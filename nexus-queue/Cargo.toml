@@ -1,0 +1,24 @@
+[package]
+name = "nexus-queue"
+description = "High-performance lock-free ring buffer queues for trading systems"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+keywords = ["spsc", "mpsc", "ring-buffer", "queue", "lock-free"]
+categories = ["concurrency", "data-structures", "no-std"]
+
+[dependencies]
+crossbeam-utils = "0.8.21"
+
+[dev-dependencies]
+criterion = { version = "0.5", features = ["html_reports"] }
+crossbeam-queue = "0.3.12"
+
+[lints]
+workspace = true
+
+[[bench]]
+name = "spsc"
+harness = false
+

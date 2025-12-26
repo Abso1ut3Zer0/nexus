@@ -1,0 +1,32 @@
+[workspace]
+resolver = "2"
+members = [
+    "nexus-queue",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.70"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/yourusername/nexus"
+keywords = ["lock-free", "concurrent", "data-structures", "trading"]
+categories = ["concurrency", "data-structures"]
+
+[workspace.dependencies]
+# Shared across workspace crates
+crossbeam-utils = "0.8"
+
+# Dev dependencies
+criterion = { version = "0.5", features = ["html_reports"] }
+
+[workspace.lints.rust]
+unsafe_op_in_unsafe_fn = "warn"
+
+[workspace.lints.clippy]
+all = "warn"
+pedantic = "warn"
+nursery = "warn"
+# Common pedantic overrides for this style of code
+missing_errors_doc = "allow"
+missing_panics_doc = "allow"
