@@ -149,7 +149,7 @@ impl<T> RingBuffer<T> {
                 match self.head.compare_exchange_weak(
                     head,
                     head.wrapping_add(1),
-                    Ordering::AcqRel,
+                    Ordering::Relaxed,
                     Ordering::Relaxed,
                 ) {
                     Ok(_) => return Some(head),
@@ -181,7 +181,7 @@ impl<T> RingBuffer<T> {
                 match self.head.compare_exchange_weak(
                     head,
                     head.wrapping_add(1),
-                    Ordering::AcqRel,
+                    Ordering::Relaxed,
                     Ordering::Relaxed,
                 ) {
                     Ok(_) => return Some(head),
