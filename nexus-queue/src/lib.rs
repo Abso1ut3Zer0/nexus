@@ -38,5 +38,5 @@
 #![warn(clippy::nursery)]
 #![allow(clippy::module_name_repetitions)]
 
+pub mod mpsc;
 pub mod spsc;
-

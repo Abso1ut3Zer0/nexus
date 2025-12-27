@@ -22,3 +22,7 @@ workspace = true
 name = "spsc"
 harness = false
 
+[[bench]]
+name = "mpsc"
+harness = false
+
