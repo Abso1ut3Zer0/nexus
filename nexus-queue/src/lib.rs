@@ -23,7 +23,7 @@
 //!
 //! // Create a channel with capacity for 1024 elements
 //! // (will be rounded up to next power of two)
-//! let (tx, rx) = spsc::channel::<u64>(1024);
+//! let (tx, rx) = spsc::bounded::channel::<u64>(1024);
 //!
 //! // Send a value
 //! tx.try_send(42).unwrap();

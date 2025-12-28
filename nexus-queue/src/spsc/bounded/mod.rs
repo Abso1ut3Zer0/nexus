@@ -8,7 +8,7 @@
 //! ```
 //! use nexus_queue::spsc;
 //!
-//! let (tx, rx) = spsc::channel::<u64>(1024);
+//! let (tx, rx) = spsc::bounded::channel::<u64>(1024);
 //!
 //! tx.try_send(1).unwrap();
 //! tx.try_send(2).unwrap();
@@ -52,7 +52,7 @@ use ring::RingBuffer;
 /// ```
 /// use nexus_queue::spsc;
 ///
-/// let (tx, rx) = spsc::channel::<String>(100);
+/// let (tx, rx) = spsc::bounded::channel::<String>(100);
 /// // Actual capacity will be 128 (next power of two)
 /// assert_eq!(tx.capacity(), 128);
 /// ```
@@ -102,9 +102,9 @@ impl<T> Sender<T> {
     /// # Example
     ///
     /// ```
-    /// use nexus_queue::spsc::{self, TrySendError};
+    /// use nexus_queue::spsc::{self, bounded::TrySendError};
     ///
-    /// let (tx, rx) = spsc::channel::<u32>(2);
+    /// let (tx, rx) = spsc::bounded::channel::<u32>(2);
     ///
     /// assert!(tx.try_send(1).is_ok());
     /// assert!(tx.try_send(2).is_ok());
@@ -252,9 +252,9 @@ impl<T> Receiver<T> {
     /// # Example
     ///
     /// ```
-    /// use nexus_queue::spsc::{self, TryRecvError};
+    /// use nexus_queue::spsc::{self, bounded::TryRecvError};
     ///
-    /// let (tx, rx) = spsc::channel::<u32>(8);
+    /// let (tx, rx) = spsc::bounded::channel::<u32>(8);
     ///
     /// // Queue is empty
     /// assert!(matches!(rx.try_recv(), Err(TryRecvError::Empty)));
@@ -501,10 +501,7 @@ mod tests {
 
         drop(rx);
 
-        assert!(matches!(
-            tx.try_send(1),
-            Err(TrySendError::Disconnected(1))
-        ));
+        assert!(matches!(tx.try_send(1), Err(TrySendError::Disconnected(1))));
     }
 
     #[test]
@@ -520,8 +517,8 @@ mod tests {
 
     #[test]
     fn with_drop_type() {
-        use std::sync::atomic::{AtomicUsize, Ordering};
         use std::sync::Arc;
+        use std::sync::atomic::{AtomicUsize, Ordering};
 
         let drop_count = Arc::new(AtomicUsize::new(0));
 
