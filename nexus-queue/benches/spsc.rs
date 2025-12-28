@@ -2,22 +2,18 @@
 //!
 //! Compares nexus-queue against crossbeam-queue's ArrayQueue.
 
-use criterion::{black_box, criterion_group, criterion_main, BenchmarkId, Criterion, Throughput};
+use criterion::{BenchmarkId, Criterion, Throughput, black_box, criterion_group, criterion_main};
 use crossbeam_queue::ArrayQueue;
 use nexus_queue::spsc;
+use nexus_queue::spsc::overwriting;
 use std::sync::Arc;
 use std::thread;
 
-/// Message sizes to benchmark
-#[allow(unused)]
-#[derive(Debug, Clone, Copy)]
-struct Small(u64);
-
-#[allow(unused)]
+#[allow(dead_code)]
 #[derive(Debug, Clone, Copy)]
 struct Medium([u64; 16]); // 128 bytes
 
-#[allow(unused)]
+#[allow(dead_code)]
 #[derive(Debug, Clone, Copy)]
 struct Large([u64; 32]); // 256 bytes
 
@@ -30,7 +26,7 @@ fn bench_single_thread_latency(c: &mut Criterion) {
 
     // --- Small message (8 bytes) ---
     group.bench_function("nexus_spsc/u64", |b| {
-        let (tx, rx) = spsc::channel::<u64>(1024);
+        let (tx, rx) = spsc::bounded::channel::<u64>(1024);
         b.iter(|| {
             tx.try_send(black_box(42)).unwrap();
             black_box(rx.try_recv().unwrap())
@@ -47,7 +43,7 @@ fn bench_single_thread_latency(c: &mut Criterion) {
 
     // --- Medium message (128 bytes) ---
     group.bench_function("nexus_spsc/128b", |b| {
-        let (tx, rx) = spsc::channel::<Medium>(1024);
+        let (tx, rx) = spsc::bounded::channel::<Medium>(1024);
         let msg = Medium([0; 16]);
         b.iter(|| {
             tx.try_send(black_box(msg)).unwrap();
@@ -66,7 +62,7 @@ fn bench_single_thread_latency(c: &mut Criterion) {
 
     // --- Large message (256 bytes) ---
     group.bench_function("nexus_spsc/256b", |b| {
-        let (tx, rx) = spsc::channel::<Large>(1024);
+        let (tx, rx) = spsc::bounded::channel::<Large>(1024);
         let msg = Large([0; 32]);
         b.iter(|| {
             tx.try_send(black_box(msg)).unwrap();
@@ -100,7 +96,7 @@ fn bench_burst_throughput(c: &mut Criterion) {
             BenchmarkId::new("nexus_spsc", batch_size),
             &batch_size,
             |b, &n| {
-                let (tx, rx) = spsc::channel::<u64>(n * 2);
+                let (tx, rx) = spsc::bounded::channel::<u64>(n * 2);
                 b.iter(|| {
                     for i in 0..n {
                         tx.try_send(black_box(i as u64)).unwrap();
@@ -144,8 +140,8 @@ fn bench_cross_thread_pingpong(c: &mut Criterion) {
 
     group.bench_function("nexus_spsc", |b| {
         b.iter(|| {
-            let (tx1, rx1) = spsc::channel::<u64>(64);
-            let (tx2, rx2) = spsc::channel::<u64>(64);
+            let (tx1, rx1) = spsc::bounded::channel::<u64>(64);
+            let (tx2, rx2) = spsc::bounded::channel::<u64>(64);
 
             let handle = thread::spawn(move || {
                 for _ in 0..ITERATIONS {
@@ -232,7 +228,7 @@ fn bench_cross_thread_throughput(c: &mut Criterion) {
 
     group.bench_function("nexus_spsc/u64", |b| {
         b.iter(|| {
-            let (tx, rx) = spsc::channel::<u64>(1024);
+            let (tx, rx) = spsc::bounded::channel::<u64>(1024);
 
             let producer = thread::spawn(move || {
                 for i in 0..MESSAGE_COUNT {
@@ -297,7 +293,7 @@ fn bench_cross_thread_throughput(c: &mut Criterion) {
     // Large messages
     group.bench_function("nexus_spsc/256b", |b| {
         b.iter(|| {
-            let (tx, rx) = spsc::channel::<Large>(1024);
+            let (tx, rx) = spsc::bounded::channel::<Large>(1024);
             let msg = Large([42; 32]);
 
             let producer = thread::spawn(move || {
@@ -364,12 +360,216 @@ fn bench_cross_thread_throughput(c: &mut Criterion) {
     group.finish();
 }
 
+// ============================================================================
+// Overwriting queue benchmarks
+// ============================================================================
+
+/// Single-threaded latency for overwriting queues
+fn bench_overwriting_single_thread(c: &mut Criterion) {
+    let mut group = c.benchmark_group("overwriting_single_thread");
+
+    // --- Small message (8 bytes) ---
+    group.bench_function("nexus_overwriting/u64", |b| {
+        let (mut tx, mut rx) = overwriting::channel::<u64>(1024);
+        b.iter(|| {
+            tx.send(black_box(42)).unwrap();
+            black_box(rx.try_recv().unwrap().value)
+        });
+    });
+
+    group.bench_function("crossbeam_force_push/u64", |b| {
+        let q = ArrayQueue::<u64>::new(1024);
+        b.iter(|| {
+            q.force_push(black_box(42));
+            black_box(q.pop().unwrap())
+        });
+    });
+
+    // --- Medium message (128 bytes) ---
+    group.bench_function("nexus_overwriting/128b", |b| {
+        let (mut tx, mut rx) = overwriting::channel::<Medium>(1024);
+        let msg = Medium([0; 16]);
+        b.iter(|| {
+            tx.send(black_box(msg)).unwrap();
+            black_box(rx.try_recv().unwrap().value)
+        });
+    });
+
+    group.bench_function("crossbeam_force_push/128b", |b| {
+        let q = ArrayQueue::<Medium>::new(1024);
+        let msg = Medium([0; 16]);
+        b.iter(|| {
+            q.force_push(black_box(msg));
+            black_box(q.pop().unwrap())
+        });
+    });
+
+    // --- Large message (256 bytes) ---
+    group.bench_function("nexus_overwriting/256b", |b| {
+        let (mut tx, mut rx) = overwriting::channel::<Large>(1024);
+        let msg = Large([0; 32]);
+        b.iter(|| {
+            tx.send(black_box(msg)).unwrap();
+            black_box(rx.try_recv().unwrap().value)
+        });
+    });
+
+    group.bench_function("crossbeam_force_push/256b", |b| {
+        let q = ArrayQueue::<Large>::new(1024);
+        let msg = Large([0; 32]);
+        b.iter(|| {
+            q.force_push(black_box(msg));
+            black_box(q.pop().unwrap())
+        });
+    });
+
+    group.finish();
+}
+
+/// Benchmark overwriting behavior when queue is full
+fn bench_overwriting_full_queue(c: &mut Criterion) {
+    let mut group = c.benchmark_group("overwriting_full_queue");
+
+    const QUEUE_SIZE: usize = 64;
+    const OPS: usize = 1000;
+    group.throughput(Throughput::Elements(OPS as u64));
+
+    // Queue is always full, every send overwrites
+    group.bench_function("nexus_overwriting", |b| {
+        let (mut tx, mut rx) = overwriting::channel::<u64>(QUEUE_SIZE);
+        // Pre-fill
+        for i in 0..QUEUE_SIZE {
+            tx.send(i as u64).unwrap();
+        }
+        b.iter(|| {
+            for i in 0..OPS {
+                tx.send(black_box(i as u64)).unwrap();
+            }
+            // Drain
+            while rx.try_recv().is_ok() {}
+            // Re-fill for next iteration
+            for i in 0..QUEUE_SIZE {
+                tx.send(i as u64).unwrap();
+            }
+        });
+    });
+
+    group.bench_function("crossbeam_force_push", |b| {
+        let q = ArrayQueue::<u64>::new(QUEUE_SIZE);
+        // Pre-fill
+        for i in 0..QUEUE_SIZE {
+            q.force_push(i as u64);
+        }
+        b.iter(|| {
+            for i in 0..OPS {
+                q.force_push(black_box(i as u64));
+            }
+            // Drain
+            while q.pop().is_some() {}
+            // Re-fill for next iteration
+            for i in 0..QUEUE_SIZE {
+                q.force_push(i as u64);
+            }
+        });
+    });
+
+    group.finish();
+}
+
+/// Cross-thread throughput with overwriting (fast producer, slow consumer)
+fn bench_overwriting_cross_thread(c: &mut Criterion) {
+    let mut group = c.benchmark_group("overwriting_cross_thread");
+
+    const MESSAGE_COUNT: usize = 100_000;
+    group.throughput(Throughput::Elements(MESSAGE_COUNT as u64));
+
+    group.bench_function("nexus_overwriting/u64", |b| {
+        b.iter(|| {
+            let (mut tx, mut rx) = overwriting::channel::<u64>(1024);
+
+            let producer = thread::spawn(move || {
+                for i in 0..MESSAGE_COUNT {
+                    tx.send(i as u64).unwrap();
+                }
+                tx // Return sender so we can detect disconnect
+            });
+
+            let consumer = thread::spawn(move || {
+                let mut received = 0;
+                let mut lagged_total = 0;
+                loop {
+                    match rx.try_recv() {
+                        Ok(result) => {
+                            black_box(result.value);
+                            lagged_total += result.lagged;
+                            received += 1;
+                        }
+                        Err(overwriting::TryRecvError::Empty) => {
+                            std::hint::spin_loop();
+                        }
+                        Err(overwriting::TryRecvError::Disconnected) => break,
+                    }
+                }
+                (received, lagged_total)
+            });
+
+            let _tx = producer.join().unwrap();
+            drop(_tx); // Signal disconnect
+            let (_received, _lagged) = consumer.join().unwrap();
+        });
+    });
+
+    group.bench_function("crossbeam_force_push/u64", |b| {
+        b.iter(|| {
+            let q = Arc::new(ArrayQueue::<u64>::new(1024));
+            let done = Arc::new(std::sync::atomic::AtomicBool::new(false));
+
+            let q1 = q.clone();
+            let producer = thread::spawn(move || {
+                for i in 0..MESSAGE_COUNT {
+                    q1.force_push(i as u64);
+                }
+            });
+
+            let q2 = q.clone();
+            let done2 = done.clone();
+            let consumer = thread::spawn(move || {
+                let mut received = 0;
+                loop {
+                    match q2.pop() {
+                        Some(v) => {
+                            black_box(v);
+                            received += 1;
+                        }
+                        None => {
+                            if done2.load(std::sync::atomic::Ordering::Relaxed) && q2.is_empty() {
+                                break;
+                            }
+                            std::hint::spin_loop();
+                        }
+                    }
+                }
+                received
+            });
+
+            producer.join().unwrap();
+            done.store(true, std::sync::atomic::Ordering::Relaxed);
+            let _received = consumer.join().unwrap();
+        });
+    });
+
+    group.finish();
+}
+
 criterion_group!(
     benches,
     bench_single_thread_latency,
     bench_burst_throughput,
     bench_cross_thread_pingpong,
     bench_cross_thread_throughput,
+    bench_overwriting_single_thread,
+    bench_overwriting_full_queue,
+    bench_overwriting_cross_thread,
 );
 
 criterion_main!(benches);
