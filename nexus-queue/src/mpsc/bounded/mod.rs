@@ -9,7 +9,7 @@
 //! use nexus_queue::mpsc;
 //! use std::thread;
 //!
-//! let (tx, mut rx) = mpsc::channel::<u64>(1024);
+//! let (tx, mut rx) = mpsc::bounded::channel::<u64>(1024);
 //!
 //! // Clone sender for multiple producers
 //! let tx2 = tx.clone();
@@ -69,7 +69,7 @@ use ring::RingBuffer;
 /// ```
 /// use nexus_queue::mpsc;
 ///
-/// let (tx, mut rx) = mpsc::channel::<String>(100);
+/// let (tx, mut rx) = mpsc::bounded::channel::<String>(100);
 /// // Actual capacity will be 128 (next power of two)
 /// assert_eq!(tx.capacity(), 128);
 /// ```
@@ -111,9 +111,9 @@ impl<T> Sender<T> {
     /// # Example
     ///
     /// ```
-    /// use nexus_queue::mpsc::{self, TrySendError};
+    /// use nexus_queue::mpsc::{self, bounded::TrySendError};
     ///
-    /// let (tx, mut rx) = mpsc::channel::<u32>(2);
+    /// let (tx, mut rx) = mpsc::bounded::channel::<u32>(2);
     ///
     /// assert!(tx.try_send(1).is_ok());
     /// assert!(tx.try_send(2).is_ok());
@@ -222,9 +222,9 @@ impl<T> Receiver<T> {
     /// # Example
     ///
     /// ```
-    /// use nexus_queue::mpsc::{self, TryRecvError};
+    /// use nexus_queue::mpsc::{self, bounded::TryRecvError};
     ///
-    /// let (tx, mut rx) = mpsc::channel::<u32>(8);
+    /// let (tx, mut rx) = mpsc::bounded::channel::<u32>(8);
     ///
     /// // Queue is empty
     /// assert!(matches!(rx.try_recv(), Err(TryRecvError::Empty)));
