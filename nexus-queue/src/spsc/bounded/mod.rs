@@ -39,6 +39,7 @@ mod ring;
 use std::cell::Cell;
 use std::fmt;
 use std::ptr::NonNull;
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 use ring::RingBuffer;
 
@@ -58,17 +59,29 @@ use ring::RingBuffer;
 /// ```
 pub fn channel<T>(capacity: usize) -> (Sender<T>, Receiver<T>) {
     let inner = RingBuffer::<T>::allocate(capacity);
+    let rb = unsafe { inner.as_ref() };
 
     (
         Sender {
             inner,
-            local_head: Cell::new(0),
-            cached_tail: Cell::new(0),
+            // Cached hot fields
+            buffer: rb.buffer(),
+            mask: rb.mask(),
+            capacity: rb.capacity(),
+            tail_atomic: rb.tail_ptr(),
+            // Local state
+            local_tail: Cell::new(0),
+            cached_head: Cell::new(0),
         },
         Receiver {
             inner,
-            local_tail: Cell::new(0),
-            cached_head: Cell::new(0),
+            // Cached hot fields
+            buffer: rb.buffer(),
+            mask: rb.mask(),
+            head_atomic: rb.head_ptr(),
+            // Local state
+            local_head: Cell::new(0),
+            cached_tail: Cell::new(0),
         },
     )
 }
@@ -79,12 +92,18 @@ pub fn channel<T>(capacity: usize) -> (Sender<T>, Receiver<T>) {
 pub struct Sender<T> {
     inner: NonNull<RingBuffer<T>>,
 
-    /// Our write position (authoritative, only we update this)
-    local_head: Cell<usize>,
+    // === Cached hot fields (avoid indirection through inner) ===
+    buffer: *mut T,
+    mask: usize,
+    capacity: usize,
+    tail_atomic: *const AtomicUsize,
 
-    /// Cached snapshot of consumer's tail position
-    /// Only refreshed when queue appears full
-    cached_tail: Cell<usize>,
+    // === Local state ===
+    /// Our write position (authoritative, only we update this)
+    local_tail: Cell<usize>,
+    /// Cached snapshot of consumer's head position.
+    /// Only refreshed when queue appears full.
+    cached_head: Cell<usize>,
 }
 
 // Safety: Sender can be sent to another thread, but cannot be shared
@@ -114,44 +133,34 @@ impl<T> Sender<T> {
     /// ```
     #[inline]
     pub fn try_send(&self, value: T) -> Result<(), TrySendError<T>> {
-        // Safety: We have a valid pointer from construction, and we're the only producer
-        let inner = unsafe { self.inner.as_ref() };
-        let head = self.local_head.get();
+        let tail = self.local_tail.get();
 
-        // Fast path: check cached tail (no atomic load!)
-        if head.wrapping_sub(self.cached_tail.get()) < inner.capacity() {
-            // Safety: We have exclusive write access to this slot
-            unsafe {
-                inner.write_slot(head, value);
-            }
-            let next = head.wrapping_add(1);
-            inner.publish_head(next);
-            self.local_head.set(next);
+        // Fast path: check cached head (no atomic load!)
+        // Queue has space if tail - head < capacity
+        if tail.wrapping_sub(self.cached_head.get()) < self.capacity {
+            unsafe { self.buffer.add(tail & self.mask).write(value) };
+            let next = tail.wrapping_add(1);
+            unsafe { (*self.tail_atomic).store(next, Ordering::Release) };
+            self.local_tail.set(next);
             return Ok(());
         }
 
-        // Slow path: refresh cached tail
-        self.try_send_slow(inner, head, value)
+        self.try_send_slow(tail, value)
     }
 
     #[cold]
-    fn try_send_slow(
-        &self,
-        inner: &RingBuffer<T>,
-        head: usize,
-        value: T,
-    ) -> Result<(), TrySendError<T>> {
-        let tail = inner.load_tail();
-        self.cached_tail.set(tail);
+    fn try_send_slow(&self, tail: usize, value: T) -> Result<(), TrySendError<T>> {
+        let inner = unsafe { self.inner.as_ref() };
 
-        if head.wrapping_sub(tail) < inner.capacity() {
-            // Safety: We have exclusive write access to this slot
-            unsafe {
-                inner.write_slot(head, value);
-            }
-            let next = head.wrapping_add(1);
-            inner.publish_head(next);
-            self.local_head.set(next);
+        // Refresh cached head from consumer
+        let head = inner.load_head();
+        self.cached_head.set(head);
+
+        if tail.wrapping_sub(head) < self.capacity {
+            unsafe { self.buffer.add(tail & self.mask).write(value) };
+            let next = tail.wrapping_add(1);
+            unsafe { (*self.tail_atomic).store(next, Ordering::Release) };
+            self.local_tail.set(next);
             return Ok(());
         }
 
@@ -166,8 +175,7 @@ impl<T> Sender<T> {
     /// Returns the capacity of the queue.
     #[inline]
     pub fn capacity(&self) -> usize {
-        // Safety: Valid pointer from construction
-        unsafe { self.inner.as_ref().capacity() }
+        self.capacity
     }
 
     /// Returns `true` if the receiver has been dropped.
@@ -176,7 +184,6 @@ impl<T> Sender<T> {
     /// immediately after this returns `false`.
     #[inline]
     pub fn is_disconnected(&self) -> bool {
-        // Safety: Valid pointer from construction
         unsafe { self.inner.as_ref().is_receiver_disconnected() }
     }
 
@@ -185,11 +192,10 @@ impl<T> Sender<T> {
     /// Note: This is a snapshot and may be immediately stale in concurrent contexts.
     #[inline]
     pub fn len(&self) -> usize {
-        // Safety: Valid pointer from construction
         let inner = unsafe { self.inner.as_ref() };
-        let head = inner.load_head();
         let tail = inner.load_tail();
-        head.wrapping_sub(tail)
+        let head = inner.load_head();
+        tail.wrapping_sub(head)
     }
 
     /// Returns `true` if the queue is empty.
@@ -201,7 +207,6 @@ impl<T> Sender<T> {
 
 impl<T> Drop for Sender<T> {
     fn drop(&mut self) {
-        // Safety: Valid pointer, we're being dropped so no more access after this
         unsafe {
             self.inner.as_ref().set_sender_disconnected();
             RingBuffer::release(self.inner);
@@ -224,12 +229,17 @@ impl<T> fmt::Debug for Sender<T> {
 pub struct Receiver<T> {
     inner: NonNull<RingBuffer<T>>,
 
-    /// Our read position (authoritative, only we update this)
-    local_tail: Cell<usize>,
+    // === Cached hot fields (avoid indirection through inner) ===
+    buffer: *mut T,
+    mask: usize,
+    head_atomic: *const AtomicUsize,
 
-    /// Cached snapshot of producer's head position
-    /// Only refreshed when queue appears empty
-    cached_head: Cell<usize>,
+    // === Local state ===
+    /// Our read position (authoritative, only we update this)
+    local_head: Cell<usize>,
+    /// Cached snapshot of producer's tail position.
+    /// Only refreshed when queue appears empty.
+    cached_tail: Cell<usize>,
 }
 
 // Safety: Receiver can be sent to another thread, but cannot be shared
@@ -260,35 +270,34 @@ impl<T> Receiver<T> {
     /// ```
     #[inline]
     pub fn try_recv(&self) -> Result<T, TryRecvError> {
-        // Safety: We have a valid pointer from construction, and we're the only consumer
-        let inner = unsafe { self.inner.as_ref() };
-        let tail = self.local_tail.get();
+        let head = self.local_head.get();
 
-        // Fast path: check cached head (no atomic load!)
-        if tail != self.cached_head.get() {
-            // Safety: We have exclusive read access to this slot
-            let value = unsafe { inner.read_slot(tail) };
-            let next = tail.wrapping_add(1);
-            inner.publish_tail(next);
-            self.local_tail.set(next);
+        // Fast path: check cached tail (no atomic load!)
+        // Queue has data if head != tail
+        if head != self.cached_tail.get() {
+            let value = unsafe { self.buffer.add(head & self.mask).read() };
+            let next = head.wrapping_add(1);
+            unsafe { (*self.head_atomic).store(next, Ordering::Release) };
+            self.local_head.set(next);
             return Ok(value);
         }
 
-        // Slow path: refresh cached head
-        self.try_recv_slow(inner, tail)
+        self.try_recv_slow(head)
     }
 
     #[cold]
-    fn try_recv_slow(&self, inner: &RingBuffer<T>, tail: usize) -> Result<T, TryRecvError> {
-        let head = inner.load_head();
-        self.cached_head.set(head);
+    fn try_recv_slow(&self, head: usize) -> Result<T, TryRecvError> {
+        let inner = unsafe { self.inner.as_ref() };
 
-        if tail != head {
-            // Safety: We have exclusive read access to this slot
-            let value = unsafe { inner.read_slot(tail) };
-            let next = tail.wrapping_add(1);
-            inner.publish_tail(next);
-            self.local_tail.set(next);
+        // Refresh cached tail from producer
+        let tail = inner.load_tail();
+        self.cached_tail.set(tail);
+
+        if head != tail {
+            let value = unsafe { self.buffer.add(head & self.mask).read() };
+            let next = head.wrapping_add(1);
+            unsafe { (*self.head_atomic).store(next, Ordering::Release) };
+            self.local_head.set(next);
             return Ok(value);
         }
 
@@ -303,7 +312,6 @@ impl<T> Receiver<T> {
     /// Returns the capacity of the queue.
     #[inline]
     pub fn capacity(&self) -> usize {
-        // Safety: Valid pointer from construction
         unsafe { self.inner.as_ref().capacity() }
     }
 
@@ -313,7 +321,6 @@ impl<T> Receiver<T> {
     /// immediately after this returns `false`.
     #[inline]
     pub fn is_disconnected(&self) -> bool {
-        // Safety: Valid pointer from construction
         unsafe { self.inner.as_ref().is_sender_disconnected() }
     }
 
@@ -322,11 +329,10 @@ impl<T> Receiver<T> {
     /// Note: This is a snapshot and may be immediately stale in concurrent contexts.
     #[inline]
     pub fn len(&self) -> usize {
-        // Safety: Valid pointer from construction
         let inner = unsafe { self.inner.as_ref() };
-        let head = inner.load_head();
         let tail = inner.load_tail();
-        head.wrapping_sub(tail)
+        let head = inner.load_head();
+        tail.wrapping_sub(head)
     }
 
     /// Returns `true` if the queue is empty.
@@ -338,7 +344,6 @@ impl<T> Receiver<T> {
 
 impl<T> Drop for Receiver<T> {
     fn drop(&mut self) {
-        // Safety: Valid pointer, we're being dropped so no more access after this
         unsafe {
             self.inner.as_ref().set_receiver_disconnected();
             RingBuffer::release(self.inner);

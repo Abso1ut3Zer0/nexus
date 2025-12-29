@@ -17,26 +17,27 @@ use crossbeam_utils::CachePadded;
 /// ```text
 /// ┌───────────────────────────────────────────────────────┐
 /// │ RingBuffer header                                     │
-/// │   ref_count, capacity, mask, buffer, layout           │
-/// │   sender_disconnected, receiver_disconnected          │
 /// ├───────────────────────────────────────────────────────┤
-/// │ head (cache-line padded) - producer write position    │
+/// │ head (cache-line padded) - consumer read position     │
 /// ├───────────────────────────────────────────────────────┤
-/// │ tail (cache-line padded) - consumer read position     │
+/// │ tail (cache-line padded) - producer write position    │
 /// ├───────────────────────────────────────────────────────┤
-/// │ Buffer: [MaybeUninit<T>; capacity]                    │
+/// │ Buffer: [T; capacity]                                 │
 /// └───────────────────────────────────────────────────────┘
 /// ```
+///
+/// Queue contains elements in range [head, tail).
+/// - Producer writes at tail, then increments tail
+/// - Consumer reads at head, then increments head
 #[repr(C)]
 pub struct RingBuffer<T> {
     // === Hot path data - put first for cache locality ===
-    // === Cache-line padded indices ===
-    /// Producer's write position. Updated by sender, read by receiver.
-    head: CachePadded<AtomicUsize>,
     /// Consumer's read position. Updated by receiver, read by sender.
+    head: CachePadded<AtomicUsize>,
+    /// Producer's write position. Updated by sender, read by receiver.
     tail: CachePadded<AtomicUsize>,
 
-    /// Cached pointer to the buffer (avoids recomputing base + offset on every access)
+    /// Pointer to the data buffer
     buffer: *mut T,
 
     // === Immutable configuration (set once at construction) ===
@@ -83,10 +84,29 @@ impl<T> RingBuffer<T> {
         unsafe { NonNull::new_unchecked(Box::into_raw(rb)) }
     }
 
+    #[inline]
+    pub fn buffer(&self) -> *mut T {
+        self.buffer
+    }
+
+    #[inline]
+    pub fn mask(&self) -> usize {
+        self.mask
+    }
+
+    #[inline]
+    pub fn head_ptr(&self) -> *const AtomicUsize {
+        &*self.head as *const AtomicUsize
+    }
+
+    #[inline]
+    pub fn tail_ptr(&self) -> *const AtomicUsize {
+        &*self.tail as *const AtomicUsize
+    }
+
     /// Returns a pointer to the slot at the given index (automatically masked).
     #[inline(always)]
     fn slot_ptr(&self, index: usize) -> *mut T {
-        // Safety: buffer is valid and masking ensures we're in bounds
         unsafe { self.buffer.add(index & self.mask) }
     }
 
@@ -98,58 +118,16 @@ impl<T> RingBuffer<T> {
 
     // === Index operations ===
 
-    /// Loads the current head (producer write position).
+    /// Loads the current head (consumer read position).
     #[inline(always)]
     pub fn load_head(&self) -> usize {
         self.head.load(Ordering::Acquire)
     }
 
-    /// Loads the current tail (consumer read position).
+    /// Loads the current tail (producer write position).
     #[inline(always)]
     pub fn load_tail(&self) -> usize {
         self.tail.load(Ordering::Acquire)
-    }
-
-    /// Publishes a new head position (called by producer after writing).
-    #[inline(always)]
-    pub fn publish_head(&self, head: usize) {
-        self.head.store(head, Ordering::Release);
-    }
-
-    /// Publishes a new tail position (called by consumer after reading).
-    #[inline(always)]
-    pub fn publish_tail(&self, tail: usize) {
-        self.tail.store(tail, Ordering::Release);
-    }
-
-    // === Slot operations ===
-
-    /// Writes a value into the slot at the given index.
-    ///
-    /// # Safety
-    ///
-    /// Caller must ensure:
-    /// - Exclusive write access to this slot
-    /// - The slot is not currently occupied (no live value to drop)
-    #[inline(always)]
-    pub unsafe fn write_slot(&self, index: usize, value: T) {
-        // Safety: Caller guarantees exclusive access and slot is empty
-        unsafe {
-            self.slot_ptr(index).write(value);
-        }
-    }
-
-    /// Reads a value from the slot at the given index.
-    ///
-    /// # Safety
-    ///
-    /// Caller must ensure:
-    /// - Exclusive read access to this slot
-    /// - The slot contains a valid, initialized value
-    #[inline(always)]
-    pub unsafe fn read_slot(&self, index: usize) -> T {
-        // Safety: Caller guarantees exclusive access and slot contains valid data
-        unsafe { self.slot_ptr(index).read() }
     }
 
     // === Disconnect operations ===
@@ -211,12 +189,11 @@ impl<T> RingBuffer<T> {
         let inner = unsafe { this.as_ref() };
 
         // These loads can be Relaxed since we're the only accessor
-        let tail = inner.tail.load(Ordering::Relaxed);
         let head = inner.head.load(Ordering::Relaxed);
+        let tail = inner.tail.load(Ordering::Relaxed);
 
-        // Drop elements in [tail, head)
-        for i in tail..head {
-            // Safety: These slots contain valid data that was written but never read
+        // Drop elements in [head, tail) - head is read pos, tail is write pos
+        for i in head..tail {
             unsafe {
                 ptr::drop_in_place(inner.slot_ptr(i));
             }
@@ -240,55 +217,6 @@ mod tests {
 
         // Both release calls should succeed without double-free
         unsafe {
-            RingBuffer::release(rb);
-            RingBuffer::release(rb);
-        }
-    }
-
-    #[test]
-    fn write_and_read() {
-        let rb = RingBuffer::<u64>::allocate(8);
-
-        unsafe {
-            let inner = rb.as_ref();
-
-            // Write some values
-            inner.write_slot(0, 42);
-            inner.write_slot(1, 43);
-            inner.write_slot(7, 49); // Test wrapping
-
-            // Read them back
-            assert_eq!(inner.read_slot(0), 42);
-            assert_eq!(inner.read_slot(1), 43);
-            assert_eq!(inner.read_slot(7), 49);
-
-            // Cleanup
-            RingBuffer::release(rb);
-            RingBuffer::release(rb);
-        }
-    }
-
-    #[test]
-    fn index_masking() {
-        let rb = RingBuffer::<u64>::allocate(4);
-
-        unsafe {
-            let inner = rb.as_ref();
-
-            // Write at index 0 and index 4 (should be same slot)
-            inner.write_slot(0, 100);
-            let val = inner.read_slot(0);
-            assert_eq!(val, 100);
-
-            inner.write_slot(4, 200);
-            let val = inner.read_slot(4);
-            assert_eq!(val, 200);
-
-            // Both should access the same underlying slot (index & mask = index & 3)
-            inner.write_slot(0, 300);
-            let val = inner.read_slot(4); // Should read from slot 0
-            assert_eq!(val, 300);
-
             RingBuffer::release(rb);
             RingBuffer::release(rb);
         }
