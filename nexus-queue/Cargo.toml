@@ -14,6 +14,7 @@ crossbeam-utils = "0.8.21"
 [dev-dependencies]
 criterion = { version = "0.5", features = ["html_reports"] }
 crossbeam-queue = "0.3.12"
+rtrb = "0.3.2"
 
 [lints]
 workspace = true

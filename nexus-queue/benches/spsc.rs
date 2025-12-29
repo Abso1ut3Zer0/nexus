@@ -41,6 +41,14 @@ fn bench_single_thread_latency(c: &mut Criterion) {
         });
     });
 
+    group.bench_function("rtrb/u64", |b| {
+        let (mut tx, mut rx) = rtrb::RingBuffer::new(1024);
+        b.iter(|| {
+            tx.push(black_box(42)).unwrap();
+            black_box(rx.pop().unwrap())
+        });
+    });
+
     // --- Medium message (128 bytes) ---
     group.bench_function("nexus_spsc/128b", |b| {
         let (tx, rx) = spsc::bounded::channel::<Medium>(1024);
@@ -60,6 +68,15 @@ fn bench_single_thread_latency(c: &mut Criterion) {
         });
     });
 
+    group.bench_function("rtrb/128b", |b| {
+        let (mut tx, mut rx) = rtrb::RingBuffer::new(1024);
+        let msg = Medium([0; 16]);
+        b.iter(|| {
+            tx.push(black_box(msg)).unwrap();
+            black_box(rx.pop().unwrap())
+        });
+    });
+
     // --- Large message (256 bytes) ---
     group.bench_function("nexus_spsc/256b", |b| {
         let (tx, rx) = spsc::bounded::channel::<Large>(1024);
@@ -76,6 +93,15 @@ fn bench_single_thread_latency(c: &mut Criterion) {
         b.iter(|| {
             q.push(black_box(msg)).unwrap();
             black_box(q.pop().unwrap())
+        });
+    });
+
+    group.bench_function("rtrb/256b", |b| {
+        let (mut tx, mut rx) = rtrb::RingBuffer::new(1024);
+        let msg = Large([0; 32]);
+        b.iter(|| {
+            tx.push(black_box(msg)).unwrap();
+            black_box(rx.pop().unwrap())
         });
     });
 
@@ -119,6 +145,22 @@ fn bench_burst_throughput(c: &mut Criterion) {
                     }
                     for _ in 0..n {
                         black_box(q.pop().unwrap());
+                    }
+                });
+            },
+        );
+
+        group.bench_with_input(
+            BenchmarkId::new("rtrb", batch_size),
+            &batch_size,
+            |b, &n| {
+                let (mut tx, mut rx) = rtrb::RingBuffer::new(n * 2);
+                b.iter(|| {
+                    for i in 0..n {
+                        tx.push(black_box(i as u64)).unwrap();
+                    }
+                    for _ in 0..n {
+                        black_box(rx.pop().unwrap());
                     }
                 });
             },
@@ -213,6 +255,42 @@ fn bench_cross_thread_pingpong(c: &mut Criterion) {
         });
     });
 
+    group.bench_function("rtrb", |b| {
+        b.iter(|| {
+            let (mut tx1, mut rx1) = rtrb::RingBuffer::new(64);
+            let (mut tx2, mut rx2) = rtrb::RingBuffer::new(64);
+
+            let handle = thread::spawn(move || {
+                for _ in 0..ITERATIONS {
+                    let val = loop {
+                        match rx1.pop() {
+                            Ok(v) => break v,
+                            Err(_) => std::hint::spin_loop(),
+                        }
+                    };
+                    while tx2.push(val + 1).is_err() {
+                        std::hint::spin_loop();
+                    }
+                }
+            });
+
+            for i in 0..ITERATIONS {
+                while tx1.push(i as u64).is_err() {
+                    std::hint::spin_loop();
+                }
+                let result = loop {
+                    match rx2.pop() {
+                        Ok(v) => break v,
+                        Err(_) => std::hint::spin_loop(),
+                    }
+                };
+                black_box(result);
+            }
+
+            handle.join().unwrap();
+        });
+    });
+
     group.finish();
 }
 
@@ -290,6 +368,37 @@ fn bench_cross_thread_throughput(c: &mut Criterion) {
         });
     });
 
+    group.bench_function("rtrb/u64", |b| {
+        b.iter(|| {
+            let (mut tx, mut rx) = rtrb::RingBuffer::new(1024);
+
+            let producer = thread::spawn(move || {
+                for i in 0..MESSAGE_COUNT {
+                    while tx.push(i as u64).is_err() {
+                        std::hint::spin_loop();
+                    }
+                }
+            });
+
+            let consumer = thread::spawn(move || {
+                for _ in 0..MESSAGE_COUNT {
+                    loop {
+                        match rx.pop() {
+                            Ok(v) => {
+                                black_box(v);
+                                break;
+                            }
+                            Err(_) => std::hint::spin_loop(),
+                        }
+                    }
+                }
+            });
+
+            producer.join().unwrap();
+            consumer.join().unwrap();
+        });
+    });
+
     // Large messages
     group.bench_function("nexus_spsc/256b", |b| {
         b.iter(|| {
@@ -347,6 +456,38 @@ fn bench_cross_thread_throughput(c: &mut Criterion) {
                                 break;
                             }
                             None => std::hint::spin_loop(),
+                        }
+                    }
+                }
+            });
+
+            producer.join().unwrap();
+            consumer.join().unwrap();
+        });
+    });
+
+    group.bench_function("rtrb/256b", |b| {
+        b.iter(|| {
+            let (mut tx, mut rx) = rtrb::RingBuffer::new(1024);
+            let msg = Large([42; 32]);
+
+            let producer = thread::spawn(move || {
+                for _ in 0..MESSAGE_COUNT {
+                    while tx.push(msg).is_err() {
+                        std::hint::spin_loop();
+                    }
+                }
+            });
+
+            let consumer = thread::spawn(move || {
+                for _ in 0..MESSAGE_COUNT {
+                    loop {
+                        match rx.pop() {
+                            Ok(v) => {
+                                black_box(v);
+                                break;
+                            }
+                            Err(_) => std::hint::spin_loop(),
                         }
                     }
                 }
