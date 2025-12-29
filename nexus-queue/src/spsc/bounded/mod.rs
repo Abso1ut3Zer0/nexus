@@ -116,12 +116,6 @@ impl<T> Sender<T> {
     pub fn try_send(&self, value: T) -> Result<(), TrySendError<T>> {
         // Safety: We have a valid pointer from construction, and we're the only producer
         let inner = unsafe { self.inner.as_ref() };
-
-        // Check for receiver disconnect first (Relaxed is fine - just a hint)
-        if inner.is_receiver_disconnected() {
-            return Err(TrySendError::Disconnected(value));
-        }
-
         let head = self.local_head.get();
 
         // Fast path: check cached tail (no atomic load!)
@@ -130,8 +124,9 @@ impl<T> Sender<T> {
             unsafe {
                 inner.write_slot(head, value);
             }
-            inner.publish_head(head.wrapping_add(1));
-            self.local_head.set(head.wrapping_add(1));
+            let next = head.wrapping_add(1);
+            inner.publish_head(next);
+            self.local_head.set(next);
             return Ok(());
         }
 
@@ -154,8 +149,9 @@ impl<T> Sender<T> {
             unsafe {
                 inner.write_slot(head, value);
             }
-            inner.publish_head(head.wrapping_add(1));
-            self.local_head.set(head.wrapping_add(1));
+            let next = head.wrapping_add(1);
+            inner.publish_head(next);
+            self.local_head.set(next);
             return Ok(());
         }
 
@@ -272,8 +268,9 @@ impl<T> Receiver<T> {
         if tail != self.cached_head.get() {
             // Safety: We have exclusive read access to this slot
             let value = unsafe { inner.read_slot(tail) };
-            inner.publish_tail(tail.wrapping_add(1));
-            self.local_tail.set(tail.wrapping_add(1));
+            let next = tail.wrapping_add(1);
+            inner.publish_tail(next);
+            self.local_tail.set(next);
             return Ok(value);
         }
 
@@ -289,8 +286,9 @@ impl<T> Receiver<T> {
         if tail != head {
             // Safety: We have exclusive read access to this slot
             let value = unsafe { inner.read_slot(tail) };
-            inner.publish_tail(tail.wrapping_add(1));
-            self.local_tail.set(tail.wrapping_add(1));
+            let next = tail.wrapping_add(1);
+            inner.publish_tail(next);
+            self.local_tail.set(next);
             return Ok(value);
         }
 
@@ -477,6 +475,22 @@ mod tests {
         let _ = rx.try_recv();
 
         assert!(matches!(rx.try_recv(), Err(TryRecvError::Empty)));
+    }
+
+    #[test]
+    fn receiver_disconnect() {
+        let (tx, rx) = channel::<u64>(4);
+
+        // Fill the queue
+        tx.try_send(1).unwrap();
+        tx.try_send(2).unwrap();
+        tx.try_send(3).unwrap();
+        tx.try_send(4).unwrap();
+
+        drop(rx);
+
+        // Now sender discovers receiver is gone when it can't make progress
+        assert!(matches!(tx.try_send(5), Err(TrySendError::Disconnected(5))));
     }
 
     // ============================================================================
