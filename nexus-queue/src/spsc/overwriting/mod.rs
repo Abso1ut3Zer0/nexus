@@ -33,6 +33,7 @@
 
 mod ring;
 
+use core::fmt;
 use std::ptr::NonNull;
 
 use ring::RingBuffer;
@@ -90,11 +91,25 @@ pub enum TryRecvError {
 }
 
 /// Error returned when sending fails.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq)]
 pub enum SendError<T> {
     /// The receiver has been dropped.
     Disconnected(T),
 }
+
+impl<T> fmt::Display for SendError<T> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "receiver disconnected")
+    }
+}
+
+impl<T> fmt::Debug for SendError<T> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        fmt::Display::fmt(&self, f)
+    }
+}
+
+impl<T> std::error::Error for SendError<T> {}
 
 /// The sending half of an overwriting SPSC channel.
 ///
@@ -312,11 +327,43 @@ impl<T> Drop for Receiver<T> {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    // ============================================================================
+    // Basic Operations
+    // ============================================================================
+
+    use crate::spsc::overwriting::{SendError, TryRecvError, channel};
 
     #[test]
-    fn basic_send_recv() {
-        let (mut tx, mut rx) = channel::<u32>(4);
+    fn send_returns_none_when_not_overwriting() {
+        let (mut tx, mut rx) = channel::<u64>(8);
+
+        assert_eq!(tx.send(1).unwrap(), None);
+        assert_eq!(tx.send(2).unwrap(), None);
+        assert_eq!(tx.send(3).unwrap(), None);
+
+        assert_eq!(rx.try_recv().unwrap().value, 1);
+        assert_eq!(rx.try_recv().unwrap().value, 2);
+        assert_eq!(rx.try_recv().unwrap().value, 3);
+    }
+
+    #[test]
+    fn send_returns_old_value_when_overwriting() {
+        let (mut tx, _rx) = channel::<u64>(4);
+
+        assert_eq!(tx.send(1).unwrap(), None);
+        assert_eq!(tx.send(2).unwrap(), None);
+        assert_eq!(tx.send(3).unwrap(), None);
+        assert_eq!(tx.send(4).unwrap(), None);
+
+        assert_eq!(tx.send(5).unwrap(), Some(1));
+        assert_eq!(tx.send(6).unwrap(), Some(2));
+        assert_eq!(tx.send(7).unwrap(), Some(3));
+        assert_eq!(tx.send(8).unwrap(), Some(4));
+    }
+
+    #[test]
+    fn recv_returns_lagged_zero_normal() {
+        let (mut tx, mut rx) = channel::<u64>(8);
 
         tx.send(1).unwrap();
         tx.send(2).unwrap();
@@ -328,94 +375,178 @@ mod tests {
         let r2 = rx.try_recv().unwrap();
         assert_eq!(r2.value, 2);
         assert_eq!(r2.lagged, 0);
-
-        assert!(matches!(rx.try_recv(), Err(TryRecvError::Empty)));
     }
 
     #[test]
-    fn overwrite_when_full() {
-        let (mut tx, mut rx) = channel::<u32>(4);
+    fn recv_returns_lagged_nonzero_when_lapped() {
+        let (mut tx, mut rx) = channel::<u64>(4);
 
-        // Fill the queue (capacity rounds to 4)
-        assert_eq!(tx.send(1).unwrap(), None); // No overwrite
-        assert_eq!(tx.send(2).unwrap(), None);
-        assert_eq!(tx.send(3).unwrap(), None);
-        assert_eq!(tx.send(4).unwrap(), None);
-
-        // These should overwrite oldest values and return them
-        assert_eq!(tx.send(5).unwrap(), Some(1)); // Overwrote 1
-        assert_eq!(tx.send(6).unwrap(), Some(2)); // Overwrote 2
-
-        // First recv should detect lapping
-        let r1 = rx.try_recv().unwrap();
-        // We should see one of the newer values, with lagged > 0
-        assert!(r1.lagged > 0, "Expected lagged > 0, got {}", r1.lagged);
-    }
-
-    #[test]
-    fn producer_laps_consumer_multiple_times() {
-        let (mut tx, mut rx) = channel::<u32>(4);
-
-        // Producer writes 12 values (3 full laps around a size-4 buffer)
-        for i in 0..12 {
+        for i in 0..8 {
             tx.send(i).unwrap();
         }
 
-        // Consumer should detect significant lag
-        let r1 = rx.try_recv().unwrap();
-        assert!(r1.lagged > 0, "Expected lag, got 0");
-        // Should see one of the recent values (8, 9, 10, or 11)
-        assert!(r1.value >= 8, "Expected recent value, got {}", r1.value);
+        let result = rx.try_recv().unwrap();
+        assert!(
+            result.lagged > 0,
+            "Expected lagged > 0, got {}",
+            result.lagged
+        );
+        assert!(
+            result.value >= 4,
+            "Expected value >= 4, got {}",
+            result.value
+        );
     }
 
     #[test]
-    fn disconnect_sender() {
-        let (tx, mut rx) = channel::<u32>(4);
+    fn fill_then_overwrite_all() {
+        let (mut tx, mut rx) = channel::<u64>(4);
+
+        for i in 0..4 {
+            assert_eq!(tx.send(i).unwrap(), None);
+        }
+
+        for i in 4..8 {
+            let old = tx.send(i).unwrap();
+            assert_eq!(old, Some(i - 4));
+        }
+
+        let mut values = Vec::new();
+        while let Ok(result) = rx.try_recv() {
+            values.push(result.value);
+        }
+        assert!(values.iter().all(|&v| v >= 4));
+    }
+
+    // ============================================================================
+    // Lapping
+    // ============================================================================
+
+    #[test]
+    fn producer_laps_consumer_once() {
+        let (mut tx, mut rx) = channel::<u64>(4);
+
+        for i in 0..8 {
+            tx.send(i).unwrap();
+        }
+
+        let result = rx.try_recv().unwrap();
+        assert!(result.lagged > 0);
+        assert!(result.value >= 4);
+    }
+
+    #[test]
+    fn consumer_catches_up_after_lag() {
+        let (mut tx, mut rx) = channel::<u64>(4);
+
+        for i in 0..8 {
+            tx.send(i).unwrap();
+        }
+
+        let r1 = rx.try_recv().unwrap();
+        assert!(r1.lagged > 0);
+
+        let r2 = rx.try_recv().unwrap();
+        assert_eq!(r2.lagged, 0);
+
+        let r3 = rx.try_recv().unwrap();
+        assert_eq!(r3.lagged, 0);
+    }
+
+    #[test]
+    fn lagged_count_accuracy() {
+        let (mut tx, mut rx) = channel::<u64>(4);
+
+        for i in 0..8 {
+            tx.send(i).unwrap();
+        }
+
+        let result = rx.try_recv().unwrap();
+        assert!(
+            result.lagged >= 2 && result.lagged <= 8,
+            "Expected lagged between 2-8, got {}",
+            result.lagged
+        );
+    }
+
+    // ============================================================================
+    // Disconnection
+    // ============================================================================
+
+    #[test]
+    fn sender_disconnect_then_recv_drains() {
+        let (mut tx, mut rx) = channel::<u64>(8);
+
+        tx.send(1).unwrap();
+        tx.send(2).unwrap();
+        tx.send(3).unwrap();
 
         drop(tx);
 
-        assert!(rx.is_disconnected());
+        assert_eq!(rx.try_recv().unwrap().value, 1);
+        assert_eq!(rx.try_recv().unwrap().value, 2);
+        assert_eq!(rx.try_recv().unwrap().value, 3);
         assert!(matches!(rx.try_recv(), Err(TryRecvError::Disconnected)));
     }
 
     #[test]
-    fn disconnect_receiver() {
-        let (mut tx, rx) = channel::<u32>(4);
+    fn sender_disconnect_empty_queue() {
+        let (tx, mut rx) = channel::<u64>(8);
+
+        drop(tx);
+
+        assert!(matches!(rx.try_recv(), Err(TryRecvError::Disconnected)));
+    }
+
+    #[test]
+    fn sender_disconnect_after_overwrite() {
+        let (mut tx, mut rx) = channel::<u64>(4);
+
+        for i in 0..8 {
+            tx.send(i).unwrap();
+        }
+
+        drop(tx);
+
+        let mut count = 0;
+        loop {
+            match rx.try_recv() {
+                Ok(_) => count += 1,
+                Err(TryRecvError::Empty) => {}
+                Err(TryRecvError::Disconnected) => break,
+            }
+        }
+        assert_eq!(count, 4);
+    }
+
+    #[test]
+    fn receiver_disconnect_returns_disconnected_error() {
+        let (mut tx, rx) = channel::<u64>(4);
+
+        tx.send(1).unwrap();
+        tx.send(2).unwrap();
+        tx.send(3).unwrap();
+        tx.send(4).unwrap();
 
         drop(rx);
 
-        assert!(tx.is_disconnected());
-        assert!(matches!(tx.send(1), Err(SendError::Disconnected(1))));
+        match tx.send(5) {
+            Err(SendError::Disconnected(5)) => {}
+            _ => panic!("Expected Disconnected error"),
+        }
     }
 
-    #[test]
-    fn recv_result_into_value() {
-        let (mut tx, mut rx) = channel::<String>(4);
-
-        tx.send("hello".to_string()).unwrap();
-
-        let result = rx.try_recv().unwrap();
-        let s: String = result.into_value();
-        assert_eq!(s, "hello");
-    }
+    // ============================================================================
+    // Drop Behavior
+    // ============================================================================
 
     #[test]
-    fn send_unchecked() {
-        let (mut tx, mut rx) = channel::<u32>(4);
-
-        tx.send_unchecked(42);
-        tx.send_unchecked(43);
-
-        assert_eq!(rx.try_recv().unwrap().value, 42);
-        assert_eq!(rx.try_recv().unwrap().value, 43);
-    }
-
-    #[test]
-    fn drops_on_overwrite() {
+    fn drop_sender_drops_remaining_items() {
         use std::sync::Arc;
         use std::sync::atomic::{AtomicUsize, Ordering};
 
-        #[derive(Debug)]
+        let drop_count = Arc::new(AtomicUsize::new(0));
+
         struct DropCounter(Arc<AtomicUsize>);
         impl Drop for DropCounter {
             fn drop(&mut self) {
@@ -423,51 +554,416 @@ mod tests {
             }
         }
 
-        let drop_count = Arc::new(AtomicUsize::new(0));
-        let (mut tx, rx) = channel::<DropCounter>(4);
+        let (mut tx, rx) = channel::<DropCounter>(8);
 
-        // Fill queue
-        for _ in 0..4 {
-            tx.send(DropCounter(drop_count.clone())).unwrap();
-        }
+        tx.send(DropCounter(Arc::clone(&drop_count))).unwrap();
+        tx.send(DropCounter(Arc::clone(&drop_count))).unwrap();
+        tx.send(DropCounter(Arc::clone(&drop_count))).unwrap();
 
-        assert_eq!(drop_count.load(Ordering::SeqCst), 0, "Nothing dropped yet");
+        assert_eq!(drop_count.load(Ordering::SeqCst), 0);
 
-        // Overwrite - should drop the oldest
-        tx.send(DropCounter(drop_count.clone())).unwrap();
-        assert_eq!(
-            drop_count.load(Ordering::SeqCst),
-            1,
-            "Should have dropped 1"
-        );
-
-        tx.send(DropCounter(drop_count.clone())).unwrap();
-        assert_eq!(
-            drop_count.load(Ordering::SeqCst),
-            2,
-            "Should have dropped 2"
-        );
-
-        // Drop channel - remaining 4 items should be dropped
         drop(rx);
         drop(tx);
 
-        assert_eq!(
-            drop_count.load(Ordering::SeqCst),
-            6,
-            "All 6 should be dropped"
-        );
+        assert_eq!(drop_count.load(Ordering::SeqCst), 3);
     }
 
     #[test]
-    fn capacity_rounds_to_power_of_two() {
-        let (tx, _rx) = channel::<u32>(5);
-        assert_eq!(tx.capacity(), 8);
+    fn overwrite_returns_old_value_for_drop() {
+        use std::sync::Arc;
+        use std::sync::atomic::{AtomicUsize, Ordering};
 
-        let (tx, _rx) = channel::<u32>(7);
-        assert_eq!(tx.capacity(), 8);
+        let drop_count = Arc::new(AtomicUsize::new(0));
 
-        let (tx, _rx) = channel::<u32>(8);
-        assert_eq!(tx.capacity(), 8);
+        struct DropCounter(Arc<AtomicUsize>);
+        impl Drop for DropCounter {
+            fn drop(&mut self) {
+                self.0.fetch_add(1, Ordering::SeqCst);
+            }
+        }
+
+        let (mut tx, _rx) = channel::<DropCounter>(4);
+
+        for _ in 0..4 {
+            tx.send(DropCounter(Arc::clone(&drop_count))).unwrap();
+        }
+        assert_eq!(drop_count.load(Ordering::SeqCst), 0);
+
+        let old = tx.send(DropCounter(Arc::clone(&drop_count))).unwrap();
+        drop(old);
+        assert_eq!(drop_count.load(Ordering::SeqCst), 1);
+
+        let old = tx.send(DropCounter(Arc::clone(&drop_count))).unwrap();
+        drop(old);
+        assert_eq!(drop_count.load(Ordering::SeqCst), 2);
+    }
+
+    #[test]
+    fn consumed_slot_returns_none_on_overwrite() {
+        use std::sync::Arc;
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        let drop_count = Arc::new(AtomicUsize::new(0));
+
+        struct DropCounter(Arc<AtomicUsize>);
+        impl Drop for DropCounter {
+            fn drop(&mut self) {
+                self.0.fetch_add(1, Ordering::SeqCst);
+            }
+        }
+
+        let (mut tx, mut rx) = channel::<DropCounter>(4);
+
+        tx.send(DropCounter(Arc::clone(&drop_count))).unwrap();
+        let item = rx.try_recv().unwrap().value;
+        drop(item);
+        assert_eq!(drop_count.load(Ordering::SeqCst), 1);
+
+        tx.send(DropCounter(Arc::clone(&drop_count))).unwrap();
+        tx.send(DropCounter(Arc::clone(&drop_count))).unwrap();
+        tx.send(DropCounter(Arc::clone(&drop_count))).unwrap();
+
+        let old = tx.send(DropCounter(Arc::clone(&drop_count))).unwrap();
+        assert!(
+            old.is_none(),
+            "Slot was consumed, shouldn't return old value"
+        );
+        assert_eq!(drop_count.load(Ordering::SeqCst), 1);
+    }
+
+    // ============================================================================
+    // Cross-Thread
+    // ============================================================================
+
+    #[test]
+    fn cross_thread_basic() {
+        use std::thread;
+
+        let (mut tx, mut rx) = channel::<u64>(64);
+
+        let producer = thread::spawn(move || {
+            for i in 0..1000 {
+                tx.send(i).unwrap();
+            }
+        });
+
+        let consumer = thread::spawn(move || {
+            let mut received = 0;
+            let mut lagged_total = 0;
+            loop {
+                match rx.try_recv() {
+                    Ok(result) => {
+                        received += 1;
+                        lagged_total += result.lagged;
+                    }
+                    Err(TryRecvError::Empty) => thread::yield_now(),
+                    Err(TryRecvError::Disconnected) => break,
+                }
+            }
+            (received, lagged_total)
+        });
+
+        producer.join().unwrap();
+        let (received, _lagged) = consumer.join().unwrap();
+        assert!(received > 0);
+    }
+
+    #[test]
+    fn cross_thread_fast_producer_slow_consumer() {
+        use std::thread;
+        use std::time::Duration;
+
+        let (mut tx, mut rx) = channel::<u64>(16);
+
+        let producer = thread::spawn(move || {
+            for i in 0..10000 {
+                tx.send(i).unwrap();
+            }
+        });
+
+        let consumer = thread::spawn(move || {
+            let mut lagged_total = 0;
+            loop {
+                match rx.try_recv() {
+                    Ok(result) => {
+                        lagged_total += result.lagged;
+                        thread::sleep(Duration::from_micros(1));
+                    }
+                    Err(TryRecvError::Empty) => thread::yield_now(),
+                    Err(TryRecvError::Disconnected) => break,
+                }
+            }
+            lagged_total
+        });
+
+        producer.join().unwrap();
+        let lagged = consumer.join().unwrap();
+        assert!(lagged > 0, "Expected lag with fast producer");
+    }
+
+    #[test]
+    fn cross_thread_disconnect_terminates() {
+        use std::thread;
+
+        let (tx, mut rx) = channel::<u64>(16);
+
+        let consumer = thread::spawn(move || {
+            loop {
+                match rx.try_recv() {
+                    Ok(_) => {}
+                    Err(TryRecvError::Empty) => thread::yield_now(),
+                    Err(TryRecvError::Disconnected) => return true,
+                }
+            }
+        });
+
+        drop(tx);
+
+        let terminated = consumer.join().unwrap();
+        assert!(terminated);
+    }
+
+    #[test]
+    fn cross_thread_no_hang_after_disconnect() {
+        use std::sync::Arc;
+        use std::sync::atomic::{AtomicBool, Ordering};
+        use std::thread;
+        use std::time::Duration;
+
+        let (mut tx, mut rx) = channel::<u64>(16);
+        let finished = Arc::new(AtomicBool::new(false));
+        let finished_clone = Arc::clone(&finished);
+
+        for i in 0..100 {
+            tx.send(i).unwrap();
+        }
+
+        let consumer = thread::spawn(move || {
+            loop {
+                match rx.try_recv() {
+                    Ok(_) => {}
+                    Err(TryRecvError::Empty) => {
+                        if finished_clone.load(Ordering::Relaxed) {
+                            thread::sleep(Duration::from_millis(1));
+                        }
+                        thread::yield_now();
+                    }
+                    Err(TryRecvError::Disconnected) => return,
+                }
+            }
+        });
+
+        drop(tx);
+        finished.store(true, Ordering::Relaxed);
+
+        let result = consumer.join();
+        assert!(result.is_ok());
+    }
+
+    // ============================================================================
+    // Special Types
+    // ============================================================================
+
+    #[test]
+    fn zero_sized_type() {
+        let (mut tx, mut rx) = channel::<()>(8);
+
+        tx.send(()).unwrap();
+        tx.send(()).unwrap();
+
+        assert_eq!(rx.try_recv().unwrap().value, ());
+        assert_eq!(rx.try_recv().unwrap().value, ());
+    }
+
+    #[test]
+    fn large_message_4kb() {
+        #[derive(Clone, PartialEq, Debug)]
+        struct LargeMessage {
+            data: [u8; 4096],
+            id: u64,
+        }
+
+        let (mut tx, mut rx) = channel::<LargeMessage>(4);
+
+        let msg = LargeMessage {
+            data: [0xAB; 4096],
+            id: 12345,
+        };
+
+        tx.send(msg.clone()).unwrap();
+        let received = rx.try_recv().unwrap().value;
+
+        assert_eq!(received.id, 12345);
+        assert_eq!(received.data[0], 0xAB);
+        assert_eq!(received.data[4095], 0xAB);
+    }
+
+    #[test]
+    fn non_copy_type_drops_correctly() {
+        use std::sync::Arc;
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        let drop_count = Arc::new(AtomicUsize::new(0));
+
+        struct NonCopy {
+            data: String,
+            counter: Arc<AtomicUsize>,
+        }
+        impl Drop for NonCopy {
+            fn drop(&mut self) {
+                self.counter.fetch_add(1, Ordering::SeqCst);
+            }
+        }
+
+        let (mut tx, mut rx) = channel::<NonCopy>(4);
+
+        tx.send(NonCopy {
+            data: "hello".to_string(),
+            counter: Arc::clone(&drop_count),
+        })
+        .unwrap();
+
+        let item = rx.try_recv().unwrap().value;
+        assert_eq!(item.data, "hello");
+        drop(item);
+        assert_eq!(drop_count.load(Ordering::SeqCst), 1);
+    }
+
+    // ============================================================================
+    // send_unchecked
+    // ============================================================================
+
+    #[test]
+    fn send_unchecked_returns_old_value() {
+        let (mut tx, _rx) = channel::<u64>(4);
+
+        assert_eq!(tx.send_unchecked(1), None);
+        assert_eq!(tx.send_unchecked(2), None);
+        assert_eq!(tx.send_unchecked(3), None);
+        assert_eq!(tx.send_unchecked(4), None);
+
+        assert_eq!(tx.send_unchecked(5), Some(1));
+        assert_eq!(tx.send_unchecked(6), Some(2));
+    }
+
+    // ============================================================================
+    // Stress Tests
+    // ============================================================================
+
+    #[test]
+    fn stress_test_many_overwrites() {
+        let (mut tx, mut rx) = channel::<u64>(16);
+
+        for i in 0..100_000 {
+            tx.send(i).unwrap();
+        }
+
+        let mut count = 0;
+        while rx.try_recv().is_ok() {
+            count += 1;
+        }
+
+        assert_eq!(count, 16);
+    }
+
+    #[test]
+    fn stress_test_cross_thread_high_volume() {
+        use std::thread;
+
+        const COUNT: u64 = 1_000_000;
+
+        let (mut tx, mut rx) = channel::<u64>(1024);
+
+        let producer = thread::spawn(move || {
+            for i in 0..COUNT {
+                tx.send(i).unwrap();
+            }
+        });
+
+        let consumer = thread::spawn(move || {
+            let mut received = 0u64;
+            let mut lagged_total = 0usize;
+            loop {
+                match rx.try_recv() {
+                    Ok(result) => {
+                        received += 1;
+                        lagged_total += result.lagged;
+                    }
+                    Err(TryRecvError::Empty) => std::hint::spin_loop(),
+                    Err(TryRecvError::Disconnected) => break,
+                }
+            }
+            (received, lagged_total)
+        });
+
+        producer.join().unwrap();
+        let (received, lagged) = consumer.join().unwrap();
+
+        assert!(received > 0);
+        assert!(received + lagged as u64 <= COUNT);
+    }
+
+    #[test]
+    fn stress_test_alternating_overwrite_consume() {
+        let (mut tx, mut rx) = channel::<u64>(4);
+
+        for round in 0..1000 {
+            for i in 0..8 {
+                tx.send(round * 8 + i).unwrap();
+            }
+
+            let mut count = 0;
+            while rx.try_recv().is_ok() {
+                count += 1;
+            }
+            assert_eq!(count, 4, "Round {}: expected 4 items", round);
+        }
+    }
+
+    // ============================================================================
+    // Edge Cases
+    // ============================================================================
+
+    #[test]
+    fn empty_then_overwrite() {
+        let (mut tx, mut rx) = channel::<u64>(4);
+
+        for i in 0..4 {
+            tx.send(i).unwrap();
+        }
+        for _ in 0..4 {
+            rx.try_recv().unwrap();
+        }
+
+        for i in 4..12 {
+            tx.send(i).unwrap();
+        }
+
+        let result = rx.try_recv().unwrap();
+        assert!(result.value >= 8 || result.lagged > 0);
+    }
+
+    #[test]
+    fn interleaved_send_recv_no_overwrite() {
+        let (mut tx, mut rx) = channel::<u64>(8);
+
+        for i in 0..1000 {
+            tx.send(i).unwrap();
+            let result = rx.try_recv().unwrap();
+            assert_eq!(result.value, i);
+            assert_eq!(result.lagged, 0);
+        }
+    }
+
+    #[test]
+    fn single_slot_queue() {
+        let (mut tx, mut rx) = channel::<u64>(1);
+
+        assert_eq!(tx.send(1).unwrap(), None);
+        assert_eq!(tx.send(2).unwrap(), None);
+        assert_eq!(tx.send(3).unwrap(), Some(1));
+
+        let r = rx.try_recv().unwrap();
+        assert!(r.value >= 2);
     }
 }

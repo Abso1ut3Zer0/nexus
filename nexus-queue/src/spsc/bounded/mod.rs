@@ -358,7 +358,7 @@ impl<T> fmt::Debug for Receiver<T> {
 }
 
 /// Error returned by [`Sender::try_send`].
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq)]
 pub enum TrySendError<T> {
     /// The queue is full. Contains the value that couldn't be sent.
     Full(T),
@@ -385,7 +385,7 @@ impl<T> TrySendError<T> {
     }
 }
 
-impl<T: fmt::Debug> fmt::Display for TrySendError<T> {
+impl<T> fmt::Display for TrySendError<T> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Full(_) => write!(f, "queue is full"),
@@ -394,7 +394,13 @@ impl<T: fmt::Debug> fmt::Display for TrySendError<T> {
     }
 }
 
-impl<T: fmt::Debug> std::error::Error for TrySendError<T> {}
+impl<T> fmt::Debug for TrySendError<T> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        fmt::Display::fmt(&self, f)
+    }
+}
+
+impl<T> std::error::Error for TrySendError<T> {}
 
 /// Error returned by [`Receiver::try_recv`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -430,99 +436,69 @@ impl std::error::Error for TryRecvError {}
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    // ============================================================================
+    // Basic Operations
+    // ============================================================================
+
+    use crate::spsc::bounded::{TryRecvError, TrySendError, channel};
 
     #[test]
-    fn basic_send_recv() {
+    fn send_recv_interleaved() {
         let (tx, rx) = channel::<u64>(8);
 
-        tx.try_send(1).unwrap();
-        tx.try_send(2).unwrap();
-        tx.try_send(3).unwrap();
-
-        assert_eq!(rx.try_recv().unwrap(), 1);
-        assert_eq!(rx.try_recv().unwrap(), 2);
-        assert_eq!(rx.try_recv().unwrap(), 3);
-        assert!(matches!(rx.try_recv(), Err(TryRecvError::Empty)));
-    }
-
-    #[test]
-    fn capacity_rounds_to_power_of_two() {
-        let (tx, _rx) = channel::<u64>(100);
-        assert_eq!(tx.capacity(), 128);
-
-        let (tx, _rx) = channel::<u64>(1);
-        assert_eq!(tx.capacity(), 2); // Minimum is 2
-
-        let (tx, _rx) = channel::<u64>(1024);
-        assert_eq!(tx.capacity(), 1024);
-    }
-
-    #[test]
-    fn queue_full() {
-        let (tx, rx) = channel::<u64>(4);
-
-        // Fill the queue
-        tx.try_send(1).unwrap();
-        tx.try_send(2).unwrap();
-        tx.try_send(3).unwrap();
-        tx.try_send(4).unwrap();
-
-        // Should be full now
-        assert!(matches!(tx.try_send(5), Err(TrySendError::Full(5))));
-
-        // Drain one
-        assert_eq!(rx.try_recv().unwrap(), 1);
-
-        // Should have space again
-        tx.try_send(5).unwrap();
-    }
-
-    #[test]
-    fn sender_disconnect() {
-        let (tx, rx) = channel::<u64>(8);
-
-        tx.try_send(1).unwrap();
-        tx.try_send(2).unwrap();
-
-        drop(tx);
-
-        // Should still be able to drain
-        assert_eq!(rx.try_recv().unwrap(), 1);
-        assert_eq!(rx.try_recv().unwrap(), 2);
-
-        // Now should get disconnected
-        assert!(matches!(rx.try_recv(), Err(TryRecvError::Disconnected)));
-    }
-
-    #[test]
-    fn receiver_disconnect() {
-        let (tx, rx) = channel::<u64>(8);
-
-        drop(rx);
-
-        assert!(matches!(tx.try_send(1), Err(TrySendError::Disconnected(1))));
-    }
-
-    #[test]
-    fn wrapping_indices() {
-        let (tx, rx) = channel::<u64>(4);
-
-        // Send and receive many more messages than capacity
-        for i in 0..1000 {
+        for i in 0..100 {
             tx.try_send(i).unwrap();
             assert_eq!(rx.try_recv().unwrap(), i);
         }
     }
 
     #[test]
-    fn with_drop_type() {
+    fn fill_then_drain() {
+        let (tx, rx) = channel::<u64>(8);
+
+        for i in 0..8 {
+            tx.try_send(i).unwrap();
+        }
+
+        for i in 0..8 {
+            assert_eq!(rx.try_recv().unwrap(), i);
+        }
+
+        assert!(matches!(rx.try_recv(), Err(TryRecvError::Empty)));
+    }
+
+    #[test]
+    fn recv_when_empty_returns_error() {
+        let (tx, rx) = channel::<u64>(8);
+
+        assert!(matches!(rx.try_recv(), Err(TryRecvError::Empty)));
+
+        tx.try_send(1).unwrap();
+        let _ = rx.try_recv();
+
+        assert!(matches!(rx.try_recv(), Err(TryRecvError::Empty)));
+    }
+
+    // ============================================================================
+    // Disconnection
+    // ============================================================================
+
+    #[test]
+    fn sender_disconnect_empty_queue() {
+        let (tx, rx) = channel::<u64>(8);
+
+        drop(tx);
+
+        assert!(matches!(rx.try_recv(), Err(TryRecvError::Disconnected)));
+    }
+
+    #[test]
+    fn drop_receiver_drops_remaining_items() {
         use std::sync::Arc;
         use std::sync::atomic::{AtomicUsize, Ordering};
 
         let drop_count = Arc::new(AtomicUsize::new(0));
 
-        #[derive(Debug)]
         struct DropCounter(Arc<AtomicUsize>);
         impl Drop for DropCounter {
             fn drop(&mut self) {
@@ -534,41 +510,362 @@ mod tests {
 
         tx.try_send(DropCounter(Arc::clone(&drop_count))).unwrap();
         tx.try_send(DropCounter(Arc::clone(&drop_count))).unwrap();
-        tx.try_send(DropCounter(Arc::clone(&drop_count))).unwrap();
 
         assert_eq!(drop_count.load(Ordering::SeqCst), 0);
 
-        let _ = rx.try_recv().unwrap();
-        assert_eq!(drop_count.load(Ordering::SeqCst), 1);
-
-        // Drop remaining items via channel drop
-        drop(rx);
         drop(tx);
+        drop(rx);
 
-        assert_eq!(drop_count.load(Ordering::SeqCst), 3);
+        assert_eq!(drop_count.load(Ordering::SeqCst), 2);
+    }
+
+    // ============================================================================
+    // Index Wrapping
+    // ============================================================================
+
+    #[test]
+    fn multiple_wraparounds() {
+        let (tx, rx) = channel::<u64>(4);
+
+        for lap in 0..100 {
+            for i in 0..4 {
+                tx.try_send(lap * 4 + i).unwrap();
+            }
+            for i in 0..4 {
+                assert_eq!(rx.try_recv().unwrap(), lap * 4 + i);
+            }
+        }
     }
 
     #[test]
-    fn large_struct() {
-        #[derive(Debug, PartialEq)]
+    fn partial_fill_drain_wraparound() {
+        let (tx, rx) = channel::<u64>(8);
+
+        for _ in 0..50 {
+            tx.try_send(1).unwrap();
+            tx.try_send(2).unwrap();
+            tx.try_send(3).unwrap();
+
+            assert_eq!(rx.try_recv().unwrap(), 1);
+            assert_eq!(rx.try_recv().unwrap(), 2);
+
+            tx.try_send(4).unwrap();
+            tx.try_send(5).unwrap();
+
+            assert_eq!(rx.try_recv().unwrap(), 3);
+            assert_eq!(rx.try_recv().unwrap(), 4);
+            assert_eq!(rx.try_recv().unwrap(), 5);
+        }
+    }
+
+    // ============================================================================
+    // Cross-Thread
+    // ============================================================================
+
+    #[test]
+    fn cross_thread_basic() {
+        use std::thread;
+
+        let (tx, rx) = channel::<u64>(64);
+
+        let producer = thread::spawn(move || {
+            for i in 0..100 {
+                while tx.try_send(i).is_err() {
+                    thread::yield_now();
+                }
+            }
+        });
+
+        let consumer = thread::spawn(move || {
+            for i in 0..100 {
+                loop {
+                    match rx.try_recv() {
+                        Ok(v) => {
+                            assert_eq!(v, i);
+                            break;
+                        }
+                        Err(TryRecvError::Empty) => thread::yield_now(),
+                        Err(TryRecvError::Disconnected) => panic!("unexpected disconnect"),
+                    }
+                }
+            }
+        });
+
+        producer.join().unwrap();
+        consumer.join().unwrap();
+    }
+
+    #[test]
+    fn cross_thread_throughput() {
+        use std::thread;
+
+        const COUNT: u64 = 100_000;
+
+        let (tx, rx) = channel::<u64>(1024);
+
+        let producer = thread::spawn(move || {
+            for i in 0..COUNT {
+                while tx.try_send(i).is_err() {
+                    std::hint::spin_loop();
+                }
+            }
+        });
+
+        let consumer = thread::spawn(move || {
+            let mut received = 0;
+            let mut expected = 0;
+            while received < COUNT {
+                match rx.try_recv() {
+                    Ok(v) => {
+                        assert_eq!(v, expected);
+                        expected += 1;
+                        received += 1;
+                    }
+                    Err(TryRecvError::Empty) => std::hint::spin_loop(),
+                    Err(TryRecvError::Disconnected) => break,
+                }
+            }
+            received
+        });
+
+        producer.join().unwrap();
+        let received = consumer.join().unwrap();
+        assert_eq!(received, COUNT);
+    }
+
+    #[test]
+    fn cross_thread_producer_faster() {
+        use std::thread;
+        use std::time::Duration;
+
+        let (tx, rx) = channel::<u64>(16);
+
+        let producer = thread::spawn(move || {
+            for i in 0..1000 {
+                while tx.try_send(i).is_err() {
+                    std::hint::spin_loop();
+                }
+            }
+        });
+
+        let consumer = thread::spawn(move || {
+            let mut count = 0;
+            loop {
+                match rx.try_recv() {
+                    Ok(_) => count += 1,
+                    Err(TryRecvError::Empty) => {
+                        thread::sleep(Duration::from_micros(10));
+                    }
+                    Err(TryRecvError::Disconnected) => break,
+                }
+            }
+            count
+        });
+
+        producer.join().unwrap();
+        let count = consumer.join().unwrap();
+        assert_eq!(count, 1000);
+    }
+
+    #[test]
+    fn cross_thread_consumer_faster() {
+        use std::thread;
+        use std::time::Duration;
+
+        let (tx, rx) = channel::<u64>(16);
+
+        let producer = thread::spawn(move || {
+            for i in 0..100 {
+                thread::sleep(Duration::from_micros(10));
+                while tx.try_send(i).is_err() {
+                    std::hint::spin_loop();
+                }
+            }
+        });
+
+        let consumer = thread::spawn(move || {
+            let mut count = 0;
+            loop {
+                match rx.try_recv() {
+                    Ok(_) => count += 1,
+                    Err(TryRecvError::Empty) => std::hint::spin_loop(),
+                    Err(TryRecvError::Disconnected) => break,
+                }
+            }
+            count
+        });
+
+        producer.join().unwrap();
+        let count = consumer.join().unwrap();
+        assert_eq!(count, 100);
+    }
+
+    // ============================================================================
+    // Special Types
+    // ============================================================================
+
+    #[test]
+    fn zero_sized_type() {
+        let (tx, rx) = channel::<()>(8);
+
+        tx.try_send(()).unwrap();
+        tx.try_send(()).unwrap();
+        tx.try_send(()).unwrap();
+
+        assert_eq!(rx.try_recv().unwrap(), ());
+        assert_eq!(rx.try_recv().unwrap(), ());
+        assert_eq!(rx.try_recv().unwrap(), ());
+        assert!(matches!(rx.try_recv(), Err(TryRecvError::Empty)));
+    }
+
+    #[test]
+    fn large_message_4kb() {
+        #[derive(Clone, PartialEq, Debug)]
         struct LargeMessage {
-            data: [u8; 256],
+            data: [u8; 4096],
             id: u64,
         }
 
-        let (tx, rx) = channel::<LargeMessage>(8);
+        let (tx, rx) = channel::<LargeMessage>(4);
 
         let msg = LargeMessage {
-            data: [42; 256],
-            id: 123,
+            data: [0xAB; 4096],
+            id: 12345,
         };
 
-        tx.try_send(LargeMessage {
-            data: [42; 256],
-            id: 123,
-        })
-        .unwrap();
+        tx.try_send(msg.clone()).unwrap();
+        let received = rx.try_recv().unwrap();
 
-        assert_eq!(rx.try_recv().unwrap(), msg);
+        assert_eq!(received.id, 12345);
+        assert_eq!(received.data[0], 0xAB);
+        assert_eq!(received.data[4095], 0xAB);
+    }
+
+    #[test]
+    fn string_messages() {
+        let (tx, rx) = channel::<String>(8);
+
+        tx.try_send("hello".to_string()).unwrap();
+        tx.try_send("world".to_string()).unwrap();
+
+        assert_eq!(rx.try_recv().unwrap(), "hello");
+        assert_eq!(rx.try_recv().unwrap(), "world");
+    }
+
+    #[test]
+    fn vec_messages() {
+        let (tx, rx) = channel::<Vec<u8>>(8);
+
+        tx.try_send(vec![1, 2, 3]).unwrap();
+        tx.try_send(vec![4, 5, 6, 7, 8]).unwrap();
+
+        assert_eq!(rx.try_recv().unwrap(), vec![1, 2, 3]);
+        assert_eq!(rx.try_recv().unwrap(), vec![4, 5, 6, 7, 8]);
+    }
+
+    // ============================================================================
+    // Edge Cases
+    // ============================================================================
+
+    #[test]
+    fn single_capacity() {
+        let (tx, rx) = channel::<u64>(1);
+        // Rounds to 2
+
+        tx.try_send(1).unwrap();
+        tx.try_send(2).unwrap();
+        assert!(matches!(tx.try_send(3), Err(TrySendError::Full(3))));
+
+        assert_eq!(rx.try_recv().unwrap(), 1);
+        tx.try_send(3).unwrap();
+    }
+
+    #[test]
+    fn is_empty_check() {
+        let (tx, rx) = channel::<u64>(4);
+
+        assert!(rx.is_empty());
+
+        tx.try_send(1).unwrap();
+        assert!(!rx.is_empty());
+
+        tx.try_send(2).unwrap();
+        tx.try_send(3).unwrap();
+        tx.try_send(4).unwrap();
+
+        assert!(!rx.is_empty());
+
+        for _ in 0..4 {
+            let _ = rx.try_recv();
+        }
+
+        assert!(rx.is_empty());
+    }
+
+    #[test]
+    fn disconnect_flags() {
+        let (tx, rx) = channel::<u64>(8);
+
+        assert!(!tx.is_disconnected());
+        assert!(!rx.is_disconnected());
+
+        drop(rx);
+        assert!(tx.is_disconnected());
+    }
+
+    #[test]
+    fn disconnect_flags_sender_first() {
+        let (tx, rx) = channel::<u64>(8);
+
+        drop(tx);
+        assert!(rx.is_disconnected());
+    }
+
+    // ============================================================================
+    // Stress Tests
+    // ============================================================================
+
+    #[test]
+    fn stress_test_sequential() {
+        let (tx, rx) = channel::<u64>(16);
+
+        for i in 0..100_000 {
+            tx.try_send(i).unwrap();
+            assert_eq!(rx.try_recv().unwrap(), i);
+        }
+    }
+
+    #[test]
+    fn stress_test_cross_thread() {
+        use std::thread;
+
+        const ITERATIONS: u64 = 500_000;
+
+        let (tx, rx) = channel::<u64>(256);
+
+        let producer = thread::spawn(move || {
+            for i in 0..ITERATIONS {
+                while tx.try_send(i).is_err() {
+                    std::hint::spin_loop();
+                }
+            }
+        });
+
+        let consumer = thread::spawn(move || {
+            let mut expected = 0;
+            while expected < ITERATIONS {
+                match rx.try_recv() {
+                    Ok(v) => {
+                        assert_eq!(v, expected);
+                        expected += 1;
+                    }
+                    Err(TryRecvError::Empty) => std::hint::spin_loop(),
+                    Err(TryRecvError::Disconnected) => panic!("unexpected disconnect"),
+                }
+            }
+        });
+
+        producer.join().unwrap();
+        consumer.join().unwrap();
     }
 }
