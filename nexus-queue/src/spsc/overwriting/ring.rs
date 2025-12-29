@@ -19,7 +19,7 @@ use crossbeam_utils::CachePadded;
 struct Slot<T> {
     /// The lap number when this slot was last written.
     ///
-    /// - `lap == 0` means never written
+    /// - `lap == 0` means never written or consumed
     /// - `lap == n` means written during lap `n` (1-indexed)
     lap: AtomicUsize,
     /// The actual data.
@@ -40,15 +40,19 @@ struct Slot<T> {
 /// │ Slot[capacity-1]: { lap, data }             │
 /// └─────────────────────────────────────────────┘
 /// ```
+///
+/// Queue contains elements in range [head, tail).
+/// - Producer writes at tail, then increments tail
+/// - Consumer reads at head, then increments head
 #[repr(C)]
 pub struct RingBuffer<T> {
-    // === Cache line 1: Producer-owned ===
-    /// Next position for producer to write (monotonically increasing).
+    // === Cache line 1: Consumer-owned ===
+    /// Consumer's read position (monotonically increasing).
     head: CachePadded<AtomicUsize>,
 
-    // === Cache line 2: Consumer-owned ===
-    /// Next position for consumer to read (monotonically increasing).
-    /// In overwriting mode, producer may advance this when overwriting.
+    // === Cache line 2: Producer-owned ===
+    /// Producer's write position (monotonically increasing).
+    /// In overwriting mode, this advances even when buffer is full.
     tail: CachePadded<AtomicUsize>,
 
     // === Metadata (read-only after creation) ===
@@ -165,69 +169,22 @@ impl<T> RingBuffer<T> {
 
     /// Returns the current lap for a given absolute position.
     #[inline]
-    fn lap_of(&self, pos: usize) -> usize {
+    pub fn lap_of(&self, pos: usize) -> usize {
         pos / self.capacity + 1 // 1-indexed laps
     }
 
-    // === Producer operations ===
+    // === Consumer operations (head) ===
 
-    /// Loads the current head position.
+    /// Loads the current head position (consumer read position).
     #[inline]
     pub fn load_head(&self) -> usize {
-        self.head.load(Ordering::Relaxed)
+        self.head.load(Ordering::Acquire)
     }
 
-    /// Stores the head position.
+    /// Returns a pointer to the head atomic for direct access.
     #[inline]
-    pub fn store_head(&self, head: usize) {
-        self.head.store(head, Ordering::Release);
-    }
-
-    /// Writes a value to the given slot index, potentially overwriting.
-    ///
-    /// Returns the old value if there was unconsumed data in the slot.
-    ///
-    /// # Safety
-    ///
-    /// - Caller must have exclusive access to write to this slot position
-    /// - `head` must be the position being written to
-    #[inline]
-    pub unsafe fn write_and_publish(&self, head: usize, value: T) -> Option<T> {
-        let slot = self.slot(head);
-        let lap = self.lap_of(head);
-
-        // If slot has existing unconsumed data, read it out before overwriting
-        let old_lap = slot.lap.load(Ordering::Acquire);
-        let old_value = if old_lap > 0 {
-            // There's unconsumed data - take ownership of it
-            Some(unsafe { (*slot.data.get()).assume_init_read() })
-        } else {
-            None
-        };
-
-        // Write new value
-        unsafe {
-            (*slot.data.get()).write(value);
-        }
-
-        // Publish with new lap number
-        slot.lap.store(lap, Ordering::Release);
-
-        old_value
-    }
-
-    // === Consumer operations ===
-
-    /// Loads the current tail position.
-    #[inline]
-    pub fn load_tail(&self) -> usize {
-        self.tail.load(Ordering::Acquire)
-    }
-
-    /// Stores the tail position.
-    #[inline]
-    pub fn store_tail(&self, tail: usize) {
-        self.tail.store(tail, Ordering::Release);
+    pub fn head_ptr(&self) -> *const AtomicUsize {
+        &*self.head as *const AtomicUsize
     }
 
     /// Attempts to read from the given position.
@@ -240,11 +197,11 @@ impl<T> RingBuffer<T> {
     /// # Safety
     ///
     /// - Only one consumer may call this
-    /// - `tail` must be the consumer's current position
+    /// - `head` must be the consumer's current position
     #[inline]
-    pub unsafe fn try_read(&self, tail: usize) -> Option<(T, usize)> {
-        let slot = self.slot(tail);
-        let expected_lap = self.lap_of(tail);
+    pub unsafe fn try_read(&self, head: usize) -> Option<(T, usize)> {
+        let slot = self.slot(head);
+        let expected_lap = self.lap_of(head);
 
         let slot_lap = slot.lap.load(Ordering::Acquire);
 
@@ -272,19 +229,66 @@ impl<T> RingBuffer<T> {
         Some((value, lagged))
     }
 
-    /// Calculates the new tail position after detecting a lap.
+    /// Calculates the new head position after detecting a lap.
     ///
     /// When consumer is lapped, it needs to jump to the oldest valid position.
     #[inline]
-    pub fn catch_up_tail(&self) -> usize {
-        // The oldest valid position is (head - capacity + 1)
-        // But we need to be careful about the race - head may have moved
-        let head = self.head.load(Ordering::Acquire);
-        if head >= self.capacity {
-            head - self.capacity + 1
+    pub fn catch_up_head(&self) -> usize {
+        // The oldest valid position is (tail - capacity + 1)
+        // But we need to be careful about the race - tail may have moved
+        let tail = self.tail.load(Ordering::Acquire);
+        if tail >= self.capacity {
+            tail - self.capacity + 1
         } else {
             0
         }
+    }
+
+    // === Producer operations (tail) ===
+
+    /// Loads the current tail position (producer write position).
+    #[inline]
+    pub fn load_tail(&self) -> usize {
+        self.tail.load(Ordering::Relaxed)
+    }
+
+    /// Returns a pointer to the tail atomic for direct access.
+    #[inline]
+    pub fn tail_ptr(&self) -> *const AtomicUsize {
+        &*self.tail as *const AtomicUsize
+    }
+
+    /// Writes a value to the given slot index, potentially overwriting.
+    ///
+    /// Returns the old value if there was unconsumed data in the slot.
+    ///
+    /// # Safety
+    ///
+    /// - Caller must have exclusive access to write to this slot position
+    /// - `tail` must be the position being written to
+    #[inline]
+    pub unsafe fn write_and_publish(&self, tail: usize, value: T) -> Option<T> {
+        let slot = self.slot(tail);
+        let lap = self.lap_of(tail);
+
+        // If slot has existing unconsumed data, read it out before overwriting
+        let old_lap = slot.lap.load(Ordering::Acquire);
+        let old_value = if old_lap > 0 {
+            // There's unconsumed data - take ownership of it
+            Some(unsafe { (*slot.data.get()).assume_init_read() })
+        } else {
+            None
+        };
+
+        // Write new value
+        unsafe {
+            (*slot.data.get()).write(value);
+        }
+
+        // Publish with new lap number
+        slot.lap.store(lap, Ordering::Release);
+
+        old_value
     }
 
     // === Liveness tracking ===
@@ -317,9 +321,9 @@ impl<T> RingBuffer<T> {
     ///
     /// Must only be called during buffer destruction when no other
     /// threads are accessing the buffer.
-    pub unsafe fn drop_remaining(&self, tail: usize, head: usize) {
-        // Drop elements from tail to head
-        for pos in tail..head {
+    pub unsafe fn drop_remaining(&self, head: usize, tail: usize) {
+        // Drop elements from head to tail (head is read pos, tail is write pos)
+        for pos in head..tail {
             let slot = self.slot(pos);
             let slot_lap = slot.lap.load(Ordering::Relaxed);
             let expected_lap = self.lap_of(pos);

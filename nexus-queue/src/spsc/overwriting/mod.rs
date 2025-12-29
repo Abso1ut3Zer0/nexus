@@ -35,6 +35,7 @@ mod ring;
 
 use core::fmt;
 use std::ptr::NonNull;
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 use ring::RingBuffer;
 
@@ -46,16 +47,23 @@ use ring::RingBuffer;
 ///
 /// Panics if `capacity` is 0.
 pub fn channel<T>(capacity: usize) -> (Sender<T>, Receiver<T>) {
-    let ring = RingBuffer::allocate(capacity);
+    let inner = RingBuffer::allocate(capacity);
+    let rb = unsafe { inner.as_ref() };
 
     let sender = Sender {
-        inner: ring,
-        local_head: 0,
+        inner,
+        // Cached hot fields
+        tail_atomic: rb.tail_ptr(),
+        // Local state
+        local_tail: 0,
     };
 
     let receiver = Receiver {
-        inner: ring,
-        local_tail: 0,
+        inner,
+        // Cached hot fields
+        head_atomic: rb.head_ptr(),
+        // Local state
+        local_head: 0,
     };
 
     (sender, receiver)
@@ -117,8 +125,13 @@ impl<T> std::error::Error for SendError<T> {}
 /// it simply overwrites the oldest unread value and returns it.
 pub struct Sender<T> {
     inner: NonNull<RingBuffer<T>>,
-    /// Local copy of head position (only this sender modifies head).
-    local_head: usize,
+
+    // === Cached hot fields ===
+    tail_atomic: *const AtomicUsize,
+
+    // === Local state ===
+    /// Our write position (only this sender modifies tail).
+    local_tail: usize,
 }
 
 unsafe impl<T: Send> Send for Sender<T> {}
@@ -141,14 +154,15 @@ impl<T> Sender<T> {
             return Err(SendError::Disconnected(value));
         }
 
-        let head = self.local_head;
+        let tail = self.local_tail;
 
         // Write and publish, getting back any overwritten value
-        let old_value = unsafe { inner.write_and_publish(head, value) };
+        let old_value = unsafe { inner.write_and_publish(tail, value) };
 
-        // Advance head
-        self.local_head = head.wrapping_add(1);
-        inner.store_head(self.local_head);
+        // Advance tail
+        let next = tail.wrapping_add(1);
+        unsafe { (*self.tail_atomic).store(next, Ordering::Release) };
+        self.local_tail = next;
 
         Ok(old_value)
     }
@@ -164,14 +178,15 @@ impl<T> Sender<T> {
     pub fn send_unchecked(&mut self, value: T) -> Option<T> {
         let inner = unsafe { self.inner.as_ref() };
 
-        let head = self.local_head;
+        let tail = self.local_tail;
 
         // Write and publish
-        let old_value = unsafe { inner.write_and_publish(head, value) };
+        let old_value = unsafe { inner.write_and_publish(tail, value) };
 
-        // Advance head
-        self.local_head = head.wrapping_add(1);
-        inner.store_head(self.local_head);
+        // Advance tail
+        let next = tail.wrapping_add(1);
+        unsafe { (*self.tail_atomic).store(next, Ordering::Release) };
+        self.local_tail = next;
 
         old_value
     }
@@ -197,8 +212,8 @@ impl<T> Drop for Sender<T> {
         // If receiver is already gone, we need to clean up
         if inner.is_receiver_disconnected() {
             unsafe {
-                let tail = inner.load_tail();
-                inner.drop_remaining(tail, self.local_head);
+                let head = inner.load_head();
+                inner.drop_remaining(head, self.local_tail);
                 RingBuffer::deallocate(self.inner);
             }
         }
@@ -208,8 +223,13 @@ impl<T> Drop for Sender<T> {
 /// The receiving half of an overwriting SPSC channel.
 pub struct Receiver<T> {
     inner: NonNull<RingBuffer<T>>,
-    /// Local tail position.
-    local_tail: usize,
+
+    // === Cached hot fields ===
+    head_atomic: *const AtomicUsize,
+
+    // === Local state ===
+    /// Our read position.
+    local_head: usize,
 }
 
 unsafe impl<T: Send> Send for Receiver<T> {}
@@ -228,33 +248,33 @@ impl<T> Receiver<T> {
         let inner = unsafe { self.inner.as_ref() };
 
         // Try to read from current position
-        match unsafe { inner.try_read(self.local_tail) } {
+        match unsafe { inner.try_read(self.local_head) } {
             Some((value, lagged)) => {
                 if lagged > 0 {
                     // We were lapped - need to catch up
-                    self.local_tail = inner.catch_up_tail();
+                    self.local_head = inner.catch_up_head();
                 } else {
-                    self.local_tail = self.local_tail.wrapping_add(1);
+                    self.local_head = self.local_head.wrapping_add(1);
                 }
                 Ok(RecvResult { value, lagged })
             }
             None => {
                 // No data at current position - check if disconnected
                 if inner.is_sender_disconnected() {
-                    let head = inner.load_head();
-                    if self.local_tail >= head {
+                    let tail = inner.load_tail();
+                    if self.local_head >= tail {
                         // We've caught up to producer
                         Err(TryRecvError::Disconnected)
                     } else {
-                        // Producer stopped but we haven't reached head yet.
+                        // Producer stopped but we haven't reached tail yet.
                         // This can happen if:
                         // 1. We already consumed this slot (lap=0)
                         // 2. Producer stopped mid-lap (slot_lap < expected_lap)
                         //
-                        // Advance local_tail to try next position.
+                        // Advance local_head to try next position.
                         // This ensures we don't get stuck on consumed slots
                         // after wrapping around the buffer.
-                        self.local_tail = self.local_tail.wrapping_add(1);
+                        self.local_head = self.local_head.wrapping_add(1);
                         Err(TryRecvError::Empty)
                     }
                 } else {
@@ -297,7 +317,7 @@ impl<T> Receiver<T> {
     #[inline]
     pub fn is_empty(&self) -> bool {
         let inner = unsafe { self.inner.as_ref() };
-        self.local_tail >= inner.load_head()
+        self.local_head >= inner.load_tail()
     }
 
     /// Returns the capacity of the queue.
@@ -311,15 +331,15 @@ impl<T> Drop for Receiver<T> {
     fn drop(&mut self) {
         let inner = unsafe { self.inner.as_ref() };
 
-        // Sync our local tail before marking disconnected
-        inner.store_tail(self.local_tail);
+        // Sync our local head before marking disconnected
+        unsafe { (*self.head_atomic).store(self.local_head, Ordering::Release) };
         inner.set_receiver_disconnected();
 
         // If sender is already gone, we need to clean up
         if inner.is_sender_disconnected() {
             unsafe {
-                let head = inner.load_head();
-                inner.drop_remaining(self.local_tail, head);
+                let tail = inner.load_tail();
+                inner.drop_remaining(self.local_head, tail);
                 RingBuffer::deallocate(self.inner);
             }
         }
