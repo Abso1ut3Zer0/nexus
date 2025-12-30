@@ -56,8 +56,11 @@ mod ring;
 
 use std::fmt;
 use std::ptr::NonNull;
+use std::sync::atomic::{AtomicUsize, Ordering};
 
-use ring::RingBuffer;
+use crossbeam_utils::Backoff;
+
+use ring::{RingBuffer, Slot};
 
 /// Creates a new MPSC channel with the given capacity.
 ///
@@ -69,18 +72,26 @@ use ring::RingBuffer;
 /// ```
 /// use nexus_queue::mpsc;
 ///
-/// let (tx, mut rx) = mpsc::bounded::channel::<String>(100);
+/// let (tx, rx) = mpsc::bounded::channel::<String>(100);
 /// // Actual capacity will be 128 (next power of two)
 /// assert_eq!(tx.capacity(), 128);
 /// ```
 pub fn channel<T>(capacity: usize) -> (Sender<T>, Receiver<T>) {
     let inner = RingBuffer::<T>::allocate(capacity);
 
+    let inner_ref = unsafe { inner.as_ref() };
+
     (
-        Sender { inner },
+        Sender {
+            inner,
+            // Cache hot fields to avoid indirection on every send
+            buffer: inner_ref.buffer_ptr(),
+            mask: inner_ref.mask(),
+            tail: inner_ref.tail_ptr(),
+        },
         Receiver {
             inner,
-            local_tail: 0,
+            local_head: 0,
         },
     )
 }
@@ -91,6 +102,11 @@ pub fn channel<T>(capacity: usize) -> (Sender<T>, Receiver<T>) {
 /// All clones share the same underlying queue.
 pub struct Sender<T> {
     inner: NonNull<RingBuffer<T>>,
+
+    // Cached hot fields - avoid indirection on hot path
+    buffer: *mut Slot<T>,
+    mask: usize,
+    tail: *const AtomicUsize,
 }
 
 // Safety: Sender can be sent to another thread. The ring buffer uses
@@ -113,7 +129,7 @@ impl<T> Sender<T> {
     /// ```
     /// use nexus_queue::mpsc::{self, bounded::TrySendError};
     ///
-    /// let (tx, mut rx) = mpsc::bounded::channel::<u32>(2);
+    /// let (tx, rx) = mpsc::bounded::channel::<u32>(2);
     ///
     /// assert!(tx.try_send(1).is_ok());
     /// assert!(tx.try_send(2).is_ok());
@@ -123,31 +139,52 @@ impl<T> Sender<T> {
     /// ```
     #[inline]
     pub fn try_send(&self, value: T) -> Result<(), TrySendError<T>> {
-        let inner = unsafe { self.inner.as_ref() };
+        let backoff = Backoff::new();
+        let tail_atomic = unsafe { &*self.tail };
+        let mut tail = tail_atomic.load(Ordering::Relaxed);
 
-        // Check for receiver disconnect first
-        if inner.is_receiver_disconnected() {
-            return Err(TrySendError::Disconnected(value));
+        loop {
+            let slot = unsafe { self.buffer.add(tail & self.mask) };
+            let seq = unsafe { (*slot).sequence.load(Ordering::Acquire) };
+            let diff = seq as isize - tail as isize;
+
+            if diff == 0 {
+                match tail_atomic.compare_exchange_weak(
+                    tail,
+                    tail.wrapping_add(1),
+                    Ordering::Relaxed,
+                    Ordering::Relaxed,
+                ) {
+                    Ok(_) => {
+                        unsafe {
+                            (*slot).data.get().cast::<T>().write(value);
+                            (*slot)
+                                .sequence
+                                .store(tail.wrapping_add(1), Ordering::Release);
+                        }
+                        return Ok(());
+                    }
+                    Err(t) => {
+                        tail = t;
+                        backoff.spin();
+                    }
+                }
+            } else if diff < 0 {
+                return self.try_send_slow(value);
+            } else {
+                tail = tail_atomic.load(Ordering::Relaxed);
+                backoff.spin();
+            }
         }
+    }
 
-        // Try to claim a slot
-        match inner.try_claim() {
-            Some(index) => {
-                // Safety: We successfully claimed this slot
-                unsafe {
-                    inner.write_slot(index, value);
-                    inner.publish(index);
-                }
-                Ok(())
-            }
-            None => {
-                // Queue is full - recheck disconnect
-                if inner.is_receiver_disconnected() {
-                    Err(TrySendError::Disconnected(value))
-                } else {
-                    Err(TrySendError::Full(value))
-                }
-            }
+    #[cold]
+    fn try_send_slow(&self, value: T) -> Result<(), TrySendError<T>> {
+        let inner = unsafe { self.inner.as_ref() };
+        if inner.is_receiver_disconnected() {
+            Err(TrySendError::Disconnected(value))
+        } else {
+            Err(TrySendError::Full(value))
         }
     }
 
@@ -170,7 +207,12 @@ impl<T> Clone for Sender<T> {
         inner.add_sender();
         RingBuffer::acquire(self.inner);
 
-        Self { inner: self.inner }
+        Self {
+            inner: self.inner,
+            buffer: self.buffer,
+            mask: self.mask,
+            tail: self.tail,
+        }
     }
 }
 
@@ -201,7 +243,7 @@ pub struct Receiver<T> {
     inner: NonNull<RingBuffer<T>>,
 
     /// Our read position. We're the only reader, so no atomic needed.
-    local_tail: usize,
+    local_head: usize,
 }
 
 // Safety: Receiver can be sent to another thread, but not shared (not Sync).
@@ -238,30 +280,31 @@ impl<T> Receiver<T> {
 
         // Try to read from current position
         // Safety: We're the only consumer
-        match unsafe { inner.try_read(self.local_tail) } {
+        match unsafe { inner.try_read(self.local_head) } {
             Some(value) => {
-                self.local_tail = self.local_tail.wrapping_add(1);
-                // Note: We don't store tail here - producers check slot.sequence, not tail.
-                // Tail is only synced in Drop for cleanup.
+                self.local_head = self.local_head.wrapping_add(1);
                 Ok(value)
             }
-            None => {
-                // Slot not ready - either empty or producer still publishing
-                if inner.sender_count() == 0 {
-                    // All senders gone, but check if there are in-flight messages
-                    // by comparing tail to head. If tail < head, a producer claimed
-                    // a slot but we haven't seen the publish yet.
-                    if self.local_tail == inner.load_head() {
-                        // Truly empty
-                        Err(TryRecvError::Disconnected)
-                    } else {
-                        // In-flight message, spin
-                        Err(TryRecvError::Empty)
-                    }
-                } else {
-                    Err(TryRecvError::Empty)
-                }
+            None => self.try_recv_slow(inner),
+        }
+    }
+
+    #[cold]
+    fn try_recv_slow(&self, inner: &RingBuffer<T>) -> Result<T, TryRecvError> {
+        // Slot not ready - either empty or producer still publishing
+        if inner.sender_count() == 0 {
+            // All senders gone, but check if there are in-flight messages
+            // by comparing head to tail. If head < tail, a producer claimed
+            // a slot but we haven't seen the publish yet.
+            if self.local_head == inner.load_tail() {
+                // Truly empty
+                Err(TryRecvError::Disconnected)
+            } else {
+                // In-flight message, spin
+                Err(TryRecvError::Empty)
             }
+        } else {
+            Err(TryRecvError::Empty)
         }
     }
 
@@ -282,8 +325,8 @@ impl<T> Drop for Receiver<T> {
     fn drop(&mut self) {
         unsafe {
             let inner = self.inner.as_ref();
-            // Sync our local tail position for drop_remaining_elements
-            inner.store_tail(self.local_tail);
+            // Sync our local head position for drop_remaining_elements
+            inner.store_head(self.local_head);
             inner.set_receiver_disconnected();
             RingBuffer::release(self.inner);
         }
@@ -300,7 +343,7 @@ impl<T> fmt::Debug for Receiver<T> {
 }
 
 /// Error returned by [`Sender::try_send`].
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq)]
 pub enum TrySendError<T> {
     /// The queue is full. Contains the value that couldn't be sent.
     Full(T),
@@ -327,7 +370,7 @@ impl<T> TrySendError<T> {
     }
 }
 
-impl<T: fmt::Debug> fmt::Display for TrySendError<T> {
+impl<T> fmt::Display for TrySendError<T> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Full(_) => write!(f, "queue is full"),
@@ -336,7 +379,13 @@ impl<T: fmt::Debug> fmt::Display for TrySendError<T> {
     }
 }
 
-impl<T: fmt::Debug> std::error::Error for TrySendError<T> {}
+impl<T> fmt::Debug for TrySendError<T> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        fmt::Display::fmt(&self, f)
+    }
+}
+
+impl<T> std::error::Error for TrySendError<T> {}
 
 /// Error returned by [`Receiver::try_recv`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -434,14 +483,19 @@ mod tests {
 
     #[test]
     fn receiver_disconnect() {
-        let (tx, rx) = channel::<u64>(8);
+        let (tx, rx) = channel::<u64>(4);
 
         drop(rx);
 
-        assert!(matches!(
-            tx.try_send(1),
-            Err(TrySendError::Disconnected(1))
-        ));
+        // Disconnect is only detected when queue is full (slow path optimization)
+        // Fill the queue first
+        tx.try_send(1).unwrap();
+        tx.try_send(2).unwrap();
+        tx.try_send(3).unwrap();
+        tx.try_send(4).unwrap();
+
+        // Now we should get Disconnected
+        assert!(matches!(tx.try_send(5), Err(TrySendError::Disconnected(5))));
     }
 
     #[test]
@@ -515,7 +569,6 @@ mod tests {
 
         let drop_count = Arc::new(AtomicUsize::new(0));
 
-        #[derive(Debug)]
         struct DropCounter(Arc<AtomicUsize>);
         impl Drop for DropCounter {
             fn drop(&mut self) {
