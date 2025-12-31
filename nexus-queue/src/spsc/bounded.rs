@@ -72,7 +72,6 @@ pub fn ring_buffer<T>(capacity: usize) -> (Producer<T>, Consumer<T>) {
             _inner: Arc::clone(&inner),
             buffer: buffer_ptr,
             mask,
-            capacity,
             head_atomic,
             tail_atomic,
             local_head: 0,
@@ -82,7 +81,6 @@ pub fn ring_buffer<T>(capacity: usize) -> (Producer<T>, Consumer<T>) {
             _inner: inner,
             buffer: buffer_ptr,
             mask,
-            capacity,
             tail_atomic,
             head_atomic,
             local_tail: 0,
@@ -124,8 +122,6 @@ pub struct Producer<T> {
     buffer: *mut T,
     /// Cached mask - avoids Arc deref on hot path.
     mask: usize,
-    /// Cached capacity.
-    capacity: usize,
     /// Pointer to head atomic - avoids Arc deref on hot path.
     head_atomic: *const AtomicUsize,
     /// Pointer to tail atomic - for refreshing cached_tail.
@@ -163,11 +159,11 @@ impl<T> Producer<T> {
         let head = self.local_head;
         let mut tail = self.cached_tail;
 
-        if head.wrapping_sub(tail) >= self.capacity {
+        if head.wrapping_sub(tail) > self.mask {
             // Refresh cache
             tail = unsafe { (*self.tail_atomic).load(Ordering::Acquire) };
             self.cached_tail = tail;
-            if head.wrapping_sub(tail) >= self.capacity {
+            if head.wrapping_sub(tail) > self.mask {
                 return Err(RingBufferFull::new(value));
             }
         }
@@ -189,7 +185,7 @@ impl<T> Producer<T> {
     /// Returns the capacity of the ring buffer.
     #[inline]
     pub fn capacity(&self) -> usize {
-        self.capacity
+        self.mask + 1
     }
 
     /// Returns the number of elements currently in the buffer.
@@ -232,8 +228,6 @@ pub struct Consumer<T> {
     buffer: *mut T,
     /// Cached mask - avoids Arc deref on hot path.
     mask: usize,
-    /// Cached capacity.
-    capacity: usize,
     /// Pointer to tail atomic - avoids Arc deref on hot path.
     tail_atomic: *const AtomicUsize,
     /// Pointer to head atomic - for refreshing cached_head.
@@ -294,7 +288,7 @@ impl<T> Consumer<T> {
     /// Returns the capacity of the ring buffer.
     #[inline]
     pub fn capacity(&self) -> usize {
-        self.capacity
+        self.mask + 1
     }
 
     /// Returns the number of elements currently in the buffer.
