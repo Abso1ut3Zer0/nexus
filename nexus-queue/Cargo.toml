@@ -27,3 +27,39 @@ harness = false
 name = "mpsc"
 harness = false
 
+[[bench]]
+name = "profile_spsc"
+harness = false
+
+[[bench]]
+name = "perf_raw"
+harness = false
+
+[[bench]]
+name = "perf_minimal"
+harness = false
+
+[[bench]]
+name = "perf_rtrb"
+harness = false
+
+[[bench]]
+name = "perf_rtrb_clone"
+harness = false
+
+[[bench]]
+name = "perf_const"
+harness = false
+
+[[bench]]
+name = "perf_fenced"
+harness = false
+
+[[bench]]
+name = "perf_raw_fenced"
+harness = false
+
+[[bench]]
+name = "perf_raw_pointer"
+harness = false
+

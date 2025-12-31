@@ -21,4 +21,11 @@
 //! - Consumer can tolerate detecting missed messages
 
 pub mod bounded;
+pub mod const_q;
+pub mod fenced;
+pub mod minimal;
 pub mod overwriting;
+pub mod raw;
+pub mod raw_fenced;
+pub mod raw_pointer;
+pub mod rtrb_clone;

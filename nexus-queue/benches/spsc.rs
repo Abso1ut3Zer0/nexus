@@ -702,6 +702,110 @@ fn bench_overwriting_cross_thread(c: &mut Criterion) {
     group.finish();
 }
 
+/// Cross-thread throughput: raw ring buffer vs rtrb
+fn bench_raw_cross_thread_throughput(c: &mut Criterion) {
+    let mut group = c.benchmark_group("raw_cross_thread_throughput");
+
+    const MESSAGE_COUNT: usize = 100_000;
+    group.throughput(Throughput::Elements(MESSAGE_COUNT as u64));
+
+    group.bench_function("nexus_raw/u64", |b| {
+        b.iter(|| {
+            let (mut producer, mut consumer) = spsc::raw::ring_buffer::<u64>(1024);
+
+            let producer_handle = thread::spawn(move || {
+                for i in 0..MESSAGE_COUNT {
+                    while producer.push(i as u64).is_err() {
+                        std::hint::spin_loop();
+                    }
+                }
+            });
+
+            let consumer_handle = thread::spawn(move || {
+                for _ in 0..MESSAGE_COUNT {
+                    loop {
+                        match consumer.pop() {
+                            Some(v) => {
+                                black_box(v);
+                                break;
+                            }
+                            None => std::hint::spin_loop(),
+                        }
+                    }
+                }
+            });
+
+            producer_handle.join().unwrap();
+            consumer_handle.join().unwrap();
+        });
+    });
+
+    group.bench_function("rtrb/u64", |b| {
+        b.iter(|| {
+            let (mut producer, mut consumer) = rtrb::RingBuffer::<u64>::new(1024);
+
+            let producer_handle = thread::spawn(move || {
+                for i in 0..MESSAGE_COUNT {
+                    while producer.push(i as u64).is_err() {
+                        std::hint::spin_loop();
+                    }
+                }
+            });
+
+            let consumer_handle = thread::spawn(move || {
+                for _ in 0..MESSAGE_COUNT {
+                    loop {
+                        match consumer.pop() {
+                            Ok(v) => {
+                                black_box(v);
+                                break;
+                            }
+                            Err(_) => std::hint::spin_loop(),
+                        }
+                    }
+                }
+            });
+
+            producer_handle.join().unwrap();
+            consumer_handle.join().unwrap();
+        });
+    });
+
+    // Also compare channel version
+    group.bench_function("nexus_channel/u64", |b| {
+        b.iter(|| {
+            let (tx, rx) = spsc::bounded::channel::<u64>(1024);
+
+            let producer = thread::spawn(move || {
+                for i in 0..MESSAGE_COUNT {
+                    while tx.try_send(i as u64).is_err() {
+                        std::hint::spin_loop();
+                    }
+                }
+            });
+
+            let consumer = thread::spawn(move || {
+                for _ in 0..MESSAGE_COUNT {
+                    loop {
+                        match rx.try_recv() {
+                            Ok(v) => {
+                                black_box(v);
+                                break;
+                            }
+                            Err(_) => std::hint::spin_loop(),
+                        }
+                    }
+                }
+            });
+
+            producer.join().unwrap();
+            consumer.join().unwrap();
+        });
+    });
+
+    group.finish();
+}
+
 criterion_group!(
     benches,
     bench_single_thread_latency,
@@ -711,6 +815,7 @@ criterion_group!(
     bench_overwriting_single_thread,
     bench_overwriting_full_queue,
     bench_overwriting_cross_thread,
+    bench_raw_cross_thread_throughput,
 );
 
 criterion_main!(benches);
