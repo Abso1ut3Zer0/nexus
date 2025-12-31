@@ -90,11 +90,15 @@ pub fn ring_buffer<T>(capacity: usize) -> (Producer<T>, Consumer<T>) {
 }
 
 /// Shared state between producer and consumer.
+#[repr(C)]
 struct Inner<T> {
+    // === Separate cache lines (CachePadded handles this) ===
     /// Producer's write position.
     head: CachePadded<AtomicUsize>,
     /// Consumer's read position.
     tail: CachePadded<AtomicUsize>,
+
+    // === Immutable after construction ===
     /// Raw pointer to buffer (owned by Vec we leaked).
     buffer: *mut T,
     /// Capacity of the buffer.
@@ -115,21 +119,25 @@ unsafe impl<T: Send> Sync for Inner<T> {}
 ///
 /// This struct can be sent to another thread but cannot be shared
 /// (implements `Send` but not `Sync`).
+#[repr(C)]
 pub struct Producer<T> {
-    /// Handle to inner ring buffer for cleanup
-    _inner: Arc<Inner<T>>,
+    // === Hot path fields ===
+    /// Our write position (authoritative).
+    local_head: usize,
+    /// Cached consumer's read position.
+    cached_tail: usize,
     /// Cached buffer pointer - avoids Arc deref on hot path.
     buffer: *mut T,
     /// Cached mask - avoids Arc deref on hot path.
     mask: usize,
     /// Pointer to head atomic - avoids Arc deref on hot path.
     head_atomic: *const AtomicUsize,
+
+    // === Cold path fields ===
     /// Pointer to tail atomic - for refreshing cached_tail.
     tail_atomic: *const AtomicUsize,
-    /// Our write position (authoritative).
-    local_head: usize,
-    /// Cached consumer's read position.
-    cached_tail: usize,
+    /// Handle to inner ring buffer for cleanup
+    _inner: Arc<Inner<T>>,
 }
 
 // Safety: Producer is Send but not Sync - only one thread can use it.
@@ -221,21 +229,25 @@ impl<T> fmt::Debug for Producer<T> {
 ///
 /// This struct can be sent to another thread but cannot be shared
 /// (implements `Send` but not `Sync`).
+#[repr(C)]
 pub struct Consumer<T> {
-    /// Handle to inner ring buffer for cleanup
-    _inner: Arc<Inner<T>>,
+    // === Hot path fields ===
+    /// Our read position (authoritative).
+    local_tail: usize,
+    /// Cached producer's write position.
+    cached_head: usize,
     /// Cached buffer pointer - avoids Arc deref on hot path.
     buffer: *mut T,
     /// Cached mask - avoids Arc deref on hot path.
     mask: usize,
     /// Pointer to tail atomic - avoids Arc deref on hot path.
     tail_atomic: *const AtomicUsize,
+
+    // === Cold path fields ===
     /// Pointer to head atomic - for refreshing cached_head.
     head_atomic: *const AtomicUsize,
-    /// Our read position (authoritative).
-    local_tail: usize,
-    /// Cached producer's write position.
-    cached_head: usize,
+    /// Handle to inner ring buffer for cleanup
+    _inner: Arc<Inner<T>>,
 }
 
 // Safety: Consumer is Send but not Sync - only one thread can use it.
