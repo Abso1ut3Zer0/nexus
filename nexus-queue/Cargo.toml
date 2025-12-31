@@ -21,10 +21,25 @@ rtrb = "0.3.2"
 workspace = true
 
 [[bench]]
-name = "spsc"
-harness = false
-
-[[bench]]
 name = "mpsc"
 harness = false
 
+[[bench]]
+name = "perf_spsc_bounded"
+harness = false
+
+[[bench]]
+name = "perf_spsc_bounded_latency"
+harness = false
+
+[[bench]]
+name = "perf_rtrb"
+harness = false
+
+[[bench]]
+name = "perf_rtrb_latency"
+harness = false
+
+[[bench]]
+name = "profile_spsc_bounded"
+harness = false

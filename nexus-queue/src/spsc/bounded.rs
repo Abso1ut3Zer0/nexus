@@ -31,7 +31,6 @@
 //! padded head and tail indices to prevent false sharing between producer
 //! and consumer threads.
 
-use std::cell::Cell;
 use std::fmt;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -40,25 +39,25 @@ use crossbeam_utils::CachePadded;
 
 /// Creates a new SPSC ring buffer with the given capacity.
 ///
-/// Returns a `(Producer, Consumer)` pair. The actual capacity will be
-/// rounded up to the next power of two (minimum 2) for efficient index masking.
+/// Returns a `(Producer, Consumer)` pair. Both endpoints cache the other's
+/// index, amortizing atomic loads across multiple operations.
+///
+/// The actual capacity will be rounded up to the next power of two for efficient
+/// index masking.
 ///
 /// # Example
 ///
 /// ```
 /// use nexus_queue::spsc::bounded;
 ///
-/// let (producer, consumer) = bounded::ring_buffer::<String>(100);
-/// // Actual capacity will be 128 (next power of two)
-/// assert_eq!(producer.capacity(), 128);
+/// let (mut tx, mut rx) = bounded::ring_buffer::<u64>(1024);
+/// tx.push(42).unwrap();
+/// assert_eq!(rx.pop(), Some(42));
 /// ```
 pub fn ring_buffer<T>(capacity: usize) -> (Producer<T>, Consumer<T>) {
     let capacity = capacity.next_power_of_two();
     let mask = capacity - 1;
-
-    // Allocate buffer via Vec<T> and leak it - we'll reconstruct in Drop
     let buffer_ptr = std::mem::ManuallyDrop::new(Vec::<T>::with_capacity(capacity)).as_mut_ptr();
-
     let inner = Arc::new(Inner {
         head: CachePadded::new(AtomicUsize::new(0)),
         tail: CachePadded::new(AtomicUsize::new(0)),
@@ -66,11 +65,8 @@ pub fn ring_buffer<T>(capacity: usize) -> (Producer<T>, Consumer<T>) {
         capacity,
         mask,
     });
-
-    // Get raw pointers to the atomics BEFORE moving inner into Producer/Consumer
     let head_atomic = &*inner.head as *const AtomicUsize;
     let tail_atomic = &*inner.tail as *const AtomicUsize;
-
     (
         Producer {
             _inner: Arc::clone(&inner),
@@ -79,8 +75,8 @@ pub fn ring_buffer<T>(capacity: usize) -> (Producer<T>, Consumer<T>) {
             capacity,
             head_atomic,
             tail_atomic,
-            local_head: Cell::new(0),
-            cached_tail: Cell::new(0),
+            local_head: 0,
+            cached_tail: 0,
         },
         Consumer {
             _inner: inner,
@@ -89,8 +85,8 @@ pub fn ring_buffer<T>(capacity: usize) -> (Producer<T>, Consumer<T>) {
             capacity,
             tail_atomic,
             head_atomic,
-            local_tail: Cell::new(0),
-            cached_head: Cell::new(0),
+            local_tail: 0,
+            cached_head: 0,
         },
     )
 }
@@ -135,9 +131,9 @@ pub struct Producer<T> {
     /// Pointer to tail atomic - for refreshing cached_tail.
     tail_atomic: *const AtomicUsize,
     /// Our write position (authoritative).
-    local_head: Cell<usize>,
+    local_head: usize,
     /// Cached consumer's read position.
-    cached_tail: Cell<usize>,
+    cached_tail: usize,
 }
 
 // Safety: Producer is Send but not Sync - only one thread can use it.
@@ -164,16 +160,16 @@ impl<T> Producer<T> {
     /// ```
     #[inline]
     pub fn push(&mut self, value: T) -> Result<(), RingBufferFull<T>> {
-        let head = self.local_head.get();
+        let head = self.local_head;
 
         // Fast path: check cached tail (no atomic load!)
         // Queue has space if head - tail < capacity
-        if head.wrapping_sub(self.cached_tail.get()) < self.capacity {
+        if head.wrapping_sub(self.cached_tail) < self.capacity {
             unsafe {
                 self.buffer.add(head & self.mask).write(value);
             }
             let next_head = head.wrapping_add(1);
-            self.local_head.set(next_head);
+            self.local_head = next_head;
             unsafe { (*self.head_atomic).store(next_head, Ordering::Release) };
             return Ok(());
         }
@@ -181,25 +177,27 @@ impl<T> Producer<T> {
         self.push_slow(head, value)
     }
 
-    #[cold]
+    #[inline]
     fn push_slow(&mut self, head: usize, value: T) -> Result<(), RingBufferFull<T>> {
         // Refresh cached tail from consumer
         let tail = unsafe { (*self.tail_atomic).load(Ordering::Acquire) };
-        self.cached_tail.set(tail);
+        self.cached_tail = tail;
 
         if head.wrapping_sub(tail) < self.capacity {
             unsafe {
                 self.buffer.add(head & self.mask).write(value);
             }
             let next_head = head.wrapping_add(1);
-            self.local_head.set(next_head);
+            self.local_head = next_head;
             unsafe { (*self.head_atomic).store(next_head, Ordering::Release) };
             Ok(())
         } else {
             Err(RingBufferFull::new(value))
         }
     }
+}
 
+impl<T> Producer<T> {
     /// Returns the capacity of the ring buffer.
     #[inline]
     pub fn capacity(&self) -> usize {
@@ -253,9 +251,9 @@ pub struct Consumer<T> {
     /// Pointer to head atomic - for refreshing cached_head.
     head_atomic: *const AtomicUsize,
     /// Our read position (authoritative).
-    local_tail: Cell<usize>,
+    local_tail: usize,
     /// Cached producer's write position.
-    cached_head: Cell<usize>,
+    cached_head: usize,
 }
 
 // Safety: Consumer is Send but not Sync - only one thread can use it.
@@ -281,14 +279,14 @@ impl<T> Consumer<T> {
     /// ```
     #[inline]
     pub fn pop(&mut self) -> Option<T> {
-        let tail = self.local_tail.get();
+        let tail = self.local_tail;
 
         // Fast path: check cached head (no atomic load!)
         // Queue has data if tail != head
-        if tail != self.cached_head.get() {
+        if tail != self.cached_head {
             let value = unsafe { self.buffer.add(tail & self.mask).read() };
             let next_tail = tail.wrapping_add(1);
-            self.local_tail.set(next_tail);
+            self.local_tail = next_tail;
             unsafe { (*self.tail_atomic).store(next_tail, Ordering::Release) };
             return Some(value);
         }
@@ -296,23 +294,25 @@ impl<T> Consumer<T> {
         self.pop_slow(tail)
     }
 
-    #[cold]
+    #[inline]
     fn pop_slow(&mut self, tail: usize) -> Option<T> {
         // Refresh cached head from producer
         let head = unsafe { (*self.head_atomic).load(Ordering::Acquire) };
-        self.cached_head.set(head);
+        self.cached_head = head;
 
         if tail != head {
             let value = unsafe { self.buffer.add(tail & self.mask).read() };
             let next_tail = tail.wrapping_add(1);
-            self.local_tail.set(next_tail);
+            self.local_tail = next_tail;
             unsafe { (*self.tail_atomic).store(next_tail, Ordering::Release) };
             Some(value)
         } else {
             None
         }
     }
+}
 
+impl<T> Consumer<T> {
     /// Returns the capacity of the ring buffer.
     #[inline]
     pub fn capacity(&self) -> usize {
