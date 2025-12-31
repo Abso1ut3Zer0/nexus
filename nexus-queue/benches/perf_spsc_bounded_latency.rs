@@ -73,7 +73,7 @@ fn main() {
     let max = *samples.last().unwrap();
 
     println!(
-        "nexus bounded uncached latency (cycles): min={} p50={} p99={} p99.9={} max={}",
+        "nexus bounded latency (cycles): min={} p50={} p99={} p99.9={} max={}",
         min, p50, p99, p999, max
     );
 }
@@ -82,7 +82,8 @@ fn main() {
 fn rdtsc() -> u64 {
     #[cfg(target_arch = "x86_64")]
     unsafe {
-        core::arch::x86_64::_rdtsc()
+        let mut aux: u32 = 0;
+        core::arch::x86_64::__rdtscp(&mut aux)
     }
     #[cfg(not(target_arch = "x86_64"))]
     {

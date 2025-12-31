@@ -161,39 +161,27 @@ impl<T> Producer<T> {
     #[inline]
     pub fn push(&mut self, value: T) -> Result<(), RingBufferFull<T>> {
         let head = self.local_head;
+        let mut tail = self.cached_tail;
 
-        // Fast path: check cached tail (no atomic load!)
-        // Queue has space if head - tail < capacity
-        if head.wrapping_sub(self.cached_tail) < self.capacity {
-            unsafe {
-                self.buffer.add(head & self.mask).write(value);
+        if head.wrapping_sub(tail) >= self.capacity {
+            // Refresh cache
+            tail = unsafe { (*self.tail_atomic).load(Ordering::Acquire) };
+            self.cached_tail = tail;
+            if head.wrapping_sub(tail) >= self.capacity {
+                return Err(RingBufferFull::new(value));
             }
-            let next_head = head.wrapping_add(1);
-            self.local_head = next_head;
-            unsafe { (*self.head_atomic).store(next_head, Ordering::Release) };
-            return Ok(());
         }
 
-        self.push_slow(head, value)
-    }
-
-    #[inline]
-    fn push_slow(&mut self, head: usize, value: T) -> Result<(), RingBufferFull<T>> {
-        // Refresh cached tail from consumer
-        let tail = unsafe { (*self.tail_atomic).load(Ordering::Acquire) };
-        self.cached_tail = tail;
-
-        if head.wrapping_sub(tail) < self.capacity {
-            unsafe {
-                self.buffer.add(head & self.mask).write(value);
-            }
-            let next_head = head.wrapping_add(1);
-            self.local_head = next_head;
-            unsafe { (*self.head_atomic).store(next_head, Ordering::Release) };
-            Ok(())
-        } else {
-            Err(RingBufferFull::new(value))
+        unsafe {
+            self.buffer.add(head & self.mask).write(value);
         }
+        let next_head = head.wrapping_add(1);
+        unsafe { (*self.head_atomic).store(next_head, Ordering::Release) };
+
+        // Note - keep this instruction here as it gives cache coherency
+        // a head start, which gives us more consistent behavior
+        self.local_head = next_head;
+        Ok(())
     }
 }
 
@@ -280,35 +268,25 @@ impl<T> Consumer<T> {
     #[inline]
     pub fn pop(&mut self) -> Option<T> {
         let tail = self.local_tail;
+        let mut head = self.cached_head;
 
-        // Fast path: check cached head (no atomic load!)
-        // Queue has data if tail != head
-        if tail != self.cached_head {
-            let value = unsafe { self.buffer.add(tail & self.mask).read() };
-            let next_tail = tail.wrapping_add(1);
-            self.local_tail = next_tail;
-            unsafe { (*self.tail_atomic).store(next_tail, Ordering::Release) };
-            return Some(value);
+        if tail == head {
+            // Refresh cache
+            head = unsafe { (*self.head_atomic).load(Ordering::Acquire) };
+            self.cached_head = head;
+            if tail == head {
+                return None;
+            }
         }
 
-        self.pop_slow(tail)
-    }
+        let value = unsafe { self.buffer.add(tail & self.mask).read() };
+        let next_tail = tail.wrapping_add(1);
+        unsafe { (*self.tail_atomic).store(next_tail, Ordering::Release) };
 
-    #[inline]
-    fn pop_slow(&mut self, tail: usize) -> Option<T> {
-        // Refresh cached head from producer
-        let head = unsafe { (*self.head_atomic).load(Ordering::Acquire) };
-        self.cached_head = head;
-
-        if tail != head {
-            let value = unsafe { self.buffer.add(tail & self.mask).read() };
-            let next_tail = tail.wrapping_add(1);
-            self.local_tail = next_tail;
-            unsafe { (*self.tail_atomic).store(next_tail, Ordering::Release) };
-            Some(value)
-        } else {
-            None
-        }
+        // Note - keep this instruction here as it gives cache coherency
+        // a head start, which gives us more consistent behavior
+        self.local_tail = next_tail;
+        Some(value)
     }
 }
 
