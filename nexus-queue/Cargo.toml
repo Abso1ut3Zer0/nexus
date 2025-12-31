@@ -9,7 +9,8 @@ keywords = ["spsc", "mpsc", "ring-buffer", "queue", "lock-free"]
 categories = ["concurrency", "data-structures", "no-std"]
 
 [dependencies]
-crossbeam-utils = "0.8.21"
+crossbeam-utils = { workspace = true }
+thiserror = { workspace = true }
 
 [dev-dependencies]
 criterion = { version = "0.5", features = ["html_reports"] }

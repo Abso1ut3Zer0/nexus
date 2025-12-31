@@ -14,11 +14,8 @@ keywords = ["lock-free", "concurrent", "data-structures", "trading"]
 categories = ["concurrency", "data-structures"]
 
 [workspace.dependencies]
-# Shared across workspace crates
-crossbeam-utils = "0.8"
-
-# Dev dependencies
-criterion = { version = "0.5", features = ["html_reports"] }
+crossbeam-utils = "0.8.21"
+thiserror = "2.0.17"
 
 [workspace.lints.rust]
 unsafe_op_in_unsafe_fn = "warn"
@@ -27,6 +24,5 @@ unsafe_op_in_unsafe_fn = "warn"
 all = "warn"
 pedantic = "warn"
 nursery = "warn"
-# Common pedantic overrides for this style of code
 missing_errors_doc = "allow"
 missing_panics_doc = "allow"
