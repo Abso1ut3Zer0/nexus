@@ -1,6 +1,6 @@
 [package]
 name = "nexus-queue"
-description = "High-performance lock-free ring buffer queues for trading systems"
+description = "High-performance lock-free ring buffer queues for low latency systems"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
