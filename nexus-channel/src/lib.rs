@@ -25,14 +25,14 @@
 //! ```text
 //! Traditional channel (crossbeam):
 //! ┌─────────────────────────────────────────────────────────┐
-//! │ send() -> push -> unpark() -> SYSCALL (every time!)    │
-//! │ recv() -> pop empty -> park() -> SYSCALL               │
+//! │ send() -> push -> unpark() -> SYSCALL (every time!)     │
+//! │ recv() -> pop empty -> park() -> SYSCALL                │
 //! └─────────────────────────────────────────────────────────┘
 //!
 //! nexus-channel:
 //! ┌─────────────────────────────────────────────────────────┐
-//! │ send() -> push -> if (receiver_parked) unpark()        │
-//! │ recv() -> pop empty -> spin -> snooze -> park()        │
+//! │ send() -> push -> if (receiver_parked) unpark()         │
+//! │ recv() -> pop empty -> spin -> snooze -> park()         │
 //! └─────────────────────────────────────────────────────────┘
 //!    Only syscall when receiver is ACTUALLY sleeping
 //! ```
