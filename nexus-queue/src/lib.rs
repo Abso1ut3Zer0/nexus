@@ -1,35 +1,3 @@
-//! Single-Producer Single-Consumer (SPSC) ring buffer with per-slot sequencing.
-//!
-//! This module provides a high-performance SPSC queue that outperforms traditional
-//! implementations like [`rtrb`](https://docs.rs/rtrb) on both latency and throughput.
-//!
-//! # Performance Summary
-//!
-//! Benchmarked on Intel Core Ultra 7 155H @ 4.8GHz, pinned to cores 0,2:
-//!
-//! | Metric | nexus spsc | rtrb | Improvement |
-//! |--------|------------|------|-------------|
-//! | Latency p50 | ~152 cycles | ~202 cycles | **25% faster** |
-//! | Latency p99 | ~255 cycles | ~300 cycles | **15% faster** |
-//! | Throughput | 449ms/10M ops | 587ms/10M ops | **31% faster** |
-//! | IPC | 0.19 | 0.14 | **36% better** |
-//!
-//! At 4.8GHz, 152 cycles ≈ **32 nanoseconds** one-way latency.
-//!
-//! # Design: Per-Slot Sequencing
-//!
-//! Traditional SPSC queues (like rtrb) use separate atomic head/tail indices with
-//! cached copies to reduce atomic operations:
-//!
-//! ```text
-//! Traditional (rtrb-style):
-//! ┌─────────────────┐  ┌─────────────────┐  ┌─────────────────┐
-//! │ head (atomic)   │  │ tail (atomic)   │  │ buffer[N]       │
-//! │ cached_tail     │  │ cached_head     │  │ (just data)     │
-//! └─────────────────┘  └─────────────────┘  └─────────────────┘
-//!    Cache line 1         Cache line 2         Cache line 3+
-//! ```
-//!
 //! This implementation uses per-slot lap counters instead:
 //!
 //! ```text

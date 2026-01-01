@@ -1,6 +1,7 @@
 [workspace]
 resolver = "2"
 members = [
+	"nexus-channel",
     "nexus-queue",
 ]
 
@@ -15,7 +16,6 @@ categories = ["concurrency", "data-structures"]
 
 [workspace.dependencies]
 crossbeam-utils = "0.8.21"
-thiserror = "2.0.17"
 
 [workspace.lints.rust]
 unsafe_op_in_unsafe_fn = "warn"

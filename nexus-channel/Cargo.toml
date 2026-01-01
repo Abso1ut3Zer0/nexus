@@ -1,0 +1,47 @@
+[package]
+name = "nexus-channel"
+description = "High-performance lock-free spsc channel for low latency systems"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+keywords = ["spsc", "channel", "lock-free"]
+categories = ["concurrency", "data-structures", "no-std"]
+
+[dependencies]
+nexus-queue = { path = "../nexus-queue" }
+crossbeam-utils = { workspace = true }
+
+[dev-dependencies]
+criterion = { version = "0.5", features = ["html_reports"] }
+crossbeam-channel = "0.5.15"
+hdrhistogram = "7.5.4"
+
+rtrb = "0.3.2"
+[lints]
+workspace = true
+
+[[bench]]
+name = "perf_channel"
+harness = false
+
+[[bench]]
+name = "perf_channel_latency"
+harness = false
+
+[[bench]]
+name = "perf_crossbeam_channel"
+harness = false
+
+[[bench]]
+name = "perf_crossbeam_channel_latency"
+harness = false
+
+[[bench]]
+name = "profile_channel"
+harness = false
+
+[[bench]]
+name = "profile_crossbeam_channel"
+harness = false
+
