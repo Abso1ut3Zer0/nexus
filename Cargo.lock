@@ -324,7 +324,7 @@ dependencies = [
 
 [[package]]
 name = "nexus-channel"
-version = "0.2.2"
+version = "0.2.3"
 dependencies = [
  "criterion",
  "crossbeam-channel",
@@ -336,7 +336,7 @@ dependencies = [
 
 [[package]]
 name = "nexus-queue"
-version = "0.2.2"
+version = "0.2.3"
 dependencies = [
  "criterion",
  "crossbeam-queue",
