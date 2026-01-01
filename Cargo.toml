@@ -6,7 +6,7 @@ members = [
 ]
 
 [workspace.package]
-version = "0.2.0"
+version = "0.2.1"
 edition = "2024"
 rust-version = "1.70"
 license = "MIT OR Apache-2.0"
@@ -16,7 +16,7 @@ categories = ["concurrency", "data-structures"]
 
 [workspace.dependencies]
 crossbeam-utils = "0.8.21"
-nexus-queue = { version = "0.2.0", path = "nexus-queue" }
+nexus-queue = { version = "0.2.1", path = "nexus-queue" }
 
 [workspace.lints.rust]
 unsafe_op_in_unsafe_fn = "warn"
