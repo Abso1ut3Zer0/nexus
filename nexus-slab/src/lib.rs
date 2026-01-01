@@ -505,6 +505,68 @@ impl<T> Slab<T> {
         Ok(Key::new(index, slot.generation))
     }
 
+    /// Returns a vacant entry that can be used to insert a value.
+    ///
+    /// This is useful for self-referential structures where the value
+    /// needs to know its own key before being inserted.
+    ///
+    /// If the returned [`VacantEntry`] is dropped without calling
+    /// [`insert`](VacantEntry::insert), the slot is automatically
+    /// returned to the free list.
+    ///
+    /// # Errors
+    ///
+    /// Returns `Err(Full(()))` if the slab is full or not allocated.
+    ///
+    /// # Example
+    ///
+    /// ```no_run
+    /// # use nexus_slab::{Slab, Key};
+    /// struct Node {
+    ///     self_key: Key,
+    ///     data: u64,
+    /// }
+    ///
+    /// let mut slab: Slab<Node> = Slab::new();
+    /// slab.alloc(100)?;
+    ///
+    /// let entry = slab.vacant_entry()?;
+    /// let key = entry.key();
+    /// entry.insert(Node { self_key: key, data: 42 });
+    ///
+    /// // The node knows its own key
+    /// assert_eq!(slab.get(key).unwrap().self_key, key);
+    /// # Ok::<(), Box<dyn std::error::Error>>(())
+    /// ```
+    #[inline]
+    pub fn vacant_entry(&mut self) -> Result<VacantEntry<'_, T>, Full<()>> {
+        if self.free_head == NONE {
+            return Err(Full(()));
+        }
+
+        let index = self.free_head;
+
+        // Safety: free_head is valid when not NONE and we're allocated
+        let slot = unsafe { &mut *self.slot_ptr(index) };
+
+        // Pop from free list
+        self.free_head = unsafe { slot.data.next_free };
+
+        // Increment generation now so the key is stable
+        slot.generation = slot.generation.wrapping_add(1);
+        let generation = slot.generation;
+
+        // Note: occupied stays 0 until insert() is called
+        // Note: len is not incremented until insert() is called
+
+        Ok(VacantEntry {
+            slab: self,
+            index,
+            generation,
+            inserted: false,
+        })
+    }
+
     /// Removes a value from the slab by key.
     ///
     /// Returns `Some(value)` if the key was valid, `None` if the key was
@@ -815,9 +877,149 @@ impl<T: fmt::Debug> fmt::Debug for Entry<'_, T> {
     }
 }
 
+/// A vacant entry in the slab, ready to be filled.
+///
+/// Obtained from [`Slab::vacant_entry`]. This reserves a slot and provides
+/// the key before the value is inserted, enabling self-referential structures.
+///
+/// If dropped without calling [`insert`](VacantEntry::insert), the slot is
+/// automatically returned to the free list.
+///
+/// # Example
+///
+/// ```no_run
+/// # use nexus_slab::Slab;
+/// struct Node {
+///     key: nexus_slab::Key,
+///     data: u64,
+/// }
+///
+/// let mut slab: Slab<Node> = Slab::new();
+/// slab.alloc(100)?;
+///
+/// let entry = slab.vacant_entry()?;
+/// let key = entry.key();
+/// entry.insert(Node { key, data: 42 });
+///
+/// assert_eq!(slab.get(key).unwrap().key, key);
+/// # Ok::<(), Box<dyn std::error::Error>>(())
+/// ```
+pub struct VacantEntry<'a, T> {
+    slab: &'a mut Slab<T>,
+    index: u32,
+    generation: u64,
+    inserted: bool,
+}
+
+impl<'a, T> VacantEntry<'a, T> {
+    /// Returns the key that will be associated with the inserted value.
+    ///
+    /// This key is valid immediately and can be embedded in the value
+    /// being inserted.
+    #[inline]
+    pub fn key(&self) -> Key {
+        Key::new(self.index, self.generation)
+    }
+
+    /// Inserts a value into the vacant entry, returning the key.
+    ///
+    /// This consumes the `VacantEntry`. The returned key is the same
+    /// as what [`key`](VacantEntry::key) would have returned.
+    ///
+    /// # Example
+    ///
+    /// ```no_run
+    /// # use nexus_slab::Slab;
+    /// let mut slab: Slab<u64> = Slab::new();
+    /// slab.alloc(100)?;
+    ///
+    /// let entry = slab.vacant_entry()?;
+    /// let key = entry.insert(42);
+    ///
+    /// assert_eq!(slab.get(key), Some(&42));
+    /// # Ok::<(), Box<dyn std::error::Error>>(())
+    /// ```
+    #[inline]
+    pub fn insert(mut self, value: T) -> Key {
+        let key = self.key();
+
+        // Safety: index is valid from vacant_entry creation
+        let slot = unsafe { &mut *self.slab.slot_ptr(self.index) };
+        slot.occupied = 1;
+        slot.data.value = ManuallyDrop::new(value);
+        self.slab.len += 1;
+
+        // Mark as inserted so Drop doesn't return to free list
+        self.inserted = true;
+
+        key
+    }
+}
+
+impl<T> Drop for VacantEntry<'_, T> {
+    fn drop(&mut self) {
+        if !self.inserted {
+            // Return slot to free list
+            // Safety: index is valid from vacant_entry creation
+            let slot = unsafe { &mut *self.slab.slot_ptr(self.index) };
+            slot.data.next_free = self.slab.free_head;
+            self.slab.free_head = self.index;
+            // Note: generation was already incremented, that's fine - it just
+            // means this abandoned key will never accidentally match
+        }
+    }
+}
+
+impl<T> fmt::Debug for VacantEntry<'_, T> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("VacantEntry")
+            .field("key", &self.key())
+            .finish()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // ============================================================================
+    // Memory Layout Tests
+    // ============================================================================
+
+    #[test]
+    fn key_size_and_alignment() {
+        assert_eq!(std::mem::size_of::<Key>(), 16);
+        assert_eq!(std::mem::align_of::<Key>(), 16);
+    }
+
+    #[test]
+    fn key_field_offsets() {
+        let key = Key::new(0xDEADBEEF, 0x123456789ABCDEF0);
+        assert_eq!(key.index(), 0xDEADBEEF);
+        assert_eq!(key.generation(), 0x123456789ABCDEF0);
+    }
+
+    #[test]
+    fn slot_size_is_power_of_two() {
+        assert!(padded_slot_size::<u8>().is_power_of_two());
+        assert!(padded_slot_size::<u64>().is_power_of_two());
+        assert!(padded_slot_size::<[u8; 100]>().is_power_of_two());
+        assert!(padded_slot_size::<[u8; 1000]>().is_power_of_two());
+    }
+
+    #[test]
+    fn slot_shift_matches_size() {
+        assert_eq!(1 << slot_shift::<u8>(), padded_slot_size::<u8>());
+        assert_eq!(1 << slot_shift::<u64>(), padded_slot_size::<u64>());
+        assert_eq!(
+            1 << slot_shift::<[u8; 100]>(),
+            padded_slot_size::<[u8; 100]>()
+        );
+    }
+
+    // ============================================================================
+    // Const Construction
+    // ============================================================================
 
     #[test]
     fn const_new() {
@@ -827,24 +1029,62 @@ mod tests {
     }
 
     #[test]
-    fn unallocated_behavior() {
-        let mut slab: Slab<u64> = Slab::new();
+    fn default_is_unallocated() {
+        let slab: Slab<u64> = Slab::default();
+        assert!(!slab.is_allocated());
+    }
+
+    // ============================================================================
+    // Unallocated Behavior
+    // ============================================================================
+
+    #[test]
+    fn unallocated_state() {
+        let slab: Slab<u64> = Slab::new();
 
         assert!(!slab.is_allocated());
         assert_eq!(slab.capacity(), 0);
         assert_eq!(slab.len(), 0);
         assert!(slab.is_empty());
-        assert!(slab.is_full()); // No free slots
+        assert!(slab.is_full());
         assert_eq!(slab.memory_size(), 0);
+    }
 
-        // Insert fails
+    #[test]
+    fn unallocated_insert_fails() {
+        let mut slab: Slab<u64> = Slab::new();
         let result = slab.insert(42);
         assert!(result.is_err());
 
-        // Get returns None for any key
+        // Value is returned
+        match result {
+            Err(Full(v)) => assert_eq!(v, 42),
+            Ok(_) => panic!("expected Full error"),
+        }
+    }
+
+    #[test]
+    fn unallocated_get_returns_none() {
+        let slab: Slab<u64> = Slab::new();
         let fake_key = Key::new(0, 1);
         assert_eq!(slab.get(fake_key), None);
     }
+
+    #[test]
+    fn unallocated_mlock_fails() {
+        let slab: Slab<u64> = Slab::new();
+        assert!(slab.mlock().is_err());
+    }
+
+    #[test]
+    fn unallocated_munlock_fails() {
+        let slab: Slab<u64> = Slab::new();
+        assert!(slab.munlock().is_err());
+    }
+
+    // ============================================================================
+    // Allocation
+    // ============================================================================
 
     #[test]
     fn alloc_returns_bytes() {
@@ -858,14 +1098,34 @@ mod tests {
     }
 
     #[test]
+    fn alloc_rounds_up_capacity() {
+        let mut slab: Slab<u64> = Slab::new();
+        slab.alloc(100).unwrap();
+
+        // Capacity is at least what we asked for
+        assert!(slab.capacity() >= 100);
+    }
+
+    #[test]
     fn alloc_bytes_respects_budget() {
         let mut slab: Slab<u64> = Slab::new();
         let budget = 64 * 1024; // 64KB
         let bytes = slab.alloc_bytes(budget).unwrap();
 
+        // Never exceeds budget
         assert!(bytes <= budget);
         assert!(bytes > 0);
         assert!(slab.capacity() > 0);
+    }
+
+    #[test]
+    fn alloc_bytes_rounds_down() {
+        let page_size = sys::page_size();
+        let mut slab: Slab<u64> = Slab::new();
+
+        // Request 1.5 pages, should get 1 page
+        let bytes = slab.alloc_bytes(page_size + page_size / 2).unwrap();
+        assert_eq!(bytes, page_size);
     }
 
     #[test]
@@ -873,29 +1133,37 @@ mod tests {
         let mut slab: Slab<u64> = Slab::new();
         slab.alloc(100).unwrap();
 
-        let result = slab.alloc(100);
-        assert!(result.is_err());
-
-        let result = slab.alloc_bytes(4096);
-        assert!(result.is_err());
+        assert!(slab.alloc(100).is_err());
+        assert!(slab.alloc_bytes(4096).is_err());
     }
 
     #[test]
     fn alloc_zero_fails() {
         let mut slab: Slab<u64> = Slab::new();
-        let result = slab.alloc(0);
-        assert!(result.is_err());
+        assert!(slab.alloc(0).is_err());
     }
 
     #[test]
     fn alloc_bytes_too_small_fails() {
         let mut slab: Slab<u64> = Slab::new();
-        let result = slab.alloc_bytes(100); // Less than page size
-        assert!(result.is_err());
+        assert!(slab.alloc_bytes(100).is_err()); // Less than page size
     }
 
     #[test]
-    fn basic_insert_get_remove() {
+    fn memory_is_page_aligned() {
+        let mut slab: Slab<u64> = Slab::new();
+        slab.alloc(100).unwrap();
+
+        let page_size = sys::page_size();
+        assert_eq!(slab.memory_size() % page_size, 0);
+    }
+
+    // ============================================================================
+    // Basic Operations
+    // ============================================================================
+
+    #[test]
+    fn insert_get_remove() {
         let mut slab: Slab<u64> = Slab::new();
         slab.alloc(16).unwrap();
 
@@ -909,53 +1177,26 @@ mod tests {
     }
 
     #[test]
-    fn generation_prevents_stale_access() {
+    fn get_mut_modifies_value() {
         let mut slab: Slab<u64> = Slab::new();
         slab.alloc(16).unwrap();
 
-        let key1 = slab.insert(100).unwrap();
-        slab.remove(key1);
+        let key = slab.insert(10).unwrap();
+        *slab.get_mut(key).unwrap() = 20;
 
-        let key2 = slab.insert(200).unwrap();
-
-        // Same index, different generation
-        assert_eq!(key1.index(), key2.index());
-        assert_ne!(key1.generation(), key2.generation());
-
-        // Old key doesn't work
-        assert_eq!(slab.get(key1), None);
-        // New key works
-        assert_eq!(slab.get(key2), Some(&200));
+        assert_eq!(slab.get(key), Some(&20));
     }
 
     #[test]
-    fn fill_and_drain() {
+    fn contains() {
         let mut slab: Slab<u64> = Slab::new();
-        slab.alloc(4).unwrap();
-        let capacity = slab.capacity();
+        slab.alloc(16).unwrap();
 
-        // Fill to actual capacity
-        let mut keys = Vec::new();
-        for i in 0..capacity {
-            keys.push(slab.insert(i as u64).unwrap());
-        }
+        let key = slab.insert(42).unwrap();
+        assert!(slab.contains(key));
 
-        assert!(slab.is_full());
-        assert!(slab.insert(999).is_err());
-
-        // Remove two keys
-        let k1 = keys[1];
-        let k3 = keys[3];
-        slab.remove(k1);
-        slab.remove(k3);
-
-        // LIFO: k3's slot reused first
-        let k4 = slab.insert(4).unwrap();
-        assert_eq!(k4.index(), k3.index());
-
-        // Then k1's slot
-        let k5 = slab.insert(5).unwrap();
-        assert_eq!(k5.index(), k1.index());
+        slab.remove(key);
+        assert!(!slab.contains(key));
     }
 
     #[test]
@@ -975,19 +1216,235 @@ mod tests {
     }
 
     #[test]
-    fn contains() {
+    fn entry_on_invalid_key_returns_none() {
         let mut slab: Slab<u64> = Slab::new();
         slab.alloc(16).unwrap();
 
         let key = slab.insert(42).unwrap();
-        assert!(slab.contains(key));
-
         slab.remove(key);
-        assert!(!slab.contains(key));
+
+        assert!(slab.entry(key).is_none());
+    }
+
+    // ============================================================================
+    // Stale Key Detection (Use-After-Free Prevention)
+    // ============================================================================
+
+    #[test]
+    fn generation_prevents_stale_access() {
+        let mut slab: Slab<u64> = Slab::new();
+        slab.alloc(16).unwrap();
+
+        let key1 = slab.insert(100).unwrap();
+        slab.remove(key1);
+
+        let key2 = slab.insert(200).unwrap();
+
+        // Same index, different generation
+        assert_eq!(key1.index(), key2.index());
+        assert_ne!(key1.generation(), key2.generation());
+
+        // Old key returns None
+        assert_eq!(slab.get(key1), None);
+        assert_eq!(slab.get_mut(key1), None);
+        assert_eq!(slab.remove(key1), None);
+
+        // New key works
+        assert_eq!(slab.get(key2), Some(&200));
     }
 
     #[test]
-    fn drop_cleans_up() {
+    fn generation_increments_on_reuse() {
+        let mut slab: Slab<u64> = Slab::new();
+        slab.alloc(1).unwrap();
+
+        let mut prev_gen = 0;
+        for i in 0..100 {
+            let key = slab.insert(i).unwrap();
+            assert!(key.generation() > prev_gen);
+            prev_gen = key.generation();
+            slab.remove(key);
+        }
+    }
+
+    #[test]
+    fn stale_key_to_occupied_slot_fails() {
+        let mut slab: Slab<u64> = Slab::new();
+        slab.alloc(16).unwrap();
+
+        let key1 = slab.insert(100).unwrap();
+        slab.remove(key1);
+        let _key2 = slab.insert(200).unwrap();
+
+        // key1 points to an occupied slot but with wrong generation
+        assert_eq!(slab.get(key1), None);
+    }
+
+    // ============================================================================
+    // Invalid Key Handling
+    // ============================================================================
+
+    #[test]
+    fn out_of_bounds_index_returns_none() {
+        let mut slab: Slab<u64> = Slab::new();
+        slab.alloc(16).unwrap();
+
+        let fake_key = Key::new(999999, 1);
+        assert_eq!(slab.get(fake_key), None);
+        assert_eq!(slab.get_mut(fake_key), None);
+        assert_eq!(slab.remove(fake_key), None);
+        assert!(slab.entry(fake_key).is_none());
+    }
+
+    #[test]
+    fn wrong_generation_returns_none() {
+        let mut slab: Slab<u64> = Slab::new();
+        slab.alloc(16).unwrap();
+
+        let key = slab.insert(42).unwrap();
+        let bad_key = Key::new(key.index(), key.generation() + 1);
+
+        assert_eq!(slab.get(bad_key), None);
+    }
+
+    #[test]
+    fn key_to_free_slot_returns_none() {
+        let mut slab: Slab<u64> = Slab::new();
+        slab.alloc(16).unwrap();
+
+        let key = slab.insert(42).unwrap();
+        slab.remove(key);
+
+        // Same generation but slot is now free
+        assert_eq!(slab.get(key), None);
+    }
+
+    // ============================================================================
+    // Capacity and Fullness
+    // ============================================================================
+
+    #[test]
+    fn fill_to_capacity() {
+        let mut slab: Slab<u64> = Slab::new();
+        slab.alloc(4).unwrap();
+        let capacity = slab.capacity();
+
+        let mut keys = Vec::new();
+        for i in 0..capacity {
+            keys.push(slab.insert(i as u64).unwrap());
+        }
+
+        assert!(slab.is_full());
+        assert_eq!(slab.len(), capacity);
+        assert!(slab.insert(999).is_err());
+    }
+
+    #[test]
+    fn full_insert_returns_value() {
+        let mut slab: Slab<String> = Slab::new();
+        slab.alloc(1).unwrap();
+        let capacity = slab.capacity();
+
+        for i in 0..capacity {
+            slab.insert(format!("item-{}", i)).unwrap();
+        }
+
+        let result = slab.insert("overflow".to_string());
+        match result {
+            Err(Full(s)) => assert_eq!(s, "overflow"),
+            Ok(_) => panic!("expected full error"),
+        }
+    }
+
+    #[test]
+    fn lifo_free_list() {
+        let mut slab: Slab<u64> = Slab::new();
+        slab.alloc(16).unwrap();
+
+        let k0 = slab.insert(0).unwrap();
+        let k1 = slab.insert(1).unwrap();
+        let k2 = slab.insert(2).unwrap();
+
+        slab.remove(k0);
+        slab.remove(k2);
+        slab.remove(k1);
+
+        // LIFO: k1 removed last, reused first
+        let new_key = slab.insert(100).unwrap();
+        assert_eq!(new_key.index(), k1.index());
+    }
+
+    // ============================================================================
+    // Type Variety
+    // ============================================================================
+
+    #[test]
+    fn zero_sized_type() {
+        let mut slab: Slab<()> = Slab::new();
+        slab.alloc(16).unwrap();
+
+        let k1 = slab.insert(()).unwrap();
+        let k2 = slab.insert(()).unwrap();
+
+        assert_eq!(slab.get(k1), Some(&()));
+        assert_eq!(slab.get(k2), Some(&()));
+
+        slab.remove(k1);
+        assert_eq!(slab.get(k1), None);
+    }
+
+    #[test]
+    fn string_type() {
+        let mut slab: Slab<String> = Slab::new();
+        slab.alloc(16).unwrap();
+
+        let key = slab.insert("hello world".to_string()).unwrap();
+        assert_eq!(slab.get(key), Some(&"hello world".to_string()));
+    }
+
+    #[test]
+    fn vec_type() {
+        let mut slab: Slab<Vec<u64>> = Slab::new();
+        slab.alloc(16).unwrap();
+
+        let key = slab.insert(vec![1, 2, 3, 4, 5]).unwrap();
+        assert_eq!(slab.get(key), Some(&vec![1, 2, 3, 4, 5]));
+    }
+
+    #[test]
+    fn large_aligned_type() {
+        #[derive(Debug)]
+        #[repr(C, align(128))]
+        struct BigAligned {
+            data: [u8; 256],
+        }
+
+        let mut slab: Slab<BigAligned> = Slab::new();
+        slab.alloc(16).unwrap();
+
+        let key = slab.insert(BigAligned { data: [42; 256] }).unwrap();
+        assert_eq!(slab.get(key).unwrap().data[0], 42);
+        assert_eq!(slab.get(key).unwrap().data[255], 42);
+    }
+
+    #[test]
+    fn option_type() {
+        let mut slab: Slab<Option<u64>> = Slab::new();
+        slab.alloc(16).unwrap();
+
+        let k1 = slab.insert(Some(42)).unwrap();
+        let k2 = slab.insert(None).unwrap();
+
+        assert_eq!(slab.get(k1), Some(&Some(42)));
+        assert_eq!(slab.get(k2), Some(&None));
+    }
+
+    // ============================================================================
+    // Drop Behavior
+    // ============================================================================
+
+    #[test]
+    fn drop_cleans_up_values() {
         use std::sync::atomic::{AtomicUsize, Ordering};
 
         static DROP_COUNT: AtomicUsize = AtomicUsize::new(0);
@@ -1014,71 +1471,301 @@ mod tests {
     }
 
     #[test]
-    fn full_returns_value() {
-        let mut slab: Slab<String> = Slab::new();
+    fn remove_drops_value() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        static DROP_COUNT: AtomicUsize = AtomicUsize::new(0);
+
+        #[derive(Debug)]
+        struct DropCounter;
+        impl Drop for DropCounter {
+            fn drop(&mut self) {
+                DROP_COUNT.fetch_add(1, Ordering::SeqCst);
+            }
+        }
+
+        DROP_COUNT.store(0, Ordering::SeqCst);
+
+        let mut slab: Slab<DropCounter> = Slab::new();
+        slab.alloc(16).unwrap();
+
+        let key = slab.insert(DropCounter).unwrap();
+        assert_eq!(DROP_COUNT.load(Ordering::SeqCst), 0);
+
+        slab.remove(key);
+        assert_eq!(DROP_COUNT.load(Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn partial_fill_drop() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        static DROP_COUNT: AtomicUsize = AtomicUsize::new(0);
+
+        #[derive(Debug)]
+        struct DropCounter;
+        impl Drop for DropCounter {
+            fn drop(&mut self) {
+                DROP_COUNT.fetch_add(1, Ordering::SeqCst);
+            }
+        }
+
+        DROP_COUNT.store(0, Ordering::SeqCst);
+
+        {
+            let mut slab: Slab<DropCounter> = Slab::new();
+            slab.alloc(100).unwrap();
+
+            // Only insert a few
+            slab.insert(DropCounter).unwrap();
+            slab.insert(DropCounter).unwrap();
+
+            // Remove one
+            let key = slab.insert(DropCounter).unwrap();
+            slab.remove(key); // Drop count = 1
+        }
+        // Remaining 2 dropped
+
+        assert_eq!(DROP_COUNT.load(Ordering::SeqCst), 3);
+    }
+
+    #[test]
+    fn unallocated_drop_is_safe() {
+        let slab: Slab<String> = Slab::new();
+        drop(slab); // Should not panic
+    }
+
+    // ============================================================================
+    // Send Safety
+    // ============================================================================
+
+    #[test]
+    fn slab_is_send() {
+        fn assert_send<T: Send>() {}
+        assert_send::<Slab<u64>>();
+        assert_send::<Slab<String>>();
+    }
+
+    #[test]
+    fn move_across_threads() {
+        use std::thread;
+
+        let mut slab: Slab<u64> = Slab::new();
+        slab.alloc(100).unwrap();
+
+        let key = slab.insert(42).unwrap();
+
+        let handle = thread::spawn(move || {
+            assert_eq!(slab.get(key), Some(&42));
+            slab.remove(key);
+            slab
+        });
+
+        let slab = handle.join().unwrap();
+        assert_eq!(slab.len(), 0);
+    }
+
+    // ============================================================================
+    // Key Properties
+    // ============================================================================
+
+    #[test]
+    fn key_is_copy() {
+        fn assert_copy<T: Copy>() {}
+        assert_copy::<Key>();
+    }
+
+    #[test]
+    fn key_is_eq() {
+        let k1 = Key::new(1, 100);
+        let k2 = Key::new(1, 100);
+        let k3 = Key::new(1, 101);
+        let k4 = Key::new(2, 100);
+
+        assert_eq!(k1, k2);
+        assert_ne!(k1, k3);
+        assert_ne!(k1, k4);
+    }
+
+    #[test]
+    fn key_is_hashable() {
+        use std::collections::HashMap;
+
+        let mut slab: Slab<u64> = Slab::new();
+        slab.alloc(16).unwrap();
+
+        let key = slab.insert(42).unwrap();
+
+        let mut map = HashMap::new();
+        map.insert(key, "value");
+
+        assert_eq!(map.get(&key), Some(&"value"));
+    }
+
+    #[test]
+    fn key_debug_format() {
+        let key = Key::new(42, 7);
+        let debug_str = format!("{:?}", key);
+        assert!(debug_str.contains("42"));
+        assert!(debug_str.contains("7"));
+    }
+
+    // ============================================================================
+    // Stress Tests
+    // ============================================================================
+
+    #[test]
+    fn stress_insert_remove_cycle() {
+        let mut slab: Slab<u64> = Slab::new();
         slab.alloc(1).unwrap();
+
+        for i in 0..10_000u64 {
+            let key = slab.insert(i).unwrap();
+            assert_eq!(slab.get(key), Some(&i));
+            assert_eq!(slab.remove(key), Some(i));
+        }
+    }
+
+    #[test]
+    fn stress_fill_drain_cycles() {
+        let mut slab: Slab<u64> = Slab::new();
+        slab.alloc(64).unwrap();
         let capacity = slab.capacity();
 
-        // Fill to capacity
-        for i in 0..capacity {
-            slab.insert(format!("item-{}", i)).unwrap();
+        for cycle in 0..100 {
+            let mut keys = Vec::with_capacity(capacity);
+
+            // Fill
+            for i in 0..capacity {
+                let val = (cycle * capacity + i) as u64;
+                keys.push(slab.insert(val).unwrap());
+            }
+            assert!(slab.is_full());
+
+            // Drain
+            for (i, key) in keys.iter().enumerate() {
+                let expected = (cycle * capacity + i) as u64;
+                assert_eq!(slab.remove(*key), Some(expected));
+            }
+            assert!(slab.is_empty());
+        }
+    }
+
+    #[test]
+    fn stress_random_operations() {
+        use std::collections::HashMap;
+
+        let mut slab: Slab<u64> = Slab::new();
+        slab.alloc(256).unwrap();
+
+        let mut reference: HashMap<u32, u64> = HashMap::new();
+        let mut next_val = 0u64;
+
+        for i in 0..10_000 {
+            if i % 3 != 0 && !slab.is_full() {
+                // Insert
+                let key = slab.insert(next_val).unwrap();
+                reference.insert(key.index(), next_val);
+                next_val += 1;
+            } else if !slab.is_empty() {
+                // Remove first valid key we find
+                if let Some((&idx, _)) = reference.iter().next() {
+                    // Find key with this index
+                    for g in 1..1000u64 {
+                        let key = Key::new(idx, g);
+                        if let Some(val) = slab.remove(key) {
+                            assert_eq!(reference.remove(&idx), Some(val));
+                            break;
+                        }
+                    }
+                }
+            }
         }
 
-        let result = slab.insert("overflow".to_string());
-        match result {
-            Err(Full(s)) => assert_eq!(s, "overflow"),
-            Ok(_) => panic!("expected full error"),
-        }
+        // Verify remaining entries
+        assert_eq!(slab.len(), reference.len());
     }
 
     #[test]
-    fn invalid_key_returns_none() {
-        let mut slab: Slab<u64> = Slab::new();
-        slab.alloc(16).unwrap();
-
-        // Fabricated key
-        let fake_key = Key::new(999, 42);
-        assert_eq!(slab.get(fake_key), None);
-        assert_eq!(slab.get_mut(fake_key), None);
-        assert_eq!(slab.remove(fake_key), None);
-        assert!(slab.entry(fake_key).is_none());
-    }
-
-    #[test]
-    fn power_of_two_slot_size() {
-        assert!(padded_slot_size::<u8>().is_power_of_two());
-        assert!(padded_slot_size::<u64>().is_power_of_two());
-        assert!(padded_slot_size::<[u8; 100]>().is_power_of_two());
-        assert!(padded_slot_size::<[u8; 1000]>().is_power_of_two());
-    }
-
-    #[test]
-    fn get_mut_modifies_value() {
-        let mut slab: Slab<u64> = Slab::new();
-        slab.alloc(16).unwrap();
-
-        let key = slab.insert(10).unwrap();
-        *slab.get_mut(key).unwrap() = 20;
-
-        assert_eq!(slab.get(key), Some(&20));
-    }
-
-    #[test]
-    fn many_generations() {
+    fn stress_many_generations() {
         let mut slab: Slab<u64> = Slab::new();
         slab.alloc(1).unwrap();
 
-        let mut prev_gen = 0;
-        for i in 0..1000 {
+        let mut keys = Vec::new();
+
+        // Accumulate many generations worth of stale keys
+        for i in 0..1000u64 {
             let key = slab.insert(i).unwrap();
-            assert!(key.generation() > prev_gen || prev_gen == 0);
-            prev_gen = key.generation();
+            keys.push(key);
             slab.remove(key);
         }
+
+        // Insert one more
+        let final_key = slab.insert(9999).unwrap();
+
+        // All old keys should be invalid
+        for key in &keys {
+            assert_eq!(slab.get(*key), None);
+        }
+
+        // Current key works
+        assert_eq!(slab.get(final_key), Some(&9999));
+    }
+
+    // ============================================================================
+    // Determinism
+    // ============================================================================
+
+    #[test]
+    fn deterministic_key_assignment() {
+        let run = || {
+            let mut slab: Slab<u64> = Slab::new();
+            slab.alloc(16).unwrap();
+
+            let k1 = slab.insert(1).unwrap();
+            let k2 = slab.insert(2).unwrap();
+            let k3 = slab.insert(3).unwrap();
+
+            (k1, k2, k3)
+        };
+
+        let (a1, a2, a3) = run();
+        let (b1, b2, b3) = run();
+
+        assert_eq!(a1.index(), b1.index());
+        assert_eq!(a2.index(), b2.index());
+        assert_eq!(a3.index(), b3.index());
     }
 
     #[test]
-    fn debug_impl() {
+    fn deterministic_after_remove() {
+        let run = || {
+            let mut slab: Slab<u64> = Slab::new();
+            slab.alloc(16).unwrap();
+
+            let k1 = slab.insert(1).unwrap();
+            let k2 = slab.insert(2).unwrap();
+            slab.remove(k1);
+            let k3 = slab.insert(3).unwrap();
+
+            (k1, k2, k3)
+        };
+
+        let (a1, a2, a3) = run();
+        let (b1, b2, b3) = run();
+
+        // k3 should reuse k1's slot
+        assert_eq!(a3.index(), a1.index());
+        assert_eq!(b3.index(), b1.index());
+        assert_eq!(a2.index(), b2.index());
+    }
+
+    // ============================================================================
+    // Debug Impls
+    // ============================================================================
+
+    #[test]
+    fn slab_debug_format() {
         let slab: Slab<u64> = Slab::new();
         let debug_str = format!("{:?}", slab);
         assert!(debug_str.contains("Slab"));
@@ -1088,23 +1775,293 @@ mod tests {
     }
 
     #[test]
-    fn key_debug_impl() {
-        let key = Key::new(42, 7);
-        let debug_str = format!("{:?}", key);
+    fn entry_debug_format() {
+        let mut slab: Slab<u64> = Slab::new();
+        slab.alloc(16).unwrap();
+
+        let key = slab.insert(42).unwrap();
+        let entry = slab.entry(key).unwrap();
+
+        let debug_str = format!("{:?}", entry);
+        assert!(debug_str.contains("Entry"));
         assert!(debug_str.contains("42"));
-        assert!(debug_str.contains("7"));
     }
 
     #[test]
-    fn mlock_without_alloc_fails() {
-        let slab: Slab<u64> = Slab::new();
-        let result = slab.mlock();
-        assert!(result.is_err());
+    fn full_error_debug_format() {
+        let err = Full(42u64);
+        let debug_str = format!("{:?}", err);
+        assert!(debug_str.contains("Full"));
+        assert!(debug_str.contains("42"));
     }
 
     #[test]
-    fn default_is_unallocated() {
-        let slab: Slab<u64> = Slab::default();
-        assert!(!slab.is_allocated());
+    fn full_error_display_format() {
+        let err = Full(42u64);
+        let display_str = format!("{}", err);
+        assert!(display_str.contains("full"));
+    }
+
+    // ============================================================================
+    // Edge Cases
+    // ============================================================================
+
+    #[test]
+    fn single_slot_slab() {
+        let mut slab: Slab<u64> = Slab::new();
+        slab.alloc(1).unwrap();
+
+        // May have more than 1 slot due to page rounding
+        let capacity = slab.capacity();
+        assert!(capacity >= 1);
+
+        // Verify we can cycle through insert/remove
+        for i in 0..100 {
+            let key = slab.insert(i).unwrap();
+            assert_eq!(slab.get(key), Some(&i));
+            slab.remove(key);
+        }
+    }
+
+    #[test]
+    fn large_allocation() {
+        let mut slab: Slab<u64> = Slab::new();
+        let bytes = slab.alloc(100_000).unwrap();
+
+        assert!(slab.capacity() >= 100_000);
+        assert!(bytes > 0);
+
+        // Can actually use it
+        let key = slab.insert(42).unwrap();
+        assert_eq!(slab.get(key), Some(&42));
+    }
+
+    #[test]
+    fn alloc_bytes_exact_page() {
+        let page_size = sys::page_size();
+        let mut slab: Slab<u64> = Slab::new();
+
+        let bytes = slab.alloc_bytes(page_size).unwrap();
+        assert_eq!(bytes, page_size);
+    }
+
+    #[test]
+    fn alloc_bytes_multiple_pages() {
+        let page_size = sys::page_size();
+        let mut slab: Slab<u64> = Slab::new();
+
+        let bytes = slab.alloc_bytes(page_size * 10).unwrap();
+        assert_eq!(bytes, page_size * 10);
+    }
+
+    // ============================================================================
+    // Vacant Entry Tests
+    // ============================================================================
+
+    #[test]
+    fn vacant_entry_basic() {
+        let mut slab: Slab<u64> = Slab::new();
+        slab.alloc(16).unwrap();
+
+        let entry = slab.vacant_entry().unwrap();
+        let key = entry.key();
+        let returned_key = entry.insert(42);
+
+        assert_eq!(key, returned_key);
+        assert_eq!(slab.get(key), Some(&42));
+        assert_eq!(slab.len(), 1);
+    }
+
+    #[test]
+    fn vacant_entry_self_referential() {
+        #[derive(Debug, PartialEq)]
+        struct Node {
+            self_key: Key,
+            data: u64,
+        }
+
+        let mut slab: Slab<Node> = Slab::new();
+        slab.alloc(16).unwrap();
+
+        let entry = slab.vacant_entry().unwrap();
+        let key = entry.key();
+        entry.insert(Node {
+            self_key: key,
+            data: 42,
+        });
+
+        let node = slab.get(key).unwrap();
+        assert_eq!(node.self_key, key);
+        assert_eq!(node.data, 42);
+    }
+
+    #[test]
+    fn vacant_entry_drop_returns_to_free_list() {
+        let mut slab: Slab<u64> = Slab::new();
+        slab.alloc(16).unwrap();
+
+        let initial_capacity = slab.capacity();
+
+        // Get a vacant entry but don't insert
+        {
+            let entry = slab.vacant_entry().unwrap();
+            let _key = entry.key();
+            // entry dropped here without insert
+        }
+
+        // Slot should be back in free list
+        assert_eq!(slab.len(), 0);
+        assert!(!slab.is_full());
+
+        // Should be able to fill to capacity
+        for i in 0..initial_capacity {
+            slab.insert(i as u64).unwrap();
+        }
+        assert!(slab.is_full());
+    }
+
+    #[test]
+    fn vacant_entry_abandoned_key_is_invalid() {
+        let mut slab: Slab<u64> = Slab::new();
+        slab.alloc(16).unwrap();
+
+        // Get key from abandoned entry
+        let abandoned_key = {
+            let entry = slab.vacant_entry().unwrap();
+            entry.key()
+            // entry dropped here
+        };
+
+        // Insert something else (reuses same slot with different generation)
+        let valid_key = slab.insert(42).unwrap();
+
+        // Abandoned key should be invalid
+        assert_eq!(slab.get(abandoned_key), None);
+
+        // Valid key works
+        assert_eq!(slab.get(valid_key), Some(&42));
+    }
+
+    #[test]
+    fn vacant_entry_on_full_slab_fails() {
+        let mut slab: Slab<u64> = Slab::new();
+        slab.alloc(1).unwrap();
+        let capacity = slab.capacity();
+
+        // Fill it
+        for i in 0..capacity {
+            slab.insert(i as u64).unwrap();
+        }
+
+        // vacant_entry should fail
+        assert!(slab.vacant_entry().is_err());
+    }
+
+    #[test]
+    fn vacant_entry_on_unallocated_fails() {
+        let mut slab: Slab<u64> = Slab::new();
+        assert!(slab.vacant_entry().is_err());
+    }
+
+    #[test]
+    fn vacant_entry_key_matches_insert_key() {
+        let mut slab: Slab<u64> = Slab::new();
+        slab.alloc(16).unwrap();
+
+        let entry = slab.vacant_entry().unwrap();
+        let pre_key = entry.key();
+        let post_key = entry.insert(99);
+
+        assert_eq!(pre_key, post_key);
+        assert_eq!(pre_key.index(), post_key.index());
+        assert_eq!(pre_key.generation(), post_key.generation());
+    }
+
+    #[test]
+    fn vacant_entry_multiple_sequential() {
+        let mut slab: Slab<u64> = Slab::new();
+        slab.alloc(16).unwrap();
+
+        let e1 = slab.vacant_entry().unwrap();
+        let k1 = e1.insert(1);
+
+        let e2 = slab.vacant_entry().unwrap();
+        let k2 = e2.insert(2);
+
+        let e3 = slab.vacant_entry().unwrap();
+        let k3 = e3.insert(3);
+
+        assert_eq!(slab.get(k1), Some(&1));
+        assert_eq!(slab.get(k2), Some(&2));
+        assert_eq!(slab.get(k3), Some(&3));
+        assert_eq!(slab.len(), 3);
+    }
+
+    #[test]
+    fn vacant_entry_interleaved_with_insert() {
+        let mut slab: Slab<u64> = Slab::new();
+        slab.alloc(16).unwrap();
+
+        let k1 = slab.insert(1).unwrap();
+
+        let entry = slab.vacant_entry().unwrap();
+        let k2 = entry.insert(2);
+
+        let k3 = slab.insert(3).unwrap();
+
+        assert_eq!(slab.get(k1), Some(&1));
+        assert_eq!(slab.get(k2), Some(&2));
+        assert_eq!(slab.get(k3), Some(&3));
+    }
+
+    #[test]
+    fn vacant_entry_drop_then_reuse() {
+        let mut slab: Slab<u64> = Slab::new();
+        slab.alloc(1).unwrap();
+
+        // Create and abandon multiple entries
+        for _ in 0..10 {
+            let _entry = slab.vacant_entry().unwrap();
+        }
+
+        // Still have capacity
+        assert_eq!(slab.len(), 0);
+
+        // Can still insert
+        let key = slab.insert(42).unwrap();
+        assert_eq!(slab.get(key), Some(&42));
+    }
+
+    #[test]
+    fn vacant_entry_debug_format() {
+        let mut slab: Slab<u64> = Slab::new();
+        slab.alloc(16).unwrap();
+
+        let entry = slab.vacant_entry().unwrap();
+        let debug_str = format!("{:?}", entry);
+        assert!(debug_str.contains("VacantEntry"));
+        assert!(debug_str.contains("key"));
+    }
+
+    #[test]
+    fn vacant_entry_stress() {
+        let mut slab: Slab<u64> = Slab::new();
+        slab.alloc(64).unwrap();
+
+        for i in 0..1000u64 {
+            if i % 3 == 0 {
+                // Use vacant_entry
+                let entry = slab.vacant_entry().unwrap();
+                let key = entry.key();
+                entry.insert(i);
+                assert_eq!(slab.get(key), Some(&i));
+                slab.remove(key);
+            } else {
+                // Use regular insert
+                let key = slab.insert(i).unwrap();
+                assert_eq!(slab.get(key), Some(&i));
+                slab.remove(key);
+            }
+        }
     }
 }
