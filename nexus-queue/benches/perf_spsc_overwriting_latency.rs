@@ -7,15 +7,15 @@
 
 use std::thread;
 
-use nexus_queue::spsc::overwriting;
+use nexus_queue::spsc;
 
 const WARMUP: u64 = 10_000;
 const SAMPLES: u64 = 100_000;
 const CAPACITY: usize = 64;
 
 fn main() {
-    let (mut prod_fwd, mut cons_fwd) = overwriting::ring_buffer::<u64>(CAPACITY);
-    let (mut prod_ret, mut cons_ret) = overwriting::ring_buffer::<u64>(CAPACITY);
+    let (mut prod_fwd, mut cons_fwd) = spsc::ring_buffer::<u64>(CAPACITY);
+    let (mut prod_ret, mut cons_ret) = spsc::ring_buffer::<u64>(CAPACITY);
 
     let total = WARMUP + SAMPLES;
 
@@ -28,7 +28,7 @@ fn main() {
                 }
                 std::hint::spin_loop();
             };
-            prod_ret.push(val);
+            let _ = prod_ret.push(val);
         }
     });
 
@@ -38,7 +38,7 @@ fn main() {
     for i in 0..total {
         let start = rdtsc();
 
-        prod_fwd.push(i);
+        let _ = prod_fwd.push(i);
 
         loop {
             if cons_ret.pop().is_some() {

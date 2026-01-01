@@ -28,9 +28,9 @@ impl Message {
 }
 
 fn main() {
-    use nexus_queue::spsc::bounded;
+    use nexus_queue::spsc;
 
-    let (mut producer, mut consumer) = bounded::ring_buffer::<Message>(CAPACITY);
+    let (mut producer, mut consumer) = spsc::ring_buffer::<Message>(CAPACITY);
 
     let producer_handle = thread::spawn(move || {
         for i in 0..COUNT {

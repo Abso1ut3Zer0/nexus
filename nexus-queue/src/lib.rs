@@ -23,7 +23,7 @@
 //!
 //! // Create a channel with capacity for 1024 elements
 //! // (will be rounded up to next power of two)
-//! let (mut tx, mut rx) = spsc::bounded::ring_buffer::<u64>(1024);
+//! let (mut tx, mut rx) = spsc::ring_buffer::<u64>(1024);
 //!
 //! // Send a value
 //! tx.push(42).unwrap();
