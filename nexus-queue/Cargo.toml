@@ -41,5 +41,6 @@ name = "perf_rtrb_latency"
 harness = false
 
 [[bench]]
-name = "profile_spsc_bounded"
+name = "perf_spsc_overwriting_latency"
 harness = false
+

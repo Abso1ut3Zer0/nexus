@@ -69,7 +69,7 @@ pub fn ring_buffer<T>(capacity: usize) -> (Producer<T>, Consumer<T>) {
     let tail_atomic = &*inner.tail as *const AtomicUsize;
     (
         Producer {
-            _inner: Arc::clone(&inner),
+            inner: Arc::clone(&inner),
             buffer: buffer_ptr,
             mask,
             head_atomic,
@@ -78,7 +78,7 @@ pub fn ring_buffer<T>(capacity: usize) -> (Producer<T>, Consumer<T>) {
             cached_tail: 0,
         },
         Consumer {
-            _inner: inner,
+            inner,
             buffer: buffer_ptr,
             mask,
             tail_atomic,
@@ -137,7 +137,7 @@ pub struct Producer<T> {
     /// Pointer to tail atomic - for refreshing cached_tail.
     tail_atomic: *const AtomicUsize,
     /// Handle to inner ring buffer for cleanup
-    _inner: Arc<Inner<T>>,
+    inner: Arc<Inner<T>>,
 }
 
 // Safety: Producer is Send but not Sync - only one thread can use it.
@@ -215,6 +215,12 @@ impl<T> Producer<T> {
     pub fn is_empty(&self) -> bool {
         self.len() == 0
     }
+
+    /// Returns `true` if the consumer has been dropped
+    #[inline]
+    pub fn is_disconnected(&self) -> bool {
+        Arc::strong_count(&self.inner) != 2
+    }
 }
 
 impl<T> fmt::Debug for Producer<T> {
@@ -251,7 +257,7 @@ pub struct Consumer<T> {
     /// Pointer to head atomic - for refreshing cached_head.
     head_atomic: *const AtomicUsize,
     /// Handle to inner ring buffer for cleanup
-    _inner: Arc<Inner<T>>,
+    inner: Arc<Inner<T>>,
 }
 
 // Safety: Consumer is Send but not Sync - only one thread can use it.
@@ -325,6 +331,12 @@ impl<T> Consumer<T> {
     #[inline]
     pub fn is_empty(&self) -> bool {
         self.len() == 0
+    }
+
+    /// Returns `true` if the producer has been dropped
+    #[inline]
+    pub fn is_disconnected(&self) -> bool {
+        Arc::strong_count(&self.inner) != 2
     }
 }
 
