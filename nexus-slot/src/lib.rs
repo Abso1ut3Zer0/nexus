@@ -1,58 +1,120 @@
-//! Single-value SPSC conflation slot.
+//! A high-performance SPSC conflation slot.
 //!
-//! This is optimized for the "latest value wins" pattern common in market data:
-//! - Writer overwrites with newest data
-//! - Reader gets each new value exactly once
+//! This crate provides a single-value slot optimized for the "latest value wins"
+//! pattern common in trading systems: market data snapshots, order book updates,
+//! position state, etc.
+//!
+//! - **Writer** overwrites with newest data (never blocks)
+//! - **Reader** gets each new value exactly once
 //! - Old values are silently discarded (conflated)
+//!
+//! # Use Case
+//!
+//! This is specifically designed for **single-producer, single-consumer** (SPSC)
+//! scenarios where you only care about the most recent value. If you need:
+//!
+//! - Multiple writers → use [`seqlock`](https://crates.io/crates/seqlock) or a mutex
+//! - Multiple readers → use [`arc-swap`](https://crates.io/crates/arc-swap) or RwLock
+//! - Queue semantics (all messages delivered) → use [`nexus-queue`] or [`crossbeam`](https://crates.io/crates/crossbeam)
+//! - Async/await → use [`tokio::sync::watch`](https://docs.rs/tokio/latest/tokio/sync/watch/index.html)
 //!
 //! # Performance
 //!
-//! | Operation | Cycles | Notes |
-//! |-----------|--------|-------|
-//! | write (64 bytes) | ~12-18 | Two stores + memcpy |
-//! | read (64 bytes) | ~15-25 | Two loads + memcpy |
-//! | read (no new data) | ~3-5 | Single load + compare |
-//! | has_update | ~3-5 | Single load + compare |
+//! Benchmarked on Intel Core Ultra 7 155H @ 2.7GHz, pinned to physical cores
+//! with turbo disabled:
+//!
+//! | Implementation | p50 Latency | Notes |
+//! |----------------|-------------|-------|
+//! | **nexus_slot** | 159 cycles (59 ns) | SPSC only |
+//! | `seqlock` crate | 355 cycles (132 ns) | Supports multiple writers |
+//! | `ArrayQueue(1)` | 540 cycles (201 ns) | General-purpose bounded queue |
+//!
+//! The performance advantage comes from specializing for the SPSC case:
+//!
+//! - **No writer contention**: Single writer means no mutex, no CAS loops
+//! - **Cached sequence numbers**: Writer tracks sequence locally, avoiding atomic loads
+//! - **No queue machinery**: No head/tail coordination, just a sequence counter
+//!
+//! Other implementations are more general-purpose and pay for flexibility we
+//! don't need in the SPSC conflation case.
+//!
+//! # The `Pod` Trait
+//!
+//! Types used with this slot must implement [`Pod`] (Plain Old Data). This is
+//! an `unsafe` marker trait guaranteeing the type has no heap allocations or
+//! resources requiring cleanup.
+//!
+//! Any `Copy` type automatically implements `Pod`. For non-`Copy` types that
+//! are still just bytes (e.g., large structs where you want to avoid implicit
+//! copies), you can implement it manually:
+//!
+//! ```rust
+//! use nexus_slot::Pod;
+//!
+//! #[repr(C)]
+//! struct OrderBook {
+//!     bids: [f64; 20],
+//!     asks: [f64; 20],
+//!     sequence: u64,
+//! }
+//!
+//! // SAFETY: OrderBook is just bytes - no heap allocations
+//! unsafe impl Pod for OrderBook {}
+//! ```
 //!
 //! # Example
 //!
 //! ```rust
 //! use nexus_slot::{self, Pod};
 //!
-//! #[derive(Clone, Default)]
-//! #[repr(C)]
+//! #[derive(Copy, Clone, Default)]
 //! struct Quote {
-//!     price: f64,
-//!     size: f64,
+//!     bid: f64,
+//!     ask: f64,
+//!     sequence: u64,
 //! }
 //!
-//! unsafe impl Pod for Quote {}
-//!
-//! let (mut writer, mut reader) = nexus_slot::new::<Quote>();
+//! let (mut writer, mut reader) = nexus_slot::slot::<Quote>();
 //!
 //! // No data yet
 //! assert!(reader.read().is_none());
 //!
-//! // Write some data
-//! writer.write(Quote { price: 100.0, size: 10.0 });
+//! // Writer publishes a quote
+//! writer.write(Quote { bid: 100.0, ask: 100.05, sequence: 1 });
 //!
-//! // Read consumes it
+//! // Reader consumes it
 //! let quote = reader.read().unwrap();
-//! assert_eq!(quote.price, 100.0);
+//! assert_eq!(quote.sequence, 1);
 //!
-//! // Already consumed, returns None
+//! // Already consumed - returns None until next write
 //! assert!(reader.read().is_none());
 //!
-//! // New write makes data available again
-//! writer.write(Quote { price: 101.0, size: 20.0 });
-//! assert!(reader.read().is_some());
+//! // Multiple writes before read = conflation
+//! writer.write(Quote { bid: 100.1, ask: 100.15, sequence: 2 });
+//! writer.write(Quote { bid: 100.2, ask: 100.25, sequence: 3 });
+//!
+//! // Reader only sees the latest
+//! let quote = reader.read().unwrap();
+//! assert_eq!(quote.sequence, 3);
 //! ```
+//!
+//! # Implementation
+//!
+//! Uses a sequence lock (seqlock) internally:
+//!
+//! - Writer increments sequence to odd (writing), copies data, increments to even (done)
+//! - Reader loads sequence, copies data, checks sequence unchanged
+//! - If sequence changed during read, retry
+//!
+//! The SPSC constraint allows us to cache the sequence number on the writer side,
+//! eliminating an atomic load on every write. The reader caches the last-read
+//! sequence to detect "already consumed" without copying data.
 
 use std::cell::UnsafeCell;
 use std::fmt;
 use std::mem::MaybeUninit;
-use std::sync::atomic::{fence, AtomicUsize, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering, fence};
 
 /// Marker trait for types safe to use in a conflated slot.
 ///
@@ -126,7 +188,7 @@ unsafe impl<T: Send> Send for Reader<T> {}
 /// Creates a new conflated slot.
 ///
 /// Returns a `(Writer, Reader)` pair.
-pub fn new<T: Pod>() -> (Writer<T>, Reader<T>) {
+pub fn slot<T: Pod>() -> (Writer<T>, Reader<T>) {
     let _ = T::_ASSERT_NO_DROP;
 
     let inner = Arc::new(Inner {
@@ -278,13 +340,13 @@ mod tests {
 
     #[test]
     fn read_before_write_returns_none() {
-        let (_, mut reader) = new::<TestData>();
+        let (_, mut reader) = slot::<TestData>();
         assert!(reader.read().is_none());
     }
 
     #[test]
     fn read_consumes_value() {
-        let (mut writer, mut reader) = new::<TestData>();
+        let (mut writer, mut reader) = slot::<TestData>();
 
         writer.write(TestData { a: 1, b: 2 });
 
@@ -298,7 +360,7 @@ mod tests {
 
     #[test]
     fn new_write_makes_data_available_again() {
-        let (mut writer, mut reader) = new::<TestData>();
+        let (mut writer, mut reader) = slot::<TestData>();
 
         writer.write(TestData { a: 1, b: 0 });
         assert!(reader.read().is_some());
@@ -311,7 +373,7 @@ mod tests {
 
     #[test]
     fn multiple_writes_before_read_conflates() {
-        let (mut writer, mut reader) = new::<TestData>();
+        let (mut writer, mut reader) = slot::<TestData>();
 
         writer.write(TestData { a: 1, b: 0 });
         writer.write(TestData { a: 2, b: 0 });
@@ -324,7 +386,7 @@ mod tests {
 
     #[test]
     fn has_update_does_not_consume() {
-        let (mut writer, mut reader) = new::<TestData>();
+        let (mut writer, mut reader) = slot::<TestData>();
 
         assert!(!reader.has_update());
 
@@ -345,7 +407,7 @@ mod tests {
 
     #[test]
     fn writer_detects_disconnect() {
-        let (writer, reader) = new::<TestData>();
+        let (writer, reader) = slot::<TestData>();
         assert!(!writer.is_disconnected());
         drop(reader);
         assert!(writer.is_disconnected());
@@ -353,7 +415,7 @@ mod tests {
 
     #[test]
     fn reader_detects_disconnect() {
-        let (writer, reader) = new::<TestData>();
+        let (writer, reader) = slot::<TestData>();
         assert!(!reader.is_disconnected());
         drop(writer);
         assert!(reader.is_disconnected());
@@ -361,7 +423,7 @@ mod tests {
 
     #[test]
     fn can_read_after_writer_disconnect() {
-        let (mut writer, mut reader) = new::<TestData>();
+        let (mut writer, mut reader) = slot::<TestData>();
 
         writer.write(TestData { a: 42, b: 0 });
         drop(writer);
@@ -378,7 +440,7 @@ mod tests {
     fn cross_thread_write_read() {
         use std::thread;
 
-        let (mut writer, mut reader) = new::<TestData>();
+        let (mut writer, mut reader) = slot::<TestData>();
 
         let handle = thread::spawn(move || {
             while reader.read().is_none() {
@@ -394,7 +456,7 @@ mod tests {
     fn cross_thread_conflation() {
         use std::thread;
 
-        let (mut writer, mut reader) = new::<u64>();
+        let (mut writer, mut reader) = slot::<u64>();
 
         let handle = thread::spawn(move || {
             let mut last = 0;
@@ -436,7 +498,7 @@ mod tests {
         }
         unsafe impl Pod for Checkable {}
 
-        let (mut writer, mut reader) = new::<Checkable>();
+        let (mut writer, mut reader) = slot::<Checkable>();
 
         let handle = thread::spawn(move || {
             loop {
@@ -472,7 +534,7 @@ mod tests {
         }
         unsafe impl Pod for Large {}
 
-        let (mut writer, mut reader) = new::<Large>();
+        let (mut writer, mut reader) = slot::<Large>();
 
         let handle = thread::spawn(move || {
             loop {
@@ -504,7 +566,7 @@ mod tests {
 
     #[test]
     fn stress_writes_then_single_read() {
-        let (mut writer, mut reader) = new::<u64>();
+        let (mut writer, mut reader) = slot::<u64>();
 
         for i in 0..1_000_000 {
             writer.write(i);
@@ -518,8 +580,8 @@ mod tests {
     fn ping_pong() {
         use std::thread;
 
-        let (mut w1, mut r1) = new::<u64>();
-        let (mut w2, mut r2) = new::<u64>();
+        let (mut w1, mut r1) = slot::<u64>();
+        let (mut w2, mut r2) = slot::<u64>();
 
         let handle = thread::spawn(move || {
             for i in 0..10_000u64 {
