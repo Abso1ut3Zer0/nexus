@@ -12,8 +12,6 @@ Benchmarked against [`rtrb`](https://crates.io/crates/rtrb) and [`crossbeam`](ht
 | **p99 latency** | 681 cycles (253 ns) | 894 cycles (332 ns) | 1598 cycles (593 ns) |
 | **Throughput** | 117 M msgs/sec | 50 M msgs/sec | 32 M msgs/sec |
 
-**~25% lower latency and ~2.3x higher throughput than rtrb.**
-
 ## Usage
 
 ```rust
