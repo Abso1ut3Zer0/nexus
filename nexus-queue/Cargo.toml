@@ -21,10 +21,6 @@ rtrb = "0.3.2"
 workspace = true
 
 [[bench]]
-name = "mpsc"
-harness = false
-
-[[bench]]
 name = "perf_spsc_bounded"
 harness = false
 
@@ -42,5 +38,13 @@ harness = false
 
 [[bench]]
 name = "perf_spsc_overwriting_latency"
+harness = false
+
+[[bench]]
+name = "perf_crossbeam"
+harness = false
+
+[[bench]]
+name = "perf_crossbeam_latency"
 harness = false
 

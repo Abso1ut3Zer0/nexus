@@ -1,9 +1,9 @@
-//! Isolated benchmark for nexus_raw SPSC - for perf profiling
+//! Isolated benchmark for crossbeam ArrayQueue - for perf profiling
 //!
-//! Run: cargo build --release --bench perf_raw
-//! Profile: sudo perf stat -e cycles,instructions,cache-misses,L1-dcache-load-misses ./target/release/deps/perf_raw-*
+//! Run: cargo build --release --bench perf_crossbeam
+//! Profile: sudo perf stat -e cycles,instructions,cache-misses,L1-dcache-load-misses ./target/release/deps/perf_crossbeam-*
 
-use std::thread;
+use std::{sync::Arc, thread};
 
 const COUNT: u64 = 10_000_000;
 const CAPACITY: usize = 1024;
@@ -28,10 +28,11 @@ impl Message {
 }
 
 fn main() {
-    use nexus_queue;
+    use crossbeam_queue::ArrayQueue;
 
-    let (mut producer, mut consumer) = nexus_queue::ring_buffer::<Message>(CAPACITY);
+    let queue = Arc::new(ArrayQueue::new(CAPACITY));
 
+    let producer = queue.clone();
     let producer_handle = thread::spawn(move || {
         for i in 0..COUNT {
             while producer.push(Message::new(i)).is_err() {
@@ -40,6 +41,7 @@ fn main() {
         }
     });
 
+    let consumer = queue.clone();
     let consumer_handle = thread::spawn(move || {
         let mut received = 0u64;
         let mut sum = 0u64;

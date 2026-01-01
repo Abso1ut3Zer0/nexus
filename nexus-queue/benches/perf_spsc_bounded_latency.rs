@@ -7,15 +7,15 @@
 
 use std::thread;
 
-use nexus_queue::spsc;
+use nexus_queue;
 
 const WARMUP: u64 = 10_000;
 const SAMPLES: u64 = 100_000;
 const CAPACITY: usize = 64;
 
 fn main() {
-    let (mut prod_fwd, mut cons_fwd) = spsc::ring_buffer::<u64>(CAPACITY);
-    let (mut prod_ret, mut cons_ret) = spsc::ring_buffer::<u64>(CAPACITY);
+    let (mut prod_fwd, mut cons_fwd) = nexus_queue::ring_buffer::<u64>(CAPACITY);
+    let (mut prod_ret, mut cons_ret) = nexus_queue::ring_buffer::<u64>(CAPACITY);
 
     let total = WARMUP + SAMPLES;
 

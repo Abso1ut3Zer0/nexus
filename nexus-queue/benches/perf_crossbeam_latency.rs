@@ -1,47 +1,56 @@
-//! Ping-pong latency benchmark for overwriting SPSC ring buffer.
+//! Ping-pong latency benchmark for crossbeam ArrayQueue (MPMC)
 //!
-//! Measures round-trip latency with exactly one message in flight.
+//! NOTE: crossbeam ArrayQueue is MPMC, so it has overhead for handling
+//! multiple producers/consumers that SPSC queues avoid.
 //!
-//! Run: cargo build --release --bench perf_spsc_overwriting_latency
-//! Profile: sudo taskset -c 0,2 ./target/release/deps/perf_spsc_overwriting_latency-*
+//! Run: cargo build --release --bench perf_crossbeam_latency
+//! Profile: sudo taskset -c 0,2 ./target/release/deps/perf_crossbeam_latency-*
 
-use std::thread;
+use std::{sync::Arc, thread};
 
-use nexus_queue;
+use crossbeam_queue::ArrayQueue;
 
 const WARMUP: u64 = 10_000;
 const SAMPLES: u64 = 100_000;
 const CAPACITY: usize = 64;
 
 fn main() {
-    let (mut prod_fwd, mut cons_fwd) = nexus_queue::ring_buffer::<u64>(CAPACITY);
-    let (mut prod_ret, mut cons_ret) = nexus_queue::ring_buffer::<u64>(CAPACITY);
+    // Forward channel: main -> worker
+    let fwd = Arc::new(ArrayQueue::new(CAPACITY));
+    // Return channel: worker -> main
+    let ret = Arc::new(ArrayQueue::new(CAPACITY));
 
     let total = WARMUP + SAMPLES;
 
-    // Consumer thread: receive and echo back
-    let consumer = thread::spawn(move || {
+    // Worker thread: receive and echo back
+    let worker_fwd = fwd.clone();
+    let worker_ret = ret.clone();
+    let worker = thread::spawn(move || {
         for _ in 0..total {
             let val = loop {
-                if let Some(v) = cons_fwd.pop() {
+                if let Some(v) = worker_fwd.pop() {
                     break v;
                 }
                 std::hint::spin_loop();
             };
-            let _ = prod_ret.push(val);
+            while worker_ret.push(val).is_err() {
+                std::hint::spin_loop();
+            }
         }
     });
 
     let mut samples = Vec::with_capacity(SAMPLES as usize);
 
-    // Producer: send, wait for echo, measure RTT
+    // Main: send, wait for echo, measure RTT
     for i in 0..total {
         let start = rdtsc();
 
-        let _ = prod_fwd.push(i);
+        while fwd.push(i).is_err() {
+            std::hint::spin_loop();
+        }
 
         loop {
-            if cons_ret.pop().is_some() {
+            if ret.pop().is_some() {
                 break;
             }
             std::hint::spin_loop();
@@ -54,7 +63,7 @@ fn main() {
         }
     }
 
-    consumer.join().unwrap();
+    worker.join().unwrap();
 
     // Statistics
     samples.sort_unstable();
@@ -65,7 +74,7 @@ fn main() {
     let max = *samples.last().unwrap();
 
     println!(
-        "overwriting latency (cycles): min={} p50={} p99={} p99.9={} max={}",
+        "crossbeam latency (cycles): min={} p50={} p99={} p99.9={} max={}",
         min, p50, p99, p999, max
     );
 }
