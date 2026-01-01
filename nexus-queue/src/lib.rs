@@ -117,33 +117,19 @@
 //! testing, it's actually slower for latency-sensitive workloads because the
 //! cache is always stale in ping-pong scenarios.
 //!
-//! # API Design
-//!
-//! This module provides a unified queue with two push modes:
-//!
-//! - [`push`](Producer::push) - Returns error if full (bounded behavior)
-//! - [`force_push`](Producer::force_push) - Overwrites oldest value if full
-//!
-//! This eliminates the need for separate "bounded" and "overwriting" queue types.
-//! The consumer automatically handles both modes, catching up if lapped.
-//!
 //! # Example
 //!
 //! ```
-//! use nexus_queue::spsc;
+//! use nexus_queue;
 //!
-//! let (mut producer, mut consumer) = spsc::ring_buffer::<u64>(1024);
+//! let (mut producer, mut consumer) = nexus_queue::ring_buffer::<u64>(1024);
 //!
 //! // Bounded push - returns error if full
 //! producer.push(1).unwrap();
 //! producer.push(2).unwrap();
 //!
-//! // Force push - overwrites oldest if full (useful for real-time data)
-//! producer.force_push(3);
-//!
 //! assert_eq!(consumer.pop(), Some(1));
 //! assert_eq!(consumer.pop(), Some(2));
-//! assert_eq!(consumer.pop(), Some(3));
 //! ```
 //!
 //! # Benchmarking Methodology
@@ -218,13 +204,10 @@ pub fn ring_buffer<T>(capacity: usize) -> (Producer<T>, Consumer<T>) {
     let buffer = slots.as_mut_ptr();
 
     let inner = Arc::new(Inner {
-        tail: AtomicUsize::new(0),
         buffer,
         capacity,
         mask,
     });
-
-    let tail_atomic = &inner.tail as *const AtomicUsize;
 
     (
         Producer {
@@ -232,7 +215,6 @@ pub fn ring_buffer<T>(capacity: usize) -> (Producer<T>, Consumer<T>) {
             buffer,
             mask,
             shift,
-            tail_atomic,
             inner: Arc::clone(&inner),
         },
         Consumer {
@@ -240,7 +222,6 @@ pub fn ring_buffer<T>(capacity: usize) -> (Producer<T>, Consumer<T>) {
             buffer,
             mask,
             shift,
-            tail_atomic,
             inner,
         },
     )
@@ -260,8 +241,6 @@ struct Slot<T> {
 /// Shared state between producer and consumer.
 #[repr(C)]
 struct Inner<T> {
-    /// Producer's write position - used by consumer to catch up when lapped.
-    tail: AtomicUsize,
     buffer: *mut Slot<T>,
     capacity: usize,
     mask: usize,
@@ -290,10 +269,6 @@ impl<T> Drop for Inner<T> {
 
 /// The producer half of an SPSC ring buffer.
 ///
-/// Provides two push methods:
-/// - [`push`](Producer::push) - Bounded, returns error if full
-/// - [`force_push`](Producer::force_push) - Overwrites oldest if full
-///
 /// Takes `&mut self` to statically ensure single-producer access.
 #[repr(C)]
 pub struct Producer<T> {
@@ -302,7 +277,6 @@ pub struct Producer<T> {
     buffer: *mut Slot<T>,
     mask: usize,
     shift: usize,
-    tail_atomic: *const AtomicUsize,
 
     // === Cold path fields ===
     inner: Arc<Inner<T>>,
@@ -318,9 +292,9 @@ impl<T> Producer<T> {
     /// # Example
     ///
     /// ```
-    /// use nexus_queue::spsc;
+    /// use nexus_queue;
     ///
-    /// let (mut producer, mut consumer) = spsc::ring_buffer::<u32>(2);
+    /// let (mut producer, mut consumer) = nexus_queue::ring_buffer::<u32>(2);
     ///
     /// assert!(producer.push(1).is_ok());
     /// assert!(producer.push(2).is_ok());
@@ -347,62 +321,9 @@ impl<T> Producer<T> {
         let lap = (tail >> self.shift) + 1;
         fence(Ordering::Release);
         slot.lap.store(lap, Ordering::Relaxed);
-
-        // Update tail (for consumer catch-up)
-        let next_tail = tail.wrapping_add(1);
-        unsafe { (*self.tail_atomic).store(next_tail, Ordering::Relaxed) };
-
-        self.local_tail = next_tail;
+        self.local_tail = tail.wrapping_add(1);
 
         Ok(())
-    }
-
-    /// Pushes a value, overwriting the oldest unread value if full.
-    ///
-    /// Returns `None` if the slot was empty, or `Some(old_value)` if
-    /// an unread value was overwritten (indicates consumer is falling behind).
-    ///
-    /// # Example
-    ///
-    /// ```
-    /// use nexus_queue::spsc;
-    ///
-    /// let (mut producer, mut consumer) = spsc::ring_buffer::<u32>(2);
-    ///
-    /// assert!(producer.force_push(1).is_none()); // Slot was empty
-    /// assert!(producer.force_push(2).is_none()); // Slot was empty
-    /// assert_eq!(producer.force_push(3), Some(1)); // Overwrote value 1
-    /// ```
-    #[inline]
-    pub fn force_push(&mut self, value: T) -> Option<T> {
-        let tail = self.local_tail;
-        let slot = unsafe { &*self.buffer.add(tail & self.mask) };
-
-        // Check for unconsumed data (lap > 0 means data present)
-        let old_lap = slot.lap.load(Ordering::Relaxed);
-        fence(Ordering::Acquire);
-
-        let old_value = if old_lap > 0 {
-            Some(unsafe { (*slot.data.get()).assume_init_read() })
-        } else {
-            None
-        };
-
-        // Write new value
-        unsafe { (*slot.data.get()).write(value) };
-
-        // Publish with new lap
-        let lap = (tail >> self.shift) + 1;
-        fence(Ordering::Release);
-        slot.lap.store(lap, Ordering::Relaxed);
-
-        // Update tail (for consumer catch-up)
-        let next_tail = tail.wrapping_add(1);
-        unsafe { (*self.tail_atomic).store(next_tail, Ordering::Relaxed) };
-
-        self.local_tail = next_tail;
-
-        old_value
     }
 
     /// Returns the capacity of the ring buffer.
@@ -439,7 +360,6 @@ pub struct Consumer<T> {
     shift: usize,
 
     // === Cold path fields ===
-    tail_atomic: *const AtomicUsize,
     inner: Arc<Inner<T>>,
 }
 
@@ -449,16 +369,14 @@ impl<T> Consumer<T> {
     /// Attempts to pop a value from the ring buffer.
     ///
     /// Returns `Some(value)` if data is available, `None` if the buffer is empty.
-    /// Values are returned in FIFO order. If the consumer was lapped (only possible
-    /// when producer uses `force_push`), it automatically catches up to the oldest
-    /// valid position.
+    /// Values are returned in FIFO order.
     ///
     /// # Example
     ///
     /// ```
-    /// use nexus_queue::spsc;
+    /// use nexus_queue;
     ///
-    /// let (mut producer, mut consumer) = spsc::ring_buffer::<u32>(8);
+    /// let (mut producer, mut consumer) = nexus_queue::ring_buffer::<u32>(8);
     ///
     /// assert_eq!(consumer.pop(), None); // Empty
     ///
@@ -474,33 +392,12 @@ impl<T> Consumer<T> {
         let slot_lap = slot.lap.load(Ordering::Relaxed);
         fence(Ordering::Acquire);
 
-        if slot_lap == 0 {
-            // Slot is empty/consumed
+        if slot_lap != expected_lap {
             return None;
         }
 
-        if slot_lap < expected_lap {
-            // Slot hasn't been written for this lap yet (shouldn't happen in normal operation)
-            return None;
-        }
-
-        if slot_lap > expected_lap {
-            // We've been lapped - catch up to oldest valid position
-            let tail = unsafe { (*self.tail_atomic).load(Ordering::Relaxed) };
-            fence(Ordering::Acquire);
-
-            // Oldest valid position is tail - capacity
-            let oldest_valid = tail.saturating_sub(self.capacity());
-            self.local_head = oldest_valid;
-
-            // Retry from new position
-            return self.pop();
-        }
-
-        // Normal case: slot_lap == expected_lap
         let value = unsafe { (*slot.data.get()).assume_init_read() };
 
-        // Mark consumed
         fence(Ordering::Release);
         slot.lap.store(0, Ordering::Relaxed);
 
@@ -519,14 +416,6 @@ impl<T> Consumer<T> {
     #[inline]
     pub fn is_disconnected(&self) -> bool {
         Arc::strong_count(&self.inner) == 1
-    }
-
-    /// Returns an estimated length of the buffer.
-    /// This is estimated due to the atomics.
-    #[inline]
-    pub fn len(&self) -> usize {
-        let tail = unsafe { (*self.tail_atomic).load(Ordering::Relaxed) };
-        tail.wrapping_sub(self.local_head)
     }
 }
 
@@ -615,130 +504,6 @@ mod tests {
         let err = prod.push(5).unwrap_err();
         assert_eq!(err.into_inner(), 5);
     }
-
-    // ============================================================================
-    // Force Push (Overwriting) Behavior
-    // ============================================================================
-
-    #[test]
-    fn force_push_returns_old_value() {
-        let (mut prod, _cons) = ring_buffer::<u64>(4);
-
-        assert_eq!(prod.force_push(1), None);
-        assert_eq!(prod.force_push(2), None);
-        assert_eq!(prod.force_push(3), None);
-        assert_eq!(prod.force_push(4), None);
-
-        // Now full - overwrites begin
-        assert_eq!(prod.force_push(5), Some(1));
-        assert_eq!(prod.force_push(6), Some(2));
-        assert_eq!(prod.force_push(7), Some(3));
-        assert_eq!(prod.force_push(8), Some(4));
-    }
-
-    #[test]
-    fn consumed_slot_returns_none_on_force_push() {
-        let (mut prod, mut cons) = ring_buffer::<u64>(4);
-
-        prod.force_push(1);
-        prod.force_push(2);
-        prod.force_push(3);
-        prod.force_push(4);
-
-        // Consume one
-        assert_eq!(cons.pop(), Some(1));
-
-        // Force push to consumed slot - should return None
-        assert_eq!(prod.force_push(5), None);
-
-        // Force push to unconsumed slot - should return old value
-        assert_eq!(prod.force_push(6), Some(2));
-    }
-
-    #[test]
-    fn consumer_catches_up_fifo() {
-        let (mut prod, mut cons) = ring_buffer::<u64>(4);
-
-        // Fill buffer
-        for i in 1..=4 {
-            prod.force_push(i);
-        }
-
-        // Overwrite slot 0
-        assert_eq!(prod.force_push(5), Some(1));
-
-        // Consumer should catch up and read in FIFO order
-        assert_eq!(cons.pop(), Some(2));
-        assert_eq!(cons.pop(), Some(3));
-        assert_eq!(cons.pop(), Some(4));
-        assert_eq!(cons.pop(), Some(5));
-        assert_eq!(cons.pop(), None);
-    }
-
-    // ============================================================================
-    // Mixed Push Modes
-    // ============================================================================
-
-    #[test]
-    fn mixed_push_and_force_push() {
-        let (mut prod, mut cons) = ring_buffer::<u64>(4);
-
-        // Use regular push until full
-        assert!(prod.push(1).is_ok());
-        assert!(prod.push(2).is_ok());
-        assert!(prod.push(3).is_ok());
-        assert!(prod.push(4).is_ok());
-        assert!(prod.push(5).is_err());
-
-        // Switch to force_push
-        assert_eq!(prod.force_push(5), Some(1));
-
-        // Consumer reads in order
-        assert_eq!(cons.pop(), Some(2));
-        assert_eq!(cons.pop(), Some(3));
-        assert_eq!(cons.pop(), Some(4));
-        assert_eq!(cons.pop(), Some(5));
-    }
-
-    // ============================================================================
-    // Multiple Laps
-    // ============================================================================
-
-    #[test]
-    fn full_lap_overwrite() {
-        let (mut prod, mut cons) = ring_buffer::<u64>(4);
-
-        // Write 2 full laps (8 values)
-        for i in 0..8 {
-            prod.force_push(i);
-        }
-
-        // Buffer now contains values 4,5,6,7
-        assert_eq!(cons.pop(), Some(4));
-        assert_eq!(cons.pop(), Some(5));
-        assert_eq!(cons.pop(), Some(6));
-        assert_eq!(cons.pop(), Some(7));
-        assert_eq!(cons.pop(), None);
-    }
-
-    #[test]
-    fn many_laps() {
-        let (mut prod, mut cons) = ring_buffer::<u64>(4);
-
-        // Write 5 laps worth (20 values)
-        for i in 0..20 {
-            prod.force_push(i);
-        }
-
-        // Buffer contains values 16,17,18,19
-        let mut values = Vec::new();
-        while let Some(v) = cons.pop() {
-            values.push(v);
-        }
-
-        assert_eq!(values, vec![16, 17, 18, 19]);
-    }
-
     // ============================================================================
     // Interleaved Operations
     // ============================================================================
@@ -781,18 +546,6 @@ mod tests {
 
         assert_eq!(cons.pop(), Some(1));
         assert!(prod.push(2).is_ok());
-    }
-
-    #[test]
-    fn single_slot_overwriting() {
-        let (mut prod, mut cons) = ring_buffer::<u64>(1);
-
-        assert_eq!(prod.force_push(1), None);
-        assert_eq!(prod.force_push(2), Some(1));
-        assert_eq!(prod.force_push(3), Some(2));
-
-        assert_eq!(cons.pop(), Some(3));
-        assert_eq!(cons.pop(), None);
     }
 
     // ============================================================================
@@ -850,33 +603,6 @@ mod tests {
         assert_eq!(DROP_COUNT.load(Ordering::SeqCst), 3);
     }
 
-    #[test]
-    fn force_push_drops_old_via_return() {
-        use std::sync::atomic::AtomicUsize;
-
-        static DROP_COUNT: AtomicUsize = AtomicUsize::new(0);
-
-        struct DropCounter;
-        impl Drop for DropCounter {
-            fn drop(&mut self) {
-                DROP_COUNT.fetch_add(1, Ordering::SeqCst);
-            }
-        }
-
-        DROP_COUNT.store(0, Ordering::SeqCst);
-
-        let (mut prod, _cons) = ring_buffer::<DropCounter>(4);
-
-        for _ in 0..4 {
-            prod.force_push(DropCounter);
-        }
-        assert_eq!(DROP_COUNT.load(Ordering::SeqCst), 0);
-
-        let old = prod.force_push(DropCounter);
-        drop(old);
-        assert_eq!(DROP_COUNT.load(Ordering::SeqCst), 1);
-    }
-
     // ============================================================================
     // Cross-Thread
     // ============================================================================
@@ -912,81 +638,6 @@ mod tests {
         assert_eq!(received, 10_000);
     }
 
-    #[test]
-    fn cross_thread_overwriting() {
-        use std::thread;
-
-        let (mut prod, mut cons) = ring_buffer::<u64>(64);
-
-        let producer = thread::spawn(move || {
-            for i in 0..10_000 {
-                prod.force_push(i);
-            }
-        });
-
-        let consumer = thread::spawn(move || {
-            let mut received = 0;
-            loop {
-                match cons.pop() {
-                    Some(_) => received += 1,
-                    None => {
-                        if cons.is_disconnected() {
-                            break;
-                        }
-                        std::hint::spin_loop();
-                    }
-                }
-            }
-            received
-        });
-
-        producer.join().unwrap();
-        let received = consumer.join().unwrap();
-        assert!(received > 0);
-    }
-
-    #[test]
-    fn cross_thread_fifo_preserved() {
-        use std::thread;
-
-        let (mut prod, mut cons) = ring_buffer::<u64>(64);
-
-        let producer = thread::spawn(move || {
-            for i in 0..1000 {
-                prod.force_push(i);
-            }
-        });
-
-        let consumer = thread::spawn(move || {
-            let mut last_seen: Option<u64> = None;
-            let mut out_of_order = 0;
-
-            loop {
-                match cons.pop() {
-                    Some(v) => {
-                        if let Some(last) = last_seen {
-                            if v <= last {
-                                out_of_order += 1;
-                            }
-                        }
-                        last_seen = Some(v);
-                    }
-                    None => {
-                        if cons.is_disconnected() {
-                            break;
-                        }
-                        std::hint::spin_loop();
-                    }
-                }
-            }
-            out_of_order
-        });
-
-        producer.join().unwrap();
-        let out_of_order = consumer.join().unwrap();
-        assert_eq!(out_of_order, 0, "FIFO order was violated");
-    }
-
     // ============================================================================
     // Special Types
     // ============================================================================
@@ -1014,28 +665,72 @@ mod tests {
         assert_eq!(cons.pop(), Some("world".to_string()));
     }
 
-    // ============================================================================
-    // Stress Tests
-    // ============================================================================
-
     #[test]
-    fn stress_many_overwrites() {
-        let (mut prod, mut cons) = ring_buffer::<u64>(16);
-
-        for i in 0..100_000 {
-            prod.force_push(i);
-        }
-
-        let mut count = 0;
-        while cons.pop().is_some() {
-            count += 1;
-        }
-
-        assert_eq!(count, 16);
+    #[should_panic(expected = "capacity must be non-zero")]
+    fn zero_capacity_panics() {
+        let _ = ring_buffer::<u64>(0);
     }
 
     #[test]
-    fn stress_cross_thread_high_volume() {
+    fn large_message_type() {
+        #[repr(C, align(64))]
+        struct LargeMessage {
+            data: [u8; 256],
+        }
+
+        let (mut prod, mut cons) = ring_buffer::<LargeMessage>(8);
+
+        let msg = LargeMessage { data: [42u8; 256] };
+        assert!(prod.push(msg).is_ok());
+
+        let received = cons.pop().unwrap();
+        assert_eq!(received.data[0], 42);
+        assert_eq!(received.data[255], 42);
+    }
+
+    #[test]
+    fn multiple_laps() {
+        let (mut prod, mut cons) = ring_buffer::<u64>(4);
+
+        // 10 full laps through 4-slot buffer
+        for i in 0..40 {
+            assert!(prod.push(i).is_ok());
+            assert_eq!(cons.pop(), Some(i));
+        }
+    }
+
+    #[test]
+    fn fifo_order_cross_thread() {
+        use std::thread;
+
+        let (mut prod, mut cons) = ring_buffer::<u64>(64);
+
+        let producer = thread::spawn(move || {
+            for i in 0..10_000u64 {
+                while prod.push(i).is_err() {
+                    std::hint::spin_loop();
+                }
+            }
+        });
+
+        let consumer = thread::spawn(move || {
+            let mut expected = 0u64;
+            while expected < 10_000 {
+                if let Some(val) = cons.pop() {
+                    assert_eq!(val, expected, "FIFO order violated");
+                    expected += 1;
+                } else {
+                    std::hint::spin_loop();
+                }
+            }
+        });
+
+        producer.join().unwrap();
+        consumer.join().unwrap();
+    }
+
+    #[test]
+    fn stress_high_volume() {
         use std::thread;
 
         const COUNT: u64 = 1_000_000;
@@ -1044,30 +739,37 @@ mod tests {
 
         let producer = thread::spawn(move || {
             for i in 0..COUNT {
-                prod.force_push(i);
+                while prod.push(i).is_err() {
+                    std::hint::spin_loop();
+                }
             }
         });
 
         let consumer = thread::spawn(move || {
+            let mut sum = 0u64;
             let mut received = 0u64;
-            loop {
-                match cons.pop() {
-                    Some(_) => received += 1,
-                    None => {
-                        if cons.is_disconnected() {
-                            break;
-                        }
-                        std::hint::spin_loop();
-                    }
+            while received < COUNT {
+                if let Some(val) = cons.pop() {
+                    sum = sum.wrapping_add(val);
+                    received += 1;
+                } else {
+                    std::hint::spin_loop();
                 }
             }
-            received
+            sum
         });
 
         producer.join().unwrap();
-        let received = consumer.join().unwrap();
+        let sum = consumer.join().unwrap();
+        assert_eq!(sum, COUNT * (COUNT - 1) / 2);
+    }
 
-        assert!(received > 0);
-        assert!(received <= COUNT);
+    #[test]
+    fn capacity_rounds_to_power_of_two() {
+        let (prod, _) = ring_buffer::<u64>(100);
+        assert_eq!(prod.capacity(), 128);
+
+        let (prod, _) = ring_buffer::<u64>(1000);
+        assert_eq!(prod.capacity(), 1024);
     }
 }
