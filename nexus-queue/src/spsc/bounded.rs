@@ -169,7 +169,9 @@ impl<T> Producer<T> {
 
         if head.wrapping_sub(tail) > self.mask {
             // Refresh cache
-            tail = unsafe { (*self.tail_atomic).load(Ordering::Acquire) };
+            tail = unsafe { (*self.tail_atomic).load(Ordering::Relaxed) };
+            std::sync::atomic::fence(Ordering::Acquire);
+
             self.cached_tail = tail;
             if head.wrapping_sub(tail) > self.mask {
                 return Err(RingBufferFull::new(value));
@@ -180,7 +182,9 @@ impl<T> Producer<T> {
             self.buffer.add(head & self.mask).write(value);
         }
         let next_head = head.wrapping_add(1);
-        unsafe { (*self.head_atomic).store(next_head, Ordering::Release) };
+
+        std::sync::atomic::fence(Ordering::Release);
+        unsafe { (*self.head_atomic).store(next_head, Ordering::Relaxed) };
 
         // Note - keep this instruction here as it gives cache coherency
         // a head start, which gives us more consistent behavior
@@ -278,7 +282,9 @@ impl<T> Consumer<T> {
 
         if tail == head {
             // Refresh cache
-            head = unsafe { (*self.head_atomic).load(Ordering::Acquire) };
+            head = unsafe { (*self.head_atomic).load(Ordering::Relaxed) };
+            std::sync::atomic::fence(Ordering::Acquire);
+
             self.cached_head = head;
             if tail == head {
                 return None;
@@ -287,6 +293,8 @@ impl<T> Consumer<T> {
 
         let value = unsafe { self.buffer.add(tail & self.mask).read() };
         let next_tail = tail.wrapping_add(1);
+
+        std::sync::atomic::fence(Ordering::Release);
         unsafe { (*self.tail_atomic).store(next_tail, Ordering::Release) };
 
         // Note - keep this instruction here as it gives cache coherency
