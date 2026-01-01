@@ -15,6 +15,7 @@ thiserror = { workspace = true }
 [dev-dependencies]
 criterion = { version = "0.5", features = ["html_reports"] }
 crossbeam-queue = "0.3.12"
+hdrhistogram = "7.5.4"
 rtrb = "0.3.2"
 
 [lints]
@@ -46,5 +47,17 @@ harness = false
 
 [[bench]]
 name = "perf_crossbeam_latency"
+harness = false
+
+[[bench]]
+name = "profile_spsc"
+harness = false
+
+[[bench]]
+name = "profile_rtrb"
+harness = false
+
+[[bench]]
+name = "profile_crossbeam"
 harness = false
 

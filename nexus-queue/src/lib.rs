@@ -327,6 +327,7 @@ impl<T> Producer<T> {
     /// assert!(producer.push(3).is_err()); // Full
     /// ```
     #[inline]
+    #[must_use = "push returns Err if full, which should be handled"]
     pub fn push(&mut self, value: T) -> Result<(), Full<T>> {
         let tail = self.local_tail;
         let slot = unsafe { &*self.buffer.add(tail & self.mask) };
@@ -518,6 +519,14 @@ impl<T> Consumer<T> {
     #[inline]
     pub fn is_disconnected(&self) -> bool {
         Arc::strong_count(&self.inner) == 1
+    }
+
+    /// Returns an estimated length of the buffer.
+    /// This is estimated due to the atomics.
+    #[inline]
+    pub fn len(&self) -> usize {
+        let tail = unsafe { (*self.tail_atomic).load(Ordering::Relaxed) };
+        tail.wrapping_sub(self.local_head)
     }
 }
 
