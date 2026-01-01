@@ -2,7 +2,7 @@
 resolver = "2"
 members = [
 	"nexus-channel",
-    "nexus-queue",
+    "nexus-queue", "nexus-slab",
 	"nexus-slot",
 ]
 

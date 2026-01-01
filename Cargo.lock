@@ -361,6 +361,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "nexus-slab"
+version = "0.2.1"
+dependencies = [
+ "libc",
+ "windows-sys",
+]
+
+[[package]]
 name = "nexus-slot"
 version = "0.2.1"
 dependencies = [
