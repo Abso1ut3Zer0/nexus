@@ -1,6 +1,6 @@
 //! OwnedList - a doubly-linked list that owns its storage.
 
-use crate::{BoxedStorage, Full, Index, Linked, List, Storage};
+use crate::{BoxedStorage, Full, Index, Iter, IterMut, Linked, List, Storage, linked::Indices};
 
 /// A doubly-linked list that owns its storage.
 ///
@@ -241,83 +241,35 @@ impl<T: Linked<Idx>, Idx: Index> OwnedList<T, Idx> {
     }
 
     /// Clears the list, removing all elements.
+    ///
+    /// This drops all values and resets the list to empty state.
     pub fn clear(&mut self) {
-        let mut idx = self.list.head();
-        while idx.is_some() {
-            let next = self.storage.get(idx).unwrap().next();
-            self.storage.remove(idx);
-            idx = next;
-        }
-        self.list = List::new();
+        self.list.clear(&mut self.storage);
+        self.storage.clear();
     }
 
     /// Returns an iterator over references to elements, front to back.
     #[inline]
-    pub fn iter(&self) -> Iter<'_, T, Idx> {
-        Iter {
-            storage: &self.storage,
-            current: self.list.head(),
-        }
+    pub fn iter(&self) -> Iter<'_, T, Idx, BoxedStorage<T, Idx>> {
+        self.list.iter(&self.storage)
     }
 
     /// Returns an iterator over mutable references to elements, front to back.
     #[inline]
-    pub fn iter_mut(&mut self) -> IterMut<'_, T, Idx> {
-        let head = self.list.head();
-        IterMut {
-            storage: &mut self.storage,
-            current: head,
-        }
+    pub fn iter_mut(&mut self) -> IterMut<'_, T, Idx, BoxedStorage<T, Idx>> {
+        self.list.iter_mut(&mut self.storage)
+    }
+
+    /// Returns an iterator over indices, front to back.
+    #[inline]
+    pub fn indices(&self) -> Indices<'_, T, Idx, BoxedStorage<T, Idx>> {
+        self.list.indices(&self.storage)
     }
 }
 
 impl<T: Linked<Idx>, Idx: Index> Default for OwnedList<T, Idx> {
     fn default() -> Self {
         Self::with_capacity(16)
-    }
-}
-
-/// Iterator over references to list elements.
-pub struct Iter<'a, T, Idx: Index> {
-    storage: &'a BoxedStorage<T, Idx>,
-    current: Idx,
-}
-
-impl<'a, T: Linked<Idx>, Idx: Index> Iterator for Iter<'a, T, Idx> {
-    type Item = &'a T;
-
-    fn next(&mut self) -> Option<Self::Item> {
-        if self.current.is_none() {
-            return None;
-        }
-
-        let node = self.storage.get(self.current)?;
-        self.current = node.next();
-        Some(node)
-    }
-}
-
-/// Iterator over mutable references to list elements.
-pub struct IterMut<'a, T, Idx: Index> {
-    storage: &'a mut BoxedStorage<T, Idx>,
-    current: Idx,
-}
-
-impl<'a, T: Linked<Idx>, Idx: Index> Iterator for IterMut<'a, T, Idx> {
-    type Item = &'a mut T;
-
-    fn next(&mut self) -> Option<Self::Item> {
-        if self.current.is_none() {
-            return None;
-        }
-
-        // Safety: We only visit each node once, and we update current
-        // before returning the reference, so no aliasing occurs.
-        let node = &mut *self.storage.get_mut(self.current)?;
-        self.current = node.next();
-
-        // Extend lifetime - safe because we won't revisit this node
-        Some(unsafe { &mut *(node as *mut T) })
     }
 }
 

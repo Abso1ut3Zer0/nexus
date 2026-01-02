@@ -364,25 +364,25 @@ impl<Idx: Index> Heap<Idx> {
             return;
         }
 
-        let idx = self.heap[pos];
+        // Safety: pos is valid index into heap
+        let idx = *unsafe { self.heap.get_unchecked(pos) };
         let mut hole = pos;
 
-        // Safety: idx is valid
         while hole > 0 {
             let parent = (hole - 1) / 2;
-            let parent_idx = self.heap[parent];
+            // Safety: parent < hole <= len
+            let parent_idx = *unsafe { self.heap.get_unchecked(parent) };
 
-            if storage
-                .get(idx)
-                .unwrap()
-                .cmp(storage.get(parent_idx).unwrap())
-                .is_lt()
-            {
-                // Move parent down into hole
-                self.heap[hole] = parent_idx;
+            // Safety: both indices are valid in storage
+            if unsafe {
                 storage
-                    .get_mut(parent_idx)
-                    .unwrap()
+                    .get_unchecked(idx)
+                    .cmp(storage.get_unchecked(parent_idx))
+            }
+            .is_lt()
+            {
+                *unsafe { self.heap.get_unchecked_mut(hole) } = parent_idx;
+                unsafe { storage.get_unchecked_mut(parent_idx) }
                     .set_heap_idx(Idx::from_usize(hole));
                 hole = parent;
             } else {
@@ -390,13 +390,9 @@ impl<Idx: Index> Heap<Idx> {
             }
         }
 
-        // Place element in final position
         if hole != pos {
-            self.heap[hole] = idx;
-            storage
-                .get_mut(idx)
-                .unwrap()
-                .set_heap_idx(Idx::from_usize(hole));
+            *unsafe { self.heap.get_unchecked_mut(hole) } = idx;
+            unsafe { storage.get_unchecked_mut(idx) }.set_heap_idx(Idx::from_usize(hole));
         }
     }
 
@@ -411,58 +407,73 @@ impl<Idx: Index> Heap<Idx> {
             return;
         }
 
-        let idx = self.heap[pos];
+        // Safety: pos is valid index into heap
+        let idx = *unsafe { self.heap.get_unchecked(pos) };
         let mut hole = pos;
 
+        // Phase 1: Descend to leaf, always following smaller child
         loop {
             let left = 2 * hole + 1;
             if left >= len {
                 break;
             }
 
-            // Find smaller child
             let right = left + 1;
-            let smaller = if right < len
-                && storage
-                    .get(self.heap[right])
-                    .unwrap()
-                    .cmp(storage.get(self.heap[left]).unwrap())
-                    .is_lt()
-            {
-                right
+
+            // Safety: left < len
+            let left_idx = *unsafe { self.heap.get_unchecked(left) };
+
+            let smaller = if right < len {
+                let right_idx = *unsafe { self.heap.get_unchecked(right) };
+                // Safety: both indices valid in storage
+                if unsafe {
+                    storage
+                        .get_unchecked(right_idx)
+                        .cmp(storage.get_unchecked(left_idx))
+                }
+                .is_lt()
+                {
+                    right
+                } else {
+                    left
+                }
             } else {
                 left
             };
 
-            let smaller_idx = self.heap[smaller];
+            // Safety: smaller < len
+            let smaller_idx = *unsafe { self.heap.get_unchecked(smaller) };
+            *unsafe { self.heap.get_unchecked_mut(hole) } = smaller_idx;
+            unsafe { storage.get_unchecked_mut(smaller_idx) }.set_heap_idx(Idx::from_usize(hole));
+            hole = smaller;
+        }
 
-            // Compare with element being sifted
-            if storage
-                .get(smaller_idx)
-                .unwrap()
-                .cmp(storage.get(idx).unwrap())
-                .is_lt()
-            {
-                // Move smaller child up into hole
-                self.heap[hole] = smaller_idx;
+        // Phase 2: Sift up from leaf position
+        while hole > pos {
+            let parent = (hole - 1) / 2;
+            // Safety: parent < hole
+            let parent_idx = *unsafe { self.heap.get_unchecked(parent) };
+
+            // Safety: both indices valid in storage
+            if unsafe {
                 storage
-                    .get_mut(smaller_idx)
-                    .unwrap()
+                    .get_unchecked(idx)
+                    .cmp(storage.get_unchecked(parent_idx))
+            }
+            .is_lt()
+            {
+                *unsafe { self.heap.get_unchecked_mut(hole) } = parent_idx;
+                unsafe { storage.get_unchecked_mut(parent_idx) }
                     .set_heap_idx(Idx::from_usize(hole));
-                hole = smaller;
+                hole = parent;
             } else {
                 break;
             }
         }
 
         // Place element in final position
-        if hole != pos {
-            self.heap[hole] = idx;
-            storage
-                .get_mut(idx)
-                .unwrap()
-                .set_heap_idx(Idx::from_usize(hole));
-        }
+        *unsafe { self.heap.get_unchecked_mut(hole) } = idx;
+        unsafe { storage.get_unchecked_mut(idx) }.set_heap_idx(Idx::from_usize(hole));
     }
 }
 

@@ -143,7 +143,7 @@ impl<T, Idx: Index> BoxedStorage<T, Idx> {
         // Calculate layout
         // Layout: [entries][padding][bitmap][padding][free_stack]
         let entries_layout = Layout::array::<MaybeUninit<T>>(capacity).unwrap();
-        let bitmap_words = (capacity + 63) / 64;
+        let bitmap_words = bitmap_words(capacity);
         let bitmap_layout = Layout::array::<u64>(bitmap_words).unwrap();
         let free_stack_layout = Layout::array::<Idx>(capacity).unwrap();
 
@@ -205,6 +205,46 @@ impl<T, Idx: Index> BoxedStorage<T, Idx> {
     #[inline]
     pub const fn is_full(&self) -> bool {
         self.free_len == 0
+    }
+
+    /// Removes all elements from storage.
+    ///
+    /// This drops all stored values and makes all slots available for reuse.
+    ///
+    /// # Warning
+    ///
+    /// If any data structures (List, Heap, etc.) still reference indices in
+    /// this storage, they will have dangling references. Only call this when
+    /// you know nothing else references the storage, or after clearing those
+    /// data structures first.
+    ///
+    /// For owned wrappers like [`OwnedList`] and [`OwnedHeap`], this is handled
+    /// automatically.
+    pub fn clear(&mut self) {
+        // Drop all occupied values
+        for i in 0..self.capacity {
+            if self.is_occupied(i) {
+                // Safety: slot is occupied
+                unsafe {
+                    let ptr = self.entries_ptr().add(i);
+                    std::ptr::drop_in_place((*ptr).as_mut_ptr());
+                }
+            }
+        }
+
+        // Reset bitmap to all zeros (all vacant)
+        unsafe {
+            std::ptr::write_bytes(self.bitmap_ptr(), 0, bitmap_words(self.capacity));
+        }
+
+        // Rebuild free stack
+        let free_stack = self.free_stack_ptr();
+        for i in 0..self.capacity {
+            unsafe {
+                *free_stack.add(i) = Idx::from_usize(i);
+            }
+        }
+        self.free_len = self.capacity;
     }
 
     #[inline]
@@ -423,6 +463,11 @@ impl<T> Storage<T> for nexus_slab::Slab<T> {
     unsafe fn get_unchecked_mut(&mut self, index: Self::Index) -> &mut T {
         unsafe { self.get_unchecked_mut(index) }
     }
+}
+
+#[inline]
+const fn bitmap_words(capacity: usize) -> usize {
+    (capacity + 63) / 64
 }
 
 #[cfg(test)]
