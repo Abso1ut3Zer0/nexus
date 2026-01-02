@@ -41,6 +41,7 @@ Each crate is small, focused, and honest about its constraints. No kitchen sinks
 | **nexus-pool** | Object pool with borrow/return semantics over nexus-slab. Acquire returns a guard, drop returns to pool. | Planned |
 | **nexus-id** | Snowflake-style ID generator with const generic bit layout. Lock-free, monotonic, embeds timestamp and worker ID. | Planned |
 | **nexus-ascii** | Fixed-capacity ASCII strings. Zero UTF-8 overhead for symbols, order IDs, and protocol fields that are always ASCII. | Planned |
+| **nexus-collections** | Index-linked data structures: list, skip list, heap. Base types take external storage (slab-backed, composable). `Owned*` variants for self-contained use. | Planned |
 
 ## Design Principles
 
