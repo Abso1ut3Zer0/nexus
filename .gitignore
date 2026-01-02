@@ -27,3 +27,4 @@ Cargo.lock
 /target
 
 *perf.*
+Cargo.lock
