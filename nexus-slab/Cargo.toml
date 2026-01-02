@@ -14,5 +14,51 @@ libc = "0.2.178"
 [target.'cfg(windows)'.dependencies]
 windows-sys = "0.61.2"
 
+[dev-dependencies]
+criterion = { version = "0.5", features = ["html_reports"] }
+hdrhistogram = "7.5.4"
+slab = "0.4.11"
+
 [lints]
 workspace = true
+
+[[example]]
+name = "perf_slab_compare"
+harness = false
+
+[[example]]
+name = "perf_insert_cycles"
+harness = false
+
+[[example]]
+name = "perf_get_cycles"
+harness = false
+
+[[example]]
+name = "perf_churn_cycles"
+harness = false
+
+[[example]]
+name = "perf_indexing_cycles"
+harness = false
+
+[[bin]]
+name = "perf_nexus_slab_churn"
+harness = false
+
+[[bin]]
+name = "perf_nexus_slab_get"
+harness = false
+
+[[bin]]
+name = "perf_nexus_slab_indexing"
+harness = false
+
+[[bin]]
+name = "perf_nexus_slab_insert"
+harness = false
+
+[[bench]]
+name = "slab_comparison"
+harness = false
+

@@ -364,7 +364,10 @@ dependencies = [
 name = "nexus-slab"
 version = "0.2.1"
 dependencies = [
+ "criterion",
+ "hdrhistogram",
  "libc",
+ "slab",
  "windows-sys",
 ]
 
@@ -620,6 +623,12 @@ name = "simd-adler32"
 version = "0.3.8"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e320a6c5ad31d271ad523dcf3ad13e2767ad8b1cb8f047f75a8aeaf8da139da2"
+
+[[package]]
+name = "slab"
+version = "0.4.11"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "7a2ae44ef20feb57a68b23d846850f861394c2e02dc425a50098ae8c90267589"
 
 [[package]]
 name = "smallvec"
