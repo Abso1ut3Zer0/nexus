@@ -26,7 +26,7 @@ This means:
 
 Know your access patterns. If `push` is called a million times for every `len` check, optimizing `len` at the expense of `push` is not a win.
 
-*Tune for the distribution*. We optimize for the lowest expected cost across realistic call patterns — not individual operations in isolation. Profile real workloads, weight by frequency, and optimize the aggregate.
+**Tune for the distribution**. We optimize for the lowest expected cost across realistic call patterns — not individual operations in isolation. Profile real workloads, weight by frequency, and optimize the aggregate.
 
 ### No Kitchen Sinks
 
