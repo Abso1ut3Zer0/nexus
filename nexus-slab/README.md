@@ -176,6 +176,10 @@ If you need ABA protection, track key validity externally or use a different dat
 - Collections that need to grow dynamically
 - Small slabs (< 1000 items) — overhead not justified
 
+## Acknowledgments
+
+Inspired by the [slab](https://github.com/tokio-rs/slab) crate's approach to pre-allocated storage with stable keys.
+
 ## License
 
 MIT OR Apache-2.0

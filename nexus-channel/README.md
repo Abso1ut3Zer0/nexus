@@ -245,6 +245,10 @@ Turbo boost changes CPU frequency dynamically, making cycle counts inconsistent.
 - Don't need blocking → use `nexus_queue` directly
 - Need async/await → `tokio::sync::mpsc`
 
+## Acknowledgments
+
+Built on `nexus-queue`. Parking strategy informed by patterns in [crossbeam-channel](https://github.com/crossbeam-rs/crossbeam/tree/master/crossbeam-channel).
+
 ## License
 
 MIT OR Apache-2.0

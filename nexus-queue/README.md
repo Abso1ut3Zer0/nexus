@@ -143,6 +143,10 @@ On x86 these compile to no instructions (strong memory model), but they're requi
 - Multiple consumers → use MPMC queues
 - You need async/await → use `tokio::sync::mpsc`
 
+## Acknowledgments
+
+Inspired by the design of [crossbeam](https://github.com/crossbeam-rs/crossbeam)'s `ArrayQueue` and its use of per-slot sequence counters.
+
 ## License
 
 MIT OR Apache-2.0
