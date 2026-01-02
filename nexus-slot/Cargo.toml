@@ -1,6 +1,6 @@
 [package]
 name = "nexus-slot"
-version = "0.1.0"
+version = "0.1.1"
 description = "High-performance SPSC conflation slot for latest-value-wins scenarios"
 readme = "README.md"
 edition.workspace = true

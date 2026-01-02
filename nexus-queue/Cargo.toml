@@ -1,6 +1,6 @@
 [package]
 name = "nexus-queue"
-version = "0.2.2"
+version = "0.2.3"
 description = "High-performance lock-free SPSC ring buffer for low-latency systems"
 readme = "README.md"
 edition.workspace = true
