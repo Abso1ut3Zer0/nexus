@@ -11,7 +11,7 @@ members = [
 edition = "2024"
 rust-version = "1.85"
 license = "MIT OR Apache-2.0"
-repository = "https://github.com/mhartington/nexus"  # Fix placeholder
+repository = "https://github.com/Abso1ut3Zer0/nexus"
 keywords = ["lock-free", "concurrent", "data-structures", "trading"]
 categories = ["concurrency", "data-structures"]
 
