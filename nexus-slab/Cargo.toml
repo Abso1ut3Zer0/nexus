@@ -1,6 +1,8 @@
 [package]
 name = "nexus-slab"
-version.workspace = true
+version = "0.1.0"
+description = "Pre-allocated slab with OS-level memory control (mlock, huge pages)"
+readme = "README.md"
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
@@ -9,15 +11,15 @@ keywords.workspace = true
 categories.workspace = true
 
 [target.'cfg(unix)'.dependencies]
-libc = "0.2.178"
+libc = "0.2"
 
 [target.'cfg(windows)'.dependencies]
-windows-sys = "0.61.2"
+windows-sys = { version = "0.61", features = ["Win32_System_Memory", "Win32_System_SystemInformation"] }
 
 [dev-dependencies]
 criterion = { version = "0.5", features = ["html_reports"] }
-hdrhistogram = "7.5.4"
-slab = "0.4.11"
+hdrhistogram = "7.5"
+slab = "0.4"
 
 [lints]
 workspace = true
@@ -46,23 +48,6 @@ harness = false
 name = "perf_mixed_cycles"
 harness = false
 
-[[bin]]
-name = "perf_nexus_slab_churn"
-harness = false
-
-[[bin]]
-name = "perf_nexus_slab_get"
-harness = false
-
-[[bin]]
-name = "perf_nexus_slab_indexing"
-harness = false
-
-[[bin]]
-name = "perf_nexus_slab_insert"
-harness = false
-
 [[bench]]
 name = "slab_comparison"
 harness = false
-

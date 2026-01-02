@@ -1,23 +1,22 @@
 [workspace]
 resolver = "2"
 members = [
-	"nexus-channel",
-    "nexus-queue", "nexus-slab",
-	"nexus-slot",
+    "nexus-channel",
+    "nexus-queue",
+    "nexus-slab",
+    "nexus-slot",
 ]
 
 [workspace.package]
-version = "0.2.1"
 edition = "2024"
 rust-version = "1.85"
 license = "MIT OR Apache-2.0"
-repository = "https://github.com/yourusername/nexus"
+repository = "https://github.com/mhartington/nexus"  # Fix placeholder
 keywords = ["lock-free", "concurrent", "data-structures", "trading"]
 categories = ["concurrency", "data-structures"]
 
 [workspace.dependencies]
 crossbeam-utils = "0.8.21"
-nexus-queue = { version = "0.2.1", path = "nexus-queue" }
 
 [workspace.lints.rust]
 unsafe_op_in_unsafe_fn = "warn"
