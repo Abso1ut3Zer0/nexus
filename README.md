@@ -66,6 +66,14 @@ These are foundational crates. Dependency trees are kept small and intentional.
 - **macOS** — Supported
 - **Windows** — Experimental where noted, typically behind feature flags
 
+## Contributing
+
+Please read [CONTRIBUTING.md](./CONTRIBUTING.md) before submitting changes.
+
+The short version: we build specialized primitives, not general-purpose ones. Different constraints mean different problems, and different problems deserve different solutions. If you're proposing a feature, be ready to justify why it belongs in a tuned, minimal implementation.
+
+We also have specific benchmarking standards — cycles not time, turbo boost disabled, cores pinned, jitter eliminated. Details in the contributing guide.
+
 ## License
 
 Licensed under either of [Apache License, Version 2.0](LICENSE-APACHE) or [MIT license](LICENSE-MIT) at your option.
