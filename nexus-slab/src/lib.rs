@@ -748,12 +748,14 @@ impl<T> Slab<T> {
     #[inline]
     pub fn get(&self, key: Key) -> Option<&T> {
         let index = key.0;
+        let slot_ptr = unsafe { self.slot_ptr(index) };
+
         if index >= self.capacity {
             return None;
         }
 
         // Safety: index is bounds-checked
-        let slot = unsafe { &*self.slot_ptr(index) };
+        let slot = unsafe { &*slot_ptr };
 
         match slot {
             Slot::Vacant { .. } => None,
@@ -767,12 +769,14 @@ impl<T> Slab<T> {
     #[inline]
     pub fn get_mut(&mut self, key: Key) -> Option<&mut T> {
         let index = key.0;
+        let slot_ptr = unsafe { self.slot_ptr(index) };
+
         if index >= self.capacity {
             return None;
         }
 
         // Safety: index is bounds-checked
-        let slot = unsafe { &mut *self.slot_ptr(index) };
+        let slot = unsafe { &mut *slot_ptr };
 
         match slot {
             Slot::Vacant { .. } => None,
@@ -840,11 +844,13 @@ impl<T> Slab<T> {
     #[inline]
     pub fn contains(&self, key: Key) -> bool {
         let index = key.0;
+        let slot_ptr = unsafe { self.slot_ptr(index) };
+
         if index >= self.capacity {
             return false;
         }
 
-        let slot = unsafe { &*self.slot_ptr(index) };
+        let slot = unsafe { &*slot_ptr };
         matches!(slot, Slot::Occupied { .. })
     }
 

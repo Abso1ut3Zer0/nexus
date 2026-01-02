@@ -42,6 +42,10 @@ harness = false
 name = "perf_indexing_cycles"
 harness = false
 
+[[example]]
+name = "perf_mixed_cycles"
+harness = false
+
 [[bin]]
 name = "perf_nexus_slab_churn"
 harness = false
