@@ -1,6 +1,6 @@
 [package]
 name = "nexus-channel"
-version = "0.2.2"
+version = "0.2.3"
 description = "High-performance lock-free SPSC channel for low-latency systems"
 readme = "README.md"
 edition.workspace = true
