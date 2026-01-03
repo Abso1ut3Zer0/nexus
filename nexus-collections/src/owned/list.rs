@@ -1,6 +1,6 @@
 //! OwnedList - a doubly-linked list that owns its storage.
 
-use crate::{BoxedStorage, Full, Index, Iter, IterMut, Linked, List, Storage, linked::Indices};
+use crate::{BoxedStorage, Full, Index, Iter, IterMut, List, Storage, list::Indices};
 
 /// A doubly-linked list that owns its storage.
 ///

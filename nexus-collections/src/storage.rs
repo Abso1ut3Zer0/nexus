@@ -60,6 +60,13 @@ pub trait Storage<T> {
     ///
     /// `index` must be valid and occupied.
     unsafe fn get_unchecked_mut(&mut self, index: Self::Index) -> &mut T;
+
+    /// Removes an element without bounds checking.
+    ///
+    /// # Safety
+    ///
+    /// The index must be valid and occupied.
+    unsafe fn remove_unchecked(&mut self, index: Self::Index) -> T;
 }
 
 /// Error returned when fixed-capacity storage is full.
@@ -362,6 +369,21 @@ impl<T, Idx: Index> Storage<T> for BoxedStorage<T, Idx> {
     unsafe fn get_unchecked_mut(&mut self, index: Self::Index) -> &mut T {
         unsafe { (*self.entries_ptr().add(index.as_usize())).assume_init_mut() }
     }
+
+    #[inline]
+    unsafe fn remove_unchecked(&mut self, index: Self::Index) -> T {
+        let i = index.as_usize();
+
+        self.set_vacant(i);
+        let value = unsafe { self.entries_ptr().add(i).read().assume_init() };
+
+        unsafe {
+            self.free_stack_ptr().add(self.free_len).write(index);
+        }
+        self.free_len += 1;
+
+        value
+    }
 }
 
 impl<T, Idx: Index> Drop for BoxedStorage<T, Idx> {
@@ -423,6 +445,12 @@ impl<T> Storage<T> for slab::Slab<T> {
     unsafe fn get_unchecked_mut(&mut self, index: Self::Index) -> &mut T {
         unsafe { self.get_mut(index).unwrap_unchecked() }
     }
+
+    #[inline]
+    unsafe fn remove_unchecked(&mut self, index: Self::Index) -> T {
+        // slab
+        self.remove(index)
+    }
 }
 
 // =============================================================================
@@ -462,6 +490,11 @@ impl<T> Storage<T> for nexus_slab::Slab<T> {
     #[inline]
     unsafe fn get_unchecked_mut(&mut self, index: Self::Index) -> &mut T {
         unsafe { self.get_unchecked_mut(index) }
+    }
+
+    #[inline]
+    unsafe fn remove_unchecked(&mut self, index: Self::Index) -> T {
+        unsafe { self.remove_unchecked(index) }
     }
 }
 

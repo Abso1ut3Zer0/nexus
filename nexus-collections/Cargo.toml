@@ -21,11 +21,11 @@ nexus-slab = ["dep:nexus-slab"]
 full = ["slab", "nexus-slab"]
 
 [dependencies.slab]
-version = "0.4"
+version = "0.4.11"
 optional = true
 
 [dependencies.nexus-slab]
-version = "0.1"
+version = "0.1.2"
 nexus-slab = { path = "../nexus-slab", version = "0.1.2" }
 optional = true
 
