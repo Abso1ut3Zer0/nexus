@@ -26,7 +26,6 @@ optional = true
 
 [dependencies.nexus-slab]
 version = "0.1.2"
-nexus-slab = { path = "../nexus-slab", version = "0.1.2" }
 optional = true
 
 [lints]
