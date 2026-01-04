@@ -58,7 +58,7 @@
 //! assert_eq!(heap.remove(&mut storage, a), Some(3));
 //! ```
 
-use std::marker::PhantomData;
+use std::{cmp::Ordering, marker::PhantomData};
 
 use crate::{BoundedStorage, BoxedStorage, Full, Key, Storage, UnboundedStorage};
 
@@ -303,6 +303,44 @@ where
             .get(storage_key)
             .map(|n| n.heap_pos.is_some())
             .unwrap_or(false)
+    }
+
+    /// Replaces the value at key with a new value, restoring heap property.
+    /// Returns the old value, or None if key invalid.
+    pub fn replace(&mut self, storage: &mut S, key: K, value: T) -> Option<T> {
+        let node = storage.get_mut(key)?;
+        let old = std::mem::replace(&mut node.data, value);
+        let cmp = node.data.cmp(&old);
+        let pos = node.heap_pos.as_usize();
+        // Compare to decide sift direction
+        match cmp {
+            Ordering::Less => self.sift_up(storage, pos),
+            Ordering::Greater => self.sift_down(storage, pos),
+            Ordering::Equal => {}
+        }
+        Some(old)
+    }
+
+    /// Mutates value in place (caller asserts it decreased), sifts up.
+    pub fn decrease_with<F>(&mut self, storage: &mut S, key: K, f: F)
+    where
+        F: FnOnce(&mut T),
+    {
+        let node = storage.get_mut(key).expect("invalid key");
+        let pos = node.heap_pos.as_usize();
+        f(&mut node.data);
+        self.sift_up(storage, pos);
+    }
+
+    /// Mutates value in place (caller asserts it increased), sifts down.
+    pub fn increase_with<F>(&mut self, storage: &mut S, key: K, f: F)
+    where
+        F: FnOnce(&mut T),
+    {
+        let node = storage.get_mut(key).expect("invalid key");
+        let pos = node.heap_pos.as_usize();
+        f(&mut node.data);
+        self.sift_down(storage, pos);
     }
 
     // ========================================================================

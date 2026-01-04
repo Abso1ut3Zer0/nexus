@@ -142,7 +142,6 @@ mod key;
 mod list;
 mod storage;
 
-// TODO: uncomment as modules are added
 mod heap;
 mod owned;
 
@@ -150,17 +149,15 @@ pub use key::Key;
 pub use list::{BoxedListStorage, Cursor, Drain, Iter, IterMut, Keys, List, ListNode};
 pub use storage::{BoundedStorage, BoxedStorage, Full, Keyed, Storage, UnboundedStorage};
 
-// TODO: uncomment as modules are added
 pub use heap::{BoxedHeapStorage, Heap};
-pub use owned::{OwnedList};
+pub use owned::{OwnedHeap, OwnedList};
 
-#[cfg(feature = "nexus-slab")]
-pub use list::NexusListStorage;
 #[cfg(feature = "nexus-slab")]
 pub use heap::NexusHeapStorage;
+#[cfg(feature = "nexus-slab")]
+pub use list::NexusListStorage;
 
-#[cfg(feature = "slab")]
-pub use list::SlabListStorage;
 #[cfg(feature = "slab")]
 pub use heap::SlabHeapStorage;
-
+#[cfg(feature = "slab")]
+pub use list::SlabListStorage;
