@@ -19,6 +19,9 @@ slab = ["dep:slab"]
 nexus-slab = ["dep:nexus-slab"]
 full = ["slab", "nexus-slab"]
 
+[dependencies]
+rand_core = "0.9.3"
+
 [dependencies.slab]
 version = "0.4.11"
 optional = true

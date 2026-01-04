@@ -1,0 +1,1133 @@
+//! Skip list - a probabilistic sorted map backed by external storage.
+//!
+//! A skip list provides O(log n) expected time for insert, lookup, and removal,
+//! with predictable latency (no rebalancing). This makes it well-suited for
+//! latency-sensitive applications like order book price levels.
+//!
+//! # Design
+//!
+//! Unlike [`List`] and [`Heap`], the skip list stores keys and values internally
+//! in its nodes rather than wrapping user data. The external storage owns
+//! [`SkipNode`]s which contain the key, value, and forward pointers.
+//!
+//! ```text
+//! Level 3:  HEAD ─────────────────────► 50 ──────────────────► NIL
+//!             │                          │
+//! Level 2:  HEAD ────────► 20 ──────────► 50 ──────────────────► NIL
+//!             │            │              │
+//! Level 1:  HEAD ──► 10 ──► 20 ──► 30 ──► 50 ──► 60 ──► NIL
+//! ```
+//!
+//! # Example
+//!
+//! ```ignore
+//! use nexus_collections::{SkipList, BoxedSkipStorage};
+//! use rand::SeedableRng;
+//! use rand::rngs::SmallRng;
+//!
+//! let mut storage: BoxedSkipStorage<u64, String> = BoxedSkipStorage::with_capacity(100);
+//! let rng = SmallRng::seed_from_u64(12345);
+//! let mut map: SkipList<u64, String, _, _, _, 16> = SkipList::new(rng);
+//!
+//! map.try_insert(&mut storage, 100, "first".into()).unwrap();
+//! map.try_insert(&mut storage, 50, "second".into()).unwrap();
+//!
+//! assert_eq!(map.get(&storage, &50), Some(&"second".into()));
+//! assert_eq!(map.first(&storage), Some((&50, &"second".into())));
+//! ```
+
+use core::marker::PhantomData;
+
+use rand_core::RngCore;
+
+use crate::key::Key;
+use crate::storage::{BoundedStorage, Full, Storage, UnboundedStorage};
+
+// ============================================================================
+// SkipNode
+// ============================================================================
+
+/// A node in the skip list containing key, value, and forward pointers.
+///
+/// Forward pointers at each level point to the next node at that level.
+/// Nodes with higher `level` values participate in more express lanes,
+/// allowing O(log n) traversal.
+#[derive(Debug, Clone)]
+pub struct SkipNode<K, V, Idx: Key, const MAX_LEVEL: usize> {
+    /// The key used for ordering.
+    pub key: K,
+    /// The value associated with this key.
+    pub value: V,
+    /// Forward pointers at each level. `forward[i]` points to the next node at level i.
+    forward: [Idx; MAX_LEVEL],
+    /// The level of this node (0-indexed). Node participates in levels 0..=level.
+    level: u8,
+}
+
+impl<K, V, Idx: Key, const MAX_LEVEL: usize> SkipNode<K, V, Idx, MAX_LEVEL> {
+    /// Creates a new node with the given key, value, and level.
+    #[inline]
+    fn new(key: K, value: V, level: u8) -> Self {
+        Self {
+            key,
+            value,
+            forward: [Idx::NONE; MAX_LEVEL],
+            level,
+        }
+    }
+}
+
+// ============================================================================
+// SkipList
+// ============================================================================
+
+/// A probabilistic sorted map backed by external storage.
+///
+/// The skip list maintains elements in sorted order by key, providing
+/// O(log n) expected time for insert, lookup, and removal operations.
+///
+/// # Type Parameters
+///
+/// - `K`: Key type, must implement `Ord`
+/// - `V`: Value type
+/// - `S`: Storage type implementing [`Storage`]
+/// - `Idx`: Index type for storage keys, defaults to `u32`
+/// - `R`: Random number generator implementing [`RngCore`]
+/// - `MAX_LEVEL`: Maximum number of levels, defaults to 16 (~65K elements efficient)
+#[derive(Debug)]
+pub struct SkipList<K, V, S, Idx = u32, R = (), const MAX_LEVEL: usize = 16>
+where
+    K: Ord,
+    Idx: Key,
+{
+    /// Head pointers for each level. `head[i]` points to the first node at level i.
+    head: [Idx; MAX_LEVEL],
+    /// Tail pointer (last node at level 0) for O(1) `last()` access.
+    tail: Idx,
+    /// Random number generator for level assignment.
+    rng: R,
+    /// Current maximum level in use (0-indexed).
+    level: usize,
+    /// Number of elements in the skip list.
+    len: usize,
+    /// Marker for storage and key/value types.
+    _marker: PhantomData<(K, V, S)>,
+}
+
+impl<K, V, S, Idx, R, const MAX_LEVEL: usize> SkipList<K, V, S, Idx, R, MAX_LEVEL>
+where
+    K: Ord,
+    Idx: Key,
+    R: RngCore,
+    S: Storage<SkipNode<K, V, Idx, MAX_LEVEL>, Key = Idx>,
+{
+    /// Creates a new empty skip list with the given random number generator.
+    #[inline]
+    pub fn new(rng: R) -> Self {
+        Self {
+            head: [Idx::NONE; MAX_LEVEL],
+            tail: Idx::NONE,
+            rng,
+            level: 0,
+            len: 0,
+            _marker: PhantomData,
+        }
+    }
+
+    /// Returns the number of elements in the skip list.
+    #[inline]
+    pub fn len(&self) -> usize {
+        self.len
+    }
+
+    /// Returns `true` if the skip list is empty.
+    #[inline]
+    pub fn is_empty(&self) -> bool {
+        self.len == 0
+    }
+
+    /// Returns `true` if the skip list contains the given key.
+    #[inline]
+    pub fn contains_key(&self, storage: &S, key: &K) -> bool {
+        self.get(storage, key).is_some()
+    }
+
+    /// Returns a reference to the value for the given key, or `None` if not found.
+    #[inline]
+    pub fn get<'a>(&'a self, storage: &'a S, key: &K) -> Option<&'a V> {
+        let (_, found) = self.search(storage, key);
+        found.map(|idx| &storage.get(idx).expect("invalid index").value)
+    }
+
+    /// Returns a mutable reference to the value for the given key, or `None` if not found.
+    #[inline]
+    pub fn get_mut<'a>(&'a mut self, storage: &'a mut S, key: &K) -> Option<&'a mut V> {
+        let (_, found) = self.search(storage, key);
+        found.map(|idx| &mut storage.get_mut(idx).expect("invalid index").value)
+    }
+
+    /// Returns the first (smallest) key-value pair, or `None` if empty.
+    #[inline]
+    pub fn first<'a>(&'a self, storage: &'a S) -> Option<(&'a K, &'a V)> {
+        if self.head[0].is_none() {
+            return None;
+        }
+        let node = storage.get(self.head[0]).expect("invalid head");
+        Some((&node.key, &node.value))
+    }
+
+    /// Returns a mutable reference to the first (smallest) key-value pair.
+    #[inline]
+    pub fn first_mut<'a>(&'a mut self, storage: &'a mut S) -> Option<(&'a K, &'a mut V)> {
+        if self.head[0].is_none() {
+            return None;
+        }
+        let node = storage.get_mut(self.head[0]).expect("invalid head");
+        Some((&node.key, &mut node.value))
+    }
+
+    /// Returns the last (largest) key-value pair, or `None` if empty.
+    ///
+    /// This is O(1) due to maintained tail pointer.
+    #[inline]
+    pub fn last<'a>(&'a self, storage: &'a S) -> Option<(&'a K, &'a V)> {
+        if self.tail.is_none() {
+            return None;
+        }
+        let node = storage.get(self.tail).expect("invalid tail");
+        Some((&node.key, &node.value))
+    }
+
+    /// Returns a mutable reference to the last (largest) key-value pair.
+    ///
+    /// This is O(1) due to maintained tail pointer.
+    #[inline]
+    pub fn last_mut<'a>(&'a mut self, storage: &'a mut S) -> Option<(&'a K, &'a mut V)> {
+        if self.tail.is_none() {
+            return None;
+        }
+        let node = storage.get_mut(self.tail).expect("invalid tail");
+        Some((&node.key, &mut node.value))
+    }
+
+    /// Removes the first (smallest) key-value pair and returns it.
+    pub fn pop_first(&mut self, storage: &mut S) -> Option<(K, V)> {
+        if self.head[0].is_none() {
+            return None;
+        }
+
+        let first_idx = self.head[0];
+
+        // Read level and forward pointers before mutating
+        let first_node = storage.get(first_idx).expect("invalid head");
+        let node_level = first_node.level as usize;
+        let mut forwards = [Idx::NONE; MAX_LEVEL];
+        for i in 0..=node_level {
+            forwards[i] = first_node.forward[i];
+        }
+
+        // Update head pointers at all levels this node participates in
+        for i in 0..=node_level {
+            self.head[i] = forwards[i];
+        }
+
+        // Update tail if this was the only node
+        if self.head[0].is_none() {
+            self.tail = Idx::NONE;
+        }
+
+        // Reduce level if needed
+        while self.level > 0 && self.head[self.level].is_none() {
+            self.level -= 1;
+        }
+
+        self.len -= 1;
+
+        let node = storage.remove(first_idx).expect("invalid index");
+        Some((node.key, node.value))
+    }
+
+    /// Removes the last (largest) key-value pair and returns it.
+    ///
+    /// This is O(log n) as we need to search for predecessors.
+    pub fn pop_last(&mut self, storage: &mut S) -> Option<(K, V)>
+    where
+        K: Clone,
+    {
+        if self.tail.is_none() {
+            return None;
+        }
+
+        // Clone the key to release the borrow on storage
+        let tail_key = storage.get(self.tail).expect("invalid tail").key.clone();
+
+        // Search for predecessors
+        let (update, _) = self.search(storage, &tail_key);
+
+        let idx = self.tail;
+
+        // Read level and forward pointers before mutating
+        let node = storage.get(idx).expect("invalid tail");
+        let node_level = node.level as usize;
+        let mut forwards = [Idx::NONE; MAX_LEVEL];
+        for i in 0..=node_level {
+            forwards[i] = node.forward[i];
+        }
+
+        // Update forward pointers at each level
+        for i in 0..=node_level {
+            if update[i].is_none() {
+                // Node was head at this level
+                self.head[i] = forwards[i];
+            } else {
+                // Safety: update[i] is valid from search
+                let prev = unsafe { storage.get_unchecked_mut(update[i]) };
+                prev.forward[i] = forwards[i];
+            }
+        }
+
+        // Update tail to predecessor at level 0
+        self.tail = update[0];
+
+        // Reduce level if needed
+        while self.level > 0 && self.head[self.level].is_none() {
+            self.level -= 1;
+        }
+
+        self.len -= 1;
+
+        let node = storage.remove(idx).expect("invalid index");
+        Some((node.key, node.value))
+    }
+
+    /// Removes the entry for the given key and returns the value, or `None` if not found.
+    pub fn remove(&mut self, storage: &mut S, key: &K) -> Option<V> {
+        let (update, found) = self.search(storage, key);
+
+        let idx = found?;
+
+        // Read level and forward pointers before mutating
+        let node = storage.get(idx).expect("invalid index");
+        let node_level = node.level as usize;
+        let forward_0_is_none = node.forward[0].is_none();
+        let mut forwards = [Idx::NONE; MAX_LEVEL];
+        for i in 0..=node_level {
+            forwards[i] = node.forward[i];
+        }
+
+        // Update forward pointers at each level
+        for i in 0..=node_level {
+            if update[i].is_none() {
+                // Node was head at this level
+                self.head[i] = forwards[i];
+            } else {
+                // Safety: update[i] is valid from search
+                let prev = unsafe { storage.get_unchecked_mut(update[i]) };
+                prev.forward[i] = forwards[i];
+            }
+        }
+
+        // Update tail if we removed the last node
+        if forward_0_is_none {
+            self.tail = update[0];
+        }
+
+        // Reduce level if needed
+        while self.level > 0 && self.head[self.level].is_none() {
+            self.level -= 1;
+        }
+
+        self.len -= 1;
+
+        let node = storage.remove(idx).expect("invalid index");
+        Some(node.value)
+    }
+
+    /// Removes all elements from the skip list.
+    pub fn clear(&mut self, storage: &mut S) {
+        // Walk level 0 and remove all nodes
+        let mut current = self.head[0];
+        while current.is_some() {
+            let next = storage.get(current).expect("invalid index").forward[0];
+            storage.remove(current);
+            current = next;
+        }
+
+        self.head = [Idx::NONE; MAX_LEVEL];
+        self.tail = Idx::NONE;
+        self.level = 0;
+        self.len = 0;
+    }
+
+    /// Returns an iterator over key-value pairs in sorted order.
+    #[inline]
+    pub fn iter<'a>(&'a self, storage: &'a S) -> Iter<'a, K, V, S, Idx, MAX_LEVEL> {
+        Iter {
+            storage,
+            current: self.head[0],
+            _marker: PhantomData,
+        }
+    }
+
+    /// Returns a mutable iterator over key-value pairs in sorted order.
+    #[inline]
+    pub fn iter_mut<'a>(&'a mut self, storage: &'a mut S) -> IterMut<'a, K, V, S, Idx, MAX_LEVEL> {
+        IterMut {
+            current: self.head[0],
+            storage,
+            _marker: PhantomData,
+        }
+    }
+
+    /// Returns an iterator over keys in sorted order.
+    #[inline]
+    pub fn keys<'a>(&'a self, storage: &'a S) -> Keys<'a, K, V, S, Idx, MAX_LEVEL> {
+        Keys {
+            inner: self.iter(storage),
+        }
+    }
+
+    /// Returns an iterator over values in sorted order by key.
+    #[inline]
+    pub fn values<'a>(&'a self, storage: &'a S) -> Values<'a, K, V, S, Idx, MAX_LEVEL> {
+        Values {
+            inner: self.iter(storage),
+        }
+    }
+
+    /// Returns a cursor starting at the first element.
+    #[inline]
+    pub fn cursor_front<'a>(
+        &'a mut self,
+        storage: &'a mut S,
+    ) -> Cursor<'a, K, V, S, Idx, R, MAX_LEVEL> {
+        let current = self.head[0];
+        Cursor {
+            list: self,
+            storage,
+            current,
+            prev_at_level: [Idx::NONE; MAX_LEVEL],
+        }
+    }
+
+    /// Returns a cursor starting at the given key, or at the first element greater than key.
+    #[inline]
+    pub fn cursor_at<'a>(
+        &'a mut self,
+        storage: &'a mut S,
+        key: &K,
+    ) -> Cursor<'a, K, V, S, Idx, R, MAX_LEVEL> {
+        let (prev_at_level, found) = self.search(storage, key);
+        let current = if let Some(idx) = found {
+            idx
+        } else {
+            // Position at first element greater than key
+            if prev_at_level[0].is_none() {
+                self.head[0]
+            } else {
+                let prev = storage.get(prev_at_level[0]).expect("invalid index");
+                prev.forward[0]
+            }
+        };
+
+        Cursor {
+            list: self,
+            storage,
+            current,
+            prev_at_level,
+        }
+    }
+
+    // ========================================================================
+    // Internal helpers
+    // ========================================================================
+
+    /// Searches for the key, returning predecessors at each level and the found index.
+    ///
+    /// Returns `(update, found)` where:
+    /// - `update[i]` is the predecessor at level i (NONE if head)
+    /// - `found` is `Some(idx)` if the key exists, `None` otherwise
+    fn search(&self, storage: &S, key: &K) -> ([Idx; MAX_LEVEL], Option<Idx>) {
+        let mut update = [Idx::NONE; MAX_LEVEL];
+        let mut current = Idx::NONE;
+
+        // Start from the highest level
+        for i in (0..=self.level).rev() {
+            // Get starting point for this level
+            let mut next = if current.is_none() {
+                self.head[i]
+            } else {
+                // Safety: current is valid
+                unsafe { storage.get_unchecked(current) }.forward[i]
+            };
+
+            // Traverse forward while next key is less than target
+            while next.is_some() {
+                let next_node = unsafe { storage.get_unchecked(next) };
+                if next_node.key >= *key {
+                    break;
+                }
+                current = next;
+                next = next_node.forward[i];
+            }
+
+            update[i] = current;
+        }
+
+        // Check if we found the exact key
+        let next = if current.is_none() {
+            self.head[0]
+        } else {
+            unsafe { storage.get_unchecked(current) }.forward[0]
+        };
+
+        let found = if next.is_some() {
+            let next_node = unsafe { storage.get_unchecked(next) };
+            if next_node.key == *key {
+                Some(next)
+            } else {
+                None
+            }
+        } else {
+            None
+        };
+
+        (update, found)
+    }
+
+    /// Generates a random level for a new node.
+    ///
+    /// Uses geometric distribution with p=0.5 by counting trailing ones
+    /// in a random number.
+    #[inline]
+    fn random_level(&mut self) -> u8 {
+        let r = self.rng.next_u32();
+        (r.trailing_ones() as usize).min(MAX_LEVEL - 1) as u8
+    }
+
+    /// Links a newly inserted node into the skip list structure.
+    fn link_node(&mut self, storage: &mut S, idx: Idx, new_level: u8, update: &[Idx; MAX_LEVEL]) {
+        // First pass: collect what we need to set as forward pointers
+        let mut new_forwards = [Idx::NONE; MAX_LEVEL];
+        for i in 0..=new_level as usize {
+            if update[i].is_none() {
+                new_forwards[i] = self.head[i];
+            } else {
+                // Safety: update[i] is valid from search
+                new_forwards[i] = unsafe { storage.get_unchecked(update[i]) }.forward[i];
+            }
+        }
+
+        // Second pass: set the new node's forward pointers
+        {
+            let node = storage.get_mut(idx).expect("invalid index");
+            for i in 0..=new_level as usize {
+                node.forward[i] = new_forwards[i];
+            }
+        }
+
+        // Third pass: update predecessors and heads to point to new node
+        for i in 0..=new_level as usize {
+            if update[i].is_none() {
+                self.head[i] = idx;
+            } else {
+                // Safety: update[i] is valid from search
+                let prev = unsafe { storage.get_unchecked_mut(update[i]) };
+                prev.forward[i] = idx;
+            }
+        }
+
+        // Update tail if this is the new last node
+        let node = storage.get(idx).expect("invalid index");
+        if node.forward[0].is_none() {
+            self.tail = idx;
+        }
+
+        // Update max level
+        if new_level as usize > self.level {
+            self.level = new_level as usize;
+        }
+
+        self.len += 1;
+    }
+}
+
+// ============================================================================
+// Bounded storage impl
+// ============================================================================
+
+impl<K, V, S, Idx, R, const MAX_LEVEL: usize> SkipList<K, V, S, Idx, R, MAX_LEVEL>
+where
+    K: Ord,
+    Idx: Key,
+    R: RngCore,
+    S: BoundedStorage<SkipNode<K, V, Idx, MAX_LEVEL>, Key = Idx>,
+{
+    /// Tries to insert a key-value pair, returning an error if storage is full.
+    ///
+    /// If the key already exists, the value is updated and the old value is returned.
+    pub fn try_insert(
+        &mut self,
+        storage: &mut S,
+        key: K,
+        value: V,
+    ) -> Result<Option<V>, Full<(K, V)>> {
+        // Search first to check if key exists
+        let (update, found) = self.search(storage, &key);
+
+        // If key exists, update value
+        if let Some(existing_idx) = found {
+            let node = storage.get_mut(existing_idx).expect("invalid index");
+            let old_value = core::mem::replace(&mut node.value, value);
+            return Ok(Some(old_value));
+        }
+
+        // Key doesn't exist, allocate new node
+        let new_level = self.random_level();
+        let node = SkipNode::new(key, value, new_level);
+        let idx = match storage.try_insert(node) {
+            Ok(idx) => idx,
+            Err(Full(node)) => return Err(Full((node.key, node.value))),
+        };
+
+        // Link the node into the list
+        self.link_node(storage, idx, new_level, &update);
+
+        Ok(None)
+    }
+}
+
+// ============================================================================
+// Unbounded storage impl
+// ============================================================================
+
+impl<K, V, S, Idx, R, const MAX_LEVEL: usize> SkipList<K, V, S, Idx, R, MAX_LEVEL>
+where
+    K: Ord,
+    Idx: Key,
+    R: RngCore,
+    S: UnboundedStorage<SkipNode<K, V, Idx, MAX_LEVEL>, Key = Idx>,
+{
+    /// Inserts a key-value pair.
+    ///
+    /// If the key already exists, the value is updated and the old value is returned.
+    pub fn insert(&mut self, storage: &mut S, key: K, value: V) -> Option<V> {
+        // Search first to check if key exists
+        let (update, found) = self.search(storage, &key);
+
+        // If key exists, update value
+        if let Some(existing_idx) = found {
+            let node = storage.get_mut(existing_idx).expect("invalid index");
+            let old_value = core::mem::replace(&mut node.value, value);
+            return Some(old_value);
+        }
+
+        // Key doesn't exist, allocate new node
+        let new_level = self.random_level();
+        let node = SkipNode::new(key, value, new_level);
+        let idx = storage.insert(node);
+
+        // Link the node into the list
+        self.link_node(storage, idx, new_level, &update);
+
+        None
+    }
+}
+
+// ============================================================================
+// Entry API
+// ============================================================================
+
+/// A view into a single entry in the skip list.
+pub enum Entry<'a, K, V, S, Idx, R, const MAX_LEVEL: usize>
+where
+    K: Ord,
+    Idx: Key,
+    R: RngCore,
+    S: Storage<SkipNode<K, V, Idx, MAX_LEVEL>, Key = Idx>,
+{
+    /// An occupied entry.
+    Occupied(OccupiedEntry<'a, K, V, S, Idx, R, MAX_LEVEL>),
+    /// A vacant entry.
+    Vacant(VacantEntry<'a, K, V, S, Idx, R, MAX_LEVEL>),
+}
+
+/// An occupied entry in the skip list.
+pub struct OccupiedEntry<'a, K, V, S, Idx, R, const MAX_LEVEL: usize>
+where
+    K: Ord,
+    Idx: Key,
+    R: RngCore,
+    S: Storage<SkipNode<K, V, Idx, MAX_LEVEL>, Key = Idx>,
+{
+    list: &'a mut SkipList<K, V, S, Idx, R, MAX_LEVEL>,
+    storage: &'a mut S,
+    idx: Idx,
+}
+
+/// A vacant entry in the skip list.
+pub struct VacantEntry<'a, K, V, S, Idx, R, const MAX_LEVEL: usize>
+where
+    K: Ord,
+    Idx: Key,
+    R: RngCore,
+    S: Storage<SkipNode<K, V, Idx, MAX_LEVEL>, Key = Idx>,
+{
+    list: &'a mut SkipList<K, V, S, Idx, R, MAX_LEVEL>,
+    storage: &'a mut S,
+    key: K,
+    update: [Idx; MAX_LEVEL],
+}
+
+impl<'a, K, V, S, Idx, R, const MAX_LEVEL: usize> Entry<'a, K, V, S, Idx, R, MAX_LEVEL>
+where
+    K: Ord,
+    Idx: Key,
+    R: RngCore,
+    S: Storage<SkipNode<K, V, Idx, MAX_LEVEL>, Key = Idx>,
+{
+    /// Returns a reference to the key.
+    pub fn key(&self) -> &K {
+        match self {
+            Entry::Occupied(e) => &e.storage.get(e.idx).expect("invalid index").key,
+            Entry::Vacant(e) => &e.key,
+        }
+    }
+
+    /// Modifies an existing entry before insertion.
+    pub fn and_modify<F>(mut self, f: F) -> Self
+    where
+        F: FnOnce(&mut V),
+    {
+        if let Entry::Occupied(ref mut e) = self {
+            let node = e.storage.get_mut(e.idx).expect("invalid index");
+            f(&mut node.value);
+        }
+        self
+    }
+}
+
+impl<'a, K, V, S, Idx, R, const MAX_LEVEL: usize> Entry<'a, K, V, S, Idx, R, MAX_LEVEL>
+where
+    K: Ord,
+    Idx: Key,
+    R: RngCore,
+    S: BoundedStorage<SkipNode<K, V, Idx, MAX_LEVEL>, Key = Idx>,
+{
+    /// Ensures a value is in the entry by inserting the default if empty.
+    /// Returns `None` if storage is full.
+    pub fn or_try_insert(self, default: V) -> Option<&'a mut V> {
+        self.or_try_insert_with(|| default)
+    }
+
+    /// Ensures a value is in the entry by inserting the result of the function if empty.
+    /// Returns `None` if storage is full.
+    pub fn or_try_insert_with<F: FnOnce() -> V>(self, f: F) -> Option<&'a mut V> {
+        match self {
+            Entry::Occupied(e) => Some(&mut e.storage.get_mut(e.idx).expect("invalid index").value),
+            Entry::Vacant(e) => e.try_insert(f()),
+        }
+    }
+}
+
+impl<'a, K, V, S, Idx, R, const MAX_LEVEL: usize> Entry<'a, K, V, S, Idx, R, MAX_LEVEL>
+where
+    K: Ord,
+    Idx: Key,
+    R: RngCore,
+    S: UnboundedStorage<SkipNode<K, V, Idx, MAX_LEVEL>, Key = Idx>,
+{
+    /// Ensures a value is in the entry by inserting the default if empty.
+    pub fn or_insert(self, default: V) -> &'a mut V {
+        self.or_insert_with(|| default)
+    }
+
+    /// Ensures a value is in the entry by inserting the result of the function if empty.
+    pub fn or_insert_with<F: FnOnce() -> V>(self, f: F) -> &'a mut V {
+        match self {
+            Entry::Occupied(e) => &mut e.storage.get_mut(e.idx).expect("invalid index").value,
+            Entry::Vacant(e) => e.insert(f()),
+        }
+    }
+
+    /// Ensures a value is in the entry by inserting the default value if empty.
+    pub fn or_default(self) -> &'a mut V
+    where
+        V: Default,
+    {
+        self.or_insert_with(V::default)
+    }
+}
+
+impl<'a, K, V, S, Idx, R, const MAX_LEVEL: usize> OccupiedEntry<'a, K, V, S, Idx, R, MAX_LEVEL>
+where
+    K: Ord,
+    Idx: Key,
+    R: RngCore,
+    S: Storage<SkipNode<K, V, Idx, MAX_LEVEL>, Key = Idx>,
+{
+    /// Gets a reference to the value.
+    pub fn get(&self) -> &V {
+        &self.storage.get(self.idx).expect("invalid index").value
+    }
+
+    /// Gets a mutable reference to the value.
+    pub fn get_mut(&mut self) -> &mut V {
+        &mut self.storage.get_mut(self.idx).expect("invalid index").value
+    }
+
+    /// Converts to a mutable reference to the value.
+    pub fn into_mut(self) -> &'a mut V {
+        &mut self.storage.get_mut(self.idx).expect("invalid index").value
+    }
+
+    /// Removes the entry and returns the value.
+    pub fn remove(self) -> V
+    where
+        K: Clone,
+    {
+        let key = self
+            .storage
+            .get(self.idx)
+            .expect("invalid index")
+            .key
+            .clone();
+        self.list
+            .remove(self.storage, &key)
+            .expect("key must exist")
+    }
+}
+
+impl<'a, K, V, S, Idx, R, const MAX_LEVEL: usize> VacantEntry<'a, K, V, S, Idx, R, MAX_LEVEL>
+where
+    K: Ord,
+    Idx: Key,
+    R: RngCore,
+    S: BoundedStorage<SkipNode<K, V, Idx, MAX_LEVEL>, Key = Idx>,
+{
+    /// Tries to insert a value, returning `None` if storage is full.
+    pub fn try_insert(self, value: V) -> Option<&'a mut V> {
+        let new_level = self.list.random_level();
+        let node = SkipNode::new(self.key, value, new_level);
+        let idx = self.storage.try_insert(node).ok()?;
+
+        // Link the node
+        self.list
+            .link_node(self.storage, idx, new_level, &self.update);
+
+        Some(&mut self.storage.get_mut(idx).expect("just inserted").value)
+    }
+}
+
+impl<'a, K, V, S, Idx, R, const MAX_LEVEL: usize> VacantEntry<'a, K, V, S, Idx, R, MAX_LEVEL>
+where
+    K: Ord,
+    Idx: Key,
+    R: RngCore,
+    S: UnboundedStorage<SkipNode<K, V, Idx, MAX_LEVEL>, Key = Idx>,
+{
+    /// Inserts a value.
+    pub fn insert(self, value: V) -> &'a mut V {
+        let new_level = self.list.random_level();
+        let node = SkipNode::new(self.key, value, new_level);
+        let idx = self.storage.insert(node);
+
+        // Link the node
+        self.list
+            .link_node(self.storage, idx, new_level, &self.update);
+
+        &mut self.storage.get_mut(idx).expect("just inserted").value
+    }
+}
+
+impl<K, V, S, Idx, R, const MAX_LEVEL: usize> SkipList<K, V, S, Idx, R, MAX_LEVEL>
+where
+    K: Ord,
+    Idx: Key,
+    R: RngCore,
+    S: Storage<SkipNode<K, V, Idx, MAX_LEVEL>, Key = Idx>,
+{
+    /// Gets the entry for the given key.
+    pub fn entry<'a>(
+        &'a mut self,
+        storage: &'a mut S,
+        key: K,
+    ) -> Entry<'a, K, V, S, Idx, R, MAX_LEVEL> {
+        let (update, found) = self.search(storage, &key);
+
+        if let Some(idx) = found {
+            Entry::Occupied(OccupiedEntry {
+                list: self,
+                storage,
+                idx,
+            })
+        } else {
+            Entry::Vacant(VacantEntry {
+                list: self,
+                storage,
+                key,
+                update,
+            })
+        }
+    }
+}
+
+// ============================================================================
+// Cursor
+// ============================================================================
+
+/// A cursor for traversing and modifying the skip list.
+///
+/// The cursor maintains its position and predecessors, allowing O(1) removal
+/// at the current position.
+pub struct Cursor<'a, K, V, S, Idx, R, const MAX_LEVEL: usize>
+where
+    K: Ord,
+    Idx: Key,
+    R: RngCore,
+    S: Storage<SkipNode<K, V, Idx, MAX_LEVEL>, Key = Idx>,
+{
+    list: &'a mut SkipList<K, V, S, Idx, R, MAX_LEVEL>,
+    storage: &'a mut S,
+    current: Idx,
+    prev_at_level: [Idx; MAX_LEVEL],
+}
+
+impl<'a, K, V, S, Idx, R, const MAX_LEVEL: usize> Cursor<'a, K, V, S, Idx, R, MAX_LEVEL>
+where
+    K: Ord,
+    Idx: Key,
+    R: RngCore,
+    S: Storage<SkipNode<K, V, Idx, MAX_LEVEL>, Key = Idx>,
+{
+    /// Returns a reference to the current key-value pair, or `None` if exhausted.
+    pub fn current(&self) -> Option<(&K, &V)> {
+        if self.current.is_none() {
+            return None;
+        }
+        let node = self.storage.get(self.current).expect("invalid current");
+        Some((&node.key, &node.value))
+    }
+
+    /// Returns a mutable reference to the current value, or `None` if exhausted.
+    pub fn current_mut(&mut self) -> Option<(&K, &mut V)> {
+        if self.current.is_none() {
+            return None;
+        }
+        let node = self.storage.get_mut(self.current).expect("invalid current");
+        Some((&node.key, &mut node.value))
+    }
+
+    /// Returns a reference to the next key-value pair without advancing.
+    pub fn peek_next(&self) -> Option<(&K, &V)> {
+        if self.current.is_none() {
+            return None;
+        }
+        let node = self.storage.get(self.current).expect("invalid current");
+        let next = node.forward[0];
+        if next.is_none() {
+            return None;
+        }
+        let next_node = self.storage.get(next).expect("invalid next");
+        Some((&next_node.key, &next_node.value))
+    }
+
+    /// Advances the cursor to the next position.
+    pub fn move_next(&mut self) {
+        if self.current.is_none() {
+            return;
+        }
+
+        let node = self.storage.get(self.current).expect("invalid current");
+        let node_level = node.level as usize;
+
+        // Update predecessors for levels where current participates
+        for i in 0..=node_level {
+            self.prev_at_level[i] = self.current;
+        }
+
+        // Advance
+        self.current = node.forward[0];
+    }
+
+    /// Removes the current element and advances to the next.
+    ///
+    /// Returns the removed key-value pair, or `None` if cursor is exhausted.
+    pub fn remove_current(&mut self) -> Option<(K, V)> {
+        if self.current.is_none() {
+            return None;
+        }
+
+        let idx = self.current;
+
+        // Read level and forward pointers before mutating
+        let node = self.storage.get(idx).expect("invalid current");
+        let node_level = node.level as usize;
+        let next = node.forward[0];
+        let mut forwards = [Idx::NONE; MAX_LEVEL];
+        for i in 0..=node_level {
+            forwards[i] = node.forward[i];
+        }
+
+        // Update forward pointers at each level
+        for i in 0..=node_level {
+            if self.prev_at_level[i].is_none() {
+                // Node was head at this level
+                self.list.head[i] = forwards[i];
+            } else {
+                // Safety: prev_at_level[i] is valid
+                let prev = unsafe { self.storage.get_unchecked_mut(self.prev_at_level[i]) };
+                prev.forward[i] = forwards[i];
+            }
+        }
+
+        // Update tail if we removed the last node
+        if next.is_none() {
+            self.list.tail = self.prev_at_level[0];
+        }
+
+        // Reduce level if needed
+        while self.list.level > 0 && self.list.head[self.list.level].is_none() {
+            self.list.level -= 1;
+        }
+
+        self.list.len -= 1;
+
+        // Advance cursor
+        self.current = next;
+
+        let node = self.storage.remove(idx).expect("invalid index");
+        Some((node.key, node.value))
+    }
+}
+
+// ============================================================================
+// Iterators
+// ============================================================================
+
+/// An iterator over key-value pairs in sorted order.
+pub struct Iter<'a, K, V, S, Idx, const MAX_LEVEL: usize>
+where
+    Idx: Key,
+    S: Storage<SkipNode<K, V, Idx, MAX_LEVEL>, Key = Idx>,
+{
+    storage: &'a S,
+    current: Idx,
+    _marker: PhantomData<(K, V)>,
+}
+
+impl<'a, K: 'a, V: 'a, S, Idx: 'a, const MAX_LEVEL: usize> Iterator
+    for Iter<'a, K, V, S, Idx, MAX_LEVEL>
+where
+    Idx: Key,
+    S: Storage<SkipNode<K, V, Idx, MAX_LEVEL>, Key = Idx>,
+{
+    type Item = (&'a K, &'a V);
+
+    fn next(&mut self) -> Option<Self::Item> {
+        if self.current.is_none() {
+            return None;
+        }
+        let node = self.storage.get(self.current).expect("invalid index");
+        self.current = node.forward[0];
+        Some((&node.key, &node.value))
+    }
+}
+
+/// A mutable iterator over key-value pairs in sorted order.
+pub struct IterMut<'a, K, V, S, Idx, const MAX_LEVEL: usize>
+where
+    Idx: Key,
+    S: Storage<SkipNode<K, V, Idx, MAX_LEVEL>, Key = Idx>,
+{
+    storage: &'a mut S,
+    current: Idx,
+    _marker: PhantomData<(K, V)>,
+}
+
+impl<'a, K: 'a, V: 'a, S, Idx: 'a, const MAX_LEVEL: usize> Iterator
+    for IterMut<'a, K, V, S, Idx, MAX_LEVEL>
+where
+    Idx: Key,
+    S: Storage<SkipNode<K, V, Idx, MAX_LEVEL>, Key = Idx>,
+{
+    type Item = (&'a K, &'a mut V);
+
+    fn next(&mut self) -> Option<Self::Item> {
+        if self.current.is_none() {
+            return None;
+        }
+        let idx = self.current;
+
+        // Safety: We only visit each node once (current advances before return).
+        // The storage lives for 'a, so the node reference is valid for 'a.
+        // We're working around the borrow checker's inability to track this.
+        let node: &'a mut SkipNode<K, V, Idx, MAX_LEVEL> =
+            unsafe { &mut *(self.storage.get_mut(idx).expect("invalid index") as *mut _) };
+
+        self.current = node.forward[0];
+        Some((&node.key, &mut node.value))
+    }
+}
+
+/// An iterator over keys in sorted order.
+pub struct Keys<'a, K, V, S, Idx, const MAX_LEVEL: usize>
+where
+    Idx: Key,
+    S: Storage<SkipNode<K, V, Idx, MAX_LEVEL>, Key = Idx>,
+{
+    inner: Iter<'a, K, V, S, Idx, MAX_LEVEL>,
+}
+
+impl<'a, K: 'a, V: 'a, S, Idx: 'a, const MAX_LEVEL: usize> Iterator
+    for Keys<'a, K, V, S, Idx, MAX_LEVEL>
+where
+    Idx: Key,
+    S: Storage<SkipNode<K, V, Idx, MAX_LEVEL>, Key = Idx>,
+{
+    type Item = &'a K;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        self.inner.next().map(|(k, _)| k)
+    }
+}
+
+/// An iterator over values in sorted order by key.
+pub struct Values<'a, K, V, S, Idx, const MAX_LEVEL: usize>
+where
+    Idx: Key,
+    S: Storage<SkipNode<K, V, Idx, MAX_LEVEL>, Key = Idx>,
+{
+    inner: Iter<'a, K, V, S, Idx, MAX_LEVEL>,
+}
+
+impl<'a, K: 'a, V: 'a, S, Idx: 'a, const MAX_LEVEL: usize> Iterator
+    for Values<'a, K, V, S, Idx, MAX_LEVEL>
+where
+    Idx: Key,
+    S: Storage<SkipNode<K, V, Idx, MAX_LEVEL>, Key = Idx>,
+{
+    type Item = &'a V;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        self.inner.next().map(|(_, v)| v)
+    }
+}
+
+// ============================================================================
+// Type aliases
+// ============================================================================
+
+/// Boxed storage for skip list nodes.
+pub type BoxedSkipStorage<K, V, Idx = u32, const MAX_LEVEL: usize = 16> =
+    crate::BoxedStorage<SkipNode<K, V, Idx, MAX_LEVEL>, Idx>;
+
+#[cfg(feature = "slab")]
+/// Slab storage for skip list nodes (unbounded).
+pub type SlabSkipStorage<K, V, const MAX_LEVEL: usize = 16> =
+    slab::Slab<SkipNode<K, V, usize, MAX_LEVEL>>;
+
+#[cfg(feature = "nexus-slab")]
+/// Nexus slab storage for skip list nodes (bounded).
+pub type NexusSkipStorage<K, V, const MAX_LEVEL: usize = 16> =
+    nexus_slab::Slab<SkipNode<K, V, nexus_slab::Key, MAX_LEVEL>>;

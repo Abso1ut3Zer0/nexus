@@ -142,6 +142,7 @@ pub mod heap;
 pub mod key;
 pub mod list;
 pub mod owned;
+pub mod skiplist;
 pub mod storage;
 
 pub use heap::{BoxedHeapStorage, Heap};
