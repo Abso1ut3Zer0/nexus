@@ -79,75 +79,27 @@ pub trait Key: Copy + Eq {
 // Implementations for integer types
 // =============================================================================
 
-impl Key for u8 {
-    const NONE: Self = u8::MAX;
+macro_rules! impl_key_for_uint {
+    ($($ty:ty),+) => {
+        $(
+            impl Key for $ty {
+                const NONE: Self = <$ty>::MAX;
 
-    #[inline]
-    fn from_usize(val: usize) -> Self {
-        val as u8
-    }
+                #[inline]
+                fn from_usize(val: usize) -> Self {
+                    val as $ty
+                }
 
-    #[inline]
-    fn as_usize(&self) -> usize {
-        *self as usize
-    }
+                #[inline]
+                fn as_usize(&self) -> usize {
+                    *self as usize
+                }
+            }
+        )+
+    };
 }
 
-impl Key for u16 {
-    const NONE: Self = u16::MAX;
-
-    #[inline]
-    fn from_usize(val: usize) -> Self {
-        val as u16
-    }
-
-    #[inline]
-    fn as_usize(&self) -> usize {
-        *self as usize
-    }
-}
-
-impl Key for u32 {
-    const NONE: Self = u32::MAX;
-
-    #[inline]
-    fn from_usize(val: usize) -> Self {
-        val as u32
-    }
-
-    #[inline]
-    fn as_usize(&self) -> usize {
-        *self as usize
-    }
-}
-
-impl Key for u64 {
-    const NONE: Self = u64::MAX;
-
-    #[inline]
-    fn from_usize(val: usize) -> Self {
-        val as u64
-    }
-
-    #[inline]
-    fn as_usize(&self) -> usize {
-        *self as usize
-    }
-}
-
-impl Key for usize {
-    const NONE: Self = usize::MAX;
-
-    #[inline]
-    fn from_usize(val: usize) -> Self {
-        val
-    }
-
-    #[inline]
-    fn as_usize(&self) -> usize {
-        *self
-    }
-}
+impl_key_for_uint!(u8, u16, u32, u64, usize);
 
 #[cfg(feature = "nexus-slab")]
 impl Key for nexus_slab::Key {

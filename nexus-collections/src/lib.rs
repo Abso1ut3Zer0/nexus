@@ -138,19 +138,17 @@
 
 #![warn(missing_docs)]
 
-mod key;
-mod list;
-mod storage;
-
-mod heap;
-mod owned;
-
-pub use key::Key;
-pub use list::{BoxedListStorage, Cursor, Drain, Iter, IterMut, Keys, List, ListNode};
-pub use storage::{BoundedStorage, BoxedStorage, Full, Keyed, Storage, UnboundedStorage};
+pub mod heap;
+pub mod key;
+pub mod list;
+pub mod owned;
+pub mod storage;
 
 pub use heap::{BoxedHeapStorage, Heap};
+pub use key::Key;
+pub use list::{BoxedListStorage, List};
 pub use owned::{OwnedHeap, OwnedList};
+pub use storage::{BoundedStorage, BoxedStorage, Full, Keyed, Storage, UnboundedStorage};
 
 #[cfg(feature = "nexus-slab")]
 pub use heap::NexusHeapStorage;

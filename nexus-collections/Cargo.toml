@@ -8,7 +8,7 @@ rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
 keywords = ["collections", "intrusive", "slab", "low-latency", "pre-allocated"]
-categories = ["data-structures", "no-std"]
+categories = ["data-structures"]
 
 [dev-dependencies]
 hdrhistogram = "7.5"
@@ -17,7 +17,6 @@ hdrhistogram = "7.5"
 default = []
 slab = ["dep:slab"]
 nexus-slab = ["dep:nexus-slab"]
-# Dev/testing feature that enables everything
 full = ["slab", "nexus-slab"]
 
 [dependencies.slab]
