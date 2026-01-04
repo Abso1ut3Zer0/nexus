@@ -1,5 +1,5 @@
 mod heap;
-// mod list;
+mod list;
 
 pub use heap::*;
-// pub use list::*;
+pub use list::*;

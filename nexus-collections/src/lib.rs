@@ -16,12 +16,12 @@
 //! This crate inverts the model:
 //!
 //! ```text
-//! Storage (Slab)     - owns data, provides stable indices
-//! List/Heap/SkipList - coordinate indices, don't own data
+//! Storage (Slab)     - owns data, provides stable keys
+//! List/Heap/SkipList - coordinate keys, don't own data
 //! ```
 //!
 //! Benefits:
-//! - **Stable indices**: Remove from middle without invalidating other indices
+//! - **Stable keys**: Remove from middle without invalidating other keys
 //! - **Zero allocation on hot path**: Pre-allocate storage at startup
 //! - **O(1) operations**: Internal links enable O(1) removal from lists
 //! - **Shared storage**: Multiple data structures can reference the same pool
@@ -35,20 +35,20 @@
 //! // Storage owns the data (wrapped in ListNode internally)
 //! let mut storage: BoxedListStorage<u64> = BoxedListStorage::with_capacity(1000);
 //!
-//! // List coordinates indices into storage
+//! // List coordinates keys into storage
 //! let mut queue: List<u64, BoxedListStorage<u64>> = List::new();
 //!
-//! // Insert returns stable index for O(1) access later
-//! let idx = queue.push_back(&mut storage, 42).unwrap();
+//! // Insert returns stable key for O(1) access later
+//! let key = queue.try_push_back(&mut storage, 42).unwrap();
 //!
 //! // O(1) removal from anywhere
-//! assert_eq!(queue.remove(&mut storage, idx), Some(42));
+//! assert_eq!(queue.remove(&mut storage, key), Some(42));
 //! ```
 //!
 //! # Moving Between Lists
 //!
 //! Use `unlink` and `link_back` to move elements without deallocating.
-//! The storage index stays valid.
+//! The storage key stays valid.
 //!
 //! ```
 //! use nexus_collections::{BoxedListStorage, List};
@@ -57,14 +57,14 @@
 //! let mut queue_a: List<u64, BoxedListStorage<u64>> = List::new();
 //! let mut queue_b: List<u64, BoxedListStorage<u64>> = List::new();
 //!
-//! let idx = queue_a.push_back(&mut storage, 42).unwrap();
+//! let key = queue_a.try_push_back(&mut storage, 42).unwrap();
 //!
-//! // Move to queue_b - index remains valid
-//! queue_a.unlink(&mut storage, idx);
-//! queue_b.link_back(&mut storage, idx);
+//! // Move to queue_b - key remains valid
+//! queue_a.unlink(&mut storage, key);
+//! queue_b.link_back(&mut storage, key);
 //!
 //! assert!(queue_a.is_empty());
-//! assert_eq!(queue_b.get(&storage, idx), Some(&42));
+//! assert_eq!(queue_b.get(&storage, key), Some(&42));
 //! ```
 //!
 //! # Critical Invariant: Same Storage Instance
@@ -80,10 +80,10 @@
 //! let mut storage_b: BoxedListStorage<u64> = BoxedListStorage::with_capacity(16);
 //! let mut list: List<u64, BoxedListStorage<u64>> = List::new();
 //!
-//! let idx = list.push_back(&mut storage_a, 1).unwrap();
+//! let key = list.try_push_back(&mut storage_a, 1).unwrap();
 //!
 //! // WRONG: using storage_b with a list that references storage_a
-//! // list.remove(&mut storage_b, idx);  // Undefined behavior!
+//! // list.remove(&mut storage_b, key);  // Undefined behavior!
 //! ```
 //!
 //! # Storage Options
@@ -93,14 +93,32 @@
 //! | [`BoxedStorage`] | Fixed (runtime) | Single heap alloc | Default choice |
 //! | `slab::Slab` | Growable | May reallocate | When size unknown |
 //! | `nexus_slab::Slab` | Fixed | Page-aligned, mlockable | Latency-critical |
+//! | `HashMap<K, V>` | Growable | May reallocate | When keys are in values |
 //!
 //! Enable `slab` or `nexus-slab` features to use external storage backends.
+//!
+//! # Storage Traits
+//!
+//! Storage is split into bounded and unbounded variants:
+//!
+//! ```text
+//! Storage<T>           - base trait: get, remove, len
+//!     │
+//!     ├── BoundedStorage<T>   - fixed capacity, try_insert -> Result
+//!     │
+//!     └── UnboundedStorage<T> - growable, insert -> Key (infallible)
+//! ```
+//!
+//! This enables different APIs for data structures:
+//! - `try_push` for bounded storage (returns `Result<K, Full<T>>`)
+//! - `push` for unbounded storage (returns `K`, infallible)
 //!
 //! # Data Structures
 //!
 //! | Structure | Use Case | Key Operations |
 //! |-----------|----------|----------------|
 //! | [`List`] | FIFO queues, LRU caches | O(1) push/pop/remove |
+//! | [`Heap`] | Priority queues, timers | O(log n) push/pop, O(1) decrease-key |
 //!
 //! # Performance
 //!
@@ -110,25 +128,36 @@
 //! |-----------|--------------|-------|
 //! | List push_back | 22 | O(1) |
 //! | List remove | 24 | O(1), from anywhere |
+//! | Heap push | 30-46 | O(log n) |
+//! | Heap pop | 30-46 | O(log n) |
 //!
 //! # Feature Flags
 //!
 //! - `slab` - Enable [`Storage`] impl for `slab::Slab`
 //! - `nexus-slab` - Enable [`Storage`] impl for `nexus_slab::Slab`
 
-mod heap;
-mod index;
+#![warn(missing_docs)]
+
+mod key;
 mod list;
-mod owned;
 mod storage;
 
-pub use heap::{Heap, HeapEntry};
-pub use index::Index;
-pub use list::{BoxedListStorage, Cursor, Indices, Iter, IterMut, List};
-pub use owned::OwnedHeap;
-pub use storage::{BoxedStorage, Full, Storage};
+// TODO: uncomment as modules are added
+// mod heap;
+// mod owned;
+
+pub use key::Key;
+pub use list::{BoxedListStorage, Cursor, Drain, Iter, IterMut, Keys, List, ListNode};
+pub use storage::{BoundedStorage, BoxedStorage, Full, Keyed, Storage, UnboundedStorage};
+
+// TODO: uncomment as modules are added
+// pub use heap::Heap;
+// pub use owned::{OwnedHeap, OwnedList};
 
 #[cfg(feature = "nexus-slab")]
 pub use list::NexusListStorage;
 #[cfg(feature = "slab")]
 pub use list::SlabListStorage;
+
+/// Type alias for bounded heap storage backed by a boxed allocation.
+pub type BoxedHeapStorage<T, K = u32> = BoxedStorage<T, K>;

@@ -1,75 +1,185 @@
-//! Storage trait for slab-like containers with stable indices.
+//! Storage traits for slab-like containers with stable keys.
 //!
-//! Storage provides insert/remove/get operations where indices remain
+//! Storage provides insert/remove/get operations where keys remain
 //! valid until explicitly removed. This enables node-based data structures
-//! (lists, skip lists, heaps) to use indices instead of pointers.
+//! (lists, skip lists, heaps) to use keys instead of pointers.
+//!
+//! # Trait Hierarchy
+//!
+//! ```text
+//! Storage<T>           - base trait: get, remove, len
+//!     │
+//!     ├── BoundedStorage<T>   - fixed capacity, try_insert -> Result
+//!     │
+//!     └── UnboundedStorage<T> - growable, insert -> Key (infallible)
+//! ```
+//!
+//! # Key Generation Models
+//!
+//! **Storage-assigned keys** (slab-like): Storage generates keys on insert.
+//! - `BoxedStorage`, `slab::Slab`, `nexus_slab::Slab`
+//!
+//! **Value-provided keys** (map-like): Value contains its own key via [`Keyed`] trait.
+//! - `HashMap<K, V>` where `V: Keyed<Key = K>`
+//!
+//! # Implementations
+//!
+//! | Type | Traits | Key Model |
+//! |------|--------|-----------|
+//! | `BoxedStorage<T>` | `BoundedStorage` | Storage-assigned |
+//! | `slab::Slab<T>` | `UnboundedStorage` | Storage-assigned |
+//! | `nexus_slab::Slab<T>` | `BoundedStorage` | Storage-assigned |
+//! | `HashMap<K, V>` | `UnboundedStorage` | Value-provided (`V: Keyed`) |
 
-use crate::Index;
+use crate::Key;
 
 use core::mem::MaybeUninit;
 use core::ptr::NonNull;
 use std::alloc::{Layout, alloc, dealloc, handle_alloc_error};
+use std::collections::HashMap;
+use std::hash::{BuildHasher, Hash};
 use std::marker::PhantomData;
 
-/// Slab-like storage with stable indices.
+// =============================================================================
+// Traits
+// =============================================================================
+
+/// Base storage trait with stable keys.
 ///
-/// # Requirements
+/// Provides common operations for slab-like containers. Keys remain
+/// valid until explicitly removed, enabling node-based data structures
+/// to use keys instead of pointers.
 ///
-/// Implementations must provide:
-/// - **Stable indices**: an index remains valid until explicitly removed
-/// - **O(1)** insert, remove, get operations
-/// - **Slot reuse**: removed slots can be reused by future inserts
-///
-/// # Implementations
-///
-/// - `BoxedStorage<T>` - runtime capacity, heap allocated (in this crate)
-/// - `slab::Slab<T>` - growable, heap allocated (feature `slab`)
-/// - `nexus_slab::Slab<T>` - page-aligned, mlockable (feature `nexus-slab`)
+/// See [`BoundedStorage`] for fixed-capacity storage and
+/// [`UnboundedStorage`] for growable storage.
 pub trait Storage<T> {
-    /// Index type for this storage.
-    type Index: Index;
+    /// Key type for this storage.
+    type Key: Key;
 
-    /// Error type for failed insertions.
-    ///
-    /// - `Full<T>` for fixed-capacity storage
-    /// - `Infallible` for growable storage
-    type Error;
+    /// Removes and returns the value at `key`, if present.
+    fn remove(&mut self, key: Self::Key) -> Option<T>;
 
-    /// Inserts a value, returning its stable index.
-    fn try_insert(&mut self, value: T) -> Result<Self::Index, Self::Error>;
+    /// Returns a reference to the value at `key`, if present.
+    fn get(&self, key: Self::Key) -> Option<&T>;
 
-    /// Removes and returns the value at `index`, if present.
-    fn remove(&mut self, index: Self::Index) -> Option<T>;
+    /// Returns a mutable reference to the value at `key`, if present.
+    fn get_mut(&mut self, key: Self::Key) -> Option<&mut T>;
 
-    /// Returns a reference to the value at `index`, if present.
-    fn get(&self, index: Self::Index) -> Option<&T>;
+    /// Returns the number of occupied slots.
+    fn len(&self) -> usize;
 
-    /// Returns a mutable reference to the value at `index`, if present.
-    fn get_mut(&mut self, index: Self::Index) -> Option<&mut T>;
+    /// Returns `true` if no slots are occupied.
+    #[inline]
+    fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
 
     /// Returns a reference without bounds checking.
     ///
     /// # Safety
     ///
-    /// `index` must be valid and occupied.
-    unsafe fn get_unchecked(&self, index: Self::Index) -> &T;
+    /// `key` must be valid and occupied.
+    unsafe fn get_unchecked(&self, key: Self::Key) -> &T;
 
     /// Returns a mutable reference without bounds checking.
     ///
     /// # Safety
     ///
-    /// `index` must be valid and occupied.
-    unsafe fn get_unchecked_mut(&mut self, index: Self::Index) -> &mut T;
+    /// `key` must be valid and occupied.
+    unsafe fn get_unchecked_mut(&mut self, key: Self::Key) -> &mut T;
 
     /// Removes an element without bounds checking.
     ///
     /// # Safety
     ///
-    /// The index must be valid and occupied.
-    unsafe fn remove_unchecked(&mut self, index: Self::Index) -> T;
+    /// The key must be valid and occupied.
+    unsafe fn remove_unchecked(&mut self, key: Self::Key) -> T;
 }
 
+/// Fixed-capacity storage where insertion can fail.
+///
+/// Use this for pre-allocated, bounded storage where capacity is known
+/// upfront. Insertion returns `Result<Key, Full<T>>`.
+///
+/// # Implementations
+///
+/// - [`BoxedStorage<T>`] - runtime capacity, heap allocated
+/// - `nexus_slab::Slab<T>` - page-aligned, mlockable (feature `nexus-slab`)
+pub trait BoundedStorage<T>: Storage<T> {
+    /// Attempts to insert a value, returning its stable key.
+    ///
+    /// Returns `Err(Full(value))` if storage is at capacity.
+    fn try_insert(&mut self, value: T) -> Result<Self::Key, Full<T>>;
+
+    /// Returns the total capacity (number of slots).
+    fn capacity(&self) -> usize;
+
+    /// Returns `true` if all slots are occupied.
+    #[inline]
+    fn is_full(&self) -> bool {
+        self.len() >= self.capacity()
+    }
+}
+
+/// Growable storage where insertion always succeeds.
+///
+/// Use this when you want storage that grows as needed. Insertion
+/// is infallible (may allocate).
+///
+/// # Implementations
+///
+/// - `slab::Slab<T>` - growable, heap allocated (feature `slab`)
+/// - `HashMap<K, V>` where `V: Keyed<Key = K>` (feature `std`)
+pub trait UnboundedStorage<T>: Storage<T> {
+    /// Inserts a value, returning its stable key.
+    ///
+    /// This operation is infallible but may allocate.
+    fn insert(&mut self, value: T) -> Self::Key;
+}
+
+/// Trait for values that contain their own key.
+///
+/// Used with `HashMap` storage where the key is extracted from the value
+/// rather than generated by the storage.
+///
+/// # Example
+///
+/// ```
+/// use nexus_collections::Keyed;
+///
+/// #[derive(Clone, PartialEq, Eq, Hash)]
+/// struct OrderId(String);
+///
+/// struct Order {
+///     id: OrderId,
+///     price: u64,
+///     qty: u64,
+/// }
+///
+/// impl Keyed for Order {
+///     type Key = OrderId;
+///
+///     fn key(&self) -> Self::Key {
+///         self.id.clone()
+///     }
+/// }
+/// ```
+pub trait Keyed {
+    /// The key type for this value.
+    type Key;
+
+    /// Returns the key for this value.
+    fn key(&self) -> Self::Key;
+}
+
+// =============================================================================
+// Error Type
+// =============================================================================
+
 /// Error returned when fixed-capacity storage is full.
+///
+/// Contains the value that could not be inserted, allowing recovery.
+/// Modeled after `std::sync::mpsc::SendError`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Full<T>(pub T);
 
@@ -97,22 +207,22 @@ impl<T: core::fmt::Debug> std::error::Error for Full<T> {}
 /// Uses a single heap allocation containing:
 /// - Entry array (`MaybeUninit<T>`)
 /// - Occupancy bitmap (`u64` words)
-/// - Free stack (indices)
+/// - Free stack (keys)
 ///
 /// Capacity is rounded up to the next power of 2 for bitmap efficiency.
 ///
 /// # Example
 ///
 /// ```
-/// use nexus_collections::{BoxedStorage, Storage};
+/// use nexus_collections::{BoxedStorage, BoundedStorage, Storage};
 ///
 /// let mut storage: BoxedStorage<u64> = BoxedStorage::with_capacity(1000);
 /// assert!(storage.capacity() >= 1000); // Rounded to 1024
 ///
-/// let idx = storage.try_insert(42).unwrap();
-/// assert_eq!(storage.get(idx), Some(&42));
+/// let key = storage.try_insert(42).unwrap();
+/// assert_eq!(storage.get(key), Some(&42));
 /// ```
-pub struct BoxedStorage<T, Idx: Index = u32> {
+pub struct BoxedStorage<T, K: Key = u32> {
     /// Single allocation containing entries, bitmap, and free stack.
     ptr: NonNull<u8>,
     /// Capacity (always power of 2).
@@ -125,17 +235,17 @@ pub struct BoxedStorage<T, Idx: Index = u32> {
     bitmap_offset: usize,
     /// Offset to free stack from ptr.
     free_stack_offset: usize,
-    _marker: PhantomData<(T, Idx)>,
+    _marker: PhantomData<(T, K)>,
 }
 
-impl<T, Idx: Index> BoxedStorage<T, Idx> {
+impl<T, K: Key> BoxedStorage<T, K> {
     /// Creates storage with at least `min_capacity` slots.
     ///
     /// Actual capacity is rounded up to the next power of 2.
     ///
     /// # Panics
     ///
-    /// Panics if `min_capacity` is 0 or exceeds the index type's maximum.
+    /// Panics if `min_capacity` is 0 or exceeds the key type's maximum.
     pub fn with_capacity(min_capacity: usize) -> Self {
         assert!(min_capacity > 0, "capacity must be > 0");
 
@@ -143,8 +253,8 @@ impl<T, Idx: Index> BoxedStorage<T, Idx> {
         let capacity = min_capacity.next_power_of_two();
 
         assert!(
-            capacity <= Idx::NONE.as_usize(),
-            "capacity exceeds index type maximum"
+            capacity <= K::NONE.as_usize(),
+            "capacity exceeds key type maximum"
         );
 
         // Calculate layout
@@ -152,7 +262,7 @@ impl<T, Idx: Index> BoxedStorage<T, Idx> {
         let entries_layout = Layout::array::<MaybeUninit<T>>(capacity).unwrap();
         let bitmap_words = bitmap_words(capacity);
         let bitmap_layout = Layout::array::<u64>(bitmap_words).unwrap();
-        let free_stack_layout = Layout::array::<Idx>(capacity).unwrap();
+        let free_stack_layout = Layout::array::<K>(capacity).unwrap();
 
         let (layout, bitmap_offset) = entries_layout.extend(bitmap_layout).unwrap();
         let (layout, free_stack_offset) = layout.extend(free_stack_layout).unwrap();
@@ -173,9 +283,9 @@ impl<T, Idx: Index> BoxedStorage<T, Idx> {
 
         // Initialize free stack
         unsafe {
-            let free_stack_ptr = ptr.as_ptr().add(free_stack_offset) as *mut Idx;
+            let free_stack_ptr = ptr.as_ptr().add(free_stack_offset) as *mut K;
             for i in 0..capacity {
-                free_stack_ptr.add(i).write(Idx::from_usize(i));
+                free_stack_ptr.add(i).write(K::from_usize(i));
             }
         }
 
@@ -190,42 +300,18 @@ impl<T, Idx: Index> BoxedStorage<T, Idx> {
         }
     }
 
-    /// Returns the capacity.
-    #[inline]
-    pub const fn capacity(&self) -> usize {
-        self.capacity
-    }
-
-    /// Returns the number of occupied slots.
-    #[inline]
-    pub const fn len(&self) -> usize {
-        self.capacity - self.free_len
-    }
-
-    /// Returns `true` if no slots are occupied.
-    #[inline]
-    pub const fn is_empty(&self) -> bool {
-        self.free_len == self.capacity
-    }
-
-    /// Returns `true` if all slots are occupied.
-    #[inline]
-    pub const fn is_full(&self) -> bool {
-        self.free_len == 0
-    }
-
     /// Removes all elements from storage.
     ///
     /// This drops all stored values and makes all slots available for reuse.
     ///
     /// # Warning
     ///
-    /// If any data structures (List, Heap, etc.) still reference indices in
+    /// If any data structures (List, Heap, etc.) still reference keys in
     /// this storage, they will have dangling references. Only call this when
     /// you know nothing else references the storage, or after clearing those
     /// data structures first.
     ///
-    /// For owned wrappers like [`OwnedList`] and [`OwnedHeap`], this is handled
+    /// For owned wrappers like `OwnedList` and `OwnedHeap`, this is handled
     /// automatically.
     pub fn clear(&mut self) {
         // Drop all occupied values
@@ -248,7 +334,7 @@ impl<T, Idx: Index> BoxedStorage<T, Idx> {
         let free_stack = self.free_stack_ptr();
         for i in 0..self.capacity {
             unsafe {
-                *free_stack.add(i) = Idx::from_usize(i);
+                *free_stack.add(i) = K::from_usize(i);
             }
         }
         self.free_len = self.capacity;
@@ -265,8 +351,8 @@ impl<T, Idx: Index> BoxedStorage<T, Idx> {
     }
 
     #[inline]
-    fn free_stack_ptr(&self) -> *mut Idx {
-        unsafe { self.ptr.as_ptr().add(self.free_stack_offset) as *mut Idx }
+    fn free_stack_ptr(&self) -> *mut K {
+        unsafe { self.ptr.as_ptr().add(self.free_stack_offset) as *mut K }
     }
 
     #[inline]
@@ -300,31 +386,12 @@ impl<T, Idx: Index> BoxedStorage<T, Idx> {
     }
 }
 
-impl<T, Idx: Index> Storage<T> for BoxedStorage<T, Idx> {
-    type Index = Idx;
-    type Error = Full<T>;
+impl<T, K: Key> Storage<T> for BoxedStorage<T, K> {
+    type Key = K;
 
     #[inline]
-    fn try_insert(&mut self, value: T) -> Result<Self::Index, Self::Error> {
-        if self.free_len == 0 {
-            return Err(Full(value));
-        }
-
-        self.free_len -= 1;
-        let idx = unsafe { *self.free_stack_ptr().add(self.free_len) };
-        let i = idx.as_usize();
-
-        unsafe {
-            self.entries_ptr().add(i).write(MaybeUninit::new(value));
-        }
-        self.set_occupied(i);
-
-        Ok(idx)
-    }
-
-    #[inline]
-    fn remove(&mut self, index: Self::Index) -> Option<T> {
-        let i = index.as_usize();
+    fn remove(&mut self, key: Self::Key) -> Option<T> {
+        let i = key.as_usize();
         if i >= self.capacity || !self.is_occupied(i) {
             return None;
         }
@@ -333,7 +400,7 @@ impl<T, Idx: Index> Storage<T> for BoxedStorage<T, Idx> {
         let value = unsafe { self.entries_ptr().add(i).read().assume_init() };
 
         unsafe {
-            self.free_stack_ptr().add(self.free_len).write(index);
+            self.free_stack_ptr().add(self.free_len).write(key);
         }
         self.free_len += 1;
 
@@ -341,8 +408,8 @@ impl<T, Idx: Index> Storage<T> for BoxedStorage<T, Idx> {
     }
 
     #[inline]
-    fn get(&self, index: Self::Index) -> Option<&T> {
-        let i = index.as_usize();
+    fn get(&self, key: Self::Key) -> Option<&T> {
+        let i = key.as_usize();
         if i >= self.capacity || !self.is_occupied(i) {
             return None;
         }
@@ -351,8 +418,8 @@ impl<T, Idx: Index> Storage<T> for BoxedStorage<T, Idx> {
     }
 
     #[inline]
-    fn get_mut(&mut self, index: Self::Index) -> Option<&mut T> {
-        let i = index.as_usize();
+    fn get_mut(&mut self, key: Self::Key) -> Option<&mut T> {
+        let i = key.as_usize();
         if i >= self.capacity || !self.is_occupied(i) {
             return None;
         }
@@ -361,24 +428,29 @@ impl<T, Idx: Index> Storage<T> for BoxedStorage<T, Idx> {
     }
 
     #[inline]
-    unsafe fn get_unchecked(&self, index: Self::Index) -> &T {
-        unsafe { (*self.entries_ptr().add(index.as_usize())).assume_init_ref() }
+    fn len(&self) -> usize {
+        self.capacity - self.free_len
     }
 
     #[inline]
-    unsafe fn get_unchecked_mut(&mut self, index: Self::Index) -> &mut T {
-        unsafe { (*self.entries_ptr().add(index.as_usize())).assume_init_mut() }
+    unsafe fn get_unchecked(&self, key: Self::Key) -> &T {
+        unsafe { (*self.entries_ptr().add(key.as_usize())).assume_init_ref() }
     }
 
     #[inline]
-    unsafe fn remove_unchecked(&mut self, index: Self::Index) -> T {
-        let i = index.as_usize();
+    unsafe fn get_unchecked_mut(&mut self, key: Self::Key) -> &mut T {
+        unsafe { (*self.entries_ptr().add(key.as_usize())).assume_init_mut() }
+    }
+
+    #[inline]
+    unsafe fn remove_unchecked(&mut self, key: Self::Key) -> T {
+        let i = key.as_usize();
 
         self.set_vacant(i);
         let value = unsafe { self.entries_ptr().add(i).read().assume_init() };
 
         unsafe {
-            self.free_stack_ptr().add(self.free_len).write(index);
+            self.free_stack_ptr().add(self.free_len).write(key);
         }
         self.free_len += 1;
 
@@ -386,7 +458,32 @@ impl<T, Idx: Index> Storage<T> for BoxedStorage<T, Idx> {
     }
 }
 
-impl<T, Idx: Index> Drop for BoxedStorage<T, Idx> {
+impl<T, K: Key> BoundedStorage<T> for BoxedStorage<T, K> {
+    #[inline]
+    fn try_insert(&mut self, value: T) -> Result<Self::Key, Full<T>> {
+        if self.free_len == 0 {
+            return Err(Full(value));
+        }
+
+        self.free_len -= 1;
+        let key = unsafe { *self.free_stack_ptr().add(self.free_len) };
+        let i = key.as_usize();
+
+        unsafe {
+            self.entries_ptr().add(i).write(MaybeUninit::new(value));
+        }
+        self.set_occupied(i);
+
+        Ok(key)
+    }
+
+    #[inline]
+    fn capacity(&self) -> usize {
+        self.capacity
+    }
+}
+
+impl<T, K: Key> Drop for BoxedStorage<T, K> {
     fn drop(&mut self) {
         // Drop all occupied entries
         for i in 0..self.capacity {
@@ -405,103 +502,190 @@ impl<T, Idx: Index> Drop for BoxedStorage<T, Idx> {
 }
 
 // Safety: BoxedStorage owns its data, safe to send if T is Send
-unsafe impl<T: Send, Idx: Index> Send for BoxedStorage<T, Idx> {}
+unsafe impl<T: Send, K: Key> Send for BoxedStorage<T, K> {}
 
 // =============================================================================
-// slab::Slab implementation
+// HashMap implementation (UnboundedStorage for Keyed values)
+// =============================================================================
+
+impl<K, V, S> Storage<V> for HashMap<K, V, S>
+where
+    K: Key + Hash + Eq,
+    S: BuildHasher,
+{
+    type Key = K;
+
+    #[inline]
+    fn remove(&mut self, key: Self::Key) -> Option<V> {
+        self.remove(&key)
+    }
+
+    #[inline]
+    fn get(&self, key: Self::Key) -> Option<&V> {
+        self.get(&key)
+    }
+
+    #[inline]
+    fn get_mut(&mut self, key: Self::Key) -> Option<&mut V> {
+        self.get_mut(&key)
+    }
+
+    #[inline]
+    fn len(&self) -> usize {
+        self.len()
+    }
+
+    #[inline]
+    unsafe fn get_unchecked(&self, key: Self::Key) -> &V {
+        unsafe { self.get(&key).unwrap_unchecked() }
+    }
+
+    #[inline]
+    unsafe fn get_unchecked_mut(&mut self, key: Self::Key) -> &mut V {
+        unsafe { self.get_mut(&key).unwrap_unchecked() }
+    }
+
+    #[inline]
+    unsafe fn remove_unchecked(&mut self, key: Self::Key) -> V {
+        unsafe { self.remove(&key).unwrap_unchecked() }
+    }
+}
+
+impl<K, V, S> UnboundedStorage<V> for HashMap<K, V, S>
+where
+    K: Key + Hash + Eq + Clone,
+    V: Keyed<Key = K>,
+    S: BuildHasher + Default,
+{
+    #[inline]
+    fn insert(&mut self, value: V) -> Self::Key {
+        let key = value.key();
+        self.insert(key.clone(), value);
+        key
+    }
+}
+
+// =============================================================================
+// slab::Slab implementation (UnboundedStorage)
 // =============================================================================
 
 #[cfg(feature = "slab")]
 impl<T> Storage<T> for slab::Slab<T> {
-    type Index = usize;
-    type Error = core::convert::Infallible;
+    type Key = usize;
 
     #[inline]
-    fn try_insert(&mut self, value: T) -> Result<Self::Index, Self::Error> {
-        Ok(self.insert(value))
+    fn remove(&mut self, key: Self::Key) -> Option<T> {
+        self.try_remove(key)
     }
 
     #[inline]
-    fn remove(&mut self, index: Self::Index) -> Option<T> {
-        self.try_remove(index)
+    fn get(&self, key: Self::Key) -> Option<&T> {
+        self.get(key)
     }
 
     #[inline]
-    fn get(&self, index: Self::Index) -> Option<&T> {
-        self.get(index)
+    fn get_mut(&mut self, key: Self::Key) -> Option<&mut T> {
+        self.get_mut(key)
     }
 
     #[inline]
-    fn get_mut(&mut self, index: Self::Index) -> Option<&mut T> {
-        self.get_mut(index)
+    fn len(&self) -> usize {
+        self.len()
     }
 
     #[inline]
-    unsafe fn get_unchecked(&self, index: Self::Index) -> &T {
-        unsafe { self.get(index).unwrap_unchecked() }
+    unsafe fn get_unchecked(&self, key: Self::Key) -> &T {
+        unsafe { self.get(key).unwrap_unchecked() }
     }
 
     #[inline]
-    unsafe fn get_unchecked_mut(&mut self, index: Self::Index) -> &mut T {
-        unsafe { self.get_mut(index).unwrap_unchecked() }
+    unsafe fn get_unchecked_mut(&mut self, key: Self::Key) -> &mut T {
+        unsafe { self.get_mut(key).unwrap_unchecked() }
     }
 
     #[inline]
-    unsafe fn remove_unchecked(&mut self, index: Self::Index) -> T {
-        // slab
-        self.remove(index)
+    unsafe fn remove_unchecked(&mut self, key: Self::Key) -> T {
+        self.remove(key)
+    }
+}
+
+#[cfg(feature = "slab")]
+impl<T> UnboundedStorage<T> for slab::Slab<T> {
+    #[inline]
+    fn insert(&mut self, value: T) -> Self::Key {
+        self.insert(value)
     }
 }
 
 // =============================================================================
-// nexus_slab::Slab implementation
+// nexus_slab::Slab implementation (BoundedStorage)
 // =============================================================================
 
 #[cfg(feature = "nexus-slab")]
 impl<T> Storage<T> for nexus_slab::Slab<T> {
-    type Index = nexus_slab::Key;
-    type Error = nexus_slab::Full<T>;
+    type Key = nexus_slab::Key;
 
     #[inline]
-    fn try_insert(&mut self, value: T) -> Result<Self::Index, Self::Error> {
-        self.insert(value)
+    fn remove(&mut self, key: Self::Key) -> Option<T> {
+        self.remove(key)
     }
 
     #[inline]
-    fn remove(&mut self, index: Self::Index) -> Option<T> {
-        self.remove(index)
+    fn get(&self, key: Self::Key) -> Option<&T> {
+        self.get(key)
     }
 
     #[inline]
-    fn get(&self, index: Self::Index) -> Option<&T> {
-        self.get(index)
+    fn get_mut(&mut self, key: Self::Key) -> Option<&mut T> {
+        self.get_mut(key)
     }
 
     #[inline]
-    fn get_mut(&mut self, index: Self::Index) -> Option<&mut T> {
-        self.get_mut(index)
+    fn len(&self) -> usize {
+        self.len()
     }
 
     #[inline]
-    unsafe fn get_unchecked(&self, index: Self::Index) -> &T {
-        unsafe { self.get_unchecked(index) }
+    unsafe fn get_unchecked(&self, key: Self::Key) -> &T {
+        unsafe { self.get_unchecked(key) }
     }
 
     #[inline]
-    unsafe fn get_unchecked_mut(&mut self, index: Self::Index) -> &mut T {
-        unsafe { self.get_unchecked_mut(index) }
+    unsafe fn get_unchecked_mut(&mut self, key: Self::Key) -> &mut T {
+        unsafe { self.get_unchecked_mut(key) }
     }
 
     #[inline]
-    unsafe fn remove_unchecked(&mut self, index: Self::Index) -> T {
-        unsafe { self.remove_unchecked(index) }
+    unsafe fn remove_unchecked(&mut self, key: Self::Key) -> T {
+        unsafe { self.remove_unchecked(key) }
     }
 }
+
+#[cfg(feature = "nexus-slab")]
+impl<T> BoundedStorage<T> for nexus_slab::Slab<T> {
+    #[inline]
+    fn try_insert(&mut self, value: T) -> Result<Self::Key, Full<T>> {
+        self.insert(value).map_err(|e| Full(e.into_inner()))
+    }
+
+    #[inline]
+    fn capacity(&self) -> usize {
+        self.capacity()
+    }
+}
+
+// =============================================================================
+// Helper functions
+// =============================================================================
 
 #[inline]
 const fn bitmap_words(capacity: usize) -> usize {
     (capacity + 63) / 64
 }
+
+// =============================================================================
+// Tests
+// =============================================================================
 
 #[cfg(test)]
 mod tests {
@@ -529,13 +713,13 @@ mod tests {
     fn insert_get_remove() {
         let mut storage: BoxedStorage<u64> = BoxedStorage::with_capacity(16);
 
-        let idx = storage.try_insert(42).unwrap();
+        let key = storage.try_insert(42).unwrap();
         assert_eq!(storage.len(), 1);
-        assert_eq!(storage.get(idx), Some(&42));
+        assert_eq!(storage.get(key), Some(&42));
 
-        let removed = storage.remove(idx);
+        let removed = storage.remove(key);
         assert_eq!(removed, Some(42));
-        assert_eq!(storage.get(idx), None);
+        assert_eq!(storage.get(key), None);
         assert_eq!(storage.len(), 0);
     }
 
@@ -543,10 +727,10 @@ mod tests {
     fn get_mut() {
         let mut storage: BoxedStorage<u64> = BoxedStorage::with_capacity(16);
 
-        let idx = storage.try_insert(10).unwrap();
-        *storage.get_mut(idx).unwrap() = 20;
+        let key = storage.try_insert(10).unwrap();
+        *storage.get_mut(key).unwrap() = 20;
 
-        assert_eq!(storage.get(idx), Some(&20));
+        assert_eq!(storage.get(key), Some(&20));
     }
 
     #[test]
@@ -588,11 +772,28 @@ mod tests {
     fn remove_nonexistent() {
         let mut storage: BoxedStorage<u64> = BoxedStorage::with_capacity(16);
 
-        let idx = storage.try_insert(42).unwrap();
-        storage.remove(idx);
+        let key = storage.try_insert(42).unwrap();
+        storage.remove(key);
 
         // Double remove returns None
-        assert_eq!(storage.remove(idx), None);
+        assert_eq!(storage.remove(key), None);
+    }
+
+    #[test]
+    fn clear_storage() {
+        let mut storage: BoxedStorage<u64> = BoxedStorage::with_capacity(16);
+
+        storage.try_insert(1).unwrap();
+        storage.try_insert(2).unwrap();
+        storage.try_insert(3).unwrap();
+
+        assert_eq!(storage.len(), 3);
+
+        storage.clear();
+
+        assert_eq!(storage.len(), 0);
+        assert!(storage.is_empty());
+        assert!(!storage.is_full());
     }
 
     #[test]
@@ -640,12 +841,119 @@ mod tests {
     }
 
     #[test]
-    fn u16_index() {
+    fn u16_key() {
         let mut storage: BoxedStorage<u64, u16> = BoxedStorage::with_capacity(100);
 
-        let idx = storage.try_insert(42).unwrap();
-        assert_eq!(storage.get(idx), Some(&42));
+        let key = storage.try_insert(42).unwrap();
+        assert_eq!(storage.get(key), Some(&42));
     }
+
+    // =========================================================================
+    // HashMap tests
+    // =========================================================================
+
+    #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+    struct OrderId(u64);
+
+    // Implement Key trait for OrderId
+    impl crate::Key for OrderId {
+        const NONE: Self = OrderId(u64::MAX);
+
+        fn from_usize(val: usize) -> Self {
+            OrderId(val as u64)
+        }
+
+        fn as_usize(&self) -> usize {
+            self.0 as usize
+        }
+
+        fn is_none(&self) -> bool {
+            self.0 == u64::MAX
+        }
+    }
+
+    #[derive(Debug)]
+    struct Order {
+        id: OrderId,
+        price: u64,
+    }
+
+    impl Keyed for Order {
+        type Key = OrderId;
+
+        fn key(&self) -> Self::Key {
+            self.id.clone()
+        }
+    }
+
+    #[test]
+    fn hashmap_storage_basic() {
+        let mut storage: HashMap<OrderId, Order> = HashMap::new();
+
+        let order = Order {
+            id: OrderId(1),
+            price: 100,
+        };
+
+        let key = UnboundedStorage::insert(&mut storage, order);
+        assert_eq!(key, OrderId(1));
+
+        let retrieved = Storage::get(&storage, OrderId(1));
+        assert!(retrieved.is_some());
+        assert_eq!(retrieved.unwrap().price, 100);
+    }
+
+    #[test]
+    fn hashmap_storage_remove() {
+        let mut storage: HashMap<OrderId, Order> = HashMap::new();
+
+        UnboundedStorage::insert(
+            &mut storage,
+            Order {
+                id: OrderId(1),
+                price: 100,
+            },
+        );
+        UnboundedStorage::insert(
+            &mut storage,
+            Order {
+                id: OrderId(2),
+                price: 200,
+            },
+        );
+
+        assert_eq!(Storage::len(&storage), 2);
+
+        let removed = Storage::remove(&mut storage, OrderId(1));
+        assert!(removed.is_some());
+        assert_eq!(removed.unwrap().price, 100);
+
+        assert_eq!(Storage::len(&storage), 1);
+        assert!(Storage::get(&storage, OrderId(1)).is_none());
+    }
+
+    #[test]
+    fn hashmap_storage_get_mut() {
+        let mut storage: HashMap<OrderId, Order> = HashMap::new();
+
+        UnboundedStorage::insert(
+            &mut storage,
+            Order {
+                id: OrderId(1),
+                price: 100,
+            },
+        );
+
+        if let Some(order) = Storage::get_mut(&mut storage, OrderId(1)) {
+            order.price = 150;
+        }
+
+        assert_eq!(Storage::get(&storage, OrderId(1)).unwrap().price, 150);
+    }
+
+    // =========================================================================
+    // slab::Slab tests
+    // =========================================================================
 
     #[cfg(feature = "slab")]
     mod slab_tests {
@@ -655,25 +963,29 @@ mod tests {
         fn insert_get_remove() {
             let mut storage = slab::Slab::new();
 
-            let idx = storage.try_insert(42).unwrap();
-            assert_eq!(storage.get(idx), Some(&42));
+            let key = UnboundedStorage::insert(&mut storage, 42);
+            assert_eq!(Storage::get(&storage, key), Some(&42));
 
-            let removed = storage.remove(idx);
-            assert_eq!(removed, 42);
-            assert_eq!(storage.get(idx), None);
+            let removed = Storage::remove(&mut storage, key);
+            assert_eq!(removed, Some(42));
+            assert_eq!(Storage::get(&storage, key), None);
         }
 
         #[test]
         fn slot_reuse() {
             let mut storage = slab::Slab::new();
 
-            let idx1 = storage.try_insert(1).unwrap();
-            storage.remove(idx1);
+            let key1 = UnboundedStorage::insert(&mut storage, 1);
+            Storage::remove(&mut storage, key1);
 
-            let idx2 = storage.try_insert(2).unwrap();
-            assert_eq!(idx1, idx2); // Slot reused
+            let key2 = UnboundedStorage::insert(&mut storage, 2);
+            assert_eq!(key1, key2); // Slot reused
         }
     }
+
+    // =========================================================================
+    // nexus_slab::Slab tests
+    // =========================================================================
 
     #[cfg(feature = "nexus-slab")]
     mod nexus_slab_tests {
@@ -683,14 +995,18 @@ mod tests {
         fn insert_get_remove() {
             let mut storage: nexus_slab::Slab<u64> = nexus_slab::Slab::with_capacity(16).unwrap();
 
-            let idx = storage.try_insert(42).unwrap();
-            assert_eq!(storage.get(idx), Some(&42));
+            let key = BoundedStorage::try_insert(&mut storage, 42).unwrap();
+            assert_eq!(Storage::get(&storage, key), Some(&42));
 
-            let removed = storage.remove(idx);
+            let removed = Storage::remove(&mut storage, key);
             assert_eq!(removed, Some(42));
-            assert_eq!(storage.get(idx), None);
+            assert_eq!(Storage::get(&storage, key), None);
         }
     }
+
+    // =========================================================================
+    // Benchmarks
+    // =========================================================================
 
     #[test]
     #[ignore]
@@ -718,17 +1034,17 @@ mod tests {
         for i in 0..ITERATIONS {
             // Insert
             let start = Instant::now();
-            let idx = storage.try_insert(i as u64).unwrap();
+            let key = storage.try_insert(i as u64).unwrap();
             insert_ns.push(start.elapsed().as_nanos() as u64);
 
             // Get
             let start = Instant::now();
-            let _ = std::hint::black_box(storage.get(idx));
+            let _ = std::hint::black_box(storage.get(key));
             get_ns.push(start.elapsed().as_nanos() as u64);
 
             // Remove
             let start = Instant::now();
-            let _ = std::hint::black_box(storage.remove(idx));
+            let _ = std::hint::black_box(storage.remove(key));
             remove_ns.push(start.elapsed().as_nanos() as u64);
         }
 
@@ -797,19 +1113,19 @@ mod tests {
         for i in 0..ITERATIONS {
             // Insert
             let start = rdtsc();
-            let idx = storage.try_insert(i as u64).unwrap();
+            let key = storage.try_insert(i as u64).unwrap();
             let end = rdtsc();
             insert_cycles.push(end - start);
 
             // Get
             let start = rdtsc();
-            let _ = std::hint::black_box(storage.get(idx));
+            let _ = std::hint::black_box(storage.get(key));
             let end = rdtsc();
             get_cycles.push(end - start);
 
             // Remove
             let start = rdtsc();
-            let _ = std::hint::black_box(storage.remove(idx));
+            let _ = std::hint::black_box(storage.remove(key));
             let end = rdtsc();
             remove_cycles.push(end - start);
         }

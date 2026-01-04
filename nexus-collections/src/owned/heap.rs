@@ -1,76 +1,49 @@
 //! OwnedHeap - a min-heap that owns its storage.
 
-use crate::{BoxedStorage, Full, Heap, HeapEntry, Index, Storage};
+use crate::heap::{BoxedHeapStorage, Drain, DrainWhile, Heap};
+use crate::{Full, Index, Storage};
 
 /// A min-heap that owns its storage.
 ///
-/// This is a convenience wrapper around [`Heap`] + [`BoxedStorage`] for cases
+/// This is a convenience wrapper around [`Heap`] + [`BoxedHeapStorage`] for cases
 /// where you don't need to share storage across multiple data structures.
+///
+/// For shared storage scenarios (e.g., timers that can be in multiple heaps
+/// over their lifetime), use [`Heap`] directly with external storage.
 ///
 /// # Example
 ///
 /// ```
-/// use nexus_collections::{Index, HeapEntry, OwnedHeap};
-/// use std::cmp::Ordering;
+/// use nexus_collections::OwnedHeap;
 ///
-/// #[derive(Debug)]
-/// struct Timer {
-///     fire_at: u64,
-///     id: u32,
-///     heap_idx: u32,
-/// }
+/// let mut heap: OwnedHeap<u32> = OwnedHeap::with_capacity(100);
 ///
-/// impl Timer {
-///     fn new(fire_at: u64, id: u32) -> Self {
-///         Self { fire_at, id, heap_idx: u32::NONE }
-///     }
-/// }
+/// let a = heap.push(10).unwrap();
+/// let b = heap.push(5).unwrap();
+/// let c = heap.push(15).unwrap();
 ///
-/// impl HeapEntry<u32> for Timer {
-///     fn heap_idx(&self) -> u32 { self.heap_idx }
-///     fn set_heap_idx(&mut self, idx: u32) { self.heap_idx = idx; }
-/// }
+/// // Peek returns minimum
+/// assert_eq!(heap.peek(), Some(&5));
 ///
-/// impl Ord for Timer {
-///     fn cmp(&self, other: &Self) -> Ordering {
-///         self.fire_at.cmp(&other.fire_at)
-///     }
-/// }
-/// impl PartialOrd for Timer {
-///     fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
-///         Some(self.cmp(other))
-///     }
-/// }
-/// impl PartialEq for Timer {
-///     fn eq(&self, other: &Self) -> bool {
-///         self.fire_at == other.fire_at
-///     }
-/// }
-/// impl Eq for Timer {}
+/// // Cancel by handle
+/// heap.remove(a);
 ///
-/// let mut timers: OwnedHeap<Timer> = OwnedHeap::with_capacity(100);
-///
-/// let a = timers.push(Timer::new(100, 1)).unwrap();
-/// let b = timers.push(Timer::new(50, 2)).unwrap();
-/// let c = timers.push(Timer::new(75, 3)).unwrap();
-///
-/// // Pops in fire_at order (min-heap)
-/// assert_eq!(timers.pop().unwrap().id, 2);  // fire_at: 50
-/// assert_eq!(timers.pop().unwrap().id, 3);  // fire_at: 75
-/// assert_eq!(timers.pop().unwrap().id, 1);  // fire_at: 100
+/// // Pop in sorted order
+/// assert_eq!(heap.pop(), Some(5));
+/// assert_eq!(heap.pop(), Some(15));
 /// ```
-pub struct OwnedHeap<T: HeapEntry<Idx> + Ord, Idx: Index = u32> {
-    storage: BoxedStorage<T, Idx>,
-    heap: Heap<Idx>,
+pub struct OwnedHeap<T: Ord, Idx: Index = u32> {
+    storage: BoxedHeapStorage<T, Idx>,
+    heap: Heap<T, BoxedHeapStorage<T, Idx>, Idx>,
 }
 
-impl<T: HeapEntry<Idx> + Ord, Idx: Index> OwnedHeap<T, Idx> {
+impl<T: Ord, Idx: Index> OwnedHeap<T, Idx> {
     /// Creates a new heap with the given capacity.
     ///
     /// Capacity is rounded up to the next power of 2.
     pub fn with_capacity(capacity: usize) -> Self {
         Self {
-            storage: BoxedStorage::with_capacity(capacity),
+            storage: BoxedHeapStorage::with_capacity(capacity),
             heap: Heap::with_capacity(capacity),
         }
     }
@@ -93,18 +66,20 @@ impl<T: HeapEntry<Idx> + Ord, Idx: Index> OwnedHeap<T, Idx> {
         self.storage.capacity()
     }
 
+    // ========================================================================
+    // Core operations
+    // ========================================================================
+
     /// Pushes a value onto the heap.
     ///
-    /// Returns the index of the inserted element.
+    /// Returns the index (handle) of the inserted element.
     ///
     /// # Errors
     ///
     /// Returns `Err(Full(value))` if storage is full.
     #[inline]
     pub fn push(&mut self, value: T) -> Result<Idx, Full<T>> {
-        let idx = self.storage.try_insert(value)?;
-        self.heap.push(&mut self.storage, idx);
-        Ok(idx)
+        self.heap.push(&mut self.storage, value)
     }
 
     /// Removes and returns the minimum element.
@@ -112,8 +87,7 @@ impl<T: HeapEntry<Idx> + Ord, Idx: Index> OwnedHeap<T, Idx> {
     /// Returns `None` if the heap is empty.
     #[inline]
     pub fn pop(&mut self) -> Option<T> {
-        let idx = self.heap.pop(&mut self.storage)?;
-        self.storage.remove(idx)
+        self.heap.pop(&mut self.storage)
     }
 
     /// Returns a reference to the minimum element without removing it.
@@ -121,8 +95,7 @@ impl<T: HeapEntry<Idx> + Ord, Idx: Index> OwnedHeap<T, Idx> {
     /// Returns `None` if the heap is empty.
     #[inline]
     pub fn peek(&self) -> Option<&T> {
-        let idx = self.heap.peek()?;
-        self.storage.get(idx)
+        self.heap.peek(&self.storage)
     }
 
     /// Returns the index of the minimum element without removing it.
@@ -130,84 +103,109 @@ impl<T: HeapEntry<Idx> + Ord, Idx: Index> OwnedHeap<T, Idx> {
     /// Returns `None` if the heap is empty.
     #[inline]
     pub fn peek_idx(&self) -> Option<Idx> {
-        self.heap.peek()
+        self.heap.peek_idx()
     }
+
+    // ========================================================================
+    // Handle-based operations
+    // ========================================================================
 
     /// Removes an element by index.
     ///
-    /// Returns `None` if the index is invalid or not in the heap.
+    /// Returns `Some(value)` if the element was in the heap, `None` otherwise.
     #[inline]
     pub fn remove(&mut self, idx: Idx) -> Option<T> {
-        if !self.heap.remove(&mut self.storage, idx) {
-            return None;
-        }
-        self.storage.remove(idx)
+        self.heap.remove(&mut self.storage, idx)
     }
 
     /// Returns a reference to the element at the given index.
+    ///
+    /// Returns `None` if the index is invalid or not in the heap.
     #[inline]
     pub fn get(&self, idx: Idx) -> Option<&T> {
-        self.storage.get(idx)
+        self.storage.get(idx).map(|node| &node.data)
     }
 
     /// Returns a mutable reference to the element at the given index.
     ///
-    /// # Warning
-    ///
-    /// If you modify the element's priority, you must call [`update`](Self::update),
-    /// [`decrease_key`](Self::decrease_key), or [`increase_key`](Self::increase_key)
-    /// to restore heap order.
+    /// **Warning:** Modifying the element may break heap order. After modification,
+    /// call [`decrease_key`](Self::decrease_key), [`increase_key`](Self::increase_key),
+    /// or [`update_key`](Self::update_key) to restore heap order.
     #[inline]
     pub fn get_mut(&mut self, idx: Idx) -> Option<&mut T> {
-        self.storage.get_mut(idx)
+        self.storage.get_mut(idx).map(|node| &mut node.data)
     }
 
-    /// Notifies the heap that an element's priority has decreased.
+    // ========================================================================
+    // Priority updates
+    // ========================================================================
+
+    /// Restores heap order after decreasing an element's priority.
     ///
-    /// Call this after decreasing an element's priority to restore heap order.
+    /// Call this after using [`get_mut`](Self::get_mut) to decrease an element's value.
     ///
     /// # Panics
     ///
-    /// Panics if `idx` is not in the heap.
+    /// Panics if `idx` is not in the heap (debug builds only).
     #[inline]
     pub fn decrease_key(&mut self, idx: Idx) {
         self.heap.decrease_key(&mut self.storage, idx);
     }
 
-    /// Notifies the heap that an element's priority has increased.
+    /// Restores heap order after increasing an element's priority.
     ///
-    /// Call this after increasing an element's priority to restore heap order.
+    /// Call this after using [`get_mut`](Self::get_mut) to increase an element's value.
     ///
     /// # Panics
     ///
-    /// Panics if `idx` is not in the heap.
+    /// Panics if `idx` is not in the heap (debug builds only).
     #[inline]
     pub fn increase_key(&mut self, idx: Idx) {
         self.heap.increase_key(&mut self.storage, idx);
     }
 
-    /// Restores heap order after an element's priority changed.
+    /// Restores heap order after changing an element's priority.
     ///
-    /// Use when you don't know if priority increased or decreased.
+    /// Use when you don't know if the priority increased or decreased.
     ///
     /// # Panics
     ///
-    /// Panics if `idx` is not in the heap.
+    /// Panics if `idx` is not in the heap (debug builds only).
     #[inline]
-    pub fn update(&mut self, idx: Idx) {
-        self.heap.update(&mut self.storage, idx);
+    pub fn update_key(&mut self, idx: Idx) {
+        self.heap.update_key(&mut self.storage, idx);
     }
 
+    // ========================================================================
+    // Bulk operations
+    // ========================================================================
+
     /// Clears the heap, removing all elements.
-    ///
-    /// This drops all values and resets the heap to empty state.
     pub fn clear(&mut self) {
         self.heap.clear(&mut self.storage);
         self.storage.clear();
     }
+
+    /// Returns an iterator that drains elements in sorted order.
+    #[inline]
+    pub fn drain(&mut self) -> Drain<'_, T, BoxedHeapStorage<T, Idx>, Idx> {
+        self.heap.drain(&mut self.storage)
+    }
+
+    /// Returns an iterator that drains elements while the predicate is true.
+    ///
+    /// The predicate is called on each minimum element. Draining stops
+    /// when the predicate returns `false` or the heap is empty.
+    #[inline]
+    pub fn drain_while<F>(&mut self, pred: F) -> DrainWhile<'_, T, BoxedHeapStorage<T, Idx>, Idx, F>
+    where
+        F: FnMut(&T) -> bool,
+    {
+        self.heap.drain_while(&mut self.storage, pred)
+    }
 }
 
-impl<T: HeapEntry<Idx> + Ord, Idx: Index> Default for OwnedHeap<T, Idx> {
+impl<T: Ord, Idx: Index> Default for OwnedHeap<T, Idx> {
     fn default() -> Self {
         Self::with_capacity(16)
     }
@@ -216,170 +214,217 @@ impl<T: HeapEntry<Idx> + Ord, Idx: Index> Default for OwnedHeap<T, Idx> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::cmp::Ordering;
-
-    #[derive(Debug)]
-    struct Task {
-        priority: u32,
-        id: u32,
-        heap_idx: u32,
-    }
-
-    impl Task {
-        fn new(priority: u32, id: u32) -> Self {
-            Self {
-                priority,
-                id,
-                heap_idx: u32::NONE,
-            }
-        }
-    }
-
-    impl HeapEntry<u32> for Task {
-        fn heap_idx(&self) -> u32 {
-            self.heap_idx
-        }
-        fn set_heap_idx(&mut self, idx: u32) {
-            self.heap_idx = idx;
-        }
-    }
-
-    impl Ord for Task {
-        fn cmp(&self, other: &Self) -> Ordering {
-            self.priority.cmp(&other.priority)
-        }
-    }
-
-    impl PartialOrd for Task {
-        fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
-            Some(self.cmp(other))
-        }
-    }
-
-    impl PartialEq for Task {
-        fn eq(&self, other: &Self) -> bool {
-            self.priority == other.priority
-        }
-    }
-
-    impl Eq for Task {}
 
     #[test]
     fn new_is_empty() {
-        let heap: OwnedHeap<Task> = OwnedHeap::with_capacity(16);
+        let heap: OwnedHeap<u32> = OwnedHeap::with_capacity(16);
         assert!(heap.is_empty());
         assert_eq!(heap.len(), 0);
         assert!(heap.peek().is_none());
     }
 
     #[test]
-    fn push_pop_single() {
-        let mut heap: OwnedHeap<Task> = OwnedHeap::with_capacity(16);
+    fn push_pop() {
+        let mut heap: OwnedHeap<u32> = OwnedHeap::with_capacity(16);
 
-        let _idx = heap.push(Task::new(5, 1)).unwrap();
-        assert_eq!(heap.len(), 1);
-        assert!(heap.peek().is_some());
-        assert_eq!(heap.peek().unwrap().priority, 5);
+        heap.push(10).unwrap();
+        heap.push(5).unwrap();
+        heap.push(15).unwrap();
 
-        let task = heap.pop().unwrap();
-        assert_eq!(task.id, 1);
-        assert!(heap.is_empty());
+        assert_eq!(heap.pop(), Some(5));
+        assert_eq!(heap.pop(), Some(10));
+        assert_eq!(heap.pop(), Some(15));
+        assert_eq!(heap.pop(), None);
     }
 
     #[test]
-    fn min_heap_order() {
-        let mut heap: OwnedHeap<Task> = OwnedHeap::with_capacity(16);
+    fn peek() {
+        let mut heap: OwnedHeap<u32> = OwnedHeap::with_capacity(16);
 
-        heap.push(Task::new(10, 1)).unwrap();
-        heap.push(Task::new(1, 2)).unwrap();
-        heap.push(Task::new(5, 3)).unwrap();
-        heap.push(Task::new(3, 4)).unwrap();
+        assert!(heap.peek().is_none());
 
-        assert_eq!(heap.pop().unwrap().priority, 1);
-        assert_eq!(heap.pop().unwrap().priority, 3);
-        assert_eq!(heap.pop().unwrap().priority, 5);
-        assert_eq!(heap.pop().unwrap().priority, 10);
+        heap.push(10).unwrap();
+        assert_eq!(heap.peek(), Some(&10));
+
+        heap.push(5).unwrap();
+        assert_eq!(heap.peek(), Some(&5));
+
+        heap.push(15).unwrap();
+        assert_eq!(heap.peek(), Some(&5));
     }
 
     #[test]
     fn remove_by_index() {
-        let mut heap: OwnedHeap<Task> = OwnedHeap::with_capacity(16);
+        let mut heap: OwnedHeap<u32> = OwnedHeap::with_capacity(16);
 
-        let _a = heap.push(Task::new(10, 1)).unwrap();
-        let _b = heap.push(Task::new(1, 2)).unwrap();
-        let c = heap.push(Task::new(5, 3)).unwrap();
+        let a = heap.push(10).unwrap();
+        let b = heap.push(5).unwrap();
+        let c = heap.push(15).unwrap();
 
-        let removed = heap.remove(c).unwrap();
-        assert_eq!(removed.id, 3);
+        // Remove middle
+        assert_eq!(heap.remove(a), Some(10));
         assert_eq!(heap.len(), 2);
 
-        assert_eq!(heap.pop().unwrap().priority, 1);
-        assert_eq!(heap.pop().unwrap().priority, 10);
-    }
+        // Remaining: 5, 15
+        assert_eq!(heap.pop(), Some(5));
+        assert_eq!(heap.pop(), Some(15));
 
-    #[test]
-    fn decrease_key() {
-        let mut heap: OwnedHeap<Task> = OwnedHeap::with_capacity(16);
-
-        let a = heap.push(Task::new(10, 1)).unwrap();
-        let _b = heap.push(Task::new(5, 2)).unwrap();
-
-        // Decrease a's priority
-        heap.get_mut(a).unwrap().priority = 1;
-        heap.decrease_key(a);
-
-        // Now a should be at the top
-        assert_eq!(heap.peek().unwrap().id, 1);
-    }
-
-    #[test]
-    fn increase_key() {
-        let mut heap: OwnedHeap<Task> = OwnedHeap::with_capacity(16);
-
-        let a = heap.push(Task::new(1, 1)).unwrap();
-        let _b = heap.push(Task::new(5, 2)).unwrap();
-
-        // Increase a's priority
-        heap.get_mut(a).unwrap().priority = 100;
-        heap.increase_key(a);
-
-        // Now b should be at the top
-        assert_eq!(heap.peek().unwrap().id, 2);
+        // b and c handles are now invalid (removed)
+        assert!(heap.get(b).is_none());
+        assert!(heap.get(c).is_none());
     }
 
     #[test]
     fn get_and_get_mut() {
-        let mut heap: OwnedHeap<Task> = OwnedHeap::with_capacity(16);
+        let mut heap: OwnedHeap<u32> = OwnedHeap::with_capacity(16);
 
-        let a = heap.push(Task::new(10, 1)).unwrap();
+        let a = heap.push(10).unwrap();
+        let b = heap.push(5).unwrap();
 
-        assert_eq!(heap.get(a).unwrap().id, 1);
+        assert_eq!(heap.get(a), Some(&10));
+        assert_eq!(heap.get(b), Some(&5));
 
-        heap.get_mut(a).unwrap().id = 42;
-        assert_eq!(heap.get(a).unwrap().id, 42);
+        *heap.get_mut(a).unwrap() = 1;
+        heap.decrease_key(a);
+
+        assert_eq!(heap.peek(), Some(&1));
+    }
+
+    #[test]
+    fn decrease_key() {
+        let mut heap: OwnedHeap<u32> = OwnedHeap::with_capacity(16);
+
+        let a = heap.push(10).unwrap();
+        heap.push(5).unwrap();
+
+        *heap.get_mut(a).unwrap() = 1;
+        heap.decrease_key(a);
+
+        assert_eq!(heap.peek_idx(), Some(a));
+        assert_eq!(heap.pop(), Some(1));
+    }
+
+    #[test]
+    fn increase_key() {
+        let mut heap: OwnedHeap<u32> = OwnedHeap::with_capacity(16);
+
+        let a = heap.push(1).unwrap();
+        heap.push(5).unwrap();
+
+        assert_eq!(heap.peek_idx(), Some(a));
+
+        *heap.get_mut(a).unwrap() = 100;
+        heap.increase_key(a);
+
+        assert_ne!(heap.peek_idx(), Some(a));
+        assert_eq!(heap.pop(), Some(5));
+        assert_eq!(heap.pop(), Some(100));
+    }
+
+    #[test]
+    fn update_key() {
+        let mut heap: OwnedHeap<u32> = OwnedHeap::with_capacity(16);
+
+        let a = heap.push(10).unwrap();
+        heap.push(5).unwrap();
+
+        *heap.get_mut(a).unwrap() = 1;
+        heap.update_key(a);
+
+        assert_eq!(heap.peek(), Some(&1));
+    }
+
+    #[test]
+    fn clear() {
+        let mut heap: OwnedHeap<u32> = OwnedHeap::with_capacity(16);
+
+        heap.push(1).unwrap();
+        heap.push(2).unwrap();
+        heap.push(3).unwrap();
+
+        heap.clear();
+
+        assert!(heap.is_empty());
+        assert_eq!(heap.len(), 0);
+    }
+
+    #[test]
+    fn drain() {
+        let mut heap: OwnedHeap<u32> = OwnedHeap::with_capacity(16);
+
+        heap.push(10).unwrap();
+        heap.push(5).unwrap();
+        heap.push(15).unwrap();
+        heap.push(1).unwrap();
+
+        let values: Vec<_> = heap.drain().collect();
+        assert_eq!(values, vec![1, 5, 10, 15]);
+        assert!(heap.is_empty());
+    }
+
+    #[test]
+    fn drain_while() {
+        let mut heap: OwnedHeap<u32> = OwnedHeap::with_capacity(16);
+
+        heap.push(1).unwrap();
+        heap.push(5).unwrap();
+        heap.push(10).unwrap();
+        heap.push(15).unwrap();
+
+        let values: Vec<_> = heap.drain_while(|&x| x < 10).collect();
+        assert_eq!(values, vec![1, 5]);
+        assert_eq!(heap.len(), 2);
     }
 
     #[test]
     fn full_returns_error() {
-        let mut heap: OwnedHeap<Task> = OwnedHeap::with_capacity(2);
+        let mut heap: OwnedHeap<u32> = OwnedHeap::with_capacity(2);
 
-        heap.push(Task::new(1, 1)).unwrap();
-        heap.push(Task::new(2, 2)).unwrap();
+        heap.push(1).unwrap();
+        heap.push(2).unwrap();
 
-        let err = heap.push(Task::new(3, 3));
+        let err = heap.push(3);
         assert!(err.is_err());
-        assert_eq!(err.unwrap_err().into_inner().id, 3);
+        assert_eq!(err.unwrap_err().into_inner(), 3);
     }
 
     #[test]
-    fn peek_idx() {
-        let mut heap: OwnedHeap<Task> = OwnedHeap::with_capacity(16);
+    fn timer_use_case() {
+        #[derive(Clone, PartialEq, Eq, PartialOrd, Ord, Debug)]
+        struct Timer {
+            fire_at: u64,
+            id: u32,
+        }
 
-        assert!(heap.peek_idx().is_none());
+        let mut heap: OwnedHeap<Timer> = OwnedHeap::with_capacity(16);
 
-        let _a = heap.push(Task::new(10, 1)).unwrap();
-        let b = heap.push(Task::new(1, 2)).unwrap();
+        let t1 = heap
+            .push(Timer {
+                fire_at: 100,
+                id: 1,
+            })
+            .unwrap();
+        let _t2 = heap.push(Timer { fire_at: 50, id: 2 }).unwrap();
+        let t3 = heap
+            .push(Timer {
+                fire_at: 200,
+                id: 3,
+            })
+            .unwrap();
 
-        assert_eq!(heap.peek_idx(), Some(b));
+        // Cancel t1
+        heap.remove(t1);
+
+        // Reschedule t3
+        heap.get_mut(t3).unwrap().fire_at = 25;
+        heap.decrease_key(t3);
+
+        // Process expired timers
+        let now = 60;
+        let expired: Vec<_> = heap.drain_while(|t| t.fire_at <= now).collect();
+
+        assert_eq!(expired.len(), 2);
+        assert_eq!(expired[0].id, 3); // fire_at: 25
+        assert_eq!(expired[1].id, 2); // fire_at: 50
     }
 }
