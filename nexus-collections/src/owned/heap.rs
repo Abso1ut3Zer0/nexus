@@ -1,7 +1,7 @@
 //! OwnedHeap - a min-heap that owns its storage.
 
 use crate::heap::{BoxedHeapStorage, Drain, DrainWhile, Heap};
-use crate::{Full, Index, Storage};
+use crate::{Full, Storage};
 
 /// A min-heap that owns its storage.
 ///

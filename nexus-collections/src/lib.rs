@@ -143,21 +143,24 @@ mod list;
 mod storage;
 
 // TODO: uncomment as modules are added
-// mod heap;
-// mod owned;
+mod heap;
+mod owned;
 
 pub use key::Key;
 pub use list::{BoxedListStorage, Cursor, Drain, Iter, IterMut, Keys, List, ListNode};
 pub use storage::{BoundedStorage, BoxedStorage, Full, Keyed, Storage, UnboundedStorage};
 
 // TODO: uncomment as modules are added
-// pub use heap::Heap;
-// pub use owned::{OwnedHeap, OwnedList};
+pub use heap::{BoxedHeapStorage, Heap};
+pub use owned::{OwnedList};
 
 #[cfg(feature = "nexus-slab")]
 pub use list::NexusListStorage;
+#[cfg(feature = "nexus-slab")]
+pub use heap::NexusHeapStorage;
+
 #[cfg(feature = "slab")]
 pub use list::SlabListStorage;
+#[cfg(feature = "slab")]
+pub use heap::SlabHeapStorage;
 
-/// Type alias for bounded heap storage backed by a boxed allocation.
-pub type BoxedHeapStorage<T, K = u32> = BoxedStorage<T, K>;

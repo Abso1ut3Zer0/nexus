@@ -2105,3 +2105,1412 @@ mod tests_slab {
         assert_eq!(list.len(), 100);
     }
 }
+
+#[cfg(test)]
+mod bench_boxed_storage {
+    use super::*;
+    use hdrhistogram::Histogram;
+
+    #[inline]
+    fn rdtscp() -> u64 {
+        #[cfg(target_arch = "x86_64")]
+        unsafe {
+            core::arch::x86_64::__rdtscp(&mut 0)
+        }
+        #[cfg(not(target_arch = "x86_64"))]
+        {
+            std::time::Instant::now().elapsed().as_nanos() as u64
+        }
+    }
+
+    fn print_histogram(name: &str, hist: &Histogram<u64>) {
+        println!(
+            "{:24} p50: {:4} cycles | p99: {:4} cycles | p999: {:5} cycles | min: {:4} | max: {:5}",
+            name,
+            hist.value_at_quantile(0.50),
+            hist.value_at_quantile(0.99),
+            hist.value_at_quantile(0.999),
+            hist.min(),
+            hist.max(),
+        );
+    }
+
+    const WARMUP: usize = 10_000;
+    const ITERATIONS: usize = 100_000;
+
+    #[test]
+    #[ignore]
+    fn bench_list_try_push_back() {
+        let mut storage: BoxedListStorage<u64> =
+            BoxedListStorage::with_capacity(ITERATIONS + WARMUP);
+        let mut list: List<u64, BoxedListStorage<u64>> = List::new();
+        let mut hist = Histogram::<u64>::new(3).unwrap();
+
+        for i in 0..WARMUP {
+            let _ = list.try_push_back(&mut storage, i as u64);
+            let _ = list.pop_back(&mut storage);
+        }
+
+        for i in 0..ITERATIONS {
+            let start = rdtscp();
+            let _ = list.try_push_back(&mut storage, i as u64);
+            let elapsed = rdtscp() - start;
+            hist.record(elapsed).unwrap();
+            let _ = list.pop_back(&mut storage);
+        }
+
+        print_histogram("try_push_back", &hist);
+    }
+
+    #[test]
+    #[ignore]
+    fn bench_list_try_push_front() {
+        let mut storage: BoxedListStorage<u64> =
+            BoxedListStorage::with_capacity(ITERATIONS + WARMUP);
+        let mut list: List<u64, BoxedListStorage<u64>> = List::new();
+        let mut hist = Histogram::<u64>::new(3).unwrap();
+
+        for i in 0..WARMUP {
+            let _ = list.try_push_front(&mut storage, i as u64);
+            let _ = list.pop_front(&mut storage);
+        }
+
+        for i in 0..ITERATIONS {
+            let start = rdtscp();
+            let _ = list.try_push_front(&mut storage, i as u64);
+            let elapsed = rdtscp() - start;
+            hist.record(elapsed).unwrap();
+            let _ = list.pop_front(&mut storage);
+        }
+
+        print_histogram("try_push_front", &hist);
+    }
+
+    #[test]
+    #[ignore]
+    fn bench_list_pop_front() {
+        let mut storage: BoxedListStorage<u64> =
+            BoxedListStorage::with_capacity(ITERATIONS + WARMUP);
+        let mut list: List<u64, BoxedListStorage<u64>> = List::new();
+        let mut hist = Histogram::<u64>::new(3).unwrap();
+
+        for _ in 0..WARMUP {
+            let _ = list.try_push_back(&mut storage, 1);
+            let _ = list.pop_front(&mut storage);
+        }
+
+        for i in 0..ITERATIONS {
+            let _ = list.try_push_back(&mut storage, i as u64);
+            let start = rdtscp();
+            let _ = list.pop_front(&mut storage);
+            let elapsed = rdtscp() - start;
+            hist.record(elapsed).unwrap();
+        }
+
+        print_histogram("pop_front", &hist);
+    }
+
+    #[test]
+    #[ignore]
+    fn bench_list_pop_back() {
+        let mut storage: BoxedListStorage<u64> =
+            BoxedListStorage::with_capacity(ITERATIONS + WARMUP);
+        let mut list: List<u64, BoxedListStorage<u64>> = List::new();
+        let mut hist = Histogram::<u64>::new(3).unwrap();
+
+        for _ in 0..WARMUP {
+            let _ = list.try_push_back(&mut storage, 1);
+            let _ = list.pop_back(&mut storage);
+        }
+
+        for i in 0..ITERATIONS {
+            let _ = list.try_push_back(&mut storage, i as u64);
+            let start = rdtscp();
+            let _ = list.pop_back(&mut storage);
+            let elapsed = rdtscp() - start;
+            hist.record(elapsed).unwrap();
+        }
+
+        print_histogram("pop_back", &hist);
+    }
+
+    #[test]
+    #[ignore]
+    fn bench_list_get() {
+        let mut storage: BoxedListStorage<u64> = BoxedListStorage::with_capacity(1024);
+        let mut list: List<u64, BoxedListStorage<u64>> = List::new();
+        let mut hist = Histogram::<u64>::new(3).unwrap();
+
+        let mut keys = Vec::with_capacity(1000);
+        for i in 0..1000 {
+            keys.push(list.try_push_back(&mut storage, i as u64).unwrap());
+        }
+
+        let mid_key = keys[500];
+        for _ in 0..WARMUP {
+            std::hint::black_box(list.get(&storage, mid_key));
+        }
+
+        for _ in 0..ITERATIONS {
+            let start = rdtscp();
+            std::hint::black_box(list.get(&storage, mid_key));
+            let elapsed = rdtscp() - start;
+            hist.record(elapsed).unwrap();
+        }
+
+        print_histogram("get (middle)", &hist);
+    }
+
+    #[test]
+    #[ignore]
+    fn bench_list_remove_middle() {
+        let mut storage: BoxedListStorage<u64> = BoxedListStorage::with_capacity(16);
+        let mut list: List<u64, BoxedListStorage<u64>> = List::new();
+        let mut hist = Histogram::<u64>::new(3).unwrap();
+
+        for _ in 0..WARMUP {
+            let a = list.try_push_back(&mut storage, 1).unwrap();
+            let b = list.try_push_back(&mut storage, 2).unwrap();
+            let c = list.try_push_back(&mut storage, 3).unwrap();
+            let _ = list.remove(&mut storage, b);
+            let _ = list.remove(&mut storage, a);
+            let _ = list.remove(&mut storage, c);
+        }
+
+        for _ in 0..ITERATIONS {
+            let a = list.try_push_back(&mut storage, 1).unwrap();
+            let b = list.try_push_back(&mut storage, 2).unwrap();
+            let c = list.try_push_back(&mut storage, 3).unwrap();
+
+            let start = rdtscp();
+            let _ = list.remove(&mut storage, b);
+            let elapsed = rdtscp() - start;
+            hist.record(elapsed).unwrap();
+
+            let _ = list.remove(&mut storage, a);
+            let _ = list.remove(&mut storage, c);
+        }
+
+        print_histogram("remove (middle)", &hist);
+    }
+
+    #[test]
+    #[ignore]
+    fn bench_list_unlink() {
+        let mut storage: BoxedListStorage<u64> = BoxedListStorage::with_capacity(16);
+        let mut list: List<u64, BoxedListStorage<u64>> = List::new();
+        let mut hist = Histogram::<u64>::new(3).unwrap();
+
+        for _ in 0..WARMUP {
+            let key = list.try_push_back(&mut storage, 1).unwrap();
+            list.unlink(&mut storage, key);
+            storage.remove(key);
+        }
+
+        for _ in 0..ITERATIONS {
+            let key = list.try_push_back(&mut storage, 1).unwrap();
+
+            let start = rdtscp();
+            list.unlink(&mut storage, key);
+            let elapsed = rdtscp() - start;
+            hist.record(elapsed).unwrap();
+
+            storage.remove(key);
+        }
+
+        print_histogram("unlink", &hist);
+    }
+
+    #[test]
+    #[ignore]
+    fn bench_list_link_back() {
+        let mut storage: BoxedListStorage<u64> = BoxedListStorage::with_capacity(16);
+        let mut list: List<u64, BoxedListStorage<u64>> = List::new();
+        let mut hist = Histogram::<u64>::new(3).unwrap();
+
+        for _ in 0..WARMUP {
+            let key = list.try_push_back(&mut storage, 1).unwrap();
+            list.unlink(&mut storage, key);
+            list.link_back(&mut storage, key);
+            list.remove(&mut storage, key);
+        }
+
+        for _ in 0..ITERATIONS {
+            let key = list.try_push_back(&mut storage, 1).unwrap();
+            list.unlink(&mut storage, key);
+
+            let start = rdtscp();
+            list.link_back(&mut storage, key);
+            let elapsed = rdtscp() - start;
+            hist.record(elapsed).unwrap();
+
+            list.remove(&mut storage, key);
+        }
+
+        print_histogram("link_back", &hist);
+    }
+
+    #[test]
+    #[ignore]
+    fn bench_list_move_to_back() {
+        let mut storage: BoxedListStorage<u64> = BoxedListStorage::with_capacity(1024);
+        let mut list: List<u64, BoxedListStorage<u64>> = List::new();
+        let mut hist = Histogram::<u64>::new(3).unwrap();
+
+        // Build a list of 100 elements
+        let mut keys = Vec::with_capacity(100);
+        for i in 0..100 {
+            keys.push(list.try_push_back(&mut storage, i as u64).unwrap());
+        }
+
+        for _ in 0..WARMUP {
+            list.move_to_back(&mut storage, keys[0]);
+        }
+
+        for i in 0..ITERATIONS {
+            let key = keys[i % 100];
+            let start = rdtscp();
+            list.move_to_back(&mut storage, key);
+            let elapsed = rdtscp() - start;
+            hist.record(elapsed).unwrap();
+        }
+
+        print_histogram("move_to_back", &hist);
+    }
+
+    #[test]
+    #[ignore]
+    fn bench_list_order_queue_workflow() {
+        let mut storage: BoxedListStorage<u64> = BoxedListStorage::with_capacity(32);
+        let mut queue_a: List<u64, BoxedListStorage<u64>> = List::new();
+        let mut queue_b: List<u64, BoxedListStorage<u64>> = List::new();
+
+        let mut hist_insert = Histogram::<u64>::new(3).unwrap();
+        let mut hist_move = Histogram::<u64>::new(3).unwrap();
+        let mut hist_cancel = Histogram::<u64>::new(3).unwrap();
+
+        for i in 0..WARMUP {
+            let key = queue_a.try_push_back(&mut storage, i as u64).unwrap();
+            queue_a.unlink(&mut storage, key);
+            queue_b.link_back(&mut storage, key);
+            queue_b.remove(&mut storage, key);
+        }
+
+        for i in 0..ITERATIONS {
+            let start = rdtscp();
+            let key = queue_a.try_push_back(&mut storage, i as u64).unwrap();
+            hist_insert.record(rdtscp() - start).unwrap();
+
+            let start = rdtscp();
+            queue_a.unlink(&mut storage, key);
+            queue_b.link_back(&mut storage, key);
+            hist_move.record(rdtscp() - start).unwrap();
+
+            let start = rdtscp();
+            queue_b.remove(&mut storage, key);
+            hist_cancel.record(rdtscp() - start).unwrap();
+        }
+
+        println!("\n=== Order Queue Workflow (BoxedStorage) ===");
+        print_histogram("insert (new order)", &hist_insert);
+        print_histogram("move (price amend)", &hist_move);
+        print_histogram("cancel", &hist_cancel);
+    }
+
+    #[test]
+    #[ignore]
+    fn bench_list_all() {
+        println!("\n=== List Benchmarks (BoxedStorage) ===");
+        println!(
+            "Run with: cargo test --release bench_boxed_storage::bench_list_all -- --ignored --nocapture\n"
+        );
+
+        bench_list_try_push_back();
+        bench_list_try_push_front();
+        bench_list_pop_front();
+        bench_list_pop_back();
+        bench_list_get();
+        bench_list_remove_middle();
+        bench_list_unlink();
+        bench_list_link_back();
+        bench_list_move_to_back();
+
+        println!();
+        bench_list_order_queue_workflow();
+    }
+}
+
+#[cfg(all(test, feature = "slab"))]
+mod bench_slab_storage {
+    use super::*;
+    use hdrhistogram::Histogram;
+
+    #[inline]
+    fn rdtscp() -> u64 {
+        #[cfg(target_arch = "x86_64")]
+        unsafe {
+            core::arch::x86_64::__rdtscp(&mut 0)
+        }
+        #[cfg(not(target_arch = "x86_64"))]
+        {
+            std::time::Instant::now().elapsed().as_nanos() as u64
+        }
+    }
+
+    fn print_histogram(name: &str, hist: &Histogram<u64>) {
+        println!(
+            "{:24} p50: {:4} cycles | p99: {:4} cycles | p999: {:5} cycles | min: {:4} | max: {:5}",
+            name,
+            hist.value_at_quantile(0.50),
+            hist.value_at_quantile(0.99),
+            hist.value_at_quantile(0.999),
+            hist.min(),
+            hist.max(),
+        );
+    }
+
+    const WARMUP: usize = 10_000;
+    const ITERATIONS: usize = 100_000;
+
+    #[test]
+    #[ignore]
+    fn bench_list_push_back() {
+        let mut storage: SlabListStorage<u64> = slab::Slab::with_capacity(16);
+        let mut list: List<u64, SlabListStorage<u64>, usize> = List::new();
+        let mut hist = Histogram::<u64>::new(3).unwrap();
+
+        for i in 0..WARMUP {
+            let _ = list.push_back(&mut storage, i as u64);
+            let _ = list.pop_back(&mut storage);
+        }
+
+        for i in 0..ITERATIONS {
+            let start = rdtscp();
+            let _ = list.push_back(&mut storage, i as u64);
+            let elapsed = rdtscp() - start;
+            hist.record(elapsed).unwrap();
+            let _ = list.pop_back(&mut storage);
+        }
+
+        print_histogram("push_back", &hist);
+    }
+
+    #[test]
+    #[ignore]
+    fn bench_list_push_front() {
+        let mut storage: SlabListStorage<u64> = slab::Slab::with_capacity(16);
+        let mut list: List<u64, SlabListStorage<u64>, usize> = List::new();
+        let mut hist = Histogram::<u64>::new(3).unwrap();
+
+        for i in 0..WARMUP {
+            let _ = list.push_front(&mut storage, i as u64);
+            let _ = list.pop_front(&mut storage);
+        }
+
+        for i in 0..ITERATIONS {
+            let start = rdtscp();
+            let _ = list.push_front(&mut storage, i as u64);
+            let elapsed = rdtscp() - start;
+            hist.record(elapsed).unwrap();
+            let _ = list.pop_front(&mut storage);
+        }
+
+        print_histogram("push_front", &hist);
+    }
+
+    #[test]
+    #[ignore]
+    fn bench_list_pop_front() {
+        let mut storage: SlabListStorage<u64> = slab::Slab::with_capacity(16);
+        let mut list: List<u64, SlabListStorage<u64>, usize> = List::new();
+        let mut hist = Histogram::<u64>::new(3).unwrap();
+
+        for _ in 0..WARMUP {
+            let _ = list.push_back(&mut storage, 1);
+            let _ = list.pop_front(&mut storage);
+        }
+
+        for i in 0..ITERATIONS {
+            let _ = list.push_back(&mut storage, i as u64);
+            let start = rdtscp();
+            let _ = list.pop_front(&mut storage);
+            let elapsed = rdtscp() - start;
+            hist.record(elapsed).unwrap();
+        }
+
+        print_histogram("pop_front", &hist);
+    }
+
+    #[test]
+    #[ignore]
+    fn bench_list_pop_back() {
+        let mut storage: SlabListStorage<u64> = slab::Slab::with_capacity(16);
+        let mut list: List<u64, SlabListStorage<u64>, usize> = List::new();
+        let mut hist = Histogram::<u64>::new(3).unwrap();
+
+        for _ in 0..WARMUP {
+            let _ = list.push_back(&mut storage, 1);
+            let _ = list.pop_back(&mut storage);
+        }
+
+        for i in 0..ITERATIONS {
+            let _ = list.push_back(&mut storage, i as u64);
+            let start = rdtscp();
+            let _ = list.pop_back(&mut storage);
+            let elapsed = rdtscp() - start;
+            hist.record(elapsed).unwrap();
+        }
+
+        print_histogram("pop_back", &hist);
+    }
+
+    #[test]
+    #[ignore]
+    fn bench_list_get() {
+        let mut storage: SlabListStorage<u64> = slab::Slab::with_capacity(1024);
+        let mut list: List<u64, SlabListStorage<u64>, usize> = List::new();
+        let mut hist = Histogram::<u64>::new(3).unwrap();
+
+        let mut keys = Vec::with_capacity(1000);
+        for i in 0..1000 {
+            keys.push(list.push_back(&mut storage, i as u64));
+        }
+
+        let mid_key = keys[500];
+        for _ in 0..WARMUP {
+            std::hint::black_box(list.get(&storage, mid_key));
+        }
+
+        for _ in 0..ITERATIONS {
+            let start = rdtscp();
+            std::hint::black_box(list.get(&storage, mid_key));
+            let elapsed = rdtscp() - start;
+            hist.record(elapsed).unwrap();
+        }
+
+        print_histogram("get (middle)", &hist);
+    }
+
+    #[test]
+    #[ignore]
+    fn bench_list_remove_middle() {
+        let mut storage: SlabListStorage<u64> = slab::Slab::with_capacity(16);
+        let mut list: List<u64, SlabListStorage<u64>, usize> = List::new();
+        let mut hist = Histogram::<u64>::new(3).unwrap();
+
+        for _ in 0..WARMUP {
+            let a = list.push_back(&mut storage, 1);
+            let b = list.push_back(&mut storage, 2);
+            let c = list.push_back(&mut storage, 3);
+            let _ = list.remove(&mut storage, b);
+            let _ = list.remove(&mut storage, a);
+            let _ = list.remove(&mut storage, c);
+        }
+
+        for _ in 0..ITERATIONS {
+            let a = list.push_back(&mut storage, 1);
+            let b = list.push_back(&mut storage, 2);
+            let c = list.push_back(&mut storage, 3);
+
+            let start = rdtscp();
+            let _ = list.remove(&mut storage, b);
+            let elapsed = rdtscp() - start;
+            hist.record(elapsed).unwrap();
+
+            let _ = list.remove(&mut storage, a);
+            let _ = list.remove(&mut storage, c);
+        }
+
+        print_histogram("remove (middle)", &hist);
+    }
+
+    #[test]
+    #[ignore]
+    fn bench_list_unlink() {
+        let mut storage: SlabListStorage<u64> = slab::Slab::with_capacity(16);
+        let mut list: List<u64, SlabListStorage<u64>, usize> = List::new();
+        let mut hist = Histogram::<u64>::new(3).unwrap();
+
+        for _ in 0..WARMUP {
+            let key = list.push_back(&mut storage, 1);
+            list.unlink(&mut storage, key);
+            storage.remove(key);
+        }
+
+        for _ in 0..ITERATIONS {
+            let key = list.push_back(&mut storage, 1);
+
+            let start = rdtscp();
+            list.unlink(&mut storage, key);
+            let elapsed = rdtscp() - start;
+            hist.record(elapsed).unwrap();
+
+            storage.remove(key);
+        }
+
+        print_histogram("unlink", &hist);
+    }
+
+    #[test]
+    #[ignore]
+    fn bench_list_link_back() {
+        let mut storage: SlabListStorage<u64> = slab::Slab::with_capacity(16);
+        let mut list: List<u64, SlabListStorage<u64>, usize> = List::new();
+        let mut hist = Histogram::<u64>::new(3).unwrap();
+
+        for _ in 0..WARMUP {
+            let key = list.push_back(&mut storage, 1);
+            list.unlink(&mut storage, key);
+            list.link_back(&mut storage, key);
+            list.remove(&mut storage, key);
+        }
+
+        for _ in 0..ITERATIONS {
+            let key = list.push_back(&mut storage, 1);
+            list.unlink(&mut storage, key);
+
+            let start = rdtscp();
+            list.link_back(&mut storage, key);
+            let elapsed = rdtscp() - start;
+            hist.record(elapsed).unwrap();
+
+            list.remove(&mut storage, key);
+        }
+
+        print_histogram("link_back", &hist);
+    }
+
+    #[test]
+    #[ignore]
+    fn bench_list_move_to_back() {
+        let mut storage: SlabListStorage<u64> = slab::Slab::with_capacity(1024);
+        let mut list: List<u64, SlabListStorage<u64>, usize> = List::new();
+        let mut hist = Histogram::<u64>::new(3).unwrap();
+
+        let mut keys = Vec::with_capacity(100);
+        for i in 0..100 {
+            keys.push(list.push_back(&mut storage, i as u64));
+        }
+
+        for _ in 0..WARMUP {
+            list.move_to_back(&mut storage, keys[0]);
+        }
+
+        for i in 0..ITERATIONS {
+            let key = keys[i % 100];
+            let start = rdtscp();
+            list.move_to_back(&mut storage, key);
+            let elapsed = rdtscp() - start;
+            hist.record(elapsed).unwrap();
+        }
+
+        print_histogram("move_to_back", &hist);
+    }
+
+    #[test]
+    #[ignore]
+    fn bench_list_order_queue_workflow() {
+        let mut storage: SlabListStorage<u64> = slab::Slab::with_capacity(32);
+        let mut queue_a: List<u64, SlabListStorage<u64>, usize> = List::new();
+        let mut queue_b: List<u64, SlabListStorage<u64>, usize> = List::new();
+
+        let mut hist_insert = Histogram::<u64>::new(3).unwrap();
+        let mut hist_move = Histogram::<u64>::new(3).unwrap();
+        let mut hist_cancel = Histogram::<u64>::new(3).unwrap();
+
+        for i in 0..WARMUP {
+            let key = queue_a.push_back(&mut storage, i as u64);
+            queue_a.unlink(&mut storage, key);
+            queue_b.link_back(&mut storage, key);
+            queue_b.remove(&mut storage, key);
+        }
+
+        for i in 0..ITERATIONS {
+            let start = rdtscp();
+            let key = queue_a.push_back(&mut storage, i as u64);
+            hist_insert.record(rdtscp() - start).unwrap();
+
+            let start = rdtscp();
+            queue_a.unlink(&mut storage, key);
+            queue_b.link_back(&mut storage, key);
+            hist_move.record(rdtscp() - start).unwrap();
+
+            let start = rdtscp();
+            queue_b.remove(&mut storage, key);
+            hist_cancel.record(rdtscp() - start).unwrap();
+        }
+
+        println!("\n=== Order Queue Workflow (slab::Slab) ===");
+        print_histogram("insert (new order)", &hist_insert);
+        print_histogram("move (price amend)", &hist_move);
+        print_histogram("cancel", &hist_cancel);
+    }
+
+    #[test]
+    #[ignore]
+    fn bench_list_all() {
+        println!("\n=== List Benchmarks (slab::Slab) ===");
+        println!(
+            "Run with: cargo test --release --features slab bench_slab_storage::bench_list_all -- --ignored --nocapture\n"
+        );
+
+        bench_list_push_back();
+        bench_list_push_front();
+        bench_list_pop_front();
+        bench_list_pop_back();
+        bench_list_get();
+        bench_list_remove_middle();
+        bench_list_unlink();
+        bench_list_link_back();
+        bench_list_move_to_back();
+
+        println!();
+        bench_list_order_queue_workflow();
+    }
+}
+
+#[cfg(all(test, feature = "nexus-slab"))]
+mod bench_nexus_slab_storage {
+    use super::*;
+    use hdrhistogram::Histogram;
+
+    #[inline]
+    fn rdtscp() -> u64 {
+        #[cfg(target_arch = "x86_64")]
+        unsafe {
+            core::arch::x86_64::__rdtscp(&mut 0)
+        }
+        #[cfg(not(target_arch = "x86_64"))]
+        {
+            std::time::Instant::now().elapsed().as_nanos() as u64
+        }
+    }
+
+    fn print_histogram(name: &str, hist: &Histogram<u64>) {
+        println!(
+            "{:24} p50: {:4} cycles | p99: {:4} cycles | p999: {:5} cycles | min: {:4} | max: {:5}",
+            name,
+            hist.value_at_quantile(0.50),
+            hist.value_at_quantile(0.99),
+            hist.value_at_quantile(0.999),
+            hist.min(),
+            hist.max(),
+        );
+    }
+
+    const WARMUP: usize = 10_000;
+    const ITERATIONS: usize = 100_000;
+
+    #[test]
+    #[ignore]
+    fn bench_list_try_push_back() {
+        let mut storage: NexusListStorage<u64> =
+            nexus_slab::Slab::with_capacity(ITERATIONS + WARMUP).expect("failed to allocate");
+        let mut list: List<u64, NexusListStorage<u64>, nexus_slab::Key> = List::new();
+        let mut hist = Histogram::<u64>::new(3).unwrap();
+
+        for i in 0..WARMUP {
+            let _ = list.try_push_back(&mut storage, i as u64);
+            let _ = list.pop_back(&mut storage);
+        }
+
+        for i in 0..ITERATIONS {
+            let start = rdtscp();
+            let _ = list.try_push_back(&mut storage, i as u64);
+            let elapsed = rdtscp() - start;
+            hist.record(elapsed).unwrap();
+            let _ = list.pop_back(&mut storage);
+        }
+
+        print_histogram("try_push_back", &hist);
+    }
+
+    #[test]
+    #[ignore]
+    fn bench_list_try_push_front() {
+        let mut storage: NexusListStorage<u64> =
+            nexus_slab::Slab::with_capacity(ITERATIONS + WARMUP).expect("failed to allocate");
+        let mut list: List<u64, NexusListStorage<u64>, nexus_slab::Key> = List::new();
+        let mut hist = Histogram::<u64>::new(3).unwrap();
+
+        for i in 0..WARMUP {
+            let _ = list.try_push_front(&mut storage, i as u64);
+            let _ = list.pop_front(&mut storage);
+        }
+
+        for i in 0..ITERATIONS {
+            let start = rdtscp();
+            let _ = list.try_push_front(&mut storage, i as u64);
+            let elapsed = rdtscp() - start;
+            hist.record(elapsed).unwrap();
+            let _ = list.pop_front(&mut storage);
+        }
+
+        print_histogram("try_push_front", &hist);
+    }
+
+    #[test]
+    #[ignore]
+    fn bench_list_pop_front() {
+        let mut storage: NexusListStorage<u64> =
+            nexus_slab::Slab::with_capacity(ITERATIONS + WARMUP).expect("failed to allocate");
+        let mut list: List<u64, NexusListStorage<u64>, nexus_slab::Key> = List::new();
+        let mut hist = Histogram::<u64>::new(3).unwrap();
+
+        for _ in 0..WARMUP {
+            let _ = list.try_push_back(&mut storage, 1);
+            let _ = list.pop_front(&mut storage);
+        }
+
+        for i in 0..ITERATIONS {
+            let _ = list.try_push_back(&mut storage, i as u64);
+            let start = rdtscp();
+            let _ = list.pop_front(&mut storage);
+            let elapsed = rdtscp() - start;
+            hist.record(elapsed).unwrap();
+        }
+
+        print_histogram("pop_front", &hist);
+    }
+
+    #[test]
+    #[ignore]
+    fn bench_list_pop_back() {
+        let mut storage: NexusListStorage<u64> =
+            nexus_slab::Slab::with_capacity(ITERATIONS + WARMUP).expect("failed to allocate");
+        let mut list: List<u64, NexusListStorage<u64>, nexus_slab::Key> = List::new();
+        let mut hist = Histogram::<u64>::new(3).unwrap();
+
+        for _ in 0..WARMUP {
+            let _ = list.try_push_back(&mut storage, 1);
+            let _ = list.pop_back(&mut storage);
+        }
+
+        for i in 0..ITERATIONS {
+            let _ = list.try_push_back(&mut storage, i as u64);
+            let start = rdtscp();
+            let _ = list.pop_back(&mut storage);
+            let elapsed = rdtscp() - start;
+            hist.record(elapsed).unwrap();
+        }
+
+        print_histogram("pop_back", &hist);
+    }
+
+    #[test]
+    #[ignore]
+    fn bench_list_get() {
+        let mut storage: NexusListStorage<u64> =
+            nexus_slab::Slab::with_capacity(1024).expect("failed to allocate");
+        let mut list: List<u64, NexusListStorage<u64>, nexus_slab::Key> = List::new();
+        let mut hist = Histogram::<u64>::new(3).unwrap();
+
+        let mut keys = Vec::with_capacity(1000);
+        for i in 0..1000 {
+            keys.push(list.try_push_back(&mut storage, i as u64).unwrap());
+        }
+
+        let mid_key = keys[500];
+        for _ in 0..WARMUP {
+            std::hint::black_box(list.get(&storage, mid_key));
+        }
+
+        for _ in 0..ITERATIONS {
+            let start = rdtscp();
+            std::hint::black_box(list.get(&storage, mid_key));
+            let elapsed = rdtscp() - start;
+            hist.record(elapsed).unwrap();
+        }
+
+        print_histogram("get (middle)", &hist);
+    }
+
+    #[test]
+    #[ignore]
+    fn bench_list_remove_middle() {
+        let mut storage: NexusListStorage<u64> =
+            nexus_slab::Slab::with_capacity(16).expect("failed to allocate");
+        let mut list: List<u64, NexusListStorage<u64>, nexus_slab::Key> = List::new();
+        let mut hist = Histogram::<u64>::new(3).unwrap();
+
+        for _ in 0..WARMUP {
+            let a = list.try_push_back(&mut storage, 1).unwrap();
+            let b = list.try_push_back(&mut storage, 2).unwrap();
+            let c = list.try_push_back(&mut storage, 3).unwrap();
+            let _ = list.remove(&mut storage, b);
+            let _ = list.remove(&mut storage, a);
+            let _ = list.remove(&mut storage, c);
+        }
+
+        for _ in 0..ITERATIONS {
+            let a = list.try_push_back(&mut storage, 1).unwrap();
+            let b = list.try_push_back(&mut storage, 2).unwrap();
+            let c = list.try_push_back(&mut storage, 3).unwrap();
+
+            let start = rdtscp();
+            let _ = list.remove(&mut storage, b);
+            let elapsed = rdtscp() - start;
+            hist.record(elapsed).unwrap();
+
+            let _ = list.remove(&mut storage, a);
+            let _ = list.remove(&mut storage, c);
+        }
+
+        print_histogram("remove (middle)", &hist);
+    }
+
+    #[test]
+    #[ignore]
+    fn bench_list_unlink() {
+        let mut storage: NexusListStorage<u64> =
+            nexus_slab::Slab::with_capacity(16).expect("failed to allocate");
+        let mut list: List<u64, NexusListStorage<u64>, nexus_slab::Key> = List::new();
+        let mut hist = Histogram::<u64>::new(3).unwrap();
+
+        for _ in 0..WARMUP {
+            let key = list.try_push_back(&mut storage, 1).unwrap();
+            list.unlink(&mut storage, key);
+            storage.remove(key);
+        }
+
+        for _ in 0..ITERATIONS {
+            let key = list.try_push_back(&mut storage, 1).unwrap();
+
+            let start = rdtscp();
+            list.unlink(&mut storage, key);
+            let elapsed = rdtscp() - start;
+            hist.record(elapsed).unwrap();
+
+            storage.remove(key);
+        }
+
+        print_histogram("unlink", &hist);
+    }
+
+    #[test]
+    #[ignore]
+    fn bench_list_link_back() {
+        let mut storage: NexusListStorage<u64> =
+            nexus_slab::Slab::with_capacity(16).expect("failed to allocate");
+        let mut list: List<u64, NexusListStorage<u64>, nexus_slab::Key> = List::new();
+        let mut hist = Histogram::<u64>::new(3).unwrap();
+
+        for _ in 0..WARMUP {
+            let key = list.try_push_back(&mut storage, 1).unwrap();
+            list.unlink(&mut storage, key);
+            list.link_back(&mut storage, key);
+            list.remove(&mut storage, key);
+        }
+
+        for _ in 0..ITERATIONS {
+            let key = list.try_push_back(&mut storage, 1).unwrap();
+            list.unlink(&mut storage, key);
+
+            let start = rdtscp();
+            list.link_back(&mut storage, key);
+            let elapsed = rdtscp() - start;
+            hist.record(elapsed).unwrap();
+
+            list.remove(&mut storage, key);
+        }
+
+        print_histogram("link_back", &hist);
+    }
+
+    #[test]
+    #[ignore]
+    fn bench_list_move_to_back() {
+        let mut storage: NexusListStorage<u64> =
+            nexus_slab::Slab::with_capacity(1024).expect("failed to allocate");
+        let mut list: List<u64, NexusListStorage<u64>, nexus_slab::Key> = List::new();
+        let mut hist = Histogram::<u64>::new(3).unwrap();
+
+        let mut keys = Vec::with_capacity(100);
+        for i in 0..100 {
+            keys.push(list.try_push_back(&mut storage, i as u64).unwrap());
+        }
+
+        for _ in 0..WARMUP {
+            list.move_to_back(&mut storage, keys[0]);
+        }
+
+        for i in 0..ITERATIONS {
+            let key = keys[i % 100];
+            let start = rdtscp();
+            list.move_to_back(&mut storage, key);
+            let elapsed = rdtscp() - start;
+            hist.record(elapsed).unwrap();
+        }
+
+        print_histogram("move_to_back", &hist);
+    }
+
+    #[test]
+    #[ignore]
+    fn bench_list_order_queue_workflow() {
+        let mut storage: NexusListStorage<u64> =
+            nexus_slab::Slab::with_capacity(32).expect("failed to allocate");
+        let mut queue_a: List<u64, NexusListStorage<u64>, nexus_slab::Key> = List::new();
+        let mut queue_b: List<u64, NexusListStorage<u64>, nexus_slab::Key> = List::new();
+
+        let mut hist_insert = Histogram::<u64>::new(3).unwrap();
+        let mut hist_move = Histogram::<u64>::new(3).unwrap();
+        let mut hist_cancel = Histogram::<u64>::new(3).unwrap();
+
+        for i in 0..WARMUP {
+            let key = queue_a.try_push_back(&mut storage, i as u64).unwrap();
+            queue_a.unlink(&mut storage, key);
+            queue_b.link_back(&mut storage, key);
+            queue_b.remove(&mut storage, key);
+        }
+
+        for i in 0..ITERATIONS {
+            let start = rdtscp();
+            let key = queue_a.try_push_back(&mut storage, i as u64).unwrap();
+            hist_insert.record(rdtscp() - start).unwrap();
+
+            let start = rdtscp();
+            queue_a.unlink(&mut storage, key);
+            queue_b.link_back(&mut storage, key);
+            hist_move.record(rdtscp() - start).unwrap();
+
+            let start = rdtscp();
+            queue_b.remove(&mut storage, key);
+            hist_cancel.record(rdtscp() - start).unwrap();
+        }
+
+        println!("\n=== Order Queue Workflow (nexus_slab::Slab) ===");
+        print_histogram("insert (new order)", &hist_insert);
+        print_histogram("move (price amend)", &hist_move);
+        print_histogram("cancel", &hist_cancel);
+    }
+
+    #[test]
+    #[ignore]
+    fn bench_list_all() {
+        println!("\n=== List Benchmarks (nexus_slab::Slab) ===");
+        println!(
+            "Run with: cargo test --release --features nexus-slab bench_nexus_slab_storage::bench_list_all -- --ignored --nocapture\n"
+        );
+
+        bench_list_try_push_back();
+        bench_list_try_push_front();
+        bench_list_pop_front();
+        bench_list_pop_back();
+        bench_list_get();
+        bench_list_remove_middle();
+        bench_list_unlink();
+        bench_list_link_back();
+        bench_list_move_to_back();
+
+        println!();
+        bench_list_order_queue_workflow();
+    }
+}
+
+#[cfg(test)]
+mod bench_hashmap_storage {
+    use super::*;
+    use crate::Keyed;
+    use hdrhistogram::Histogram;
+    use std::collections::HashMap;
+
+    // Test type that provides its own key
+    #[allow(unused)]
+    #[derive(Clone)]
+    struct Order {
+        id: u64,
+    }
+
+    impl Keyed for Order {
+        type Key = u64;
+        fn key(&self) -> u64 {
+            self.id
+        }
+    }
+
+    // Implement Keyed for ListNode<Order> so HashMap storage works
+    impl Keyed for ListNode<Order, u64> {
+        type Key = u64;
+        fn key(&self) -> u64 {
+            self.data.id
+        }
+    }
+
+    type HashMapListStorage = HashMap<u64, ListNode<Order, u64>>;
+
+    #[inline]
+    fn rdtscp() -> u64 {
+        #[cfg(target_arch = "x86_64")]
+        unsafe {
+            core::arch::x86_64::__rdtscp(&mut 0)
+        }
+        #[cfg(not(target_arch = "x86_64"))]
+        {
+            std::time::Instant::now().elapsed().as_nanos() as u64
+        }
+    }
+
+    fn print_histogram(name: &str, hist: &Histogram<u64>) {
+        println!(
+            "{:24} p50: {:4} cycles | p99: {:4} cycles | p999: {:5} cycles | min: {:4} | max: {:5}",
+            name,
+            hist.value_at_quantile(0.50),
+            hist.value_at_quantile(0.99),
+            hist.value_at_quantile(0.999),
+            hist.min(),
+            hist.max(),
+        );
+    }
+
+    const WARMUP: usize = 10_000;
+    const ITERATIONS: usize = 100_000;
+
+    #[test]
+    #[ignore]
+    fn bench_list_push_back() {
+        let mut storage: HashMapListStorage = HashMap::with_capacity(16);
+        let mut list: List<Order, HashMapListStorage, u64> = List::new();
+        let mut hist = Histogram::<u64>::new(3).unwrap();
+        let mut id_counter = 0u64;
+
+        for _ in 0..WARMUP {
+            let order = Order { id: id_counter };
+            id_counter += 1;
+            let _ = list.push_back(&mut storage, order);
+            let _ = list.pop_back(&mut storage);
+        }
+
+        for _ in 0..ITERATIONS {
+            let order = Order { id: id_counter };
+            id_counter += 1;
+
+            let start = rdtscp();
+            let _ = list.push_back(&mut storage, order);
+            let elapsed = rdtscp() - start;
+            hist.record(elapsed).unwrap();
+
+            let _ = list.pop_back(&mut storage);
+        }
+
+        print_histogram("push_back", &hist);
+    }
+
+    #[test]
+    #[ignore]
+    fn bench_list_push_front() {
+        let mut storage: HashMapListStorage = HashMap::with_capacity(16);
+        let mut list: List<Order, HashMapListStorage, u64> = List::new();
+        let mut hist = Histogram::<u64>::new(3).unwrap();
+        let mut id_counter = 0u64;
+
+        for _ in 0..WARMUP {
+            let order = Order { id: id_counter };
+            id_counter += 1;
+            let _ = list.push_front(&mut storage, order);
+            let _ = list.pop_front(&mut storage);
+        }
+
+        for _ in 0..ITERATIONS {
+            let order = Order { id: id_counter };
+            id_counter += 1;
+
+            let start = rdtscp();
+            let _ = list.push_front(&mut storage, order);
+            let elapsed = rdtscp() - start;
+            hist.record(elapsed).unwrap();
+
+            let _ = list.pop_front(&mut storage);
+        }
+
+        print_histogram("push_front", &hist);
+    }
+
+    #[test]
+    #[ignore]
+    fn bench_list_pop_front() {
+        let mut storage: HashMapListStorage = HashMap::with_capacity(16);
+        let mut list: List<Order, HashMapListStorage, u64> = List::new();
+        let mut hist = Histogram::<u64>::new(3).unwrap();
+        let mut id_counter = 0u64;
+
+        for _ in 0..WARMUP {
+            let order = Order { id: id_counter };
+            id_counter += 1;
+            let _ = list.push_back(&mut storage, order);
+            let _ = list.pop_front(&mut storage);
+        }
+
+        for _ in 0..ITERATIONS {
+            let order = Order { id: id_counter };
+            id_counter += 1;
+            let _ = list.push_back(&mut storage, order);
+
+            let start = rdtscp();
+            let _ = list.pop_front(&mut storage);
+            let elapsed = rdtscp() - start;
+            hist.record(elapsed).unwrap();
+        }
+
+        print_histogram("pop_front", &hist);
+    }
+
+    #[test]
+    #[ignore]
+    fn bench_list_pop_back() {
+        let mut storage: HashMapListStorage = HashMap::with_capacity(16);
+        let mut list: List<Order, HashMapListStorage, u64> = List::new();
+        let mut hist = Histogram::<u64>::new(3).unwrap();
+        let mut id_counter = 0u64;
+
+        for _ in 0..WARMUP {
+            let order = Order { id: id_counter };
+            id_counter += 1;
+            let _ = list.push_back(&mut storage, order);
+            let _ = list.pop_back(&mut storage);
+        }
+
+        for _ in 0..ITERATIONS {
+            let order = Order { id: id_counter };
+            id_counter += 1;
+            let _ = list.push_back(&mut storage, order);
+
+            let start = rdtscp();
+            let _ = list.pop_back(&mut storage);
+            let elapsed = rdtscp() - start;
+            hist.record(elapsed).unwrap();
+        }
+
+        print_histogram("pop_back", &hist);
+    }
+
+    #[test]
+    #[ignore]
+    fn bench_list_get() {
+        let mut storage: HashMapListStorage = HashMap::with_capacity(1024);
+        let mut list: List<Order, HashMapListStorage, u64> = List::new();
+        let mut hist = Histogram::<u64>::new(3).unwrap();
+
+        let mut keys = Vec::with_capacity(1000);
+        for i in 0..1000u64 {
+            let order = Order { id: i };
+            keys.push(list.push_back(&mut storage, order));
+        }
+
+        let mid_key = keys[500];
+        for _ in 0..WARMUP {
+            std::hint::black_box(list.get(&storage, mid_key));
+        }
+
+        for _ in 0..ITERATIONS {
+            let start = rdtscp();
+            std::hint::black_box(list.get(&storage, mid_key));
+            let elapsed = rdtscp() - start;
+            hist.record(elapsed).unwrap();
+        }
+
+        print_histogram("get (middle)", &hist);
+    }
+
+    #[test]
+    #[ignore]
+    fn bench_list_remove_middle() {
+        let mut storage: HashMapListStorage = HashMap::with_capacity(16);
+        let mut list: List<Order, HashMapListStorage, u64> = List::new();
+        let mut hist = Histogram::<u64>::new(3).unwrap();
+        let mut id_counter = 0u64;
+
+        for _ in 0..WARMUP {
+            let a = list.push_back(&mut storage, Order { id: id_counter });
+            id_counter += 1;
+            let b = list.push_back(&mut storage, Order { id: id_counter });
+            id_counter += 1;
+            let c = list.push_back(&mut storage, Order { id: id_counter });
+            id_counter += 1;
+            let _ = list.remove(&mut storage, b);
+            let _ = list.remove(&mut storage, a);
+            let _ = list.remove(&mut storage, c);
+        }
+
+        for _ in 0..ITERATIONS {
+            let a = list.push_back(&mut storage, Order { id: id_counter });
+            id_counter += 1;
+            let b = list.push_back(&mut storage, Order { id: id_counter });
+            id_counter += 1;
+            let c = list.push_back(&mut storage, Order { id: id_counter });
+            id_counter += 1;
+
+            let start = rdtscp();
+            let _ = list.remove(&mut storage, b);
+            let elapsed = rdtscp() - start;
+            hist.record(elapsed).unwrap();
+
+            let _ = list.remove(&mut storage, a);
+            let _ = list.remove(&mut storage, c);
+        }
+
+        print_histogram("remove (middle)", &hist);
+    }
+
+    #[test]
+    #[ignore]
+    fn bench_list_unlink() {
+        let mut storage: HashMapListStorage = HashMap::with_capacity(16);
+        let mut list: List<Order, HashMapListStorage, u64> = List::new();
+        let mut hist = Histogram::<u64>::new(3).unwrap();
+        let mut id_counter = 0u64;
+
+        for _ in 0..WARMUP {
+            let order = Order { id: id_counter };
+            id_counter += 1;
+            let key = list.push_back(&mut storage, order);
+            list.unlink(&mut storage, key);
+            storage.remove(&key);
+        }
+
+        for _ in 0..ITERATIONS {
+            let order = Order { id: id_counter };
+            id_counter += 1;
+            let key = list.push_back(&mut storage, order);
+
+            let start = rdtscp();
+            list.unlink(&mut storage, key);
+            let elapsed = rdtscp() - start;
+            hist.record(elapsed).unwrap();
+
+            storage.remove(&key);
+        }
+
+        print_histogram("unlink", &hist);
+    }
+
+    #[test]
+    #[ignore]
+    fn bench_list_link_back() {
+        let mut storage: HashMapListStorage = HashMap::with_capacity(16);
+        let mut list: List<Order, HashMapListStorage, u64> = List::new();
+        let mut hist = Histogram::<u64>::new(3).unwrap();
+        let mut id_counter = 0u64;
+
+        for _ in 0..WARMUP {
+            let order = Order { id: id_counter };
+            id_counter += 1;
+            let key = list.push_back(&mut storage, order);
+            list.unlink(&mut storage, key);
+            list.link_back(&mut storage, key);
+            list.remove(&mut storage, key);
+        }
+
+        for _ in 0..ITERATIONS {
+            let order = Order { id: id_counter };
+            id_counter += 1;
+            let key = list.push_back(&mut storage, order);
+            list.unlink(&mut storage, key);
+
+            let start = rdtscp();
+            list.link_back(&mut storage, key);
+            let elapsed = rdtscp() - start;
+            hist.record(elapsed).unwrap();
+
+            list.remove(&mut storage, key);
+        }
+
+        print_histogram("link_back", &hist);
+    }
+
+    #[test]
+    #[ignore]
+    fn bench_list_move_to_back() {
+        let mut storage: HashMapListStorage = HashMap::with_capacity(1024);
+        let mut list: List<Order, HashMapListStorage, u64> = List::new();
+        let mut hist = Histogram::<u64>::new(3).unwrap();
+
+        let mut keys = Vec::with_capacity(100);
+        for i in 0..100u64 {
+            let order = Order { id: i };
+            keys.push(list.push_back(&mut storage, order));
+        }
+
+        for _ in 0..WARMUP {
+            list.move_to_back(&mut storage, keys[0]);
+        }
+
+        for i in 0..ITERATIONS {
+            let key = keys[i % 100];
+            let start = rdtscp();
+            list.move_to_back(&mut storage, key);
+            let elapsed = rdtscp() - start;
+            hist.record(elapsed).unwrap();
+        }
+
+        print_histogram("move_to_back", &hist);
+    }
+
+    #[test]
+    #[ignore]
+    fn bench_list_order_queue_workflow() {
+        let mut storage: HashMapListStorage = HashMap::with_capacity(32);
+        let mut queue_a: List<Order, HashMapListStorage, u64> = List::new();
+        let mut queue_b: List<Order, HashMapListStorage, u64> = List::new();
+
+        let mut hist_insert = Histogram::<u64>::new(3).unwrap();
+        let mut hist_move = Histogram::<u64>::new(3).unwrap();
+        let mut hist_cancel = Histogram::<u64>::new(3).unwrap();
+
+        let mut id_counter = 0u64;
+
+        for _ in 0..WARMUP {
+            let order = Order { id: id_counter };
+            id_counter += 1;
+            let key = queue_a.push_back(&mut storage, order);
+            queue_a.unlink(&mut storage, key);
+            queue_b.link_back(&mut storage, key);
+            queue_b.remove(&mut storage, key);
+        }
+
+        for _ in 0..ITERATIONS {
+            let order = Order { id: id_counter };
+            id_counter += 1;
+
+            let start = rdtscp();
+            let key = queue_a.push_back(&mut storage, order);
+            hist_insert.record(rdtscp() - start).unwrap();
+
+            let start = rdtscp();
+            queue_a.unlink(&mut storage, key);
+            queue_b.link_back(&mut storage, key);
+            hist_move.record(rdtscp() - start).unwrap();
+
+            let start = rdtscp();
+            queue_b.remove(&mut storage, key);
+            hist_cancel.record(rdtscp() - start).unwrap();
+        }
+
+        println!("\n=== Order Queue Workflow (HashMap) ===");
+        print_histogram("insert (new order)", &hist_insert);
+        print_histogram("move (price amend)", &hist_move);
+        print_histogram("cancel", &hist_cancel);
+    }
+
+    #[test]
+    #[ignore]
+    fn bench_list_all() {
+        println!("\n=== List Benchmarks (HashMap) ===");
+        println!(
+            "Run with: cargo test --release bench_hashmap_storage::bench_list_all -- --ignored --nocapture\n"
+        );
+
+        bench_list_push_back();
+        bench_list_push_front();
+        bench_list_pop_front();
+        bench_list_pop_back();
+        bench_list_get();
+        bench_list_remove_middle();
+        bench_list_unlink();
+        bench_list_link_back();
+        bench_list_move_to_back();
+
+        println!();
+        bench_list_order_queue_workflow();
+    }
+}
