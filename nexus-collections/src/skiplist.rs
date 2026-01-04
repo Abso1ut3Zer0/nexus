@@ -110,6 +110,10 @@ where
     level: usize,
     /// Number of elements in the skip list.
     len: usize,
+    /// Derived from level_ratio: log2(level_ratio). Used to scale
+    /// the geometric distribution in random_level(). Higher values
+    /// produce fewer tall nodes (sparser upper levels).
+    level_divisor: u8,
     /// Marker for storage and key/value types.
     _marker: PhantomData<(K, V, S)>,
 }
@@ -121,15 +125,35 @@ where
     R: RngCore,
     S: Storage<SkipNode<K, V, Idx, MAX_LEVEL>, Key = Idx>,
 {
-    /// Creates a new empty skip list with the given random number generator.
-    #[inline]
+    /// Creates a new empty skip list.
+    ///
+    /// Uses default level ratio of 2 (p=0.5), meaning on average
+    /// half of nodes appear at each successive level.
     pub fn new(rng: R) -> Self {
+        Self::with_level_ratio(rng, 2)
+    }
+
+    /// Creates a new empty skip list with custom level ratio.
+    ///
+    /// `level_ratio` controls memory vs search speed tradeoff:
+    /// - Higher values = fewer levels = less memory, slower search
+    /// - Lower values = more levels = more memory, faster search
+    ///
+    /// Common values:
+    /// - 2: Standard (p=0.5), ~2 pointers per node average
+    /// - 4: Redis-style (p=0.25), ~1.33 pointers per node average
+    ///
+    /// Must be a power of 2 and >= 2. Invalid values are rounded
+    /// to nearest valid value.
+    pub fn with_level_ratio(rng: R, level_ratio: u32) -> Self {
+        let level_ratio = level_ratio.max(2).next_power_of_two();
         Self {
             head: [Idx::NONE; MAX_LEVEL],
             tail: Idx::NONE,
             rng,
             level: 0,
             len: 0,
+            level_divisor: level_ratio.trailing_zeros() as u8,
             _marker: PhantomData,
         }
     }
@@ -155,14 +179,14 @@ where
     /// Returns a reference to the value for the given key, or `None` if not found.
     #[inline]
     pub fn get<'a>(&'a self, storage: &'a S, key: &K) -> Option<&'a V> {
-        let (_, found) = self.search(storage, key);
+        let found = self.find(storage, key);
         found.map(|idx| &storage.get(idx).expect("invalid index").value)
     }
 
     /// Returns a mutable reference to the value for the given key, or `None` if not found.
     #[inline]
     pub fn get_mut<'a>(&'a mut self, storage: &'a mut S, key: &K) -> Option<&'a mut V> {
-        let (_, found) = self.search(storage, key);
+        let found = self.find(storage, key);
         found.map(|idx| &mut storage.get_mut(idx).expect("invalid index").value)
     }
 
@@ -218,17 +242,17 @@ where
 
         let first_idx = self.head[0];
 
-        // Read level and forward pointers before mutating
-        let first_node = storage.get(first_idx).expect("invalid head");
-        let node_level = first_node.level as usize;
-        let mut forwards = [Idx::NONE; MAX_LEVEL];
-        for i in 0..=node_level {
-            forwards[i] = first_node.forward[i];
-        }
+        // Get raw pointer - avoids holding borrow
+        let node_ptr =
+            storage.get(first_idx).expect("invalid head") as *const SkipNode<K, V, Idx, MAX_LEVEL>;
+
+        // Safety: node_ptr is valid, we're just reading
+        let node_level = unsafe { (*node_ptr).level } as usize;
 
         // Update head pointers at all levels this node participates in
         for i in 0..=node_level {
-            self.head[i] = forwards[i];
+            // Safety: node_ptr still valid, just reading forward[i]
+            self.head[i] = unsafe { (*node_ptr).forward[i] };
         }
 
         // Update tail if this was the only node
@@ -262,27 +286,29 @@ where
         let tail_key = storage.get(self.tail).expect("invalid tail").key.clone();
 
         // Search for predecessors
-        let (update, _) = self.search(storage, &tail_key);
+        let mut update = [Idx::NONE; MAX_LEVEL];
+        self.search(storage, &tail_key, &mut update);
 
         let idx = self.tail;
 
-        // Read level and forward pointers before mutating
-        let node = storage.get(idx).expect("invalid tail");
-        let node_level = node.level as usize;
-        let mut forwards = [Idx::NONE; MAX_LEVEL];
-        for i in 0..=node_level {
-            forwards[i] = node.forward[i];
-        }
+        // Get raw pointer - avoids holding borrow
+        let node_ptr =
+            storage.get(idx).expect("invalid tail") as *const SkipNode<K, V, Idx, MAX_LEVEL>;
+
+        // Safety: node_ptr is valid, we're just reading
+        let node_level = unsafe { (*node_ptr).level } as usize;
 
         // Update forward pointers at each level
         for i in 0..=node_level {
+            // Safety: node_ptr still valid, just reading forward[i]
+            let next = unsafe { (*node_ptr).forward[i] };
+
             if update[i].is_none() {
-                // Node was head at this level
-                self.head[i] = forwards[i];
+                self.head[i] = next;
             } else {
-                // Safety: update[i] is valid from search
+                // Safety: update[i] != idx (predecessor is always before target)
                 let prev = unsafe { storage.get_unchecked_mut(update[i]) };
-                prev.forward[i] = forwards[i];
+                prev.forward[i] = next;
             }
         }
 
@@ -302,28 +328,29 @@ where
 
     /// Removes the entry for the given key and returns the value, or `None` if not found.
     pub fn remove(&mut self, storage: &mut S, key: &K) -> Option<V> {
-        let (update, found) = self.search(storage, key);
-
+        let mut update = [Idx::NONE; MAX_LEVEL];
+        let found = self.search(storage, key, &mut update);
         let idx = found?;
 
-        // Read level and forward pointers before mutating
-        let node = storage.get(idx).expect("invalid index");
-        let node_level = node.level as usize;
-        let forward_0_is_none = node.forward[0].is_none();
-        let mut forwards = [Idx::NONE; MAX_LEVEL];
-        for i in 0..=node_level {
-            forwards[i] = node.forward[i];
-        }
+        // Get raw pointer - avoids holding borrow
+        let node_ptr =
+            storage.get(idx).expect("invalid index") as *const SkipNode<K, V, Idx, MAX_LEVEL>;
+
+        // Safety: node_ptr is valid, we're just reading
+        let node_level = unsafe { (*node_ptr).level } as usize;
+        let forward_0_is_none = unsafe { (*node_ptr).forward[0].is_none() };
 
         // Update forward pointers at each level
         for i in 0..=node_level {
+            // Safety: node_ptr still valid, just reading forward[i]
+            let next = unsafe { (*node_ptr).forward[i] };
+
             if update[i].is_none() {
-                // Node was head at this level
-                self.head[i] = forwards[i];
+                self.head[i] = next;
             } else {
-                // Safety: update[i] is valid from search
+                // Safety: update[i] != idx (predecessor is always before target)
                 let prev = unsafe { storage.get_unchecked_mut(update[i]) };
-                prev.forward[i] = forwards[i];
+                prev.forward[i] = next;
             }
         }
 
@@ -417,7 +444,9 @@ where
         storage: &'a mut S,
         key: &K,
     ) -> Cursor<'a, K, V, S, Idx, R, MAX_LEVEL> {
-        let (prev_at_level, found) = self.search(storage, key);
+        let mut prev_at_level = [Idx::NONE; MAX_LEVEL];
+        let found = self.find(storage, key);
+        self.search(storage, key, &mut prev_at_level);
         let current = if let Some(idx) = found {
             idx
         } else {
@@ -442,18 +471,53 @@ where
     // Internal helpers
     // ========================================================================
 
-    /// Searches for the key, returning predecessors at each level and the found index.
-    ///
-    /// Returns `(update, found)` where:
-    /// - `update[i]` is the predecessor at level i (NONE if head)
-    /// - `found` is `Some(idx)` if the key exists, `None` otherwise
-    fn search(&self, storage: &S, key: &K) -> ([Idx; MAX_LEVEL], Option<Idx>) {
-        let mut update = [Idx::NONE; MAX_LEVEL];
+    /// Finds the index of a key without computing predecessors.
+    /// Used for read-only operations (get, contains_key).
+    fn find(&self, storage: &S, key: &K) -> Option<Idx> {
         let mut current = Idx::NONE;
 
         // Start from the highest level
         for i in (0..=self.level).rev() {
-            // Get starting point for this level
+            let mut next = if current.is_none() {
+                self.head[i]
+            } else {
+                // Safety: current is valid
+                unsafe { storage.get_unchecked(current) }.forward[i]
+            };
+
+            // Traverse forward while next key is less than target
+            while next.is_some() {
+                let next_node = unsafe { storage.get_unchecked(next) };
+                if next_node.key >= *key {
+                    break;
+                }
+                current = next;
+                next = next_node.forward[i];
+            }
+        }
+
+        // Check if we found the exact key
+        let next = if current.is_none() {
+            self.head[0]
+        } else {
+            unsafe { storage.get_unchecked(current) }.forward[0]
+        };
+
+        if next.is_some() && unsafe { storage.get_unchecked(next) }.key == *key {
+            Some(next)
+        } else {
+            None
+        }
+    }
+
+    /// Searches for a key, filling the update array with predecessors at each level.
+    /// Used for mutations (insert, remove).
+    /// Returns the index if found.
+    fn search(&self, storage: &S, key: &K, update: &mut [Idx; MAX_LEVEL]) -> Option<Idx> {
+        let mut current = Idx::NONE;
+
+        // Start from the highest level
+        for i in (0..=self.level).rev() {
             let mut next = if current.is_none() {
                 self.head[i]
             } else {
@@ -481,18 +545,11 @@ where
             unsafe { storage.get_unchecked(current) }.forward[0]
         };
 
-        let found = if next.is_some() {
-            let next_node = unsafe { storage.get_unchecked(next) };
-            if next_node.key == *key {
-                Some(next)
-            } else {
-                None
-            }
+        if next.is_some() && unsafe { storage.get_unchecked(next) }.key == *key {
+            Some(next)
         } else {
             None
-        };
-
-        (update, found)
+        }
     }
 
     /// Generates a random level for a new node.
@@ -502,10 +559,12 @@ where
     #[inline]
     fn random_level(&mut self) -> u8 {
         let r = self.rng.next_u32();
-        (r.trailing_ones() as usize).min(MAX_LEVEL - 1) as u8
+        let level = (r.trailing_ones() as usize) / (self.level_divisor as usize);
+        level.min(MAX_LEVEL - 1) as u8
     }
 
     /// Links a newly inserted node into the skip list structure.
+    #[inline]
     fn link_node(&mut self, storage: &mut S, idx: Idx, new_level: u8, update: &[Idx; MAX_LEVEL]) {
         // First pass: collect what we need to set as forward pointers
         let mut new_forwards = [Idx::NONE; MAX_LEVEL];
@@ -573,7 +632,9 @@ where
         value: V,
     ) -> Result<Option<V>, Full<(K, V)>> {
         // Search first to check if key exists
-        let (update, found) = self.search(storage, &key);
+        let found = self.find(storage, &key);
+        let mut update = [Idx::NONE; MAX_LEVEL];
+        self.search(storage, &key, &mut update);
 
         // If key exists, update value
         if let Some(existing_idx) = found {
@@ -613,7 +674,9 @@ where
     /// If the key already exists, the value is updated and the old value is returned.
     pub fn insert(&mut self, storage: &mut S, key: K, value: V) -> Option<V> {
         // Search first to check if key exists
-        let (update, found) = self.search(storage, &key);
+        let found = self.find(storage, &key);
+        let mut update = [Idx::NONE; MAX_LEVEL];
+        self.search(storage, &key, &mut update);
 
         // If key exists, update value
         if let Some(existing_idx) = found {
@@ -853,7 +916,9 @@ where
         storage: &'a mut S,
         key: K,
     ) -> Entry<'a, K, V, S, Idx, R, MAX_LEVEL> {
-        let (update, found) = self.search(storage, &key);
+        let found = self.find(storage, &key);
+        let mut update = [Idx::NONE; MAX_LEVEL];
+        self.search(storage, &key, &mut update);
 
         if let Some(idx) = found {
             Entry::Occupied(OccupiedEntry {
@@ -878,8 +943,28 @@ where
 
 /// A cursor for traversing and modifying the skip list.
 ///
-/// The cursor maintains its position and predecessors, allowing O(1) removal
-/// at the current position.
+/// Unlike iterators, cursors track predecessor nodes at each level as they
+/// traverse. This enables O(1) removal at the current position without
+/// re-searching. The tradeoff is ~2 index writes per `move_next()` call
+/// on average.
+///
+/// # Use case
+///
+/// Cursors are designed for sweep operations that may remove elements:
+///
+/// ```ignore
+/// let mut cursor = skip_list.cursor_front(&mut storage);
+/// while let Some((price, level)) = cursor.current_mut() {
+///     process_level(level);
+///     if level.is_empty() {
+///         cursor.remove_current();  // O(1), advances automatically
+///     } else {
+///         cursor.move_next();
+///     }
+/// }
+/// ```
+///
+/// For read-only traversal, prefer `iter()` which has no tracking overhead.
 pub struct Cursor<'a, K, V, S, Idx, R, const MAX_LEVEL: usize>
 where
     K: Ord,
@@ -933,6 +1018,10 @@ where
     }
 
     /// Advances the cursor to the next position.
+    ///
+    /// Updates predecessor tracking at each level the current node participates
+    /// in. This is O(1) amortized (~2 writes average) and enables O(1) removal
+    /// via `remove_current()`.
     pub fn move_next(&mut self) {
         if self.current.is_none() {
             return;
@@ -941,7 +1030,9 @@ where
         let node = self.storage.get(self.current).expect("invalid current");
         let node_level = node.level as usize;
 
-        // Update predecessors for levels where current participates
+        // Track current as predecessor for levels it participates in.
+        // Higher levels retain their previous values - those predecessors
+        // are still valid since we only move forward at level 0.
         for i in 0..=node_level {
             self.prev_at_level[i] = self.current;
         }
@@ -960,24 +1051,25 @@ where
 
         let idx = self.current;
 
-        // Read level and forward pointers before mutating
-        let node = self.storage.get(idx).expect("invalid current");
-        let node_level = node.level as usize;
-        let next = node.forward[0];
-        let mut forwards = [Idx::NONE; MAX_LEVEL];
-        for i in 0..=node_level {
-            forwards[i] = node.forward[i];
-        }
+        // Get raw pointer - avoids holding borrow
+        let node_ptr = self.storage.get(idx).expect("invalid current")
+            as *const SkipNode<K, V, Idx, MAX_LEVEL>;
+
+        // Safety: node_ptr is valid, we're just reading
+        let node_level = unsafe { (*node_ptr).level } as usize;
+        let next = unsafe { (*node_ptr).forward[0] };
 
         // Update forward pointers at each level
         for i in 0..=node_level {
+            // Safety: node_ptr still valid, just reading forward[i]
+            let forward_i = unsafe { (*node_ptr).forward[i] };
+
             if self.prev_at_level[i].is_none() {
-                // Node was head at this level
-                self.list.head[i] = forwards[i];
+                self.list.head[i] = forward_i;
             } else {
-                // Safety: prev_at_level[i] is valid
+                // Safety: prev_at_level[i] != idx (predecessor is always before current)
                 let prev = unsafe { self.storage.get_unchecked_mut(self.prev_at_level[i]) };
-                prev.forward[i] = forwards[i];
+                prev.forward[i] = forward_i;
             }
         }
 
