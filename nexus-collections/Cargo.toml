@@ -1,7 +1,7 @@
 [package]
 name = "nexus-collections"
 version = "0.1.0"
-description = "Slab-backed intrusive collections for low-latency systems"
+description = "Storage-backed intrusive collections for low-latency systems"
 readme = "README.md"
 edition.workspace = true
 rust-version.workspace = true
