@@ -949,6 +949,234 @@ mod tests {
         assert_eq!(heap.peek(&storage), Some(&5));
     }
 
+    // Add these to the `mod tests` block in heap.rs
+
+    #[test]
+    fn replace_decreases() {
+        let mut storage = BoxedHeapStorage::with_capacity(16);
+        let mut heap: Heap<u64, _> = Heap::new();
+
+        heap.try_push(&mut storage, 10).unwrap();
+        heap.try_push(&mut storage, 20).unwrap();
+        let c = heap.try_push(&mut storage, 30).unwrap();
+
+        assert_eq!(heap.peek(&storage), Some(&10));
+
+        // Replace 30 with 5 - should become new min
+        let old = heap.replace(&mut storage, c, 5);
+        assert_eq!(old, Some(30));
+        assert_eq!(heap.peek(&storage), Some(&5));
+
+        // Verify order
+        assert_eq!(heap.pop(&mut storage), Some(5));
+        assert_eq!(heap.pop(&mut storage), Some(10));
+        assert_eq!(heap.pop(&mut storage), Some(20));
+    }
+
+    #[test]
+    fn replace_increases() {
+        let mut storage = BoxedHeapStorage::with_capacity(16);
+        let mut heap: Heap<u64, _> = Heap::new();
+
+        let a = heap.try_push(&mut storage, 10).unwrap();
+        heap.try_push(&mut storage, 20).unwrap();
+        heap.try_push(&mut storage, 30).unwrap();
+
+        assert_eq!(heap.peek(&storage), Some(&10));
+
+        // Replace 10 with 100 - 20 should become new min
+        let old = heap.replace(&mut storage, a, 100);
+        assert_eq!(old, Some(10));
+        assert_eq!(heap.peek(&storage), Some(&20));
+
+        // Verify order
+        assert_eq!(heap.pop(&mut storage), Some(20));
+        assert_eq!(heap.pop(&mut storage), Some(30));
+        assert_eq!(heap.pop(&mut storage), Some(100));
+    }
+
+    #[test]
+    fn replace_equal() {
+        let mut storage = BoxedHeapStorage::with_capacity(16);
+        let mut heap: Heap<u64, _> = Heap::new();
+
+        let a = heap.try_push(&mut storage, 10).unwrap();
+        heap.try_push(&mut storage, 20).unwrap();
+
+        // Replace with same value - no sift needed
+        let old = heap.replace(&mut storage, a, 10);
+        assert_eq!(old, Some(10));
+        assert_eq!(heap.peek(&storage), Some(&10));
+    }
+
+    #[test]
+    fn replace_invalid_key() {
+        let mut storage = BoxedHeapStorage::with_capacity(16);
+        let mut heap: Heap<u64, _> = Heap::new();
+
+        let a = heap.try_push(&mut storage, 10).unwrap();
+        heap.pop(&mut storage);
+
+        // Key no longer valid
+        let result = heap.replace(&mut storage, a, 5);
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn decrease_with_closure() {
+        let mut storage = BoxedHeapStorage::with_capacity(16);
+        let mut heap: Heap<u64, _> = Heap::new();
+
+        heap.try_push(&mut storage, 10).unwrap();
+        heap.try_push(&mut storage, 20).unwrap();
+        let c = heap.try_push(&mut storage, 30).unwrap();
+
+        assert_eq!(heap.peek(&storage), Some(&10));
+
+        // Decrease 30 to 5 via closure
+        heap.decrease_with(&mut storage, c, |v| *v = 5);
+
+        assert_eq!(heap.peek(&storage), Some(&5));
+        assert_eq!(heap.pop(&mut storage), Some(5));
+        assert_eq!(heap.pop(&mut storage), Some(10));
+        assert_eq!(heap.pop(&mut storage), Some(20));
+    }
+
+    #[test]
+    fn increase_with_closure() {
+        let mut storage = BoxedHeapStorage::with_capacity(16);
+        let mut heap: Heap<u64, _> = Heap::new();
+
+        let a = heap.try_push(&mut storage, 10).unwrap();
+        heap.try_push(&mut storage, 20).unwrap();
+        heap.try_push(&mut storage, 30).unwrap();
+
+        assert_eq!(heap.peek(&storage), Some(&10));
+
+        // Increase 10 to 25 via closure
+        heap.increase_with(&mut storage, a, |v| *v = 25);
+
+        assert_eq!(heap.peek(&storage), Some(&20));
+        assert_eq!(heap.pop(&mut storage), Some(20));
+        assert_eq!(heap.pop(&mut storage), Some(25));
+        assert_eq!(heap.pop(&mut storage), Some(30));
+    }
+
+    #[test]
+    fn decrease_with_complex_type() {
+        #[derive(Eq, PartialEq, Debug)]
+        struct Timer {
+            deadline: u64,
+            id: u64,
+        }
+
+        impl Ord for Timer {
+            fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+                self.deadline.cmp(&other.deadline)
+            }
+        }
+
+        impl PartialOrd for Timer {
+            fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+                Some(self.cmp(other))
+            }
+        }
+
+        let mut storage: BoxedHeapStorage<Timer> = BoxedHeapStorage::with_capacity(16);
+        let mut heap: Heap<Timer, _> = Heap::new();
+
+        heap.try_push(
+            &mut storage,
+            Timer {
+                deadline: 100,
+                id: 1,
+            },
+        )
+        .unwrap();
+        heap.try_push(
+            &mut storage,
+            Timer {
+                deadline: 200,
+                id: 2,
+            },
+        )
+        .unwrap();
+        let t3 = heap
+            .try_push(
+                &mut storage,
+                Timer {
+                    deadline: 300,
+                    id: 3,
+                },
+            )
+            .unwrap();
+
+        assert_eq!(heap.peek(&storage).unwrap().id, 1);
+
+        // Reschedule timer 3 to fire first
+        heap.decrease_with(&mut storage, t3, |t| t.deadline = 50);
+
+        assert_eq!(heap.peek(&storage).unwrap().id, 3);
+        assert_eq!(heap.peek(&storage).unwrap().deadline, 50);
+    }
+
+    #[test]
+    fn increase_with_complex_type() {
+        #[derive(Eq, PartialEq, Debug)]
+        struct Timer {
+            deadline: u64,
+            id: u64,
+        }
+
+        impl Ord for Timer {
+            fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+                self.deadline.cmp(&other.deadline)
+            }
+        }
+
+        impl PartialOrd for Timer {
+            fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+                Some(self.cmp(other))
+            }
+        }
+
+        let mut storage: BoxedHeapStorage<Timer> = BoxedHeapStorage::with_capacity(16);
+        let mut heap: Heap<Timer, _> = Heap::new();
+
+        let t1 = heap
+            .try_push(
+                &mut storage,
+                Timer {
+                    deadline: 100,
+                    id: 1,
+                },
+            )
+            .unwrap();
+        heap.try_push(
+            &mut storage,
+            Timer {
+                deadline: 200,
+                id: 2,
+            },
+        )
+        .unwrap();
+        heap.try_push(
+            &mut storage,
+            Timer {
+                deadline: 300,
+                id: 3,
+            },
+        )
+        .unwrap();
+
+        assert_eq!(heap.peek(&storage).unwrap().id, 1);
+
+        // Delay timer 1 to fire last
+        heap.increase_with(&mut storage, t1, |t| t.deadline = 500);
+
+        assert_eq!(heap.peek(&storage).unwrap().id, 2);
+    }
+
     // ========================================================================
     // Edge Cases
     // ========================================================================
