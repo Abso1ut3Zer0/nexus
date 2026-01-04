@@ -296,13 +296,10 @@ where
     ///
     /// # Panics
     ///
-    /// Panics if `key` is not valid in storage (debug builds only).
+    /// Panics if `key` is not valid in storage.
     #[inline]
     pub fn link_back(&mut self, storage: &mut S, key: K) {
-        debug_assert!(storage.get(key).is_some(), "invalid key");
-
-        // Safety: caller guarantees key is valid
-        let node = unsafe { storage.get_unchecked_mut(key) };
+        let node = storage.get_mut(key).expect("invalid key");
         node.prev = self.tail;
         node.next = K::NONE;
 
@@ -324,13 +321,10 @@ where
     ///
     /// # Panics
     ///
-    /// Panics if `key` is not valid in storage (debug builds only).
+    /// Panics if `key` is not valid in storage.
     #[inline]
     pub fn link_front(&mut self, storage: &mut S, key: K) {
-        debug_assert!(storage.get(key).is_some(), "invalid key");
-
-        // Safety: caller guarantees key is valid
-        let node = unsafe { storage.get_unchecked_mut(key) };
+        let node = storage.get_mut(key).expect("invalid key");
         node.next = self.head;
         node.prev = K::NONE;
 
@@ -349,17 +343,11 @@ where
     ///
     /// # Panics
     ///
-    /// Panics if `after` or `key` is not valid in storage (debug builds only).
+    /// Panics if `after` or `key` is not valid in storage.
     #[inline]
     pub fn link_after(&mut self, storage: &mut S, after: K, key: K) {
-        debug_assert!(storage.get(after).is_some(), "invalid 'after' key");
-        debug_assert!(storage.get(key).is_some(), "invalid key");
-
-        // Safety: after validated above
-        let next = unsafe { storage.get_unchecked(after) }.next;
-
-        // Safety: key validated above
-        let node = unsafe { storage.get_unchecked_mut(key) };
+        let next = storage.get(after).expect("invalid 'after' key").next;
+        let node = storage.get_mut(key).expect("invalid key");
         node.prev = after;
         node.next = next;
 
@@ -380,17 +368,11 @@ where
     ///
     /// # Panics
     ///
-    /// Panics if `before` or `key` is not valid in storage (debug builds only).
+    /// Panics if `before` or `key` is not valid in storage.
     #[inline]
     pub fn link_before(&mut self, storage: &mut S, before: K, key: K) {
-        debug_assert!(storage.get(before).is_some(), "invalid 'before' key");
-        debug_assert!(storage.get(key).is_some(), "invalid key");
-
-        // Safety: before validated above
-        let prev = unsafe { storage.get_unchecked(before) }.prev;
-
-        // Safety: key validated above
-        let node = unsafe { storage.get_unchecked_mut(key) };
+        let prev = storage.get(before).expect("invalid 'before' key").prev;
+        let node = storage.get_mut(key).expect("invalid key");
         node.next = before;
         node.prev = prev;
 
@@ -416,13 +398,10 @@ where
     ///
     /// # Panics
     ///
-    /// Panics if `key` is not valid in storage (debug builds only).
+    /// Panics if `key` is not valid in storage.
     #[inline]
     pub fn unlink(&mut self, storage: &mut S, key: K) -> bool {
-        debug_assert!(storage.get(key).is_some(), "invalid key");
-
-        // Safety: caller guarantees key is valid
-        let node = unsafe { storage.get_unchecked(key) };
+        let node = storage.get(key).expect("invalid key");
         let prev = node.prev;
         let next = node.next;
 
@@ -570,7 +549,7 @@ where
     ///
     /// # Panics
     ///
-    /// Panics if `key` is not valid in storage (debug builds only).
+    /// Panics if `key` is not valid in storage.
     #[inline]
     pub fn move_to_back(&mut self, storage: &mut S, key: K) {
         // Already at back
@@ -578,10 +557,7 @@ where
             return;
         }
 
-        debug_assert!(storage.get(key).is_some(), "invalid key");
-
-        // Safety: key validated above
-        let node = unsafe { storage.get_unchecked(key) };
+        let node = storage.get(key).expect("invalid key");
         let prev = node.prev;
         let next = node.next;
 
@@ -617,7 +593,7 @@ where
     ///
     /// # Panics
     ///
-    /// Panics if `key` is not valid in storage (debug builds only).
+    /// Panics if `key` is not valid in storage.
     #[inline]
     pub fn move_to_front(&mut self, storage: &mut S, key: K) {
         // Already at front
@@ -625,10 +601,8 @@ where
             return;
         }
 
-        debug_assert!(storage.get(key).is_some(), "invalid key");
-
         // Safety: key validated above
-        let node = unsafe { storage.get_unchecked(key) };
+        let node = storage.get(key).expect("invalid key");
         let prev = node.prev;
         let next = node.next;
 
@@ -667,10 +641,10 @@ where
     ///
     /// # Panics
     ///
-    /// Panics if `key` is not valid in storage (debug builds only).
+    /// Panics if `key` is not valid in storage.
     #[inline]
     pub fn split_off(&mut self, storage: &mut S, key: K) -> Self {
-        debug_assert!(storage.get(key).is_some(), "invalid key");
+        let prev = storage.get(key).expect("invalid key").prev;
 
         // Splitting at head = take everything
         if self.head == key {
@@ -685,9 +659,6 @@ where
             self.len = 0;
             return other;
         }
-
-        // Safety: key validated above
-        let prev = unsafe { storage.get_unchecked(key) }.prev;
 
         // Count nodes in the split-off portion
         let mut count = 0;
