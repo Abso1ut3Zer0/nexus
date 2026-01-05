@@ -12,6 +12,7 @@ categories = ["data-structures"]
 
 [dev-dependencies]
 hdrhistogram = "7.5"
+rand = "0.9.2"
 
 [features]
 default = []

@@ -1251,3 +1251,551 @@ pub type SlabSkipStorage<K, V, const MAX_LEVEL: usize = 16> =
 /// Nexus slab storage for skip list nodes (bounded).
 pub type NexusSkipStorage<K, V, const MAX_LEVEL: usize = 16> =
     nexus_slab::Slab<SkipNode<K, V, nexus_slab::Key, MAX_LEVEL>>;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use rand::SeedableRng;
+    use rand::rngs::SmallRng;
+
+    type TestStorage = BoxedSkipStorage<u64, String, u32, 8>;
+    type TestSkipList = SkipList<u64, String, TestStorage, u32, SmallRng, 8>;
+
+    fn make_rng() -> SmallRng {
+        SmallRng::seed_from_u64(12345)
+    }
+
+    // ========================================================================
+    // Basic operations
+    // ========================================================================
+
+    #[test]
+    fn new_is_empty() {
+        let storage: TestStorage = BoxedSkipStorage::with_capacity(10);
+        let list: TestSkipList = SkipList::new(make_rng());
+
+        assert!(list.is_empty());
+        assert_eq!(list.len(), 0);
+        assert_eq!(list.first(&storage), None);
+        assert_eq!(list.last(&storage), None);
+    }
+
+    #[test]
+    fn insert_single() {
+        let mut storage: TestStorage = BoxedSkipStorage::with_capacity(10);
+        let mut list: TestSkipList = SkipList::new(make_rng());
+
+        let old = list.try_insert(&mut storage, 100, "hello".into()).unwrap();
+        assert_eq!(old, None);
+        assert_eq!(list.len(), 1);
+        assert!(!list.is_empty());
+
+        assert_eq!(list.get(&storage, &100), Some(&"hello".into()));
+        assert_eq!(list.first(&storage), Some((&100, &"hello".into())));
+        assert_eq!(list.last(&storage), Some((&100, &"hello".into())));
+    }
+
+    #[test]
+    fn insert_updates_existing() {
+        let mut storage: TestStorage = BoxedSkipStorage::with_capacity(10);
+        let mut list: TestSkipList = SkipList::new(make_rng());
+
+        list.try_insert(&mut storage, 100, "first".into()).unwrap();
+        let old = list.try_insert(&mut storage, 100, "second".into()).unwrap();
+
+        assert_eq!(old, Some("first".into()));
+        assert_eq!(list.len(), 1);
+        assert_eq!(list.get(&storage, &100), Some(&"second".into()));
+    }
+
+    #[test]
+    fn insert_multiple_maintains_order() {
+        let mut storage: TestStorage = BoxedSkipStorage::with_capacity(10);
+        let mut list: TestSkipList = SkipList::new(make_rng());
+
+        // Insert out of order
+        list.try_insert(&mut storage, 50, "fifty".into()).unwrap();
+        list.try_insert(&mut storage, 10, "ten".into()).unwrap();
+        list.try_insert(&mut storage, 90, "ninety".into()).unwrap();
+        list.try_insert(&mut storage, 30, "thirty".into()).unwrap();
+
+        assert_eq!(list.len(), 4);
+        assert_eq!(list.first(&storage), Some((&10, &"ten".into())));
+        assert_eq!(list.last(&storage), Some((&90, &"ninety".into())));
+
+        // Verify sorted order via iterator
+        let keys: Vec<_> = list.keys(&storage).copied().collect();
+        assert_eq!(keys, vec![10, 30, 50, 90]);
+    }
+
+    #[test]
+    fn get_and_get_mut() {
+        let mut storage: TestStorage = BoxedSkipStorage::with_capacity(10);
+        let mut list: TestSkipList = SkipList::new(make_rng());
+
+        list.try_insert(&mut storage, 100, "hello".into()).unwrap();
+
+        assert_eq!(list.get(&storage, &100), Some(&"hello".into()));
+        assert_eq!(list.get(&storage, &999), None);
+
+        // Mutate via get_mut
+        if let Some(v) = list.get_mut(&mut storage, &100) {
+            *v = "world".into();
+        }
+        assert_eq!(list.get(&storage, &100), Some(&"world".into()));
+    }
+
+    #[test]
+    fn contains_key() {
+        let mut storage: TestStorage = BoxedSkipStorage::with_capacity(10);
+        let mut list: TestSkipList = SkipList::new(make_rng());
+
+        list.try_insert(&mut storage, 100, "hello".into()).unwrap();
+
+        assert!(list.contains_key(&storage, &100));
+        assert!(!list.contains_key(&storage, &999));
+    }
+
+    // ========================================================================
+    // Remove operations
+    // ========================================================================
+
+    #[test]
+    fn remove_existing() {
+        let mut storage: TestStorage = BoxedSkipStorage::with_capacity(10);
+        let mut list: TestSkipList = SkipList::new(make_rng());
+
+        list.try_insert(&mut storage, 100, "hello".into()).unwrap();
+        let removed = list.remove(&mut storage, &100);
+
+        assert_eq!(removed, Some("hello".into()));
+        assert!(list.is_empty());
+        assert_eq!(list.get(&storage, &100), None);
+    }
+
+    #[test]
+    fn remove_nonexistent() {
+        let mut storage: TestStorage = BoxedSkipStorage::with_capacity(10);
+        let mut list: TestSkipList = SkipList::new(make_rng());
+
+        list.try_insert(&mut storage, 100, "hello".into()).unwrap();
+        let removed = list.remove(&mut storage, &999);
+
+        assert_eq!(removed, None);
+        assert_eq!(list.len(), 1);
+    }
+
+    #[test]
+    fn remove_middle_preserves_order() {
+        let mut storage: TestStorage = BoxedSkipStorage::with_capacity(10);
+        let mut list: TestSkipList = SkipList::new(make_rng());
+
+        list.try_insert(&mut storage, 10, "ten".into()).unwrap();
+        list.try_insert(&mut storage, 20, "twenty".into()).unwrap();
+        list.try_insert(&mut storage, 30, "thirty".into()).unwrap();
+
+        list.remove(&mut storage, &20);
+
+        let keys: Vec<_> = list.keys(&storage).copied().collect();
+        assert_eq!(keys, vec![10, 30]);
+        assert_eq!(list.first(&storage), Some((&10, &"ten".into())));
+        assert_eq!(list.last(&storage), Some((&30, &"thirty".into())));
+    }
+
+    #[test]
+    fn remove_first_updates_head() {
+        let mut storage: TestStorage = BoxedSkipStorage::with_capacity(10);
+        let mut list: TestSkipList = SkipList::new(make_rng());
+
+        list.try_insert(&mut storage, 10, "ten".into()).unwrap();
+        list.try_insert(&mut storage, 20, "twenty".into()).unwrap();
+
+        list.remove(&mut storage, &10);
+
+        assert_eq!(list.first(&storage), Some((&20, &"twenty".into())));
+    }
+
+    #[test]
+    fn remove_last_updates_tail() {
+        let mut storage: TestStorage = BoxedSkipStorage::with_capacity(10);
+        let mut list: TestSkipList = SkipList::new(make_rng());
+
+        list.try_insert(&mut storage, 10, "ten".into()).unwrap();
+        list.try_insert(&mut storage, 20, "twenty".into()).unwrap();
+
+        list.remove(&mut storage, &20);
+
+        assert_eq!(list.last(&storage), Some((&10, &"ten".into())));
+    }
+
+    // ========================================================================
+    // Pop operations
+    // ========================================================================
+
+    #[test]
+    fn pop_first() {
+        let mut storage: TestStorage = BoxedSkipStorage::with_capacity(10);
+        let mut list: TestSkipList = SkipList::new(make_rng());
+
+        list.try_insert(&mut storage, 10, "ten".into()).unwrap();
+        list.try_insert(&mut storage, 20, "twenty".into()).unwrap();
+        list.try_insert(&mut storage, 30, "thirty".into()).unwrap();
+
+        assert_eq!(list.pop_first(&mut storage), Some((10, "ten".into())));
+        assert_eq!(list.pop_first(&mut storage), Some((20, "twenty".into())));
+        assert_eq!(list.pop_first(&mut storage), Some((30, "thirty".into())));
+        assert_eq!(list.pop_first(&mut storage), None);
+        assert!(list.is_empty());
+    }
+
+    #[test]
+    fn pop_last() {
+        let mut storage: TestStorage = BoxedSkipStorage::with_capacity(10);
+        let mut list: TestSkipList = SkipList::new(make_rng());
+
+        list.try_insert(&mut storage, 10, "ten".into()).unwrap();
+        list.try_insert(&mut storage, 20, "twenty".into()).unwrap();
+        list.try_insert(&mut storage, 30, "thirty".into()).unwrap();
+
+        assert_eq!(list.pop_last(&mut storage), Some((30, "thirty".into())));
+        assert_eq!(list.pop_last(&mut storage), Some((20, "twenty".into())));
+        assert_eq!(list.pop_last(&mut storage), Some((10, "ten".into())));
+        assert_eq!(list.pop_last(&mut storage), None);
+        assert!(list.is_empty());
+    }
+
+    // ========================================================================
+    // Clear
+    // ========================================================================
+
+    #[test]
+    fn clear() {
+        let mut storage: TestStorage = BoxedSkipStorage::with_capacity(10);
+        let mut list: TestSkipList = SkipList::new(make_rng());
+
+        list.try_insert(&mut storage, 10, "ten".into()).unwrap();
+        list.try_insert(&mut storage, 20, "twenty".into()).unwrap();
+
+        list.clear(&mut storage);
+
+        assert!(list.is_empty());
+        assert_eq!(list.first(&storage), None);
+        assert_eq!(list.last(&storage), None);
+    }
+
+    // ========================================================================
+    // Iteration
+    // ========================================================================
+
+    #[test]
+    fn iter_sorted() {
+        let mut storage: TestStorage = BoxedSkipStorage::with_capacity(10);
+        let mut list: TestSkipList = SkipList::new(make_rng());
+
+        list.try_insert(&mut storage, 50, "fifty".into()).unwrap();
+        list.try_insert(&mut storage, 10, "ten".into()).unwrap();
+        list.try_insert(&mut storage, 90, "ninety".into()).unwrap();
+
+        let pairs: Vec<_> = list.iter(&storage).map(|(k, v)| (*k, v.clone())).collect();
+        assert_eq!(
+            pairs,
+            vec![
+                (10, "ten".into()),
+                (50, "fifty".into()),
+                (90, "ninety".into())
+            ]
+        );
+    }
+
+    #[test]
+    fn iter_mut() {
+        let mut storage: TestStorage = BoxedSkipStorage::with_capacity(10);
+        let mut list: TestSkipList = SkipList::new(make_rng());
+
+        list.try_insert(&mut storage, 10, "a".into()).unwrap();
+        list.try_insert(&mut storage, 20, "b".into()).unwrap();
+
+        for (_, v) in list.iter_mut(&mut storage) {
+            v.push_str("_modified");
+        }
+
+        assert_eq!(list.get(&storage, &10), Some(&"a_modified".into()));
+        assert_eq!(list.get(&storage, &20), Some(&"b_modified".into()));
+    }
+
+    #[test]
+    fn keys_and_values() {
+        let mut storage: TestStorage = BoxedSkipStorage::with_capacity(10);
+        let mut list: TestSkipList = SkipList::new(make_rng());
+
+        list.try_insert(&mut storage, 10, "ten".into()).unwrap();
+        list.try_insert(&mut storage, 20, "twenty".into()).unwrap();
+
+        let keys: Vec<_> = list.keys(&storage).copied().collect();
+        let values: Vec<_> = list.values(&storage).cloned().collect();
+
+        assert_eq!(keys, vec![10, 20]);
+        assert_eq!(values, vec!["ten".to_string(), "twenty".to_string()]);
+    }
+
+    // ========================================================================
+    // Entry API
+    // ========================================================================
+
+    #[test]
+    fn entry_or_try_insert_vacant() {
+        let mut storage: TestStorage = BoxedSkipStorage::with_capacity(10);
+        let mut list: TestSkipList = SkipList::new(make_rng());
+
+        let val = list
+            .entry(&mut storage, 100)
+            .or_try_insert("hello".into())
+            .unwrap();
+        assert_eq!(val, &"hello".to_string());
+        assert_eq!(list.get(&storage, &100), Some(&"hello".into()));
+    }
+
+    #[test]
+    fn entry_or_try_insert_occupied() {
+        let mut storage: TestStorage = BoxedSkipStorage::with_capacity(10);
+        let mut list: TestSkipList = SkipList::new(make_rng());
+
+        list.try_insert(&mut storage, 100, "existing".into())
+            .unwrap();
+
+        let val = list
+            .entry(&mut storage, 100)
+            .or_try_insert("new".into())
+            .unwrap();
+        assert_eq!(val, &"existing".to_string());
+    }
+
+    #[test]
+    fn entry_and_modify() {
+        let mut storage: TestStorage = BoxedSkipStorage::with_capacity(10);
+        let mut list: TestSkipList = SkipList::new(make_rng());
+
+        list.try_insert(&mut storage, 100, "hello".into()).unwrap();
+
+        list.entry(&mut storage, 100)
+            .and_modify(|v| v.push_str(" world"))
+            .or_try_insert("default".into());
+
+        assert_eq!(list.get(&storage, &100), Some(&"hello world".into()));
+    }
+
+    #[test]
+    fn entry_remove() {
+        let mut storage: TestStorage = BoxedSkipStorage::with_capacity(10);
+        let mut list: TestSkipList = SkipList::new(make_rng());
+
+        list.try_insert(&mut storage, 100, "hello".into()).unwrap();
+
+        if let Entry::Occupied(entry) = list.entry(&mut storage, 100) {
+            let val = entry.remove();
+            assert_eq!(val, "hello".to_string());
+        }
+
+        assert!(list.is_empty());
+    }
+
+    // ========================================================================
+    // Cursor
+    // ========================================================================
+
+    #[test]
+    fn cursor_traverse() {
+        let mut storage: TestStorage = BoxedSkipStorage::with_capacity(10);
+        let mut list: TestSkipList = SkipList::new(make_rng());
+
+        list.try_insert(&mut storage, 10, "ten".into()).unwrap();
+        list.try_insert(&mut storage, 20, "twenty".into()).unwrap();
+        list.try_insert(&mut storage, 30, "thirty".into()).unwrap();
+
+        let mut cursor = list.cursor_front(&mut storage);
+        let mut keys = Vec::new();
+
+        while let Some((k, _)) = cursor.current() {
+            keys.push(*k);
+            cursor.move_next();
+        }
+
+        assert_eq!(keys, vec![10, 20, 30]);
+    }
+
+    #[test]
+    fn cursor_remove_current() {
+        let mut storage: TestStorage = BoxedSkipStorage::with_capacity(10);
+        let mut list: TestSkipList = SkipList::new(make_rng());
+
+        list.try_insert(&mut storage, 10, "ten".into()).unwrap();
+        list.try_insert(&mut storage, 20, "twenty".into()).unwrap();
+        list.try_insert(&mut storage, 30, "thirty".into()).unwrap();
+
+        let mut cursor = list.cursor_front(&mut storage);
+
+        // Remove first
+        let removed = cursor.remove_current();
+        assert_eq!(removed, Some((10, "ten".into())));
+
+        // Now at 20
+        assert_eq!(cursor.current().map(|(k, _)| *k), Some(20));
+
+        // Remove 20
+        cursor.remove_current();
+
+        // Now at 30
+        assert_eq!(cursor.current().map(|(k, _)| *k), Some(30));
+    }
+
+    #[test]
+    fn cursor_sweep_remove_evens() {
+        let mut storage: TestStorage = BoxedSkipStorage::with_capacity(10);
+        let mut list: TestSkipList = SkipList::new(make_rng());
+
+        for i in 1..=6 {
+            list.try_insert(&mut storage, i, format!("val{}", i))
+                .unwrap();
+        }
+
+        // Remove even keys
+        let mut cursor = list.cursor_front(&mut storage);
+        while let Some((k, _)) = cursor.current() {
+            if k % 2 == 0 {
+                cursor.remove_current();
+            } else {
+                cursor.move_next();
+            }
+        }
+
+        let keys: Vec<_> = list.keys(&storage).copied().collect();
+        assert_eq!(keys, vec![1, 3, 5]);
+    }
+
+    #[test]
+    fn cursor_peek_next() {
+        let mut storage: TestStorage = BoxedSkipStorage::with_capacity(10);
+        let mut list: TestSkipList = SkipList::new(make_rng());
+
+        list.try_insert(&mut storage, 10, "ten".into()).unwrap();
+        list.try_insert(&mut storage, 20, "twenty".into()).unwrap();
+
+        let cursor = list.cursor_front(&mut storage);
+        assert_eq!(cursor.current().map(|(k, _)| *k), Some(10));
+        assert_eq!(cursor.peek_next().map(|(k, _)| *k), Some(20));
+    }
+
+    // ========================================================================
+    // Level ratio
+    // ========================================================================
+
+    #[test]
+    fn level_ratio_default() {
+        let mut storage: TestStorage = BoxedSkipStorage::with_capacity(100);
+        let mut list: TestSkipList = SkipList::new(make_rng());
+
+        for i in 0..50 {
+            list.try_insert(&mut storage, i, format!("val{}", i))
+                .unwrap();
+        }
+
+        assert_eq!(list.len(), 50);
+        // Just verify it works - level distribution is probabilistic
+    }
+
+    #[test]
+    fn level_ratio_redis_style() {
+        let mut storage: TestStorage = BoxedSkipStorage::with_capacity(100);
+        let mut list: TestSkipList = SkipList::with_level_ratio(make_rng(), 4);
+
+        for i in 0..50 {
+            list.try_insert(&mut storage, i, format!("val{}", i))
+                .unwrap();
+        }
+
+        assert_eq!(list.len(), 50);
+    }
+
+    #[test]
+    fn level_ratio_invalid_rounded() {
+        let mut storage: TestStorage = BoxedSkipStorage::with_capacity(10);
+        // Invalid value 3 should round to 4
+        let mut list: TestSkipList = SkipList::with_level_ratio(make_rng(), 3);
+
+        list.try_insert(&mut storage, 100, "hello".into()).unwrap();
+        assert_eq!(list.get(&storage, &100), Some(&"hello".into()));
+    }
+
+    // ========================================================================
+    // Storage full
+    // ========================================================================
+
+    #[test]
+    fn storage_full() {
+        let mut storage: TestStorage = BoxedSkipStorage::with_capacity(2);
+        let mut list: TestSkipList = SkipList::new(make_rng());
+
+        list.try_insert(&mut storage, 10, "ten".into()).unwrap();
+        list.try_insert(&mut storage, 20, "twenty".into()).unwrap();
+
+        let result = list.try_insert(&mut storage, 30, "thirty".into());
+        assert!(result.is_err());
+
+        if let Err(Full((k, v))) = result {
+            assert_eq!(k, 30);
+            assert_eq!(v, "thirty".to_string());
+        }
+    }
+
+    // ========================================================================
+    // First/Last mut
+    // ========================================================================
+
+    #[test]
+    fn first_mut_and_last_mut() {
+        let mut storage: TestStorage = BoxedSkipStorage::with_capacity(10);
+        let mut list: TestSkipList = SkipList::new(make_rng());
+
+        list.try_insert(&mut storage, 10, "ten".into()).unwrap();
+        list.try_insert(&mut storage, 20, "twenty".into()).unwrap();
+
+        if let Some((_, v)) = list.first_mut(&mut storage) {
+            *v = "TEN".into();
+        }
+        if let Some((_, v)) = list.last_mut(&mut storage) {
+            *v = "TWENTY".into();
+        }
+
+        assert_eq!(list.get(&storage, &10), Some(&"TEN".into()));
+        assert_eq!(list.get(&storage, &20), Some(&"TWENTY".into()));
+    }
+
+    // ========================================================================
+    // Stress test
+    // ========================================================================
+
+    #[test]
+    fn stress_insert_remove() {
+        let mut storage: TestStorage = BoxedSkipStorage::with_capacity(1000);
+        let mut list: TestSkipList = SkipList::new(make_rng());
+
+        // Insert 500 items
+        for i in 0..500 {
+            list.try_insert(&mut storage, i, format!("val{}", i))
+                .unwrap();
+        }
+        assert_eq!(list.len(), 500);
+
+        // Remove odd keys
+        for i in (1..500).step_by(2) {
+            list.remove(&mut storage, &i);
+        }
+        assert_eq!(list.len(), 250);
+
+        // Verify remaining are even and sorted
+        let keys: Vec<_> = list.keys(&storage).copied().collect();
+        for (i, k) in keys.iter().enumerate() {
+            assert_eq!(*k, (i * 2) as u64);
+        }
+    }
+}
