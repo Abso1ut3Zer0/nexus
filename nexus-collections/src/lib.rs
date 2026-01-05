@@ -156,8 +156,13 @@ pub use storage::{BoundedStorage, BoxedStorage, Full, Keyed, Storage, UnboundedS
 pub use heap::NexusHeapStorage;
 #[cfg(feature = "nexus-slab")]
 pub use list::NexusListStorage;
+#[cfg(feature = "nexus-slab")]
+pub use skiplist::NexusSkipStorage;
 
 #[cfg(feature = "slab")]
 pub use heap::SlabHeapStorage;
 #[cfg(feature = "slab")]
 pub use list::SlabListStorage;
+#[cfg(feature = "slab")]
+pub use skiplist::SlabSkipStorage;
+
