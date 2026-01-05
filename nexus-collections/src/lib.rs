@@ -148,7 +148,7 @@ pub mod storage;
 pub use heap::{BoxedHeapStorage, Heap};
 pub use key::Key;
 pub use list::{BoxedListStorage, List};
-pub use owned::{OwnedHeap, OwnedList};
+pub use owned::{OwnedHeap, OwnedList, OwnedSkipList};
 pub use skiplist::{BoxedSkipStorage, Entry, OccupiedEntry, SkipList, SkipNode, VacantEntry};
 pub use storage::{BoundedStorage, BoxedStorage, Full, Keyed, Storage, UnboundedStorage};
 
@@ -165,4 +165,3 @@ pub use heap::SlabHeapStorage;
 pub use list::SlabListStorage;
 #[cfg(feature = "slab")]
 pub use skiplist::SlabSkipStorage;
-

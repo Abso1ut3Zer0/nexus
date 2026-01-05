@@ -39,6 +39,8 @@
 
 mod heap;
 mod list;
+mod skiplist;
 
 pub use heap::OwnedHeap;
 pub use list::OwnedList;
+pub use skiplist::OwnedSkipList;
