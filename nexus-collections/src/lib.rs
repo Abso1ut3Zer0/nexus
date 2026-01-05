@@ -119,17 +119,22 @@
 //! |-----------|----------|----------------|
 //! | [`List`] | FIFO queues, LRU caches | O(1) push/pop/remove |
 //! | [`Heap`] | Priority queues, timers | O(log n) push/pop, O(1) decrease-key |
+//! | [`SkipList`] | Sorted maps, probabilistic | O(log n) insert/get/remove, O(1) first/pop_first |
 //!
 //! # Performance
 //!
-//! Benchmarked on Intel Core Ultra 7 155H, single P-core:
+//! Benchmarked on Intel Core Ultra 7 155H, single P-core, turbo off (1.7 GHz):
 //!
 //! | Operation | Cycles (p50) | Notes |
 //! |-----------|--------------|-------|
-//! | List push_back | 22 | O(1) |
-//! | List remove | 24 | O(1), from anywhere |
-//! | Heap push | 30-46 | O(log n) |
-//! | Heap pop | 30-46 | O(log n) |
+//! | List push_back | 84 | O(1) |
+//! | List remove | 68 | O(1), from anywhere |
+//! | Heap push | 90 | O(log n) |
+//! | Heap pop | 64 | O(log n) |
+//! | SkipList insert | 614-1320 | O(log n), sequential vs random |
+//! | SkipList get | 842 | O(log n), 10K elements |
+//! | SkipList remove | 802 | O(log n), 10K elements |
+//! | SkipList first/pop_first | 62-116 | O(1) |
 //!
 //! # Feature Flags
 //!
