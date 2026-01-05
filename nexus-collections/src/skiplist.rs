@@ -1,4 +1,4 @@
-//! Skip list - a probabilistic sorted map backed by external storage.
+//! Skip list - a probabilistic sorted ap backed by external storage.
 //!
 //! A skip list provides O(log n) expected time for insert, lookup, and removal,
 //! with predictable latency (no rebalancing). This makes it well-suited for
@@ -473,6 +473,7 @@ where
 
     /// Finds the index of a key without computing predecessors.
     /// Used for read-only operations (get, contains_key).
+    #[inline]
     fn find(&self, storage: &S, key: &K) -> Option<Idx> {
         let mut current = Idx::NONE;
 
@@ -513,6 +514,7 @@ where
     /// Searches for a key, filling the update array with predecessors at each level.
     /// Used for mutations (insert, remove).
     /// Returns the index if found.
+    #[inline]
     fn search(&self, storage: &S, key: &K, update: &mut [Idx; MAX_LEVEL]) -> Option<Idx> {
         let mut current = Idx::NONE;
 
@@ -726,6 +728,7 @@ where
     list: &'a mut SkipList<K, V, S, Idx, R, MAX_LEVEL>,
     storage: &'a mut S,
     idx: Idx,
+    update: [Idx; MAX_LEVEL],
 }
 
 /// A vacant entry in the skip list.
@@ -830,11 +833,13 @@ where
     S: Storage<SkipNode<K, V, Idx, MAX_LEVEL>, Key = Idx>,
 {
     /// Gets a reference to the value.
+    #[inline]
     pub fn get(&self) -> &V {
         &self.storage.get(self.idx).expect("invalid index").value
     }
 
     /// Gets a mutable reference to the value.
+    #[inline]
     pub fn get_mut(&mut self) -> &mut V {
         &mut self.storage.get_mut(self.idx).expect("invalid index").value
     }
@@ -845,19 +850,41 @@ where
     }
 
     /// Removes the entry and returns the value.
-    pub fn remove(self) -> V
-    where
-        K: Clone,
-    {
-        let key = self
-            .storage
-            .get(self.idx)
-            .expect("invalid index")
-            .key
-            .clone();
-        self.list
-            .remove(self.storage, &key)
-            .expect("key must exist")
+    pub fn remove(self) -> V {
+        let idx = self.idx;
+
+        // Get raw pointer - avoids holding borrow
+        let node_ptr =
+            self.storage.get(idx).expect("invalid index") as *const SkipNode<K, V, Idx, MAX_LEVEL>;
+
+        let node_level = unsafe { (*node_ptr).level } as usize;
+        let forward_0_is_none = unsafe { (*node_ptr).forward[0].is_none() };
+
+        // Unlink at each level
+        for i in 0..=node_level {
+            let next = unsafe { (*node_ptr).forward[i] };
+
+            if self.update[i].is_none() {
+                self.list.head[i] = next;
+            } else {
+                let prev = unsafe { self.storage.get_unchecked_mut(self.update[i]) };
+                prev.forward[i] = next;
+            }
+        }
+
+        // Update tail if we removed the last node
+        if forward_0_is_none {
+            self.list.tail = self.update[0];
+        }
+
+        // Reduce level if needed
+        while self.list.level > 0 && self.list.head[self.list.level].is_none() {
+            self.list.level -= 1;
+        }
+
+        self.list.len -= 1;
+
+        self.storage.remove(idx).expect("invalid index").value
     }
 }
 
@@ -925,6 +952,7 @@ where
                 list: self,
                 storage,
                 idx,
+                update,
             })
         } else {
             Entry::Vacant(VacantEntry {
