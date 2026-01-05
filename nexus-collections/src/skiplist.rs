@@ -445,8 +445,7 @@ where
         key: &K,
     ) -> Cursor<'a, K, V, S, Idx, R, MAX_LEVEL> {
         let mut prev_at_level = [Idx::NONE; MAX_LEVEL];
-        let found = self.find(storage, key);
-        self.search(storage, key, &mut prev_at_level);
+        let found = self.search(storage, key, &mut prev_at_level);
         let current = if let Some(idx) = found {
             idx
         } else {
@@ -568,43 +567,40 @@ where
     /// Links a newly inserted node into the skip list structure.
     #[inline]
     fn link_node(&mut self, storage: &mut S, idx: Idx, new_level: u8, update: &[Idx; MAX_LEVEL]) {
-        // First pass: collect what we need to set as forward pointers
-        let mut new_forwards = [Idx::NONE; MAX_LEVEL];
+        let node_ptr =
+            storage.get_mut(idx).expect("invalid index") as *mut SkipNode<K, V, Idx, MAX_LEVEL>;
+
+        let mut is_tail = true;
+
         for i in 0..=new_level as usize {
-            if update[i].is_none() {
-                new_forwards[i] = self.head[i];
+            let next = if update[i].is_none() {
+                self.head[i]
             } else {
-                // Safety: update[i] is valid from search
-                new_forwards[i] = unsafe { storage.get_unchecked(update[i]) }.forward[i];
-            }
-        }
+                // Safety: update[i] valid from search, != idx
+                unsafe { storage.get_unchecked(update[i]) }.forward[i]
+            };
 
-        // Second pass: set the new node's forward pointers
-        {
-            let node = storage.get_mut(idx).expect("invalid index");
-            for i in 0..=new_level as usize {
-                node.forward[i] = new_forwards[i];
-            }
-        }
+            // Set new node's forward pointer
+            // Safety: node_ptr valid, not aliased with update[i]
+            unsafe { (*node_ptr).forward[i] = next };
 
-        // Third pass: update predecessors and heads to point to new node
-        for i in 0..=new_level as usize {
+            // Track if this is tail (forward[0] == NONE)
+            if i == 0 && next.is_some() {
+                is_tail = false;
+            }
+
+            // Update predecessor to point to new node
             if update[i].is_none() {
                 self.head[i] = idx;
             } else {
-                // Safety: update[i] is valid from search
-                let prev = unsafe { storage.get_unchecked_mut(update[i]) };
-                prev.forward[i] = idx;
+                unsafe { storage.get_unchecked_mut(update[i]) }.forward[i] = idx;
             }
         }
 
-        // Update tail if this is the new last node
-        let node = storage.get(idx).expect("invalid index");
-        if node.forward[0].is_none() {
+        if is_tail {
             self.tail = idx;
         }
 
-        // Update max level
         if new_level as usize > self.level {
             self.level = new_level as usize;
         }
