@@ -20,7 +20,7 @@
 //!
 //! # Example
 //!
-//! ```ignore
+//! ```rust
 //! use nexus_collections::{SkipList, BoxedSkipStorage};
 //! use rand::SeedableRng;
 //! use rand::rngs::SmallRng;
