@@ -1798,4 +1798,282 @@ mod tests {
             assert_eq!(*k, (i * 2) as u64);
         }
     }
+
+    // ========================================================================
+    // Stress tests
+    // ========================================================================
+
+    #[test]
+    fn stress_random_operations() {
+        use rand::Rng;
+
+        let mut storage: TestStorage = BoxedSkipStorage::with_capacity(500);
+        let mut list: TestSkipList = SkipList::new(make_rng());
+        let mut rng = SmallRng::seed_from_u64(99999);
+        let mut reference: std::collections::BTreeMap<u64, String> =
+            std::collections::BTreeMap::new();
+
+        for _ in 0..1000 {
+            let op = rng.random_range(0..100);
+            let key = rng.random_range(0..200);
+
+            if op < 60 {
+                // Insert
+                let value = format!("v{}", key);
+                let list_result = list.try_insert(&mut storage, key, value.clone());
+                let ref_result = reference.insert(key, value);
+
+                match list_result {
+                    Ok(old) => assert_eq!(old, ref_result),
+                    Err(_) => {
+                        // Storage full - reference should have the key already or we skip
+                        if ref_result.is_none() {
+                            reference.remove(&key);
+                        }
+                    }
+                }
+            } else if op < 90 {
+                // Remove
+                let list_result = list.remove(&mut storage, &key);
+                let ref_result = reference.remove(&key);
+                assert_eq!(list_result, ref_result);
+            } else {
+                // Get
+                let list_result = list.get(&storage, &key);
+                let ref_result = reference.get(&key);
+                assert_eq!(list_result, ref_result);
+            }
+        }
+
+        // Verify final state matches
+        assert_eq!(list.len(), reference.len());
+
+        let list_keys: Vec<_> = list.keys(&storage).copied().collect();
+        let ref_keys: Vec<_> = reference.keys().copied().collect();
+        assert_eq!(list_keys, ref_keys);
+    }
+
+    #[test]
+    fn stress_head_tail_invariants() {
+        let mut storage: TestStorage = BoxedSkipStorage::with_capacity(200);
+        let mut list: TestSkipList = SkipList::new(make_rng());
+
+        // Insert in reverse order
+        for i in (0..100).rev() {
+            list.try_insert(&mut storage, i, format!("v{}", i)).unwrap();
+
+            // First should always be smallest inserted so far
+            assert_eq!(list.first(&storage).map(|(k, _)| *k), Some(i));
+            // Last should always be 99
+            assert_eq!(list.last(&storage).map(|(k, _)| *k), Some(99));
+        }
+
+        // Remove from front
+        for i in 0..50 {
+            list.remove(&mut storage, &i);
+            assert_eq!(list.first(&storage).map(|(k, _)| *k), Some(i + 1));
+            assert_eq!(list.last(&storage).map(|(k, _)| *k), Some(99));
+        }
+
+        // Remove from back
+        for i in (75..100).rev() {
+            list.remove(&mut storage, &i);
+            assert_eq!(list.first(&storage).map(|(k, _)| *k), Some(50));
+            assert_eq!(list.last(&storage).map(|(k, _)| *k), Some(i - 1));
+        }
+
+        // Verify what remains
+        let keys: Vec<_> = list.keys(&storage).copied().collect();
+        assert_eq!(keys, (50..75).collect::<Vec<_>>());
+    }
+
+    #[test]
+    fn stress_pop_first_drain() {
+        let mut storage: TestStorage = BoxedSkipStorage::with_capacity(500);
+        let mut list: TestSkipList = SkipList::new(make_rng());
+
+        for i in 0..300 {
+            list.try_insert(&mut storage, i, format!("v{}", i)).unwrap();
+        }
+
+        // Drain via pop_first, verify order
+        let mut prev = None;
+        let mut count = 0;
+        while let Some((k, _)) = list.pop_first(&mut storage) {
+            if let Some(p) = prev {
+                assert!(k > p, "pop_first returned out of order: {} after {}", k, p);
+            }
+            prev = Some(k);
+            count += 1;
+        }
+
+        assert_eq!(count, 300);
+        assert!(list.is_empty());
+        assert_eq!(list.first(&storage), None);
+        assert_eq!(list.last(&storage), None);
+    }
+
+    #[test]
+    fn stress_pop_last_drain() {
+        let mut storage: TestStorage = BoxedSkipStorage::with_capacity(500);
+        let mut list: TestSkipList = SkipList::new(make_rng());
+
+        for i in 0..300 {
+            list.try_insert(&mut storage, i, format!("v{}", i)).unwrap();
+        }
+
+        // Drain via pop_last, verify reverse order
+        let mut prev = None;
+        let mut count = 0;
+        while let Some((k, _)) = list.pop_last(&mut storage) {
+            if let Some(p) = prev {
+                assert!(k < p, "pop_last returned out of order: {} after {}", k, p);
+            }
+            prev = Some(k);
+            count += 1;
+        }
+
+        assert_eq!(count, 300);
+        assert!(list.is_empty());
+    }
+
+    #[test]
+    fn stress_cursor_full_sweep_remove() {
+        let mut storage: TestStorage = BoxedSkipStorage::with_capacity(500);
+        let mut list: TestSkipList = SkipList::new(make_rng());
+
+        for i in 0..200 {
+            list.try_insert(&mut storage, i, format!("v{}", i)).unwrap();
+        }
+
+        // Remove everything via cursor
+        let mut cursor = list.cursor_front(&mut storage);
+        let mut count = 0;
+        let mut prev = None;
+
+        while cursor.current().is_some() {
+            let (k, _) = cursor.remove_current().unwrap();
+            if let Some(p) = prev {
+                assert!(k > p, "cursor remove out of order: {} after {}", k, p);
+            }
+            prev = Some(k);
+            count += 1;
+        }
+
+        assert_eq!(count, 200);
+        assert!(list.is_empty());
+    }
+
+    #[test]
+    fn stress_cursor_selective_remove() {
+        let mut storage: TestStorage = BoxedSkipStorage::with_capacity(500);
+        let mut list: TestSkipList = SkipList::new(make_rng());
+
+        for i in 0..200 {
+            list.try_insert(&mut storage, i, format!("v{}", i)).unwrap();
+        }
+
+        // Remove multiples of 3
+        let mut cursor = list.cursor_front(&mut storage);
+        while let Some((k, _)) = cursor.current() {
+            if k % 3 == 0 {
+                cursor.remove_current();
+            } else {
+                cursor.move_next();
+            }
+        }
+
+        // Verify
+        let keys: Vec<_> = list.keys(&storage).copied().collect();
+        for k in &keys {
+            assert!(k % 3 != 0, "key {} should have been removed", k);
+        }
+
+        // Count: 200 total, 67 multiples of 3 (0, 3, 6, ..., 198)
+        assert_eq!(keys.len(), 200 - 67);
+    }
+
+    #[test]
+    fn stress_interleaved_insert_remove() {
+        let mut storage: TestStorage = BoxedSkipStorage::with_capacity(100);
+        let mut list: TestSkipList = SkipList::new(make_rng());
+
+        for round in 0..10 {
+            let base = round * 20;
+
+            // Insert 20
+            for i in 0..20 {
+                list.try_insert(&mut storage, base + i, format!("v{}", base + i))
+                    .unwrap();
+            }
+
+            // Remove 10 (odd offsets)
+            for i in (1..20).step_by(2) {
+                list.remove(&mut storage, &(base + i));
+            }
+        }
+
+        // Should have 10 items per round = 100 total
+        assert_eq!(list.len(), 100);
+
+        // All remaining should be even offsets within their round
+        let keys: Vec<_> = list.keys(&storage).copied().collect();
+        for k in &keys {
+            assert!(k % 2 == 0, "key {} should be even", k);
+        }
+    }
+
+    #[test]
+    fn stress_entry_api() {
+        let mut storage: TestStorage = BoxedSkipStorage::with_capacity(500);
+        let mut list: TestSkipList = SkipList::new(make_rng());
+
+        // Use entry API to build counters
+        for i in 0..500 {
+            let key = i % 50; // 50 unique keys, each hit 10 times
+            list.entry(&mut storage, key)
+                .and_modify(|v| {
+                    let count: u32 = v.parse().unwrap();
+                    *v = (count + 1).to_string();
+                })
+                .or_try_insert("1".into());
+        }
+
+        assert_eq!(list.len(), 50);
+
+        // Each key should have count 10
+        for i in 0..50 {
+            let val = list.get(&storage, &i).unwrap();
+            assert_eq!(val, "10", "key {} has wrong count: {}", i, val);
+        }
+    }
+
+    #[test]
+    fn stress_reinsert_after_remove() {
+        let mut storage: TestStorage = BoxedSkipStorage::with_capacity(100);
+        let mut list: TestSkipList = SkipList::new(make_rng());
+
+        for _ in 0..5 {
+            // Fill
+            for i in 0..50 {
+                list.try_insert(&mut storage, i, format!("v{}", i)).unwrap();
+            }
+            assert_eq!(list.len(), 50);
+
+            // Empty via clear
+            list.clear(&mut storage);
+            assert!(list.is_empty());
+            assert_eq!(list.first(&storage), None);
+            assert_eq!(list.last(&storage), None);
+        }
+
+        // Final fill and verify
+        for i in 0..50 {
+            list.try_insert(&mut storage, i, format!("final{}", i))
+                .unwrap();
+        }
+
+        let keys: Vec<_> = list.keys(&storage).copied().collect();
+        assert_eq!(keys, (0..50).collect::<Vec<_>>());
+    }
 }
