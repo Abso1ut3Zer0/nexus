@@ -634,9 +634,8 @@ where
         value: V,
     ) -> Result<Option<V>, Full<(K, V)>> {
         // Search first to check if key exists
-        let found = self.find(storage, &key);
         let mut update = [Idx::NONE; MAX_LEVEL];
-        self.search(storage, &key, &mut update);
+        let found = self.search(storage, &key, &mut update);
 
         // If key exists, update value
         if let Some(existing_idx) = found {
@@ -676,9 +675,8 @@ where
     /// If the key already exists, the value is updated and the old value is returned.
     pub fn insert(&mut self, storage: &mut S, key: K, value: V) -> Option<V> {
         // Search first to check if key exists
-        let found = self.find(storage, &key);
         let mut update = [Idx::NONE; MAX_LEVEL];
-        self.search(storage, &key, &mut update);
+        let found = self.search(storage, &key, &mut update);
 
         // If key exists, update value
         if let Some(existing_idx) = found {
@@ -943,9 +941,8 @@ where
         storage: &'a mut S,
         key: K,
     ) -> Entry<'a, K, V, S, Idx, R, MAX_LEVEL> {
-        let found = self.find(storage, &key);
         let mut update = [Idx::NONE; MAX_LEVEL];
-        self.search(storage, &key, &mut update);
+        let found = self.search(storage, &key, &mut update);
 
         if let Some(idx) = found {
             Entry::Occupied(OccupiedEntry {
@@ -2075,5 +2072,631 @@ mod tests {
 
         let keys: Vec<_> = list.keys(&storage).copied().collect();
         assert_eq!(keys, (0..50).collect::<Vec<_>>());
+    }
+}
+
+#[cfg(test)]
+mod bench_skiplist {
+    use super::*;
+    use hdrhistogram::Histogram;
+    use rand::rngs::SmallRng;
+    use rand::{Rng, SeedableRng};
+
+    #[inline]
+    fn rdtscp() -> u64 {
+        #[cfg(target_arch = "x86_64")]
+        unsafe {
+            core::arch::x86_64::__rdtscp(&mut 0)
+        }
+        #[cfg(not(target_arch = "x86_64"))]
+        {
+            std::time::Instant::now().elapsed().as_nanos() as u64
+        }
+    }
+
+    fn print_histogram(name: &str, hist: &Histogram<u64>) {
+        println!(
+            "{:24} p50: {:4} cycles | p99: {:4} cycles | p999: {:5} cycles | min: {:4} | max: {:5}",
+            name,
+            hist.value_at_quantile(0.50),
+            hist.value_at_quantile(0.99),
+            hist.value_at_quantile(0.999),
+            hist.min(),
+            hist.max(),
+        );
+    }
+
+    type TestStorage = BoxedSkipStorage<u64, u64, u32, 12>;
+    type TestSkipList = SkipList<u64, u64, TestStorage, u32, SmallRng, 12>;
+
+    const WARMUP: usize = 10_000;
+    const ITERATIONS: usize = 100_000;
+
+    fn make_rng(seed: u64) -> SmallRng {
+        SmallRng::seed_from_u64(seed)
+    }
+
+    // ========================================================================
+    // Insert benchmarks
+    // ========================================================================
+
+    #[test]
+    #[ignore]
+    fn bench_insert_sequential() {
+        let mut storage: TestStorage = BoxedSkipStorage::with_capacity(ITERATIONS + WARMUP);
+        let mut list: TestSkipList = SkipList::new(make_rng(12345));
+        let mut hist = Histogram::<u64>::new(3).unwrap();
+
+        // Warmup
+        for i in 0..WARMUP as u64 {
+            let _ = list.try_insert(&mut storage, i, i);
+        }
+        list.clear(&mut storage);
+
+        // Measure
+        for i in 0..ITERATIONS as u64 {
+            let start = rdtscp();
+            let _ = list.try_insert(&mut storage, i, i);
+            let elapsed = rdtscp() - start;
+            hist.record(elapsed).unwrap();
+        }
+
+        print_histogram("insert_sequential", &hist);
+    }
+
+    #[test]
+    #[ignore]
+    fn bench_insert_random() {
+        let mut storage: TestStorage = BoxedSkipStorage::with_capacity(ITERATIONS + WARMUP);
+        let mut list: TestSkipList = SkipList::new(make_rng(12345));
+        let mut rng = make_rng(99999);
+        let mut hist = Histogram::<u64>::new(3).unwrap();
+
+        // Pre-generate keys
+        let keys: Vec<u64> = (0..ITERATIONS)
+            .map(|_| rng.random_range(0..1_000_000))
+            .collect();
+
+        // Warmup
+        for i in 0..WARMUP {
+            let _ = list.try_insert(&mut storage, keys[i % keys.len()] + 1_000_000, 0);
+        }
+        list.clear(&mut storage);
+
+        // Measure
+        for key in &keys {
+            let start = rdtscp();
+            let _ = list.try_insert(&mut storage, *key, *key);
+            let elapsed = rdtscp() - start;
+            hist.record(elapsed).unwrap();
+        }
+
+        print_histogram("insert_random", &hist);
+    }
+
+    #[test]
+    #[ignore]
+    fn bench_insert_reverse() {
+        let mut storage: TestStorage = BoxedSkipStorage::with_capacity(ITERATIONS + WARMUP);
+        let mut list: TestSkipList = SkipList::new(make_rng(12345));
+        let mut hist = Histogram::<u64>::new(3).unwrap();
+
+        // Warmup
+        for i in (0..WARMUP as u64).rev() {
+            let _ = list.try_insert(&mut storage, i + ITERATIONS as u64, i);
+        }
+        list.clear(&mut storage);
+
+        // Measure - insert in reverse order
+        for i in (0..ITERATIONS as u64).rev() {
+            let start = rdtscp();
+            let _ = list.try_insert(&mut storage, i, i);
+            let elapsed = rdtscp() - start;
+            hist.record(elapsed).unwrap();
+        }
+
+        print_histogram("insert_reverse", &hist);
+    }
+
+    // ========================================================================
+    // Lookup benchmarks
+    // ========================================================================
+
+    #[test]
+    #[ignore]
+    fn bench_get_hit() {
+        let mut storage: TestStorage = BoxedSkipStorage::with_capacity(10_000);
+        let mut list: TestSkipList = SkipList::new(make_rng(12345));
+        let mut rng = make_rng(99999);
+        let mut hist = Histogram::<u64>::new(3).unwrap();
+
+        // Fill with known keys
+        for i in 0..10_000u64 {
+            let _ = list.try_insert(&mut storage, i * 2, i);
+        }
+
+        // Pre-generate lookup keys (all hits)
+        let keys: Vec<u64> = (0..ITERATIONS)
+            .map(|_| rng.random_range(0..10_000u64) * 2)
+            .collect();
+
+        // Warmup
+        for key in keys.iter().take(WARMUP) {
+            std::hint::black_box(list.get(&storage, key));
+        }
+
+        // Measure
+        for key in &keys {
+            let start = rdtscp();
+            std::hint::black_box(list.get(&storage, key));
+            let elapsed = rdtscp() - start;
+            hist.record(elapsed).unwrap();
+        }
+
+        print_histogram("get_hit", &hist);
+    }
+
+    #[test]
+    #[ignore]
+    fn bench_get_miss() {
+        let mut storage: TestStorage = BoxedSkipStorage::with_capacity(10_000);
+        let mut list: TestSkipList = SkipList::new(make_rng(12345));
+        let mut rng = make_rng(99999);
+        let mut hist = Histogram::<u64>::new(3).unwrap();
+
+        // Fill with even keys
+        for i in 0..10_000u64 {
+            let _ = list.try_insert(&mut storage, i * 2, i);
+        }
+
+        // Pre-generate lookup keys (all misses - odd keys)
+        let keys: Vec<u64> = (0..ITERATIONS)
+            .map(|_| rng.random_range(0..10_000u64) * 2 + 1)
+            .collect();
+
+        // Warmup
+        for key in keys.iter().take(WARMUP) {
+            std::hint::black_box(list.get(&storage, key));
+        }
+
+        // Measure
+        for key in &keys {
+            let start = rdtscp();
+            std::hint::black_box(list.get(&storage, key));
+            let elapsed = rdtscp() - start;
+            hist.record(elapsed).unwrap();
+        }
+
+        print_histogram("get_miss", &hist);
+    }
+
+    // ========================================================================
+    // Remove benchmarks
+    // ========================================================================
+
+    #[test]
+    #[ignore]
+    fn bench_remove_random() {
+        let mut hist = Histogram::<u64>::new(3).unwrap();
+        let mut rng = make_rng(99999);
+
+        // Run multiple rounds since we deplete the list
+        for round in 0..10 {
+            let mut storage: TestStorage = BoxedSkipStorage::with_capacity(ITERATIONS / 10 + 100);
+            let mut list: TestSkipList = SkipList::new(make_rng(12345 + round));
+
+            // Fill
+            let mut keys: Vec<u64> = (0..ITERATIONS as u64 / 10).collect();
+            for &k in &keys {
+                let _ = list.try_insert(&mut storage, k, k);
+            }
+
+            // Shuffle for random removal order
+            for i in (1..keys.len()).rev() {
+                let j = rng.random_range(0..=i);
+                keys.swap(i, j);
+            }
+
+            // Measure removes
+            for key in &keys {
+                let start = rdtscp();
+                std::hint::black_box(list.remove(&mut storage, key));
+                let elapsed = rdtscp() - start;
+                hist.record(elapsed).unwrap();
+            }
+        }
+
+        print_histogram("remove_random", &hist);
+    }
+
+    // ========================================================================
+    // Pop benchmarks
+    // ========================================================================
+
+    #[test]
+    #[ignore]
+    fn bench_pop_first() {
+        let mut hist = Histogram::<u64>::new(3).unwrap();
+
+        for round in 0..10 {
+            let mut storage: TestStorage = BoxedSkipStorage::with_capacity(ITERATIONS / 10 + 100);
+            let mut list: TestSkipList = SkipList::new(make_rng(12345 + round));
+
+            // Fill
+            for i in 0..ITERATIONS as u64 / 10 {
+                let _ = list.try_insert(&mut storage, i, i);
+            }
+
+            // Measure pop_first
+            while !list.is_empty() {
+                let start = rdtscp();
+                std::hint::black_box(list.pop_first(&mut storage));
+                let elapsed = rdtscp() - start;
+                hist.record(elapsed).unwrap();
+            }
+        }
+
+        print_histogram("pop_first", &hist);
+    }
+
+    #[test]
+    #[ignore]
+    fn bench_pop_last() {
+        let mut hist = Histogram::<u64>::new(3).unwrap();
+
+        for round in 0..10 {
+            let mut storage: TestStorage = BoxedSkipStorage::with_capacity(ITERATIONS / 10 + 100);
+            let mut list: TestSkipList = SkipList::new(make_rng(12345 + round));
+
+            // Fill
+            for i in 0..ITERATIONS as u64 / 10 {
+                let _ = list.try_insert(&mut storage, i, i);
+            }
+
+            // Measure pop_last
+            while !list.is_empty() {
+                let start = rdtscp();
+                std::hint::black_box(list.pop_last(&mut storage));
+                let elapsed = rdtscp() - start;
+                hist.record(elapsed).unwrap();
+            }
+        }
+
+        print_histogram("pop_last", &hist);
+    }
+
+    // ========================================================================
+    // Accessor benchmarks
+    // ========================================================================
+
+    #[test]
+    #[ignore]
+    fn bench_first() {
+        let mut storage: TestStorage = BoxedSkipStorage::with_capacity(10_000);
+        let mut list: TestSkipList = SkipList::new(make_rng(12345));
+        let mut hist = Histogram::<u64>::new(3).unwrap();
+
+        for i in 0..10_000u64 {
+            let _ = list.try_insert(&mut storage, i, i);
+        }
+
+        for _ in 0..WARMUP {
+            std::hint::black_box(list.first(&storage));
+        }
+
+        for _ in 0..ITERATIONS {
+            let start = rdtscp();
+            std::hint::black_box(list.first(&storage));
+            let elapsed = rdtscp() - start;
+            hist.record(elapsed).unwrap();
+        }
+
+        print_histogram("first", &hist);
+    }
+
+    #[test]
+    #[ignore]
+    fn bench_last() {
+        let mut storage: TestStorage = BoxedSkipStorage::with_capacity(10_000);
+        let mut list: TestSkipList = SkipList::new(make_rng(12345));
+        let mut hist = Histogram::<u64>::new(3).unwrap();
+
+        for i in 0..10_000u64 {
+            let _ = list.try_insert(&mut storage, i, i);
+        }
+
+        for _ in 0..WARMUP {
+            std::hint::black_box(list.last(&storage));
+        }
+
+        for _ in 0..ITERATIONS {
+            let start = rdtscp();
+            std::hint::black_box(list.last(&storage));
+            let elapsed = rdtscp() - start;
+            hist.record(elapsed).unwrap();
+        }
+
+        print_histogram("last", &hist);
+    }
+
+    // ========================================================================
+    // Cursor benchmarks
+    // ========================================================================
+
+    #[test]
+    #[ignore]
+    fn bench_cursor_move_next() {
+        let mut storage: TestStorage = BoxedSkipStorage::with_capacity(1_000);
+        let mut list: TestSkipList = SkipList::new(make_rng(12345));
+        let mut hist = Histogram::<u64>::new(3).unwrap();
+
+        for i in 0..1_000u64 {
+            let _ = list.try_insert(&mut storage, i, i);
+        }
+
+        // Measure individual move_next calls
+        for _ in 0..ITERATIONS / 1_000 {
+            let mut cursor = list.cursor_front(&mut storage);
+            while cursor.current().is_some() {
+                let start = rdtscp();
+                cursor.move_next();
+                let elapsed = rdtscp() - start;
+                hist.record(elapsed).unwrap();
+            }
+        }
+
+        print_histogram("cursor_move_next", &hist);
+    }
+
+    #[test]
+    #[ignore]
+    fn bench_cursor_remove_current() {
+        let mut hist = Histogram::<u64>::new(3).unwrap();
+
+        for round in 0..100 {
+            let mut storage: TestStorage = BoxedSkipStorage::with_capacity(1_000);
+            let mut list: TestSkipList = SkipList::new(make_rng(12345 + round));
+
+            for i in 0..1_000u64 {
+                let _ = list.try_insert(&mut storage, i, i);
+            }
+
+            let mut cursor = list.cursor_front(&mut storage);
+            while cursor.current().is_some() {
+                let start = rdtscp();
+                std::hint::black_box(cursor.remove_current());
+                let elapsed = rdtscp() - start;
+                hist.record(elapsed).unwrap();
+            }
+        }
+
+        print_histogram("cursor_remove_current", &hist);
+    }
+
+    // ========================================================================
+    // Entry API benchmarks
+    // ========================================================================
+
+    #[test]
+    #[ignore]
+    fn bench_entry_vacant() {
+        let mut storage: TestStorage = BoxedSkipStorage::with_capacity(ITERATIONS + WARMUP);
+        let mut list: TestSkipList = SkipList::new(make_rng(12345));
+        let mut hist = Histogram::<u64>::new(3).unwrap();
+
+        // Warmup
+        for i in 0..WARMUP as u64 {
+            let _ = list
+                .entry(&mut storage, i + ITERATIONS as u64)
+                .or_try_insert(i);
+        }
+        list.clear(&mut storage);
+
+        // Measure entry -> or_try_insert (vacant path)
+        for i in 0..ITERATIONS as u64 {
+            let start = rdtscp();
+            std::hint::black_box(list.entry(&mut storage, i).or_try_insert(i));
+            let elapsed = rdtscp() - start;
+            hist.record(elapsed).unwrap();
+        }
+
+        print_histogram("entry_vacant", &hist);
+    }
+
+    #[test]
+    #[ignore]
+    fn bench_entry_occupied() {
+        let mut storage: TestStorage = BoxedSkipStorage::with_capacity(1_000);
+        let mut list: TestSkipList = SkipList::new(make_rng(12345));
+        let mut rng = make_rng(99999);
+        let mut hist = Histogram::<u64>::new(3).unwrap();
+
+        // Fill
+        for i in 0..1_000u64 {
+            let _ = list.try_insert(&mut storage, i, 0);
+        }
+
+        // Pre-generate keys
+        let keys: Vec<u64> = (0..ITERATIONS)
+            .map(|_| rng.random_range(0..1_000))
+            .collect();
+
+        // Warmup
+        for key in keys.iter().take(WARMUP) {
+            let _ = list.entry(&mut storage, *key).and_modify(|v| *v += 1);
+        }
+
+        // Measure
+        for key in &keys {
+            let start = rdtscp();
+            std::hint::black_box(
+                list.entry(&mut storage, *key)
+                    .and_modify(|v| *v += 1)
+                    .or_try_insert(0),
+            );
+            let elapsed = rdtscp() - start;
+            hist.record(elapsed).unwrap();
+        }
+
+        print_histogram("entry_occupied", &hist);
+    }
+
+    // ========================================================================
+    // Scaling benchmarks
+    // ========================================================================
+
+    #[test]
+    #[ignore]
+    fn bench_get_scaling() {
+        println!("\n--- Get scaling by size ---");
+
+        for size in [100, 1_000, 5_000, 10_000] {
+            let mut storage: TestStorage = BoxedSkipStorage::with_capacity(size + 100);
+            let mut list: TestSkipList = SkipList::new(make_rng(12345));
+            let mut rng = make_rng(99999);
+            let mut hist = Histogram::<u64>::new(3).unwrap();
+
+            for i in 0..size as u64 {
+                let _ = list.try_insert(&mut storage, i, i);
+            }
+
+            let keys: Vec<u64> = (0..ITERATIONS)
+                .map(|_| rng.random_range(0..size as u64))
+                .collect();
+
+            for key in &keys {
+                let start = rdtscp();
+                std::hint::black_box(list.get(&storage, key));
+                let elapsed = rdtscp() - start;
+                hist.record(elapsed).unwrap();
+            }
+
+            print_histogram(&format!("get_size_{}", size), &hist);
+        }
+    }
+
+    #[test]
+    #[ignore]
+    fn bench_insert_scaling() {
+        println!("\n--- Insert scaling by size ---");
+
+        for size in [100, 1_000, 5_000, 10_000] {
+            let mut hist = Histogram::<u64>::new(3).unwrap();
+            let mut rng = make_rng(99999);
+
+            let keys: Vec<u64> = (0..ITERATIONS / 10)
+                .map(|_| rng.random_range(size as u64..size as u64 * 10))
+                .collect();
+
+            for round in 0..10 {
+                let mut storage: TestStorage =
+                    BoxedSkipStorage::with_capacity(size + ITERATIONS / 10 + 100);
+                let mut list: TestSkipList = SkipList::new(make_rng(12345 + round as u64));
+
+                for i in 0..size as u64 {
+                    let _ = list.try_insert(&mut storage, i, i);
+                }
+
+                for key in &keys {
+                    let start = rdtscp();
+                    let _ = std::hint::black_box(list.try_insert(&mut storage, *key, *key));
+                    let elapsed = rdtscp() - start;
+                    hist.record(elapsed).unwrap();
+                }
+            }
+
+            print_histogram(&format!("insert_size_{}", size), &hist);
+        }
+    }
+
+    // ========================================================================
+    // Order book workflow
+    // ========================================================================
+
+    #[test]
+    #[ignore]
+    fn bench_order_book_workflow() {
+        let mut hist_insert = Histogram::<u64>::new(3).unwrap();
+        let mut hist_get = Histogram::<u64>::new(3).unwrap();
+        let mut hist_pop = Histogram::<u64>::new(3).unwrap();
+
+        for round in 0..10 {
+            let mut storage: TestStorage = BoxedSkipStorage::with_capacity(1_000);
+            let mut list: TestSkipList = SkipList::new(make_rng(12345 + round));
+            let mut rng = make_rng(99999 + round);
+
+            // Simulate order book: insert prices, lookup, remove best
+            for _ in 0..1_000 {
+                let price = rng.random_range(100..200);
+
+                // Insert new price level
+                let start = rdtscp();
+                let _ = list.try_insert(&mut storage, price, 1);
+                hist_insert.record(rdtscp() - start).unwrap();
+
+                // Lookup a price
+                let lookup = rng.random_range(100..200);
+                let start = rdtscp();
+                std::hint::black_box(list.get(&storage, &lookup));
+                hist_get.record(rdtscp() - start).unwrap();
+
+                // Remove best (first)
+                if !list.is_empty() && rng.random_bool(0.5) {
+                    let start = rdtscp();
+                    std::hint::black_box(list.pop_first(&mut storage));
+                    hist_pop.record(rdtscp() - start).unwrap();
+                }
+            }
+        }
+
+        println!("\n=== Order Book Workflow ===");
+        print_histogram("insert_level", &hist_insert);
+        print_histogram("get_level", &hist_get);
+        print_histogram("pop_best", &hist_pop);
+    }
+
+    // ========================================================================
+    // Main benchmark runner
+    // ========================================================================
+
+    #[test]
+    #[ignore]
+    fn bench_skiplist_all() {
+        println!("\n=== SkipList Benchmarks ===");
+        println!(
+            "Run with: cargo test --release bench_skiplist::bench_skiplist_all -- --ignored --nocapture\n"
+        );
+
+        println!("--- Insert ---");
+        bench_insert_sequential();
+        bench_insert_random();
+        bench_insert_reverse();
+
+        println!("\n--- Lookup ---");
+        bench_get_hit();
+        bench_get_miss();
+
+        println!("\n--- Remove ---");
+        bench_remove_random();
+
+        println!("\n--- Pop ---");
+        bench_pop_first();
+        bench_pop_last();
+
+        println!("\n--- Accessors ---");
+        bench_first();
+        bench_last();
+
+        println!("\n--- Cursor ---");
+        bench_cursor_move_next();
+        bench_cursor_remove_current();
+
+        println!("\n--- Entry API ---");
+        bench_entry_vacant();
+        bench_entry_occupied();
+
+        bench_get_scaling();
+        bench_insert_scaling();
+        bench_order_book_workflow();
     }
 }
