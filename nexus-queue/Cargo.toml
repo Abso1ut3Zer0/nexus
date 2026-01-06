@@ -31,15 +31,7 @@ name = "perf_spsc_bounded"
 harness = false
 
 [[bench]]
-name = "perf_spsc_index"
-harness = false
-
-[[bench]]
 name = "perf_spsc_bounded_latency"
-harness = false
-
-[[bench]]
-name = "perf_spsc_index_latency"
 harness = false
 
 [[bench]]
@@ -60,10 +52,6 @@ harness = false
 
 [[bench]]
 name = "profile_spsc"
-harness = false
-
-[[bench]]
-name = "profile_spsc_index"
 harness = false
 
 [[bench]]
