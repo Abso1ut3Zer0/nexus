@@ -1,6 +1,6 @@
 [package]
 name = "nexus-queue"
-version = "0.2.4"
+version = "0.3.0"
 description = "High-performance lock-free SPSC ring buffer for low-latency systems"
 readme = "README.md"
 edition.workspace = true
@@ -18,6 +18,10 @@ criterion = { version = "0.5", features = ["html_reports"] }
 crossbeam-queue = "0.3"
 hdrhistogram = "7.5"
 rtrb = "0.3"
+
+[features]
+default = []
+spsc-slot = []
 
 [lints]
 workspace = true

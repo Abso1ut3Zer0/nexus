@@ -30,7 +30,7 @@ impl Message {
 fn main() {
     use nexus_queue;
 
-    let (mut producer, mut consumer) = nexus_queue::spsc::slot::ring_buffer::<Message>(CAPACITY);
+    let (mut producer, mut consumer) = nexus_queue::spsc::ring_buffer::<Message>(CAPACITY);
 
     let producer_handle = thread::spawn(move || {
         for i in 0..COUNT {

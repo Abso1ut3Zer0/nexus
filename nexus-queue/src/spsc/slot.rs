@@ -1,143 +1,49 @@
-//! This implementation uses per-slot lap counters instead:
+//! Single-producer single-consumer queue using per-slot lap counters.
+//!
+//! # Design
 //!
 //! ```text
-//! Per-slot sequencing (nexus):
 //! ┌──────────────────────────────────────────────────────────┐
 //! │ buffer[0]: { lap: AtomicUsize, data: T }                 │
 //! │ buffer[1]: { lap: AtomicUsize, data: T }                 │
 //! │ ...                                                      │
 //! └──────────────────────────────────────────────────────────┘
-//!    Lap counter + data on SAME cache line
 //! ```
 //!
-//! # Why Per-Slot Sequencing Wins
+//! Each slot contains its own lap counter. Producer and consumer synchronize
+//! by reading/writing the lap counter on the slot they're accessing. This
+//! provides excellent cache locality - the synchronization word and data are
+//! on the same cache line.
 //!
-//! ## 1. Cache Locality
+//! # Performance Characteristics
 //!
-//! When checking if a slot is ready, we load `slot.lap`. The subsequent read of
-//! `slot.data` is on the same cache line - already in L1. Traditional designs
-//! require fetching from 3 separate cache lines (head, tail, data).
+//! This implementation has different performance characteristics than the
+//! default [`index`](super::index) implementation. The key difference is
+//! cache line ownership:
 //!
-//! ## 2. No Stale Cache Problem
+//! - **slot**: Producer and consumer write to the same cache line (the slot's lap counter)
+//! - **index**: Producer and consumer write to separate cache lines (head/tail)
 //!
-//! Traditional designs cache the remote index to avoid atomic loads:
+//! Which performs better depends on your hardware topology, particularly NUMA
+//! configuration and cache hierarchy. **Benchmark both on your target hardware.**
 //!
-//! ```text
-//! // Traditional push (rtrb-style)
-//! if head - cached_tail >= capacity {
-//!     cached_tail = tail.load();  // "Slow path" refresh
-//!     if head - cached_tail >= capacity {
-//!         return Full;
-//!     }
-//! }
+//! Enable with:
+//!
+//! ```toml
+//! [dependencies]
+//! nexus-queue = { version = "...", features = ["slot-based"] }
 //! ```
-//!
-//! In ping-pong benchmarks (1 message in flight), the cache is *always* stale,
-//! so every operation hits the "slow path". Per-slot sequencing has no cache
-//! to refresh - just check the slot directly.
-//!
-//! ## 3. Simpler Control Flow
-//!
-//! Fewer branches = better branch prediction. Our branch miss rate is ~1.6%
-//! vs similar rates for rtrb, but with fewer total branches.
-//!
-//! # Optimization Journey
-//!
-//! We started by cloning rtrb's design, then systematically tested changes.
-//! Using rtrb as baseline (p50 ≈ 200 cycles):
-//!
-//! | Change | Result | Cycles | Notes |
-//! |--------|--------|--------|-------|
-//! | Clone rtrb exactly | Baseline | ~200 | Starting point |
-//! | Per-slot lap counters | **+25%** | ~150 | Biggest win |
-//! | Division → bit shift | **+15%** | ~150→~130 | `tail/cap` → `tail>>shift` |
-//! | `repr(C)` field ordering | +5% | - | Hot fields first |
-//! | Manual fencing | ~0% | - | No change on x86, helps ARM |
-//! | Const generics | **-20%** | - | Surprisingly worse! |
-//! | CachePadded slots | ~0% | - | Not needed for our layout |
-//!
-//! ## What Worked
-//!
-//! **Per-slot sequencing**: The single biggest win. Eliminated the stale cache
-//! problem entirely and improved cache locality.
-//!
-//! **Bit shift for lap calculation**: Division is 20-90 cycles on x86. Since
-//! capacity is always a power of two, `tail / capacity` becomes `tail >> shift`.
-//! Saved ~20-50 cycles per operation.
-//!
-//! **Field ordering with `repr(C)`**: Placing hot-path fields (local_tail, buffer,
-//! mask) first improves prefetching. ~5% throughput improvement.
-//!
-//! **Instruction ordering**: Updating `local_tail` *after* the atomic store
-//! gives cache coherency a head start, reducing latency variance.
-//!
-//! ## What Didn't Work
-//!
-//! **Const generics for capacity**: We expected `const CAP: usize` to help by
-//! making the mask a compile-time constant. Instead, throughput regressed 20%!
-//! Likely causes: monomorphization code bloat, different inlining decisions.
-//!
-//! **CachePadded lap counters**: With small `T`, multiple slots share a cache
-//! line. We tested padding each slot to 64 bytes. No improvement - the true
-//! sharing on the active slot dominates, not false sharing between slots.
-//!
-//! **Cached indices**: The traditional "optimization" that rtrb uses. In our
-//! testing, it's actually slower for latency-sensitive workloads because the
-//! cache is always stale in ping-pong scenarios.
 //!
 //! # Example
 //!
 //! ```
-//! use nexus_queue;
+//! use nexus_queue::spsc;
 //!
-//! let (mut producer, mut consumer) = nexus_queue::spsc::slot::ring_buffer::<u64>(1024);
+//! let (mut tx, mut rx) = spsc::ring_buffer::<u64>(1024);
 //!
-//! // Bounded push - returns error if full
-//! producer.push(1).unwrap();
-//! producer.push(2).unwrap();
-//!
-//! assert_eq!(consumer.pop(), Some(1));
-//! assert_eq!(consumer.pop(), Some(2));
+//! tx.push(42).unwrap();
+//! assert_eq!(rx.pop(), Some(42));
 //! ```
-//!
-//! # Benchmarking Methodology
-//!
-//! Latency benchmarks use ping-pong between two threads pinned to separate
-//! physical cores (avoiding hyperthreading). We measure round-trip time with
-//! `rdtscp` and divide by 2 for one-way latency. 10,000 warmup iterations
-//! followed by 100,000 measured samples.
-//!
-//! Throughput benchmarks measure time to transfer 10 million messages through
-//! a 1024-slot buffer with producer and consumer on separate cores.
-//!
-//! All benchmarks run with turbo boost disabled for consistent results:
-//!
-//! ```bash
-//! echo 1 | sudo tee /sys/devices/system/cpu/intel_pstate/no_turbo
-//! sudo taskset -c 0,2 ./target/release/deps/perf_spsc_bounded_latency-*
-//! ```
-//!
-//! # Memory Ordering
-//!
-//! The implementation uses manual fencing for clarity and portability:
-//!
-//! - **Producer**: `fence(Release)` before storing lap counter
-//! - **Consumer**: `fence(Acquire)` after loading lap counter
-//!
-//! On x86, these compile to no instructions (strong memory model), but they're
-//! required for correctness on ARM and other weakly-ordered architectures.
-//!
-//! # When to Use This vs Other Queues
-//!
-//! Use `nexus::spsc` when:
-//! - You have exactly one producer and one consumer
-//! - You need the lowest possible latency
-//! - You want both bounded and overwriting modes in one queue
-//!
-//! Consider alternatives when:
-//! - Multiple producers → use MPSC
-//! - Multiple consumers → use SPMC or MPMC
-//! - You need async/await integration → use `tokio::sync::mpsc`
 
 use std::cell::UnsafeCell;
 use std::fmt;
@@ -264,7 +170,7 @@ impl<T> Producer<T> {
     /// ```
     /// use nexus_queue;
     ///
-    /// let (mut producer, mut consumer) = nexus_queue::spsc::slot::ring_buffer::<u32>(2);
+    /// let (mut producer, mut consumer) = nexus_queue::spsc::ring_buffer::<u32>(2);
     ///
     /// assert!(producer.push(1).is_ok());
     /// assert!(producer.push(2).is_ok());
@@ -346,7 +252,7 @@ impl<T> Consumer<T> {
     /// ```
     /// use nexus_queue;
     ///
-    /// let (mut producer, mut consumer) = nexus_queue::spsc::slot::ring_buffer::<u32>(8);
+    /// let (mut producer, mut consumer) = nexus_queue::spsc::ring_buffer::<u32>(8);
     ///
     /// assert_eq!(consumer.pop(), None); // Empty
     ///

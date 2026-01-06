@@ -137,7 +137,7 @@ fn throughput_benchmark() {
     println!("Capacity: {:>10}", CAPACITY);
     println!();
 
-    let (mut producer, mut consumer) = nexus_queue::spsc::slot::ring_buffer::<u64>(CAPACITY);
+    let (mut producer, mut consumer) = nexus_queue::spsc::ring_buffer::<u64>(CAPACITY);
 
     let start = Instant::now();
 
