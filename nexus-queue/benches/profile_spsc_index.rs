@@ -40,8 +40,8 @@ fn latency_benchmark() {
     println!("Capacity: {:>8}", CAPACITY);
     println!();
 
-    let (mut prod_a, mut cons_a) = nexus_queue::spsc::slot::ring_buffer::<u64>(CAPACITY);
-    let (mut prod_b, mut cons_b) = nexus_queue::spsc::slot::ring_buffer::<u64>(CAPACITY);
+    let (mut prod_a, mut cons_a) = nexus_queue::spsc::index::ring_buffer::<u64>(CAPACITY);
+    let (mut prod_b, mut cons_b) = nexus_queue::spsc::index::ring_buffer::<u64>(CAPACITY);
 
     let total = WARMUP + SAMPLES;
 
@@ -137,7 +137,7 @@ fn throughput_benchmark() {
     println!("Capacity: {:>10}", CAPACITY);
     println!();
 
-    let (mut producer, mut consumer) = nexus_queue::spsc::slot::ring_buffer::<u64>(CAPACITY);
+    let (mut producer, mut consumer) = nexus_queue::spsc::index::ring_buffer::<u64>(CAPACITY);
 
     let start = Instant::now();
 
