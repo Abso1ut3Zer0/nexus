@@ -215,7 +215,10 @@ use std::sync::atomic::{AtomicBool, Ordering};
 
 use crossbeam_utils::sync::{Parker, Unparker};
 use crossbeam_utils::{Backoff, CachePadded};
-use nexus_queue::{Consumer, Full, Producer, ring_buffer};
+use nexus_queue::{
+    Full,
+    spsc::{Consumer, Producer, ring_buffer},
+};
 
 /// Default number of backoff snooze iterations before parking.
 ///
