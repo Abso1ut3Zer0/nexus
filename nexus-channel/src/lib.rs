@@ -210,6 +210,7 @@
 //! ```
 
 use core::fmt;
+use std::mem::ManuallyDrop;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
@@ -258,7 +259,7 @@ struct Shared {
 /// assert_eq!(rx.recv().unwrap(), 2);
 /// ```
 pub struct Sender<T> {
-    producer: Producer<T>,
+    producer: ManuallyDrop<Producer<T>>,
     shared: Arc<Shared>,
     parker: Parker,
     receiver_unparker: Unparker,
@@ -287,7 +288,7 @@ pub struct Sender<T> {
 /// assert_eq!(rx.recv().unwrap(), 42);
 /// ```
 pub struct Receiver<T> {
-    consumer: Consumer<T>,
+    consumer: ManuallyDrop<Consumer<T>>,
     shared: Arc<Shared>,
     parker: Parker,
     sender_unparker: Unparker,
@@ -356,14 +357,14 @@ pub fn channel_with_config<T>(capacity: usize, snooze_iters: usize) -> (Sender<T
 
     (
         Sender {
-            producer,
+            producer: ManuallyDrop::new(producer),
             shared: Arc::clone(&shared),
             parker: sender_parker,
             receiver_unparker,
             snooze_iters,
         },
         Receiver {
-            consumer,
+            consumer: ManuallyDrop::new(consumer),
             shared,
             parker: receiver_parker,
             sender_unparker,
@@ -841,6 +842,12 @@ impl std::error::Error for TryRecvError {}
 
 impl<T> Drop for Sender<T> {
     fn drop(&mut self) {
+        // Manually drop the producer, so the Arc strong count is
+        // visible to the Receiver.
+        unsafe {
+            ManuallyDrop::drop(&mut self.producer);
+        }
+
         // Wake receiver so it can see disconnection and return error
         // instead of parking forever.
         self.receiver_unparker.unpark();
@@ -849,6 +856,12 @@ impl<T> Drop for Sender<T> {
 
 impl<T> Drop for Receiver<T> {
     fn drop(&mut self) {
+        // Manually drop the consumer, so the Arc strong count is
+        // visible to the Producer.
+        unsafe {
+            ManuallyDrop::drop(&mut self.consumer);
+        }
+
         // Wake sender so it can see disconnection and return error
         // instead of parking forever.
         self.sender_unparker.unpark();
