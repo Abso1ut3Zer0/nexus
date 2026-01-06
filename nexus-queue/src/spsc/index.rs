@@ -107,16 +107,20 @@ impl<T> Producer<T> {
         let tail = self.local_tail;
 
         if tail.wrapping_sub(self.cached_head) > self.mask {
-            self.cached_head = self.shared.head.load(Ordering::Acquire);
+            self.cached_head = self.shared.head.load(Ordering::Relaxed);
+
+            std::sync::atomic::fence(Ordering::Acquire);
             if tail.wrapping_sub(self.cached_head) > self.mask {
                 return Err(Full(value));
             }
         }
 
         unsafe { self.buffer.add(tail & self.mask).write(value) };
+        let new_tail = tail.wrapping_add(1);
+        std::sync::atomic::fence(Ordering::Release);
 
-        self.local_tail = tail.wrapping_add(1);
-        self.shared.tail.store(self.local_tail, Ordering::Release);
+        self.shared.tail.store(new_tail, Ordering::Relaxed);
+        self.local_tail = new_tail;
 
         Ok(())
     }
@@ -157,16 +161,20 @@ impl<T> Consumer<T> {
         let head = self.local_head;
 
         if head == self.cached_tail {
-            self.cached_tail = self.shared.tail.load(Ordering::Acquire);
+            self.cached_tail = self.shared.tail.load(Ordering::Relaxed);
+            std::sync::atomic::fence(Ordering::Acquire);
+
             if head == self.cached_tail {
                 return None;
             }
         }
 
         let value = unsafe { self.buffer.add(head & self.mask).read() };
+        let new_head = head.wrapping_add(1);
+        std::sync::atomic::fence(Ordering::Release);
 
-        self.local_head = head.wrapping_add(1);
-        self.shared.head.store(self.local_head, Ordering::Release);
+        self.shared.head.store(new_head, Ordering::Relaxed);
+        self.local_head = new_head;
 
         Some(value)
     }
