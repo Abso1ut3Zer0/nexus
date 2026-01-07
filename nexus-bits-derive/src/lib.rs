@@ -1,10 +1,12 @@
 use proc_macro::TokenStream;
 use proc_macro2::TokenStream as TokenStream2;
 use quote::quote;
-use syn::{Data, DeriveInput, Error, Fields, Ident, Result, Type, parse_macro_input};
+use syn::{
+    Data, DeriveInput, Error, Fields, Ident, Result, Type, parse::Parser, parse_macro_input,
+};
 
 // =============================================================================
-// IntEnum derive (existing)
+// IntEnum derive
 // =============================================================================
 
 #[proc_macro_derive(IntEnum)]
@@ -94,26 +96,29 @@ fn parse_repr(input: &DeriveInput) -> Result<Ident> {
 }
 
 // =============================================================================
-// BitPacked derive
+// BitStorage attribute macro
 // =============================================================================
 
-#[proc_macro_derive(BitPacked, attributes(packed, field, flag, variant))]
-pub fn derive_bit_packed(input: TokenStream) -> TokenStream {
-    let input = parse_macro_input!(input as DeriveInput);
+#[proc_macro_attribute]
+pub fn bit_storage(attr: TokenStream, item: TokenStream) -> TokenStream {
+    let attr = proc_macro2::TokenStream::from(attr);
+    let item = parse_macro_input!(item as DeriveInput);
 
-    match derive_bit_packed_impl(input) {
+    match bit_storage_impl(attr, item) {
         Ok(tokens) => tokens.into(),
         Err(err) => err.to_compile_error().into(),
     }
 }
 
-fn derive_bit_packed_impl(input: DeriveInput) -> Result<TokenStream2> {
+fn bit_storage_impl(attr: TokenStream2, input: DeriveInput) -> Result<TokenStream2> {
+    let storage_attr = parse_storage_attr_tokens(attr)?;
+
     match &input.data {
-        Data::Struct(data) => derive_packed_struct(&input, data),
-        Data::Enum(data) => derive_packed_enum(&input, data),
+        Data::Struct(data) => derive_storage_struct(&input, data, storage_attr),
+        Data::Enum(data) => derive_storage_enum(&input, data, storage_attr),
         Data::Union(_) => Err(Error::new_spanned(
             &input,
-            "BitPacked cannot be derived for unions",
+            "bit_storage cannot be applied to unions",
         )),
     }
 }
@@ -122,8 +127,8 @@ fn derive_bit_packed_impl(input: DeriveInput) -> Result<TokenStream2> {
 // Attribute types
 // =============================================================================
 
-/// Parsed #[packed(repr = T)] or #[packed(repr = T, discriminant(start = N, len = M))]
-struct PackedAttr {
+/// Parsed #[bit_storage(repr = T)] or #[bit_storage(repr = T, discriminant(start = N, len = M))]
+struct StorageAttr {
     repr: Ident,
     discriminant: Option<BitRange>,
 }
@@ -160,23 +165,11 @@ impl MemberDef {
 // Attribute parsing
 // =============================================================================
 
-fn parse_packed_attr(attrs: &[syn::Attribute]) -> Result<PackedAttr> {
-    for attr in attrs {
-        if attr.path().is_ident("packed") {
-            return parse_packed_attr_inner(attr);
-        }
-    }
-    Err(Error::new(
-        proc_macro2::Span::call_site(),
-        "BitPacked requires a #[packed(repr = ...)] attribute",
-    ))
-}
-
-fn parse_packed_attr_inner(attr: &syn::Attribute) -> Result<PackedAttr> {
+fn parse_storage_attr_tokens(attr: TokenStream2) -> Result<StorageAttr> {
     let mut repr = None;
     let mut discriminant = None;
 
-    attr.parse_nested_meta(|meta| {
+    let parser = syn::meta::parser(|meta| {
         if meta.path.is_ident("repr") {
             meta.input.parse::<syn::Token![=]>()?;
             repr = Some(meta.input.parse::<Ident>()?);
@@ -189,10 +182,16 @@ fn parse_packed_attr_inner(attr: &syn::Attribute) -> Result<PackedAttr> {
         } else {
             Err(meta.error("expected `repr` or `discriminant`"))
         }
-    })?;
+    });
 
-    let repr =
-        repr.ok_or_else(|| Error::new_spanned(attr, "packed attribute requires `repr = ...`"))?;
+    parser.parse2(attr)?;
+
+    let repr = repr.ok_or_else(|| {
+        Error::new(
+            proc_macro2::Span::call_site(),
+            "bit_storage requires `repr = ...`",
+        )
+    })?;
 
     // Validate repr
     match repr.to_string().as_str() {
@@ -200,7 +199,7 @@ fn parse_packed_attr_inner(attr: &syn::Attribute) -> Result<PackedAttr> {
         _ => return Err(Error::new_spanned(&repr, "repr must be an integer type")),
     }
 
-    Ok(PackedAttr { repr, discriminant })
+    Ok(StorageAttr { repr, discriminant })
 }
 
 fn parse_bit_range(input: syn::parse::ParseStream) -> Result<BitRange> {
@@ -255,6 +254,19 @@ fn parse_member(field: &syn::Field) -> Result<MemberDef> {
     Err(Error::new_spanned(
         field,
         "field requires #[field(start = N, len = M)] or #[flag(N)] attribute",
+    ))
+}
+
+fn parse_variant_attr(attrs: &[syn::Attribute]) -> Result<u64> {
+    for attr in attrs {
+        if attr.path().is_ident("variant") {
+            let lit: syn::LitInt = attr.parse_args()?;
+            return lit.base10_parse();
+        }
+    }
+    Err(Error::new(
+        proc_macro2::Span::call_site(),
+        "enum variant requires #[variant(N)] attribute",
     ))
 }
 
@@ -352,15 +364,22 @@ fn member_bit_range(m: &MemberDef) -> (u32, u32) {
 // Struct codegen
 // =============================================================================
 
-fn derive_packed_struct(input: &DeriveInput, data: &syn::DataStruct) -> Result<TokenStream2> {
+fn derive_storage_struct(
+    input: &DeriveInput,
+    data: &syn::DataStruct,
+    storage_attr: StorageAttr,
+) -> Result<TokenStream2> {
     let fields = match &data.fields {
         Fields::Named(f) => &f.named,
-        _ => return Err(Error::new_spanned(input, "BitPacked requires named fields")),
+        _ => {
+            return Err(Error::new_spanned(
+                input,
+                "bit_storage requires named fields",
+            ));
+        }
     };
 
-    let packed_attr = parse_packed_attr(&input.attrs)?;
-
-    if packed_attr.discriminant.is_some() {
+    if storage_attr.discriminant.is_some() {
         return Err(Error::new_spanned(
             input,
             "discriminant is only valid for enums",
@@ -369,33 +388,73 @@ fn derive_packed_struct(input: &DeriveInput, data: &syn::DataStruct) -> Result<T
 
     let members: Vec<MemberDef> = fields.iter().map(parse_member).collect::<Result<_>>()?;
 
-    validate_members(&members, &packed_attr.repr)?;
+    validate_members(&members, &storage_attr.repr)?;
 
+    let vis = &input.vis;
     let name = &input.ident;
-    let repr = &packed_attr.repr;
-    let has_enum_fields = members
-        .iter()
-        .any(|m| matches!(m, MemberDef::Field { ty, .. } if !is_primitive(ty)));
+    let repr = &storage_attr.repr;
+    let builder_name = Ident::new(&format!("{}Builder", name), name.span());
 
-    let pack_fn = generate_struct_pack(repr, &members);
-    let unpack_fn = generate_struct_unpack(repr, &members, has_enum_fields);
+    let newtype = generate_struct_newtype(vis, name, repr);
+    let builder_struct = generate_struct_builder_struct(vis, &builder_name, &members);
+    let newtype_impl = generate_struct_newtype_impl(name, &builder_name, repr, &members);
+    let builder_impl = generate_struct_builder_impl(name, &builder_name, repr, &members);
 
     Ok(quote! {
-        impl #name {
-            #pack_fn
-            #unpack_fn
-        }
+        #newtype
+        #builder_struct
+        #newtype_impl
+        #builder_impl
     })
 }
 
-fn generate_struct_pack(repr: &Ident, members: &[MemberDef]) -> TokenStream2 {
-    let pack_statements: Vec<TokenStream2> = members.iter().map(|m| {
+fn generate_struct_newtype(vis: &syn::Visibility, name: &Ident, repr: &Ident) -> TokenStream2 {
+    quote! {
+        #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+        #[repr(transparent)]
+        #vis struct #name(#vis #repr);
+    }
+}
+
+fn generate_struct_builder_struct(
+    vis: &syn::Visibility,
+    builder_name: &Ident,
+    members: &[MemberDef],
+) -> TokenStream2 {
+    let fields: Vec<TokenStream2> = members
+        .iter()
+        .map(|m| match m {
+            MemberDef::Field { name, ty, .. } => {
+                quote! { #name: Option<#ty>, }
+            }
+            MemberDef::Flag { name, .. } => {
+                quote! { #name: Option<bool>, }
+            }
+        })
+        .collect();
+
+    quote! {
+        #[derive(Debug, Clone, Copy, Default)]
+        #vis struct #builder_name {
+            #(#fields)*
+        }
+    }
+}
+
+fn generate_struct_newtype_impl(
+    name: &Ident,
+    builder_name: &Ident,
+    repr: &Ident,
+    members: &[MemberDef],
+) -> TokenStream2 {
+    let repr_bit_count = repr_bits(repr);
+
+    let accessors: Vec<TokenStream2> = members.iter().map(|m| {
         match m {
             MemberDef::Field { name: field_name, ty, range } => {
-                let field_str = field_name.to_string();
                 let start = range.start;
                 let len = range.len;
-                let max_val = if len >= 64 {
+                let mask = if len >= repr_bit_count {
                     quote! { #repr::MAX }
                 } else {
                     quote! { ((1 as #repr) << #len) - 1 }
@@ -403,33 +462,31 @@ fn generate_struct_pack(repr: &Ident, members: &[MemberDef]) -> TokenStream2 {
 
                 if is_primitive(ty) {
                     quote! {
-                        let field_val = self.#field_name as #repr;
-                        if field_val > #max_val {
-                            return Err(nexus_bits::FieldOverflow {
-                                field: #field_str,
-                                overflow: nexus_bits::Overflow { value: field_val, max: #max_val },
-                            });
+                        #[inline]
+                        pub const fn #field_name(&self) -> #ty {
+                            ((self.0 >> #start) & #mask) as #ty
                         }
-                        val |= field_val << #start;
                     }
                 } else {
-                    // IntEnum field
+                    // IntEnum field - returns Result
                     quote! {
-                        let field_val = nexus_bits::IntEnum::into_repr(self.#field_name) as #repr;
-                        if field_val > #max_val {
-                            return Err(nexus_bits::FieldOverflow {
-                                field: #field_str,
-                                overflow: nexus_bits::Overflow { value: field_val, max: #max_val },
-                            });
+                        #[inline]
+                        pub fn #field_name(&self) -> Result<#ty, nexus_bits::UnknownDiscriminant<#repr>> {
+                            let field_repr = ((self.0 >> #start) & #mask);
+                            <#ty as nexus_bits::IntEnum>::try_from_repr(field_repr as _)
+                                .ok_or(nexus_bits::UnknownDiscriminant {
+                                    field: stringify!(#field_name),
+                                    value: self.0,
+                                })
                         }
-                        val |= field_val << #start;
                     }
                 }
             }
             MemberDef::Flag { name: field_name, bit } => {
                 quote! {
-                    if self.#field_name {
-                        val |= (1 as #repr) << #bit;
+                    #[inline]
+                    pub const fn #field_name(&self) -> bool {
+                        (self.0 >> #bit) & 1 != 0
                     }
                 }
             }
@@ -437,75 +494,174 @@ fn generate_struct_pack(repr: &Ident, members: &[MemberDef]) -> TokenStream2 {
     }).collect();
 
     quote! {
-        /// Pack into integer representation.
-        #[inline]
-        pub fn pack(&self) -> Result<#repr, nexus_bits::FieldOverflow<#repr>> {
-            let mut val: #repr = 0;
-            #(#pack_statements)*
-            Ok(val)
+        impl #name {
+            /// Create from raw integer value.
+            #[inline]
+            pub const fn from_raw(raw: #repr) -> Self {
+                Self(raw)
+            }
+
+            /// Get the raw integer value.
+            #[inline]
+            pub const fn raw(self) -> #repr {
+                self.0
+            }
+
+            /// Create a builder for this type.
+            #[inline]
+            pub fn builder() -> #builder_name {
+                #builder_name::default()
+            }
+
+            #(#accessors)*
         }
     }
 }
 
-fn generate_struct_unpack(
+fn generate_struct_builder_impl(
+    name: &Ident,
+    builder_name: &Ident,
     repr: &Ident,
     members: &[MemberDef],
-    has_enum_fields: bool,
 ) -> TokenStream2 {
-    let unpack_statements: Vec<TokenStream2> = members.iter().map(|m| {
-        match m {
-            MemberDef::Field { name: field_name, ty, range } => {
-                let start = range.start;
+    let repr_bit_count = repr_bits(repr);
+
+    // Setters - wrap in Some
+    let setters: Vec<TokenStream2> = members
+        .iter()
+        .map(|m| match m {
+            MemberDef::Field {
+                name: field_name,
+                ty,
+                ..
+            } => {
+                quote! {
+                    #[inline]
+                    pub fn #field_name(mut self, val: #ty) -> Self {
+                        self.#field_name = Some(val);
+                        self
+                    }
+                }
+            }
+            MemberDef::Flag {
+                name: field_name, ..
+            } => {
+                quote! {
+                    #[inline]
+                    pub fn #field_name(mut self, val: bool) -> Self {
+                        self.#field_name = Some(val);
+                        self
+                    }
+                }
+            }
+        })
+        .collect();
+
+    // Validations - only for primitive fields that could overflow
+    let validations: Vec<TokenStream2> = members
+        .iter()
+        .filter_map(|m| match m {
+            MemberDef::Field {
+                name: field_name,
+                ty,
+                range,
+            } if is_primitive(ty) => {
+                let field_str = field_name.to_string();
                 let len = range.len;
-                let mask = if len >= 64 {
+
+                let type_bits: u32 = match ty {
+                    Type::Path(p) if p.path.is_ident("u8") || p.path.is_ident("i8") => 8,
+                    Type::Path(p) if p.path.is_ident("u16") || p.path.is_ident("i16") => 16,
+                    Type::Path(p) if p.path.is_ident("u32") || p.path.is_ident("i32") => 32,
+                    Type::Path(p) if p.path.is_ident("u64") || p.path.is_ident("i64") => 64,
+                    Type::Path(p) if p.path.is_ident("u128") || p.path.is_ident("i128") => 128,
+                    _ => 128,
+                };
+
+                if len >= type_bits {
+                    return None;
+                }
+
+                let max_val = if len >= repr_bit_count {
                     quote! { #repr::MAX }
                 } else {
                     quote! { ((1 as #repr) << #len) - 1 }
                 };
 
-                if is_primitive(ty) {
-                    quote! {
-                        let #field_name = ((raw >> #start) & #mask) as #ty;
-                    }
-                } else {
-                    // IntEnum field
-                    let field_str = field_name.to_string();
-                    quote! {
-                        let field_repr = ((raw >> #start) & #mask);
-                        let #field_name = <#ty as nexus_bits::IntEnum>::try_from_repr(field_repr as _)
-                            .ok_or(nexus_bits::UnknownDiscriminant {
+                Some(quote! {
+                    if let Some(v) = self.#field_name {
+                        if (v as #repr) > #max_val {
+                            return Err(nexus_bits::FieldOverflow {
                                 field: #field_str,
-                                value: raw,
-                            })?;
+                                overflow: nexus_bits::Overflow {
+                                    value: v as #repr,
+                                    max: #max_val,
+                                },
+                            });
+                        }
+                    }
+                })
+            }
+            _ => None,
+        })
+        .collect();
+
+    // Pack statements - only pack if Some
+    let pack_statements: Vec<TokenStream2> = members
+        .iter()
+        .map(|m| {
+            match m {
+                MemberDef::Field {
+                    name: field_name,
+                    ty,
+                    range,
+                } => {
+                    let start = range.start;
+
+                    if is_primitive(ty) {
+                        quote! {
+                            if let Some(v) = self.#field_name {
+                                val |= (v as #repr) << #start;
+                            }
+                        }
+                    } else {
+                        // IntEnum
+                        quote! {
+                            if let Some(v) = self.#field_name {
+                                val |= (nexus_bits::IntEnum::into_repr(v) as #repr) << #start;
+                            }
+                        }
+                    }
+                }
+                MemberDef::Flag {
+                    name: field_name,
+                    bit,
+                } => {
+                    quote! {
+                        if let Some(true) = self.#field_name {
+                            val |= (1 as #repr) << #bit;
+                        }
                     }
                 }
             }
-            MemberDef::Flag { name: field_name, bit } => {
-                quote! {
-                    let #field_name = (raw >> #bit) & 1 != 0;
-                }
-            }
-        }
-    }).collect();
+        })
+        .collect();
 
-    let field_names: Vec<&Ident> = members.iter().map(|m| m.name()).collect();
+    quote! {
+        impl #builder_name {
+            #(#setters)*
 
-    if has_enum_fields {
-        quote! {
-            /// Unpack from integer representation.
+            /// Build the final value, validating all fields.
             #[inline]
-            pub fn unpack(raw: #repr) -> Result<Self, nexus_bits::UnknownDiscriminant<#repr>> {
-                #(#unpack_statements)*
-                Ok(Self { #(#field_names),* })
-            }
-        }
-    } else {
-        quote! {
-            /// Unpack from integer representation.
-            #[inline]
-            pub fn unpack(raw: #repr) -> Self {
-                #(#unpack_statements)*
-                Self { #(#field_names),* }
+            pub fn build(self) -> Result<#name, nexus_bits::FieldOverflow<#repr>> {
+                // Validate
+                #(#validations)*
+
+                // Pack
+                let mut val: #repr = 0;
+                #(#pack_statements)*
+
+                Ok(#name(val))
             }
         }
     }
@@ -519,33 +675,21 @@ fn generate_struct_unpack(
 struct ParsedVariant {
     name: Ident,
     discriminant: u64,
-    members: Vec<MemberDef>,
 }
 
-fn parse_variant_attr(attrs: &[syn::Attribute]) -> Result<u64> {
-    for attr in attrs {
-        if attr.path().is_ident("variant") {
-            let lit: syn::LitInt = attr.parse_args()?;
-            return lit.base10_parse();
-        }
-    }
-    Err(Error::new(
-        proc_macro2::Span::call_site(),
-        "enum variant requires #[variant(N)] attribute",
-    ))
-}
-
-fn derive_packed_enum(input: &DeriveInput, data: &syn::DataEnum) -> Result<TokenStream2> {
-    let packed_attr = parse_packed_attr(&input.attrs)?;
-
-    let discriminant = packed_attr.discriminant.ok_or_else(|| {
+fn derive_storage_enum(
+    input: &DeriveInput,
+    data: &syn::DataEnum,
+    storage_attr: StorageAttr,
+) -> Result<TokenStream2> {
+    let discriminant = storage_attr.discriminant.ok_or_else(|| {
         Error::new_spanned(
             input,
-            "BitPacked enum requires discriminant: #[packed(repr = T, discriminant(start = N, len = M))]",
+            "bit_storage enum requires discriminant: #[bit_storage(repr = T, discriminant(start = N, len = M))]",
         )
     })?;
 
-    let repr = &packed_attr.repr;
+    let repr = &storage_attr.repr;
     let bits = repr_bits(repr);
 
     // Validate discriminant fits
@@ -554,7 +698,10 @@ fn derive_packed_enum(input: &DeriveInput, data: &syn::DataEnum) -> Result<Token
             input,
             format!(
                 "discriminant exceeds {} bits (start {} + len {} = {})",
-                bits, discriminant.start, discriminant.len, discriminant.start + discriminant.len
+                bits,
+                discriminant.start,
+                discriminant.len,
+                discriminant.start + discriminant.len
             ),
         ));
     }
@@ -595,9 +742,11 @@ fn derive_packed_enum(input: &DeriveInput, data: &syn::DataEnum) -> Result<Token
         }
 
         let members: Vec<MemberDef> = match &variant.fields {
-            Fields::Named(fields) => {
-                fields.named.iter().map(parse_member).collect::<Result<_>>()?
-            }
+            Fields::Named(fields) => fields
+                .named
+                .iter()
+                .map(parse_member)
+                .collect::<Result<_>>()?,
             Fields::Unit => Vec::new(),
             Fields::Unnamed(_) => {
                 return Err(Error::new_spanned(
@@ -632,192 +781,14 @@ fn derive_packed_enum(input: &DeriveInput, data: &syn::DataEnum) -> Result<Token
         variants.push(ParsedVariant {
             name: variant.ident.clone(),
             discriminant: disc,
-            members,
         });
     }
 
-    let name = &input.ident;
-    let pack_fn = generate_enum_pack(repr, &discriminant, &variants);
-    let unpack_fn = generate_enum_unpack(repr, &discriminant, &variants);
+    let _vis = &input.vis;
+    let _name = &input.ident;
+    let _discriminant = discriminant;
+    let _variants = variants;
 
-    Ok(quote! {
-        impl #name {
-            #pack_fn
-            #unpack_fn
-        }
-    })
-}
-
-fn generate_enum_pack(
-    repr: &Ident,
-    discriminant: &BitRange,
-    variants: &[ParsedVariant],
-) -> TokenStream2 {
-    let disc_start = discriminant.start;
-
-    let match_arms: Vec<TokenStream2> = variants.iter().map(|variant| {
-        let variant_name = &variant.name;
-        let disc_val = variant.discriminant;
-
-        let field_names: Vec<&Ident> = variant.members.iter().map(|m| m.name()).collect();
-
-        let pack_statements: Vec<TokenStream2> = variant.members.iter().map(|m| {
-            match m {
-                MemberDef::Field { name: field_name, ty, range } => {
-                    let field_str = field_name.to_string();
-                    let start = range.start;
-                    let len = range.len;
-                    let max_val = if len >= 64 {
-                        quote! { #repr::MAX }
-                    } else {
-                        quote! { ((1 as #repr) << #len) - 1 }
-                    };
-
-                    if is_primitive(ty) {
-                        quote! {
-                            let field_val = *#field_name as #repr;
-                            if field_val > #max_val {
-                                return Err(nexus_bits::FieldOverflow {
-                                    field: #field_str,
-                                    overflow: nexus_bits::Overflow { value: field_val, max: #max_val },
-                                });
-                            }
-                            val |= field_val << #start;
-                        }
-                    } else {
-                        quote! {
-                            let field_val = nexus_bits::IntEnum::into_repr(*#field_name) as #repr;
-                            if field_val > #max_val {
-                                return Err(nexus_bits::FieldOverflow {
-                                    field: #field_str,
-                                    overflow: nexus_bits::Overflow { value: field_val, max: #max_val },
-                                });
-                            }
-                            val |= field_val << #start;
-                        }
-                    }
-                }
-                MemberDef::Flag { name: field_name, bit } => {
-                    quote! {
-                        if *#field_name {
-                            val |= (1 as #repr) << #bit;
-                        }
-                    }
-                }
-            }
-        }).collect();
-
-        if field_names.is_empty() {
-            quote! {
-                Self::#variant_name => {
-                    let mut val: #repr = 0;
-                    val |= (#disc_val as #repr) << #disc_start;
-                    Ok(val)
-                }
-            }
-        } else {
-            quote! {
-                Self::#variant_name { #(#field_names),* } => {
-                    let mut val: #repr = 0;
-                    val |= (#disc_val as #repr) << #disc_start;
-                    #(#pack_statements)*
-                    Ok(val)
-                }
-            }
-        }
-    }).collect();
-
-    quote! {
-        /// Pack into integer representation.
-        #[inline]
-        pub fn pack(&self) -> Result<#repr, nexus_bits::FieldOverflow<#repr>> {
-            match self {
-                #(#match_arms)*
-            }
-        }
-    }
-}
-
-fn generate_enum_unpack(
-    repr: &Ident,
-    discriminant: &BitRange,
-    variants: &[ParsedVariant],
-) -> TokenStream2 {
-    let disc_start = discriminant.start;
-    let disc_len = discriminant.len;
-    let disc_mask = if disc_len >= 64 {
-        quote! { #repr::MAX }
-    } else {
-        quote! { ((1 as #repr) << #disc_len) - 1 }
-    };
-
-    let match_arms: Vec<TokenStream2> = variants.iter().map(|variant| {
-        let variant_name = &variant.name;
-        let disc_val = variant.discriminant;
-
-        let unpack_statements: Vec<TokenStream2> = variant.members.iter().map(|m| {
-            match m {
-                MemberDef::Field { name: field_name, ty, range } => {
-                    let start = range.start;
-                    let len = range.len;
-                    let mask = if len >= 64 {
-                        quote! { #repr::MAX }
-                    } else {
-                        quote! { ((1 as #repr) << #len) - 1 }
-                    };
-
-                    if is_primitive(ty) {
-                        quote! {
-                            let #field_name = ((raw >> #start) & #mask) as #ty;
-                        }
-                    } else {
-                        let field_str = field_name.to_string();
-                        quote! {
-                            let field_repr = ((raw >> #start) & #mask);
-                            let #field_name = <#ty as nexus_bits::IntEnum>::try_from_repr(field_repr as _)
-                                .ok_or(nexus_bits::UnknownDiscriminant {
-                                    field: #field_str,
-                                    value: raw,
-                                })?;
-                        }
-                    }
-                }
-                MemberDef::Flag { name: field_name, bit } => {
-                    quote! {
-                        let #field_name = (raw >> #bit) & 1 != 0;
-                    }
-                }
-            }
-        }).collect();
-
-        let field_names: Vec<&Ident> = variant.members.iter().map(|m| m.name()).collect();
-
-        if field_names.is_empty() {
-            quote! {
-                #disc_val => Ok(Self::#variant_name),
-            }
-        } else {
-            quote! {
-                #disc_val => {
-                    #(#unpack_statements)*
-                    Ok(Self::#variant_name { #(#field_names),* })
-                }
-            }
-        }
-    }).collect();
-
-    quote! {
-        /// Unpack from integer representation.
-        #[inline]
-        pub fn unpack(raw: #repr) -> Result<Self, nexus_bits::UnknownDiscriminant<#repr>> {
-            let discriminant = ((raw >> #disc_start) & #disc_mask) as u64;
-            match discriminant {
-                #(#match_arms)*
-                _ => Err(nexus_bits::UnknownDiscriminant {
-                    field: "",
-                    value: raw,
-                }),
-            }
-        }
-    }
+    // TODO: generate parent type, variant types, Kind enum, impls, builders, accessors
+    todo!("enum codegen not yet implemented")
 }

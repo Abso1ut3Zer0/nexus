@@ -43,4 +43,4 @@ pub use flag::Flag;
 pub use int_enum::IntEnum;
 
 #[cfg(feature = "derive")]
-pub use nexus_bits_derive::{BitPacked, IntEnum};
+pub use nexus_bits_derive::{IntEnum, bit_storage};
