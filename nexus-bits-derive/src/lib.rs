@@ -512,12 +512,312 @@ fn generate_struct_unpack(
 }
 
 // =============================================================================
-// Enum codegen (placeholder)
+// Enum codegen
 // =============================================================================
 
-fn derive_packed_enum(input: &DeriveInput, _data: &syn::DataEnum) -> Result<TokenStream2> {
-    Err(Error::new_spanned(
-        input,
-        "BitPacked for enums not yet implemented",
+/// Parsed variant for tagged enum
+struct ParsedVariant {
+    name: Ident,
+    discriminant: u64,
+    members: Vec<MemberDef>,
+}
+
+fn parse_variant_attr(attrs: &[syn::Attribute]) -> Result<u64> {
+    for attr in attrs {
+        if attr.path().is_ident("variant") {
+            let lit: syn::LitInt = attr.parse_args()?;
+            return lit.base10_parse();
+        }
+    }
+    Err(Error::new(
+        proc_macro2::Span::call_site(),
+        "enum variant requires #[variant(N)] attribute",
     ))
+}
+
+fn derive_packed_enum(input: &DeriveInput, data: &syn::DataEnum) -> Result<TokenStream2> {
+    let packed_attr = parse_packed_attr(&input.attrs)?;
+
+    let discriminant = packed_attr.discriminant.ok_or_else(|| {
+        Error::new_spanned(
+            input,
+            "BitPacked enum requires discriminant: #[packed(repr = T, discriminant(start = N, len = M))]",
+        )
+    })?;
+
+    let repr = &packed_attr.repr;
+    let bits = repr_bits(repr);
+
+    // Validate discriminant fits
+    if discriminant.start + discriminant.len > bits {
+        return Err(Error::new_spanned(
+            input,
+            format!(
+                "discriminant exceeds {} bits (start {} + len {} = {})",
+                bits, discriminant.start, discriminant.len, discriminant.start + discriminant.len
+            ),
+        ));
+    }
+
+    let max_discriminant = if discriminant.len >= 64 {
+        u64::MAX
+    } else {
+        (1u64 << discriminant.len) - 1
+    };
+
+    // Parse all variants
+    let mut variants = Vec::new();
+    for variant in &data.variants {
+        let disc = parse_variant_attr(&variant.attrs)?;
+
+        if disc > max_discriminant {
+            return Err(Error::new_spanned(
+                &variant.ident,
+                format!(
+                    "variant discriminant {} exceeds max {} for {}-bit field",
+                    disc, max_discriminant, discriminant.len
+                ),
+            ));
+        }
+
+        // Check for duplicate discriminants
+        for existing in &variants {
+            let existing: &ParsedVariant = existing;
+            if existing.discriminant == disc {
+                return Err(Error::new_spanned(
+                    &variant.ident,
+                    format!(
+                        "duplicate discriminant {}: already used by '{}'",
+                        disc, existing.name
+                    ),
+                ));
+            }
+        }
+
+        let members: Vec<MemberDef> = match &variant.fields {
+            Fields::Named(fields) => {
+                fields.named.iter().map(parse_member).collect::<Result<_>>()?
+            }
+            Fields::Unit => Vec::new(),
+            Fields::Unnamed(_) => {
+                return Err(Error::new_spanned(
+                    variant,
+                    "tuple variants not supported, use named fields",
+                ));
+            }
+        };
+
+        // Validate members don't overlap with discriminant
+        let disc_range = MemberDef::Field {
+            name: Ident::new("__discriminant", proc_macro2::Span::call_site()),
+            ty: syn::parse_quote!(u64),
+            range: BitRange {
+                start: discriminant.start,
+                len: discriminant.len,
+            },
+        };
+
+        for member in &members {
+            if ranges_overlap(&disc_range, member) {
+                return Err(Error::new_spanned(
+                    member.name(),
+                    format!("field '{}' overlaps with discriminant", member.name()),
+                ));
+            }
+        }
+
+        // Validate members within this variant
+        validate_members(&members, repr)?;
+
+        variants.push(ParsedVariant {
+            name: variant.ident.clone(),
+            discriminant: disc,
+            members,
+        });
+    }
+
+    let name = &input.ident;
+    let pack_fn = generate_enum_pack(repr, &discriminant, &variants);
+    let unpack_fn = generate_enum_unpack(repr, &discriminant, &variants);
+
+    Ok(quote! {
+        impl #name {
+            #pack_fn
+            #unpack_fn
+        }
+    })
+}
+
+fn generate_enum_pack(
+    repr: &Ident,
+    discriminant: &BitRange,
+    variants: &[ParsedVariant],
+) -> TokenStream2 {
+    let disc_start = discriminant.start;
+
+    let match_arms: Vec<TokenStream2> = variants.iter().map(|variant| {
+        let variant_name = &variant.name;
+        let disc_val = variant.discriminant;
+
+        let field_names: Vec<&Ident> = variant.members.iter().map(|m| m.name()).collect();
+
+        let pack_statements: Vec<TokenStream2> = variant.members.iter().map(|m| {
+            match m {
+                MemberDef::Field { name: field_name, ty, range } => {
+                    let field_str = field_name.to_string();
+                    let start = range.start;
+                    let len = range.len;
+                    let max_val = if len >= 64 {
+                        quote! { #repr::MAX }
+                    } else {
+                        quote! { ((1 as #repr) << #len) - 1 }
+                    };
+
+                    if is_primitive(ty) {
+                        quote! {
+                            let field_val = *#field_name as #repr;
+                            if field_val > #max_val {
+                                return Err(nexus_bits::FieldOverflow {
+                                    field: #field_str,
+                                    overflow: nexus_bits::Overflow { value: field_val, max: #max_val },
+                                });
+                            }
+                            val |= field_val << #start;
+                        }
+                    } else {
+                        quote! {
+                            let field_val = nexus_bits::IntEnum::into_repr(*#field_name) as #repr;
+                            if field_val > #max_val {
+                                return Err(nexus_bits::FieldOverflow {
+                                    field: #field_str,
+                                    overflow: nexus_bits::Overflow { value: field_val, max: #max_val },
+                                });
+                            }
+                            val |= field_val << #start;
+                        }
+                    }
+                }
+                MemberDef::Flag { name: field_name, bit } => {
+                    quote! {
+                        if *#field_name {
+                            val |= (1 as #repr) << #bit;
+                        }
+                    }
+                }
+            }
+        }).collect();
+
+        if field_names.is_empty() {
+            quote! {
+                Self::#variant_name => {
+                    let mut val: #repr = 0;
+                    val |= (#disc_val as #repr) << #disc_start;
+                    Ok(val)
+                }
+            }
+        } else {
+            quote! {
+                Self::#variant_name { #(#field_names),* } => {
+                    let mut val: #repr = 0;
+                    val |= (#disc_val as #repr) << #disc_start;
+                    #(#pack_statements)*
+                    Ok(val)
+                }
+            }
+        }
+    }).collect();
+
+    quote! {
+        /// Pack into integer representation.
+        #[inline]
+        pub fn pack(&self) -> Result<#repr, nexus_bits::FieldOverflow<#repr>> {
+            match self {
+                #(#match_arms)*
+            }
+        }
+    }
+}
+
+fn generate_enum_unpack(
+    repr: &Ident,
+    discriminant: &BitRange,
+    variants: &[ParsedVariant],
+) -> TokenStream2 {
+    let disc_start = discriminant.start;
+    let disc_len = discriminant.len;
+    let disc_mask = if disc_len >= 64 {
+        quote! { #repr::MAX }
+    } else {
+        quote! { ((1 as #repr) << #disc_len) - 1 }
+    };
+
+    let match_arms: Vec<TokenStream2> = variants.iter().map(|variant| {
+        let variant_name = &variant.name;
+        let disc_val = variant.discriminant;
+
+        let unpack_statements: Vec<TokenStream2> = variant.members.iter().map(|m| {
+            match m {
+                MemberDef::Field { name: field_name, ty, range } => {
+                    let start = range.start;
+                    let len = range.len;
+                    let mask = if len >= 64 {
+                        quote! { #repr::MAX }
+                    } else {
+                        quote! { ((1 as #repr) << #len) - 1 }
+                    };
+
+                    if is_primitive(ty) {
+                        quote! {
+                            let #field_name = ((raw >> #start) & #mask) as #ty;
+                        }
+                    } else {
+                        let field_str = field_name.to_string();
+                        quote! {
+                            let field_repr = ((raw >> #start) & #mask);
+                            let #field_name = <#ty as nexus_bits::IntEnum>::try_from_repr(field_repr as _)
+                                .ok_or(nexus_bits::UnknownDiscriminant {
+                                    field: #field_str,
+                                    value: raw,
+                                })?;
+                        }
+                    }
+                }
+                MemberDef::Flag { name: field_name, bit } => {
+                    quote! {
+                        let #field_name = (raw >> #bit) & 1 != 0;
+                    }
+                }
+            }
+        }).collect();
+
+        let field_names: Vec<&Ident> = variant.members.iter().map(|m| m.name()).collect();
+
+        if field_names.is_empty() {
+            quote! {
+                #disc_val => Ok(Self::#variant_name),
+            }
+        } else {
+            quote! {
+                #disc_val => {
+                    #(#unpack_statements)*
+                    Ok(Self::#variant_name { #(#field_names),* })
+                }
+            }
+        }
+    }).collect();
+
+    quote! {
+        /// Unpack from integer representation.
+        #[inline]
+        pub fn unpack(raw: #repr) -> Result<Self, nexus_bits::UnknownDiscriminant<#repr>> {
+            let discriminant = ((raw >> #disc_start) & #disc_mask) as u64;
+            match discriminant {
+                #(#match_arms)*
+                _ => Err(nexus_bits::UnknownDiscriminant {
+                    field: "",
+                    value: raw,
+                }),
+            }
+        }
+    }
 }
