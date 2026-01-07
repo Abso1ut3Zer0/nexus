@@ -1,7 +1,7 @@
 use proc_macro::TokenStream;
 use proc_macro2::TokenStream as TokenStream2;
 use quote::quote;
-use syn::{parse_macro_input, DeriveInput, Error, Result, Data, Fields, Ident, Type};
+use syn::{Data, DeriveInput, Error, Fields, Ident, Result, Type, parse_macro_input};
 
 // =============================================================================
 // IntEnum derive (existing)
@@ -20,14 +20,22 @@ pub fn derive_int_enum(input: TokenStream) -> TokenStream {
 fn derive_int_enum_impl(input: DeriveInput) -> Result<TokenStream2> {
     let variants = match &input.data {
         Data::Enum(data) => &data.variants,
-        _ => return Err(Error::new_spanned(&input, "IntEnum can only be derived for enums")),
+        _ => {
+            return Err(Error::new_spanned(
+                &input,
+                "IntEnum can only be derived for enums",
+            ));
+        }
     };
 
     let repr = parse_repr(&input)?;
 
     for variant in variants {
         if !matches!(variant.fields, Fields::Unit) {
-            return Err(Error::new_spanned(variant, "IntEnum variants cannot have fields"));
+            return Err(Error::new_spanned(
+                variant,
+                "IntEnum variants cannot have fields",
+            ));
         }
     }
 
@@ -103,7 +111,10 @@ fn derive_bit_packed_impl(input: DeriveInput) -> Result<TokenStream2> {
     match &input.data {
         Data::Struct(data) => derive_packed_struct(&input, data),
         Data::Enum(data) => derive_packed_enum(&input, data),
-        Data::Union(_) => Err(Error::new_spanned(&input, "BitPacked cannot be derived for unions")),
+        Data::Union(_) => Err(Error::new_spanned(
+            &input,
+            "BitPacked cannot be derived for unions",
+        )),
     }
 }
 
@@ -180,7 +191,8 @@ fn parse_packed_attr_inner(attr: &syn::Attribute) -> Result<PackedAttr> {
         }
     })?;
 
-    let repr = repr.ok_or_else(|| Error::new_spanned(attr, "packed attribute requires `repr = ...`"))?;
+    let repr =
+        repr.ok_or_else(|| Error::new_spanned(attr, "packed attribute requires `repr = ...`"))?;
 
     // Validate repr
     match repr.to_string().as_str() {
@@ -223,7 +235,9 @@ fn parse_bit_range(input: syn::parse::ParseStream) -> Result<BitRange> {
 }
 
 fn parse_member(field: &syn::Field) -> Result<MemberDef> {
-    let name = field.ident.clone()
+    let name = field
+        .ident
+        .clone()
         .ok_or_else(|| Error::new_spanned(field, "tuple structs not supported"))?;
     let ty = field.ty.clone();
 
@@ -238,7 +252,10 @@ fn parse_member(field: &syn::Field) -> Result<MemberDef> {
         }
     }
 
-    Err(Error::new_spanned(field, "field requires #[field(start = N, len = M)] or #[flag(N)] attribute"))
+    Err(Error::new_spanned(
+        field,
+        "field requires #[field(start = N, len = M)] or #[flag(N)] attribute",
+    ))
 }
 
 // =============================================================================
@@ -250,8 +267,7 @@ fn is_primitive(ty: &Type) -> bool {
         if let Some(ident) = type_path.path.get_ident() {
             return matches!(
                 ident.to_string().as_str(),
-                "u8" | "u16" | "u32" | "u64" | "u128" |
-                "i8" | "i16" | "i32" | "i64" | "i128"
+                "u8" | "u16" | "u32" | "u64" | "u128" | "i8" | "i16" | "i32" | "i64" | "i128"
             );
         }
     }
@@ -283,7 +299,13 @@ fn validate_members(members: &[MemberDef], repr: &Ident) -> Result<()> {
                 if range.start + range.len > bits {
                     return Err(Error::new_spanned(
                         name,
-                        format!("field exceeds {} bits (start {} + len {} = {})", bits, range.start, range.len, range.start + range.len),
+                        format!(
+                            "field exceeds {} bits (start {} + len {} = {})",
+                            bits,
+                            range.start,
+                            range.len,
+                            range.start + range.len
+                        ),
                     ));
                 }
             }
@@ -339,23 +361,24 @@ fn derive_packed_struct(input: &DeriveInput, data: &syn::DataStruct) -> Result<T
     let packed_attr = parse_packed_attr(&input.attrs)?;
 
     if packed_attr.discriminant.is_some() {
-        return Err(Error::new_spanned(input, "discriminant is only valid for enums"));
+        return Err(Error::new_spanned(
+            input,
+            "discriminant is only valid for enums",
+        ));
     }
 
-    let members: Vec<MemberDef> = fields.iter()
-        .map(parse_member)
-        .collect::<Result<_>>()?;
+    let members: Vec<MemberDef> = fields.iter().map(parse_member).collect::<Result<_>>()?;
 
     validate_members(&members, &packed_attr.repr)?;
 
     let name = &input.ident;
     let repr = &packed_attr.repr;
-    let has_enum_fields = members.iter().any(|m| {
-        matches!(m, MemberDef::Field { ty, .. } if !is_primitive(ty))
-    });
+    let has_enum_fields = members
+        .iter()
+        .any(|m| matches!(m, MemberDef::Field { ty, .. } if !is_primitive(ty)));
 
-    let pack_fn = generate_struct_pack(name, repr, &members);
-    let unpack_fn = generate_struct_unpack(name, repr, &members, has_enum_fields);
+    let pack_fn = generate_struct_pack(repr, &members);
+    let unpack_fn = generate_struct_unpack(repr, &members, has_enum_fields);
 
     Ok(quote! {
         impl #name {
@@ -365,7 +388,7 @@ fn derive_packed_struct(input: &DeriveInput, data: &syn::DataStruct) -> Result<T
     })
 }
 
-fn generate_struct_pack(name: &Ident, repr: &Ident, members: &[MemberDef]) -> TokenStream2 {
+fn generate_struct_pack(repr: &Ident, members: &[MemberDef]) -> TokenStream2 {
     let pack_statements: Vec<TokenStream2> = members.iter().map(|m| {
         match m {
             MemberDef::Field { name: field_name, ty, range } => {
@@ -424,7 +447,11 @@ fn generate_struct_pack(name: &Ident, repr: &Ident, members: &[MemberDef]) -> To
     }
 }
 
-fn generate_struct_unpack(name: &Ident, repr: &Ident, members: &[MemberDef], has_enum_fields: bool) -> TokenStream2 {
+fn generate_struct_unpack(
+    repr: &Ident,
+    members: &[MemberDef],
+    has_enum_fields: bool,
+) -> TokenStream2 {
     let unpack_statements: Vec<TokenStream2> = members.iter().map(|m| {
         match m {
             MemberDef::Field { name: field_name, ty, range } => {
@@ -489,5 +516,8 @@ fn generate_struct_unpack(name: &Ident, repr: &Ident, members: &[MemberDef], has
 // =============================================================================
 
 fn derive_packed_enum(input: &DeriveInput, _data: &syn::DataEnum) -> Result<TokenStream2> {
-    Err(Error::new_spanned(input, "BitPacked for enums not yet implemented"))
+    Err(Error::new_spanned(
+        input,
+        "BitPacked for enums not yet implemented",
+    ))
 }
