@@ -35,10 +35,12 @@
 mod error;
 mod field;
 mod flag;
+mod int_enum;
 
-pub use error::Overflow;
+pub use error::{FieldOverflow, Overflow, UnknownDiscriminant, UnknownVariant};
 pub use field::BitField;
 pub use flag::Flag;
+pub use int_enum::IntEnum;
 
 #[cfg(feature = "derive")]
-pub use nexus_bits_derive::BitPacked;
+pub use nexus_bits_derive::{BitPacked, IntEnum};

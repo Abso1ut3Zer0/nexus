@@ -14,8 +14,8 @@ repository.workspace = true
 workspace = true
 
 [features]
-# default = ["derive"]
-# derive = ["dep:nexus-bits-derive"]
+default = ["derive"]
+derive = ["dep:nexus-bits-derive"]
 
-# [dependencies]
-# nexus-bits-derive = { version = "0.1", path = "../nexus-bits-derive", optional = true }
+[dependencies]
+nexus-bits-derive = { version = "0.1", path = "../nexus-bits-derive", optional = true }
