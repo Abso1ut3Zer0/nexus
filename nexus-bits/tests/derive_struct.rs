@@ -977,3 +977,315 @@ fn from_raw_and_raw_are_inverses() {
     let s = BasicFields::from_raw(raw);
     assert_eq!(s.raw(), raw);
 }
+
+// =============================================================================
+// u128 repr
+// =============================================================================
+
+#[bit_storage(repr = u128)]
+pub struct U128Storage {
+    #[field(start = 0, len = 64)]
+    low: u64,
+    #[field(start = 64, len = 64)]
+    high: u64,
+}
+
+#[test]
+fn u128_repr_roundtrip() {
+    let original = U128Storage::builder()
+        .low(0xDEADBEEF_CAFEBABE)
+        .high(0x12345678_9ABCDEF0)
+        .build()
+        .unwrap();
+
+    let unpacked = U128Storage::from_raw(original.raw());
+    assert_eq!(unpacked.low(), 0xDEADBEEF_CAFEBABE);
+    assert_eq!(unpacked.high(), 0x12345678_9ABCDEF0);
+}
+
+#[test]
+fn u128_full_width() {
+    #[bit_storage(repr = u128)]
+    pub struct FullU128 {
+        #[field(start = 0, len = 128)]
+        value: u128,
+    }
+
+    let original = FullU128::builder().value(u128::MAX).build().unwrap();
+    assert_eq!(original.raw(), u128::MAX);
+    assert_eq!(original.value(), u128::MAX);
+}
+
+// =============================================================================
+// i128 repr
+// =============================================================================
+
+#[bit_storage(repr = i128)]
+pub struct I128Storage {
+    #[field(start = 0, len = 64)]
+    a: u64,
+    #[field(start = 64, len = 64)]
+    b: u64,
+}
+
+#[test]
+fn i128_repr_roundtrip() {
+    let original = I128Storage::builder()
+        .a(u64::MAX)
+        .b(u64::MAX)
+        .build()
+        .unwrap();
+
+    let unpacked = I128Storage::from_raw(original.raw());
+    assert_eq!(unpacked.a(), u64::MAX);
+    assert_eq!(unpacked.b(), u64::MAX);
+}
+
+// =============================================================================
+// Signed field types
+// =============================================================================
+
+#[bit_storage(repr = u32)]
+pub struct SignedFields {
+    #[field(start = 0, len = 8)]
+    signed_byte: i8,
+    #[field(start = 8, len = 16)]
+    signed_short: i16,
+}
+
+#[test]
+fn signed_fields_positive() {
+    let s = SignedFields::builder()
+        .signed_byte(127)
+        .signed_short(32767)
+        .build()
+        .unwrap();
+
+    let unpacked = SignedFields::from_raw(s.raw());
+    assert_eq!(unpacked.signed_byte(), 127);
+    assert_eq!(unpacked.signed_short(), 32767);
+}
+
+#[test]
+fn signed_fields_negative() {
+    // Note: negative values get truncated to their bit pattern
+    // -1i8 = 0xFF, which fits in 8 bits
+    let s = SignedFields::builder()
+        .signed_byte(-1)
+        .signed_short(-1)
+        .build()
+        .unwrap();
+
+    let unpacked = SignedFields::from_raw(s.raw());
+    // When we read back, we interpret as signed
+    assert_eq!(unpacked.signed_byte(), -1);
+    assert_eq!(unpacked.signed_short(), -1);
+}
+
+#[test]
+fn signed_fields_min_values() {
+    let s = SignedFields::builder()
+        .signed_byte(i8::MIN) // -128
+        .signed_short(i16::MIN) // -32768
+        .build()
+        .unwrap();
+
+    let unpacked = SignedFields::from_raw(s.raw());
+    assert_eq!(unpacked.signed_byte(), i8::MIN);
+    assert_eq!(unpacked.signed_short(), i16::MIN);
+}
+
+// =============================================================================
+// Builder overwrite behavior
+// =============================================================================
+
+#[test]
+fn builder_overwrite() {
+    let s = BasicFields::builder()
+        .a(100)
+        .a(200) // Should overwrite
+        .build()
+        .unwrap();
+    assert_eq!(s.a(), 200);
+}
+
+#[test]
+fn builder_overwrite_multiple_fields() {
+    let s = BasicFields::builder()
+        .a(1)
+        .b(2)
+        .c(3)
+        .a(10) // Overwrite a
+        .b(20) // Overwrite b
+        .build()
+        .unwrap();
+
+    assert_eq!(s.a(), 10);
+    assert_eq!(s.b(), 20);
+    assert_eq!(s.c(), 3);
+}
+
+#[test]
+fn builder_overwrite_flag() {
+    let s = FlagsOnly::builder()
+        .a(true)
+        .a(false) // Overwrite
+        .build()
+        .unwrap();
+
+    assert!(!s.a());
+}
+
+// =============================================================================
+// Hash trait
+// =============================================================================
+
+#[test]
+fn hash_works() {
+    use std::collections::HashSet;
+
+    let mut set = HashSet::new();
+    set.insert(BasicFields::from_raw(123));
+    set.insert(BasicFields::from_raw(456));
+    set.insert(BasicFields::from_raw(123)); // Duplicate
+
+    assert_eq!(set.len(), 2);
+    assert!(set.contains(&BasicFields::from_raw(123)));
+    assert!(set.contains(&BasicFields::from_raw(456)));
+    assert!(!set.contains(&BasicFields::from_raw(789)));
+}
+
+#[test]
+fn hash_as_map_key() {
+    use std::collections::HashMap;
+
+    let mut map = HashMap::new();
+    let id1 = SnowflakeId::builder()
+        .sequence(1)
+        .worker(1)
+        .timestamp(1000)
+        .build()
+        .unwrap();
+    let id2 = SnowflakeId::builder()
+        .sequence(2)
+        .worker(1)
+        .timestamp(1000)
+        .build()
+        .unwrap();
+
+    map.insert(id1, "first");
+    map.insert(id2, "second");
+
+    assert_eq!(map.get(&id1), Some(&"first"));
+    assert_eq!(map.get(&id2), Some(&"second"));
+}
+
+// =============================================================================
+// IntEnum overflow in builder (BUG: currently not validated!)
+// =============================================================================
+
+#[derive(IntEnum, Debug, Clone, Copy, PartialEq, Eq)]
+#[repr(u8)]
+pub enum LargeEnum {
+    Small = 0,
+    Medium = 15, // Max that fits in 4 bits
+    Big = 255,   // Won't fit in 4 bits
+}
+
+#[bit_storage(repr = u64)]
+pub struct WithLargeEnum {
+    #[field(start = 0, len = 4)] // max value is 15
+    val: LargeEnum,
+}
+
+#[test]
+fn enum_field_valid_values() {
+    // Small = 0, fits fine
+    let s = WithLargeEnum::builder()
+        .val(LargeEnum::Small)
+        .build()
+        .unwrap();
+    assert_eq!(s.val().unwrap(), LargeEnum::Small);
+
+    // Medium = 15, exactly at max
+    let s = WithLargeEnum::builder()
+        .val(LargeEnum::Medium)
+        .build()
+        .unwrap();
+    assert_eq!(s.val().unwrap(), LargeEnum::Medium);
+}
+
+#[test]
+fn enum_field_overflow() {
+    // Big = 255, should NOT fit in 4 bits (max 15)
+    // This test documents the expected behavior: should return error
+    let result = WithLargeEnum::builder().val(LargeEnum::Big).build();
+
+    // BUG: Currently this passes but silently truncates!
+    // After fix, this should be an error:
+    let err = result.unwrap_err();
+    assert_eq!(err.field, "val");
+}
+
+// =============================================================================
+// Timestamp overflow (validates large field overflow detection)
+// =============================================================================
+
+#[test]
+fn snowflake_timestamp_overflow() {
+    // timestamp field is 42 bits, max value is (1 << 42) - 1
+    let result = SnowflakeId::builder()
+        .sequence(0)
+        .worker(0)
+        .timestamp(1u64 << 42) // One more than max
+        .build();
+
+    let err = result.unwrap_err();
+    assert_eq!(err.field, "timestamp");
+}
+
+#[test]
+fn snowflake_timestamp_at_max() {
+    // Exactly at max should work
+    let max_ts = (1u64 << 42) - 1;
+    let s = SnowflakeId::builder()
+        .sequence(0)
+        .worker(0)
+        .timestamp(max_ts)
+        .build()
+        .unwrap();
+
+    assert_eq!(s.timestamp(), max_ts);
+}
+
+// =============================================================================
+// Visibility preservation
+// =============================================================================
+
+mod inner {
+    use nexus_bits::bit_storage;
+
+    #[bit_storage(repr = u32)]
+    pub struct PublicStorage {
+        #[field(start = 0, len = 16)]
+        value: u16,
+    }
+
+    #[bit_storage(repr = u32)]
+    struct PrivateStorage {
+        #[field(start = 0, len = 16)]
+        value: u16,
+    }
+
+    #[test]
+    fn private_storage_works() {
+        let s = PrivateStorage::builder().value(123).build().unwrap();
+        assert_eq!(s.value(), 123);
+    }
+}
+
+#[test]
+fn public_storage_accessible() {
+    let s = inner::PublicStorage::builder().value(456).build().unwrap();
+    assert_eq!(s.value(), 456);
+}

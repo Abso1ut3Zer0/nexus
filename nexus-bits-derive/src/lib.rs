@@ -557,7 +557,7 @@ fn generate_struct_builder_impl(
         })
         .collect();
 
-    // Validations - only for primitive fields that could overflow
+    // Validations
     let validations: Vec<TokenStream2> = members
         .iter()
         .filter_map(|m| match m {
@@ -565,22 +565,9 @@ fn generate_struct_builder_impl(
                 name: field_name,
                 ty,
                 range,
-            } if is_primitive(ty) => {
+            } => {
                 let field_str = field_name.to_string();
                 let len = range.len;
-
-                let type_bits: u32 = match ty {
-                    Type::Path(p) if p.path.is_ident("u8") || p.path.is_ident("i8") => 8,
-                    Type::Path(p) if p.path.is_ident("u16") || p.path.is_ident("i16") => 16,
-                    Type::Path(p) if p.path.is_ident("u32") || p.path.is_ident("i32") => 32,
-                    Type::Path(p) if p.path.is_ident("u64") || p.path.is_ident("i64") => 64,
-                    Type::Path(p) if p.path.is_ident("u128") || p.path.is_ident("i128") => 128,
-                    _ => 128,
-                };
-
-                if len >= type_bits {
-                    return None;
-                }
 
                 let max_val = if len >= repr_bit_count {
                     quote! { #repr::MAX }
@@ -588,25 +575,87 @@ fn generate_struct_builder_impl(
                     quote! { ((1 as #repr) << #len) - 1 }
                 };
 
-                Some(quote! {
-                    if let Some(v) = self.#field_name {
-                        if (v as #repr) > #max_val {
-                            return Err(nexus_bits::FieldOverflow {
-                                field: #field_str,
-                                overflow: nexus_bits::Overflow {
-                                    value: v as #repr,
-                                    max: #max_val,
-                                },
-                            });
-                        }
+                if is_primitive(ty) {
+                    let type_bits: u32 = match ty {
+                        Type::Path(p) if p.path.is_ident("u8") || p.path.is_ident("i8") => 8,
+                        Type::Path(p) if p.path.is_ident("u16") || p.path.is_ident("i16") => 16,
+                        Type::Path(p) if p.path.is_ident("u32") || p.path.is_ident("i32") => 32,
+                        Type::Path(p) if p.path.is_ident("u64") || p.path.is_ident("i64") => 64,
+                        Type::Path(p) if p.path.is_ident("u128") || p.path.is_ident("i128") => 128,
+                        _ => 128,
+                    };
+
+                    // Skip validation if field can hold entire type
+                    if len >= type_bits {
+                        return None;
                     }
-                })
+
+                    // Check if this is a signed type
+                    let is_signed = matches!(ty,
+                        Type::Path(p) if p.path.is_ident("i8") || p.path.is_ident("i16") ||
+                                         p.path.is_ident("i32") || p.path.is_ident("i64") ||
+                                         p.path.is_ident("i128")
+                    );
+
+                    if is_signed {
+                        // For signed types, check that value fits in signed field range
+                        // A signed N-bit field can hold -(2^(N-1)) to (2^(N-1) - 1)
+                        let min_shift = len - 1;
+                        Some(quote! {
+                            if let Some(v) = self.#field_name {
+                                let min_val = -((1i128 << #min_shift) as i128);
+                                let max_val = ((1i128 << #min_shift) - 1) as i128;
+                                let v_i128 = v as i128;
+                                if v_i128 < min_val || v_i128 > max_val {
+                                    return Err(nexus_bits::FieldOverflow {
+                                        field: #field_str,
+                                        overflow: nexus_bits::Overflow {
+                                            value: (v as #repr),
+                                            max: #max_val,
+                                        },
+                                    });
+                                }
+                            }
+                        })
+                    } else {
+                        // Unsigned - simple max check
+                        Some(quote! {
+                            if let Some(v) = self.#field_name {
+                                if (v as #repr) > #max_val {
+                                    return Err(nexus_bits::FieldOverflow {
+                                        field: #field_str,
+                                        overflow: nexus_bits::Overflow {
+                                            value: v as #repr,
+                                            max: #max_val,
+                                        },
+                                    });
+                                }
+                            }
+                        })
+                    }
+                } else {
+                    // IntEnum field - validate repr value fits in field
+                    Some(quote! {
+                        if let Some(v) = self.#field_name {
+                            let repr_val = nexus_bits::IntEnum::into_repr(v) as #repr;
+                            if repr_val > #max_val {
+                                return Err(nexus_bits::FieldOverflow {
+                                    field: #field_str,
+                                    overflow: nexus_bits::Overflow {
+                                        value: repr_val,
+                                        max: #max_val,
+                                    },
+                                });
+                            }
+                        }
+                    })
+                }
             }
             _ => None,
         })
         .collect();
 
-    // Pack statements - only pack if Some
+    // Pack statements - ALWAYS mask to prevent sign extension corruption
     let pack_statements: Vec<TokenStream2> = members
         .iter()
         .map(|m| {
@@ -617,18 +666,24 @@ fn generate_struct_builder_impl(
                     range,
                 } => {
                     let start = range.start;
+                    let len = range.len;
+                    let mask = if len >= repr_bit_count {
+                        quote! { #repr::MAX }
+                    } else {
+                        quote! { ((1 as #repr) << #len) - 1 }
+                    };
 
                     if is_primitive(ty) {
                         quote! {
                             if let Some(v) = self.#field_name {
-                                val |= (v as #repr) << #start;
+                                val |= ((v as #repr) & #mask) << #start;
                             }
                         }
                     } else {
                         // IntEnum
                         quote! {
                             if let Some(v) = self.#field_name {
-                                val |= (nexus_bits::IntEnum::into_repr(v) as #repr) << #start;
+                                val |= ((nexus_bits::IntEnum::into_repr(v) as #repr) & #mask) << #start;
                             }
                         }
                     }
