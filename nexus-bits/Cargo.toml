@@ -18,4 +18,4 @@ default = ["derive"]
 derive = ["dep:nexus-bits-derive"]
 
 [dependencies]
-nexus-bits-derive = { version = "0.2", path = "../nexus-bits-derive", optional = true }
+nexus-bits-derive = { version = "0.2", optional = true }
