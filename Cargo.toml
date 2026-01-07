@@ -1,10 +1,12 @@
 [workspace]
 resolver = "2"
 members = [
-    "nexus-channel", "nexus-collections",
-    "nexus-queue",
-    "nexus-slab",
-    "nexus-slot",
+	"nexus-bits",
+	"nexus-channel",
+	"nexus-collections",
+	"nexus-queue",
+	"nexus-slab",
+	"nexus-slot",
 ]
 
 [workspace.package]
