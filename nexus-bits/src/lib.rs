@@ -37,7 +37,7 @@ mod field;
 mod flag;
 mod int_enum;
 
-pub use error::{FieldOverflow, Overflow, UnknownDiscriminant, UnknownVariant};
+pub use error::{FieldOverflow, Overflow, UnknownDiscriminant};
 pub use field::BitField;
 pub use flag::Flag;
 pub use int_enum::IntEnum;

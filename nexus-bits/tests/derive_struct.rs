@@ -1,6 +1,6 @@
 //! Tests for BitPacked derive macro on structs.
 
-use nexus_bits::{BitPacked, FieldOverflow, IntEnum, Overflow, UnknownVariant};
+use nexus_bits::{BitPacked, FieldOverflow, IntEnum, Overflow, UnknownDiscriminant};
 
 // =============================================================================
 // Basic primitive fields
@@ -715,7 +715,7 @@ fn field_overflow_display() {
 
 #[test]
 fn unknown_variant_display() {
-    let err = UnknownVariant::<u64> {
+    let err = UnknownDiscriminant::<u64> {
         field: "my_enum",
         value: 42,
     };

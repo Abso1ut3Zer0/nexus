@@ -34,34 +34,26 @@ impl<T: fmt::Display> fmt::Display for FieldOverflow<T> {
     }
 }
 
-/// Unknown discriminant during tagged enum unpack.
+/// Unknown discriminant during unpack.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct UnknownDiscriminant<T> {
+    /// Field or context name.
+    /// Empty string for top-level enum discriminant.
+    pub field: &'static str,
     /// The discriminant value that wasn't recognized.
     pub value: T,
 }
 
 impl<T: fmt::Display> fmt::Display for UnknownDiscriminant<T> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "unknown discriminant: {}", self.value)
-    }
-}
-
-/// Unknown enum variant value during struct field unpack.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct UnknownVariant<T> {
-    /// Field name with unknown variant.
-    pub field: &'static str,
-    /// The value that didn't map to a variant.
-    pub value: T,
-}
-
-impl<T: fmt::Display> fmt::Display for UnknownVariant<T> {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(
-            f,
-            "field '{}': unknown variant value {}",
-            self.field, self.value
-        )
+        if self.field.is_empty() {
+            write!(f, "unknown discriminant: {}", self.value)
+        } else {
+            write!(
+                f,
+                "field '{}': unknown discriminant {}",
+                self.field, self.value
+            )
+        }
     }
 }

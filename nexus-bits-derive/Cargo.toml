@@ -1,7 +1,7 @@
 [package]
 name = "nexus-bits-derive"
 version = "0.1.0"
-description = "Derive macro for nexus-bits bit field packing"
+description = "Derive macros for nexus-bits. Use nexus-bits instead of depending on this directly."
 keywords = ["bitfield", "packed", "derive", "macro"]
 categories = ["no-std", "data-structures"]
 edition.workspace = true

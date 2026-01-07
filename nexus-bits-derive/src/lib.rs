@@ -446,7 +446,7 @@ fn generate_struct_unpack(name: &Ident, repr: &Ident, members: &[MemberDef], has
                     quote! {
                         let field_repr = ((raw >> #start) & #mask);
                         let #field_name = <#ty as nexus_bits::IntEnum>::try_from_repr(field_repr as _)
-                            .ok_or(nexus_bits::UnknownVariant {
+                            .ok_or(nexus_bits::UnknownDiscriminant {
                                 field: #field_str,
                                 value: raw,
                             })?;
@@ -467,7 +467,7 @@ fn generate_struct_unpack(name: &Ident, repr: &Ident, members: &[MemberDef], has
         quote! {
             /// Unpack from integer representation.
             #[inline]
-            pub fn unpack(raw: #repr) -> Result<Self, nexus_bits::UnknownVariant<#repr>> {
+            pub fn unpack(raw: #repr) -> Result<Self, nexus_bits::UnknownDiscriminant<#repr>> {
                 #(#unpack_statements)*
                 Ok(Self { #(#field_names),* })
             }
