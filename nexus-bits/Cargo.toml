@@ -1,6 +1,6 @@
 [package]
 name = "nexus-bits"
-version = "0.2.0"
+version = "0.2.1"
 description = "Bit field packing for integer IDs"
 keywords = ["bitfield", "packed", "no-std", "low-latency"]
 categories = ["no-std", "data-structures"]
