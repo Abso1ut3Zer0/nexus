@@ -730,6 +730,7 @@ fn generate_struct_builder_impl(
 struct ParsedVariant {
     name: Ident,
     discriminant: u64,
+    members: Vec<MemberDef>,
 }
 
 fn derive_storage_enum(
@@ -836,14 +837,614 @@ fn derive_storage_enum(
         variants.push(ParsedVariant {
             name: variant.ident.clone(),
             discriminant: disc,
+            members,
         });
     }
 
-    let _vis = &input.vis;
-    let _name = &input.ident;
-    let _discriminant = discriminant;
-    let _variants = variants;
+    let vis = &input.vis;
+    let name = &input.ident;
 
-    // TODO: generate parent type, variant types, Kind enum, impls, builders, accessors
-    todo!("enum codegen not yet implemented")
+    let parent_type = generate_enum_parent_type(vis, name, repr);
+    let variant_types = generate_enum_variant_types(vis, name, repr, &variants);
+    let kind_enum = generate_enum_kind(vis, name, &variants);
+    let builder_structs = generate_enum_builder_structs(vis, name, &variants);
+    let parent_impl = generate_enum_parent_impl(name, repr, &discriminant, &variants);
+    let variant_impls = generate_enum_variant_impls(name, repr, &variants);
+    let builder_impls = generate_enum_builder_impls(name, repr, &discriminant, &variants);
+    let from_impls = generate_enum_from_impls(name, &variants);
+
+    Ok(quote! {
+        #parent_type
+        #variant_types
+        #kind_enum
+        #builder_structs
+        #parent_impl
+        #variant_impls
+        #builder_impls
+        #from_impls
+    })
+}
+
+fn variant_type_name(parent_name: &Ident, variant_name: &Ident) -> Ident {
+    Ident::new(
+        &format!("{}{}", parent_name, variant_name),
+        variant_name.span(),
+    )
+}
+
+fn variant_builder_name(parent_name: &Ident, variant_name: &Ident) -> Ident {
+    Ident::new(
+        &format!("{}{}Builder", parent_name, variant_name),
+        variant_name.span(),
+    )
+}
+
+fn kind_enum_name(parent_name: &Ident) -> Ident {
+    Ident::new(&format!("{}Kind", parent_name), parent_name.span())
+}
+
+fn generate_enum_parent_type(vis: &syn::Visibility, name: &Ident, repr: &Ident) -> TokenStream2 {
+    quote! {
+        #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+        #[repr(transparent)]
+        #vis struct #name(#vis #repr);
+    }
+}
+
+fn generate_enum_variant_types(
+    vis: &syn::Visibility,
+    parent_name: &Ident,
+    repr: &Ident,
+    variants: &[ParsedVariant],
+) -> TokenStream2 {
+    let types: Vec<TokenStream2> = variants
+        .iter()
+        .map(|v| {
+            let type_name = variant_type_name(parent_name, &v.name);
+            quote! {
+                #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+                #[repr(transparent)]
+                #vis struct #type_name(#repr);
+            }
+        })
+        .collect();
+
+    quote! { #(#types)* }
+}
+
+fn generate_enum_kind(
+    vis: &syn::Visibility,
+    parent_name: &Ident,
+    variants: &[ParsedVariant],
+) -> TokenStream2 {
+    let kind_name = kind_enum_name(parent_name);
+    let variant_names: Vec<&Ident> = variants.iter().map(|v| &v.name).collect();
+
+    quote! {
+        #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+        #vis enum #kind_name {
+            #(#variant_names),*
+        }
+    }
+}
+
+fn generate_enum_builder_structs(
+    vis: &syn::Visibility,
+    parent_name: &Ident,
+    variants: &[ParsedVariant],
+) -> TokenStream2 {
+    let builders: Vec<TokenStream2> = variants
+        .iter()
+        .map(|v| {
+            let builder_name = variant_builder_name(parent_name, &v.name);
+
+            let fields: Vec<TokenStream2> = v
+                .members
+                .iter()
+                .map(|m| match m {
+                    MemberDef::Field { name, ty, .. } => {
+                        quote! { #name: Option<#ty>, }
+                    }
+                    MemberDef::Flag { name, .. } => {
+                        quote! { #name: Option<bool>, }
+                    }
+                })
+                .collect();
+
+            quote! {
+                #[derive(Debug, Clone, Copy, Default)]
+                #vis struct #builder_name {
+                    #(#fields)*
+                }
+            }
+        })
+        .collect();
+
+    quote! { #(#builders)* }
+}
+
+fn generate_enum_parent_impl(
+    name: &Ident,
+    repr: &Ident,
+    discriminant: &BitRange,
+    variants: &[ParsedVariant],
+) -> TokenStream2 {
+    let repr_bit_count = repr_bits(repr);
+    let kind_name = kind_enum_name(name);
+    let disc_start = discriminant.start;
+    let disc_len = discriminant.len;
+
+    let disc_mask = if disc_len >= repr_bit_count {
+        quote! { #repr::MAX }
+    } else {
+        quote! { ((1 as #repr) << #disc_len) - 1 }
+    };
+
+    // kind() match arms
+    let kind_arms: Vec<TokenStream2> = variants
+        .iter()
+        .map(|v| {
+            let variant_name = &v.name;
+            let disc_val = v.discriminant;
+            quote! {
+                #disc_val => Ok(#kind_name::#variant_name),
+            }
+        })
+        .collect();
+
+    // is_* methods
+    let is_methods: Vec<TokenStream2> = variants
+        .iter()
+        .map(|v| {
+            let variant_name = &v.name;
+            let method_name = Ident::new(
+                &format!("is_{}", to_snake_case(&variant_name.to_string())),
+                variant_name.span(),
+            );
+            let disc_val = v.discriminant;
+            quote! {
+                #[inline]
+                pub fn #method_name(&self) -> bool {
+                    let disc = ((self.0 >> #disc_start) & #disc_mask) as u64;
+                    disc == #disc_val
+                }
+            }
+        })
+        .collect();
+
+    // as_* methods
+    let as_methods: Vec<TokenStream2> = variants
+        .iter()
+        .map(|v| {
+            let variant_name = &v.name;
+            let variant_type = variant_type_name(name, variant_name);
+            let method_name = Ident::new(
+                &format!("as_{}", to_snake_case(&variant_name.to_string())),
+                variant_name.span(),
+            );
+            let disc_val = v.discriminant;
+
+            // Validation for IntEnum fields
+            let validations: Vec<TokenStream2> = v.members
+                .iter()
+                .filter_map(|m| {
+                    if let MemberDef::Field { name: field_name, ty, range } = m {
+                        if !is_primitive(ty) {
+                            let start = range.start;
+                            let len = range.len;
+                            let repr_bit_count = repr_bits(repr);
+                            let mask = if len >= repr_bit_count {
+                                quote! { #repr::MAX }
+                            } else {
+                                quote! { ((1 as #repr) << #len) - 1 }
+                            };
+                            return Some(quote! {
+                                let field_repr = ((self.0 >> #start) & #mask);
+                                if <#ty as nexus_bits::IntEnum>::try_from_repr(field_repr as _).is_none() {
+                                    return Err(nexus_bits::UnknownDiscriminant {
+                                        field: stringify!(#field_name),
+                                        value: self.0,
+                                    });
+                                }
+                            });
+                        }
+                    }
+                    None
+                })
+                .collect();
+
+            quote! {
+                #[inline]
+                pub fn #method_name(&self) -> Result<#variant_type, nexus_bits::UnknownDiscriminant<#repr>> {
+                    let disc = ((self.0 >> #disc_start) & #disc_mask) as u64;
+                    if disc != #disc_val {
+                        return Err(nexus_bits::UnknownDiscriminant {
+                            field: "__discriminant",
+                            value: self.0,
+                        });
+                    }
+                    #(#validations)*
+                    Ok(#variant_type(self.0))
+                }
+            }
+        })
+        .collect();
+
+    // Builder shortcut methods
+    let builder_methods: Vec<TokenStream2> = variants
+        .iter()
+        .map(|v| {
+            let variant_name = &v.name;
+            let builder_name = variant_builder_name(name, variant_name);
+            let method_name = Ident::new(
+                &to_snake_case(&variant_name.to_string()),
+                variant_name.span(),
+            );
+            quote! {
+                #[inline]
+                pub fn #method_name() -> #builder_name {
+                    #builder_name::default()
+                }
+            }
+        })
+        .collect();
+
+    quote! {
+        impl #name {
+            /// Create from raw integer value.
+            #[inline]
+            pub const fn from_raw(raw: #repr) -> Self {
+                Self(raw)
+            }
+
+            /// Get the raw integer value.
+            #[inline]
+            pub const fn raw(self) -> #repr {
+                self.0
+            }
+
+            /// Get the kind (discriminant) of this value.
+            #[inline]
+            pub fn kind(&self) -> Result<#kind_name, nexus_bits::UnknownDiscriminant<#repr>> {
+                let disc = ((self.0 >> #disc_start) & #disc_mask) as u64;
+                match disc {
+                    #(#kind_arms)*
+                    _ => Err(nexus_bits::UnknownDiscriminant {
+                        field: "__discriminant",
+                        value: self.0,
+                    }),
+                }
+            }
+
+            #(#is_methods)*
+
+            #(#as_methods)*
+
+            #(#builder_methods)*
+        }
+    }
+}
+
+fn generate_enum_variant_impls(
+    parent_name: &Ident,
+    repr: &Ident,
+    variants: &[ParsedVariant],
+) -> TokenStream2 {
+    let repr_bit_count = repr_bits(repr);
+
+    let impls: Vec<TokenStream2> =
+        variants
+            .iter()
+            .map(|v| {
+                let variant_name = &v.name;
+                let variant_type = variant_type_name(parent_name, variant_name);
+                let builder_name = variant_builder_name(parent_name, variant_name);
+
+                // Accessors - infallible since variant is pre-validated
+                let accessors: Vec<TokenStream2> = v.members
+                .iter()
+                .map(|m| {
+                    match m {
+                        MemberDef::Field { name: field_name, ty, range } => {
+                            let start = range.start;
+                            let len = range.len;
+                            let mask = if len >= repr_bit_count {
+                                quote! { #repr::MAX }
+                            } else {
+                                quote! { ((1 as #repr) << #len) - 1 }
+                            };
+
+                            if is_primitive(ty) {
+                                quote! {
+                                    #[inline]
+                                    pub const fn #field_name(&self) -> #ty {
+                                        ((self.0 >> #start) & #mask) as #ty
+                                    }
+                                }
+                            } else {
+                                // IntEnum - infallible because already validated
+                                quote! {
+                                    #[inline]
+                                    pub fn #field_name(&self) -> #ty {
+                                        let field_repr = ((self.0 >> #start) & #mask);
+                                        // SAFETY: This type was validated during construction
+                                        <#ty as nexus_bits::IntEnum>::try_from_repr(field_repr as _)
+                                            .expect("variant type invariant violated")
+                                    }
+                                }
+                            }
+                        }
+                        MemberDef::Flag { name: field_name, bit } => {
+                            quote! {
+                                #[inline]
+                                pub const fn #field_name(&self) -> bool {
+                                    (self.0 >> #bit) & 1 != 0
+                                }
+                            }
+                        }
+                    }
+                })
+                .collect();
+
+                quote! {
+                    impl #variant_type {
+                        /// Create a builder for this variant.
+                        #[inline]
+                        pub fn builder() -> #builder_name {
+                            #builder_name::default()
+                        }
+
+                        /// Get the raw integer value.
+                        #[inline]
+                        pub const fn raw(self) -> #repr {
+                            self.0
+                        }
+
+                        /// Convert to parent type.
+                        #[inline]
+                        pub const fn as_parent(self) -> #parent_name {
+                            #parent_name(self.0)
+                        }
+
+                        #(#accessors)*
+                    }
+                }
+            })
+            .collect();
+
+    quote! { #(#impls)* }
+}
+
+fn generate_enum_builder_impls(
+    parent_name: &Ident,
+    repr: &Ident,
+    discriminant: &BitRange,
+    variants: &[ParsedVariant],
+) -> TokenStream2 {
+    let repr_bit_count = repr_bits(repr);
+    let disc_start = discriminant.start;
+
+    let impls: Vec<TokenStream2> = variants
+        .iter()
+        .map(|v| {
+            let variant_name = &v.name;
+            let variant_type = variant_type_name(parent_name, variant_name);
+            let builder_name = variant_builder_name(parent_name, variant_name);
+            let disc_val = v.discriminant;
+
+            // Setters
+            let setters: Vec<TokenStream2> = v.members
+                .iter()
+                .map(|m| match m {
+                    MemberDef::Field { name: field_name, ty, .. } => {
+                        quote! {
+                            #[inline]
+                            pub fn #field_name(mut self, val: #ty) -> Self {
+                                self.#field_name = Some(val);
+                                self
+                            }
+                        }
+                    }
+                    MemberDef::Flag { name: field_name, .. } => {
+                        quote! {
+                            #[inline]
+                            pub fn #field_name(mut self, val: bool) -> Self {
+                                self.#field_name = Some(val);
+                                self
+                            }
+                        }
+                    }
+                })
+                .collect();
+
+            // Validations
+            let validations: Vec<TokenStream2> = v.members
+                .iter()
+                .filter_map(|m| match m {
+                    MemberDef::Field { name: field_name, ty, range } => {
+                        let field_str = field_name.to_string();
+                        let len = range.len;
+
+                        let max_val = if len >= repr_bit_count {
+                            quote! { #repr::MAX }
+                        } else {
+                            quote! { ((1 as #repr) << #len) - 1 }
+                        };
+
+                        if is_primitive(ty) {
+                            let type_bits: u32 = match ty {
+                                Type::Path(p) if p.path.is_ident("u8") || p.path.is_ident("i8") => 8,
+                                Type::Path(p) if p.path.is_ident("u16") || p.path.is_ident("i16") => 16,
+                                Type::Path(p) if p.path.is_ident("u32") || p.path.is_ident("i32") => 32,
+                                Type::Path(p) if p.path.is_ident("u64") || p.path.is_ident("i64") => 64,
+                                Type::Path(p) if p.path.is_ident("u128") || p.path.is_ident("i128") => 128,
+                                _ => 128,
+                            };
+
+                            if len >= type_bits {
+                                return None;
+                            }
+
+                            let is_signed = matches!(ty,
+                                Type::Path(p) if p.path.is_ident("i8") || p.path.is_ident("i16") ||
+                                                 p.path.is_ident("i32") || p.path.is_ident("i64") ||
+                                                 p.path.is_ident("i128")
+                            );
+
+                            if is_signed {
+                                let min_shift = len - 1;
+                                Some(quote! {
+                                    if let Some(v) = self.#field_name {
+                                        let min_val = -((1i128 << #min_shift) as i128);
+                                        let max_val = ((1i128 << #min_shift) - 1) as i128;
+                                        let v_i128 = v as i128;
+                                        if v_i128 < min_val || v_i128 > max_val {
+                                            return Err(nexus_bits::FieldOverflow {
+                                                field: #field_str,
+                                                overflow: nexus_bits::Overflow {
+                                                    value: (v as #repr),
+                                                    max: #max_val,
+                                                },
+                                            });
+                                        }
+                                    }
+                                })
+                            } else {
+                                Some(quote! {
+                                    if let Some(v) = self.#field_name {
+                                        if (v as #repr) > #max_val {
+                                            return Err(nexus_bits::FieldOverflow {
+                                                field: #field_str,
+                                                overflow: nexus_bits::Overflow {
+                                                    value: v as #repr,
+                                                    max: #max_val,
+                                                },
+                                            });
+                                        }
+                                    }
+                                })
+                            }
+                        } else {
+                            // IntEnum field
+                            Some(quote! {
+                                if let Some(v) = self.#field_name {
+                                    let repr_val = nexus_bits::IntEnum::into_repr(v) as #repr;
+                                    if repr_val > #max_val {
+                                        return Err(nexus_bits::FieldOverflow {
+                                            field: #field_str,
+                                            overflow: nexus_bits::Overflow {
+                                                value: repr_val,
+                                                max: #max_val,
+                                            },
+                                        });
+                                    }
+                                }
+                            })
+                        }
+                    }
+                    _ => None,
+                })
+                .collect();
+
+            // Pack statements
+            let pack_statements: Vec<TokenStream2> = v.members
+                .iter()
+                .map(|m| {
+                    match m {
+                        MemberDef::Field { name: field_name, ty, range } => {
+                            let start = range.start;
+                            let len = range.len;
+                            let mask = if len >= repr_bit_count {
+                                quote! { #repr::MAX }
+                            } else {
+                                quote! { ((1 as #repr) << #len) - 1 }
+                            };
+
+                            if is_primitive(ty) {
+                                quote! {
+                                    if let Some(v) = self.#field_name {
+                                        val |= ((v as #repr) & #mask) << #start;
+                                    }
+                                }
+                            } else {
+                                quote! {
+                                    if let Some(v) = self.#field_name {
+                                        val |= ((nexus_bits::IntEnum::into_repr(v) as #repr) & #mask) << #start;
+                                    }
+                                }
+                            }
+                        }
+                        MemberDef::Flag { name: field_name, bit } => {
+                            quote! {
+                                if let Some(true) = self.#field_name {
+                                    val |= (1 as #repr) << #bit;
+                                }
+                            }
+                        }
+                    }
+                })
+                .collect();
+
+            quote! {
+                impl #builder_name {
+                    #(#setters)*
+
+                    /// Build the variant type, validating all fields.
+                    #[inline]
+                    pub fn build(self) -> Result<#variant_type, nexus_bits::FieldOverflow<#repr>> {
+                        #(#validations)*
+
+                        let mut val: #repr = 0;
+                        // Set discriminant
+                        val |= (#disc_val as #repr) << #disc_start;
+                        #(#pack_statements)*
+
+                        Ok(#variant_type(val))
+                    }
+
+                    /// Build directly to parent type, validating all fields.
+                    #[inline]
+                    pub fn build_parent(self) -> Result<#parent_name, nexus_bits::FieldOverflow<#repr>> {
+                        self.build().map(|v| v.as_parent())
+                    }
+                }
+            }
+        })
+        .collect();
+
+    quote! { #(#impls)* }
+}
+
+fn generate_enum_from_impls(parent_name: &Ident, variants: &[ParsedVariant]) -> TokenStream2 {
+    let impls: Vec<TokenStream2> = variants
+        .iter()
+        .map(|v| {
+            let variant_type = variant_type_name(parent_name, &v.name);
+            quote! {
+                impl From<#variant_type> for #parent_name {
+                    #[inline]
+                    fn from(v: #variant_type) -> Self {
+                        v.as_parent()
+                    }
+                }
+            }
+        })
+        .collect();
+
+    quote! { #(#impls)* }
+}
+
+fn to_snake_case(s: &str) -> String {
+    let mut result = String::new();
+    for (i, c) in s.chars().enumerate() {
+        if c.is_uppercase() {
+            if i > 0 {
+                result.push('_');
+            }
+            result.push(c.to_lowercase().next().unwrap());
+        } else {
+            result.push(c);
+        }
+    }
+    result
 }
