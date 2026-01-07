@@ -18,4 +18,7 @@ default = ["derive"]
 derive = ["dep:nexus-bits-derive"]
 
 [dependencies]
-nexus-bits-derive = { version = "0.3", path = "../nexus-bits-derive", optional = true }
+nexus-bits-derive = { version = "0.3", optional = true }
+# Below used when developing proc macro
+# nexus-bits-derive = { version = "0.3", path = "../nexus-bits-derive", optional = true }
+
