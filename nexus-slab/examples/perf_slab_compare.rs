@@ -25,7 +25,10 @@ fn bench_insert(c: &mut Criterion) {
 
     // nexus-slab
     group.bench_function("nexus-slab", |b| {
-        let mut slab = nexus_slab::Slab::<u64>::with_capacity(COUNT).unwrap();
+        let mut slab = nexus_slab::SlabBuilder::default()
+            .capacity(COUNT)
+            .build()
+            .unwrap();
 
         b.iter(|| {
             slab.clear();
@@ -60,7 +63,10 @@ fn bench_get_sequential(c: &mut Criterion) {
 
     // nexus-slab
     group.bench_function("nexus-slab", |b| {
-        let mut slab = nexus_slab::Slab::<u64>::with_capacity(COUNT).unwrap();
+        let mut slab = nexus_slab::SlabBuilder::default()
+            .capacity(COUNT)
+            .build()
+            .unwrap();
         let keys: Vec<_> = (0..COUNT).map(|i| slab.insert(i as u64).unwrap()).collect();
 
         b.iter(|| {
@@ -109,7 +115,10 @@ fn bench_get_random(c: &mut Criterion) {
 
     // nexus-slab
     group.bench_function("nexus-slab", |b| {
-        let mut slab = nexus_slab::Slab::<u64>::with_capacity(COUNT).unwrap();
+        let mut slab = nexus_slab::SlabBuilder::default()
+            .capacity(COUNT)
+            .build()
+            .unwrap();
         let keys: Vec<_> = (0..COUNT).map(|i| slab.insert(i as u64).unwrap()).collect();
 
         b.iter(|| {
@@ -146,7 +155,10 @@ fn bench_remove(c: &mut Criterion) {
     group.bench_function("nexus-slab", |b| {
         b.iter_batched(
             || {
-                let mut slab = nexus_slab::Slab::<u64>::with_capacity(COUNT).unwrap();
+                let mut slab = nexus_slab::SlabBuilder::default()
+                    .capacity(COUNT)
+                    .build()
+                    .unwrap();
                 let keys: Vec<_> = (0..COUNT).map(|i| slab.insert(i as u64).unwrap()).collect();
                 (slab, keys)
             },
@@ -189,7 +201,10 @@ fn bench_churn(c: &mut Criterion) {
 
     // nexus-slab
     group.bench_function("nexus-slab", |b| {
-        let mut slab = nexus_slab::Slab::<u64>::with_capacity(COUNT).unwrap();
+        let mut slab = nexus_slab::SlabBuilder::default()
+            .capacity(COUNT)
+            .build()
+            .unwrap();
 
         b.iter(|| {
             slab.clear();
@@ -241,7 +256,10 @@ fn bench_insert_scaling(c: &mut Criterion) {
         group.throughput(Throughput::Elements(size as u64));
 
         group.bench_with_input(BenchmarkId::new("nexus-slab", size), &size, |b, &size| {
-            let mut slab = nexus_slab::Slab::<u64>::with_capacity(size).unwrap();
+            let mut slab = nexus_slab::SlabBuilder::default()
+                .capacity(COUNT)
+                .build()
+                .unwrap();
 
             b.iter(|| {
                 slab.clear();

@@ -35,7 +35,10 @@ fn print_stats(name: &str, hist: &Histogram<u64>) {
 }
 
 fn bench_nexus_slab() -> Histogram<u64> {
-    let mut slab = nexus_slab::Slab::<u64>::with_capacity(CAPACITY).unwrap();
+    let mut slab = nexus_slab::SlabBuilder::default()
+        .capacity(CAPACITY)
+        .build()
+        .unwrap();
     let mut hist = Histogram::<u64>::new(3).unwrap();
 
     // Warmup - fill and clear to prime caches

@@ -113,15 +113,11 @@ struct Order {
 }
 
 /// Rolling window benchmark for nexus-slab
-fn bench_nexus(use_collapse: bool) -> Stats {
-    let mut slab = nexus_slab::Slab::<u64>::with_capacity(CAPACITY).unwrap();
-
-    if use_collapse {
-        match slab.try_collapse() {
-            Ok(()) => {}
-            Err(e) => eprintln!("  try_collapse failed: {}", e),
-        }
-    }
+fn bench_nexus() -> Stats {
+    let mut slab = nexus_slab::SlabBuilder::default()
+        .capacity(CAPACITY)
+        .build()
+        .unwrap();
 
     let mut stats = Stats::new();
     let mut rng = Xorshift::new(SEED);
@@ -252,14 +248,9 @@ fn main() {
     println!("================================================================");
     println!();
 
-    println!("nexus-slab (no collapse):");
-    let nexus_no_collapse = bench_nexus(false);
-    nexus_no_collapse.print("");
-    println!();
-
-    println!("nexus-slab (with try_collapse):");
-    let nexus_with_collapse = bench_nexus(true);
-    nexus_with_collapse.print("");
+    println!("nexus-slab:");
+    let nexus_stats = bench_nexus();
+    nexus_stats.print("");
     println!();
 
     println!("slab crate:");
@@ -271,23 +262,20 @@ fn main() {
     println!("================================================================");
     println!("TAIL LATENCY COMPARISON (p999 cycles):");
     println!("----------------------------------------------------------------");
-    println!("              nexus       nexus+collapse    slab");
+    println!("              nexus          slab");
     println!(
-        "  INSERT:     {:>5}          {:>5}          {:>5}",
-        nexus_no_collapse.insert.value_at_quantile(0.999),
-        nexus_with_collapse.insert.value_at_quantile(0.999),
+        "  INSERT:     {:>5}          {:>5}",
+        nexus_stats.insert.value_at_quantile(0.999),
         slab_stats.insert.value_at_quantile(0.999)
     );
     println!(
-        "  GET:        {:>5}          {:>5}          {:>5}",
-        nexus_no_collapse.get.value_at_quantile(0.999),
-        nexus_with_collapse.get.value_at_quantile(0.999),
+        "  GET:        {:>5}          {:>5}",
+        nexus_stats.get.value_at_quantile(0.999),
         slab_stats.get.value_at_quantile(0.999)
     );
     println!(
-        "  REMOVE:     {:>5}          {:>5}          {:>5}",
-        nexus_no_collapse.remove.value_at_quantile(0.999),
-        nexus_with_collapse.remove.value_at_quantile(0.999),
+        "  REMOVE:     {:>5}          {:>5}",
+        nexus_stats.remove.value_at_quantile(0.999),
         slab_stats.remove.value_at_quantile(0.999)
     );
 }
