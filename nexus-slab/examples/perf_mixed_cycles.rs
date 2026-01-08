@@ -1,32 +1,17 @@
-//! Mixed workload benchmark: INSERT + GET + REMOVE across large slab.
+//! Growth benchmark: compare allocation strategies when exceeding initial capacity
 //!
-//! Simulates realistic order lifecycle with rolling window:
-//! - Maintains ~50% slab occupancy
-//! - Each order: insert -> several lookups -> remove
-//! - Orders spread randomly across slab for realistic access pattern
-//!
-//! Tests THP behavior and whether try_collapse() helps tail latencies.
-//!
-//! Run with:
-//!   cargo build --release --example perf_mixed_cycles
-//!   taskset -c 0 ./target/release/examples/perf_mixed_cycles
+//! Tests:
+//! 1. Pre-allocated phase (within initial capacity)
+//! 2. Growth phase (exceeding capacity, triggers realloc/mmap)
+//! 3. Post-growth phase (steady state after growth)
 
 use hdrhistogram::Histogram;
 use std::hint::black_box;
 
-// 1M slots = 16MB working set - triggers THP behavior
-const CAPACITY: usize = 1_000_000;
-
-// Total order lifecycles to simulate (can exceed capacity)
-const TOTAL_ORDERS: usize = 1_000_000;
-
-// How many orders active at once (~50% of capacity)
-const ACTIVE_ORDERS: usize = CAPACITY / 2;
-
-// Lookups per order before removal
-const LOOKUPS_PER_ORDER: usize = 3;
-
-const SEED: u64 = 0xCAFEBABE;
+const INITIAL_CAPACITY: usize = 100_000;
+const FINAL_SIZE: usize = 500_000;
+const OPERATIONS_PER_PHASE: usize = 500_000;
+const SEED: u64 = 0xDEADBEEF;
 
 #[inline(always)]
 fn rdtscp() -> u64 {
@@ -36,9 +21,7 @@ fn rdtscp() -> u64 {
         std::arch::x86_64::__rdtscp(&mut aux)
     }
     #[cfg(not(target_arch = "x86_64"))]
-    {
-        panic!("rdtscp only supported on x86_64");
-    }
+    panic!("rdtscp only supported on x86_64");
 }
 
 struct Xorshift {
@@ -62,13 +45,13 @@ impl Xorshift {
     }
 }
 
-struct Stats {
+struct PhaseStats {
     insert: Histogram<u64>,
     get: Histogram<u64>,
     remove: Histogram<u64>,
 }
 
-impl Stats {
+impl PhaseStats {
     fn new() -> Self {
         Self {
             insert: Histogram::new(3).unwrap(),
@@ -77,10 +60,10 @@ impl Stats {
         }
     }
 
-    fn print(&self, name: &str) {
-        println!("{}", name);
+    fn print(&self, phase: &str) {
+        println!("  {}:", phase);
         println!(
-            "  INSERT:  p50={:>4}  p99={:>4}  p999={:>5}  max={:>7}  (n={})",
+            "    INSERT:  p50={:>4}  p99={:>4}  p999={:>5}  max={:>8}  (n={})",
             self.insert.value_at_quantile(0.50),
             self.insert.value_at_quantile(0.99),
             self.insert.value_at_quantile(0.999),
@@ -88,7 +71,7 @@ impl Stats {
             self.insert.len()
         );
         println!(
-            "  GET:     p50={:>4}  p99={:>4}  p999={:>5}  max={:>7}  (n={})",
+            "    GET:     p50={:>4}  p99={:>4}  p999={:>5}  max={:>8}  (n={})",
             self.get.value_at_quantile(0.50),
             self.get.value_at_quantile(0.99),
             self.get.value_at_quantile(0.999),
@@ -96,7 +79,7 @@ impl Stats {
             self.get.len()
         );
         println!(
-            "  REMOVE:  p50={:>4}  p99={:>4}  p999={:>5}  max={:>7}  (n={})",
+            "    REMOVE:  p50={:>4}  p99={:>4}  p999={:>5}  max={:>8}  (n={})",
             self.remove.value_at_quantile(0.50),
             self.remove.value_at_quantile(0.99),
             self.remove.value_at_quantile(0.999),
@@ -106,126 +89,196 @@ impl Stats {
     }
 }
 
-/// Order with remaining lookups before removal
-struct Order {
-    key: nexus_slab::Key,
-    lookups_remaining: usize,
+struct GrowthStats {
+    pre_growth: PhaseStats,
+    during_growth: PhaseStats,
+    post_growth: PhaseStats,
 }
 
-/// Rolling window benchmark for nexus-slab
-fn bench_nexus() -> Stats {
-    let mut slab = nexus_slab::SlabBuilder::default()
-        .capacity(CAPACITY)
+impl GrowthStats {
+    fn new() -> Self {
+        Self {
+            pre_growth: PhaseStats::new(),
+            during_growth: PhaseStats::new(),
+            post_growth: PhaseStats::new(),
+        }
+    }
+}
+
+fn bench_nexus() -> GrowthStats {
+    let mut slab: nexus_slab::DynamicSlab<u64> = nexus_slab::SlabBuilder::default()
+        .capacity(INITIAL_CAPACITY)
         .build()
         .unwrap();
 
-    let mut stats = Stats::new();
+    let mut stats = GrowthStats::new();
     let mut rng = Xorshift::new(SEED);
-    let mut active: Vec<Order> = Vec::with_capacity(ACTIVE_ORDERS + 1);
-    let mut orders_created = 0usize;
+    let mut keys: Vec<nexus_slab::Key> = Vec::with_capacity(FINAL_SIZE);
 
-    // Warmup: fill to 25% and drain
-    let warmup = CAPACITY / 4;
-    for i in 0..warmup as u64 {
-        let _ = slab.insert(i);
+    // Phase 1: Pre-growth (fill to ~80% of initial capacity)
+    let pre_growth_target = INITIAL_CAPACITY * 8 / 10;
+    for i in 0..pre_growth_target {
+        let start = rdtscp();
+        let key = slab.insert(i as u64).unwrap();
+        let end = rdtscp();
+        let _ = stats.pre_growth.insert.record(end.wrapping_sub(start));
+        keys.push(key);
     }
-    slab.clear();
 
-    // Main loop: maintain rolling window of active orders
-    while orders_created < TOTAL_ORDERS || !active.is_empty() {
-        // If we have room and orders left to create, insert
-        if active.len() < ACTIVE_ORDERS && orders_created < TOTAL_ORDERS {
+    // Mixed ops within pre-allocated space
+    for _ in 0..OPERATIONS_PER_PHASE {
+        let op = rng.next() % 10;
+        if op < 2 && slab.len() < pre_growth_target {
+            // Insert
             let start = rdtscp();
-            let key = slab.insert(orders_created as u64).unwrap();
+            let key = slab.insert(rng.next()).unwrap();
             let end = rdtscp();
-            let _ = stats.insert.record(end.wrapping_sub(start));
-
-            active.push(Order {
-                key,
-                lookups_remaining: LOOKUPS_PER_ORDER,
-            });
-            orders_created += 1;
+            let _ = stats.pre_growth.insert.record(end.wrapping_sub(start));
+            keys.push(key);
+        } else if op < 8 && !keys.is_empty() {
+            // Get
+            let idx = rng.next_usize(keys.len());
+            let start = rdtscp();
+            black_box(slab.get(keys[idx]));
+            let end = rdtscp();
+            let _ = stats.pre_growth.get.record(end.wrapping_sub(start));
+        } else if !keys.is_empty() {
+            // Remove
+            let idx = rng.next_usize(keys.len());
+            let key = keys.swap_remove(idx);
+            let start = rdtscp();
+            black_box(slab.remove(key));
+            let end = rdtscp();
+            let _ = stats.pre_growth.remove.record(end.wrapping_sub(start));
         }
+    }
 
-        // Pick a random active order
-        if active.is_empty() {
-            continue;
+    // Phase 2: Growth (push beyond initial capacity)
+    while slab.capacity() < FINAL_SIZE {
+        let start = rdtscp();
+        let key = slab.insert(rng.next()).unwrap();
+        let end = rdtscp();
+        let _ = stats.during_growth.insert.record(end.wrapping_sub(start));
+        keys.push(key);
+
+        // Some gets during growth
+        if !keys.is_empty() && rng.next() % 4 == 0 {
+            let idx = rng.next_usize(keys.len());
+            let start = rdtscp();
+            black_box(slab.get(keys[idx]));
+            let end = rdtscp();
+            let _ = stats.during_growth.get.record(end.wrapping_sub(start));
         }
-        let idx = rng.next_usize(active.len());
+    }
 
-        if active[idx].lookups_remaining > 0 {
-            // Do a lookup
+    // Phase 3: Post-growth steady state
+    for _ in 0..OPERATIONS_PER_PHASE {
+        let op = rng.next() % 10;
+        if op < 2 {
             let start = rdtscp();
-            black_box(slab.get(active[idx].key));
+            let key = slab.insert(rng.next()).unwrap();
             let end = rdtscp();
-            let _ = stats.get.record(end.wrapping_sub(start));
-            active[idx].lookups_remaining -= 1;
-        } else {
-            // Remove this order
-            let order = active.swap_remove(idx);
+            let _ = stats.post_growth.insert.record(end.wrapping_sub(start));
+            keys.push(key);
+        } else if op < 8 && !keys.is_empty() {
+            let idx = rng.next_usize(keys.len());
             let start = rdtscp();
-            black_box(slab.remove(order.key));
+            black_box(slab.get(keys[idx]));
             let end = rdtscp();
-            let _ = stats.remove.record(end.wrapping_sub(start));
+            let _ = stats.post_growth.get.record(end.wrapping_sub(start));
+        } else if !keys.is_empty() {
+            let idx = rng.next_usize(keys.len());
+            let key = keys.swap_remove(idx);
+            let start = rdtscp();
+            black_box(slab.remove(key));
+            let end = rdtscp();
+            let _ = stats.post_growth.remove.record(end.wrapping_sub(start));
         }
     }
 
     stats
 }
 
-/// Order for slab crate
-struct SlabOrder {
-    key: usize,
-    lookups_remaining: usize,
-}
+fn bench_slab_crate() -> GrowthStats {
+    let mut slab = slab::Slab::<u64>::with_capacity(INITIAL_CAPACITY);
 
-/// Rolling window benchmark for slab crate
-fn bench_slab_crate() -> Stats {
-    let mut slab = slab::Slab::<u64>::with_capacity(CAPACITY);
-    let mut stats = Stats::new();
+    let mut stats = GrowthStats::new();
     let mut rng = Xorshift::new(SEED);
-    let mut active: Vec<SlabOrder> = Vec::with_capacity(ACTIVE_ORDERS + 1);
-    let mut orders_created = 0usize;
+    let mut keys: Vec<usize> = Vec::with_capacity(FINAL_SIZE);
 
-    // Warmup
-    let warmup = CAPACITY / 4;
-    for i in 0..warmup as u64 {
-        slab.insert(i);
+    // Phase 1: Pre-growth
+    let pre_growth_target = INITIAL_CAPACITY * 8 / 10;
+    for i in 0..pre_growth_target {
+        let start = rdtscp();
+        let key = slab.insert(i as u64);
+        let end = rdtscp();
+        let _ = stats.pre_growth.insert.record(end.wrapping_sub(start));
+        keys.push(key);
     }
-    slab.clear();
 
-    // Main loop
-    while orders_created < TOTAL_ORDERS || !active.is_empty() {
-        if active.len() < ACTIVE_ORDERS && orders_created < TOTAL_ORDERS {
+    for _ in 0..OPERATIONS_PER_PHASE {
+        let op = rng.next() % 10;
+        if op < 2 && slab.len() < pre_growth_target {
             let start = rdtscp();
-            let key = slab.insert(orders_created as u64);
+            let key = slab.insert(rng.next());
             let end = rdtscp();
-            let _ = stats.insert.record(end.wrapping_sub(start));
-
-            active.push(SlabOrder {
-                key,
-                lookups_remaining: LOOKUPS_PER_ORDER,
-            });
-            orders_created += 1;
+            let _ = stats.pre_growth.insert.record(end.wrapping_sub(start));
+            keys.push(key);
+        } else if op < 8 && !keys.is_empty() {
+            let idx = rng.next_usize(keys.len());
+            let start = rdtscp();
+            black_box(slab.get(keys[idx]));
+            let end = rdtscp();
+            let _ = stats.pre_growth.get.record(end.wrapping_sub(start));
+        } else if !keys.is_empty() {
+            let idx = rng.next_usize(keys.len());
+            let key = keys.swap_remove(idx);
+            let start = rdtscp();
+            black_box(slab.remove(key));
+            let end = rdtscp();
+            let _ = stats.pre_growth.remove.record(end.wrapping_sub(start));
         }
+    }
 
-        if active.is_empty() {
-            continue;
+    // Phase 2: Growth
+    while slab.capacity() < FINAL_SIZE {
+        let start = rdtscp();
+        let key = slab.insert(rng.next());
+        let end = rdtscp();
+        let _ = stats.during_growth.insert.record(end.wrapping_sub(start));
+        keys.push(key);
+
+        if !keys.is_empty() && rng.next() % 4 == 0 {
+            let idx = rng.next_usize(keys.len());
+            let start = rdtscp();
+            black_box(slab.get(keys[idx]));
+            let end = rdtscp();
+            let _ = stats.during_growth.get.record(end.wrapping_sub(start));
         }
-        let idx = rng.next_usize(active.len());
+    }
 
-        if active[idx].lookups_remaining > 0 {
+    // Phase 3: Post-growth
+    for _ in 0..OPERATIONS_PER_PHASE {
+        let op = rng.next() % 10;
+        if op < 2 {
             let start = rdtscp();
-            black_box(slab.get(active[idx].key));
+            let key = slab.insert(rng.next());
             let end = rdtscp();
-            let _ = stats.get.record(end.wrapping_sub(start));
-            active[idx].lookups_remaining -= 1;
-        } else {
-            let order = active.swap_remove(idx);
+            let _ = stats.post_growth.insert.record(end.wrapping_sub(start));
+            keys.push(key);
+        } else if op < 8 && !keys.is_empty() {
+            let idx = rng.next_usize(keys.len());
             let start = rdtscp();
-            black_box(slab.remove(order.key));
+            black_box(slab.get(keys[idx]));
             let end = rdtscp();
-            let _ = stats.remove.record(end.wrapping_sub(start));
+            let _ = stats.post_growth.get.record(end.wrapping_sub(start));
+        } else if !keys.is_empty() {
+            let idx = rng.next_usize(keys.len());
+            let key = keys.swap_remove(idx);
+            let start = rdtscp();
+            black_box(slab.remove(key));
+            let end = rdtscp();
+            let _ = stats.post_growth.remove.record(end.wrapping_sub(start));
         }
     }
 
@@ -233,49 +286,53 @@ fn bench_slab_crate() -> Stats {
 }
 
 fn main() {
+    println!("GROWTH BENCHMARK");
     println!(
-        "MIXED WORKLOAD: {} total orders, {} capacity, {} active",
-        TOTAL_ORDERS, CAPACITY, ACTIVE_ORDERS
+        "Initial capacity: {}, Final size: {}",
+        INITIAL_CAPACITY, FINAL_SIZE
     );
-    println!(
-        "Each order: 1 insert + {} gets + 1 remove",
-        LOOKUPS_PER_ORDER
-    );
-    println!(
-        "Working set: {}MB (exceeds cache, tests THP)",
-        CAPACITY * 16 / 1024 / 1024
-    );
-    println!("================================================================");
-    println!();
+    println!("================================================================\n");
+
+    let nexus = bench_nexus();
+    let slab = bench_slab_crate();
 
     println!("nexus-slab:");
-    let nexus_stats = bench_nexus();
-    nexus_stats.print("");
+    nexus.pre_growth.print("PRE-GROWTH (within capacity)");
+    nexus
+        .during_growth
+        .print("DURING GROWTH (exceeding capacity)");
+    nexus.post_growth.print("POST-GROWTH (steady state)");
     println!();
 
     println!("slab crate:");
-    let slab_stats = bench_slab_crate();
-    slab_stats.print("");
+    slab.pre_growth.print("PRE-GROWTH (within capacity)");
+    slab.during_growth
+        .print("DURING GROWTH (exceeding capacity)");
+    slab.post_growth.print("POST-GROWTH (steady state)");
     println!();
 
-    // Summary comparison focused on tails
     println!("================================================================");
-    println!("TAIL LATENCY COMPARISON (p999 cycles):");
+    println!("GROWTH PHASE INSERT COMPARISON (where realloc/mmap happens):");
     println!("----------------------------------------------------------------");
     println!("              nexus          slab");
     println!(
-        "  INSERT:     {:>5}          {:>5}",
-        nexus_stats.insert.value_at_quantile(0.999),
-        slab_stats.insert.value_at_quantile(0.999)
+        "  p50:        {:>5}          {:>5}",
+        nexus.during_growth.insert.value_at_quantile(0.50),
+        slab.during_growth.insert.value_at_quantile(0.50)
     );
     println!(
-        "  GET:        {:>5}          {:>5}",
-        nexus_stats.get.value_at_quantile(0.999),
-        slab_stats.get.value_at_quantile(0.999)
+        "  p99:        {:>5}          {:>5}",
+        nexus.during_growth.insert.value_at_quantile(0.99),
+        slab.during_growth.insert.value_at_quantile(0.99)
     );
     println!(
-        "  REMOVE:     {:>5}          {:>5}",
-        nexus_stats.remove.value_at_quantile(0.999),
-        slab_stats.remove.value_at_quantile(0.999)
+        "  p999:       {:>5}          {:>5}",
+        nexus.during_growth.insert.value_at_quantile(0.999),
+        slab.during_growth.insert.value_at_quantile(0.999)
+    );
+    println!(
+        "  max:        {:>5}          {:>5}",
+        nexus.during_growth.insert.max(),
+        slab.during_growth.insert.max()
     );
 }
