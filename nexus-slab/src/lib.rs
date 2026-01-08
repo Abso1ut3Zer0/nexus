@@ -4,23 +4,23 @@
 //!
 //! ## Design Philosophy
 //!
-//! Unlike traditional slab allocators that immediately reuse freed slots (LIFO),
-//! nexus-slab prioritizes sequential "bump" allocation for cache locality. The
-//! key insight is that by tracking occupancy per slab, we can detect when slabs
-//! fully drain and reset them for fresh bump allocation.
+//! This allocator prioritizes sequential "bump" allocation for cache locality,
+//! falling back to LIFO freelist reuse. By tracking occupancy per slab, we can
+//! detect when slabs fully drain and reset them for fresh bump allocation.
 //!
 //! ## Allocation Priority
 //!
 //! 1. **Bump** from current slab (sequential, cache-friendly)
-//! 2. **Empty slab** from empty list → reset → bump (fresh sequential)
-//! 3. **Freelist** from retired slabs (scattered but no syscall)
-//! 4. **Grow** new slab (syscall, last resort)
+//! 2. **Freelist** from current slab (LIFO, cache-hot)
+//! 3. **Empty slab** → reset → bump (fresh sequential)
+//! 4. **Freelist** from other slabs (scattered but no syscall)
+//! 5. **Grow** new slab (dynamic only)
 //!
-//! ## Retire Threshold
+//! ## Builder Tiers
 //!
-//! Slabs are retired before reaching 100% capacity (default 75%). This gives
-//! slabs a better chance to fully drain, enabling bump allocation recovery.
-//! Tradeoff: higher threshold = more memory efficient, lower = better drain odds.
+//! - [`Slab::with_capacity`] - Simple API, sane defaults, always dynamic
+//! - [`SlabBuilder`] - Power user control over memory layout
+//! - [`SlabBuilder::fixed`] - Pre-allocated bounded capacity
 
 #![warn(missing_docs)]
 
@@ -40,6 +40,9 @@ pub const FIXED: bool = true;
 /// Dynamic mode: grows on demand.
 pub const DYNAMIC: bool = false;
 
+// Default slab size for simple API (256KB - small for drain recovery)
+const DEFAULT_SLAB_BYTES: usize = 256 * 1024;
+
 // =============================================================================
 // Key
 // =============================================================================
@@ -57,22 +60,33 @@ impl Key {
         Self(((slab as u64) << 32) | (slot as u64))
     }
 
-    /// Slab id getter method.
+    /// Returns the slab index.
     #[inline]
     pub fn slab(self) -> u32 {
         (self.0 >> 32) as u32
     }
 
-    /// Slot id getter method within a slab.
+    /// Returns the slot index within the slab.
     #[inline]
     pub fn slot(self) -> u32 {
         self.0 as u32
     }
 
-    /// Unsafe constructor.
+    /// Constructs a key from a raw u64 value.
+    ///
+    /// # Safety
+    ///
+    /// The caller must ensure the raw value represents a valid key
+    /// that was previously obtained from this slab.
     #[inline]
     pub const unsafe fn from_raw(value: u64) -> Self {
         Self(value)
+    }
+
+    /// Returns the raw u64 representation of this key.
+    #[inline]
+    pub const fn into_raw(self) -> u64 {
+        self.0
     }
 }
 
@@ -82,7 +96,10 @@ impl Key {
 
 /// Returned when inserting into a full fixed-capacity slab.
 #[derive(Debug)]
-pub struct Full<T>(pub T);
+pub struct Full<T>(
+    /// The value that could not be inserted.
+    pub T,
+);
 
 /// Errors that can occur when building a slab.
 #[derive(Debug)]
@@ -94,7 +111,7 @@ pub enum SlabError {
         /// Size of a slab in bytes.
         slab_size: usize,
     },
-    /// Zero capacity requested for fixed slab.
+    /// Zero capacity requested.
     ZeroCapacity,
     /// OS memory allocation failed.
     Allocation(std::io::Error),
@@ -115,9 +132,13 @@ enum Slot<T> {
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum SlabState {
+    /// Active slab for allocation
     Current,
+    /// No occupied slots, can reset for bump
     Empty,
+    /// Has freelist entries available
     HasFreelist,
+    /// Fully exhausted (no bump, no freelist)
     Full,
 }
 
@@ -162,7 +183,7 @@ pub struct Slab<T, const MODE: bool> {
     fixed_pages: Option<sys::Pages>,
     fixed_slots: NonNull<Slot<T>>,
 
-    // Dynamic mode: per-slab allocations (empty for Fixed)
+    // Dynamic mode: per-slab allocations
     slab_pages: Vec<sys::Pages>,
     slab_bases: Vec<NonNull<Slot<T>>>,
 
@@ -176,8 +197,7 @@ pub struct Slab<T, const MODE: bool> {
 
     len: usize,
     slots_per_slab: u32,
-    retire_threshold: u32,
-    slab_bytes: usize, // Needed for dynamic growth
+    slab_bytes: usize,
 }
 
 /// A growable slab allocator.
@@ -189,9 +209,90 @@ pub type FixedSlab<T> = Slab<T, FIXED>;
 unsafe impl<T: Send, const MODE: bool> Send for Slab<T, MODE> {}
 
 impl<T> DynamicSlab<T> {
-    /// Create a new dynamic slab with default settings.
-    pub fn new() -> Result<Self, SlabError> {
-        SlabBuilder::default().build()
+    /// Create a new dynamic slab with the given capacity hint.
+    ///
+    /// This is the simple API with sane defaults:
+    /// - Pre-allocates enough slabs to hold `capacity` items
+    /// - Uses 256KB slabs (good balance for drain recovery)
+    /// - Grows automatically when needed
+    ///
+    /// For more control, use [`SlabBuilder`].
+    pub fn with_capacity(capacity: usize) -> Result<Self, SlabError> {
+        if capacity == 0 {
+            return Err(SlabError::ZeroCapacity);
+        }
+
+        let slot_size = std::mem::size_of::<Slot<T>>().max(1);
+        let slab_bytes = DEFAULT_SLAB_BYTES;
+
+        if slot_size > slab_bytes {
+            return Err(SlabError::SlotTooLarge {
+                slot_size,
+                slab_size: slab_bytes,
+            });
+        }
+
+        let slots_per_slab = slab_bytes / slot_size;
+        let num_slabs = (capacity + slots_per_slab - 1) / slots_per_slab;
+
+        Self::build_dynamic(slab_bytes, slots_per_slab as u32, num_slabs)
+    }
+
+    fn build_dynamic(
+        slab_bytes: usize,
+        slots_per_slab: u32,
+        num_slabs: usize,
+    ) -> Result<Self, SlabError> {
+        let num_slabs = num_slabs.max(1);
+
+        let mut slab_pages = Vec::with_capacity(num_slabs);
+        let mut slab_bases = Vec::with_capacity(num_slabs);
+        let mut slabs = Vec::with_capacity(num_slabs);
+
+        for i in 0..num_slabs {
+            let pages = sys::Pages::alloc(slab_bytes).map_err(SlabError::Allocation)?;
+            let base = NonNull::new(pages.as_ptr() as *mut Slot<T>).expect("mmap returned null");
+
+            slab_pages.push(pages);
+            slab_bases.push(base);
+
+            let mut meta = SlabMeta::new();
+            meta.prev = if i > 0 { (i - 1) as u32 } else { SLAB_NONE };
+            meta.next = if i < num_slabs - 1 {
+                (i + 1) as u32
+            } else {
+                SLAB_NONE
+            };
+            meta.state = SlabState::Empty;
+            slabs.push(meta);
+        }
+
+        // First slab becomes current
+        slabs[0].state = SlabState::Current;
+        slabs[0].prev = SLAB_NONE;
+        slabs[0].next = SLAB_NONE;
+
+        let empty_head = if num_slabs > 1 {
+            slabs[1].prev = SLAB_NONE;
+            1
+        } else {
+            SLAB_NONE
+        };
+
+        Ok(Slab {
+            fixed_pages: None,
+            fixed_slots: NonNull::dangling(),
+            slab_pages,
+            slab_bases,
+            slabs,
+            slots_capacity: num_slabs * slots_per_slab as usize,
+            empty_head,
+            freelist_head: SLAB_NONE,
+            current: 0,
+            len: 0,
+            slots_per_slab,
+            slab_bytes,
+        })
     }
 }
 
@@ -236,83 +337,90 @@ impl<T, const MODE: bool> Slab<T, MODE> {
     ///
     /// Returns `Err(Full(value))` if the slab is at capacity (fixed mode only).
     pub fn insert(&mut self, value: T) -> Result<Key, Full<T>> {
-        // 1. Bump from current slab
         if self.current != SLAB_NONE {
             let slab_idx = self.current;
             let meta = &self.slabs[slab_idx as usize];
 
+            // 1. Bump from current (sequential)
             if meta.bump_cursor < self.slots_per_slab {
-                // Check if we should retire early (prefer empty slab or grow for fresh bump)
-                let can_retire = meta.occupied >= self.retire_threshold
-                    && (self.empty_head != SLAB_NONE || MODE == DYNAMIC);
-
-                if can_retire {
-                    self.retire_current();
-                    // Fall through to empty list / grow path
-                } else {
-                    // Continue bumping on current
-                    let slot_idx = self.slabs[slab_idx as usize].bump_cursor;
-                    self.slabs[slab_idx as usize].bump_cursor += 1;
-                    self.slabs[slab_idx as usize].occupied += 1;
-                    self.len += 1;
-
-                    unsafe {
-                        let ptr = self.slot_ptr(slab_idx, slot_idx);
-                        ptr::write(ptr, Slot::Occupied { value });
-                    }
-
-                    return Ok(Key::new(slab_idx, slot_idx));
-                }
-            } else {
-                // Bump exhausted, retire current
-                self.retire_current();
+                return Ok(self.bump_alloc(slab_idx, value));
             }
+
+            // 2. Freelist from current (LIFO, cache-hot)
+            if meta.free_head != SLOT_NONE {
+                return Ok(self.freelist_alloc(slab_idx, value));
+            }
+
+            // Current exhausted → retire to Full
+            self.slabs[slab_idx as usize].state = SlabState::Full;
+            self.current = SLAB_NONE;
         }
 
-        // 2. Empty slab → reset → bump
+        // 3. Empty slab → reset → bump
         if self.empty_head != SLAB_NONE {
             let slab_idx = self.pop_list(SlabState::Empty);
             self.slabs[slab_idx as usize].reset();
             self.slabs[slab_idx as usize].state = SlabState::Current;
             self.current = slab_idx;
-            return self.insert(value);
+            return Ok(self.bump_alloc(slab_idx, value));
         }
 
-        // 3. Freelist from retired slab (all slabs above threshold)
+        // 4. Freelist from other slabs
         if self.freelist_head != SLAB_NONE {
             let slab_idx = self.freelist_head;
-            let slot_idx = self.freelist_pop(slab_idx);
+            let key = self.freelist_alloc(slab_idx, value);
 
-            self.slabs[slab_idx as usize].occupied += 1;
-            self.len += 1;
-
-            // Check if freelist exhausted
+            // Check if slab's freelist exhausted
             if self.slabs[slab_idx as usize].free_head == SLOT_NONE {
                 self.unlink(slab_idx);
                 self.slabs[slab_idx as usize].state = SlabState::Full;
             }
 
-            unsafe {
-                let ptr = self.slot_ptr(slab_idx, slot_idx);
-                ptr::write(ptr, Slot::Occupied { value });
-            }
-
-            return Ok(Key::new(slab_idx, slot_idx));
+            return Ok(key);
         }
 
-        // 4. Grow (dynamic) or Full (fixed)
+        // 5. Grow (dynamic) or Full (fixed)
         if MODE == DYNAMIC {
             match self.grow() {
                 Ok(slab_idx) => {
                     self.slabs[slab_idx as usize].state = SlabState::Current;
                     self.current = slab_idx;
-                    return self.insert(value);
+                    return Ok(self.bump_alloc(slab_idx, value));
                 }
                 Err(_) => {}
             }
         }
 
         Err(Full(value))
+    }
+
+    #[inline]
+    fn bump_alloc(&mut self, slab_idx: u32, value: T) -> Key {
+        let slot_idx = self.slabs[slab_idx as usize].bump_cursor;
+        self.slabs[slab_idx as usize].bump_cursor += 1;
+        self.slabs[slab_idx as usize].occupied += 1;
+        self.len += 1;
+
+        unsafe {
+            let ptr = self.slot_ptr(slab_idx, slot_idx);
+            ptr::write(ptr, Slot::Occupied { value });
+        }
+
+        Key::new(slab_idx, slot_idx)
+    }
+
+    #[inline]
+    fn freelist_alloc(&mut self, slab_idx: u32, value: T) -> Key {
+        let slot_idx = self.freelist_pop(slab_idx);
+        self.slabs[slab_idx as usize].occupied += 1;
+        self.len += 1;
+
+        unsafe {
+            let ptr = self.slot_ptr(slab_idx, slot_idx);
+            ptr::write(ptr, Slot::Occupied { value });
+        }
+
+        Key::new(slab_idx, slot_idx)
     }
 
     /// Get a reference to the value at `key`.
@@ -385,7 +493,6 @@ impl<T, const MODE: bool> Slab<T, MODE> {
             }
         };
 
-        // Read current state before mutation
         let old_state = self.slabs[slab_idx as usize].state;
 
         // Push to per-slab freelist
@@ -397,11 +504,11 @@ impl<T, const MODE: bool> Slab<T, MODE> {
 
         // State transitions
         if new_occupied == 0 {
-            // Slab is now empty - move to empty list
-            if old_state == SlabState::HasFreelist {
-                self.unlink(slab_idx);
-            } else if old_state == SlabState::Current {
-                self.current = SLAB_NONE;
+            // Slab is now empty
+            match old_state {
+                SlabState::HasFreelist => self.unlink(slab_idx),
+                SlabState::Current => self.current = SLAB_NONE,
+                _ => {}
             }
             self.push_list(SlabState::Empty, slab_idx);
             self.slabs[slab_idx as usize].state = SlabState::Empty;
@@ -410,7 +517,6 @@ impl<T, const MODE: bool> Slab<T, MODE> {
             self.push_list(SlabState::HasFreelist, slab_idx);
             self.slabs[slab_idx as usize].state = SlabState::HasFreelist;
         }
-        // If already HasFreelist or Current, no state change needed
 
         value
     }
@@ -450,7 +556,7 @@ impl<T, const MODE: bool> Slab<T, MODE> {
             }
         }
 
-        // Reset all slab metadata and rebuild empty list
+        // Reset all metadata and rebuild empty list
         let num_slabs = self.slabs.len();
         for i in 0..num_slabs {
             self.slabs[i] = SlabMeta::new();
@@ -463,9 +569,25 @@ impl<T, const MODE: bool> Slab<T, MODE> {
             self.slabs[i].state = SlabState::Empty;
         }
 
-        self.empty_head = if num_slabs > 0 { 0 } else { SLAB_NONE };
+        // First slab becomes current
+        if num_slabs > 0 {
+            self.slabs[0].state = SlabState::Current;
+            self.slabs[0].prev = SLAB_NONE;
+            self.slabs[0].next = SLAB_NONE;
+            self.current = 0;
+
+            self.empty_head = if num_slabs > 1 {
+                self.slabs[1].prev = SLAB_NONE;
+                1
+            } else {
+                SLAB_NONE
+            };
+        } else {
+            self.current = SLAB_NONE;
+            self.empty_head = SLAB_NONE;
+        }
+
         self.freelist_head = SLAB_NONE;
-        self.current = SLAB_NONE;
         self.len = 0;
     }
 
@@ -476,12 +598,10 @@ impl<T, const MODE: bool> Slab<T, MODE> {
     #[inline]
     unsafe fn slot_ptr(&self, slab_idx: u32, slot_idx: u32) -> *mut Slot<T> {
         if MODE == FIXED {
-            // Contiguous block: global offset
             let global = (slab_idx as usize) * (self.slots_per_slab as usize) + (slot_idx as usize);
             debug_assert!(global < self.slots_capacity);
             unsafe { self.fixed_slots.as_ptr().add(global) }
         } else {
-            // Per-slab: direct lookup
             debug_assert!((slab_idx as usize) < self.slab_bases.len());
             unsafe {
                 self.slab_bases[slab_idx as usize]
@@ -572,7 +692,6 @@ impl<T, const MODE: bool> Slab<T, MODE> {
         if prev != SLAB_NONE {
             self.slabs[prev as usize].next = next;
         } else {
-            // Was head
             *self.list_head_mut(state) = next;
         }
 
@@ -585,41 +704,12 @@ impl<T, const MODE: bool> Slab<T, MODE> {
     }
 
     // -------------------------------------------------------------------------
-    // Internal: Current Slab Management
-    // -------------------------------------------------------------------------
-
-    fn retire_current(&mut self) {
-        if self.current == SLAB_NONE {
-            return;
-        }
-
-        let slab_idx = self.current;
-        let meta = &self.slabs[slab_idx as usize];
-
-        if meta.free_head != SLOT_NONE {
-            // Has freelist entries
-            self.slabs[slab_idx as usize].state = SlabState::HasFreelist;
-            self.push_list(SlabState::HasFreelist, slab_idx);
-        } else if meta.occupied == 0 {
-            // Empty (shouldn't happen but handle it)
-            self.slabs[slab_idx as usize].state = SlabState::Empty;
-            self.push_list(SlabState::Empty, slab_idx);
-        } else {
-            // Full (no freelist, occupied > 0)
-            self.slabs[slab_idx as usize].state = SlabState::Full;
-        }
-
-        self.current = SLAB_NONE;
-    }
-
-    // -------------------------------------------------------------------------
     // Internal: Growth (Dynamic mode only)
     // -------------------------------------------------------------------------
 
     fn grow(&mut self) -> Result<u32, SlabError> {
         debug_assert!(MODE == DYNAMIC, "grow called in fixed mode");
 
-        // Allocate new slab
         let new_pages = sys::Pages::alloc(self.slab_bytes).map_err(SlabError::Allocation)?;
         let base = NonNull::new(new_pages.as_ptr() as *mut Slot<T>).expect("mmap returned null");
 
@@ -636,7 +726,6 @@ impl<T, const MODE: bool> Slab<T, MODE> {
 
 impl<T, const MODE: bool> Drop for Slab<T, MODE> {
     fn drop(&mut self) {
-        // Drop all occupied values
         for slab_idx in 0..self.slabs.len() {
             let meta = &self.slabs[slab_idx];
             for slot_idx in 0..meta.bump_cursor {
@@ -648,50 +737,60 @@ impl<T, const MODE: bool> Drop for Slab<T, MODE> {
                 }
             }
         }
-        // Pages dropped automatically via RAII (both fixed_pages and slab_pages)
     }
 }
 
 // =============================================================================
-// Builder
+// Builder (Power User)
 // =============================================================================
 
-/// Builder for creating slabs.
+/// Builder for creating slabs with fine-grained control.
+///
+/// For simple usage, prefer [`DynamicSlab::with_capacity`].
 #[derive(Default)]
 pub struct SlabBuilder {
     capacity: Option<usize>,
-    slab_megabytes: Option<usize>,
-    retire_percent: Option<u8>,
+    slab_bytes: Option<usize>,
+    num_slabs: Option<usize>,
     huge_pages: bool,
     mlock: bool,
 }
 
 impl SlabBuilder {
-    /// Set the initial/maximum capacity in slots.
+    /// Create a new builder.
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Set the initial capacity hint in slots.
     ///
-    /// For dynamic slabs, this is a hint for pre-allocation.
-    /// For fixed slabs, this is required and sets the hard limit.
+    /// For dynamic slabs, this determines pre-allocation.
+    /// For fixed slabs, this sets the hard limit.
     pub fn capacity(mut self, capacity: usize) -> Self {
         self.capacity = Some(capacity);
         self
     }
 
-    /// Set the slab size in megabytes (default: 2MB).
-    pub fn slab_megabytes(mut self, mb: usize) -> Self {
-        self.slab_megabytes = Some(mb);
+    /// Set the slab size in bytes (default: 256KB).
+    ///
+    /// Smaller slabs drain faster (more bump recovery).
+    /// Larger slabs may benefit from THP (2MB+).
+    pub fn slab_bytes(mut self, bytes: usize) -> Self {
+        self.slab_bytes = Some(bytes);
         self
     }
 
-    /// Set the retire threshold as a percentage (default: 75%).
+    /// Set the number of slabs to pre-allocate.
     ///
-    /// Slabs are retired when occupancy reaches this percentage, giving them
-    /// a chance to drain completely and reset for bump allocation.
-    pub fn retire_percent(mut self, percent: u8) -> Self {
-        self.retire_percent = Some(percent.min(100));
+    /// Overrides calculation from capacity.
+    pub fn num_slabs(mut self, n: usize) -> Self {
+        self.num_slabs = Some(n);
         self
     }
 
     /// Use huge pages (MAP_HUGETLB on Linux).
+    ///
+    /// Requires slab_bytes to be a multiple of huge page size.
     pub fn huge_pages(mut self, enabled: bool) -> Self {
         self.huge_pages = enabled;
         self
@@ -704,17 +803,15 @@ impl SlabBuilder {
     }
 
     /// Build a fixed-capacity slab.
+    ///
+    /// Fixed slabs use a single contiguous allocation and never grow.
     pub fn fixed(self) -> FixedSlabBuilder {
         FixedSlabBuilder { inner: self }
     }
 
     /// Build a dynamic (growable) slab.
     pub fn build<T>(self) -> Result<DynamicSlab<T>, SlabError> {
-        self.build_impl()
-    }
-
-    fn build_impl<T, const MODE: bool>(self) -> Result<Slab<T, MODE>, SlabError> {
-        let slab_bytes = self.slab_megabytes.unwrap_or(2) * 1024 * 1024;
+        let slab_bytes = self.slab_bytes.unwrap_or(DEFAULT_SLAB_BYTES);
         let slot_size = std::mem::size_of::<Slot<T>>().max(1);
 
         if slot_size > slab_bytes {
@@ -725,64 +822,47 @@ impl SlabBuilder {
         }
 
         let slots_per_slab = (slab_bytes / slot_size) as u32;
-        let retire_percent = self.retire_percent.unwrap_or(75) as u32;
-        let retire_threshold = (slots_per_slab * retire_percent / 100).max(1);
 
-        // Calculate number of slabs needed
-        let capacity = self.capacity.unwrap_or(slots_per_slab as usize);
-        if MODE == FIXED && capacity == 0 {
+        let num_slabs = if let Some(n) = self.num_slabs {
+            n
+        } else if let Some(cap) = self.capacity {
+            (cap + slots_per_slab as usize - 1) / slots_per_slab as usize
+        } else {
+            1
+        };
+
+        if num_slabs == 0 {
             return Err(SlabError::ZeroCapacity);
         }
 
-        let num_slabs = (capacity + slots_per_slab as usize - 1) / slots_per_slab as usize;
+        // Build with possible huge pages / mlock
+        let mut slab_pages = Vec::with_capacity(num_slabs);
+        let mut slab_bases = Vec::with_capacity(num_slabs);
+        let mut slabs = Vec::with_capacity(num_slabs);
 
-        // Mode-specific initialization
-        let (fixed_pages, fixed_slots, slab_pages, slab_bases, total_slots) = if MODE == FIXED {
-            // Fixed: single contiguous allocation
-            let total_slots = num_slabs * slots_per_slab as usize;
-            let total_bytes = total_slots * slot_size;
-
+        for i in 0..num_slabs {
             #[cfg(target_os = "linux")]
             let pages = if self.huge_pages {
-                sys::Pages::alloc_hugetlb(total_bytes).map_err(SlabError::Allocation)?
+                sys::Pages::alloc_hugetlb(slab_bytes).map_err(SlabError::Allocation)?
             } else {
-                sys::Pages::alloc(total_bytes).map_err(SlabError::Allocation)?
+                sys::Pages::alloc(slab_bytes).map_err(SlabError::Allocation)?
             };
 
             #[cfg(not(target_os = "linux"))]
-            let pages = sys::Pages::alloc(total_bytes).map_err(SlabError::Allocation)?;
+            let pages = sys::Pages::alloc(slab_bytes).map_err(SlabError::Allocation)?;
 
             if self.mlock {
                 pages.mlock().map_err(SlabError::Allocation)?;
             }
 
-            let slots = NonNull::new(pages.as_ptr() as *mut Slot<T>).expect("mmap returned null");
-
-            (Some(pages), slots, Vec::new(), Vec::new(), total_slots)
-        } else {
-            // Dynamic: start with one slab, grow on demand
-            let pages = sys::Pages::alloc(slab_bytes).map_err(SlabError::Allocation)?;
             let base = NonNull::new(pages.as_ptr() as *mut Slot<T>).expect("mmap returned null");
 
-            // Dummy pointer for fixed_slots (never used in dynamic mode)
-            let dummy = NonNull::dangling();
+            slab_pages.push(pages);
+            slab_bases.push(base);
 
-            (
-                None,
-                dummy,
-                vec![pages],
-                vec![base],
-                slots_per_slab as usize,
-            )
-        };
-
-        // Initialize slab metadata
-        let actual_num_slabs = if MODE == FIXED { num_slabs } else { 1 };
-        let mut slabs = Vec::with_capacity(actual_num_slabs);
-        for i in 0..actual_num_slabs {
             let mut meta = SlabMeta::new();
             meta.prev = if i > 0 { (i - 1) as u32 } else { SLAB_NONE };
-            meta.next = if i < actual_num_slabs - 1 {
+            meta.next = if i < num_slabs - 1 {
                 (i + 1) as u32
             } else {
                 SLAB_NONE
@@ -791,41 +871,37 @@ impl SlabBuilder {
             slabs.push(meta);
         }
 
-        // First slab becomes current
-        let (current, empty_head) = if actual_num_slabs > 0 {
-            slabs[0].state = SlabState::Current;
-            slabs[0].prev = SLAB_NONE;
-            slabs[0].next = SLAB_NONE;
+        slabs[0].state = SlabState::Current;
+        slabs[0].prev = SLAB_NONE;
+        slabs[0].next = SLAB_NONE;
 
-            let empty_head = if actual_num_slabs > 1 {
-                slabs[1].prev = SLAB_NONE;
-                1
-            } else {
-                SLAB_NONE
-            };
-
-            (0, empty_head)
+        let empty_head = if num_slabs > 1 {
+            slabs[1].prev = SLAB_NONE;
+            1
         } else {
-            (SLAB_NONE, SLAB_NONE)
+            SLAB_NONE
         };
 
         Ok(Slab {
-            fixed_pages,
-            fixed_slots,
+            fixed_pages: None,
+            fixed_slots: NonNull::dangling(),
             slab_pages,
             slab_bases,
             slabs,
-            slots_capacity: total_slots,
+            slots_capacity: num_slabs * slots_per_slab as usize,
             empty_head,
             freelist_head: SLAB_NONE,
-            current,
+            current: 0,
             len: 0,
             slots_per_slab,
-            retire_threshold,
             slab_bytes,
         })
     }
 }
+
+// =============================================================================
+// FixedSlabBuilder
+// =============================================================================
 
 /// Builder for fixed-capacity slabs.
 pub struct FixedSlabBuilder {
@@ -839,15 +915,9 @@ impl FixedSlabBuilder {
         self
     }
 
-    /// Set the slab size in megabytes (default: 2MB).
-    pub fn slab_megabytes(mut self, mb: usize) -> Self {
-        self.inner.slab_megabytes = Some(mb);
-        self
-    }
-
-    /// Set the retire threshold as a percentage (default: 75%).
-    pub fn retire_percent(mut self, percent: u8) -> Self {
-        self.inner.retire_percent = Some(percent.min(100));
+    /// Set the slab size in bytes.
+    pub fn slab_bytes(mut self, bytes: usize) -> Self {
+        self.inner.slab_bytes = Some(bytes);
         self
     }
 
@@ -865,10 +935,82 @@ impl FixedSlabBuilder {
 
     /// Build the fixed-capacity slab.
     pub fn build<T>(self) -> Result<FixedSlab<T>, SlabError> {
-        if self.inner.capacity.is_none() || self.inner.capacity == Some(0) {
+        let capacity = self.inner.capacity.ok_or(SlabError::ZeroCapacity)?;
+        if capacity == 0 {
             return Err(SlabError::ZeroCapacity);
         }
-        self.inner.build_impl()
+
+        let slab_bytes = self.inner.slab_bytes.unwrap_or(DEFAULT_SLAB_BYTES);
+        let slot_size = std::mem::size_of::<Slot<T>>().max(1);
+
+        if slot_size > slab_bytes {
+            return Err(SlabError::SlotTooLarge {
+                slot_size,
+                slab_size: slab_bytes,
+            });
+        }
+
+        let slots_per_slab = (slab_bytes / slot_size) as u32;
+        let num_slabs = (capacity + slots_per_slab as usize - 1) / slots_per_slab as usize;
+        let total_slots = num_slabs * slots_per_slab as usize;
+        let total_bytes = total_slots * slot_size;
+
+        // Single contiguous allocation
+        #[cfg(target_os = "linux")]
+        let pages = if self.inner.huge_pages {
+            sys::Pages::alloc_hugetlb(total_bytes).map_err(SlabError::Allocation)?
+        } else {
+            sys::Pages::alloc(total_bytes).map_err(SlabError::Allocation)?
+        };
+
+        #[cfg(not(target_os = "linux"))]
+        let pages = sys::Pages::alloc(total_bytes).map_err(SlabError::Allocation)?;
+
+        if self.inner.mlock {
+            pages.mlock().map_err(SlabError::Allocation)?;
+        }
+
+        let slots = NonNull::new(pages.as_ptr() as *mut Slot<T>).expect("mmap returned null");
+
+        // Initialize slab metadata
+        let mut slabs = Vec::with_capacity(num_slabs);
+        for i in 0..num_slabs {
+            let mut meta = SlabMeta::new();
+            meta.prev = if i > 0 { (i - 1) as u32 } else { SLAB_NONE };
+            meta.next = if i < num_slabs - 1 {
+                (i + 1) as u32
+            } else {
+                SLAB_NONE
+            };
+            meta.state = SlabState::Empty;
+            slabs.push(meta);
+        }
+
+        slabs[0].state = SlabState::Current;
+        slabs[0].prev = SLAB_NONE;
+        slabs[0].next = SLAB_NONE;
+
+        let empty_head = if num_slabs > 1 {
+            slabs[1].prev = SLAB_NONE;
+            1
+        } else {
+            SLAB_NONE
+        };
+
+        Ok(Slab {
+            fixed_pages: Some(pages),
+            fixed_slots: slots,
+            slab_pages: Vec::new(),
+            slab_bases: Vec::new(),
+            slabs,
+            slots_capacity: total_slots,
+            empty_head,
+            freelist_head: SLAB_NONE,
+            current: 0,
+            len: 0,
+            slots_per_slab,
+            slab_bytes,
+        })
     }
 }
 
@@ -884,7 +1026,7 @@ mod tests {
 
     #[test]
     fn basic_insert_get_remove() {
-        let mut slab = DynamicSlab::<u64>::new().unwrap();
+        let mut slab = DynamicSlab::<u64>::with_capacity(100).unwrap();
 
         let k1 = slab.insert(42).unwrap();
         let k2 = slab.insert(100).unwrap();
@@ -901,46 +1043,40 @@ mod tests {
     }
 
     #[test]
+    fn simple_api() {
+        let mut slab = DynamicSlab::<String>::with_capacity(1000).unwrap();
+
+        let k = slab.insert("hello".to_string()).unwrap();
+        assert_eq!(slab.get(k), "hello");
+    }
+
+    #[test]
     fn fixed_slab_full() {
-        let mut slab: FixedSlab<u64> = SlabBuilder::default()
-            .fixed()
-            .capacity(100)
-            .slab_megabytes(1)
-            .build()
-            .unwrap();
+        let mut slab: FixedSlab<u64> = SlabBuilder::new().fixed().capacity(100).build().unwrap();
 
         let capacity = slab.capacity();
 
-        // Fill to capacity
         for i in 0..capacity {
             slab.insert(i as u64).unwrap();
         }
 
-        // Next insert should fail
         let result = slab.insert(9999);
         assert!(matches!(result, Err(Full(9999))));
     }
 
     #[test]
     fn reuse_after_remove() {
-        let mut slab: FixedSlab<u64> = SlabBuilder::default()
-            .fixed()
-            .capacity(100)
-            .build()
-            .unwrap();
+        let mut slab: FixedSlab<u64> = SlabBuilder::new().fixed().capacity(100).build().unwrap();
 
         let capacity = slab.capacity();
 
-        // Fill
         let mut keys = Vec::new();
         for i in 0..capacity {
             keys.push(slab.insert(i as u64).unwrap());
         }
 
-        // Remove one
         slab.remove(keys[50]);
 
-        // Should be able to insert
         let new_key = slab.insert(999).unwrap();
         assert_eq!(*slab.get(new_key), 999);
     }
@@ -958,7 +1094,7 @@ mod tests {
         }
 
         {
-            let mut slab = DynamicSlab::<DropCounter>::new().unwrap();
+            let mut slab = DynamicSlab::<DropCounter>::with_capacity(100).unwrap();
             for _ in 0..100 {
                 slab.insert(DropCounter(drop_count.clone())).unwrap();
             }
@@ -968,93 +1104,93 @@ mod tests {
     }
 
     #[test]
-    fn slab_becomes_empty_after_all_removes() {
-        let mut slab: FixedSlab<u64> = SlabBuilder::default()
-            .fixed()
-            .capacity(1000)
-            .slab_megabytes(1)
-            .retire_percent(75)
-            .build()
-            .unwrap();
+    fn slab_drains_to_empty() {
+        let mut slab = DynamicSlab::<u64>::with_capacity(100).unwrap();
 
-        // Insert some values
         let mut keys = Vec::new();
         for i in 0..100 {
             keys.push(slab.insert(i as u64).unwrap());
         }
 
-        // Remove all
         for key in keys {
             slab.remove(key);
         }
 
         assert!(slab.is_empty());
 
-        // Should be able to insert again (bump allocation)
+        // Should bump allocate again
         let k = slab.insert(42).unwrap();
         assert_eq!(*slab.get(k), 42);
     }
 
     #[test]
     fn clear_resets_for_bump() {
-        let mut slab = DynamicSlab::<u64>::new().unwrap();
+        let mut slab = DynamicSlab::<u64>::with_capacity(1000).unwrap();
 
-        // Fill with some values
-        for i in 0..1000 {
+        for i in 0..500 {
             slab.insert(i).unwrap();
         }
 
         slab.clear();
         assert!(slab.is_empty());
 
-        // Should be bump allocating again
         let k = slab.insert(42).unwrap();
         assert_eq!(*slab.get(k), 42);
     }
 
     #[test]
-    fn dynamic_grows_beyond_initial() {
-        let mut slab: DynamicSlab<u64> = SlabBuilder::default()
-            .slab_megabytes(1) // Smaller slabs for faster test
-            .build()
-            .unwrap();
+    fn dynamic_grows() {
+        let mut slab = DynamicSlab::<u64>::with_capacity(100).unwrap();
 
         let initial_capacity = slab.capacity();
         let initial_slabs = slab.slab_count();
 
-        // Insert more than one slab's worth
-        let target = initial_capacity + 1000;
-        for i in 0..target {
+        // Insert beyond initial capacity
+        for i in 0..(initial_capacity + 1000) {
             slab.insert(i as u64).unwrap();
         }
 
         assert!(slab.capacity() > initial_capacity);
         assert!(slab.slab_count() > initial_slabs);
-        assert_eq!(slab.len(), target);
-
-        // Verify values
-        // (can't easily verify keys since we don't track them, but len is correct)
     }
 
     #[test]
-    fn dynamic_growth_preserves_existing() {
-        let mut slab = DynamicSlab::<u64>::new().unwrap();
+    fn key_from_raw() {
+        let mut slab = DynamicSlab::<u64>::with_capacity(100).unwrap();
 
-        // Insert some values and track keys
-        let mut keys = Vec::new();
-        for i in 0..100 {
-            keys.push(slab.insert(i as u64).unwrap());
-        }
+        let k1 = slab.insert(42).unwrap();
+        let raw = k1.into_raw();
 
-        // Force growth by inserting a lot more
-        let initial_capacity = slab.capacity();
-        while slab.capacity() == initial_capacity {
-            slab.insert(999).unwrap();
-        }
+        let k2 = unsafe { Key::from_raw(raw) };
+        assert_eq!(*slab.get(k2), 42);
+    }
 
-        // Original keys should still be valid
-        for (i, key) in keys.iter().enumerate() {
-            assert_eq!(*slab.get(*key), i as u64);
-        }
+    #[test]
+    fn key_accessors() {
+        let key = Key::new(5, 10);
+        assert_eq!(key.slab(), 5);
+        assert_eq!(key.slot(), 10);
+    }
+
+    #[test]
+    fn power_user_builder() {
+        let slab: DynamicSlab<u64> = SlabBuilder::new()
+            .capacity(10000)
+            .slab_bytes(512 * 1024) // 512KB slabs
+            .build()
+            .unwrap();
+
+        assert!(slab.capacity() >= 10000);
+    }
+
+    #[test]
+    fn contains() {
+        let mut slab = DynamicSlab::<u64>::with_capacity(100).unwrap();
+
+        let k = slab.insert(42).unwrap();
+        assert!(slab.contains(k));
+
+        slab.remove(k);
+        assert!(!slab.contains(k));
     }
 }

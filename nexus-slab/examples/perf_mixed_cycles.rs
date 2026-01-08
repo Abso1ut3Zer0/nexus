@@ -106,8 +106,11 @@ impl GrowthStats {
 }
 
 fn bench_nexus() -> GrowthStats {
-    let mut slab: nexus_slab::DynamicSlab<u64> = nexus_slab::SlabBuilder::default()
-        .capacity(INITIAL_CAPACITY)
+    // Start with initial capacity, let it grow
+    let mut slab: nexus_slab::DynamicSlab<u64> = nexus_slab::SlabBuilder::new()
+        .capacity(INITIAL_CAPACITY) // 100K - will need to grow
+        .slab_bytes(2 * 1024 * 1024)
+        .mlock(true)
         .build()
         .unwrap();
 
