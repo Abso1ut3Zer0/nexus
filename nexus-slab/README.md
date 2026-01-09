@@ -23,6 +23,17 @@ Trade 2-4 cycles on median for **60x better worst-case p999**.
 
 ## Architecture
 
+### Two-Level Freelist
+```
+slabs_head ─► Slab 2 ─► Slab 0 ─► NONE      Slab 1 (full)
+                │         │                     │
+                ▼         ▼                     ▼
+             [slots]   [slots]              [no space]
+```
+
+- **Slab freelist**: O(1) access to a slab with available space
+- **Slot freelist**: Per-slab LIFO chain of freed slots
+
 ### Memory Layout
 ```
 Slab 0 (independent allocation)    Slab 1 (independent allocation)
@@ -34,9 +45,10 @@ Slab 0 (independent allocation)    Slab 1 (independent allocation)
 
 SlabMeta[] (small Vec)
 ┌─────────────────────────────┐
-│ freelist_head: u32          │  ← Per-slab freelist for draining
+│ freelist_head: u32          │  ← Per-slab slot freelist
 │ bump_cursor: u32            │  ← Sequential allocation pointer
-│ occupied: u32               │  ← Count for slab selection
+│ occupied: u32               │  ← Slot count
+│ next_free_slab: u32         │  ← Slab freelist chain
 └─────────────────────────────┘
 ```
 
@@ -44,25 +56,27 @@ Each slab is allocated independently — no contiguous backing array that needs 
 
 ### Allocation Strategy
 
-1. **Freelist first (LIFO)**: Check active slab's freelist for recently-freed slots
-2. **Bump allocation**: Sequential allocation when freelist is empty (fresh slab)
-3. **Cross-slab fallback**: Search other slabs when active slab exhausted
-4. **Growth** (dynamic mode): Allocate new slab when all are full
+1. **Slab freelist head**: O(1) access to a slab with space
+2. **Slot freelist (LIFO)**: Reuse recently-freed slots for cache locality
+3. **Bump allocation**: Sequential allocation when slot freelist is empty
+4. **Pop exhausted slabs**: Remove from slab freelist when full
+5. **Growth** (dynamic mode): Allocate new slab when slab freelist is empty
 
-LIFO freelist reuse means inserts write to cache-hot memory, reducing cache misses on high-churn workloads.
+### Remove: LIFO Behavior
+
+When removing from a **full** slab, that slab is pushed to the **front** of the slab freelist. This means:
+
+- The next insert uses cache-hot memory (just touched by the remove)
+- High-churn workloads stay concentrated in fewer slabs
+- Better cache utilization overall
 
 ### Per-Slab Freelists
 
-Unlike global freelists, each slab maintains its own chain. This enables:
+Unlike global freelists, each slab maintains its own chain:
 
-- **Cache locality**: Freed slots are reused LIFO, so the next insert writes to cache-hot memory
-- **Slab affinity**: After a remove, the active slab switches to where the free slot is, concentrating activity
-- **Independent growth**: New slabs don't touch existing slab structures
-
-Allocation priority:
-1. **Freelist** (LIFO): Reuse recently-freed slots from active slab
-2. **Bump cursor**: Allocate untouched slots if freelist is empty
-3. **Cross-slab**: Search other slabs when active slab is exhausted
+- **Cache locality**: Freed slots reused LIFO within the same slab
+- **Independent draining**: Slabs can be fully emptied without affecting others
+- **No cross-slab pointers**: Simpler invariants, no fragmentation across slabs
 
 ### Why Direct mmap? (Unix)
 
@@ -87,7 +101,7 @@ use nexus_slab::DynamicSlab;
 let mut slab: DynamicSlab<u64> = DynamicSlab::with_capacity(10_000)?;
 
 // O(1) operations
-let key = slab.insert(42)?;
+let key = slab.insert(42);
 assert_eq!(*slab.get(key), 42);
 
 let value = slab.remove(key);
@@ -95,21 +109,24 @@ assert_eq!(value, 42);
 
 // Grows automatically when needed (allocates new slab, never copies)
 for i in 0..100_000 {
-    slab.insert(i)?;
+    slab.insert(i);
 }
 ```
 
 ### Fixed Slab (pre-allocated, no growth)
 ```rust
-use nexus_slab::FixedSlab;
+use nexus_slab::{SlabBuilder, FixedSlab, Full};
 
 // All memory allocated upfront
-let mut slab: FixedSlab<Order> = FixedSlab::with_capacity(100_000)?;
+let mut slab: FixedSlab<Order> = SlabBuilder::new()
+    .fixed()
+    .capacity(100_000)
+    .build()?;
 
 // Returns Err(Full) when exhausted — no surprise allocations
-match slab.insert(order) {
+match slab.try_insert(order) {
     Ok(key) => { /* ... */ }
-    Err(Full { value }) => { /* handle backpressure */ }
+    Err(Full(value)) => { /* handle backpressure */ }
 }
 ```
 
@@ -118,10 +135,10 @@ match slab.insert(order) {
 use nexus_slab::SlabBuilder;
 
 let slab: DynamicSlab<Order> = SlabBuilder::new()
-    .capacity(100_000)          // Initial capacity hint
+    .capacity(100_000)           // Initial capacity hint
     .slab_bytes(2 * 1024 * 1024) // 2MB slabs (matches huge page size)
-    .huge_pages(true)           // Unix: use MAP_HUGETLB
-    .mlock(true)                // Unix: lock pages in RAM
+    .huge_pages(true)            // Unix: use MAP_HUGETLB
+    .mlock(true)                 // Unix: lock pages in RAM
     .build()?;
 ```
 
@@ -144,45 +161,54 @@ let slab: DynamicSlab<Order> = SlabBuilder::new()
 
 ### Core Operations
 
-| Method | Complexity | Description |
-|--------|------------|-------------|
-| `insert(value)` | O(1) | Insert value, returns key |
-| `get(key)` | O(1) | Get reference by key |
-| `get_mut(key)` | O(1) | Get mutable reference |
-| `remove(key)` | O(1) | Remove and return value |
-| `contains(key)` | O(1) | Check if key is occupied |
-| `len()` | O(1) | Number of occupied slots |
-| `capacity()` | O(1) | Total slots available |
+| Method | DynamicSlab | FixedSlab | Description |
+|--------|-------------|-----------|-------------|
+| `insert(value)` | `Key` | — | Insert, grow if needed (panics on alloc failure) |
+| `try_insert(value)` | — | `Result<Key, Full>` | Insert, returns `Err` if full |
+| `get(key)` | `&T` | `&T` | Get reference by key |
+| `get_mut(key)` | `&mut T` | `&mut T` | Get mutable reference |
+| `remove(key)` | `T` | `T` | Remove and return value |
+| `contains(key)` | `bool` | `bool` | Check if key is occupied |
+| `len()` | `usize` | `usize` | Number of occupied slots |
+| `capacity()` | `usize` | `usize` | Total slots available |
 
 ### Vacant Entry Pattern
 
 For self-referential structures:
 ```rust
-let entry = slab.vacant_entry()?;
+// DynamicSlab
+let entry = slab.vacant_entry();
 let key = entry.key();
+entry.insert(Node { self_key: key, data: 42 });
 
-let node = Node { self_key: key, data: 42 };
-entry.insert(node);
+// FixedSlab
+if let Some(entry) = slab.try_vacant_entry() {
+    let key = entry.key();
+    entry.insert(Node { self_key: key, data: 42 });
+}
 ```
 
 ## Key Design
 
-Keys encode `(slab_index, slot_index, generation)` in a `u64`. Generation counters detect use-after-remove:
+Keys encode `(slab_index, slot_index)` in a `u64`. Keys are valid until removed:
 ```rust
-let key = slab.insert(1)?;
-slab.remove(key);
-slab.insert(2)?;  // Reuses same slot with new generation
+let key = slab.insert(42);
+assert!(slab.contains(key));
 
-assert!(slab.get(key).is_none());  // Old key returns None, not new value
+slab.remove(key);
+assert!(!slab.contains(key));  // Key no longer valid
 ```
+
+**Note**: There is no generation counter — reusing a key after removal is undefined behavior. The caller is responsible for tracking key validity.
 
 ## When to Use This
 
 **Good fit:**
+- Systems requiring large slabs with low latency operations
 - Trading systems, matching engines
 - Real-time audio/video processing
 - Game servers with strict latency budgets
-- Any system where p999 matters more than p50
+- Any system where p999 matters more than a few cycles on p50
 
 **Use `slab` crate instead when:**
 - Median performance is the priority

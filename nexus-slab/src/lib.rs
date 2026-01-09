@@ -23,6 +23,18 @@
 //!
 //! # Architecture
 //!
+//! ## Two-Level Freelist
+//!
+//! ```text
+//! slabs_head ─► Slab 2 ─► Slab 0 ─► NONE
+//!                 │         │
+//!                 ▼         ▼
+//!              [slots]   [slots]     Slab 1 (full, not on freelist)
+//! ```
+//!
+//! - **Slab freelist**: Which slabs have available space (O(1) lookup)
+//! - **Slot freelist**: Which slots within a slab are free (per-slab, LIFO)
+//!
 //! ## Memory Layout
 //!
 //! ```text
@@ -41,6 +53,7 @@
 //!                               │ bump_cursor: u32    │
 //!                               │ occupied: u32       │
 //!                               │ freelist_head: u32  │
+//!                               │ next_free_slab: u32 │
 //!                               └─────────────────────┘
 //! ```
 //!
@@ -57,12 +70,11 @@
 //!
 //! ## Allocation Strategy
 //!
-//! Each slab maintains a per-slab freelist and bump cursor:
-//!
-//! 1. **Freelist first (LIFO)**: Reuse recently-freed slots for cache locality
-//! 2. **Bump allocation**: Sequential allocation when freelist is empty
-//! 3. **Cross-slab fallback**: Search other slabs when active slab is exhausted
-//! 4. **Growth**: Allocate new slab when all are full (dynamic mode only)
+//! 1. **Check slab freelist head** - O(1) access to a slab with space
+//! 2. **Slot freelist first (LIFO)**: Reuse recently-freed slots for cache locality
+//! 3. **Bump allocation**: Sequential allocation when slot freelist is empty
+//! 4. **Pop exhausted slabs**: Remove from slab freelist when full
+//! 5. **Growth**: Allocate new slab when all are full (dynamic mode only)
 //!
 //! ## Remove: LIFO Cache-Hot Behavior
 //!
@@ -71,21 +83,21 @@
 //! ```text
 //! Remove slot X from slab S:
 //! ┌─────────────────────────────────────────────────────────┐
-//! │ 1. Read value from X                                   │
-//! │ 2. X.tag ← S.freelist_head (chain to old head)         │
-//! │ 3. S.freelist_head ← X (freed slot becomes new head)   │
-//! │ 4. active_slab ← S (hint for next insert)              │
+//! │ 1. Read value from X                                    │
+//! │ 2. X.tag ← S.freelist_head (chain to old head)          │
+//! │ 3. S.freelist_head ← X (freed slot becomes new head)    │
+//! │ 4. If S was full: push S to front of slab freelist      │
 //! └─────────────────────────────────────────────────────────┘
 //! ```
 //!
-//! LIFO reuse means the next insert writes to cache-hot memory, reducing
-//! cache misses on high-churn workloads.
+//! When a full slab gains a free slot, it's pushed to the **front** of the
+//! slab freelist (LIFO), so the next insert uses cache-hot memory.
 //!
 //! ## Growth (Dynamic Mode)
 //!
-//! When all slabs are exhausted, a new slab is allocated. This cost is
-//! amortized over `slots_per_slab` allocations (typically ~16K slots per
-//! 256KB slab for 16-byte values).
+//! When the slab freelist is empty, a new slab is allocated and becomes
+//! the freelist head. This cost is amortized over `slots_per_slab` allocations
+//! (typically ~16K slots per 256KB slab for 16-byte values).
 //!
 //! # Example
 //!
@@ -108,12 +120,6 @@
 //!
 //! - **Dynamic**: Grows by adding new slabs. Use when capacity is unbounded
 //!   but growth is infrequent.
-//!
-//! # Feature Flags
-//!
-//! - **`mmap`** (Unix only): Use `mmap` for allocation with support for huge
-//!   pages (`huge_pages`) and memory locking (`mlock`). Without this feature,
-//!   uses `std::alloc` which is portable and Miri-compatible.
 
 #![warn(missing_docs)]
 
@@ -297,9 +303,7 @@ impl SlabMeta {
 
 /// A slab allocator with configurable growth mode.
 pub struct Slab<T, const MODE: bool> {
-    // Which slab to try first on insert (locality hint)
-    active_slab: u32,
-    slab_freelist_head: u32,
+    slabs_head: u32,
 
     len: usize,
     max_len: usize, // For FIXED mode: user-requested capacity limit (0 = unlimited for DYNAMIC)
@@ -369,15 +373,14 @@ impl<T> DynamicSlab<T> {
         }
 
         // Initialize slab freelist - all slabs except first go on freelist
-        let mut slab_freelist_head = SLAB_NONE;
-        for i in (1..num_slabs).rev() {
-            slabs[i].next_free_slab = slab_freelist_head;
-            slab_freelist_head = i as u32;
+        let mut slabs_head = SLAB_NONE;
+        for i in (0..num_slabs).rev() {
+            slabs[i].next_free_slab = slabs_head;
+            slabs_head = i as u32;
         }
 
         Ok(Slab {
-            active_slab: 0,
-            slab_freelist_head,
+            slabs_head,
             len: 0,
             max_len: 0, // Dynamic mode: no limit
             slots_per_slab,
@@ -416,58 +419,43 @@ impl<T> Slab<T, DYNAMIC> {
     /// Allocate a slot. Grows if needed, panics on allocation failure.
     #[inline]
     fn alloc(&mut self) -> (u32, u32) {
-        // Try active slab first (locality)
-        let active = self.active_slab as usize;
+        if self.slabs_head == SLAB_NONE {
+            let slab_idx = self.grow();
+            self.slabs_head = slab_idx;
+            self.slabs[slab_idx as usize].bump_cursor = 1;
+            return (slab_idx, 0);
+        }
+
+        let slab_idx = self.slabs_head;
 
         let (head, cursor) = {
-            let meta = &self.slabs[active];
+            let meta = &self.slabs[slab_idx as usize];
             (meta.freelist_head, meta.bump_cursor)
         };
 
-        // Check freelist first (LIFO cache-hot)
+        // Freelist first (LIFO cache-hot)
         if head != SLOT_NONE {
-            let ptr = unsafe { self.slot_ptr_unchecked(active as u32, head) };
+            let ptr = unsafe { self.slot_ptr_unchecked(slab_idx, head) };
             let next = unsafe { (*ptr).tag };
-            self.slabs[active].freelist_head = next;
-            return (active as u32, head);
-        }
+            self.slabs[slab_idx as usize].freelist_head = next;
 
-        // Check bump cursor
-        if cursor < self.slots_per_slab {
-            self.slabs[active].bump_cursor = cursor + 1;
-            return (active as u32, cursor);
-        }
-
-        // Active exhausted - try slab freelist
-        while let Some(slab_idx) = self.pop_slab_freelist() {
-            let idx = slab_idx as usize;
-
-            let (head, cursor) = {
-                let meta = &self.slabs[idx];
-                (meta.freelist_head, meta.bump_cursor)
-            };
-
-            if head != SLOT_NONE {
-                let ptr = unsafe { self.slot_ptr_unchecked(slab_idx, head) };
-                let next = unsafe { (*ptr).tag };
-                self.slabs[idx].freelist_head = next;
-                self.active_slab = slab_idx;
-                return (slab_idx, head);
+            // If slab now exhausted (freelist empty AND bump maxed), pop it
+            if next == SLOT_NONE && cursor >= self.slots_per_slab {
+                self.slabs_head = self.slabs[slab_idx as usize].next_free_slab;
             }
 
-            if cursor < self.slots_per_slab {
-                self.slabs[idx].bump_cursor = cursor + 1;
-                self.active_slab = slab_idx;
-                return (slab_idx, cursor);
-            }
-            // Slab was on freelist but actually full - continue to next
+            return (slab_idx, head);
         }
 
-        // Grow
-        let slab_idx = self.grow();
-        self.active_slab = slab_idx;
-        self.slabs[slab_idx as usize].bump_cursor = 1;
-        (slab_idx, 0)
+        // Bump cursor
+        self.slabs[slab_idx as usize].bump_cursor = cursor + 1;
+
+        // If slab now exhausted, pop it from freelist
+        if cursor + 1 >= self.slots_per_slab {
+            self.slabs_head = self.slabs[slab_idx as usize].next_free_slab;
+        }
+
+        (slab_idx, cursor)
     }
 
     /// Grow by adding a new slab. Panics on allocation failure.
@@ -513,58 +501,44 @@ impl<T> Slab<T, FIXED> {
     /// Try to allocate a slot. Returns None if full.
     #[inline]
     fn alloc(&mut self) -> Option<(u32, u32)> {
-        // Check capacity limit
         if self.max_len > 0 && self.len >= self.max_len {
             return None;
         }
 
-        // Try active slab first (locality)
-        let active = self.active_slab as usize;
+        if self.slabs_head == SLAB_NONE {
+            return None;
+        }
+
+        let slab_idx = self.slabs_head;
 
         let (head, cursor) = {
-            let meta = &self.slabs[active];
+            let meta = &self.slabs[slab_idx as usize];
             (meta.freelist_head, meta.bump_cursor)
         };
 
-        // Check freelist first (LIFO cache-hot)
+        // Freelist first (LIFO cache-hot)
         if head != SLOT_NONE {
-            let ptr = unsafe { self.slot_ptr_unchecked(active as u32, head) };
+            let ptr = unsafe { self.slot_ptr_unchecked(slab_idx, head) };
             let next = unsafe { (*ptr).tag };
-            self.slabs[active].freelist_head = next;
-            return Some((active as u32, head));
-        }
+            self.slabs[slab_idx as usize].freelist_head = next;
 
-        // Check bump cursor
-        if cursor < self.slots_per_slab {
-            self.slabs[active].bump_cursor = cursor + 1;
-            return Some((active as u32, cursor));
-        }
-
-        // Active exhausted - try slab freelist
-        while let Some(slab_idx) = self.pop_slab_freelist() {
-            let idx = slab_idx as usize;
-
-            let (head, cursor) = {
-                let meta = &self.slabs[idx];
-                (meta.freelist_head, meta.bump_cursor)
-            };
-
-            if head != SLOT_NONE {
-                let ptr = unsafe { self.slot_ptr_unchecked(slab_idx, head) };
-                let next = unsafe { (*ptr).tag };
-                self.slabs[idx].freelist_head = next;
-                self.active_slab = slab_idx;
-                return Some((slab_idx, head));
+            // If slab now exhausted (freelist empty AND bump maxed), pop it
+            if next == SLOT_NONE && cursor >= self.slots_per_slab {
+                self.slabs_head = self.slabs[slab_idx as usize].next_free_slab;
             }
 
-            if cursor < self.slots_per_slab {
-                self.slabs[idx].bump_cursor = cursor + 1;
-                self.active_slab = slab_idx;
-                return Some((slab_idx, cursor));
-            }
+            return Some((slab_idx, head));
         }
 
-        None
+        // Bump cursor
+        self.slabs[slab_idx as usize].bump_cursor = cursor + 1;
+
+        // If slab now exhausted, pop it from freelist
+        if cursor + 1 >= self.slots_per_slab {
+            self.slabs_head = self.slabs[slab_idx as usize].next_free_slab;
+        }
+
+        Some((slab_idx, cursor))
     }
 }
 
@@ -651,7 +625,7 @@ impl<T, const MODE: bool> Slab<T, MODE> {
 
         let meta = unsafe { self.slabs.get_unchecked_mut(slab_idx as usize) };
 
-        // Check if slab was full before this remove
+        // Was full before this remove?
         let was_full = meta.freelist_head == SLOT_NONE && meta.bump_cursor >= self.slots_per_slab;
 
         // Push slot onto per-slab freelist
@@ -661,13 +635,11 @@ impl<T, const MODE: bool> Slab<T, MODE> {
         meta.freelist_head = slot_idx;
         meta.occupied -= 1;
 
-        // If slab was full and isn't active, add to slab freelist
-        if was_full && slab_idx != self.active_slab {
-            self.push_slab_freelist(slab_idx);
+        // If slab was full, push to front of slab freelist (LIFO)
+        if was_full {
+            meta.next_free_slab = self.slabs_head;
+            self.slabs_head = slab_idx;
         }
-
-        // Switch to this slab for LIFO locality
-        self.active_slab = slab_idx;
 
         value
     }
@@ -713,35 +685,22 @@ impl<T, const MODE: bool> Slab<T, MODE> {
             *meta = SlabMeta::new();
         }
 
-        // Reset slab freelist - all slabs except 0 go on freelist
-        self.slab_freelist_head = SLAB_NONE;
-        for i in (1..self.slabs.len()).rev() {
-            self.push_slab_freelist(i as u32);
+        // Rebuild slab freelist with all slabs
+        self.slabs_head = 0;
+        for i in 0..self.slabs.len() {
+            self.slabs[i].next_free_slab = if i + 1 < self.slabs.len() {
+                (i + 1) as u32
+            } else {
+                SLAB_NONE
+            };
         }
 
-        self.active_slab = 0;
         self.len = 0;
     }
 
     // -------------------------------------------------------------------------
     // Internal
     // -------------------------------------------------------------------------
-
-    #[inline]
-    fn push_slab_freelist(&mut self, slab_idx: u32) {
-        self.slabs[slab_idx as usize].next_free_slab = self.slab_freelist_head;
-        self.slab_freelist_head = slab_idx;
-    }
-
-    #[inline]
-    fn pop_slab_freelist(&mut self) -> Option<u32> {
-        if self.slab_freelist_head == SLAB_NONE {
-            return None;
-        }
-        let slab_idx = self.slab_freelist_head;
-        self.slab_freelist_head = self.slabs[slab_idx as usize].next_free_slab;
-        Some(slab_idx)
-    }
 
     #[inline]
     fn slot_ptr(&self, slab_idx: u32, slot_idx: u32) -> *const Slot<T> {
@@ -918,15 +877,14 @@ impl SlabBuilder {
         }
 
         // Initialize slab freelist - all slabs except first go on freelist
-        let mut slab_freelist_head = SLAB_NONE;
-        for i in (1..num_slabs).rev() {
-            slabs[i].next_free_slab = slab_freelist_head;
-            slab_freelist_head = i as u32;
+        let mut slabs_head = SLAB_NONE;
+        for i in (0..num_slabs).rev() {
+            slabs[i].next_free_slab = slabs_head;
+            slabs_head = i as u32;
         }
 
         Ok(Slab {
-            active_slab: 0,
-            slab_freelist_head,
+            slabs_head,
             len: 0,
             max_len: 0, // Dynamic mode: no limit
             slots_per_slab,
@@ -1017,15 +975,14 @@ impl FixedSlabBuilder {
         }
 
         // Initialize slab freelist - all slabs except first go on freelist
-        let mut slab_freelist_head = SLAB_NONE;
-        for i in (1..num_slabs).rev() {
-            slabs[i].next_free_slab = slab_freelist_head;
-            slab_freelist_head = i as u32;
+        let mut slabs_head = SLAB_NONE;
+        for i in (0..num_slabs).rev() {
+            slabs[i].next_free_slab = slabs_head;
+            slabs_head = i as u32;
         }
 
         Ok(Slab {
-            active_slab: 0,
-            slab_freelist_head,
+            slabs_head,
             len: 0,
             max_len: capacity,
             slots_per_slab,
@@ -1386,56 +1343,26 @@ mod tests {
     // =========================================================================
 
     #[test]
-    fn cross_slab_freelist_preserved() {
-        // Use small slab size to force multiple slabs
-        let mut slab: DynamicSlab<u64> = SlabBuilder::new()
-            .slab_bytes(4096) // Small slabs: 4096 / 16 = 256 slots per slab
-            .build()
-            .unwrap();
+    fn slab_freelist_lifo_on_remove() {
+        let mut slab: DynamicSlab<u64> = SlabBuilder::new().slab_bytes(4096).build().unwrap();
 
         let slots_per_slab = slab.slots_per_slab() as usize;
 
-        // Fill first slab completely and start second
-        let mut keys_slab0 = Vec::new();
-        let mut keys_slab1 = Vec::new();
-
+        // Fill slab 0 completely, spill into slab 1
+        let mut keys = Vec::new();
         for i in 0..(slots_per_slab + 10) {
-            let k = slab.insert(i as u64);
-            if k.slab() == 0 {
-                keys_slab0.push(k);
-            } else {
-                keys_slab1.push(k);
-            }
+            keys.push(slab.insert(i as u64));
         }
 
-        // Remove some from slab 0 (builds freelist there)
-        let removed_from_0: Vec<Key> = keys_slab0.iter().take(5).cloned().collect();
-        for &k in &removed_from_0 {
-            slab.remove(k);
-        }
+        // Remove from slab 0 (was full) - pushes to front of slab freelist
+        let k0 = keys[0];
+        assert_eq!(k0.slab(), 0);
+        slab.remove(k0);
 
-        // Remove from slab 1 - this switches current slab
-        // Slab 0's freelist should be saved to freelist_head
-        let k1 = keys_slab1[0];
-        slab.remove(k1);
-
-        // Insert - should use slab 1's freed slot first
-        let new1 = slab.insert(999);
-        assert_eq!(new1.slab(), k1.slab());
-
-        // Now exhaust slab 1's remaining bump room
-        // Slab 1 had 10 slots used, 1 freed and reused, so ~246 bump slots remain
-        // Insert enough to exhaust it and force find_next_slot to check freelist_head
-        let mut found_slab0 = false;
-        for _ in 0..(slots_per_slab + 50) {
-            let k = slab.insert(0);
-            if k.slab() == 0 {
-                found_slab0 = true;
-                break;
-            }
-        }
-
-        assert!(found_slab0, "Should have returned to slab 0's freelist");
+        // Next insert should use slab 0 (LIFO)
+        let new_key = slab.insert(999);
+        assert_eq!(new_key.slab(), 0);
+        assert_eq!(new_key.slot(), k0.slot()); // Reuses same slot
     }
 
     // =========================================================================
