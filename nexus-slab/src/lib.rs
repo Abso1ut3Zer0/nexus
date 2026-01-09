@@ -268,6 +268,54 @@ impl<T> Slot<T> {
 }
 
 // =============================================================================
+// VacantEntry
+// =============================================================================
+
+/// A vacant entry in the slab, allowing key inspection before insertion.
+///
+/// Useful for self-referential structures where the value needs to know its own key.
+///
+/// # Example
+///
+/// ```ignore
+/// struct Node {
+///     id: Key,
+///     data: u64,
+/// }
+///
+/// let mut slab = DynamicSlab::with_capacity(100)?;
+/// let entry = slab.vacant_entry()?;
+/// let key = entry.key();
+/// entry.insert(Node { id: key, data: 42 });
+/// ```
+pub struct VacantEntry<'a, T, const MODE: bool> {
+    slab: &'a mut Slab<T, MODE>,
+    key: Key,
+}
+
+impl<'a, T, const MODE: bool> VacantEntry<'a, T, MODE> {
+    /// Returns the key that will be assigned to the value once inserted.
+    #[inline]
+    pub fn key(&self) -> Key {
+        self.key
+    }
+
+    /// Insert a value into the entry, consuming it.
+    #[inline]
+    pub fn insert(self, value: T) {
+        let ptr = self.slab.slot_ptr_mut(self.key.slab(), self.key.slot());
+
+        unsafe {
+            (*ptr).tag = SLOT_OCCUPIED;
+            (*ptr).value.write(value);
+        }
+
+        self.slab.len += 1;
+        self.slab.slabs[self.key.slab() as usize].occupied += 1;
+    }
+}
+
+// =============================================================================
 // SlabMeta
 // =============================================================================
 
@@ -452,6 +500,54 @@ impl<T, const MODE: bool> Slab<T, MODE> {
         }
 
         Err(Full(value))
+    }
+
+    /// Get a vacant entry, allowing key inspection before insertion.
+    ///
+    /// Returns `Err(Full(()))` if the slab is full (fixed mode only).
+    #[inline]
+    pub fn vacant_entry(&mut self) -> Result<VacantEntry<'_, T, MODE>, Full<()>> {
+        // For FIXED mode, check capacity limit
+        if MODE == FIXED && self.max_len > 0 && self.len >= self.max_len {
+            return Err(Full(()));
+        }
+
+        // Try active slab first (locality)
+        if let Some((slab_idx, slot_idx)) = self.alloc_from_slab(self.active_slab as usize) {
+            return Ok(VacantEntry {
+                slab: self,
+                key: Key::new(slab_idx, slot_idx),
+            });
+        }
+
+        // Try other slabs
+        for idx in 0..self.slabs.len() {
+            if idx == self.active_slab as usize {
+                continue;
+            }
+            if let Some((slab_idx, slot_idx)) = self.alloc_from_slab(idx) {
+                self.active_slab = slab_idx;
+                return Ok(VacantEntry {
+                    slab: self,
+                    key: Key::new(slab_idx, slot_idx),
+                });
+            }
+        }
+
+        // Try to grow (dynamic mode only)
+        if MODE == DYNAMIC {
+            if let Ok(slab_idx) = self.grow() {
+                self.active_slab = slab_idx;
+                let slot_idx = 0;
+                self.slabs[slab_idx as usize].bump_cursor = 1;
+                return Ok(VacantEntry {
+                    slab: self,
+                    key: Key::new(slab_idx, slot_idx),
+                });
+            }
+        }
+
+        Err(Full(()))
     }
 
     /// Try to allocate a slot from the given slab.
@@ -936,6 +1032,38 @@ mod tests {
         // Key pointing to non-existent slot
         let fake_key2 = Key::new(0, 999999);
         assert!(!slab.contains(fake_key2));
+    }
+
+    #[test]
+    fn vacant_entry_self_referential() {
+        #[derive(Debug, PartialEq)]
+        struct Node {
+            id: Key,
+            data: u64,
+        }
+
+        let mut slab = DynamicSlab::<Node>::with_capacity(100).unwrap();
+
+        let entry = slab.vacant_entry().unwrap();
+        let key = entry.key();
+        entry.insert(Node { id: key, data: 42 });
+
+        let node = slab.get(key);
+        assert_eq!(node.id, key);
+        assert_eq!(node.data, 42);
+    }
+
+    #[test]
+    fn vacant_entry_fixed_full() {
+        let mut slab: FixedSlab<u64> = SlabBuilder::new().fixed().capacity(2).build().unwrap();
+
+        let e1 = slab.vacant_entry().unwrap();
+        e1.insert(1);
+
+        let e2 = slab.vacant_entry().unwrap();
+        e2.insert(2);
+
+        assert!(slab.vacant_entry().is_err());
     }
 
     // =========================================================================
