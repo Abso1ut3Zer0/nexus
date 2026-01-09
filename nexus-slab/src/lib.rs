@@ -94,7 +94,7 @@
 //!
 //! let mut slab = DynamicSlab::with_capacity(1000).unwrap();
 //!
-//! let key = slab.insert(42).unwrap();
+//! let key = slab.insert(42);
 //! assert_eq!(*slab.get(key), 42);
 //!
 //! let value = slab.remove(key);
@@ -379,6 +379,188 @@ impl<T> DynamicSlab<T> {
     }
 }
 
+impl<T> Slab<T, DYNAMIC> {
+    /// Insert a value, returning its key.
+    ///
+    /// Grows if needed. Panics on allocation failure.
+    #[inline]
+    pub fn insert(&mut self, value: T) -> Key {
+        let (slab_idx, slot_idx) = self.alloc();
+        self.write_slot(slab_idx, slot_idx, value)
+    }
+
+    /// Get a vacant entry for the next slot.
+    ///
+    /// Grows if needed. Panics on allocation failure.
+    #[inline]
+    pub fn vacant_entry(&mut self) -> VacantEntry<'_, T, DYNAMIC> {
+        let (slab_idx, slot_idx) = self.alloc();
+        VacantEntry {
+            slab: self,
+            key: Key::new(slab_idx, slot_idx),
+        }
+    }
+
+    /// Allocate a slot. Grows if needed, panics on allocation failure.
+    #[inline]
+    fn alloc(&mut self) -> (u32, u32) {
+        // Try active slab first (locality)
+        let active = self.active_slab as usize;
+
+        // Read phase
+        let (head, cursor) = {
+            let meta = &self.slabs[active];
+            (meta.freelist_head, meta.bump_cursor)
+        };
+
+        // Check freelist first (LIFO cache-hot)
+        if head != SLOT_NONE {
+            let ptr = unsafe { self.slot_ptr_unchecked(active as u32, head) };
+            let next = unsafe { (*ptr).tag };
+            self.slabs[active].freelist_head = next;
+            return (active as u32, head);
+        }
+
+        // Check bump cursor
+        if cursor < self.slots_per_slab {
+            self.slabs[active].bump_cursor = cursor + 1;
+            return (active as u32, cursor);
+        }
+
+        // Try other slabs
+        for idx in 0..self.slabs.len() {
+            if idx == active {
+                continue;
+            }
+
+            let (head, cursor) = {
+                let meta = &self.slabs[idx];
+                (meta.freelist_head, meta.bump_cursor)
+            };
+
+            if head != SLOT_NONE {
+                let ptr = unsafe { self.slot_ptr_unchecked(idx as u32, head) };
+                let next = unsafe { (*ptr).tag };
+                self.slabs[idx].freelist_head = next;
+                self.active_slab = idx as u32;
+                return (idx as u32, head);
+            }
+
+            if cursor < self.slots_per_slab {
+                self.slabs[idx].bump_cursor = cursor + 1;
+                self.active_slab = idx as u32;
+                return (idx as u32, cursor);
+            }
+        }
+
+        // Grow
+        let slab_idx = self.grow();
+        self.active_slab = slab_idx;
+        self.slabs[slab_idx as usize].bump_cursor = 1;
+        (slab_idx, 0)
+    }
+
+    /// Grow by adding a new slab. Panics on allocation failure.
+    #[cold]
+    fn grow(&mut self) -> u32 {
+        let new_pages = sys::Pages::alloc(self.slab_bytes).expect("slab allocation failed");
+        let base = NonNull::new(new_pages.as_ptr() as *mut Slot<T>).expect("alloc returned null");
+
+        let slab_idx = self.slabs.len() as u32;
+
+        self.slab_pages.push(new_pages);
+        self.slab_bases.push(base);
+        self.slabs.push(SlabMeta::new());
+
+        slab_idx
+    }
+}
+
+impl<T> Slab<T, FIXED> {
+    /// Attempt to insert a value.
+    ///
+    /// Returns `Err(Full)` if at capacity.
+    #[inline]
+    pub fn try_insert(&mut self, value: T) -> Result<Key, Full<T>> {
+        match self.alloc() {
+            Some((slab_idx, slot_idx)) => Ok(self.write_slot(slab_idx, slot_idx, value)),
+            None => Err(Full(value)),
+        }
+    }
+
+    /// Attempt to get a vacant entry.
+    ///
+    /// Returns `None` if at capacity.
+    #[inline]
+    pub fn try_vacant_entry(&mut self) -> Option<VacantEntry<'_, T, FIXED>> {
+        let (slab_idx, slot_idx) = self.alloc()?;
+        Some(VacantEntry {
+            slab: self,
+            key: Key::new(slab_idx, slot_idx),
+        })
+    }
+
+    /// Try to allocate a slot. Returns None if full.
+    #[inline]
+    fn alloc(&mut self) -> Option<(u32, u32)> {
+        // Check capacity limit
+        if self.max_len > 0 && self.len >= self.max_len {
+            return None;
+        }
+
+        // Try active slab first (locality)
+        let active = self.active_slab as usize;
+
+        // Read phase
+        let (head, cursor) = {
+            let meta = &self.slabs[active];
+            (meta.freelist_head, meta.bump_cursor)
+        };
+
+        // Check freelist first (LIFO cache-hot)
+        if head != SLOT_NONE {
+            let ptr = unsafe { self.slot_ptr_unchecked(active as u32, head) };
+            let next = unsafe { (*ptr).tag };
+            self.slabs[active].freelist_head = next;
+            return Some((active as u32, head));
+        }
+
+        // Check bump cursor
+        if cursor < self.slots_per_slab {
+            self.slabs[active].bump_cursor = cursor + 1;
+            return Some((active as u32, cursor));
+        }
+
+        // Try other slabs
+        for idx in 0..self.slabs.len() {
+            if idx == active {
+                continue;
+            }
+
+            let (head, cursor) = {
+                let meta = &self.slabs[idx];
+                (meta.freelist_head, meta.bump_cursor)
+            };
+
+            if head != SLOT_NONE {
+                let ptr = unsafe { self.slot_ptr_unchecked(idx as u32, head) };
+                let next = unsafe { (*ptr).tag };
+                self.slabs[idx].freelist_head = next;
+                self.active_slab = idx as u32;
+                return Some((idx as u32, head));
+            }
+
+            if cursor < self.slots_per_slab {
+                self.slabs[idx].bump_cursor = cursor + 1;
+                self.active_slab = idx as u32;
+                return Some((idx as u32, cursor));
+            }
+        }
+
+        None
+    }
+}
+
 impl<T, const MODE: bool> Slab<T, MODE> {
     /// Returns the number of occupied slots.
     #[inline]
@@ -412,138 +594,6 @@ impl<T, const MODE: bool> Slab<T, MODE> {
     #[inline]
     pub fn slots_per_slab(&self) -> u32 {
         self.slots_per_slab
-    }
-
-    // -------------------------------------------------------------------------
-    // Insert
-    // -------------------------------------------------------------------------
-
-    /// Insert a value, returning its key.
-    #[inline]
-    pub fn insert(&mut self, value: T) -> Result<Key, Full<T>> {
-        // For FIXED mode, check capacity limit
-        if MODE == FIXED && self.max_len > 0 && self.len >= self.max_len {
-            return Err(Full(value));
-        }
-
-        // Try active slab first (locality)
-        if let Some((slab_idx, slot_idx)) = self.alloc_from_slab(self.active_slab as usize) {
-            return self.write_slot(slab_idx, slot_idx, value);
-        }
-
-        // Try other slabs
-        for idx in 0..self.slabs.len() {
-            if idx == self.active_slab as usize {
-                continue;
-            }
-            if let Some((slab_idx, slot_idx)) = self.alloc_from_slab(idx) {
-                self.active_slab = slab_idx;
-                return self.write_slot(slab_idx, slot_idx, value);
-            }
-        }
-
-        // Try to grow (dynamic mode only)
-        if MODE == DYNAMIC {
-            if let Ok(slab_idx) = self.grow() {
-                self.active_slab = slab_idx;
-                let slot_idx = 0;
-                self.slabs[slab_idx as usize].bump_cursor = 1;
-                return self.write_slot(slab_idx, slot_idx, value);
-            }
-        }
-
-        Err(Full(value))
-    }
-
-    /// Get a vacant entry, allowing key inspection before insertion.
-    ///
-    /// Returns `Err(Full(()))` if the slab is full (fixed mode only).
-    #[inline]
-    pub fn vacant_entry(&mut self) -> Result<VacantEntry<'_, T, MODE>, Full<()>> {
-        // For FIXED mode, check capacity limit
-        if MODE == FIXED && self.max_len > 0 && self.len >= self.max_len {
-            return Err(Full(()));
-        }
-
-        // Try active slab first (locality)
-        if let Some((slab_idx, slot_idx)) = self.alloc_from_slab(self.active_slab as usize) {
-            return Ok(VacantEntry {
-                slab: self,
-                key: Key::new(slab_idx, slot_idx),
-            });
-        }
-
-        // Try other slabs
-        for idx in 0..self.slabs.len() {
-            if idx == self.active_slab as usize {
-                continue;
-            }
-            if let Some((slab_idx, slot_idx)) = self.alloc_from_slab(idx) {
-                self.active_slab = slab_idx;
-                return Ok(VacantEntry {
-                    slab: self,
-                    key: Key::new(slab_idx, slot_idx),
-                });
-            }
-        }
-
-        // Try to grow (dynamic mode only)
-        if MODE == DYNAMIC {
-            if let Ok(slab_idx) = self.grow() {
-                self.active_slab = slab_idx;
-                let slot_idx = 0;
-                self.slabs[slab_idx as usize].bump_cursor = 1;
-                return Ok(VacantEntry {
-                    slab: self,
-                    key: Key::new(slab_idx, slot_idx),
-                });
-            }
-        }
-
-        Err(Full(()))
-    }
-
-    /// Try to allocate a slot from the given slab.
-    /// Returns Some((slab_idx, slot_idx)) if successful.
-    #[inline(always)]
-    fn alloc_from_slab(&mut self, idx: usize) -> Option<(u32, u32)> {
-        // SAFETY: idx is either active_slab (always valid) or from bounded loop
-        let (head, cursor) = unsafe {
-            let meta = self.slabs.get_unchecked(idx);
-            (meta.freelist_head, meta.bump_cursor)
-        };
-
-        if head != SLOT_NONE {
-            // SAFETY: freelist_head is valid slot index when not SLOT_NONE
-            let ptr = unsafe { self.slot_ptr_unchecked(idx as u32, head) };
-            let next = unsafe { (*ptr).tag };
-            unsafe { self.slabs.get_unchecked_mut(idx).freelist_head = next };
-            return Some((idx as u32, head));
-        }
-
-        if cursor < self.slots_per_slab {
-            unsafe { self.slabs.get_unchecked_mut(idx).bump_cursor = cursor + 1 };
-            return Some((idx as u32, cursor));
-        }
-
-        None
-    }
-
-    #[inline(always)]
-    fn write_slot(&mut self, slab_idx: u32, slot_idx: u32, value: T) -> Result<Key, Full<T>> {
-        // SAFETY: slab_idx/slot_idx from alloc_from_slab, always valid
-        let ptr = unsafe { self.slot_ptr_unchecked_mut(slab_idx, slot_idx) };
-
-        unsafe {
-            (*ptr).tag = SLOT_OCCUPIED;
-            (*ptr).value.write(value);
-        }
-
-        self.len += 1;
-        // SAFETY: slab_idx from alloc_from_slab, always valid
-        unsafe { self.slabs.get_unchecked_mut(slab_idx as usize).occupied += 1 };
-
-        Ok(Key::new(slab_idx, slot_idx))
     }
 
     // -------------------------------------------------------------------------
@@ -694,21 +744,18 @@ impl<T, const MODE: bool> Slab<T, MODE> {
         unsafe { self.slot_ptr_unchecked(slab_idx, slot_idx) as *mut _ }
     }
 
-    // -------------------------------------------------------------------------
-    // Internal: Growth
-    // -------------------------------------------------------------------------
-
-    fn grow(&mut self) -> Result<u32, SlabError> {
-        let new_pages = sys::Pages::alloc(self.slab_bytes).map_err(SlabError::Allocation)?;
-        let base = NonNull::new(new_pages.as_ptr() as *mut Slot<T>).expect("mmap returned null");
-
-        let slab_idx = self.slabs.len() as u32;
-
-        self.slab_pages.push(new_pages);
-        self.slab_bases.push(base);
-        self.slabs.push(SlabMeta::new());
-
-        Ok(slab_idx)
+    #[inline(always)]
+    fn write_slot(&mut self, slab_idx: u32, slot_idx: u32, value: T) -> Key {
+        // SAFETY: slab_idx/slot_idx from alloc, always valid
+        let ptr = unsafe { self.slot_ptr_unchecked_mut(slab_idx, slot_idx) };
+        unsafe {
+            (*ptr).tag = SLOT_OCCUPIED;
+            (*ptr).value.write(value);
+        }
+        self.len += 1;
+        // SAFETY: slab_idx from alloc, always valid
+        unsafe { self.slabs.get_unchecked_mut(slab_idx as usize).occupied += 1 };
+        Key::new(slab_idx, slot_idx)
     }
 }
 
@@ -956,8 +1003,8 @@ mod tests {
     fn basic_insert_get_remove() {
         let mut slab = DynamicSlab::<u64>::with_capacity(100).unwrap();
 
-        let k1 = slab.insert(42).unwrap();
-        let k2 = slab.insert(100).unwrap();
+        let k1 = slab.insert(42);
+        let k2 = slab.insert(100);
 
         assert_eq!(*slab.get(k1), 42);
         assert_eq!(*slab.get(k2), 100);
@@ -974,7 +1021,7 @@ mod tests {
     fn get_mut_modifies_value() {
         let mut slab = DynamicSlab::<u64>::with_capacity(100).unwrap();
 
-        let k = slab.insert(42).unwrap();
+        let k = slab.insert(42);
         *slab.get_mut(k) = 100;
 
         assert_eq!(*slab.get(k), 100);
@@ -984,7 +1031,7 @@ mod tests {
     fn contains_returns_correct_state() {
         let mut slab = DynamicSlab::<u64>::with_capacity(100).unwrap();
 
-        let k = slab.insert(42).unwrap();
+        let k = slab.insert(42);
         assert!(slab.contains(k));
 
         slab.remove(k);
@@ -1014,7 +1061,7 @@ mod tests {
 
         let mut slab = DynamicSlab::<Node>::with_capacity(100).unwrap();
 
-        let entry = slab.vacant_entry().unwrap();
+        let entry = slab.vacant_entry();
         let key = entry.key();
         entry.insert(Node { id: key, data: 42 });
 
@@ -1027,13 +1074,13 @@ mod tests {
     fn vacant_entry_fixed_full() {
         let mut slab: FixedSlab<u64> = SlabBuilder::new().fixed().capacity(2).build().unwrap();
 
-        let e1 = slab.vacant_entry().unwrap();
+        let e1 = slab.try_vacant_entry().unwrap();
         e1.insert(1);
 
-        let e2 = slab.vacant_entry().unwrap();
+        let e2 = slab.try_vacant_entry().unwrap();
         e2.insert(2);
 
-        assert!(slab.vacant_entry().is_err());
+        assert!(slab.try_vacant_entry().is_none());
     }
 
     // =========================================================================
@@ -1044,14 +1091,14 @@ mod tests {
     fn insert_after_remove_uses_freed_slot_lifo() {
         let mut slab = DynamicSlab::<u64>::with_capacity(100).unwrap();
 
-        let _k1 = slab.insert(1).unwrap();
-        let k2 = slab.insert(2).unwrap();
-        let _k3 = slab.insert(3).unwrap();
+        let _k1 = slab.insert(1);
+        let k2 = slab.insert(2);
+        let _k3 = slab.insert(3);
 
         // Remove k2 - this slot should be reused next (LIFO)
         slab.remove(k2);
 
-        let k4 = slab.insert(4).unwrap();
+        let k4 = slab.insert(4);
         assert_eq!(k4.slab(), k2.slab());
         assert_eq!(k4.slot(), k2.slot());
         assert_eq!(*slab.get(k4), 4);
@@ -1062,18 +1109,18 @@ mod tests {
         let mut slab = DynamicSlab::<u64>::with_capacity(100).unwrap();
 
         // Insert several values
-        let _k1 = slab.insert(1).unwrap();
-        let k2 = slab.insert(2).unwrap();
-        let k3 = slab.insert(3).unwrap();
-        let _k4 = slab.insert(4).unwrap();
+        let _k1 = slab.insert(1);
+        let k2 = slab.insert(2);
+        let k3 = slab.insert(3);
+        let _k4 = slab.insert(4);
 
         // Remove in order: k2, k3 (builds chain k3 -> k2)
         slab.remove(k2);
         slab.remove(k3);
 
         // Insert should get k3 first (LIFO), then k2
-        let new1 = slab.insert(10).unwrap();
-        let new2 = slab.insert(20).unwrap();
+        let new1 = slab.insert(10);
+        let new2 = slab.insert(20);
 
         assert_eq!(new1.slot(), k3.slot());
         assert_eq!(new2.slot(), k2.slot());
@@ -1088,7 +1135,7 @@ mod tests {
         // Insert 10 values
         let mut keys: Vec<Key> = Vec::new();
         for i in 0..10 {
-            keys.push(slab.insert(i).unwrap());
+            keys.push(slab.insert(i));
         }
 
         // Remove slots 2, 4, 6, 8 (even indices after 0)
@@ -1100,7 +1147,7 @@ mod tests {
         // Reinsert 4 values - should get slots back in LIFO order
         let mut reinserted = Vec::new();
         for i in 0..4 {
-            reinserted.push(slab.insert(100 + i).unwrap());
+            reinserted.push(slab.insert(100 + i));
         }
 
         // LIFO: last removed first
@@ -1122,7 +1169,7 @@ mod tests {
         // Insert 500 values
         let mut keys = Vec::new();
         for i in 0..500 {
-            let k = slab.insert(i).unwrap();
+            let k = slab.insert(i);
             let key_tuple = (k.slab(), k.slot());
             assert!(
                 !allocated_keys.contains(&key_tuple),
@@ -1143,7 +1190,7 @@ mod tests {
 
         // Insert 250 more
         for i in 0..250 {
-            let k = slab.insert(1000 + i).unwrap();
+            let k = slab.insert(1000 + i);
             let key_tuple = (k.slab(), k.slot());
             assert!(
                 !allocated_keys.contains(&key_tuple),
@@ -1166,7 +1213,7 @@ mod tests {
             // Insert batch
             for i in 0..50 {
                 let val = (round * 1000 + i) as u64;
-                let k = slab.insert(val).unwrap();
+                let k = slab.insert(val);
                 let key_tuple = (k.slab(), k.slot());
 
                 if let Some(old_val) = live_keys.get(&key_tuple) {
@@ -1205,10 +1252,10 @@ mod tests {
         assert_eq!(capacity, 100);
 
         for i in 0..capacity {
-            slab.insert(i as u64).unwrap();
+            slab.try_insert(i as u64).unwrap();
         }
 
-        let result = slab.insert(9999);
+        let result = slab.try_insert(9999);
         assert!(matches!(result, Err(Full(9999))));
     }
 
@@ -1220,21 +1267,21 @@ mod tests {
 
         let mut keys = Vec::new();
         for i in 0..capacity {
-            keys.push(slab.insert(i as u64).unwrap());
+            keys.push(slab.try_insert(i as u64).unwrap());
         }
 
         // Full
-        assert!(slab.insert(999).is_err());
+        assert!(slab.try_insert(999).is_err());
 
         // Remove one
         slab.remove(keys[50]);
 
         // Can insert again
-        let new_key = slab.insert(999).unwrap();
+        let new_key = slab.try_insert(999).unwrap();
         assert_eq!(*slab.get(new_key), 999);
 
         // Full again
-        assert!(slab.insert(1000).is_err());
+        assert!(slab.try_insert(1000).is_err());
     }
 
     // =========================================================================
@@ -1249,7 +1296,7 @@ mod tests {
         let initial_slabs = slab.slab_count();
 
         for i in 0..(initial_capacity + 1000) {
-            slab.insert(i as u64).unwrap();
+            slab.insert(i as u64);
         }
 
         assert!(slab.capacity() > initial_capacity);
@@ -1265,12 +1312,12 @@ mod tests {
         // Fill initial capacity
         let mut keys = Vec::new();
         for i in 0..initial_capacity {
-            keys.push(slab.insert(i as u64).unwrap());
+            keys.push(slab.insert(i as u64));
         }
 
         // Force growth
         for i in 0..1000 {
-            slab.insert((initial_capacity + i) as u64).unwrap();
+            slab.insert((initial_capacity + i) as u64);
         }
 
         // Verify original values still accessible
@@ -1298,7 +1345,7 @@ mod tests {
         let mut keys_slab1 = Vec::new();
 
         for i in 0..(slots_per_slab + 10) {
-            let k = slab.insert(i as u64).unwrap();
+            let k = slab.insert(i as u64);
             if k.slab() == 0 {
                 keys_slab0.push(k);
             } else {
@@ -1318,7 +1365,7 @@ mod tests {
         slab.remove(k1);
 
         // Insert - should use slab 1's freed slot first
-        let new1 = slab.insert(999).unwrap();
+        let new1 = slab.insert(999);
         assert_eq!(new1.slab(), k1.slab());
 
         // Now exhaust slab 1's remaining bump room
@@ -1326,7 +1373,7 @@ mod tests {
         // Insert enough to exhaust it and force find_next_slot to check freelist_head
         let mut found_slab0 = false;
         for _ in 0..(slots_per_slab + 50) {
-            let k = slab.insert(0).unwrap();
+            let k = slab.insert(0);
             if k.slab() == 0 {
                 found_slab0 = true;
                 break;
@@ -1345,7 +1392,7 @@ mod tests {
         let mut slab = DynamicSlab::<u64>::with_capacity(100).unwrap();
 
         for i in 0..50 {
-            slab.insert(i).unwrap();
+            slab.insert(i);
         }
 
         slab.clear();
@@ -1353,7 +1400,7 @@ mod tests {
         assert_eq!(slab.len(), 0);
 
         // Can insert again
-        let k = slab.insert(42).unwrap();
+        let k = slab.insert(42);
         assert_eq!(*slab.get(k), 42);
     }
 
@@ -1371,7 +1418,7 @@ mod tests {
 
         let mut slab = DynamicSlab::<DropCounter>::with_capacity(100).unwrap();
         for _ in 0..50 {
-            slab.insert(DropCounter(drop_count.clone())).unwrap();
+            slab.insert(DropCounter(drop_count.clone()));
         }
 
         assert_eq!(drop_count.load(Ordering::SeqCst), 0);
@@ -1400,7 +1447,7 @@ mod tests {
         {
             let mut slab = DynamicSlab::<DropCounter>::with_capacity(100).unwrap();
             for _ in 0..100 {
-                slab.insert(DropCounter(drop_count.clone())).unwrap();
+                slab.insert(DropCounter(drop_count.clone()));
             }
         }
 
@@ -1424,7 +1471,7 @@ mod tests {
             let mut keys = Vec::new();
 
             for _ in 0..100 {
-                keys.push(slab.insert(DropCounter(drop_count.clone())).unwrap());
+                keys.push(slab.insert(DropCounter(drop_count.clone())));
             }
 
             // Remove 30 (these get dropped immediately)
@@ -1447,7 +1494,7 @@ mod tests {
     fn key_from_raw_roundtrip() {
         let mut slab = DynamicSlab::<u64>::with_capacity(100).unwrap();
 
-        let k1 = slab.insert(42).unwrap();
+        let k1 = slab.insert(42);
         let raw = k1.into_raw();
 
         let k2 = unsafe { Key::from_raw(raw) };
@@ -1470,14 +1517,14 @@ mod tests {
     fn single_slot_capacity() {
         let mut slab: FixedSlab<u64> = SlabBuilder::new().fixed().capacity(1).build().unwrap();
 
-        let k = slab.insert(42).unwrap();
+        let k = slab.try_insert(42).unwrap();
         assert_eq!(*slab.get(k), 42);
 
-        assert!(slab.insert(100).is_err());
+        assert!(slab.try_insert(100).is_err());
 
         slab.remove(k);
 
-        let k2 = slab.insert(100).unwrap();
+        let k2 = slab.try_insert(100).unwrap();
         assert_eq!(*slab.get(k2), 100);
     }
 
@@ -1487,7 +1534,7 @@ mod tests {
 
         let mut keys = Vec::new();
         for _ in 0..100 {
-            keys.push(slab.insert(()).unwrap());
+            keys.push(slab.insert(()));
         }
 
         assert_eq!(slab.len(), 100);
@@ -1507,7 +1554,7 @@ mod tests {
         let mut slab = DynamicSlab::<Large>::with_capacity(100).unwrap();
 
         let val = Large([42; 64]);
-        let k = slab.insert(val.clone()).unwrap();
+        let k = slab.insert(val.clone());
 
         assert_eq!(*slab.get(k), val);
     }
@@ -1526,7 +1573,7 @@ mod tests {
             // Insert phase
             for i in 0..100 {
                 let val = (cycle * 1000 + i) as u64;
-                let k = slab.insert(val).unwrap();
+                let k = slab.insert(val);
                 keys.push(k);
                 expected.insert((k.slab(), k.slot()), val);
             }
@@ -1569,7 +1616,7 @@ mod tests {
             if live.is_empty() || seed % 3 != 0 {
                 // Insert (2/3 probability when not empty)
                 let val = seed;
-                let k = slab.insert(val).unwrap();
+                let k = slab.insert(val);
                 live.insert((k.slab(), k.slot()), val);
             } else {
                 // Remove (1/3 probability)
@@ -1593,11 +1640,11 @@ mod tests {
             // Fill completely
             let mut keys = Vec::new();
             for i in 0..500 {
-                let k = slab.insert((cycle * 1000 + i) as u64).unwrap();
+                let k = slab.try_insert((cycle * 1000 + i) as u64).unwrap();
                 keys.push(k);
             }
 
-            assert!(slab.insert(0).is_err());
+            assert!(slab.try_insert(0).is_err());
             assert_eq!(slab.len(), 500);
 
             // Verify all values
@@ -1628,7 +1675,7 @@ mod tests {
         // Fill first slab
         let mut keys = Vec::new();
         for i in 0..slots_per_slab {
-            let k = slab.insert(i as u64).unwrap();
+            let k = slab.insert(i as u64);
             assert_eq!(k.slab(), 0);
             keys.push(k);
         }

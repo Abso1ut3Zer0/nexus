@@ -12,12 +12,8 @@ const CAPACITY: usize = 100_000;
 // Helper: Create nexus-slab with optional mlock
 // ============================================================================
 
-fn create_nexus_slab<T>(capacity: usize, mlock: bool) -> nexus_slab::Slab<T> {
-    let slab = nexus_slab::Slab::<T>::with_capacity(capacity).unwrap();
-    if mlock {
-        // May fail without privileges - that's ok for benchmarks
-        let _ = slab.mlock();
-    }
+fn create_nexus_slab<T>(capacity: usize, _mlock: bool) -> nexus_slab::DynamicSlab<T> {
+    let slab = nexus_slab::DynamicSlab::<T>::with_capacity(capacity).unwrap();
     slab
 }
 
@@ -37,7 +33,7 @@ fn bench_insert(c: &mut Criterion) {
     group.bench_function("nexus-slab", |b| {
         b.iter(|| {
             for i in 0..CAPACITY as u64 {
-                black_box(nexus.insert(i).unwrap());
+                black_box(nexus.insert(i));
             }
             nexus.clear();
         });
@@ -46,7 +42,7 @@ fn bench_insert(c: &mut Criterion) {
     group.bench_function("nexus-slab/mlock", |b| {
         b.iter(|| {
             for i in 0..CAPACITY as u64 {
-                black_box(nexus_mlock.insert(i).unwrap());
+                black_box(nexus_mlock.insert(i));
             }
             nexus_mlock.clear();
         });
@@ -74,14 +70,12 @@ fn bench_get_sequential(c: &mut Criterion) {
 
     // Setup nexus-slab (no mlock)
     let mut nexus = create_nexus_slab::<u64>(CAPACITY, false);
-    let nexus_keys: Vec<_> = (0..CAPACITY as u64)
-        .map(|i| nexus.insert(i).unwrap())
-        .collect();
+    let nexus_keys: Vec<_> = (0..CAPACITY as u64).map(|i| nexus.insert(i)).collect();
 
     // Setup nexus-slab (with mlock)
     let mut nexus_locked = create_nexus_slab::<u64>(CAPACITY, true);
     let nexus_locked_keys: Vec<_> = (0..CAPACITY as u64)
-        .map(|i| nexus_locked.insert(i).unwrap())
+        .map(|i| nexus_locked.insert(i))
         .collect();
 
     // Setup slab
@@ -92,7 +86,7 @@ fn bench_get_sequential(c: &mut Criterion) {
         b.iter(|| {
             let mut sum = 0u64;
             for key in &nexus_keys {
-                sum += black_box(*nexus.get(*key).unwrap());
+                sum += black_box(*nexus.get(*key));
             }
             sum
         });
@@ -102,7 +96,7 @@ fn bench_get_sequential(c: &mut Criterion) {
         b.iter(|| {
             let mut sum = 0u64;
             for key in &nexus_locked_keys {
-                sum += black_box(*nexus_locked.get(*key).unwrap());
+                sum += black_box(*nexus_locked.get(*key));
             }
             sum
         });
@@ -133,14 +127,12 @@ fn bench_get_random(c: &mut Criterion) {
 
     // Setup nexus-slab (no mlock)
     let mut nexus = create_nexus_slab::<u64>(CAPACITY, false);
-    let nexus_keys: Vec<_> = (0..CAPACITY as u64)
-        .map(|i| nexus.insert(i).unwrap())
-        .collect();
+    let nexus_keys: Vec<_> = (0..CAPACITY as u64).map(|i| nexus.insert(i)).collect();
 
     // Setup nexus-slab (with mlock)
     let mut nexus_locked = create_nexus_slab::<u64>(CAPACITY, true);
     let nexus_locked_keys: Vec<_> = (0..CAPACITY as u64)
-        .map(|i| nexus_locked.insert(i).unwrap())
+        .map(|i| nexus_locked.insert(i))
         .collect();
 
     // Setup slab
@@ -156,7 +148,7 @@ fn bench_get_random(c: &mut Criterion) {
         b.iter(|| {
             let mut sum = 0u64;
             for &idx in &random_indices {
-                sum += black_box(*nexus.get(nexus_keys[idx]).unwrap());
+                sum += black_box(*nexus.get(nexus_keys[idx]));
             }
             sum
         });
@@ -166,7 +158,7 @@ fn bench_get_random(c: &mut Criterion) {
         b.iter(|| {
             let mut sum = 0u64;
             for &idx in &random_indices {
-                sum += black_box(*nexus_locked.get(nexus_locked_keys[idx]).unwrap());
+                sum += black_box(*nexus_locked.get(nexus_locked_keys[idx]));
             }
             sum
         });
@@ -201,9 +193,7 @@ fn bench_remove(c: &mut Criterion) {
     group.bench_function("nexus-slab", |b| {
         b.iter(|| {
             // Fill
-            let keys: Vec<_> = (0..CAPACITY as u64)
-                .map(|i| nexus.insert(i).unwrap())
-                .collect();
+            let keys: Vec<_> = (0..CAPACITY as u64).map(|i| nexus.insert(i)).collect();
             // Time remove
             for key in keys {
                 black_box(nexus.remove(key));
@@ -214,7 +204,7 @@ fn bench_remove(c: &mut Criterion) {
     group.bench_function("nexus-slab/mlock", |b| {
         b.iter(|| {
             let keys: Vec<_> = (0..CAPACITY as u64)
-                .map(|i| nexus_mlock.insert(i).unwrap())
+                .map(|i| nexus_mlock.insert(i))
                 .collect();
             for key in keys {
                 black_box(nexus_mlock.remove(key));
@@ -252,7 +242,7 @@ fn bench_churn(c: &mut Criterion) {
     group.bench_function("nexus-slab", |b| {
         b.iter(|| {
             for i in 0..CYCLES as u64 {
-                let key = nexus.insert(i).unwrap();
+                let key = nexus.insert(i);
                 black_box(nexus.remove(key));
             }
         });
@@ -261,7 +251,7 @@ fn bench_churn(c: &mut Criterion) {
     group.bench_function("nexus-slab/mlock", |b| {
         b.iter(|| {
             for i in 0..CYCLES as u64 {
-                let key = nexus_mlock.insert(i).unwrap();
+                let key = nexus_mlock.insert(i);
                 black_box(nexus_mlock.remove(key));
             }
         });
@@ -294,7 +284,7 @@ fn bench_mixed(c: &mut Criterion) {
             || {
                 let mut slab = create_nexus_slab::<u64>(10_000, false);
                 // Pre-fill half
-                let keys: Vec<_> = (0..5000u64).map(|i| slab.insert(i).unwrap()).collect();
+                let keys: Vec<_> = (0..5000u64).map(|i| slab.insert(i)).collect();
                 (slab, keys)
             },
             |(mut slab, mut keys)| {
@@ -302,9 +292,8 @@ fn bench_mixed(c: &mut Criterion) {
                     match i % 3 {
                         0 => {
                             // Insert
-                            if let Ok(key) = slab.insert(i as u64) {
-                                keys.push(key);
-                            }
+                            let key = slab.insert(i as u64);
+                            keys.push(key);
                         }
                         1 => {
                             // Get
@@ -329,7 +318,7 @@ fn bench_mixed(c: &mut Criterion) {
             || {
                 let mut slab = create_nexus_slab::<u64>(10_000, true);
                 // Pre-fill half
-                let keys: Vec<_> = (0..5000u64).map(|i| slab.insert(i).unwrap()).collect();
+                let keys: Vec<_> = (0..5000u64).map(|i| slab.insert(i)).collect();
                 (slab, keys)
             },
             |(mut slab, mut keys)| {
@@ -337,9 +326,8 @@ fn bench_mixed(c: &mut Criterion) {
                     match i % 3 {
                         0 => {
                             // Insert
-                            if let Ok(key) = slab.insert(i as u64) {
-                                keys.push(key);
-                            }
+                            let key = slab.insert(i as u64);
+                            keys.push(key);
                         }
                         1 => {
                             // Get
@@ -410,7 +398,7 @@ fn bench_vacant_entry(c: &mut Criterion) {
             || create_nexus_slab::<u64>(COUNT, false),
             |mut slab| {
                 for i in 0..COUNT as u64 {
-                    let entry = slab.vacant_entry().unwrap();
+                    let entry = slab.vacant_entry();
                     let _key = entry.insert(i);
                 }
             },
@@ -422,7 +410,7 @@ fn bench_vacant_entry(c: &mut Criterion) {
             || create_nexus_slab::<u64>(COUNT, false),
             |mut slab| {
                 for i in 0..COUNT as u64 {
-                    let _key = slab.insert(i).unwrap();
+                    let _key = slab.insert(i);
                 }
             },
         );
@@ -455,7 +443,7 @@ fn bench_large_struct(c: &mut Criterion) {
                     let val = LargeStruct {
                         data: [i as u64; 32],
                     };
-                    black_box(slab.insert(val).unwrap());
+                    black_box(slab.insert(val));
                 }
             },
         );
@@ -469,7 +457,7 @@ fn bench_large_struct(c: &mut Criterion) {
                     let val = LargeStruct {
                         data: [i as u64; 32],
                     };
-                    black_box(slab.insert(val).unwrap());
+                    black_box(slab.insert(val));
                 }
             },
         );

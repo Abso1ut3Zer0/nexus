@@ -73,7 +73,7 @@ fn bench_nexus_slab(indices: &[usize]) -> Histogram<u64> {
 
     // Fill the slab - keys are indices 0..CAPACITY
     for i in 0..CAPACITY as u64 {
-        slab.insert(i).unwrap();
+        slab.insert(i);
     }
 
     // Warmup - random access

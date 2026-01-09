@@ -33,7 +33,7 @@ fn bench_insert(c: &mut Criterion) {
         b.iter(|| {
             slab.clear();
             for i in 0..COUNT {
-                black_box(slab.insert(i as u64).unwrap());
+                black_box(slab.insert(i as u64));
             }
         });
     });
@@ -67,7 +67,7 @@ fn bench_get_sequential(c: &mut Criterion) {
             .capacity(COUNT)
             .build()
             .unwrap();
-        let keys: Vec<_> = (0..COUNT).map(|i| slab.insert(i as u64).unwrap()).collect();
+        let keys: Vec<_> = (0..COUNT).map(|i| slab.insert(i as u64)).collect();
 
         b.iter(|| {
             for key in &keys {
@@ -119,7 +119,7 @@ fn bench_get_random(c: &mut Criterion) {
             .capacity(COUNT)
             .build()
             .unwrap();
-        let keys: Vec<_> = (0..COUNT).map(|i| slab.insert(i as u64).unwrap()).collect();
+        let keys: Vec<_> = (0..COUNT).map(|i| slab.insert(i as u64)).collect();
 
         b.iter(|| {
             for &idx in &indices {
@@ -159,7 +159,7 @@ fn bench_remove(c: &mut Criterion) {
                     .capacity(COUNT)
                     .build()
                     .unwrap();
-                let keys: Vec<_> = (0..COUNT).map(|i| slab.insert(i as u64).unwrap()).collect();
+                let keys: Vec<_> = (0..COUNT).map(|i| slab.insert(i as u64)).collect();
                 (slab, keys)
             },
             |(mut slab, keys)| {
@@ -209,15 +209,13 @@ fn bench_churn(c: &mut Criterion) {
         b.iter(|| {
             slab.clear();
             // Fill half
-            let keys: Vec<_> = (0..COUNT / 2)
-                .map(|i| slab.insert(i as u64).unwrap())
-                .collect();
+            let keys: Vec<_> = (0..COUNT / 2).map(|i| slab.insert(i as u64)).collect();
 
             // Churn: remove even, insert new
             for (i, key) in keys.iter().enumerate() {
                 if i % 2 == 0 {
                     slab.remove(*key);
-                    slab.insert((COUNT + i) as u64).unwrap();
+                    slab.insert((COUNT + i) as u64);
                 }
             }
         });
@@ -264,7 +262,7 @@ fn bench_insert_scaling(c: &mut Criterion) {
             b.iter(|| {
                 slab.clear();
                 for i in 0..size {
-                    black_box(slab.insert(i as u64).unwrap());
+                    black_box(slab.insert(i as u64));
                 }
             });
         });

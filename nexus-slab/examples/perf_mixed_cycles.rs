@@ -121,7 +121,7 @@ fn bench_nexus() -> GrowthStats {
     let pre_growth_target = INITIAL_CAPACITY * 8 / 10;
     for i in 0..pre_growth_target {
         let start = rdtscp();
-        let key = slab.insert(i as u64).unwrap();
+        let key = slab.insert(i as u64);
         let end = rdtscp();
         let _ = stats.pre_growth.insert.record(end.wrapping_sub(start));
         keys.push(key);
@@ -133,7 +133,7 @@ fn bench_nexus() -> GrowthStats {
         if op < 2 && slab.len() < pre_growth_target {
             // Insert
             let start = rdtscp();
-            let key = slab.insert(rng.next()).unwrap();
+            let key = slab.insert(rng.next());
             let end = rdtscp();
             let _ = stats.pre_growth.insert.record(end.wrapping_sub(start));
             keys.push(key);
@@ -158,7 +158,7 @@ fn bench_nexus() -> GrowthStats {
     // Phase 2: Growth (push beyond initial capacity)
     while slab.capacity() < FINAL_SIZE {
         let start = rdtscp();
-        let key = slab.insert(rng.next()).unwrap();
+        let key = slab.insert(rng.next());
         let end = rdtscp();
         let _ = stats.during_growth.insert.record(end.wrapping_sub(start));
         keys.push(key);
@@ -178,7 +178,7 @@ fn bench_nexus() -> GrowthStats {
         let op = rng.next() % 10;
         if op < 2 {
             let start = rdtscp();
-            let key = slab.insert(rng.next()).unwrap();
+            let key = slab.insert(rng.next());
             let end = rdtscp();
             let _ = stats.post_growth.insert.record(end.wrapping_sub(start));
             keys.push(key);

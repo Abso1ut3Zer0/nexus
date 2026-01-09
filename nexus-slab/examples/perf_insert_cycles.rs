@@ -43,14 +43,14 @@ fn bench_nexus_slab() -> Histogram<u64> {
 
     // Warmup - fill and clear to prime caches
     for i in 0..(CAPACITY / 10) as u64 {
-        black_box(slab.insert(i).unwrap());
+        black_box(slab.insert(i));
     }
     slab.clear();
 
     // Measured inserts
     for i in 0..CAPACITY as u64 {
         let start = rdtscp();
-        black_box(slab.insert(i).unwrap());
+        black_box(slab.insert(i));
         let end = rdtscp();
         let _ = hist.record(end.wrapping_sub(start));
     }
