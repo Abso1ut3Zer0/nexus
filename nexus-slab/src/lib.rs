@@ -377,7 +377,7 @@ impl<T> DynamicSlab<T> {
 
         Ok(Slab {
             active_slab: 0,
-            slab_freelist_head: SLAB_NONE,
+            slab_freelist_head,
             len: 0,
             max_len: 0, // Dynamic mode: no limit
             slots_per_slab,
@@ -926,7 +926,7 @@ impl SlabBuilder {
 
         Ok(Slab {
             active_slab: 0,
-            slab_freelist_head: SLAB_NONE,
+            slab_freelist_head,
             len: 0,
             max_len: 0, // Dynamic mode: no limit
             slots_per_slab,
@@ -1025,7 +1025,7 @@ impl FixedSlabBuilder {
 
         Ok(Slab {
             active_slab: 0,
-            slab_freelist_head: SLAB_NONE,
+            slab_freelist_head,
             len: 0,
             max_len: capacity,
             slots_per_slab,
