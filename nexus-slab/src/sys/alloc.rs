@@ -20,6 +20,11 @@ pub(crate) fn alloc_pages(size: usize) -> io::Result<Pages> {
     let ptr = NonNull::new(ptr)
         .ok_or_else(|| io::Error::new(io::ErrorKind::OutOfMemory, "allocation failed"))?;
 
+    // Pre-touch all pages to fault them in
+    for offset in (0..size).step_by(PAGE_SIZE) {
+        unsafe { ptr.as_ptr().add(offset).write_volatile(0) };
+    }
+
     Ok(Pages { ptr, size })
 }
 
