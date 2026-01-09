@@ -1,12 +1,22 @@
 //! Platform-specific page allocation (internal).
 
+#[cfg(not(unix))]
+mod alloc;
+
 #[cfg(unix)]
 mod unix;
 
-#[cfg(windows)]
-mod windows;
-
 use std::ptr::NonNull;
+
+// Route to correct implementation
+#[cfg(not(unix))]
+use alloc::{alloc_pages, drop_pages};
+
+#[cfg(unix)]
+use unix::{alloc_pages, drop_pages, mlock_impl};
+
+#[cfg(unix)]
+use unix::alloc_pages_hugetlb;
 
 /// A page-aligned memory region allocated directly from the OS.
 ///
@@ -18,13 +28,13 @@ pub(crate) struct Pages {
 }
 
 impl Pages {
-    /// Allocate page-aligned memory with THP hint for large allocations.
+    /// Allocate page-aligned memory.
     pub(crate) fn alloc(size: usize) -> std::io::Result<Self> {
         alloc_pages(size)
     }
 
     /// Allocate memory backed by reserved huge pages (hugetlbfs).
-    #[cfg(target_os = "linux")]
+    #[cfg(unix)]
     pub(crate) fn alloc_hugetlb(size: usize) -> std::io::Result<Self> {
         alloc_pages_hugetlb(size)
     }
@@ -36,21 +46,13 @@ impl Pages {
     }
 
     /// Lock pages in physical RAM, preventing swapping.
+    #[cfg(unix)]
     pub(crate) fn mlock(&self) -> std::io::Result<()> {
         mlock_impl(self.ptr, self.size)
     }
 }
 
 unsafe impl Send for Pages {}
-
-#[cfg(unix)]
-use unix::{alloc_pages, drop_pages, mlock_impl};
-
-#[cfg(all(unix, target_os = "linux"))]
-use unix::alloc_pages_hugetlb;
-
-#[cfg(windows)]
-use windows::{alloc_pages, drop_pages, mlock_impl};
 
 impl Drop for Pages {
     fn drop(&mut self) {
@@ -81,8 +83,7 @@ mod tests {
     }
 
     #[test]
-    fn alloc_large_thp_eligible() {
-        // 4MB - should get THP hint on Linux
+    fn alloc_large() {
         let pages = Pages::alloc(4 * 1024 * 1024).unwrap();
         assert!(!pages.as_ptr().is_null());
     }
@@ -98,8 +99,6 @@ mod tests {
     fn can_write_entire_region() {
         let size = 4096 * 4;
         let pages = Pages::alloc(size).unwrap();
-
-        // Should not fault - pages are prefaulted
         unsafe {
             std::ptr::write_bytes(pages.as_ptr(), 0xAB, size);
             assert_eq!(*pages.as_ptr(), 0xAB);
@@ -108,9 +107,9 @@ mod tests {
     }
 
     #[test]
+    #[cfg(unix)]
     fn mlock_does_not_panic() {
         let pages = Pages::alloc(4096).unwrap();
-        // May succeed or fail depending on privileges - just shouldn't panic
         let _ = pages.mlock();
     }
 
@@ -122,7 +121,6 @@ mod tests {
 
     #[test]
     fn drop_deallocates() {
-        // Just verify no crash/leak - can't easily verify memory returned to OS
         for _ in 0..100 {
             let pages = Pages::alloc(4096 * 100).unwrap();
             drop(pages);
@@ -130,22 +128,18 @@ mod tests {
     }
 
     #[test]
-    #[cfg(target_os = "linux")]
-    #[cfg_attr(miri, ignore)]
+    #[cfg(unix)]
     fn hugetlb_returns_result() {
-        // May succeed or fail depending on system config - shouldn't panic
         let result = Pages::alloc_hugetlb(2 * 1024 * 1024);
         match result {
             Ok(pages) => assert!(!pages.as_ptr().is_null()),
-            Err(_) => {} // Expected without reserved huge pages
+            Err(_) => {}
         }
     }
 
     #[test]
     fn multiple_concurrent_allocs() {
         let allocations: Vec<_> = (0..10).map(|_| Pages::alloc(4096 * 10).unwrap()).collect();
-
-        // All should have distinct addresses
         for i in 0..allocations.len() {
             for j in (i + 1)..allocations.len() {
                 assert_ne!(allocations[i].as_ptr(), allocations[j].as_ptr());

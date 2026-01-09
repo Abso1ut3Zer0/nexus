@@ -7,17 +7,17 @@
 //! Designed for latency-critical systems (trading, real-time, game servers) where
 //! worst-case performance matters more than average-case throughput. Typical slab
 //! allocators using `Vec` exhibit bimodal p999 latency due to reallocation copying;
-//! `nexus-slab` provides consistent p999 by using mmap-backed slabs that grow
-//! independently.
+//! `nexus-slab` provides consistent p999 by using independently-allocated slabs that
+//! grow without copying existing data.
 //!
 //! # Performance Characteristics
 //!
 //! | Metric | nexus-slab | Typical Vec-based |
 //! |--------|------------|-------------------|
-//! | p50    | ~26 cycles | ~22 cycles        |
-//! | p99    | ~32 cycles | ~24 cycles        |
-//! | p999   | ~50-60 cycles (consistent) | 40-3000 cycles (bimodal) |
-//! | max    | ~500-800K cycles (mmap) | ~1.5-2M cycles (realloc+copy) |
+//! | p50    | ~24 cycles | ~22 cycles        |
+//! | p99    | ~28 cycles | ~24 cycles        |
+//! | p999   | ~40-44 cycles (consistent) | 30-2400 cycles (bimodal) |
+//! | max    | ~500-800K cycles (growth) | ~1.5-2M cycles (realloc+copy) |
 //!
 //! Trade a few cycles on median for **predictable** tail latency.
 //!
@@ -26,7 +26,7 @@
 //! ## Memory Layout
 //!
 //! ```text
-//! Slab 0 (mmap region)          Slab 1 (mmap region)
+//! Slab 0                        Slab 1
 //! ┌─────────────────────┐       ┌─────────────────────┐
 //! │ Slot 0              │       │ Slot 0              │
 //! │ ┌─────┬───────────┐ │       │ ┌─────┬───────────┐ │
@@ -55,58 +55,26 @@
 //! Freelists are **intra-slab only** - chains never cross slab boundaries.
 //! This enables slabs to drain independently.
 //!
-//! ## Two-Pointer Allocation
+//! ## Allocation Strategy
 //!
-//! The allocator maintains two slot positions:
+//! Each slab maintains a per-slab freelist and bump cursor:
 //!
-//! - `current`: The slot that will be used on the **next insert**
-//! - `next`: The slot that will become `current` **after** that insert
-//!
-//! ```text
-//! Insert flow:
-//! ┌─────────────────────────────────────────────────────────┐
-//! │ 1. Write value to current slot                         │
-//! │ 2. Mark slot as OCCUPIED                               │
-//! │ 3. current ← next                                      │
-//! │ 4. Compute new next (follow chain or bump allocate)    │
-//! └─────────────────────────────────────────────────────────┘
-//! ```
-//!
-//! This design pre-computes the next allocation point, keeping the hot path
-//! to a simple write + pointer advance.
-//!
-//! ## Per-Slab Freelists & Draining
-//!
-//! Each slab maintains its own freelist via `SlabMeta::freelist_head`.
-//! When allocation switches to a different slab (due to remove), the old
-//! slab's freelist head is preserved:
-//!
-//! ```text
-//! Remove from Slab B while current is in Slab A:
-//! ┌─────────────────────────────────────────────────────────┐
-//! │ 1. Save: slabs[A].freelist_head ← current_slot         │
-//! │ 2. Freed slot in B becomes new current                 │
-//! │ 3. Future inserts stay in B until exhausted            │
-//! │ 4. When B exhausted, can return to A via freelist_head │
-//! └─────────────────────────────────────────────────────────┘
-//! ```
-//!
-//! This concentrates allocation activity in fewer slabs, allowing inactive
-//! slabs to drain. When `occupied == 0`, a slab can be reset to bump
-//! allocation (sequential memory access pattern).
+//! 1. **Freelist first (LIFO)**: Reuse recently-freed slots for cache locality
+//! 2. **Bump allocation**: Sequential allocation when freelist is empty
+//! 3. **Cross-slab fallback**: Search other slabs when active slab is exhausted
+//! 4. **Growth**: Allocate new slab when all are full (dynamic mode only)
 //!
 //! ## Remove: LIFO Cache-Hot Behavior
 //!
-//! On remove, the freed slot becomes `current` immediately:
+//! On remove, the freed slot is pushed onto the slab's freelist:
 //!
 //! ```text
-//! Remove slot X:
+//! Remove slot X from slab S:
 //! ┌─────────────────────────────────────────────────────────┐
 //! │ 1. Read value from X                                   │
-//! │ 2. Chain: X.tag ← current_slot (if same slab)          │
-//! │         or X.tag ← SLOT_NONE (if different slab)       │
-//! │ 3. current ← X (just-freed slot, still in L1 cache)    │
-//! │ 4. Compute new next                                    │
+//! │ 2. X.tag ← S.freelist_head (chain to old head)         │
+//! │ 3. S.freelist_head ← X (freed slot becomes new head)   │
+//! │ 4. active_slab ← S (hint for next insert)              │
 //! └─────────────────────────────────────────────────────────┘
 //! ```
 //!
@@ -115,39 +83,18 @@
 //!
 //! ## Growth (Dynamic Mode)
 //!
-//! When all slabs are exhausted:
-//!
-//! 1. `mmap` a new slab region (~500K cycles, rare)
-//! 2. Initialize first slot, set as `current`
-//! 3. Continue with bump allocation
-//!
-//! Mmap cost is amortized over `slots_per_slab` allocations (typically
-//! ~16K slots per 256KB slab for 16-byte values).
-//!
-//! ## Advance Next Algorithm
-//!
-//! `advance_next()` determines where to allocate after the current slot:
-//!
-//! ```text
-//! 1. If current.tag is a valid chain pointer → next = chain target
-//! 2. Else if current slab has bump room → next = bump allocate
-//! 3. Else scan other slabs:
-//!    a. Check freelist_head (saved chains from previous visits)
-//!    b. Check bump cursors
-//! 4. If nothing found → next = NONE (will trigger grow on insert)
-//! ```
-//!
-//! Preference for staying in the current slab maintains cache locality
-//! and enables draining of other slabs.
+//! When all slabs are exhausted, a new slab is allocated. This cost is
+//! amortized over `slots_per_slab` allocations (typically ~16K slots per
+//! 256KB slab for 16-byte values).
 //!
 //! # Example
 //!
-//! ```ignore
+//! ```
 //! use nexus_slab::DynamicSlab;
 //!
-//! let mut slab = DynamicSlab::with_capacity(1000)?;
+//! let mut slab = DynamicSlab::with_capacity(1000).unwrap();
 //!
-//! let key = slab.insert(42)?;
+//! let key = slab.insert(42).unwrap();
 //! assert_eq!(*slab.get(key), 42);
 //!
 //! let value = slab.remove(key);
@@ -159,8 +106,14 @@
 //! - **Fixed**: Pre-allocates all memory upfront. Returns `Full` when exhausted.
 //!   Use when capacity is known and you want zero allocation after init.
 //!
-//! - **Dynamic**: Grows by adding new slabs. Each growth is an mmap syscall.
-//!   Use when capacity is unbounded but growth is infrequent.
+//! - **Dynamic**: Grows by adding new slabs. Use when capacity is unbounded
+//!   but growth is infrequent.
+//!
+//! # Feature Flags
+//!
+//! - **`mmap`** (Unix only): Use `mmap` for allocation with support for huge
+//!   pages (`huge_pages`) and memory locking (`mlock`). Without this feature,
+//!   uses `std::alloc` which is portable and Miri-compatible.
 
 #![warn(missing_docs)]
 
@@ -784,8 +737,9 @@ impl<T, const MODE: bool> Drop for Slab<T, MODE> {
 pub struct SlabBuilder {
     capacity: Option<usize>,
     slab_bytes: Option<usize>,
-    num_slabs: Option<usize>,
+    #[cfg(unix)]
     huge_pages: bool,
+    #[cfg(unix)]
     mlock: bool,
 }
 
@@ -807,19 +761,15 @@ impl SlabBuilder {
         self
     }
 
-    /// Set the number of slabs to pre-allocate.
-    pub fn num_slabs(mut self, n: usize) -> Self {
-        self.num_slabs = Some(n);
-        self
-    }
-
     /// Use huge pages (MAP_HUGETLB on Linux).
+    #[cfg(unix)]
     pub fn huge_pages(mut self, enabled: bool) -> Self {
         self.huge_pages = enabled;
         self
     }
 
     /// Lock pages in memory (mlock).
+    #[cfg(unix)]
     pub fn mlock(mut self, enabled: bool) -> Self {
         self.mlock = enabled;
         self
@@ -844,9 +794,7 @@ impl SlabBuilder {
 
         let slots_per_slab = (slab_bytes / slot_size) as u32;
 
-        let num_slabs = if let Some(n) = self.num_slabs {
-            n
-        } else if let Some(cap) = self.capacity {
+        let num_slabs = if let Some(cap) = self.capacity {
             (cap + slots_per_slab as usize - 1) / slots_per_slab as usize
         } else {
             1
@@ -861,22 +809,23 @@ impl SlabBuilder {
         let mut slabs = Vec::with_capacity(num_slabs);
 
         for _ in 0..num_slabs {
-            #[cfg(target_os = "linux")]
+            // Change from #[cfg(target_os = "linux")] to:
+            #[cfg(unix)]
             let pages = if self.huge_pages {
                 sys::Pages::alloc_hugetlb(slab_bytes).map_err(SlabError::Allocation)?
             } else {
                 sys::Pages::alloc(slab_bytes).map_err(SlabError::Allocation)?
             };
 
-            #[cfg(not(target_os = "linux"))]
+            #[cfg(not(unix))]
             let pages = sys::Pages::alloc(slab_bytes).map_err(SlabError::Allocation)?;
 
+            #[cfg(unix)]
             if self.mlock {
                 pages.mlock().map_err(SlabError::Allocation)?;
             }
 
-            let base = NonNull::new(pages.as_ptr() as *mut Slot<T>).expect("mmap returned null");
-
+            let base = NonNull::new(pages.as_ptr() as *mut Slot<T>).expect("alloc returned null");
             slab_pages.push(pages);
             slab_bases.push(base);
             slabs.push(SlabMeta::new());
@@ -916,12 +865,14 @@ impl FixedSlabBuilder {
     }
 
     /// Use huge pages.
+    #[cfg(unix)]
     pub fn huge_pages(mut self, enabled: bool) -> Self {
         self.inner.huge_pages = enabled;
         self
     }
 
     /// Lock pages in memory.
+    #[cfg(unix)]
     pub fn mlock(mut self, enabled: bool) -> Self {
         self.inner.mlock = enabled;
         self
@@ -949,21 +900,22 @@ impl FixedSlabBuilder {
         let total_slots = num_slabs * slots_per_slab as usize;
         let total_bytes = total_slots * slot_size;
 
-        #[cfg(target_os = "linux")]
+        #[cfg(unix)]
         let pages = if self.inner.huge_pages {
             sys::Pages::alloc_hugetlb(total_bytes).map_err(SlabError::Allocation)?
         } else {
             sys::Pages::alloc(total_bytes).map_err(SlabError::Allocation)?
         };
 
-        #[cfg(not(target_os = "linux"))]
+        #[cfg(not(unix))]
         let pages = sys::Pages::alloc(total_bytes).map_err(SlabError::Allocation)?;
 
+        #[cfg(unix)]
         if self.inner.mlock {
             pages.mlock().map_err(SlabError::Allocation)?;
         }
 
-        let slots = NonNull::new(pages.as_ptr() as *mut Slot<T>).expect("mmap returned null");
+        let slots = NonNull::new(pages.as_ptr() as *mut Slot<T>).expect("alloc returned null");
 
         let mut slabs = Vec::with_capacity(num_slabs);
         for _ in 0..num_slabs {
@@ -973,7 +925,7 @@ impl FixedSlabBuilder {
         Ok(Slab {
             active_slab: 0,
             len: 0,
-            max_len: capacity, // Fixed mode: enforce user-requested capacity
+            max_len: capacity,
             slots_per_slab,
             slabs,
             fixed_pages: Some(pages),
@@ -1703,13 +1655,6 @@ mod tests {
 
         // Should have fewer slots per slab than default 256KB
         assert!(slab.slots_per_slab() < (256 * 1024 / 16) as u32);
-    }
-
-    #[test]
-    fn builder_num_slabs() {
-        let slab: DynamicSlab<u64> = SlabBuilder::new().num_slabs(5).build().unwrap();
-
-        assert_eq!(slab.slab_count(), 5);
     }
 
     #[test]

@@ -1,7 +1,7 @@
 [package]
 name = "nexus-slab"
-version = "0.2.0"
-description = "Pre-allocated slab with OS-level memory control (mlock, huge pages)"
+version = "0.3.0"
+description = "A high-performance slab allocator optimized for predictable tail latency"
 readme = "README.md"
 edition.workspace = true
 rust-version.workspace = true
@@ -12,9 +12,6 @@ categories.workspace = true
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"
-
-[target.'cfg(windows)'.dependencies]
-windows-sys = { version = "0.61", features = ["Win32_System_Memory", "Win32_System_SystemInformation"] }
 
 [dev-dependencies]
 criterion = { version = "0.5", features = ["html_reports"] }
@@ -51,4 +48,3 @@ harness = false
 [[bench]]
 name = "slab_comparison"
 harness = false
-
