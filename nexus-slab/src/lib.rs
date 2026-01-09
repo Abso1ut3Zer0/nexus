@@ -552,38 +552,34 @@ impl<T, const MODE: bool> Slab<T, MODE> {
 
     /// Try to allocate a slot from the given slab.
     /// Returns Some((slab_idx, slot_idx)) if successful.
-    #[inline]
+    #[inline(always)]
     fn alloc_from_slab(&mut self, idx: usize) -> Option<(u32, u32)> {
-        if idx >= self.slabs.len() {
-            return None;
-        }
+        // SAFETY: idx is either active_slab (always valid) or from bounded loop
+        let (head, cursor) = unsafe {
+            let meta = self.slabs.get_unchecked(idx);
+            (meta.freelist_head, meta.bump_cursor)
+        };
 
-        let meta = &mut self.slabs[idx];
-
-        // First: try freelist (LIFO, cache-hot)
-        if meta.freelist_head != SLOT_NONE {
-            let slot_idx = meta.freelist_head;
-            // Pop from freelist: read next pointer
-            let ptr = self.slot_ptr(idx as u32, slot_idx);
+        if head != SLOT_NONE {
+            // SAFETY: freelist_head is valid slot index when not SLOT_NONE
+            let ptr = unsafe { self.slot_ptr_unchecked(idx as u32, head) };
             let next = unsafe { (*ptr).tag };
-            self.slabs[idx].freelist_head = next;
-            return Some((idx as u32, slot_idx));
+            unsafe { self.slabs.get_unchecked_mut(idx).freelist_head = next };
+            return Some((idx as u32, head));
         }
 
-        // Second: try bump allocation
-        if meta.bump_cursor < self.slots_per_slab {
-            let slot_idx = meta.bump_cursor;
-            meta.bump_cursor += 1;
-            return Some((idx as u32, slot_idx));
+        if cursor < self.slots_per_slab {
+            unsafe { self.slabs.get_unchecked_mut(idx).bump_cursor = cursor + 1 };
+            return Some((idx as u32, cursor));
         }
 
         None
     }
 
-    /// Write value to slot and return key.
-    #[inline]
+    #[inline(always)]
     fn write_slot(&mut self, slab_idx: u32, slot_idx: u32, value: T) -> Result<Key, Full<T>> {
-        let ptr = self.slot_ptr_mut(slab_idx, slot_idx);
+        // SAFETY: slab_idx/slot_idx from alloc_from_slab, always valid
+        let ptr = unsafe { self.slot_ptr_unchecked_mut(slab_idx, slot_idx) };
 
         unsafe {
             (*ptr).tag = SLOT_OCCUPIED;
@@ -591,7 +587,8 @@ impl<T, const MODE: bool> Slab<T, MODE> {
         }
 
         self.len += 1;
-        self.slabs[slab_idx as usize].occupied += 1;
+        // SAFETY: slab_idx from alloc_from_slab, always valid
+        unsafe { self.slabs.get_unchecked_mut(slab_idx as usize).occupied += 1 };
 
         Ok(Key::new(slab_idx, slot_idx))
     }
@@ -721,6 +718,27 @@ impl<T, const MODE: bool> Slab<T, MODE> {
     #[inline]
     fn slot_ptr_mut(&mut self, slab_idx: u32, slot_idx: u32) -> *mut Slot<T> {
         self.slot_ptr(slab_idx, slot_idx) as *mut Slot<T>
+    }
+
+    /// Unchecked slot pointer - caller guarantees valid indices
+    #[inline(always)]
+    unsafe fn slot_ptr_unchecked(&self, slab_idx: u32, slot_idx: u32) -> *const Slot<T> {
+        if MODE == FIXED {
+            let global = (slab_idx as usize) * (self.slots_per_slab as usize) + (slot_idx as usize);
+            unsafe { self.fixed_slots.as_ptr().add(global) }
+        } else {
+            unsafe {
+                self.slab_bases
+                    .get_unchecked(slab_idx as usize)
+                    .as_ptr()
+                    .add(slot_idx as usize)
+            }
+        }
+    }
+
+    #[inline(always)]
+    unsafe fn slot_ptr_unchecked_mut(&mut self, slab_idx: u32, slot_idx: u32) -> *mut Slot<T> {
+        unsafe { self.slot_ptr_unchecked(slab_idx, slot_idx) as *mut _ }
     }
 
     // -------------------------------------------------------------------------
