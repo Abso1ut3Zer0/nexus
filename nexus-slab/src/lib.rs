@@ -125,6 +125,7 @@ mod sys;
 // Constants
 // =============================================================================
 
+const SLAB_NONE: u32 = u32::MAX;
 const SLOT_NONE: u32 = u32::MAX;
 
 /// Fixed mode: pre-allocated, bounded capacity.
@@ -276,6 +277,7 @@ struct SlabMeta {
     bump_cursor: u32,
     occupied: u32,
     freelist_head: u32, // Head of this slab's freelist, SLOT_NONE if empty
+    next_free_slab: u32,
 }
 
 impl SlabMeta {
@@ -284,6 +286,7 @@ impl SlabMeta {
             bump_cursor: 0,
             occupied: 0,
             freelist_head: SLOT_NONE,
+            next_free_slab: SLAB_NONE,
         }
     }
 }
@@ -296,6 +299,7 @@ impl SlabMeta {
 pub struct Slab<T, const MODE: bool> {
     // Which slab to try first on insert (locality hint)
     active_slab: u32,
+    slab_freelist_head: u32,
 
     len: usize,
     max_len: usize, // For FIXED mode: user-requested capacity limit (0 = unlimited for DYNAMIC)
@@ -364,8 +368,16 @@ impl<T> DynamicSlab<T> {
             slabs.push(SlabMeta::new());
         }
 
+        // Initialize slab freelist - all slabs except first go on freelist
+        let mut slab_freelist_head = SLAB_NONE;
+        for i in (1..num_slabs).rev() {
+            slabs[i].next_free_slab = slab_freelist_head;
+            slab_freelist_head = i as u32;
+        }
+
         Ok(Slab {
             active_slab: 0,
+            slab_freelist_head: SLAB_NONE,
             len: 0,
             max_len: 0, // Dynamic mode: no limit
             slots_per_slab,
@@ -407,7 +419,6 @@ impl<T> Slab<T, DYNAMIC> {
         // Try active slab first (locality)
         let active = self.active_slab as usize;
 
-        // Read phase
         let (head, cursor) = {
             let meta = &self.slabs[active];
             (meta.freelist_head, meta.bump_cursor)
@@ -427,11 +438,9 @@ impl<T> Slab<T, DYNAMIC> {
             return (active as u32, cursor);
         }
 
-        // Try other slabs
-        for idx in 0..self.slabs.len() {
-            if idx == active {
-                continue;
-            }
+        // Active exhausted - try slab freelist
+        while let Some(slab_idx) = self.pop_slab_freelist() {
+            let idx = slab_idx as usize;
 
             let (head, cursor) = {
                 let meta = &self.slabs[idx];
@@ -439,18 +448,19 @@ impl<T> Slab<T, DYNAMIC> {
             };
 
             if head != SLOT_NONE {
-                let ptr = unsafe { self.slot_ptr_unchecked(idx as u32, head) };
+                let ptr = unsafe { self.slot_ptr_unchecked(slab_idx, head) };
                 let next = unsafe { (*ptr).tag };
                 self.slabs[idx].freelist_head = next;
-                self.active_slab = idx as u32;
-                return (idx as u32, head);
+                self.active_slab = slab_idx;
+                return (slab_idx, head);
             }
 
             if cursor < self.slots_per_slab {
                 self.slabs[idx].bump_cursor = cursor + 1;
-                self.active_slab = idx as u32;
-                return (idx as u32, cursor);
+                self.active_slab = slab_idx;
+                return (slab_idx, cursor);
             }
+            // Slab was on freelist but actually full - continue to next
         }
 
         // Grow
@@ -511,7 +521,6 @@ impl<T> Slab<T, FIXED> {
         // Try active slab first (locality)
         let active = self.active_slab as usize;
 
-        // Read phase
         let (head, cursor) = {
             let meta = &self.slabs[active];
             (meta.freelist_head, meta.bump_cursor)
@@ -531,11 +540,9 @@ impl<T> Slab<T, FIXED> {
             return Some((active as u32, cursor));
         }
 
-        // Try other slabs
-        for idx in 0..self.slabs.len() {
-            if idx == active {
-                continue;
-            }
+        // Active exhausted - try slab freelist
+        while let Some(slab_idx) = self.pop_slab_freelist() {
+            let idx = slab_idx as usize;
 
             let (head, cursor) = {
                 let meta = &self.slabs[idx];
@@ -543,17 +550,17 @@ impl<T> Slab<T, FIXED> {
             };
 
             if head != SLOT_NONE {
-                let ptr = unsafe { self.slot_ptr_unchecked(idx as u32, head) };
+                let ptr = unsafe { self.slot_ptr_unchecked(slab_idx, head) };
                 let next = unsafe { (*ptr).tag };
                 self.slabs[idx].freelist_head = next;
-                self.active_slab = idx as u32;
-                return Some((idx as u32, head));
+                self.active_slab = slab_idx;
+                return Some((slab_idx, head));
             }
 
             if cursor < self.slots_per_slab {
                 self.slabs[idx].bump_cursor = cursor + 1;
-                self.active_slab = idx as u32;
-                return Some((idx as u32, cursor));
+                self.active_slab = slab_idx;
+                return Some((slab_idx, cursor));
             }
         }
 
@@ -632,7 +639,7 @@ impl<T, const MODE: bool> Slab<T, MODE> {
     pub fn remove(&mut self, key: Key) -> T {
         let slab_idx = key.slab();
         let slot_idx = key.slot();
-        let ptr = self.slot_ptr_mut(slab_idx, slot_idx); // bounds check here
+        let ptr = self.slot_ptr_mut(slab_idx, slot_idx);
 
         let value = unsafe {
             let slot = &*ptr;
@@ -641,15 +648,25 @@ impl<T, const MODE: bool> Slab<T, MODE> {
         };
 
         self.len -= 1;
-        // SAFETY: slot_ptr succeeded, so slab_idx < slab_bases.len() == slabs.len()
-        let meta = unsafe { self.slabs.get_unchecked_mut(slab_idx as usize) };
-        meta.occupied -= 1;
 
+        let meta = unsafe { self.slabs.get_unchecked_mut(slab_idx as usize) };
+
+        // Check if slab was full before this remove
+        let was_full = meta.freelist_head == SLOT_NONE && meta.bump_cursor >= self.slots_per_slab;
+
+        // Push slot onto per-slab freelist
         unsafe {
             (*ptr).tag = meta.freelist_head;
         }
         meta.freelist_head = slot_idx;
+        meta.occupied -= 1;
 
+        // If slab was full and isn't active, add to slab freelist
+        if was_full && slab_idx != self.active_slab {
+            self.push_slab_freelist(slab_idx);
+        }
+
+        // Switch to this slab for LIFO locality
         self.active_slab = slab_idx;
 
         value
@@ -696,13 +713,35 @@ impl<T, const MODE: bool> Slab<T, MODE> {
             *meta = SlabMeta::new();
         }
 
+        // Reset slab freelist - all slabs except 0 go on freelist
+        self.slab_freelist_head = SLAB_NONE;
+        for i in (1..self.slabs.len()).rev() {
+            self.push_slab_freelist(i as u32);
+        }
+
         self.active_slab = 0;
         self.len = 0;
     }
 
     // -------------------------------------------------------------------------
-    // Internal: Slot Access
+    // Internal
     // -------------------------------------------------------------------------
+
+    #[inline]
+    fn push_slab_freelist(&mut self, slab_idx: u32) {
+        self.slabs[slab_idx as usize].next_free_slab = self.slab_freelist_head;
+        self.slab_freelist_head = slab_idx;
+    }
+
+    #[inline]
+    fn pop_slab_freelist(&mut self) -> Option<u32> {
+        if self.slab_freelist_head == SLAB_NONE {
+            return None;
+        }
+        let slab_idx = self.slab_freelist_head;
+        self.slab_freelist_head = self.slabs[slab_idx as usize].next_free_slab;
+        Some(slab_idx)
+    }
 
     #[inline]
     fn slot_ptr(&self, slab_idx: u32, slot_idx: u32) -> *const Slot<T> {
@@ -878,8 +917,16 @@ impl SlabBuilder {
             slabs.push(SlabMeta::new());
         }
 
+        // Initialize slab freelist - all slabs except first go on freelist
+        let mut slab_freelist_head = SLAB_NONE;
+        for i in (1..num_slabs).rev() {
+            slabs[i].next_free_slab = slab_freelist_head;
+            slab_freelist_head = i as u32;
+        }
+
         Ok(Slab {
             active_slab: 0,
+            slab_freelist_head: SLAB_NONE,
             len: 0,
             max_len: 0, // Dynamic mode: no limit
             slots_per_slab,
@@ -969,8 +1016,16 @@ impl FixedSlabBuilder {
             slabs.push(SlabMeta::new());
         }
 
+        // Initialize slab freelist - all slabs except first go on freelist
+        let mut slab_freelist_head = SLAB_NONE;
+        for i in (1..num_slabs).rev() {
+            slabs[i].next_free_slab = slab_freelist_head;
+            slab_freelist_head = i as u32;
+        }
+
         Ok(Slab {
             active_slab: 0,
+            slab_freelist_head: SLAB_NONE,
             len: 0,
             max_len: capacity,
             slots_per_slab,
