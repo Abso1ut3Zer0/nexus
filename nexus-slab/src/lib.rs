@@ -172,7 +172,6 @@ mod sys;
 // Constants
 // =============================================================================
 
-const SLAB_NONE: u32 = u32::MAX;
 const SLOT_NONE: u32 = u32::MAX;
 
 /// Fixed mode: pre-allocated, bounded capacity.
@@ -294,17 +293,13 @@ impl SlabMeta {
 
 /// A slab allocator with configurable growth mode.
 pub struct Slab<T, const MODE: bool> {
-    // ===== HOT PATH: Two index pairs =====
-    current_slab: u32,
-    current_slot: u32,
-    next_slab: u32,
-    next_slot: u32,
+    // Which slab to try first on insert (locality hint)
+    active_slab: u32,
 
     len: usize,
     max_len: usize, // For FIXED mode: user-requested capacity limit (0 = unlimited for DYNAMIC)
     slots_per_slab: u32,
 
-    // ===== COLD PATH =====
     slabs: Vec<SlabMeta>,
 
     // Storage
@@ -368,37 +363,8 @@ impl<T> DynamicSlab<T> {
             slabs.push(SlabMeta::new());
         }
 
-        // Initialize cursors: current = slab 0 slot 0, next = slab 0 slot 1
-        let (next_slab, next_slot) = if slots_per_slab > 1 {
-            (0, 1)
-        } else if num_slabs > 1 {
-            (1, 0)
-        } else {
-            (SLAB_NONE, SLOT_NONE)
-        };
-
-        // Mark initial bump cursors
-        slabs[0].bump_cursor = if slots_per_slab > 1 { 2 } else { 1 };
-        if next_slab == 1 {
-            slabs[1].bump_cursor = 1;
-        }
-
-        // Initialize slot tags for current and next
-        unsafe {
-            let ptr = slab_bases[0].as_ptr();
-            (*ptr).tag = SLOT_NONE; // current slot
-            if slots_per_slab > 1 {
-                (*ptr.add(1)).tag = SLOT_NONE; // next slot
-            } else if num_slabs > 1 {
-                (*slab_bases[1].as_ptr()).tag = SLOT_NONE; // next slot in slab 1
-            }
-        }
-
         Ok(Slab {
-            current_slab: 0,
-            current_slot: 0,
-            next_slab,
-            next_slot,
+            active_slab: 0,
             len: 0,
             max_len: 0, // Dynamic mode: no limit
             slots_per_slab,
@@ -448,7 +414,7 @@ impl<T, const MODE: bool> Slab<T, MODE> {
     }
 
     // -------------------------------------------------------------------------
-    // Insert - Hot Path
+    // Insert
     // -------------------------------------------------------------------------
 
     /// Insert a value, returning its key.
@@ -459,166 +425,79 @@ impl<T, const MODE: bool> Slab<T, MODE> {
             return Err(Full(value));
         }
 
-        if self.current_slab == SLAB_NONE {
-            return self.insert_slow_path(value);
+        // Try active slab first (locality)
+        if let Some((slab_idx, slot_idx)) = self.alloc_from_slab(self.active_slab as usize) {
+            return self.write_slot(slab_idx, slot_idx, value);
         }
 
-        let key = Key::new(self.current_slab, self.current_slot);
-        let ptr = self.slot_ptr_mut(self.current_slab, self.current_slot);
+        // Try other slabs
+        for idx in 0..self.slabs.len() {
+            if idx == self.active_slab as usize {
+                continue;
+            }
+            if let Some((slab_idx, slot_idx)) = self.alloc_from_slab(idx) {
+                self.active_slab = slab_idx;
+                return self.write_slot(slab_idx, slot_idx, value);
+            }
+        }
 
-        // Write value
+        // Try to grow (dynamic mode only)
+        if MODE == DYNAMIC {
+            if let Ok(slab_idx) = self.grow() {
+                self.active_slab = slab_idx;
+                let slot_idx = 0;
+                self.slabs[slab_idx as usize].bump_cursor = 1;
+                return self.write_slot(slab_idx, slot_idx, value);
+            }
+        }
+
+        Err(Full(value))
+    }
+
+    /// Try to allocate a slot from the given slab.
+    /// Returns Some((slab_idx, slot_idx)) if successful.
+    #[inline]
+    fn alloc_from_slab(&mut self, idx: usize) -> Option<(u32, u32)> {
+        if idx >= self.slabs.len() {
+            return None;
+        }
+
+        let meta = &mut self.slabs[idx];
+
+        // First: try freelist (LIFO, cache-hot)
+        if meta.freelist_head != SLOT_NONE {
+            let slot_idx = meta.freelist_head;
+            // Pop from freelist: read next pointer
+            let ptr = self.slot_ptr(idx as u32, slot_idx);
+            let next = unsafe { (*ptr).tag };
+            self.slabs[idx].freelist_head = next;
+            return Some((idx as u32, slot_idx));
+        }
+
+        // Second: try bump allocation
+        if meta.bump_cursor < self.slots_per_slab {
+            let slot_idx = meta.bump_cursor;
+            meta.bump_cursor += 1;
+            return Some((idx as u32, slot_idx));
+        }
+
+        None
+    }
+
+    /// Write value to slot and return key.
+    #[inline]
+    fn write_slot(&mut self, slab_idx: u32, slot_idx: u32, value: T) -> Result<Key, Full<T>> {
+        let ptr = self.slot_ptr_mut(slab_idx, slot_idx);
+
         unsafe {
             (*ptr).tag = SLOT_OCCUPIED;
             (*ptr).value.write(value);
         }
 
         self.len += 1;
-        self.slabs[self.current_slab as usize].occupied += 1;
+        self.slabs[slab_idx as usize].occupied += 1;
 
-        // Advance: current = next
-        self.current_slab = self.next_slab;
-        self.current_slot = self.next_slot;
-
-        // Compute new next (if current is valid)
-        if self.current_slab != SLAB_NONE {
-            self.advance_next();
-        } else {
-            self.next_slab = SLAB_NONE;
-            self.next_slot = SLOT_NONE;
-        }
-
-        Ok(key)
-    }
-
-    /// Compute next slot, preferring to stay in current slab
-    #[inline]
-    fn advance_next(&mut self) {
-        if self.current_slab == SLAB_NONE {
-            self.next_slab = SLAB_NONE;
-            self.next_slot = SLOT_NONE;
-            return;
-        }
-
-        // Read current slot's chain pointer
-        let current_ptr = self.slot_ptr(self.current_slab, self.current_slot);
-        let next_in_chain = unsafe { (*current_ptr).tag };
-
-        // Follow intra-slab freelist chain if available
-        if next_in_chain != SLOT_NONE && next_in_chain != SLOT_OCCUPIED {
-            self.next_slab = self.current_slab;
-            self.next_slot = next_in_chain;
-            return;
-        }
-
-        // No chain, try bump allocation on current slab
-        let slab_idx = self.current_slab as usize;
-        let meta = &mut self.slabs[slab_idx];
-
-        if meta.bump_cursor < self.slots_per_slab {
-            let slot_idx = meta.bump_cursor;
-            meta.bump_cursor += 1;
-
-            // Initialize bump slot's tag so future reads are safe
-            let ptr = self.slot_ptr_mut(self.current_slab, slot_idx);
-            unsafe {
-                (*ptr).tag = SLOT_NONE;
-            }
-
-            self.next_slab = self.current_slab;
-            self.next_slot = slot_idx;
-            return;
-        }
-
-        // Current slab exhausted, find next available
-        self.find_next_slot();
-    }
-
-    #[cold]
-    fn find_next_slot(&mut self) {
-        // First: check other slabs' freelists
-        for (idx, meta) in self.slabs.iter_mut().enumerate() {
-            if meta.freelist_head != SLOT_NONE {
-                self.next_slab = idx as u32;
-                self.next_slot = meta.freelist_head;
-                meta.freelist_head = SLOT_NONE; // We're taking ownership
-                return;
-            }
-        }
-
-        // Second: check other slabs' bump space
-        for (idx, meta) in self.slabs.iter_mut().enumerate() {
-            if meta.bump_cursor < self.slots_per_slab {
-                let slot_idx = meta.bump_cursor;
-                meta.bump_cursor += 1;
-
-                // Initialize bump slot's tag
-                let ptr = self.slot_ptr_mut(idx as u32, slot_idx);
-                unsafe {
-                    (*ptr).tag = SLOT_NONE;
-                }
-
-                self.next_slab = idx as u32;
-                self.next_slot = slot_idx;
-                return;
-            }
-        }
-
-        // No space anywhere
-        self.next_slab = SLAB_NONE;
-        self.next_slot = SLOT_NONE;
-    }
-
-    #[cold]
-    fn insert_slow_path(&mut self, value: T) -> Result<Key, Full<T>> {
-        // Try to find a slot via freelist first
-        for (idx, meta) in self.slabs.iter_mut().enumerate() {
-            if meta.freelist_head != SLOT_NONE {
-                self.current_slab = idx as u32;
-                self.current_slot = meta.freelist_head;
-                meta.freelist_head = SLOT_NONE;
-                self.advance_next();
-                return self.insert(value);
-            }
-        }
-
-        // Try bump allocation
-        for (idx, meta) in self.slabs.iter_mut().enumerate() {
-            if meta.bump_cursor < self.slots_per_slab {
-                let slot_idx = meta.bump_cursor;
-                meta.bump_cursor += 1;
-
-                // Initialize bump slot's tag
-                let ptr = self.slot_ptr_mut(idx as u32, slot_idx);
-                unsafe {
-                    (*ptr).tag = SLOT_NONE;
-                }
-
-                self.current_slab = idx as u32;
-                self.current_slot = slot_idx;
-                self.advance_next();
-                return self.insert(value);
-            }
-        }
-
-        // No bump slots, try to grow
-        if MODE == DYNAMIC {
-            if let Ok(slab_idx) = self.grow() {
-                self.slabs[slab_idx as usize].bump_cursor = 1;
-
-                // Initialize first slot's tag
-                let ptr = self.slot_ptr_mut(slab_idx, 0);
-                unsafe {
-                    (*ptr).tag = SLOT_NONE;
-                }
-
-                self.current_slab = slab_idx;
-                self.current_slot = 0;
-                self.advance_next();
-                return self.insert(value);
-            }
-        }
-
-        Err(Full(value))
+        Ok(Key::new(slab_idx, slot_idx))
     }
 
     // -------------------------------------------------------------------------
@@ -650,7 +529,7 @@ impl<T, const MODE: bool> Slab<T, MODE> {
     }
 
     // -------------------------------------------------------------------------
-    // Remove - Updates current for LIFO cache-hot behavior
+    // Remove
     // -------------------------------------------------------------------------
 
     /// Remove and return the value at `key`.
@@ -666,29 +545,17 @@ impl<T, const MODE: bool> Slab<T, MODE> {
         };
 
         self.len -= 1;
-        self.slabs[slab_idx as usize].occupied -= 1;
+        let meta = &mut self.slabs[slab_idx as usize];
+        meta.occupied -= 1;
 
-        // Switching slabs? Save old current to its slab's freelist_head
-        if self.current_slab != slab_idx && self.current_slab != SLAB_NONE {
-            self.slabs[self.current_slab as usize].freelist_head = self.current_slot;
-        }
-
-        // Chain freed slot to old current (if same slab)
-        let chain_to = if self.current_slab == slab_idx {
-            self.current_slot
-        } else {
-            SLOT_NONE
-        };
+        // Push onto this slab's freelist
         unsafe {
-            (*ptr).tag = chain_to;
+            (*ptr).tag = meta.freelist_head;
         }
+        meta.freelist_head = slot_idx;
 
-        // Freed becomes current (LIFO, cache-hot)
-        self.current_slab = slab_idx;
-        self.current_slot = slot_idx;
-
-        // Compute next, preferring to stay in this slab
-        self.advance_next();
+        // Hint: prefer this slab next (cache-hot)
+        self.active_slab = slab_idx;
 
         value
     }
@@ -733,47 +600,7 @@ impl<T, const MODE: bool> Slab<T, MODE> {
             *meta = SlabMeta::new();
         }
 
-        // Reset cursors
-        if !self.slabs.is_empty() {
-            self.current_slab = 0;
-            self.current_slot = 0;
-            self.slabs[0].bump_cursor = 1;
-
-            // Initialize current slot's tag
-            unsafe {
-                let ptr = self.slot_ptr_mut(0, 0);
-                (*ptr).tag = SLOT_NONE;
-            }
-
-            if self.slots_per_slab > 1 {
-                self.next_slab = 0;
-                self.next_slot = 1;
-                self.slabs[0].bump_cursor = 2;
-                // Initialize next slot's tag
-                unsafe {
-                    let ptr = self.slot_ptr_mut(0, 1);
-                    (*ptr).tag = SLOT_NONE;
-                }
-            } else if self.slabs.len() > 1 {
-                self.next_slab = 1;
-                self.next_slot = 0;
-                self.slabs[1].bump_cursor = 1;
-                // Initialize next slot's tag
-                unsafe {
-                    let ptr = self.slot_ptr_mut(1, 0);
-                    (*ptr).tag = SLOT_NONE;
-                }
-            } else {
-                self.next_slab = SLAB_NONE;
-                self.next_slot = SLOT_NONE;
-            }
-        } else {
-            self.current_slab = SLAB_NONE;
-            self.current_slot = SLOT_NONE;
-            self.next_slab = SLAB_NONE;
-            self.next_slot = SLOT_NONE;
-        }
-
+        self.active_slab = 0;
         self.len = 0;
     }
 
@@ -941,35 +768,8 @@ impl SlabBuilder {
             slabs.push(SlabMeta::new());
         }
 
-        // Initialize cursors
-        slabs[0].bump_cursor = 1;
-
-        let (next_slab, next_slot) = if slots_per_slab > 1 {
-            slabs[0].bump_cursor = 2;
-            (0u32, 1u32)
-        } else if num_slabs > 1 {
-            slabs[1].bump_cursor = 1;
-            (1u32, 0u32)
-        } else {
-            (SLAB_NONE, SLOT_NONE)
-        };
-
-        // Initialize slot tags for current and next
-        unsafe {
-            let ptr = slab_bases[0].as_ptr();
-            (*ptr).tag = SLOT_NONE; // current slot
-            if slots_per_slab > 1 {
-                (*ptr.add(1)).tag = SLOT_NONE; // next slot
-            } else if num_slabs > 1 {
-                (*slab_bases[1].as_ptr()).tag = SLOT_NONE; // next slot in slab 1
-            }
-        }
-
         Ok(Slab {
-            current_slab: 0,
-            current_slot: 0,
-            next_slab,
-            next_slot,
+            active_slab: 0,
             len: 0,
             max_len: 0, // Dynamic mode: no limit
             slots_per_slab,
@@ -1056,34 +856,8 @@ impl FixedSlabBuilder {
             slabs.push(SlabMeta::new());
         }
 
-        slabs[0].bump_cursor = 1;
-
-        let (next_slab, next_slot) = if slots_per_slab > 1 {
-            slabs[0].bump_cursor = 2;
-            (0u32, 1u32)
-        } else if num_slabs > 1 {
-            slabs[1].bump_cursor = 1;
-            (1u32, 0u32)
-        } else {
-            (SLAB_NONE, SLOT_NONE)
-        };
-
-        // Initialize slot tags for current and next
-        unsafe {
-            let ptr = slots.as_ptr();
-            (*ptr).tag = SLOT_NONE; // current slot (slab 0, slot 0)
-            if slots_per_slab > 1 {
-                (*ptr.add(1)).tag = SLOT_NONE; // next slot (slab 0, slot 1)
-            } else if num_slabs > 1 {
-                (*ptr.add(slots_per_slab as usize)).tag = SLOT_NONE; // next slot (slab 1, slot 0)
-            }
-        }
-
         Ok(Slab {
-            current_slab: 0,
-            current_slot: 0,
-            next_slab,
-            next_slot,
+            active_slab: 0,
             len: 0,
             max_len: capacity, // Fixed mode: enforce user-requested capacity
             slots_per_slab,
@@ -1415,7 +1189,7 @@ mod tests {
     fn cross_slab_freelist_preserved() {
         // Use small slab size to force multiple slabs
         let mut slab: DynamicSlab<u64> = SlabBuilder::new()
-            .slab_bytes(4096) // Small slabs
+            .slab_bytes(4096) // Small slabs: 4096 / 16 = 256 slots per slab
             .build()
             .unwrap();
 
@@ -1434,7 +1208,7 @@ mod tests {
             }
         }
 
-        // Remove some from slab 0
+        // Remove some from slab 0 (builds freelist there)
         let removed_from_0: Vec<Key> = keys_slab0.iter().take(5).cloned().collect();
         for &k in &removed_from_0 {
             slab.remove(k);
@@ -1449,10 +1223,11 @@ mod tests {
         let new1 = slab.insert(999).unwrap();
         assert_eq!(new1.slab(), k1.slab());
 
-        // Now exhaust slab 1, should find slab 0's saved freelist
-        // Keep inserting until we get back to slab 0
+        // Now exhaust slab 1's remaining bump room
+        // Slab 1 had 10 slots used, 1 freed and reused, so ~246 bump slots remain
+        // Insert enough to exhaust it and force find_next_slot to check freelist_head
         let mut found_slab0 = false;
-        for _ in 0..100 {
+        for _ in 0..(slots_per_slab + 50) {
             let k = slab.insert(0).unwrap();
             if k.slab() == 0 {
                 found_slab0 = true;
@@ -1747,7 +1522,7 @@ mod tests {
     // =========================================================================
 
     #[test]
-    fn slab_drains_and_resets_bump_cursor() {
+    fn slab_drains_to_empty() {
         let mut slab: DynamicSlab<u64> = SlabBuilder::new().slab_bytes(4096).build().unwrap();
 
         let slots_per_slab = slab.slots_per_slab() as usize;
@@ -1760,17 +1535,16 @@ mod tests {
             keys.push(k);
         }
 
-        // Verify slab 0 is fully used
-        assert_eq!(slab.slabs[0].bump_cursor, slots_per_slab as u32);
-        assert_eq!(slab.slabs[0].occupied, slots_per_slab as u32);
+        assert_eq!(slab.len(), slots_per_slab);
 
         // Remove all from slab 0
         for k in keys {
             slab.remove(k);
         }
 
-        // Slab should be drained
-        assert_eq!(slab.slabs[0].occupied, 0);
+        // Slab should be empty
+        assert_eq!(slab.len(), 0);
+        assert!(slab.is_empty());
     }
 
     // =========================================================================
