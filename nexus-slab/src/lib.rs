@@ -1217,6 +1217,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore)]
     fn no_double_allocation_stress() {
         let mut slab = DynamicSlab::<u64>::with_capacity(100).unwrap();
         let mut live_keys: HashMap<(u32, u32), u64> = HashMap::new();
@@ -1546,6 +1547,7 @@ mod tests {
     // =========================================================================
 
     #[test]
+    #[cfg_attr(miri, ignore)]
     fn stress_insert_remove_cycles() {
         let mut slab = DynamicSlab::<u64>::with_capacity(1000).unwrap();
         let mut keys: Vec<Key> = Vec::new();
@@ -1578,6 +1580,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore)]
     fn stress_random_operations() {
         use std::collections::hash_map::DefaultHasher;
         use std::hash::{Hash, Hasher};
@@ -1615,6 +1618,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore)]
     fn stress_fill_drain_cycles() {
         let mut slab: FixedSlab<u64> = SlabBuilder::new().fixed().capacity(500).build().unwrap();
 
