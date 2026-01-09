@@ -107,7 +107,7 @@
 //! let mut slab = DynamicSlab::with_capacity(1000).unwrap();
 //!
 //! let key = slab.insert(42);
-//! assert_eq!(*slab.get(key), 42);
+//! assert_eq!(slab[key], 42);
 //!
 //! let value = slab.remove(key);
 //! assert_eq!(value, 42);
@@ -123,7 +123,10 @@
 
 #![warn(missing_docs)]
 
-use std::ptr::{self, NonNull};
+use std::{
+    ops::{Index, IndexMut},
+    ptr::{self, NonNull},
+};
 
 mod sys;
 
@@ -263,7 +266,12 @@ impl<'a, T, const MODE: bool> VacantEntry<'a, T, MODE> {
     /// Insert a value into the entry, consuming it.
     #[inline]
     pub fn insert(self, value: T) {
-        let ptr = self.slab.slot_ptr_mut(self.key.slab(), self.key.slot());
+        let slab_idx = self.key.slab();
+        let slot_idx = self.key.slot();
+
+        // SAFETY: key came from alloc() which guarantees validity
+        let base = unsafe { *self.slab.slab_bases.get_unchecked(slab_idx as usize) };
+        let ptr = unsafe { base.as_ptr().add(slot_idx as usize) };
 
         unsafe {
             (*ptr).tag = SLOT_OCCUPIED;
@@ -271,7 +279,12 @@ impl<'a, T, const MODE: bool> VacantEntry<'a, T, MODE> {
         }
 
         self.slab.len += 1;
-        self.slab.slabs[self.key.slab() as usize].occupied += 1;
+        unsafe {
+            self.slab
+                .slabs
+                .get_unchecked_mut(slab_idx as usize)
+                .occupied += 1;
+        }
     }
 }
 
@@ -312,8 +325,6 @@ pub struct Slab<T, const MODE: bool> {
     slabs: Vec<SlabMeta>,
 
     // Storage
-    #[allow(dead_code)]
-    fixed_pages: Option<sys::Pages>,
     slab_pages: Vec<sys::Pages>,
     slab_bases: Vec<NonNull<Slot<T>>>,
 
@@ -384,7 +395,6 @@ impl<T> DynamicSlab<T> {
             max_len: 0, // Dynamic mode: no limit
             slots_per_slab,
             slabs,
-            fixed_pages: None,
             slab_pages,
             slab_bases,
             slab_bytes,
@@ -547,6 +557,22 @@ impl<T> Slab<T, FIXED> {
     }
 }
 
+impl<T, const MODE: bool> Index<Key> for Slab<T, MODE> {
+    type Output = T;
+
+    #[inline]
+    fn index(&self, key: Key) -> &Self::Output {
+        self.get(key).expect("invalid key")
+    }
+}
+
+impl<T, const MODE: bool> IndexMut<Key> for Slab<T, MODE> {
+    #[inline]
+    fn index_mut(&mut self, key: Key) -> &mut Self::Output {
+        self.get_mut(key).expect("invalid key")
+    }
+}
+
 impl<T, const MODE: bool> Slab<T, MODE> {
     /// Returns the number of occupied slots.
     #[inline]
@@ -586,47 +612,78 @@ impl<T, const MODE: bool> Slab<T, MODE> {
     // Get
     // -------------------------------------------------------------------------
 
-    /// Get a reference to the value at `key`.
+    /// Get a reference without bounds checking.
+    ///
+    /// # Safety
+    /// - `key` must be valid (from a previous insert that hasn't been removed)
     #[inline]
-    pub fn get(&self, key: Key) -> &T {
+    pub unsafe fn get_unchecked(&self, key: Key) -> &T {
         let slab_idx = key.slab();
         let slot_idx = key.slot();
 
-        assert!(
-            (slab_idx as usize) < self.slab_bases.len() && slot_idx < self.slots_per_slab,
-            "invalid key: out of bounds"
-        );
+        unsafe {
+            let base = *self.slab_bases.get_unchecked(slab_idx as usize);
+            let ptr = base.as_ptr().add(slot_idx as usize);
 
-        // SAFETY: bounds verified above
-        let base = unsafe { *self.slab_bases.get_unchecked(slab_idx as usize) };
-        let ptr = unsafe { base.as_ptr().add(slot_idx as usize) };
-
-        assert!(
-            unsafe { (*ptr).is_occupied() },
-            "invalid key: slot is vacant"
-        );
-        unsafe { (*ptr).value.assume_init_ref() }
+            (*ptr).value.assume_init_ref()
+        }
     }
 
-    /// Get a mutable reference to the value at `key`.
+    /// Get a mutable reference without bounds checking.
+    ///
+    /// # Safety
+    /// - `key` must be valid (from a previous insert that hasn't been removed)
     #[inline]
-    pub fn get_mut(&mut self, key: Key) -> &mut T {
+    pub unsafe fn get_unchecked_mut(&mut self, key: Key) -> &mut T {
         let slab_idx = key.slab();
         let slot_idx = key.slot();
 
-        assert!(
-            (slab_idx as usize) < self.slab_bases.len() && slot_idx < self.slots_per_slab,
-            "invalid key: out of bounds"
-        );
+        unsafe {
+            let base = *self.slab_bases.get_unchecked(slab_idx as usize);
+            let ptr = base.as_ptr().add(slot_idx as usize);
+
+            (*ptr).value.assume_init_mut()
+        }
+    }
+
+    /// Get a reference to the value at `key`, or `None` if invalid.
+    #[inline]
+    pub fn get(&self, key: Key) -> Option<&T> {
+        let slab_idx = key.slab();
+        let slot_idx = key.slot();
+
+        if slab_idx as usize >= self.slab_bases.len() || slot_idx >= self.slots_per_slab {
+            return None;
+        }
 
         let base = unsafe { *self.slab_bases.get_unchecked(slab_idx as usize) };
         let ptr = unsafe { base.as_ptr().add(slot_idx as usize) };
 
-        assert!(
-            unsafe { (*ptr).is_occupied() },
-            "invalid key: slot is vacant"
-        );
-        unsafe { (*ptr).value.assume_init_mut() }
+        if unsafe { !(*ptr).is_occupied() } {
+            return None;
+        }
+
+        Some(unsafe { self.get_unchecked(key) })
+    }
+
+    /// Get a mutable reference to the value at `key`, or `None` if invalid.
+    #[inline]
+    pub fn get_mut(&mut self, key: Key) -> Option<&mut T> {
+        let slab_idx = key.slab();
+        let slot_idx = key.slot();
+
+        if slab_idx as usize >= self.slab_bases.len() || slot_idx >= self.slots_per_slab {
+            return None;
+        }
+
+        let base = unsafe { *self.slab_bases.get_unchecked(slab_idx as usize) };
+        let ptr = unsafe { base.as_ptr().add(slot_idx as usize) };
+
+        if unsafe { !(*ptr).is_occupied() } {
+            return None;
+        }
+
+        Some(unsafe { self.get_unchecked_mut(key) })
     }
 
     // -------------------------------------------------------------------------
@@ -674,18 +731,7 @@ impl<T, const MODE: bool> Slab<T, MODE> {
 
     /// Returns true if the key points to an occupied slot.
     pub fn contains(&self, key: Key) -> bool {
-        let slab_idx = key.slab();
-        let slot_idx = key.slot();
-
-        // Return false for out of bounds, don't panic
-        if slab_idx as usize >= self.slab_bases.len() || slot_idx >= self.slots_per_slab {
-            return false;
-        }
-
-        let base = unsafe { *self.slab_bases.get_unchecked(slab_idx as usize) };
-        let ptr = unsafe { base.as_ptr().add(slot_idx as usize) };
-
-        unsafe { (*ptr).is_occupied() }
+        self.get(key).is_some()
     }
 
     /// Remove all elements.
@@ -746,7 +792,8 @@ impl<T, const MODE: bool> Slab<T, MODE> {
     #[inline]
     fn slot_ptr(&self, slab_idx: u32, slot_idx: u32) -> *const Slot<T> {
         unsafe {
-            self.slab_bases[slab_idx as usize]
+            self.slab_bases
+                .get_unchecked(slab_idx as usize)
                 .as_ptr()
                 .add(slot_idx as usize)
         }
@@ -890,7 +937,6 @@ impl SlabBuilder {
             max_len: 0, // Dynamic mode: no limit
             slots_per_slab,
             slabs,
-            fixed_pages: None,
             slab_pages,
             slab_bases,
             slab_bytes,
@@ -989,7 +1035,6 @@ impl FixedSlabBuilder {
             max_len: capacity,
             slots_per_slab,
             slabs,
-            fixed_pages: None,
             slab_pages,
             slab_bases,
             slab_bytes,
@@ -1019,8 +1064,8 @@ mod tests {
         let k1 = slab.insert(42);
         let k2 = slab.insert(100);
 
-        assert_eq!(*slab.get(k1), 42);
-        assert_eq!(*slab.get(k2), 100);
+        assert_eq!(slab[k1], 42);
+        assert_eq!(slab[k2], 100);
         assert_eq!(slab.len(), 2);
 
         assert_eq!(slab.remove(k1), 42);
@@ -1035,9 +1080,9 @@ mod tests {
         let mut slab = DynamicSlab::<u64>::with_capacity(100).unwrap();
 
         let k = slab.insert(42);
-        *slab.get_mut(k) = 100;
+        slab[k] = 100;
 
-        assert_eq!(*slab.get(k), 100);
+        assert_eq!(slab[k], 100);
     }
 
     #[test]
@@ -1078,7 +1123,7 @@ mod tests {
         let key = entry.key();
         entry.insert(Node { id: key, data: 42 });
 
-        let node = slab.get(key);
+        let node = &slab[key];
         assert_eq!(node.id, key);
         assert_eq!(node.data, 42);
     }
@@ -1094,6 +1139,36 @@ mod tests {
         e2.insert(2);
 
         assert!(slab.try_vacant_entry().is_none());
+    }
+
+    #[test]
+    fn get_returns_none_for_invalid_key() {
+        let slab = DynamicSlab::<u64>::with_capacity(100).unwrap();
+
+        // Non-existent slab
+        assert!(slab.get(Key::new(999, 0)).is_none());
+
+        // Non-existent slot
+        assert!(slab.get(Key::new(0, 999999)).is_none());
+    }
+
+    #[test]
+    fn get_returns_none_after_remove() {
+        let mut slab = DynamicSlab::<u64>::with_capacity(100).unwrap();
+
+        let k = slab.insert(42);
+        assert!(slab.get(k).is_some());
+
+        slab.remove(k);
+        assert!(slab.get(k).is_none());
+    }
+
+    #[test]
+    fn get_mut_returns_none_for_invalid_key() {
+        let mut slab = DynamicSlab::<u64>::with_capacity(100).unwrap();
+
+        assert!(slab.get_mut(Key::new(999, 0)).is_none());
+        assert!(slab.get_mut(Key::new(0, 999999)).is_none());
     }
 
     // =========================================================================
@@ -1114,7 +1189,7 @@ mod tests {
         let k4 = slab.insert(4);
         assert_eq!(k4.slab(), k2.slab());
         assert_eq!(k4.slot(), k2.slot());
-        assert_eq!(*slab.get(k4), 4);
+        assert_eq!(slab[k4], 4);
     }
 
     #[test]
@@ -1137,8 +1212,8 @@ mod tests {
 
         assert_eq!(new1.slot(), k3.slot());
         assert_eq!(new2.slot(), k2.slot());
-        assert_eq!(*slab.get(new1), 10);
-        assert_eq!(*slab.get(new2), 20);
+        assert_eq!(slab[new1], 10);
+        assert_eq!(slab[new2], 20);
     }
 
     #[test]
@@ -1292,7 +1367,7 @@ mod tests {
 
         // Can insert again
         let new_key = slab.try_insert(999).unwrap();
-        assert_eq!(*slab.get(new_key), 999);
+        assert_eq!(slab[new_key], 999);
 
         // Full again
         assert!(slab.try_insert(1000).is_err());
@@ -1336,7 +1411,7 @@ mod tests {
 
         // Verify original values still accessible
         for (i, &k) in keys.iter().enumerate() {
-            assert_eq!(*slab.get(k), i as u64);
+            assert_eq!(slab[k], i as u64);
         }
     }
 
@@ -1385,7 +1460,7 @@ mod tests {
 
         // Can insert again
         let k = slab.insert(42);
-        assert_eq!(*slab.get(k), 42);
+        assert_eq!(slab[k], 42);
     }
 
     #[test]
@@ -1483,7 +1558,7 @@ mod tests {
 
         let k2 = unsafe { Key::from_raw(raw) };
         assert_eq!(k1, k2);
-        assert_eq!(*slab.get(k2), 42);
+        assert_eq!(slab[k2], 42);
     }
 
     #[test]
@@ -1502,14 +1577,14 @@ mod tests {
         let mut slab: FixedSlab<u64> = SlabBuilder::new().fixed().capacity(1).build().unwrap();
 
         let k = slab.try_insert(42).unwrap();
-        assert_eq!(*slab.get(k), 42);
+        assert_eq!(slab[k], 42);
 
         assert!(slab.try_insert(100).is_err());
 
         slab.remove(k);
 
         let k2 = slab.try_insert(100).unwrap();
-        assert_eq!(*slab.get(k2), 100);
+        assert_eq!(slab[k2], 100);
     }
 
     #[test]
@@ -1540,7 +1615,7 @@ mod tests {
         let val = Large([42; 64]);
         let k = slab.insert(val.clone());
 
-        assert_eq!(*slab.get(k), val);
+        assert_eq!(slab[k], val);
     }
 
     // =========================================================================
@@ -1566,7 +1641,7 @@ mod tests {
             // Verify all values
             for (&(s, sl), &val) in &expected {
                 let k = Key::new(s, sl);
-                assert_eq!(*slab.get(k), val);
+                assert_eq!(slab[k], val);
             }
 
             // Remove half
@@ -1636,7 +1711,7 @@ mod tests {
 
             // Verify all values
             for (i, &k) in keys.iter().enumerate() {
-                assert_eq!(*slab.get(k), (cycle * 1000 + i) as u64);
+                assert_eq!(slab[k], (cycle * 1000 + i) as u64);
             }
 
             // Drain completely

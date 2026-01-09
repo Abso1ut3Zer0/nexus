@@ -71,7 +71,7 @@ fn bench_get_sequential(c: &mut Criterion) {
 
         b.iter(|| {
             for key in &keys {
-                black_box(slab.get(*key));
+                black_box(slab[*key]);
             }
         });
     });
@@ -83,7 +83,7 @@ fn bench_get_sequential(c: &mut Criterion) {
 
         b.iter(|| {
             for key in &keys {
-                black_box(slab.get(*key));
+                black_box(slab[*key]);
             }
         });
     });
@@ -123,7 +123,7 @@ fn bench_get_random(c: &mut Criterion) {
 
         b.iter(|| {
             for &idx in &indices {
-                black_box(slab.get(keys[idx]));
+                black_box(slab[keys[idx]]);
             }
         });
     });
@@ -135,7 +135,7 @@ fn bench_get_random(c: &mut Criterion) {
 
         b.iter(|| {
             for &idx in &indices {
-                black_box(slab.get(keys[idx]));
+                black_box(slab[keys[idx]]);
             }
         });
     });

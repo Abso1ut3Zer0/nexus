@@ -86,7 +86,7 @@ fn bench_get_sequential(c: &mut Criterion) {
         b.iter(|| {
             let mut sum = 0u64;
             for key in &nexus_keys {
-                sum += black_box(*nexus.get(*key));
+                sum += black_box(nexus[*key]);
             }
             sum
         });
@@ -96,7 +96,7 @@ fn bench_get_sequential(c: &mut Criterion) {
         b.iter(|| {
             let mut sum = 0u64;
             for key in &nexus_locked_keys {
-                sum += black_box(*nexus_locked.get(*key));
+                sum += black_box(nexus_locked[*key]);
             }
             sum
         });
@@ -148,7 +148,7 @@ fn bench_get_random(c: &mut Criterion) {
         b.iter(|| {
             let mut sum = 0u64;
             for &idx in &random_indices {
-                sum += black_box(*nexus.get(nexus_keys[idx]));
+                sum += black_box(nexus[nexus_keys[idx]]);
             }
             sum
         });
@@ -158,7 +158,7 @@ fn bench_get_random(c: &mut Criterion) {
         b.iter(|| {
             let mut sum = 0u64;
             for &idx in &random_indices {
-                sum += black_box(*nexus_locked.get(nexus_locked_keys[idx]));
+                sum += black_box(nexus_locked[nexus_locked_keys[idx]]);
             }
             sum
         });

@@ -78,14 +78,14 @@ fn bench_nexus_slab(indices: &[usize]) -> Histogram<u64> {
     // Warmup - random access
     for &idx in indices.iter().take(10_000) {
         let key = unsafe { nexus_slab::Key::from_raw(idx as u64) };
-        black_box(slab.get(key));
+        black_box(slab[key]);
     }
 
     // Measured random gets
     for &idx in indices {
         let key = unsafe { nexus_slab::Key::from_raw(idx as u64) };
         let start = rdtscp();
-        black_box(slab.get(key));
+        black_box(slab[key]);
         let end = rdtscp();
         let _ = hist.record(end.wrapping_sub(start));
     }
@@ -104,13 +104,13 @@ fn bench_slab_crate(indices: &[usize]) -> Histogram<u64> {
 
     // Warmup - random access
     for &idx in indices.iter().take(10_000) {
-        black_box(slab.get(idx));
+        black_box(slab[idx]);
     }
 
     // Measured random gets
     for &idx in indices {
         let start = rdtscp();
-        black_box(slab.get(idx));
+        black_box(slab[idx]);
         let end = rdtscp();
         let _ = hist.record(end.wrapping_sub(start));
     }
