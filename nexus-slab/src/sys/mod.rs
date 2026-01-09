@@ -131,6 +131,7 @@ mod tests {
 
     #[test]
     #[cfg(target_os = "linux")]
+    #[cfg_attr(miri, ignore)]
     fn hugetlb_returns_result() {
         // May succeed or fail depending on system config - shouldn't panic
         let result = Pages::alloc_hugetlb(2 * 1024 * 1024);

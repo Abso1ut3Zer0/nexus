@@ -629,7 +629,7 @@ impl<T, const MODE: bool> Slab<T, MODE> {
     pub fn remove(&mut self, key: Key) -> T {
         let slab_idx = key.slab();
         let slot_idx = key.slot();
-        let ptr = self.slot_ptr_mut(slab_idx, slot_idx);
+        let ptr = self.slot_ptr_mut(slab_idx, slot_idx); // bounds check here
 
         let value = unsafe {
             let slot = &*ptr;
@@ -638,16 +638,15 @@ impl<T, const MODE: bool> Slab<T, MODE> {
         };
 
         self.len -= 1;
-        let meta = &mut self.slabs[slab_idx as usize];
+        // SAFETY: slot_ptr succeeded, so slab_idx < slab_bases.len() == slabs.len()
+        let meta = unsafe { self.slabs.get_unchecked_mut(slab_idx as usize) };
         meta.occupied -= 1;
 
-        // Push onto this slab's freelist
         unsafe {
             (*ptr).tag = meta.freelist_head;
         }
         meta.freelist_head = slot_idx;
 
-        // Hint: prefer this slab next (cache-hot)
         self.active_slab = slab_idx;
 
         value
@@ -667,8 +666,9 @@ impl<T, const MODE: bool> Slab<T, MODE> {
             return false;
         }
 
+        // SAFETY: bounds already validated above
         unsafe {
-            let ptr = self.slot_ptr(slab_idx, slot_idx);
+            let ptr = self.slot_ptr_unchecked(slab_idx, slot_idx);
             (*ptr).is_occupied()
         }
     }
