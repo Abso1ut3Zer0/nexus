@@ -314,7 +314,6 @@ pub struct Slab<T, const MODE: bool> {
     // Storage
     #[allow(dead_code)]
     fixed_pages: Option<sys::Pages>,
-    fixed_slots: NonNull<Slot<T>>,
     slab_pages: Vec<sys::Pages>,
     slab_bases: Vec<NonNull<Slot<T>>>,
 
@@ -386,7 +385,6 @@ impl<T> DynamicSlab<T> {
             slots_per_slab,
             slabs,
             fixed_pages: None,
-            fixed_slots: NonNull::dangling(),
             slab_pages,
             slab_bases,
             slab_bytes,
@@ -479,24 +477,6 @@ impl<T> Slab<T, DYNAMIC> {
 
         slab_idx
     }
-
-    #[inline(always)]
-    fn write_slot(&mut self, slab_idx: u32, slot_idx: u32, value: T) -> Key {
-        // SAFETY: slab_idx/slot_idx came from alloc() which guarantees validity
-        let base = unsafe { *self.slab_bases.get_unchecked(slab_idx as usize) };
-        let ptr = unsafe { base.as_ptr().add(slot_idx as usize) };
-
-        unsafe {
-            (*ptr).tag = SLOT_OCCUPIED;
-            (*ptr).value.write(value);
-        }
-
-        let meta = unsafe { self.slabs.get_unchecked_mut(slab_idx as usize) };
-        meta.occupied += 1;
-        self.len += 1;
-
-        Key::new(slab_idx, slot_idx)
-    }
 }
 
 impl<T> Slab<T, FIXED> {
@@ -539,14 +519,13 @@ impl<T> Slab<T, FIXED> {
 
         // SAFETY: slab_idx came from slabs_head which isn't SLAB_NONE,
         // so it's a valid index we created
+        let base = unsafe { *self.slab_bases.get_unchecked(slab_idx as usize) };
         let meta = unsafe { self.slabs.get_unchecked_mut(slab_idx as usize) };
 
         let head = meta.freelist_head;
         if head != SLOT_NONE {
-            // FixedSlab: contiguous allocation, calculate offset from fixed_slots
             // SAFETY: head came from freelist, so it's a valid slot index
-            let offset = slab_idx as usize * self.slots_per_slab as usize + head as usize;
-            let ptr = unsafe { self.fixed_slots.as_ptr().add(offset) };
+            let ptr = unsafe { base.as_ptr().add(head as usize) };
             let next = unsafe { (*ptr).tag };
             meta.freelist_head = next;
 
@@ -565,24 +544,6 @@ impl<T> Slab<T, FIXED> {
         }
 
         Some((slab_idx, cursor))
-    }
-
-    #[inline(always)]
-    fn write_slot(&mut self, slab_idx: u32, slot_idx: u32, value: T) -> Key {
-        // SAFETY: slab_idx/slot_idx came from alloc() which guarantees validity
-        let offset = slab_idx as usize * self.slots_per_slab as usize + slot_idx as usize;
-        let ptr = unsafe { self.fixed_slots.as_ptr().add(offset) };
-
-        unsafe {
-            (*ptr).tag = SLOT_OCCUPIED;
-            (*ptr).value.write(value);
-        }
-
-        let meta = unsafe { self.slabs.get_unchecked_mut(slab_idx as usize) };
-        meta.occupied += 1;
-        self.len += 1;
-
-        Key::new(slab_idx, slot_idx)
     }
 }
 
@@ -764,17 +725,30 @@ impl<T, const MODE: bool> Slab<T, MODE> {
     // Internal
     // -------------------------------------------------------------------------
 
+    #[inline(always)]
+    fn write_slot(&mut self, slab_idx: u32, slot_idx: u32, value: T) -> Key {
+        // SAFETY: slab_idx/slot_idx came from alloc() which guarantees validity
+        let base = unsafe { *self.slab_bases.get_unchecked(slab_idx as usize) };
+        let ptr = unsafe { base.as_ptr().add(slot_idx as usize) };
+
+        unsafe {
+            (*ptr).tag = SLOT_OCCUPIED;
+            (*ptr).value.write(value);
+        }
+
+        let meta = unsafe { self.slabs.get_unchecked_mut(slab_idx as usize) };
+        meta.occupied += 1;
+        self.len += 1;
+
+        Key::new(slab_idx, slot_idx)
+    }
+
     #[inline]
     fn slot_ptr(&self, slab_idx: u32, slot_idx: u32) -> *const Slot<T> {
-        if MODE == FIXED {
-            let global = (slab_idx as usize) * (self.slots_per_slab as usize) + (slot_idx as usize);
-            unsafe { self.fixed_slots.as_ptr().add(global) }
-        } else {
-            unsafe {
-                self.slab_bases[slab_idx as usize]
-                    .as_ptr()
-                    .add(slot_idx as usize)
-            }
+        unsafe {
+            self.slab_bases[slab_idx as usize]
+                .as_ptr()
+                .add(slot_idx as usize)
         }
     }
 
@@ -917,7 +891,6 @@ impl SlabBuilder {
             slots_per_slab,
             slabs,
             fixed_pages: None,
-            fixed_slots: NonNull::dangling(),
             slab_pages,
             slab_bases,
             slab_bytes,
@@ -976,32 +949,34 @@ impl FixedSlabBuilder {
 
         let slots_per_slab = (slab_bytes / slot_size) as u32;
         let num_slabs = (capacity + slots_per_slab as usize - 1) / slots_per_slab as usize;
-        let total_slots = num_slabs * slots_per_slab as usize;
-        let total_bytes = total_slots * slot_size;
 
-        #[cfg(unix)]
-        let pages = if self.inner.huge_pages {
-            sys::Pages::alloc_hugetlb(total_bytes).map_err(SlabError::Allocation)?
-        } else {
-            sys::Pages::alloc(total_bytes).map_err(SlabError::Allocation)?
-        };
-
-        #[cfg(not(unix))]
-        let pages = sys::Pages::alloc(total_bytes).map_err(SlabError::Allocation)?;
-
-        #[cfg(unix)]
-        if self.inner.mlock {
-            pages.mlock().map_err(SlabError::Allocation)?;
-        }
-
-        let slots = NonNull::new(pages.as_ptr() as *mut Slot<T>).expect("alloc returned null");
-
+        let mut slab_pages = Vec::with_capacity(num_slabs);
+        let mut slab_bases = Vec::with_capacity(num_slabs);
         let mut slabs = Vec::with_capacity(num_slabs);
+
         for _ in 0..num_slabs {
+            #[cfg(unix)]
+            let pages = if self.inner.huge_pages {
+                sys::Pages::alloc_hugetlb(slab_bytes).map_err(SlabError::Allocation)?
+            } else {
+                sys::Pages::alloc(slab_bytes).map_err(SlabError::Allocation)?
+            };
+
+            #[cfg(not(unix))]
+            let pages = sys::Pages::alloc(slab_bytes).map_err(SlabError::Allocation)?;
+
+            #[cfg(unix)]
+            if self.inner.mlock {
+                pages.mlock().map_err(SlabError::Allocation)?;
+            }
+
+            let base = NonNull::new(pages.as_ptr() as *mut Slot<T>).expect("alloc returned null");
+            slab_pages.push(pages);
+            slab_bases.push(base);
             slabs.push(SlabMeta::new());
         }
 
-        // Initialize slab freelist - all slabs except first go on freelist
+        // Initialize slab freelist
         let mut slabs_head = SLAB_NONE;
         for i in (0..num_slabs).rev() {
             slabs[i].next_free_slab = slabs_head;
@@ -1014,10 +989,9 @@ impl FixedSlabBuilder {
             max_len: capacity,
             slots_per_slab,
             slabs,
-            fixed_pages: Some(pages),
-            fixed_slots: slots,
-            slab_pages: Vec::new(),
-            slab_bases: Vec::new(),
+            fixed_pages: None,
+            slab_pages,
+            slab_bases,
             slab_bytes,
         })
     }
