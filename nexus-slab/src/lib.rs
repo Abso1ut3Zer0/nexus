@@ -15,8 +15,8 @@
 //! | Metric | nexus-slab | Typical Vec-based |
 //! |--------|------------|-------------------|
 //! | p50    | ~24 cycles | ~22 cycles        |
-//! | p99    | ~28 cycles | ~24 cycles        |
-//! | p999   | ~40-44 cycles (consistent) | 30-2400 cycles (bimodal) |
+//! | p99    | ~26 cycles | ~24 cycles        |
+//! | p999   | ~38-46 cycles (consistent) | 32-3700 cycles (bimodal) |
 //! | max    | ~500-800K cycles (growth) | ~1.5-2M cycles (realloc+copy) |
 //!
 //! Trade a few cycles on median for **predictable** tail latency.
@@ -291,20 +291,21 @@ impl<'a, T, const MODE: bool> VacantEntry<'a, T, MODE> {
 // SlabMeta
 // =============================================================================
 
+#[repr(C)]
 struct SlabMeta {
-    bump_cursor: u32,
-    occupied: u32,
-    freelist_head: u32, // Head of this slab's freelist, SLOT_NONE if empty
-    next_free_slab: u32,
+    freelist_head: u32,  // Read first in alloc
+    bump_cursor: u32,    // Read second
+    next_free_slab: u32, // Read if exhausted
+    occupied: u32,       // Only write_slot/remove
 }
 
 impl SlabMeta {
     const fn new() -> Self {
         Self {
-            bump_cursor: 0,
-            occupied: 0,
             freelist_head: SLOT_NONE,
+            bump_cursor: 0,
             next_free_slab: SLAB_NONE,
+            occupied: 0,
         }
     }
 }
@@ -314,19 +315,20 @@ impl SlabMeta {
 // =============================================================================
 
 /// A slab allocator with configurable growth mode.
+#[repr(C)]
 pub struct Slab<T, const MODE: bool> {
+    // Hot - every alloc
     slabs_head: u32,
-
-    len: usize,
-    max_len: usize, // For FIXED mode: user-requested capacity limit (0 = unlimited for DYNAMIC)
     slots_per_slab: u32,
-
     slabs: Vec<SlabMeta>,
-
-    // Storage
-    slab_pages: Vec<sys::Pages>,
     slab_bases: Vec<NonNull<Slot<T>>>,
 
+    // Warm - insert/remove
+    len: usize,
+
+    // Cold
+    max_len: usize,
+    slab_pages: Vec<sys::Pages>,
     slab_bytes: usize,
 }
 
@@ -672,7 +674,7 @@ impl<T, const MODE: bool> Slab<T, MODE> {
             return None;
         }
 
-        Some(unsafe { self.get_unchecked(key) })
+        Some(unsafe { (*ptr).value.assume_init_ref() })
     }
 
     /// Get a mutable reference to the value at `key`, or `None` if invalid.
@@ -692,7 +694,7 @@ impl<T, const MODE: bool> Slab<T, MODE> {
             return None;
         }
 
-        Some(unsafe { self.get_unchecked_mut(key) })
+        Some(unsafe { (*ptr).value.assume_init_mut() })
     }
 
     // -------------------------------------------------------------------------
@@ -749,6 +751,7 @@ impl<T, const MODE: bool> Slab<T, MODE> {
     }
 
     /// Returns true if the key points to an occupied slot.
+    #[inline]
     pub fn contains(&self, key: Key) -> bool {
         self.get(key).is_some()
     }

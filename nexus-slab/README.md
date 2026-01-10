@@ -15,8 +15,8 @@ Benchmarked on Intel Core Ultra 7 155H, pinned to a physical core. Growth phase 
 | Metric | nexus-slab | slab crate |
 |--------|------------|------------|
 | p50    | 24 cycles  | 22 cycles  |
-| p99    | 28 cycles  | 24 cycles  |
-| p999   | **40-48 cycles** | 30-2400 cycles (bimodal) |
+| p99    | 26 cycles  | 24 cycles  |
+| p999   | **38-46 cycles** | 32-3700 cycles (bimodal) |
 | max    | **500-800K cycles** | 1.5-2M cycles |
 
 Trade 2-4 cycles on median for **60x better worst-case p999**.
@@ -84,7 +84,7 @@ On Unix systems, `nexus-slab` bypasses `std::alloc` and calls `mmap` directly:
 
 | | mmap | std::alloc |
 |---|---|---|
-| p999 | 40-48 cycles | 50-60 cycles |
+| p999 | 38-46 cycles | 50-60 cycles |
 | max | 500-800K cycles | 1.5-2M cycles |
 | Huge pages | ✓ | ✗ |
 | mlock | ✓ | ✗ |
@@ -102,7 +102,7 @@ let mut slab: DynamicSlab<u64> = DynamicSlab::with_capacity(10_000)?;
 
 // O(1) operations
 let key = slab.insert(42);
-assert_eq!(*slab.get(key), 42);
+assert_eq!(slab[key], 42);
 
 let value = slab.remove(key);
 assert_eq!(value, 42);
@@ -160,17 +160,20 @@ let slab: DynamicSlab<Order> = SlabBuilder::new()
 ## API
 
 ### Core Operations
-
 | Method | DynamicSlab | FixedSlab | Description |
 |--------|-------------|-----------|-------------|
 | `insert(value)` | `Key` | — | Insert, grow if needed (panics on alloc failure) |
 | `try_insert(value)` | — | `Result<Key, Full>` | Insert, returns `Err` if full |
-| `get(key)` | `&T` | `&T` | Get reference by key |
-| `get_mut(key)` | `&mut T` | `&mut T` | Get mutable reference |
-| `remove(key)` | `T` | `T` | Remove and return value |
+| `slab[key]` | `&T` / `&mut T` | `&T` / `&mut T` | Index access (panics if invalid) |
+| `get(key)` | `Option<&T>` | `Option<&T>` | Get reference, `None` if invalid |
+| `get_mut(key)` | `Option<&mut T>` | `Option<&mut T>` | Get mutable reference, `None` if invalid |
+| `get_unchecked(key)` | `&T` | `&T` | Get reference without bounds check |
+| `get_unchecked_mut(key)` | `&mut T` | `&mut T` | Get mutable reference without bounds check |
+| `remove(key)` | `T` | `T` | Remove and return value (panics if invalid) |
 | `contains(key)` | `bool` | `bool` | Check if key is occupied |
 | `len()` | `usize` | `usize` | Number of occupied slots |
 | `capacity()` | `usize` | `usize` | Total slots available |
+| `clear()` | `()` | `()` | Remove all elements |
 
 ### Vacant Entry Pattern
 
