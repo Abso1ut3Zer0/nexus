@@ -269,7 +269,6 @@ impl<'a, T, const MODE: bool> VacantEntry<'a, T, MODE> {
         let slab_idx = self.key.slab();
         let slot_idx = self.key.slot();
 
-        // SAFETY: key came from alloc() which guarantees validity
         let base = unsafe { *self.slab.slab_bases.get_unchecked(slab_idx as usize) };
         let ptr = unsafe { base.as_ptr().add(slot_idx as usize) };
 
@@ -432,32 +431,40 @@ impl<T> Slab<T, DYNAMIC> {
         }
 
         let slab_idx = self.slabs_head;
+        let slots_per_slab = self.slots_per_slab;
 
-        // Copy base pointer first to avoid borrow conflict with meta
-        // SAFETY: slab_idx came from slabs_head which isn't SLAB_NONE,
-        // so it's a valid index we created
+        // Read phase - get everything we need
         let base = unsafe { *self.slab_bases.get_unchecked(slab_idx as usize) };
-        let meta = unsafe { self.slabs.get_unchecked_mut(slab_idx as usize) };
+        let (head, cursor, next_free_slab) = {
+            let meta = unsafe { self.slabs.get_unchecked(slab_idx as usize) };
+            (meta.freelist_head, meta.bump_cursor, meta.next_free_slab)
+        };
 
-        let head = meta.freelist_head;
         if head != SLOT_NONE {
-            // SAFETY: head came from freelist, so it's a valid slot index
             let ptr = unsafe { base.as_ptr().add(head as usize) };
             let next = unsafe { (*ptr).tag };
-            meta.freelist_head = next;
 
-            if next == SLOT_NONE && meta.bump_cursor >= self.slots_per_slab {
-                self.slabs_head = meta.next_free_slab;
+            // Pre-compute condition before writes
+            let exhausted = next == SLOT_NONE && cursor >= slots_per_slab;
+
+            // Write phase
+            unsafe { self.slabs.get_unchecked_mut(slab_idx as usize) }.freelist_head = next;
+
+            if exhausted {
+                self.slabs_head = next_free_slab;
             }
 
             return (slab_idx, head);
         }
 
-        let cursor = meta.bump_cursor;
-        meta.bump_cursor = cursor + 1;
+        // Bump path
+        let exhausted = cursor + 1 >= slots_per_slab;
 
-        if cursor + 1 >= self.slots_per_slab {
-            self.slabs_head = meta.next_free_slab;
+        // Write phase
+        unsafe { self.slabs.get_unchecked_mut(slab_idx as usize) }.bump_cursor = cursor + 1;
+
+        if exhausted {
+            self.slabs_head = next_free_slab;
         }
 
         (slab_idx, cursor)
@@ -516,7 +523,6 @@ impl<T> Slab<T, FIXED> {
     /// Try to allocate a slot. Returns None if full.
     #[inline]
     fn alloc(&mut self) -> Option<(u32, u32)> {
-        // Check user-requested capacity limit
         if self.len >= self.max_len {
             return None;
         }
@@ -526,31 +532,34 @@ impl<T> Slab<T, FIXED> {
         }
 
         let slab_idx = self.slabs_head;
+        let slots_per_slab = self.slots_per_slab;
 
-        // SAFETY: slab_idx came from slabs_head which isn't SLAB_NONE,
-        // so it's a valid index we created
         let base = unsafe { *self.slab_bases.get_unchecked(slab_idx as usize) };
-        let meta = unsafe { self.slabs.get_unchecked_mut(slab_idx as usize) };
+        let (head, cursor, next_free_slab) = {
+            let meta = unsafe { self.slabs.get_unchecked(slab_idx as usize) };
+            (meta.freelist_head, meta.bump_cursor, meta.next_free_slab)
+        };
 
-        let head = meta.freelist_head;
         if head != SLOT_NONE {
-            // SAFETY: head came from freelist, so it's a valid slot index
             let ptr = unsafe { base.as_ptr().add(head as usize) };
             let next = unsafe { (*ptr).tag };
-            meta.freelist_head = next;
+            let exhausted = next == SLOT_NONE && cursor >= slots_per_slab;
 
-            if next == SLOT_NONE && meta.bump_cursor >= self.slots_per_slab {
-                self.slabs_head = meta.next_free_slab;
+            unsafe { self.slabs.get_unchecked_mut(slab_idx as usize) }.freelist_head = next;
+
+            if exhausted {
+                self.slabs_head = next_free_slab;
             }
 
             return Some((slab_idx, head));
         }
 
-        let cursor = meta.bump_cursor;
-        meta.bump_cursor = cursor + 1;
+        let exhausted = cursor + 1 >= slots_per_slab;
 
-        if cursor + 1 >= self.slots_per_slab {
-            self.slabs_head = meta.next_free_slab;
+        unsafe { self.slabs.get_unchecked_mut(slab_idx as usize) }.bump_cursor = cursor + 1;
+
+        if exhausted {
+            self.slabs_head = next_free_slab;
         }
 
         Some((slab_idx, cursor))
@@ -708,23 +717,33 @@ impl<T, const MODE: bool> Slab<T, MODE> {
             "invalid key: slot is vacant"
         );
 
+        // === READ PHASE ===
         let value = unsafe { (*ptr).value.assume_init_read() };
+        let slots_per_slab = self.slots_per_slab;
+        let slabs_head = self.slabs_head;
 
-        self.len -= 1;
-        let meta = unsafe { self.slabs.get_unchecked_mut(slab_idx as usize) };
+        let (old_freelist_head, bump_cursor, occupied) = {
+            let meta = unsafe { self.slabs.get_unchecked(slab_idx as usize) };
+            (meta.freelist_head, meta.bump_cursor, meta.occupied)
+        };
 
-        let was_full = meta.freelist_head == SLOT_NONE && meta.bump_cursor >= self.slots_per_slab;
+        let was_full = old_freelist_head == SLOT_NONE && bump_cursor >= slots_per_slab;
 
+        // === WRITE PHASE ===
         unsafe {
-            (*ptr).tag = meta.freelist_head;
+            (*ptr).tag = old_freelist_head;
         }
+
+        let meta = unsafe { self.slabs.get_unchecked_mut(slab_idx as usize) };
         meta.freelist_head = slot_idx;
-        meta.occupied -= 1;
+        meta.occupied = occupied - 1;
 
         if was_full {
-            meta.next_free_slab = self.slabs_head;
+            meta.next_free_slab = slabs_head;
             self.slabs_head = slab_idx;
         }
+
+        self.len -= 1;
 
         value
     }
@@ -773,15 +792,16 @@ impl<T, const MODE: bool> Slab<T, MODE> {
 
     #[inline(always)]
     fn write_slot(&mut self, slab_idx: u32, slot_idx: u32, value: T) -> Key {
-        // SAFETY: slab_idx/slot_idx came from alloc() which guarantees validity
         let base = unsafe { *self.slab_bases.get_unchecked(slab_idx as usize) };
         let ptr = unsafe { base.as_ptr().add(slot_idx as usize) };
 
+        // Writes are sequential, that's fine
         unsafe {
             (*ptr).tag = SLOT_OCCUPIED;
             (*ptr).value.write(value);
         }
 
+        // But here we read then write meta, then write self
         let meta = unsafe { self.slabs.get_unchecked_mut(slab_idx as usize) };
         meta.occupied += 1;
         self.len += 1;
