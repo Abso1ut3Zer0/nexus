@@ -467,9 +467,10 @@ pub struct CtxFree<F>(pub(crate) F);
 ///
 /// # Memory Layout
 ///
-/// `N × 2 + 16` bytes where N is the parameter arity. Named functions
-/// are ZSTs, so only the [`ResourceId`] state (2 bytes each) and the
-/// `&'static str` name (16 bytes) contribute. Arity 8 = 32 bytes.
+/// `N × 2 + 16` bytes (rounded up to align 8) where N is the
+/// parameter arity. Named functions are ZSTs, so only [`ResourceId`]
+/// state (2 bytes each) and the `&'static str` name (16 bytes)
+/// contribute. Arity 1–4 = 24 bytes, arity 5–8 = 32 bytes.
 /// Always fits in `B64`.
 pub type HandlerFn<F, Params> = Callback<(), CtxFree<F>, Params>;
 

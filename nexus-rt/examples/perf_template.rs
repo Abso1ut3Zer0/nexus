@@ -217,7 +217,7 @@ fn main() {
 
     println!();
 
-    // ── HandlerTemplate::instantiate (type-erased, heap alloc) ────────────
+    // ── HandlerTemplate::generate (type-erased, inline) ───────────────────
 
     let tpl_1p = HandlerTemplate::<K1P>::new(sys_1p, r);
     let tpl_2p = HandlerTemplate::<K2P>::new(sys_2p, r);
@@ -226,34 +226,34 @@ fn main() {
     let cb_tpl_2p = CallbackTemplate::<KCb2P>::new(cb_2p, r);
     let cb_tpl_4p = CallbackTemplate::<KCb4P>::new(cb_4p, r);
 
-    print_header("HandlerTemplate::instantiate — type-erased (cycles)");
+    print_header("HandlerTemplate::generate — type-erased (cycles)");
 
-    bench_batched("instantiate   1-param", || {
-        let _ = black_box(tpl_1p.instantiate());
+    bench_batched("generate      1-param", || {
+        let _ = black_box(tpl_1p.generate());
         0
     });
-    bench_batched("instantiate   2-param", || {
-        let _ = black_box(tpl_2p.instantiate());
+    bench_batched("generate      2-param", || {
+        let _ = black_box(tpl_2p.generate());
         0
     });
-    bench_batched("instantiate   4-param", || {
-        let _ = black_box(tpl_4p.instantiate());
+    bench_batched("generate      4-param", || {
+        let _ = black_box(tpl_4p.generate());
         0
     });
-    bench_batched("instantiate   8-param", || {
-        let _ = black_box(tpl_8p.instantiate());
+    bench_batched("generate      8-param", || {
+        let _ = black_box(tpl_8p.generate());
         0
     });
 
     println!();
-    print_header("CallbackTemplate::instantiate — type-erased (cycles)");
+    print_header("CallbackTemplate::generate — type-erased (cycles)");
 
-    bench_batched("instantiate   cb 2-param", || {
-        let _ = black_box(cb_tpl_2p.instantiate(0u64));
+    bench_batched("generate      cb 2-param", || {
+        let _ = black_box(cb_tpl_2p.generate(0u64));
         0
     });
-    bench_batched("instantiate   cb 4-param", || {
-        let _ = black_box(cb_tpl_4p.instantiate(0u64));
+    bench_batched("generate      cb 4-param", || {
+        let _ = black_box(cb_tpl_4p.generate(0u64));
         0
     });
 

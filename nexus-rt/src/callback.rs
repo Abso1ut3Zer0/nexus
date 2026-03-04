@@ -56,16 +56,19 @@ use crate::world::{Registry, World};
 /// where N is the parameter arity ([`ResourceId`](crate::ResourceId) is `u16`).
 /// The 16 bytes are the `&'static str` name.
 ///
-/// | Type | Typical size |
-/// |------|-------------|
+/// | Type | Size |
+/// |------|------|
 /// | `HandlerFn` arity 0 | 16 bytes |
-/// | `HandlerFn` arity 4 | 24 bytes |
-/// | `HandlerFn` arity 8 | 32 bytes |
+/// | `HandlerFn` arity 1–4 | 24 bytes |
+/// | `HandlerFn` arity 5–8 | 32 bytes |
 /// | `Callback` arity 4, 16B ctx | 40 bytes |
-/// | `Callback` arity 8, 32B ctx | 64 bytes |
+/// | `Callback` arity 4, 32B ctx | 56 bytes |
 ///
-/// All concrete `Callback` types fit in `B64` (the default for
-/// [`FlatVirtual`](crate::FlatVirtual) / [`FlexVirtual`](crate::FlexVirtual)).
+/// Struct alignment is 8 (from the `&'static str` name field), so
+/// sizes round up to the next multiple of 8.
+///
+/// See the capacity planning section in the [crate-level docs](crate)
+/// for storage recommendations.
 ///
 /// # Examples
 ///

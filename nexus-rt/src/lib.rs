@@ -78,6 +78,110 @@
 //! | [`IntoHandler`] | `IntoSystem` | fn → handler conversion |
 //! | [`Plugin`] | `Plugin` | Composable registration |
 //! | [`World`] | `World` | Singletons only (no ECS) |
+//!
+//! # Capacity Planning
+//!
+//! When storing handlers as `dyn Handler<E>` you choose between heap
+//! allocation ([`Virtual`] = `Box`) or inline storage ([`FlatVirtual`] /
+//! [`FlexVirtual`]). Inline storage avoids heap allocation on the hot
+//! path but requires the concrete handler to fit in a fixed buffer.
+//! This section explains what determines handler size so you can pick
+//! the right buffer.
+//!
+//! ## What determines size
+//!
+//! Every handler stores:
+//!
+//! - **[`ResourceId`] state** — 2 bytes per `Res<T>` or `ResMut<T>`
+//!   parameter (one `u16` index into [`World`]). Optional params
+//!   (`Option<Res<T>>`) cost 4 bytes. [`Local<T>`] costs `sizeof(T)`.
+//! - **Name** — `&'static str` (16 bytes) for diagnostics.
+//! - **Context** — `sizeof(C)` for context-owning [`Callback`]s, zero
+//!   for context-free [`HandlerFn`]s.
+//! - **Function** — named functions are ZSTs (0 bytes). Closures are
+//!   not supported by [`IntoHandler`] / [`IntoCallback`].
+//!
+//! [`TemplatedHandler`] adds type-erasure overhead: 3 function pointers
+//! (24 bytes) and a second name copy, wrapped around an inline buffer
+//! that holds the [`Callback`] struct.
+//!
+//! [`Pipeline`] size grows linearly with the number of stages (~24
+//! bytes per stage). [`BatchPipeline`] adds a `Vec<In>` (24 bytes
+//! header + heap buffer) on top.
+//!
+//! ## Reference table (measured, 64-bit)
+//!
+//! | Type | Size | Notes |
+//! |------|------|-------|
+//! | `HandlerFn` arity 0 | 16 B | event-only, no params |
+//! | `HandlerFn` arity 1–4 | 24 B | |
+//! | `HandlerFn` arity 5–8 | 32 B | max supported arity |
+//! | `Callback` arity 4, 16 B ctx | 40 B | e.g. two `u64` fields |
+//! | `Callback` arity 4, 32 B ctx | 56 B | |
+//! | `Pipeline` 1 stage | 24 B | +24 B per additional stage |
+//! | `TemplatedHandler` | 112 B | fixed, independent of arity |
+//! | `HandlerTemplate` | 96 B | stored in World as resource |
+//!
+//! Struct alignment is 8 bytes (from `&'static str`), so all sizes
+//! are multiples of 8. `TemplatedHandler` has 16-byte alignment
+//! (from its inline buffer).
+//!
+//! ## Choosing storage
+//!
+//! | Storage | Size | Allocation | Best for |
+//! |---------|------|------------|----------|
+//! | `Virtual<E>` (Box) | 16 B | heap | simplest, rare creation |
+//! | `FlatVirtual<E>` (B64) | 64 B | none | `HandlerFn`, `Callback` |
+//! | `FlatVirtual<E, B128>` | 128 B | none | `TemplatedHandler` |
+//! | `FlexVirtual<E>` | 64 B | fallback | mixed handler types |
+//! | `FlexVirtual<E, B128>` | 128 B | fallback | mixed + templates |
+//! | Concrete type | exact | none | when type is known |
+//!
+//! **`B64`** (default) — fits all `HandlerFn` and `Callback` types
+//! through arity 8 with contexts up to ~24 bytes. Use this when all
+//! your handlers are built via [`IntoHandler`] or [`IntoCallback`].
+//!
+//! **`B128`** — required for [`TemplatedHandler`] (112 bytes). Use
+//! when mixing templates with regular handlers in the same collection,
+//! or when callback contexts exceed ~24 bytes.
+//!
+//! **`FlexVirtual`** — stores inline when possible, falls back to
+//! heap for oversized handlers. Useful when pipeline handlers (whose
+//! size depends on chain depth) coexist with fixed-size handlers.
+//!
+//! **Concrete type** — when you know the handler type at compile time,
+//! skip type erasure entirely. `HandlerFn` and `Callback` implement
+//! [`Handler<E>`] directly.
+//!
+//! ## Verifying at compile time
+//!
+//! Use a const assertion to catch sizing mismatches early:
+//!
+//! ```
+//! use nexus_rt::TemplatedHandler;
+//!
+//! const _: () = assert!(
+//!     std::mem::size_of::<TemplatedHandler<u32>>() <= 128,
+//!     "TemplatedHandler exceeds B128"
+//! );
+//! ```
+//!
+//! For concrete handlers whose type is hard to name, use
+//! `std::mem::size_of_val` in a test:
+//!
+//! ```
+//! use nexus_rt::{WorldBuilder, Res, ResMut, IntoHandler};
+//!
+//! fn my_handler(a: Res<u64>, b: ResMut<bool>, _event: u32) {}
+//!
+//! let mut wb = WorldBuilder::new();
+//! wb.register::<u64>(0);
+//! wb.register::<bool>(false);
+//! let world = wb.build();
+//!
+//! let handler = my_handler.into_handler(world.registry());
+//! assert!(std::mem::size_of_val(&handler) <= 64, "handler exceeds B64");
+//! ```
 
 #![warn(missing_docs)]
 

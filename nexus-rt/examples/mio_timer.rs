@@ -3,7 +3,8 @@
 //! Demonstrates:
 //! - World as the application (resources = state, handlers = behavior)
 //! - Timer and IO drivers cooperating (heartbeat drives IO)
-//! - Context-owning callbacks (`IntoCallback` with per-connection index)
+//! - Handler templates for zero-lookup instantiation on the hot path
+//! - Context-owning callbacks (`CallbackTemplate` with per-connection index)
 //! - Move-out-fire handler lifecycle with self-re-registration
 //! - Pure polling event loop (no registration in the loop body)
 //!
@@ -25,8 +26,8 @@ use std::net::SocketAddr;
 use std::time::{Duration, Instant};
 
 use nexus_rt::{
-    IntoCallback, IntoHandler, MioDriver, MioInstaller, MioPoller, RegistryRef, ResMut,
-    TimerInstaller, TimerPoller, TimerWheel, WorldBuilder,
+    CallbackTemplate, IntoCallback, IntoHandler, MioDriver, MioInstaller, MioPoller, RegistryRef,
+    Res, ResMut, TimerInstaller, TimerPoller, TimerWheel, WorldBuilder, callback_blueprint,
 };
 
 // ── Timing ──────────────────────────────────────────────────────────────
@@ -85,17 +86,15 @@ struct Stats {
     heartbeats: u64,
 }
 
+// ── Blueprint (template key for per-connection echo handlers) ───────────
+
+callback_blueprint!(OnEcho, usize, mio::event::Event);
+
 // ── Handlers ────────────────────────────────────────────────────────────
 
 /// Startup handler — runs once after build to wire drivers to sources.
 ///
-/// Initial registration needs simultaneous access to MioDriver, Listener,
-/// and TimerWheel. Inside a handler, Param provides disjoint borrows
-/// automatically.
-///
-/// TODO: nexus-rt should offer a `WorldBuilder::on_startup(fn)` that runs
-/// a handler once after `build()` — eliminating the manual
-/// `init.run(&mut world, ())` pattern.
+/// Uses `RegistryRef` here since startup is a cold path (runs once).
 fn startup(
     mut driver: ResMut<MioDriver>,
     mut listener: ResMut<Listener>,
@@ -122,12 +121,17 @@ fn on_accept(
     mut listener: ResMut<Listener>,
     mut conns: ResMut<Connections>,
     mut stats: ResMut<Stats>,
+    echo_tpl: Res<CallbackTemplate<OnEcho>>,
     reg: RegistryRef,
     _event: mio::event::Event,
 ) {
     while let Ok((mut stream, _)) = listener.0.accept() {
         let idx = conns.0.len();
-        let h = on_echo.into_callback(idx, &reg);
+        // Template instantiation: ~5 cycles, zero HashMap lookups.
+        // This is the high-value case — on_accept stamps out one handler
+        // per connection. With 10k connections, that's 10k generations
+        // at ~5 cycles each vs ~30 cycles each with into_callback.
+        let h = echo_tpl.generate(idx);
         let token = driver.insert(Box::new(h));
         driver
             .registry()
@@ -136,7 +140,8 @@ fn on_accept(
         conns.0.push(stream);
         stats.accepts += 1;
     }
-    // Self-re-register for next accept.
+    // Self-re-register: RegistryRef is fine here — one handler created,
+    // and the accept syscall dominates the cost anyway.
     let h = on_accept.into_handler(&reg);
     let token = driver.insert(Box::new(h));
     driver
@@ -219,6 +224,12 @@ fn main() {
 
     let mut mio_poller: MioPoller = wb.install_driver(MioInstaller::new());
     let mut timer_poller: TimerPoller = wb.install_driver(TimerInstaller::new(64));
+
+    // Pre-resolve the echo handler template — HashMap lookups happen once here.
+    // on_accept stamps out per-connection handlers at ~5 cycles each (zero lookups).
+    let echo_tpl = CallbackTemplate::<OnEcho>::new(on_echo, wb.registry());
+    wb.register(echo_tpl);
+
     let mut world = wb.build();
 
     // == Startup ==============================================================

@@ -1,13 +1,29 @@
-//! Pre-resolved handler templates for zero-lookup instantiation.
+//! Pre-resolved handler templates for zero-lookup generation.
 //!
-//! Templates solve the "resolve once, stamp many" pattern: pre-resolve
-//! [`Param`] state (ResourceIds) once at setup, then stamp out handlers
-//! at dispatch time via memcpy — zero HashMap lookups, zero heap
-//! allocations.
+//! # Motivation
 //!
-//! Use case: move-out-fire patterns where handlers are created during
-//! dispatch (accept → per-connection handler, timer schedule → fire
-//! callback).
+//! In move-out-fire patterns (mio accept → per-connection, timer →
+//! one-shot), handlers are created *during dispatch*. Each call to
+//! [`IntoHandler::into_handler`] or [`IntoCallback::into_callback`]
+//! resolves params via `HashMap<TypeId, ResourceId>` — one lookup per
+//! parameter. This is fine for cold-path setup but costs 20–75 cycles
+//! on the hot path, delaying processing of the next event.
+//!
+//! Templates eliminate this cost by front-loading the resolution:
+//!
+//! - **Setup (cold):** resolve params once, store as prototype
+//! - **Dispatch (hot):** memcpy prototype → handler (~5 cycles)
+//!
+//! The trade-off is type erasure via function pointers (~1 cycle per
+//! dispatch), making [`TemplatedHandler`] marginally slower than a
+//! concrete [`HandlerFn`](crate::HandlerFn) at dispatch time. For the
+//! creation-heavy move-out-fire pattern, the 15–70 cycle savings per
+//! creation far outweigh the ~1 cycle dispatch overhead.
+//!
+//! Templates also eliminate the need for [`RegistryRef`](crate::RegistryRef)
+//! in handler signatures — instead of passing the registry through to
+//! create handlers at dispatch time, handlers access pre-resolved
+//! templates via `Res<HandlerTemplate<K>>`.
 //!
 //! # Architecture
 //!
@@ -15,7 +31,7 @@
 //! Setup (cold):   HandlerTemplate::new(fn, registry)
 //!                   └── resolve() + store prototype state
 //!
-//! Dispatch (hot):  template.instantiate()
+//! Dispatch (hot):  template.generate()
 //!                   └── memcpy prototype → TemplatedHandler (~5 cycles)
 //!                         └── impl Handler<E> via fn-ptr delegation
 //! ```
@@ -42,8 +58,8 @@
 //! builder.register(template);
 //! let mut world = builder.build();
 //!
-//! // Instantiate on the hot path — zero HashMap lookups:
-//! let mut handler = world.resource::<HandlerTemplate<OnTick>>().instantiate();
+//! // Generate on the hot path — zero HashMap lookups:
+//! let mut handler = world.resource::<HandlerTemplate<OnTick>>().generate();
 //! handler.run(&mut world, 1u32);
 //!
 //! assert!(*world.resource::<bool>());
@@ -129,7 +145,7 @@ pub trait CallbackBlueprint: Blueprint {
 /// Type-erased handler produced by template instantiation.
 ///
 /// Dispatches via monomorphized function pointers that delegate to
-/// the existing [`Handler`] impl on [`Callback`]. The internal blob
+/// the existing [`Handler`] impl on [`Callback`]. The internal buffer
 /// stores a real `Callback` struct — no duplicated dispatch logic.
 ///
 /// # Size
@@ -162,8 +178,8 @@ unsafe impl<E> Send for TemplatedHandler<E> {}
 
 impl<E> Drop for TemplatedHandler<E> {
     fn drop(&mut self) {
-        // SAFETY: buf contains a Callback written by instantiate_handler/
-        // instantiate_callback. drop_fn is monomorphized for the same type.
+        // SAFETY: buf contains a Callback written by generate_handler/
+        // generate_callback. drop_fn is monomorphized for the same type.
         unsafe { (self.drop_fn)(self.buf.bytes.as_mut_ptr().cast()) }
     }
 }
@@ -192,15 +208,15 @@ impl<E> Handler<E> for TemplatedHandler<E> {
 
 /// Pre-resolved handler template stored as a [`World`] resource.
 ///
-/// Created once at setup via [`new`](Self::new). Each [`instantiate`](Self::instantiate)
-/// stamps out a [`TemplatedHandler`] by cloning the pre-resolved state —
-/// zero HashMap lookups.
+/// Created once at setup via [`new`](Self::new). Each [`generate`](Self::generate)
+/// call stamps out a [`TemplatedHandler`] by cloning the pre-resolved
+/// state — zero HashMap lookups.
 ///
 /// # Guarantees
 ///
 /// - [`new`](Self::new) resolves all params and checks access conflicts
 ///   (panics on error — cold path)
-/// - [`instantiate`](Self::instantiate) is a memcpy (zero heap allocations)
+/// - [`generate`](Self::generate) is a memcpy (zero heap allocations)
 /// - Template is immutable after creation
 ///
 /// # Panics
@@ -225,13 +241,13 @@ impl<E> Handler<E> for TemplatedHandler<E> {
 /// builder.register::<u64>(42);
 /// let template = HandlerTemplate::<OnPing>::new(on_ping, builder.registry());
 ///
-/// let mut handler = template.instantiate();
+/// let mut handler = template.generate();
 /// builder.register(template);
 /// ```
 pub struct HandlerTemplate<K: Blueprint> {
     /// Inline prototype: P::State (type-erased, Copy).
     prototype: InlineBuf,
-    instantiate_fn: unsafe fn(*const u8) -> TemplatedHandler<K::Event>,
+    generate_fn: unsafe fn(*const u8) -> TemplatedHandler<K::Event>,
     name: &'static str,
     _key: PhantomData<K>,
 }
@@ -254,7 +270,7 @@ impl<K: Blueprint> HandlerTemplate<K> {
     ///
     /// Panics if any required resource is not registered, or if
     /// parameter accesses conflict. Also panics if `P::State` exceeds
-    /// the inline buffer size (128 bytes).
+    /// the inline buffer size (64 bytes).
     pub fn new<F, P>(f: F, registry: &Registry) -> Self
     where
         F: IntoHandler<K::Event, P> + Copy,
@@ -279,7 +295,7 @@ impl<K: Blueprint> HandlerTemplate<K> {
 
         Self {
             prototype,
-            instantiate_fn: instantiate_handler::<K::Event, F, P>,
+            generate_fn: generate_handler::<K::Event, F, P>,
             name,
             _key: PhantomData,
         }
@@ -288,10 +304,10 @@ impl<K: Blueprint> HandlerTemplate<K> {
     /// Stamp out a new handler from the pre-resolved prototype.
     ///
     /// Zero HashMap lookups. Zero heap allocations.
-    pub fn instantiate(&self) -> TemplatedHandler<K::Event> {
+    pub fn generate(&self) -> TemplatedHandler<K::Event> {
         // SAFETY: prototype was initialized in new() with the concrete
-        // P::State type that instantiate_fn expects.
-        unsafe { (self.instantiate_fn)(self.prototype.bytes.as_ptr().cast()) }
+        // P::State type that generate_fn expects.
+        unsafe { (self.generate_fn)(self.prototype.bytes.as_ptr().cast()) }
     }
 
     /// Returns the handler function's name.
@@ -307,13 +323,13 @@ impl<K: Blueprint> HandlerTemplate<K> {
 /// Pre-resolved callback template stored as a [`World`] resource.
 ///
 /// Same as [`HandlerTemplate`] but injects a per-instance context at
-/// instantiation time.
+/// generation time.
 ///
 /// # Guarantees
 ///
 /// - [`new`](Self::new) resolves params and checks conflicts (cold path)
-/// - [`instantiate`](Self::instantiate) is a memcpy + context write
-///   (zero heap allocations)
+/// - [`generate`](Self::generate) is a memcpy + context write (zero
+///   heap allocations)
 /// - Template is immutable after creation
 ///
 /// # Panics
@@ -342,13 +358,13 @@ impl<K: Blueprint> HandlerTemplate<K> {
 /// builder.register::<u64>(0);
 /// let template = CallbackTemplate::<OnConn>::new(on_conn, builder.registry());
 ///
-/// let mut handler = template.instantiate(ConnCtx { id: 42 });
+/// let mut handler = template.generate(ConnCtx { id: 42 });
 /// builder.register(template);
 /// ```
 pub struct CallbackTemplate<K: CallbackBlueprint> {
     /// Inline prototype: P::State (type-erased, Copy).
     prototype: InlineBuf,
-    instantiate_fn: unsafe fn(*const u8, K::Context) -> TemplatedHandler<K::Event>,
+    generate_fn: unsafe fn(*const u8, K::Context) -> TemplatedHandler<K::Event>,
     name: &'static str,
     _key: PhantomData<K>,
 }
@@ -367,7 +383,7 @@ impl<K: CallbackBlueprint> CallbackTemplate<K> {
     ///
     /// Panics if any required resource is not registered, if parameter
     /// accesses conflict, or if `P::State` exceeds the inline buffer
-    /// size (128 bytes).
+    /// size (64 bytes).
     pub fn new<F, P>(f: F, registry: &Registry) -> Self
     where
         F: IntoCallback<K::Context, K::Event, P> + Copy,
@@ -391,7 +407,7 @@ impl<K: CallbackBlueprint> CallbackTemplate<K> {
 
         Self {
             prototype,
-            instantiate_fn: instantiate_callback::<K::Context, K::Event, F, P>,
+            generate_fn: generate_callback::<K::Context, K::Event, F, P>,
             name,
             _key: PhantomData,
         }
@@ -400,10 +416,10 @@ impl<K: CallbackBlueprint> CallbackTemplate<K> {
     /// Stamp out a callback with per-instance context.
     ///
     /// Zero HashMap lookups. Zero heap allocations.
-    pub fn instantiate(&self, ctx: K::Context) -> TemplatedHandler<K::Event> {
+    pub fn generate(&self, ctx: K::Context) -> TemplatedHandler<K::Event> {
         // SAFETY: prototype was initialized in new() with the concrete
-        // P::State type that instantiate_fn expects.
-        unsafe { (self.instantiate_fn)(self.prototype.bytes.as_ptr().cast(), ctx) }
+        // P::State type that generate_fn expects.
+        unsafe { (self.generate_fn)(self.prototype.bytes.as_ptr().cast(), ctx) }
     }
 
     /// Returns the callback function's name.
@@ -425,7 +441,7 @@ impl<K: CallbackBlueprint> CallbackTemplate<K> {
 /// # Safety
 ///
 /// `proto` must point to a valid `P::State` produced by `HandlerTemplate::new`.
-unsafe fn instantiate_handler<E, F, P>(proto: *const u8) -> TemplatedHandler<E>
+unsafe fn generate_handler<E, F, P>(proto: *const u8) -> TemplatedHandler<E>
 where
     F: IntoHandler<E, P> + Copy,
     P: Param,
@@ -472,28 +488,28 @@ where
 
 /// # Safety
 ///
-/// `blob` must point to a valid `<F as IntoHandler<E, P>>::Handler`.
-unsafe fn run_handler<E, F, P>(blob: *mut u8, world: &mut World, event: E)
+/// `ptr` must point to a valid `<F as IntoHandler<E, P>>::Handler`.
+unsafe fn run_handler<E, F, P>(ptr: *mut u8, world: &mut World, event: E)
 where
     F: IntoHandler<E, P> + Copy,
     P: Param,
 {
-    // SAFETY: blob was allocated as <F as IntoHandler<E, P>>::Handler
-    // in instantiate_handler.
-    let handler = unsafe { &mut *(blob as *mut <F as IntoHandler<E, P>>::Handler) };
+    // SAFETY: ptr points to a valid <F as IntoHandler<E, P>>::Handler
+    // written by generate_handler.
+    let handler = unsafe { &mut *(ptr as *mut <F as IntoHandler<E, P>>::Handler) };
     handler.run(world, event);
 }
 
 /// # Safety
 ///
-/// `blob` must point to a valid `<F as IntoHandler<E, P>>::Handler`.
-unsafe fn inputs_changed_handler<E, F, P>(blob: *const u8, world: &World) -> bool
+/// `ptr` must point to a valid `<F as IntoHandler<E, P>>::Handler`.
+unsafe fn inputs_changed_handler<E, F, P>(ptr: *const u8, world: &World) -> bool
 where
     F: IntoHandler<E, P> + Copy,
     P: Param,
 {
-    // SAFETY: blob was allocated as <F as IntoHandler<E, P>>::Handler.
-    let handler = unsafe { &*(blob as *const <F as IntoHandler<E, P>>::Handler) };
+    // SAFETY: ptr points to a valid <F as IntoHandler<E, P>>::Handler.
+    let handler = unsafe { &*(ptr as *const <F as IntoHandler<E, P>>::Handler) };
     handler.inputs_changed(world)
 }
 
@@ -504,7 +520,7 @@ where
 /// # Safety
 ///
 /// `proto` must point to a valid `P::State`.
-unsafe fn instantiate_callback<C, E, F, P>(proto: *const u8, ctx: C) -> TemplatedHandler<E>
+unsafe fn generate_callback<C, E, F, P>(proto: *const u8, ctx: C) -> TemplatedHandler<E>
 where
     C: Send + 'static,
     F: IntoCallback<C, E, P> + Copy,
@@ -548,27 +564,30 @@ where
 
 /// # Safety
 ///
-/// `blob` must point to a valid `<F as IntoCallback<C, E, P>>::Callback`.
-unsafe fn run_callback<C, E, F, P>(blob: *mut u8, world: &mut World, event: E)
+/// `ptr` must point to a valid `<F as IntoCallback<C, E, P>>::Callback`.
+unsafe fn run_callback<C, E, F, P>(ptr: *mut u8, world: &mut World, event: E)
 where
     C: Send + 'static,
     F: IntoCallback<C, E, P> + Copy,
     P: Param,
 {
-    let handler = unsafe { &mut *(blob as *mut <F as IntoCallback<C, E, P>>::Callback) };
+    // SAFETY: ptr points to a valid <F as IntoCallback<C, E, P>>::Callback
+    // written by generate_callback.
+    let handler = unsafe { &mut *(ptr as *mut <F as IntoCallback<C, E, P>>::Callback) };
     handler.run(world, event);
 }
 
 /// # Safety
 ///
-/// `blob` must point to a valid `<F as IntoCallback<C, E, P>>::Callback`.
-unsafe fn inputs_changed_callback<C, E, F, P>(blob: *const u8, world: &World) -> bool
+/// `ptr` must point to a valid `<F as IntoCallback<C, E, P>>::Callback`.
+unsafe fn inputs_changed_callback<C, E, F, P>(ptr: *const u8, world: &World) -> bool
 where
     C: Send + 'static,
     F: IntoCallback<C, E, P> + Copy,
     P: Param,
 {
-    let handler = unsafe { &*(blob as *const <F as IntoCallback<C, E, P>>::Callback) };
+    // SAFETY: ptr points to a valid <F as IntoCallback<C, E, P>>::Callback.
+    let handler = unsafe { &*(ptr as *const <F as IntoCallback<C, E, P>>::Callback) };
     handler.inputs_changed(world)
 }
 
@@ -576,7 +595,7 @@ where
 // Drop helpers
 // =============================================================================
 
-/// Drop a handler blob in place.
+/// Drop a handler inline buffer in place.
 ///
 /// # Safety
 ///
@@ -589,7 +608,7 @@ where
     unsafe { std::ptr::drop_in_place(ptr as *mut <F as IntoHandler<E, P>>::Handler) };
 }
 
-/// Drop a callback blob in place.
+/// Drop a callback inline buffer in place.
 ///
 /// # Safety
 ///
@@ -716,14 +735,14 @@ mod tests {
     // -- HandlerTemplate tests ------------------------------------------------
 
     #[test]
-    fn instantiate_produces_working_handler() {
+    fn generate_produces_working_handler() {
         let mut wb = WorldBuilder::new();
         wb.register::<u64>(42);
         wb.register::<bool>(true);
         let template = HandlerTemplate::<TestHandler2P>::new(sys_2p, wb.registry());
         let mut world = wb.build();
 
-        let mut handler = template.instantiate();
+        let mut handler = template.generate();
         handler.run(&mut world, ());
 
         assert_eq!(*world.resource::<u64>(), 43);
@@ -737,8 +756,8 @@ mod tests {
         let template = HandlerTemplate::<TestHandler2P>::new(sys_2p, wb.registry());
         let mut world = wb.build();
 
-        let mut h1 = template.instantiate();
-        let mut h2 = template.instantiate();
+        let mut h1 = template.generate();
+        let mut h2 = template.generate();
 
         h1.run(&mut world, ());
         assert_eq!(*world.resource::<u64>(), 1);
@@ -753,7 +772,7 @@ mod tests {
         wb.register::<u64>(99);
         let template = HandlerTemplate::<TestHandler1P>::new(sys_1p, wb.registry());
 
-        let mut handler = template.instantiate();
+        let mut handler = template.generate();
         let mut world = wb.build();
         handler.run(&mut world, ()); // should not panic
     }
@@ -762,7 +781,7 @@ mod tests {
     fn event_only_template() {
         let wb = WorldBuilder::new();
         let template = HandlerTemplate::<TestHandlerEventOnly>::new(sys_event_only, wb.registry());
-        let mut handler = template.instantiate();
+        let mut handler = template.generate();
         let mut world = wb.build();
         handler.run(&mut world, 42u32); // should not panic
     }
@@ -773,7 +792,7 @@ mod tests {
         let template = HandlerTemplate::<TestHandlerEventOnly>::new(sys_event_only, wb.registry());
         assert!(template.name().contains("sys_event_only"));
 
-        let handler = template.instantiate();
+        let handler = template.generate();
         assert!(handler.name().contains("sys_event_only"));
     }
 
@@ -785,7 +804,7 @@ mod tests {
         let template = HandlerTemplate::<TestHandler2P>::new(sys_2p, wb.registry());
         let mut world = wb.build();
 
-        let mut boxed: Box<dyn Handler<()>> = Box::new(template.instantiate());
+        let mut boxed: Box<dyn Handler<()>> = Box::new(template.generate());
         boxed.run(&mut world, ());
 
         assert_eq!(*world.resource::<u64>(), 1);
@@ -799,7 +818,7 @@ mod tests {
         let template = HandlerTemplate::<TestHandler2P>::new(sys_2p, wb.registry());
         let mut world = wb.build();
 
-        let handler = template.instantiate();
+        let handler = template.generate();
         // Resources registered at sequence 0, world starts at 0 → changed.
         assert!(handler.inputs_changed(&world));
 
@@ -824,7 +843,7 @@ mod tests {
         // Template holds prototype (P::State = ResourceId, no Arc ref).
         // Each instantiation creates a Callback that doesn't hold the Arc
         // either (Res<Arc<()>> only borrows at dispatch time).
-        let handler = template.instantiate();
+        let handler = template.generate();
         drop(handler);
         drop(template);
         // If drop is broken, the Arc won't be released properly.
@@ -835,13 +854,13 @@ mod tests {
     // -- CallbackTemplate tests -----------------------------------------------
 
     #[test]
-    fn callback_instantiate_with_context() {
+    fn callback_generate_with_context() {
         let mut wb = WorldBuilder::new();
         wb.register::<u64>(0);
         let template = CallbackTemplate::<TestCallback>::new(cb_1p, wb.registry());
         let mut world = wb.build();
 
-        let mut handler = template.instantiate(TimerCtx {
+        let mut handler = template.generate(TimerCtx {
             order_id: 10,
             fires: 0,
         });
@@ -857,11 +876,11 @@ mod tests {
         let template = CallbackTemplate::<TestCallback>::new(cb_1p, wb.registry());
         let mut world = wb.build();
 
-        let mut h1 = template.instantiate(TimerCtx {
+        let mut h1 = template.generate(TimerCtx {
             order_id: 5,
             fires: 0,
         });
-        let mut h2 = template.instantiate(TimerCtx {
+        let mut h2 = template.generate(TimerCtx {
             order_id: 7,
             fires: 0,
         });
@@ -876,7 +895,7 @@ mod tests {
     fn callback_event_only() {
         let wb = WorldBuilder::new();
         let template = CallbackTemplate::<TestCallbackEventOnly>::new(cb_event_only, wb.registry());
-        let mut handler = template.instantiate(TimerCtx {
+        let mut handler = template.generate(TimerCtx {
             order_id: 0,
             fires: 0,
         });
@@ -891,7 +910,7 @@ mod tests {
         let template = CallbackTemplate::<TestCallback>::new(cb_1p, wb.registry());
         let mut world = wb.build();
 
-        let handler = template.instantiate(TimerCtx {
+        let handler = template.generate(TimerCtx {
             order_id: 1,
             fires: 0,
         });
@@ -909,7 +928,7 @@ mod tests {
         let template = CallbackTemplate::<TestCallback>::new(cb_1p, wb.registry());
         let mut world = wb.build();
 
-        let mut boxed: Box<dyn Handler<()>> = Box::new(template.instantiate(TimerCtx {
+        let mut boxed: Box<dyn Handler<()>> = Box::new(template.generate(TimerCtx {
             order_id: 99,
             fires: 0,
         }));
@@ -954,7 +973,7 @@ mod tests {
 
         let mut handler = world
             .resource::<HandlerTemplate<TestHandler2P>>()
-            .instantiate();
+            .generate();
         handler.run(&mut world, ());
 
         assert_eq!(*world.resource::<u64>(), 1);
