@@ -126,7 +126,11 @@
 //! | `HandlerTemplate` | 120 B | stored in World as resource |
 //!
 //! Struct alignment is 8 bytes (from `&'static str` and `Buffer`
-//! align(8)), so all sizes are multiples of 8.
+//! align(8)), so all sizes are multiples of 8. All inline buffers
+//! (templates, `FlatVirtual`, `FlexVirtual`) have align(8) —
+//! callback contexts, `Local<T>` types, and parameter state with
+//! alignment > 8 (e.g. `#[repr(align(16))]`) are rejected at
+//! template construction time.
 //!
 //! ## Choosing storage
 //!

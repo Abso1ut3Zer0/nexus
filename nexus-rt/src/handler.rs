@@ -551,7 +551,14 @@ pub trait IntoHandler<E, Params> {
     /// parameter accesses conflict (e.g. duplicate borrows).
     fn resolve(&self, registry: &Registry) -> <Params as Param>::State
     where
-        Params: Param;
+        Params: Param,
+    {
+        let _ = registry;
+        unimplemented!(
+            "IntoHandler::resolve not implemented for {}",
+            std::any::type_name::<Self>(),
+        )
+    }
 
     /// Construct a handler from pre-resolved parameter state.
     ///
@@ -559,7 +566,15 @@ pub trait IntoHandler<E, Params> {
     /// [`resolve`](Self::resolve) on a compatible registry.
     fn with_state(self, state: <Params as Param>::State) -> Self::Handler
     where
-        Params: Param;
+        Params: Param,
+        Self: Sized,
+    {
+        let _ = state;
+        unimplemented!(
+            "IntoHandler::with_state not implemented for {}",
+            std::any::type_name::<Self>(),
+        )
+    }
 
     /// Convert this function into a handler, resolving parameters from the registry.
     fn into_handler(self, registry: &Registry) -> Self::Handler;

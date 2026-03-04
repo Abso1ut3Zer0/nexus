@@ -195,7 +195,14 @@ pub trait IntoCallback<C, E, Params> {
     /// parameter accesses conflict.
     fn resolve(&self, registry: &Registry) -> <Params as Param>::State
     where
-        Params: Param;
+        Params: Param,
+    {
+        let _ = registry;
+        unimplemented!(
+            "IntoCallback::resolve not implemented for {}",
+            std::any::type_name::<Self>(),
+        )
+    }
 
     /// Construct a callback from context and pre-resolved parameter state.
     ///
@@ -203,7 +210,15 @@ pub trait IntoCallback<C, E, Params> {
     /// [`resolve`](Self::resolve) on a compatible registry.
     fn with_state(self, ctx: C, state: <Params as Param>::State) -> Self::Callback
     where
-        Params: Param;
+        Params: Param,
+        Self: Sized,
+    {
+        let _ = (ctx, state);
+        unimplemented!(
+            "IntoCallback::with_state not implemented for {}",
+            std::any::type_name::<Self>(),
+        )
+    }
 
     /// Convert this function + context into a Callback.
     fn into_callback(self, ctx: C, registry: &Registry) -> Self::Callback;

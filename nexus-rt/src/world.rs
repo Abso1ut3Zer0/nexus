@@ -337,7 +337,7 @@ impl WorldBuilder {
             u16::try_from(self.storage.slots.len()).is_ok(),
             "resource limit exceeded ({} registered, max {})",
             self.storage.slots.len(),
-            u16::MAX,
+            usize::from(u16::MAX) + 1,
         );
 
         let ptr = Box::into_raw(Box::new(value)) as *mut u8;

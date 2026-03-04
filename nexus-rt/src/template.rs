@@ -304,6 +304,12 @@ impl<K: Blueprint> HandlerTemplate<K> {
         );
 
         assert!(
+            std::mem::align_of::<P::State>() <= 8,
+            "Param state alignment ({}) exceeds prototype buffer alignment (8)",
+            std::mem::align_of::<P::State>(),
+        );
+
+        assert!(
             std::mem::align_of::<<F as IntoHandler<K::Event, P>>::Handler>() <= 8,
             "Handler alignment ({}) exceeds buffer alignment (8)",
             std::mem::align_of::<<F as IntoHandler<K::Event, P>>::Handler>(),
@@ -314,7 +320,7 @@ impl<K: Blueprint> HandlerTemplate<K> {
 
         // Store prototype state inline.
         let mut prototype = MaybeUninit::<B64>::uninit();
-        // SAFETY: we just verified P::State fits. B64 is align(8).
+        // SAFETY: we just verified P::State fits and aligns. B64 is align(8).
         unsafe { std::ptr::write(prototype.as_mut_ptr().cast(), state) };
 
         Self {
@@ -489,6 +495,12 @@ impl<K: CallbackBlueprint> CallbackTemplate<K> {
         );
 
         assert!(
+            std::mem::align_of::<P::State>() <= 8,
+            "Param state alignment ({}) exceeds prototype buffer alignment (8)",
+            std::mem::align_of::<P::State>(),
+        );
+
+        assert!(
             std::mem::align_of::<<F as IntoCallback<K::Context, K::Event, P>>::Callback>() <= 8,
             "Callback alignment ({}) exceeds buffer alignment (8)",
             std::mem::align_of::<<F as IntoCallback<K::Context, K::Event, P>>::Callback>(),
@@ -498,7 +510,7 @@ impl<K: CallbackBlueprint> CallbackTemplate<K> {
         let name = std::any::type_name::<F>();
 
         let mut prototype = MaybeUninit::<B64>::uninit();
-        // SAFETY: we just verified P::State fits. B64 is align(8).
+        // SAFETY: we just verified P::State fits and aligns. B64 is align(8).
         unsafe { std::ptr::write(prototype.as_mut_ptr().cast(), state) };
 
         Self {
