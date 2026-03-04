@@ -96,6 +96,35 @@ pub struct Callback<C, F, Params: Param> {
 /// Closures do not work with `IntoCallback` due to Rust's HRTB inference
 /// limitations with GATs. Use named `fn` items instead.
 ///
+/// # Callback templates
+///
+/// For dispatch-time callback creation without HashMap lookups, use
+/// [`resolve`](Self::resolve) at setup to pre-resolve parameter state,
+/// then [`with_state`](Self::with_state) on the hot path:
+///
+/// ```
+/// use nexus_rt::{WorldBuilder, ResMut, IntoCallback, Handler};
+///
+/// struct TimerCtx { order_id: u64, fires: u64 }
+///
+/// fn on_timeout(ctx: &mut TimerCtx, mut counter: ResMut<u64>, _event: ()) {
+///     ctx.fires += 1;
+///     *counter += ctx.order_id;
+/// }
+///
+/// let mut builder = WorldBuilder::new();
+/// builder.register::<u64>(0);
+///
+/// // Pre-resolve once (cold path):
+/// let state = on_timeout.resolve(builder.registry());
+///
+/// // Stamp out callbacks with different contexts (hot path):
+/// let mut cb = on_timeout.with_state(
+///     TimerCtx { order_id: 42, fires: 0 },
+///     state,
+/// );
+/// ```
+///
 /// # Examples
 ///
 /// ```
@@ -130,6 +159,28 @@ pub trait IntoCallback<C, E, Params> {
     /// The concrete Callback type produced.
     type Callback: Handler<E>;
 
+    /// Pre-resolve parameter state from the registry.
+    ///
+    /// Returns the cached state ([`ResourceId`](crate::ResourceId)s) needed
+    /// to construct callbacks without HashMap lookups. Validates access
+    /// conflicts.
+    ///
+    /// # Panics
+    ///
+    /// Panics if any required resource is not registered, or if
+    /// parameter accesses conflict.
+    fn resolve(&self, registry: &Registry) -> <Params as Param>::State
+    where
+        Params: Param;
+
+    /// Construct a callback from context and pre-resolved parameter state.
+    ///
+    /// Zero HashMap lookups. The `state` must have been produced by
+    /// [`resolve`](Self::resolve) on a compatible registry.
+    fn with_state(self, ctx: C, state: <Params as Param>::State) -> Self::Callback
+    where
+        Params: Param;
+
     /// Convert this function + context into a Callback.
     fn into_callback(self, ctx: C, registry: &Registry) -> Self::Callback;
 }
@@ -141,13 +192,22 @@ pub trait IntoCallback<C, E, Params> {
 impl<C: Send + 'static, E, F: FnMut(&mut C, E) + Send + 'static> IntoCallback<C, E, ()> for F {
     type Callback = Callback<C, F, ()>;
 
-    fn into_callback(self, ctx: C, registry: &Registry) -> Self::Callback {
+    fn resolve(&self, registry: &Registry) -> <() as Param>::State {
+        <() as Param>::init(registry);
+    }
+
+    fn with_state(self, ctx: C, _state: <() as Param>::State) -> Self::Callback {
         Callback {
             ctx,
             f: self,
-            state: <() as Param>::init(registry),
+            state: (),
             name: std::any::type_name::<F>(),
         }
+    }
+
+    fn into_callback(self, ctx: C, registry: &Registry) -> Self::Callback {
+        self.resolve(registry);
+        self.with_state(ctx, ())
     }
 }
 
@@ -182,10 +242,10 @@ macro_rules! impl_into_callback {
         {
             type Callback = Callback<C, F, ($($P,)+)>;
 
-            fn into_callback(self, ctx: C, registry: &Registry) -> Self::Callback {
+            #[allow(non_snake_case)]
+            fn resolve(&self, registry: &Registry) -> <($($P,)+) as Param>::State {
                 let state = <($($P,)+) as Param>::init(registry);
                 {
-                    #[allow(non_snake_case)]
                     let ($($P,)+) = &state;
                     registry.check_access(&[
                         $(
@@ -194,7 +254,16 @@ macro_rules! impl_into_callback {
                         )+
                     ]);
                 }
+                state
+            }
+
+            fn with_state(self, ctx: C, state: <($($P,)+) as Param>::State) -> Self::Callback {
                 Callback { ctx, f: self, state, name: std::any::type_name::<F>() }
+            }
+
+            fn into_callback(self, ctx: C, registry: &Registry) -> Self::Callback {
+                let state = self.resolve(registry);
+                self.with_state(ctx, state)
             }
         }
 

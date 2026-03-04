@@ -483,6 +483,30 @@ pub type HandlerFn<F, Params> = Callback<(), CtxFree<F>, Params>;
 /// limitations with GATs. Use named `fn` items instead. This is the same
 /// limitation as Bevy's system registration.
 ///
+/// # Handler templates
+///
+/// For dispatch-time handler creation without HashMap lookups, use
+/// [`resolve`](Self::resolve) at setup to pre-resolve parameter state,
+/// then [`with_state`](Self::with_state) on the hot path:
+///
+/// ```
+/// use nexus_rt::{Res, ResMut, IntoHandler, WorldBuilder};
+///
+/// fn tick(counter: Res<u64>, mut flag: ResMut<bool>, event: u32) {
+///     if event > 0 { *flag = true; }
+/// }
+///
+/// let mut builder = WorldBuilder::new();
+/// builder.register::<u64>(0);
+/// builder.register::<bool>(false);
+///
+/// // Pre-resolve once (cold path — HashMap lookups here):
+/// let state = tick.resolve(builder.registry());
+///
+/// // Stamp out handlers (hot path — zero HashMap lookups):
+/// let mut handler = tick.with_state(state);
+/// ```
+///
 /// # Examples
 ///
 /// ```
@@ -504,6 +528,31 @@ pub trait IntoHandler<E, Params> {
     /// The concrete handler type produced.
     type Handler: Handler<E> + 'static;
 
+    /// Pre-resolve parameter state from the registry.
+    ///
+    /// Returns the cached state ([`ResourceId`]s) needed to construct
+    /// handlers without HashMap lookups. Validates access conflicts.
+    ///
+    /// Store the returned state and pass it to
+    /// [`with_state`](Self::with_state) to stamp out handlers
+    /// on the hot path.
+    ///
+    /// # Panics
+    ///
+    /// Panics if any required resource is not registered, or if
+    /// parameter accesses conflict (e.g. duplicate borrows).
+    fn resolve(&self, registry: &Registry) -> <Params as Param>::State
+    where
+        Params: Param;
+
+    /// Construct a handler from pre-resolved parameter state.
+    ///
+    /// Zero HashMap lookups. The `state` must have been produced by
+    /// [`resolve`](Self::resolve) on a compatible registry.
+    fn with_state(self, state: <Params as Param>::State) -> Self::Handler
+    where
+        Params: Param;
+
     /// Convert this function into a handler, resolving parameters from the registry.
     fn into_handler(self, registry: &Registry) -> Self::Handler;
 }
@@ -516,13 +565,22 @@ pub trait IntoHandler<E, Params> {
 impl<E, F: FnMut(E) + Send + 'static> IntoHandler<E, ()> for F {
     type Handler = Callback<(), CtxFree<F>, ()>;
 
-    fn into_handler(self, registry: &Registry) -> Self::Handler {
+    fn resolve(&self, registry: &Registry) -> <() as Param>::State {
+        <() as Param>::init(registry);
+    }
+
+    fn with_state(self, _state: <() as Param>::State) -> Self::Handler {
         Callback {
             ctx: (),
             f: CtxFree(self),
-            state: <() as Param>::init(registry),
+            state: (),
             name: std::any::type_name::<F>(),
         }
+    }
+
+    fn into_handler(self, registry: &Registry) -> Self::Handler {
+        self.resolve(registry);
+        self.with_state(())
     }
 }
 
@@ -556,10 +614,10 @@ macro_rules! impl_into_handler {
         {
             type Handler = Callback<(), CtxFree<F>, ($($P,)+)>;
 
-            fn into_handler(self, registry: &Registry) -> Self::Handler {
+            #[allow(non_snake_case)]
+            fn resolve(&self, registry: &Registry) -> <($($P,)+) as Param>::State {
                 let state = <($($P,)+) as Param>::init(registry);
                 {
-                    #[allow(non_snake_case)]
                     let ($($P,)+) = &state;
                     registry.check_access(&[
                         $(
@@ -568,12 +626,21 @@ macro_rules! impl_into_handler {
                         )+
                     ]);
                 }
+                state
+            }
+
+            fn with_state(self, state: <($($P,)+) as Param>::State) -> Self::Handler {
                 Callback {
                     ctx: (),
                     f: CtxFree(self),
                     state,
                     name: std::any::type_name::<F>(),
                 }
+            }
+
+            fn into_handler(self, registry: &Registry) -> Self::Handler {
+                let state = self.resolve(registry);
+                self.with_state(state)
             }
         }
 
