@@ -728,6 +728,21 @@ where
 /// driver handler collections alongside [`Callback`](crate::Callback)
 /// and [`HandlerFn`](crate::HandlerFn). For batch processing, see
 /// [`BatchPipeline`].
+///
+/// # Memory Layout
+///
+/// Size depends on the closure chain — each `.stage()` / `.map()` /
+/// `.and_then()` combinator nests a closure that captures the previous
+/// chain plus a `Stage<F, P>` (~N×2 + 16 bytes per stage). Closure-based
+/// combinators (`.filter()`, `.inspect()`, etc.) add the captured closure
+/// size. Total size grows with pipeline depth.
+///
+/// Pipelines are built once at setup and live as concrete types.
+/// They are **not** compatible with [`HandlerTemplate`](crate::HandlerTemplate)
+/// (which is for stamp-many patterns). For inline storage as
+/// `dyn Handler<E>`, use [`FlatVirtual`](crate::FlatVirtual) with a
+/// buffer large enough for the concrete chain, or [`FlexVirtual`](crate::FlexVirtual)
+/// for inline-with-heap-fallback.
 pub struct Pipeline<In, F> {
     chain: F,
     _marker: PhantomData<fn(In)>,
@@ -752,6 +767,12 @@ impl<In: 'static, F: FnMut(&mut World, In) + Send + 'static> crate::Handler<In>
 /// and `Result` flow control as [`Pipeline`]. Errors are handled inline
 /// (via `.catch()`, `.unwrap_or()`, etc.) and the batch continues to
 /// the next item. No intermediate buffers between stages.
+///
+/// # Memory Layout
+///
+/// Same closure chain cost as [`Pipeline`], plus a `Vec<In>` (24 bytes
+/// header + heap-allocated buffer). Not suitable for inline storage —
+/// use `Box<dyn Handler<In>>` or store as a concrete type.
 ///
 /// # Examples
 ///

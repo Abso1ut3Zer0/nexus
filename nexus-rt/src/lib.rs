@@ -126,12 +126,21 @@ pub type Virtual<E> = Box<dyn Handler<E>>;
 ///
 /// Stores the handler inline (no heap allocation). Panics if the concrete
 /// handler doesn't fit in the buffer.
+///
+/// # Buffer sizing
+///
+/// The default `B64` (64 bytes) fits all [`HandlerFn`] and [`Callback`]
+/// types up to arity 8. For [`TemplatedHandler`], use `B128` (112 bytes
+/// including fn ptrs and name). [`Pipeline`](pipeline::Pipeline) sizes
+/// depend on chain depth — use [`FlexVirtual`] or measure with
+/// `std::mem::size_of_val`.
 #[cfg(feature = "smartptr")]
 pub type FlatVirtual<E, B = nexus_smartptr::B64> = nexus_smartptr::Flat<dyn Handler<E>, B>;
 
 /// Type alias for an inline [`Handler`] with heap fallback using [`nexus_smartptr::Flex`].
 ///
 /// Stores inline if the handler fits, otherwise heap-allocates.
+/// See [`FlatVirtual`] for buffer sizing guidance.
 #[cfg(feature = "smartptr")]
 pub type FlexVirtual<E, B = nexus_smartptr::B64> = nexus_smartptr::Flex<dyn Handler<E>, B>;
 

@@ -464,6 +464,13 @@ pub struct CtxFree<F>(pub(crate) F);
 /// Created by [`IntoHandler::into_handler`]. Use [`HandlerFn`] in type
 /// annotations when you need to name the concrete type rather than
 /// `Box<dyn Handler<E>>`.
+///
+/// # Memory Layout
+///
+/// `N × 2 + 16` bytes where N is the parameter arity. Named functions
+/// are ZSTs, so only the [`ResourceId`] state (2 bytes each) and the
+/// `&'static str` name (16 bytes) contribute. Arity 8 = 32 bytes.
+/// Always fits in `B64`.
 pub type HandlerFn<F, Params> = Callback<(), CtxFree<F>, Params>;
 
 // =============================================================================

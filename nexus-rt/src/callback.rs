@@ -46,6 +46,27 @@ use crate::world::{Registry, World};
 ///
 /// Both implement [`Handler<E>`].
 ///
+/// # Memory Layout
+///
+/// ```text
+/// sizeof(Callback<C, F, P>) = sizeof(C) + sizeof(F) + sizeof(P::State) + 16
+/// ```
+///
+/// For named functions `F` is a ZST (0 bytes). `P::State` is N × 2 bytes
+/// where N is the parameter arity ([`ResourceId`](crate::ResourceId) is `u16`).
+/// The 16 bytes are the `&'static str` name.
+///
+/// | Type | Typical size |
+/// |------|-------------|
+/// | `HandlerFn` arity 0 | 16 bytes |
+/// | `HandlerFn` arity 4 | 24 bytes |
+/// | `HandlerFn` arity 8 | 32 bytes |
+/// | `Callback` arity 4, 16B ctx | 40 bytes |
+/// | `Callback` arity 8, 32B ctx | 64 bytes |
+///
+/// All concrete `Callback` types fit in `B64` (the default for
+/// [`FlatVirtual`](crate::FlatVirtual) / [`FlexVirtual`](crate::FlexVirtual)).
+///
 /// # Examples
 ///
 /// ```
