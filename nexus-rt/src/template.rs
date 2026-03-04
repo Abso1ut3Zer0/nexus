@@ -31,10 +31,21 @@
 //! Setup (cold):   HandlerTemplate::new(fn, registry)
 //!                   └── resolve() + store prototype state
 //!
-//! Dispatch (hot):  template.generate()
-//!                   └── memcpy prototype → TemplatedHandler (~5 cycles)
+//! Dispatch (hot):  template.generate::<B>()
+//!                   └── write-into buffer → TemplatedHandler (~5 cycles)
 //!                         └── impl Handler<E> via fn-ptr delegation
 //! ```
+//!
+//! # Buffer sizing
+//!
+//! [`TemplatedHandler`] is generic over `B: Buffer` from `nexus-smartptr`.
+//! The default `B64` fits all handlers through arity 8 with contexts up
+//! to ~24 bytes. Use `B128` for larger contexts or when the handler
+//! doesn't fit — [`generate`](HandlerTemplate::generate) panics with
+//! a clear message if the buffer is too small.
+//!
+//! See the [crate-level capacity planning docs](crate#capacity-planning)
+//! for a full reference table.
 //!
 //! # Examples
 //!
@@ -68,29 +79,11 @@
 use std::marker::PhantomData;
 use std::mem::MaybeUninit;
 
+use nexus_smartptr::{B64, Buffer};
+
 use crate::handler::Param;
 use crate::world::{Registry, World};
 use crate::{Handler, IntoCallback, IntoHandler};
-
-// =============================================================================
-// Inline buffer
-// =============================================================================
-
-/// Max inline storage for type-erased handler state.
-///
-/// Fits: 8 ResourceIds (16 bytes) + &'static str name (16 bytes) +
-/// ZST function + ZST context = 32 bytes for the largest handler.
-/// 64 bytes leaves headroom for callback contexts up to ~32 bytes.
-///
-/// With this size, `TemplatedHandler<E>` is 112 bytes total (64 buf +
-/// 24 fn ptrs + 16 name + 8 padding), fitting inside `Flat128`.
-const MAX_INLINE: usize = 64;
-
-/// 16-byte aligned inline buffer for type-erased Callback storage.
-#[repr(C, align(16))]
-struct InlineBuf {
-    bytes: [MaybeUninit<u8>; MAX_INLINE],
-}
 
 // =============================================================================
 // Blueprint traits
@@ -139,7 +132,7 @@ pub trait CallbackBlueprint: Blueprint {
 }
 
 // =============================================================================
-// TemplatedHandler<E> — type-erased output
+// TemplatedHandler<E, B> — type-erased output
 // =============================================================================
 
 /// Type-erased handler produced by template instantiation.
@@ -148,12 +141,17 @@ pub trait CallbackBlueprint: Blueprint {
 /// the existing [`Handler`] impl on [`Callback`]. The internal buffer
 /// stores a real `Callback` struct — no duplicated dispatch logic.
 ///
-/// # Size
+/// # Buffer sizing
 ///
-/// Fixed at 112 bytes on 64-bit (64 inline buf + 24 fn ptrs + 16 name
-/// + 8 padding). Fits inside `Flat128` / `FlexVirtual<E, B128>`.
+/// `B` controls inline capacity. The default [`B64`] fits all
+/// [`HandlerFn`](crate::HandlerFn) and [`Callback`](crate::Callback)
+/// types through arity 8 with contexts up to ~24 bytes. Use [`B128`]
+/// for larger callbacks.
 ///
-/// Zero heap allocations — state is stored inline.
+/// [`generate`](HandlerTemplate::generate) panics if the concrete
+/// handler doesn't fit in `B`.
+///
+/// [`B128`]: nexus_smartptr::B128
 ///
 /// # Guarantees
 ///
@@ -161,9 +159,9 @@ pub trait CallbackBlueprint: Blueprint {
 /// - Zero heap allocations to create
 /// - [`Drop`] calls the monomorphized drop function (no-op for
 ///   context-free handlers, drops `C` for callbacks)
-pub struct TemplatedHandler<E> {
+pub struct TemplatedHandler<E, B: Buffer + Send = B64> {
     /// Inline Callback<C, F, P> (type-erased).
-    buf: InlineBuf,
+    buf: MaybeUninit<B>,
     run_fn: unsafe fn(*mut u8, &mut World, E),
     inputs_changed_fn: unsafe fn(*const u8, &World) -> bool,
     drop_fn: unsafe fn(*mut u8),
@@ -174,27 +172,27 @@ pub struct TemplatedHandler<E> {
 // SAFETY: The buf contains a Callback<C, F, P> where all components
 // satisfy Send (enforced by IntoHandler/IntoCallback bounds: F: Send,
 // C: Send, Param::State: Send). Function pointers are Send + Sync.
-unsafe impl<E> Send for TemplatedHandler<E> {}
+unsafe impl<E, B: Buffer + Send> Send for TemplatedHandler<E, B> {}
 
-impl<E> Drop for TemplatedHandler<E> {
+impl<E, B: Buffer + Send> Drop for TemplatedHandler<E, B> {
     fn drop(&mut self) {
         // SAFETY: buf contains a Callback written by generate_handler/
         // generate_callback. drop_fn is monomorphized for the same type.
-        unsafe { (self.drop_fn)(self.buf.bytes.as_mut_ptr().cast()) }
+        unsafe { (self.drop_fn)(self.buf.as_mut_ptr().cast()) }
     }
 }
 
-impl<E> Handler<E> for TemplatedHandler<E> {
+impl<E, B: Buffer + Send> Handler<E> for TemplatedHandler<E, B> {
     fn run(&mut self, world: &mut World, event: E) {
         // SAFETY: buf contains a properly initialized Callback,
         // run_fn is monomorphized for the same concrete type.
-        unsafe { (self.run_fn)(self.buf.bytes.as_mut_ptr().cast(), world, event) }
+        unsafe { (self.run_fn)(self.buf.as_mut_ptr().cast(), world, event) }
     }
 
     fn inputs_changed(&self, world: &World) -> bool {
         // SAFETY: buf contains a properly initialized Callback,
         // inputs_changed_fn is monomorphized for the same concrete type.
-        unsafe { (self.inputs_changed_fn)(self.buf.bytes.as_ptr().cast(), world) }
+        unsafe { (self.inputs_changed_fn)(self.buf.as_ptr().cast(), world) }
     }
 
     fn name(&self) -> &'static str {
@@ -209,8 +207,8 @@ impl<E> Handler<E> for TemplatedHandler<E> {
 /// Pre-resolved handler template stored as a [`World`] resource.
 ///
 /// Created once at setup via [`new`](Self::new). Each [`generate`](Self::generate)
-/// call stamps out a [`TemplatedHandler`] by cloning the pre-resolved
-/// state — zero HashMap lookups.
+/// call stamps out a [`TemplatedHandler`] by writing the pre-resolved
+/// state into a caller-provided buffer — zero HashMap lookups.
 ///
 /// # Guarantees
 ///
@@ -224,6 +222,10 @@ impl<E> Handler<E> for TemplatedHandler<E> {
 /// [`new`](Self::new) panics if:
 /// - Any required resource is not registered in the [`Registry`]
 /// - Parameter accesses conflict (e.g. duplicate mutable borrows)
+/// - `F` is not a zero-sized type (closures are not supported)
+///
+/// [`generate`](Self::generate) panics if:
+/// - The handler doesn't fit in the chosen buffer `B`
 ///
 /// # Examples
 ///
@@ -241,13 +243,23 @@ impl<E> Handler<E> for TemplatedHandler<E> {
 /// builder.register::<u64>(42);
 /// let template = HandlerTemplate::<OnPing>::new(on_ping, builder.registry());
 ///
+/// // Default B64 buffer:
 /// let mut handler = template.generate();
 /// builder.register(template);
 /// ```
 pub struct HandlerTemplate<K: Blueprint> {
     /// Inline prototype: P::State (type-erased, Copy).
-    prototype: InlineBuf,
-    generate_fn: unsafe fn(*const u8) -> TemplatedHandler<K::Event>,
+    prototype: MaybeUninit<B64>,
+    /// Write-into: reads prototype, writes Callback into dst buffer.
+    generate_fn: unsafe fn(proto: *const u8, dst: *mut u8),
+    /// Dispatch: Handler::run on the Callback.
+    run_fn: unsafe fn(*mut u8, &mut World, K::Event),
+    /// Dispatch: Handler::inputs_changed on the Callback.
+    inputs_changed_fn: unsafe fn(*const u8, &World) -> bool,
+    /// Drop: drop_in_place on the Callback.
+    drop_fn: unsafe fn(*mut u8),
+    /// Size of the concrete handler (for capacity check at generate).
+    handler_size: usize,
     name: &'static str,
     _key: PhantomData<K>,
 }
@@ -268,9 +280,12 @@ impl<K: Blueprint> HandlerTemplate<K> {
     ///
     /// # Panics
     ///
-    /// Panics if any required resource is not registered, or if
-    /// parameter accesses conflict. Also panics if `P::State` exceeds
-    /// the inline buffer size (64 bytes).
+    /// Panics if:
+    /// - Any required resource is not registered
+    /// - Parameter accesses conflict
+    /// - `F` is not a zero-sized type (closures not supported)
+    /// - `P::State` exceeds the prototype buffer (64 bytes)
+    /// - Handler alignment exceeds 8
     pub fn new<F, P>(f: F, registry: &Registry) -> Self
     where
         F: IntoHandler<K::Event, P> + Copy,
@@ -278,24 +293,41 @@ impl<K: Blueprint> HandlerTemplate<K> {
         P::State: Copy,
     {
         assert!(
-            std::mem::size_of::<P::State>() <= MAX_INLINE,
-            "Param state ({} bytes) exceeds inline buffer ({MAX_INLINE} bytes)",
+            std::mem::size_of::<F>() == 0,
+            "templates require named functions (zero-sized types), got size {}",
+            std::mem::size_of::<F>(),
+        );
+
+        assert!(
+            std::mem::size_of::<P::State>() <= B64::CAPACITY,
+            "Param state ({} bytes) exceeds prototype buffer ({} bytes)",
             std::mem::size_of::<P::State>(),
+            B64::CAPACITY,
+        );
+
+        assert!(
+            std::mem::align_of::<<F as IntoHandler<K::Event, P>>::Handler>() <= 8,
+            "Handler alignment ({}) exceeds buffer alignment (8)",
+            std::mem::align_of::<<F as IntoHandler<K::Event, P>>::Handler>(),
         );
 
         let state = f.resolve(registry);
         let name = std::any::type_name::<F>();
 
         // Store prototype state inline.
-        let mut prototype = InlineBuf {
-            bytes: [MaybeUninit::uninit(); MAX_INLINE],
-        };
-        // SAFETY: we just verified P::State fits. Buffer is aligned to 16.
-        unsafe { std::ptr::write(prototype.bytes.as_mut_ptr().cast(), state) };
+        let mut prototype = MaybeUninit::<B64>::uninit();
+        // SAFETY: we just verified P::State fits. B64 is align(8).
+        unsafe { std::ptr::write(prototype.as_mut_ptr().cast(), state) };
+
+        let handler_size = std::mem::size_of::<<F as IntoHandler<K::Event, P>>::Handler>();
 
         Self {
             prototype,
             generate_fn: generate_handler::<K::Event, F, P>,
+            run_fn: run_handler::<K::Event, F, P>,
+            inputs_changed_fn: inputs_changed_handler::<K::Event, F, P>,
+            drop_fn: drop_handler::<K::Event, F, P>,
+            handler_size,
             name,
             _key: PhantomData,
         }
@@ -303,11 +335,58 @@ impl<K: Blueprint> HandlerTemplate<K> {
 
     /// Stamp out a new handler from the pre-resolved prototype.
     ///
-    /// Zero HashMap lookups. Zero heap allocations.
+    /// Zero HashMap lookups. Zero heap allocations. Uses the default
+    /// [`B64`] buffer, which fits all handlers through arity 8.
+    ///
+    /// For larger handlers, use [`generate_sized`](Self::generate_sized).
     pub fn generate(&self) -> TemplatedHandler<K::Event> {
+        self.generate_sized()
+    }
+
+    /// Stamp out a handler into a specific buffer size class.
+    ///
+    /// Same as [`generate`](Self::generate) but with an explicit buffer.
+    /// Panics if the handler doesn't fit.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use nexus_rt::{WorldBuilder, Res, HandlerTemplate, handler_blueprint, B128};
+    ///
+    /// handler_blueprint!(K, u32);
+    /// fn sys(a: Res<u64>, _e: u32) {}
+    ///
+    /// let mut wb = WorldBuilder::new();
+    /// wb.register::<u64>(0);
+    /// let tpl = HandlerTemplate::<K>::new(sys, wb.registry());
+    /// let handler = tpl.generate_sized::<B128>();
+    /// ```
+    pub fn generate_sized<B: Buffer + Send>(&self) -> TemplatedHandler<K::Event, B> {
+        assert!(
+            self.handler_size <= B::CAPACITY,
+            "Handler ({} bytes) exceeds buffer capacity ({} bytes). \
+             Use a larger buffer, e.g. generate_sized::<B128>()",
+            self.handler_size,
+            B::CAPACITY,
+        );
+
+        let mut buf = MaybeUninit::<B>::uninit();
         // SAFETY: prototype was initialized in new() with the concrete
-        // P::State type that generate_fn expects.
-        unsafe { (self.generate_fn)(self.prototype.bytes.as_ptr().cast()) }
+        // P::State type that generate_fn expects. Handler fits in B
+        // (verified above). B is align(8), handler alignment <= 8
+        // (verified in new()).
+        unsafe {
+            (self.generate_fn)(self.prototype.as_ptr().cast(), buf.as_mut_ptr().cast());
+        }
+
+        TemplatedHandler {
+            buf,
+            run_fn: self.run_fn,
+            inputs_changed_fn: self.inputs_changed_fn,
+            drop_fn: self.drop_fn,
+            name: self.name,
+            _event: PhantomData,
+        }
     }
 
     /// Returns the handler function's name.
@@ -337,6 +416,11 @@ impl<K: Blueprint> HandlerTemplate<K> {
 /// [`new`](Self::new) panics if:
 /// - Any required resource is not registered
 /// - Parameter accesses conflict
+/// - `F` is not a zero-sized type
+/// - Handler alignment exceeds 8
+///
+/// [`generate`](Self::generate) panics if:
+/// - The callback doesn't fit in the chosen buffer `B`
 ///
 /// # Examples
 ///
@@ -363,8 +447,17 @@ impl<K: Blueprint> HandlerTemplate<K> {
 /// ```
 pub struct CallbackTemplate<K: CallbackBlueprint> {
     /// Inline prototype: P::State (type-erased, Copy).
-    prototype: InlineBuf,
-    generate_fn: unsafe fn(*const u8, K::Context) -> TemplatedHandler<K::Event>,
+    prototype: MaybeUninit<B64>,
+    /// Write-into: reads prototype + context, writes Callback into dst buffer.
+    generate_fn: unsafe fn(proto: *const u8, ctx: K::Context, dst: *mut u8),
+    /// Dispatch: Handler::run on the Callback.
+    run_fn: unsafe fn(*mut u8, &mut World, K::Event),
+    /// Dispatch: Handler::inputs_changed on the Callback.
+    inputs_changed_fn: unsafe fn(*const u8, &World) -> bool,
+    /// Drop: drop_in_place on the Callback.
+    drop_fn: unsafe fn(*mut u8),
+    /// Size of the concrete callback (for capacity check at generate).
+    handler_size: usize,
     name: &'static str,
     _key: PhantomData<K>,
 }
@@ -381,9 +474,12 @@ impl<K: CallbackBlueprint> CallbackTemplate<K> {
     ///
     /// # Panics
     ///
-    /// Panics if any required resource is not registered, if parameter
-    /// accesses conflict, or if `P::State` exceeds the inline buffer
-    /// size (64 bytes).
+    /// Panics if:
+    /// - Any required resource is not registered
+    /// - Parameter accesses conflict
+    /// - `F` is not a zero-sized type (closures not supported)
+    /// - `P::State` exceeds the prototype buffer (64 bytes)
+    /// - Callback alignment exceeds 8
     pub fn new<F, P>(f: F, registry: &Registry) -> Self
     where
         F: IntoCallback<K::Context, K::Event, P> + Copy,
@@ -391,23 +487,41 @@ impl<K: CallbackBlueprint> CallbackTemplate<K> {
         P::State: Copy,
     {
         assert!(
-            std::mem::size_of::<P::State>() <= MAX_INLINE,
-            "Param state ({} bytes) exceeds inline buffer ({MAX_INLINE} bytes)",
+            std::mem::size_of::<F>() == 0,
+            "templates require named functions (zero-sized types), got size {}",
+            std::mem::size_of::<F>(),
+        );
+
+        assert!(
+            std::mem::size_of::<P::State>() <= B64::CAPACITY,
+            "Param state ({} bytes) exceeds prototype buffer ({} bytes)",
             std::mem::size_of::<P::State>(),
+            B64::CAPACITY,
+        );
+
+        assert!(
+            std::mem::align_of::<<F as IntoCallback<K::Context, K::Event, P>>::Callback>() <= 8,
+            "Callback alignment ({}) exceeds buffer alignment (8)",
+            std::mem::align_of::<<F as IntoCallback<K::Context, K::Event, P>>::Callback>(),
         );
 
         let state = f.resolve(registry);
         let name = std::any::type_name::<F>();
 
-        let mut prototype = InlineBuf {
-            bytes: [MaybeUninit::uninit(); MAX_INLINE],
-        };
-        // SAFETY: we just verified P::State fits. Buffer is aligned to 16.
-        unsafe { std::ptr::write(prototype.bytes.as_mut_ptr().cast(), state) };
+        let mut prototype = MaybeUninit::<B64>::uninit();
+        // SAFETY: we just verified P::State fits. B64 is align(8).
+        unsafe { std::ptr::write(prototype.as_mut_ptr().cast(), state) };
+
+        let handler_size =
+            std::mem::size_of::<<F as IntoCallback<K::Context, K::Event, P>>::Callback>();
 
         Self {
             prototype,
             generate_fn: generate_callback::<K::Context, K::Event, F, P>,
+            run_fn: run_callback::<K::Context, K::Event, F, P>,
+            inputs_changed_fn: inputs_changed_callback::<K::Context, K::Event, F, P>,
+            drop_fn: drop_callback::<K::Context, K::Event, F, P>,
+            handler_size,
             name,
             _key: PhantomData,
         }
@@ -415,11 +529,47 @@ impl<K: CallbackBlueprint> CallbackTemplate<K> {
 
     /// Stamp out a callback with per-instance context.
     ///
-    /// Zero HashMap lookups. Zero heap allocations.
+    /// Zero HashMap lookups. Zero heap allocations. Uses the default
+    /// [`B64`] buffer, which fits most callbacks.
+    ///
+    /// For larger callbacks, use [`generate_sized`](Self::generate_sized).
     pub fn generate(&self, ctx: K::Context) -> TemplatedHandler<K::Event> {
+        self.generate_sized(ctx)
+    }
+
+    /// Stamp out a callback into a specific buffer size class.
+    ///
+    /// Same as [`generate`](Self::generate) but with an explicit buffer.
+    /// Panics if the callback doesn't fit.
+    pub fn generate_sized<B: Buffer + Send>(
+        &self,
+        ctx: K::Context,
+    ) -> TemplatedHandler<K::Event, B> {
+        assert!(
+            self.handler_size <= B::CAPACITY,
+            "Callback ({} bytes) exceeds buffer capacity ({} bytes). \
+             Use a larger buffer, e.g. generate_sized::<B128>(ctx)",
+            self.handler_size,
+            B::CAPACITY,
+        );
+
+        let mut buf = MaybeUninit::<B>::uninit();
         // SAFETY: prototype was initialized in new() with the concrete
-        // P::State type that generate_fn expects.
-        unsafe { (self.generate_fn)(self.prototype.bytes.as_ptr().cast(), ctx) }
+        // P::State type that generate_fn expects. Callback fits in B
+        // (verified above). B is align(8), callback alignment <= 8
+        // (verified in new()).
+        unsafe {
+            (self.generate_fn)(self.prototype.as_ptr().cast(), ctx, buf.as_mut_ptr().cast());
+        }
+
+        TemplatedHandler {
+            buf,
+            run_fn: self.run_fn,
+            inputs_changed_fn: self.inputs_changed_fn,
+            drop_fn: self.drop_fn,
+            name: self.name,
+            _event: PhantomData,
+        }
     }
 
     /// Returns the callback function's name.
@@ -432,16 +582,18 @@ impl<K: CallbackBlueprint> CallbackTemplate<K> {
 // Monomorphized fn ptrs — handler
 // =============================================================================
 
-/// Clones the prototype state and constructs a TemplatedHandler.
+/// Writes a handler (Callback) into the destination buffer.
 ///
-/// Uses `IntoHandler::with_state` to construct the handler, then
-/// writes it into an inline buffer. The associated type
-/// `<F as IntoHandler>::Handler: Handler<E>` guarantees dispatch works.
+/// Reads the prototype state, constructs a Callback via
+/// `IntoHandler::with_state`, and writes it to `dst`.
 ///
 /// # Safety
 ///
-/// `proto` must point to a valid `P::State` produced by `HandlerTemplate::new`.
-unsafe fn generate_handler<E, F, P>(proto: *const u8) -> TemplatedHandler<E>
+/// - `proto` must point to a valid `P::State` produced by `HandlerTemplate::new`.
+/// - `dst` must point to a buffer with sufficient size and alignment for
+///   `<F as IntoHandler<E, P>>::Handler` (both verified at template
+///   construction and generation time).
+unsafe fn generate_handler<E, F, P>(proto: *const u8, dst: *mut u8)
 where
     F: IntoHandler<E, P> + Copy,
     P: Param,
@@ -452,38 +604,16 @@ where
 
     // SAFETY: F is Copy and a named function item (ZST). Creating a ZST
     // from zeroed memory is safe — there are no bytes to be invalid.
-    assert!(
-        std::mem::size_of::<F>() == 0,
-        "templates require named functions (zero-sized types), got size {}",
-        std::mem::size_of::<F>(),
-    );
+    // ZST check was performed in HandlerTemplate::new().
     let f: F = unsafe { std::mem::zeroed() };
 
     // Construct the handler via the trait — no coupling to Callback internals.
     let handler = f.with_state(state);
 
-    // Write into inline buffer — zero heap allocations.
-    assert!(
-        std::mem::size_of::<<F as IntoHandler<E, P>>::Handler>() <= MAX_INLINE,
-        "Handler ({} bytes) exceeds inline buffer ({MAX_INLINE} bytes)",
-        std::mem::size_of::<<F as IntoHandler<E, P>>::Handler>(),
-    );
-    let mut buf = InlineBuf {
-        bytes: [MaybeUninit::uninit(); MAX_INLINE],
-    };
-    // SAFETY: size verified above. Buffer aligned to 16.
-    unsafe {
-        std::ptr::write(buf.bytes.as_mut_ptr().cast(), handler);
-    }
-
-    TemplatedHandler {
-        buf,
-        run_fn: run_handler::<E, F, P>,
-        inputs_changed_fn: inputs_changed_handler::<E, F, P>,
-        drop_fn: drop_handler::<E, F, P>,
-        name: std::any::type_name::<F>(),
-        _event: PhantomData,
-    }
+    // SAFETY: dst has sufficient size (checked at generate()) and
+    // alignment (checked at new()). We write the handler and forget it —
+    // ownership transfers to the TemplatedHandler which will call drop_fn.
+    unsafe { std::ptr::write(dst.cast(), handler) };
 }
 
 /// # Safety
@@ -517,10 +647,13 @@ where
 // Monomorphized fn ptrs — callback
 // =============================================================================
 
+/// Writes a callback (Callback with context) into the destination buffer.
+///
 /// # Safety
 ///
-/// `proto` must point to a valid `P::State`.
-unsafe fn generate_callback<C, E, F, P>(proto: *const u8, ctx: C) -> TemplatedHandler<E>
+/// - `proto` must point to a valid `P::State`.
+/// - `dst` must point to a buffer with sufficient size and alignment.
+unsafe fn generate_callback<C, E, F, P>(proto: *const u8, ctx: C, dst: *mut u8)
 where
     C: Send + 'static,
     F: IntoCallback<C, E, P> + Copy,
@@ -529,37 +662,14 @@ where
 {
     let state: P::State = unsafe { *(proto as *const P::State) };
 
-    assert!(
-        std::mem::size_of::<F>() == 0,
-        "templates require named functions (zero-sized types), got size {}",
-        std::mem::size_of::<F>(),
-    );
+    // SAFETY: F is a ZST (verified in CallbackTemplate::new()).
     let f: F = unsafe { std::mem::zeroed() };
 
     let handler = f.with_state(ctx, state);
 
-    // Write into inline buffer — zero heap allocations.
-    assert!(
-        std::mem::size_of::<<F as IntoCallback<C, E, P>>::Callback>() <= MAX_INLINE,
-        "Callback ({} bytes) exceeds inline buffer ({MAX_INLINE} bytes)",
-        std::mem::size_of::<<F as IntoCallback<C, E, P>>::Callback>(),
-    );
-    let mut buf = InlineBuf {
-        bytes: [MaybeUninit::uninit(); MAX_INLINE],
-    };
-    // SAFETY: size verified above. Buffer aligned to 16.
-    unsafe {
-        std::ptr::write(buf.bytes.as_mut_ptr().cast(), handler);
-    }
-
-    TemplatedHandler {
-        buf,
-        run_fn: run_callback::<C, E, F, P>,
-        inputs_changed_fn: inputs_changed_callback::<C, E, F, P>,
-        drop_fn: drop_callback::<C, E, F, P>,
-        name: std::any::type_name::<F>(),
-        _event: PhantomData,
-    }
+    // SAFETY: dst has sufficient size and alignment (verified at
+    // new() and generate() time).
+    unsafe { std::ptr::write(dst.cast(), handler) };
 }
 
 /// # Safety
@@ -792,7 +902,7 @@ mod tests {
         let template = HandlerTemplate::<TestHandlerEventOnly>::new(sys_event_only, wb.registry());
         assert!(template.name().contains("sys_event_only"));
 
-        let handler = template.generate();
+        let handler: TemplatedHandler<u32> = template.generate();
         assert!(handler.name().contains("sys_event_only"));
     }
 
@@ -804,7 +914,7 @@ mod tests {
         let template = HandlerTemplate::<TestHandler2P>::new(sys_2p, wb.registry());
         let mut world = wb.build();
 
-        let mut boxed: Box<dyn Handler<()>> = Box::new(template.generate());
+        let mut boxed: Box<dyn Handler<()>> = Box::new(template.generate_sized::<B64>());
         boxed.run(&mut world, ());
 
         assert_eq!(*world.resource::<u64>(), 1);
@@ -928,7 +1038,7 @@ mod tests {
         let template = CallbackTemplate::<TestCallback>::new(cb_1p, wb.registry());
         let mut world = wb.build();
 
-        let mut boxed: Box<dyn Handler<()>> = Box::new(template.generate(TimerCtx {
+        let mut boxed: Box<dyn Handler<()>> = Box::new(template.generate_sized::<B64>(TimerCtx {
             order_id: 99,
             fires: 0,
         }));
@@ -977,5 +1087,66 @@ mod tests {
         handler.run(&mut world, ());
 
         assert_eq!(*world.resource::<u64>(), 1);
+    }
+
+    // -- Buffer size-class tests ----------------------------------------------
+
+    #[test]
+    fn generate_with_explicit_b64() {
+        let mut wb = WorldBuilder::new();
+        wb.register::<u64>(0);
+        wb.register::<bool>(true);
+        let template = HandlerTemplate::<TestHandler2P>::new(sys_2p, wb.registry());
+        let mut world = wb.build();
+
+        let mut handler = template.generate_sized::<B64>();
+        handler.run(&mut world, ());
+        assert_eq!(*world.resource::<u64>(), 1);
+    }
+
+    #[test]
+    fn generate_with_b128() {
+        use nexus_smartptr::B128;
+
+        let mut wb = WorldBuilder::new();
+        wb.register::<u64>(0);
+        wb.register::<bool>(true);
+        let template = HandlerTemplate::<TestHandler2P>::new(sys_2p, wb.registry());
+        let mut world = wb.build();
+
+        let mut handler = template.generate_sized::<B128>();
+        handler.run(&mut world, ());
+        assert_eq!(*world.resource::<u64>(), 1);
+    }
+
+    #[test]
+    #[should_panic(expected = "exceeds buffer capacity")]
+    fn generate_panics_on_undersized_buffer() {
+        use nexus_smartptr::B16;
+
+        let mut wb = WorldBuilder::new();
+        wb.register::<u64>(0);
+        wb.register::<bool>(true);
+        let template = HandlerTemplate::<TestHandler2P>::new(sys_2p, wb.registry());
+
+        // Handler is 24 bytes, B16 only holds 16.
+        let _ = template.generate_sized::<B16>();
+    }
+
+    #[test]
+    fn callback_generate_with_b128() {
+        use nexus_smartptr::B128;
+
+        let mut wb = WorldBuilder::new();
+        wb.register::<u64>(0);
+        let template = CallbackTemplate::<TestCallback>::new(cb_1p, wb.registry());
+        let mut world = wb.build();
+
+        let mut handler = template.generate_sized::<B128>(TimerCtx {
+            order_id: 42,
+            fires: 0,
+        });
+        handler.run(&mut world, ());
+        assert_eq!(*world.resource::<u64>(), 42);
     }
 }

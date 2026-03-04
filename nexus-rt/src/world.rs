@@ -334,7 +334,7 @@ impl WorldBuilder {
         );
 
         assert!(
-            self.storage.slots.len() < u16::MAX as usize,
+            u16::try_from(self.storage.slots.len()).is_ok(),
             "resource limit exceeded ({} registered, max {})",
             self.storage.slots.len(),
             u16::MAX,

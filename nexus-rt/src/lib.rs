@@ -101,9 +101,11 @@
 //! - **Function** — named functions are ZSTs (0 bytes). Closures are
 //!   not supported by [`IntoHandler`] / [`IntoCallback`].
 //!
-//! [`TemplatedHandler`] adds type-erasure overhead: 3 function pointers
-//! (24 bytes) and a second name copy, wrapped around an inline buffer
-//! that holds the [`Callback`] struct.
+//! [`TemplatedHandler<E, B>`] adds type-erasure overhead: 3 function
+//! pointers (24 bytes) and a name copy (16 bytes), wrapped around a
+//! `MaybeUninit<B>` buffer that holds the [`Callback`] struct. The
+//! buffer `B` defaults to [`B64`] and can be overridden at the
+//! [`generate`](HandlerTemplate::generate) call site.
 //!
 //! [`Pipeline`] size grows linearly with the number of stages (~24
 //! bytes per stage). [`BatchPipeline`] adds a `Vec<In>` (24 bytes
@@ -119,12 +121,12 @@
 //! | `Callback` arity 4, 16 B ctx | 40 B | e.g. two `u64` fields |
 //! | `Callback` arity 4, 32 B ctx | 56 B | |
 //! | `Pipeline` 1 stage | 24 B | +24 B per additional stage |
-//! | `TemplatedHandler` | 112 B | fixed, independent of arity |
-//! | `HandlerTemplate` | 96 B | stored in World as resource |
+//! | `TemplatedHandler<_, B64>` | 112 B | default buffer |
+//! | `TemplatedHandler<_, B128>` | 176 B | larger contexts |
+//! | `HandlerTemplate` | 120 B | stored in World as resource |
 //!
-//! Struct alignment is 8 bytes (from `&'static str`), so all sizes
-//! are multiples of 8. `TemplatedHandler` has 16-byte alignment
-//! (from its inline buffer).
+//! Struct alignment is 8 bytes (from `&'static str` and `Buffer`
+//! align(8)), so all sizes are multiples of 8.
 //!
 //! ## Choosing storage
 //!
@@ -132,7 +134,7 @@
 //! |---------|------|------------|----------|
 //! | `Virtual<E>` (Box) | 16 B | heap | simplest, rare creation |
 //! | `FlatVirtual<E>` (B64) | 64 B | none | `HandlerFn`, `Callback` |
-//! | `FlatVirtual<E, B128>` | 128 B | none | `TemplatedHandler` |
+//! | `FlatVirtual<E, B128>` | 128 B | none | `TemplatedHandler<_, B64>` |
 //! | `FlexVirtual<E>` | 64 B | fallback | mixed handler types |
 //! | `FlexVirtual<E, B128>` | 128 B | fallback | mixed + templates |
 //! | Concrete type | exact | none | when type is known |
@@ -141,9 +143,9 @@
 //! through arity 8 with contexts up to ~24 bytes. Use this when all
 //! your handlers are built via [`IntoHandler`] or [`IntoCallback`].
 //!
-//! **`B128`** — required for [`TemplatedHandler`] (112 bytes). Use
-//! when mixing templates with regular handlers in the same collection,
-//! or when callback contexts exceed ~24 bytes.
+//! **`B128`** — required for [`TemplatedHandler`] with default `B64`
+//! buffer (112 bytes). Use when mixing templates with regular handlers
+//! in the same collection, or when callback contexts exceed ~24 bytes.
 //!
 //! **`FlexVirtual`** — stores inline when possible, falls back to
 //! heap for oversized handlers. Useful when pipeline handlers (whose
@@ -215,6 +217,9 @@ pub use template::{
     Blueprint, CallbackBlueprint, CallbackTemplate, HandlerTemplate, TemplatedHandler,
 };
 pub use world::{Registry, ResourceId, Sequence, World, WorldBuilder};
+
+// Buffer types from nexus-smartptr — always available (used by templates).
+pub use nexus_smartptr::{B64, B128, Buffer};
 
 /// Type alias for a boxed, type-erased [`Handler`].
 ///
