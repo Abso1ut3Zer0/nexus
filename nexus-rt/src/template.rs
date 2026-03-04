@@ -62,10 +62,13 @@ use crate::{Handler, IntoCallback, IntoHandler};
 
 /// Max inline storage for type-erased handler state.
 ///
-/// Fits: 8 ResourceIds (64 bytes) + &'static str name (16 bytes) +
-/// ZST function + ZST context = 80 bytes for the largest handler.
-/// 128 bytes leaves headroom for callback contexts up to ~48 bytes.
-const MAX_INLINE: usize = 128;
+/// Fits: 8 ResourceIds (16 bytes) + &'static str name (16 bytes) +
+/// ZST function + ZST context = 32 bytes for the largest handler.
+/// 64 bytes leaves headroom for callback contexts up to ~32 bytes.
+///
+/// With this size, `TemplatedHandler<E>` is 112 bytes total (64 buf +
+/// 24 fn ptrs + 16 name + 8 padding), fitting inside `Flat128`.
+const MAX_INLINE: usize = 64;
 
 /// 16-byte aligned inline buffer for type-erased Callback storage.
 #[repr(C, align(16))]
@@ -131,7 +134,9 @@ pub trait CallbackBlueprint: Blueprint {
 ///
 /// # Size
 ///
-/// Fixed at `MAX_INLINE` (128) + fn ptrs + name = ~168 bytes on 64-bit.
+/// Fixed at 112 bytes on 64-bit (64 inline buf + 24 fn ptrs + 16 name
+/// + 8 padding). Fits inside `Flat128` / `FlexVirtual<E, B128>`.
+///
 /// Zero heap allocations — state is stored inline.
 ///
 /// # Guarantees
