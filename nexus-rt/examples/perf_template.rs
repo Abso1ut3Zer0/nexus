@@ -11,7 +11,10 @@
 
 use std::hint::black_box;
 
-use nexus_rt::{IntoCallback, IntoHandler, Res, ResMut, WorldBuilder};
+use nexus_rt::{
+    CallbackTemplate, HandlerTemplate, IntoCallback, IntoHandler, Res, ResMut, WorldBuilder,
+    callback_blueprint, handler_blueprint,
+};
 
 // =============================================================================
 // Bench infrastructure (same as perf_construction.rs)
@@ -106,6 +109,17 @@ fn cb_2p(_ctx: &mut u64, _a: Res<u64>, _b: ResMut<u32>, _e: ()) {}
 fn cb_4p(_ctx: &mut u64, _a: Res<u64>, _b: ResMut<u32>, _c: Res<bool>, _d: Res<f64>, _e: ()) {}
 
 // =============================================================================
+// Blueprint keys for HandlerTemplate / CallbackTemplate benchmarks
+// =============================================================================
+
+handler_blueprint!(K1P, ());
+handler_blueprint!(K2P, ());
+handler_blueprint!(K4P, ());
+handler_blueprint!(K8P, ());
+callback_blueprint!(KCb2P, u64, ());
+callback_blueprint!(KCb4P, u64, ());
+
+// =============================================================================
 // Main
 // =============================================================================
 
@@ -198,6 +212,48 @@ fn main() {
     });
     bench_batched("with_state    cb 4-param", || {
         let _ = black_box(cb_4p.with_state(0u64, cb_state_4p));
+        0
+    });
+
+    println!();
+
+    // ── HandlerTemplate::instantiate (type-erased, heap alloc) ────────────
+
+    let tpl_1p = HandlerTemplate::<K1P>::new(sys_1p, r);
+    let tpl_2p = HandlerTemplate::<K2P>::new(sys_2p, r);
+    let tpl_4p = HandlerTemplate::<K4P>::new(sys_4p, r);
+    let tpl_8p = HandlerTemplate::<K8P>::new(sys_8p, r);
+    let cb_tpl_2p = CallbackTemplate::<KCb2P>::new(cb_2p, r);
+    let cb_tpl_4p = CallbackTemplate::<KCb4P>::new(cb_4p, r);
+
+    print_header("HandlerTemplate::instantiate — type-erased (cycles)");
+
+    bench_batched("instantiate   1-param", || {
+        let _ = black_box(tpl_1p.instantiate());
+        0
+    });
+    bench_batched("instantiate   2-param", || {
+        let _ = black_box(tpl_2p.instantiate());
+        0
+    });
+    bench_batched("instantiate   4-param", || {
+        let _ = black_box(tpl_4p.instantiate());
+        0
+    });
+    bench_batched("instantiate   8-param", || {
+        let _ = black_box(tpl_8p.instantiate());
+        0
+    });
+
+    println!();
+    print_header("CallbackTemplate::instantiate — type-erased (cycles)");
+
+    bench_batched("instantiate   cb 2-param", || {
+        let _ = black_box(cb_tpl_2p.instantiate(0u64));
+        0
+    });
+    bench_batched("instantiate   cb 4-param", || {
+        let _ = black_box(cb_tpl_4p.instantiate(0u64));
         0
     });
 
