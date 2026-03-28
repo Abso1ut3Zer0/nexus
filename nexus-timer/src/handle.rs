@@ -42,13 +42,31 @@ impl<T> TimerHandle<T> {
             _marker: PhantomData,
         }
     }
+
+    /// Consume the handle without freeing the underlying slot.
+    ///
+    /// Use this when the timer has already fired and the slot was
+    /// reclaimed by the wheel during polling. The handle is a stale
+    /// token at that point — `disarm` consumes it without triggering
+    /// the debug Drop panic.
+    ///
+    /// # When to use
+    ///
+    /// After a timer fires, you receive the value in your poll loop.
+    /// If you still hold the handle, call `disarm()` to dispose of it.
+    /// Alternatively, pass the handle to [`TimerWheel::free`] which
+    /// both disarms and frees the slot (safe to call on fired timers).
+    #[inline]
+    pub fn disarm(self) {
+        std::mem::forget(self);
+    }
 }
 
 impl<T> Drop for TimerHandle<T> {
     fn drop(&mut self) {
         debug_assert!(
             false,
-            "TimerHandle dropped without being consumed — call wheel.cancel() or wheel.free()"
+            "TimerHandle dropped without being consumed — call wheel.cancel(), wheel.free(), or handle.disarm()"
         );
     }
 }
