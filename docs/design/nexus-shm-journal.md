@@ -57,27 +57,35 @@ Each record, 8-byte aligned:
 ```
 
 - `frame_len` is the **commit marker** (the sentinel field). Aligned `i32`,
-  written **last**, behind a release fence.
+  written **last**, behind a release fence. It is the **unpadded** frame size
+  (header + payload only), per the Aeron convention.
   - `0` — uncommitted / end of log. Recovery stops here.
-  - `> 0` — committed; value is the total frame size (header + payload +
-    padding, excluding the length word itself). Reader advances by
-    `4 + frame_len`.
+  - `> 0` — committed; value is the unpadded frame size (header + payload,
+    excluding the length word itself). Reader advances by
+    `4 + align_8(frame_len)`.
   - `< 0` — PAD frame: `-frame_len` bytes of dead space recovery wrote over an
     uncommitted claim, or the writer wrote to skip a segment tail too small for
     a record. Reader skips, does not yield.
-- Header and payload sizes are known from `H` and `frame_len`; no separate
-  payload-length field needed (`payload_len = frame_len - size_of::<H>() -
-  padding`, and padding is recomputable from alignment).
+- Header and payload sizes are known from `H` and `frame_len`:
+  `payload_len = frame_len - size_of::<H>()`. Padding is recomputed from
+  alignment (`align_8(frame_len) - frame_len`), so no separate payload-length
+  field is needed and payload/padding are never ambiguous.
 
 `i32` frame length caps a single record at 2 GiB — far below the 64 MB default
 segment, and negative space is the PAD sentinel. A claim larger than the
 configured segment size is rejected at `try_claim` (`RecordTooLarge`).
 
+**Endianness:** `frame_len` and the `H` fields are written in native byte order
+(LE on x86-64, the only supported target). Cross-process readers on the same
+host see the same order. The on-disk format is not portable across architectures
+of differing endianness; if external tooling ever needs to read segments off-box
+that contract becomes explicit-LE, noted as future work.
+
 ---
 
 ## Commit protocol (write path)
 
-`try_claim(header, len) -> Option<WriteClaim>`:
+`try_claim(header, len) -> Result<WriteClaim, JournalError>`:
 
 1. Compute frame size, 8-byte aligned. If it doesn't fit the current segment's
    remaining space, write a PAD frame over the tail and roll to the next
@@ -113,7 +121,7 @@ syscall, no allocation.
 3. `< 0` → PAD, advance by `4 + (-frame_len)`, retry.
 4. `> 0` → `fence(Acquire)` already covered by the acquire load; yield
    `ReadRecord { header: &H, payload: &[u8] }` borrowing the mapping. Advance
-   cursor by `4 + frame_len` on next call.
+   cursor by `4 + align_8(frame_len)` on next call.
 
 `ReadRecord` borrows the segment mapping (`&'a`), zero-copy. Lifetime ties the
 borrow to the reader so a segment can't be unmapped under a live record.
@@ -147,7 +155,12 @@ recovery never reads a committed-but-torn record (the marker is the last store).
   PAD-framing the leftover. Segment roll is the only place a new file is
   created/mapped.
 - Reader follows the same sequence, mapping the next segment when it exhausts
-  the current one.
+  the current one. A cross-process read-only reader that hits a `0` marker at a
+  segment tail (rather than mid-segment) probes for `{base}.{index+1}`; if it
+  exists the writer has rolled, so the reader opens it and continues. In-process
+  readers share the writer's segment list directly. (A shared metadata region
+  for the active segment index is possible but unnecessary for SPSC roll — the
+  filename probe is the discovery mechanism.)
 - `read_range` (FIX, when `H = FixHeader`): a thin layer over the position scan
   — locate the start segment, scan forward yielding records whose `seq` falls
   in range. O(1) recent-seq lookup via an optional fixed-size ring index is
@@ -196,16 +209,16 @@ for rec in reader.read_range(start_seq..=end_seq)? {
 Out of scope: the O(1) ring index, MPSC (SPSC only per the doc), the durable
 fsync policy (mmap-is-persistence; fsync is a caller concern, note it).
 
-## Open questions for review
+## Open questions — resolved in review
 
-1. **`frame_len` as `i32`** (2 GiB record cap, negative = PAD) vs a separate
-   explicit `marker` byte + `u32` len. The combined sign-as-sentinel is the
-   Aeron model and saves a field; the explicit-marker variant is more readable
-   at the cost of a byte. Lean Aeron.
-2. **PAD on graceful drop** — since SPSC means an uncommitted claim is always
-   the tail, do we ever need to PAD-over on drop, or is "leave it 0, recovery
-   stops" sufficient? I believe the latter; flagging in case you want
-   drop-time PAD for forward-scan tooling.
-3. **`read_range` return** — borrowing iterator over the mapping (zero-copy,
-   ties up the reader) vs collected positions. Lean iterator, matches
-   `next_record`.
+1. **`frame_len` as `i32`** (2 GiB cap, negative = PAD) — confirmed. Aeron
+   sign-as-sentinel, single atomic publish store.
+2. **PAD on graceful drop** — confirmed not needed. SPSC means an uncommitted
+   claim is always the tail; "leave 0, recovery stops" is sufficient.
+3. **`read_range` return** — confirmed borrowing iterator, matches
+   `next_record`; caller `.collect()`s if it needs to.
+
+Folded in from review: `frame_len` is **unpadded** (header + payload), reader
+advances `4 + align_8(frame_len)`; `try_claim` returns
+`Result<WriteClaim, JournalError>`; cross-process segment discovery and native
+byte-order contract documented above.
