@@ -63,6 +63,32 @@ Generated output:
    should generated decoders just expose the iterator + typed accessors and let
    the caller pass once? Depends on #406's intended ergonomics.
 
+## Modeled after Prost (Michael's pointer)
+
+Prost is the model for the **tooling**, not the decode model.
+
+Adopt from `prost` / `prost-build`:
+- **`build.rs` integration** — a `Config`-style builder (`generate().out_dir(..)
+  .dictionary(..).run()`) mirroring `prost_build::Config::compile_protos`, so a
+  consumer crate generates in `build.rs` and pulls the result with
+  `include!(concat!(env!("OUT_DIR"), "/fix.rs"))`.
+- **Generated code is plain, readable Rust** — no runtime reflection, no dynamic
+  dictionary at runtime; the dictionary is consumed entirely at generation time.
+- **Builder knobs** — type attributes / derives, module layout, opt-in
+  per-message selection, analogous to Prost's `type_attribute` /
+  `btree_map` style configuration.
+- **A checked-in CLI** alongside the `build.rs` path, like `protoc` + `prost`'s
+  split, for ahead-of-time generation into the repo when preferred.
+
+Diverge from Prost where the data model differs:
+- Prost decodes length-delimited binary into **owned structs** (it copies). FIX
+  here is **zero-copy flyweight** — generated "messages" are decoders holding
+  `&[u8]` + `FieldSpan` slots that point into the original buffer; nothing is
+  copied on decode. So model Prost's *ergonomics and build pipeline*, keep our
+  span-based decode.
+- No `Default`/owned round-trip in the Prost sense; encode side is the separate
+  consume-self builder over `FieldWriter`.
+
 ## Out of scope
 
 Session/transport (#409/#410), persistence (#411). Generator targets the codec
