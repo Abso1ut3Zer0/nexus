@@ -1,7 +1,7 @@
 # nexus-fix-codegen — draft PR description (#407)
 
-Ready to become the PR body once #406 (PR #415) merges. Aligned to the actual
-`nexus-fix-codec` API Michael shipped in #415, not the earlier plan stub.
+#406 (PR #415) is merged; this is aligned to the shipped `nexus-fix-codec` API
+and simplified to reflect what the codec now provides.
 
 ---
 
@@ -41,13 +41,23 @@ Generated output:
   no error.
 - **No encoder-side validation** — the generator emits structure, not policy;
   required-field enforcement is the engine's job (#409).
-- **DATA fields** (95/96, 90/91, 212/213, 348/349, 358/359): emit
-  length-delimited reads — take the prior length field, consume exactly that many
-  bytes, never scan for SOH inside the value.
-- **Decode model** — adopts `FieldReader` as the scan engine rather than a
-  bespoke scanner; the `Cell<FieldSpan>` watermark from the plan layers on top
-  (cache populated lazily on first access, "absent" = full pass with no hit).
-  Confirming this is the shape wanted before building it.
+- **Decode model — two shapes, no watermark.** The codec already supplies both
+  a single forward pass (`FieldReader`) and random access (`find_tag`), so the
+  `Cell<FieldSpan>` watermark layer from the plan is dropped entirely. Generated
+  decoders pick:
+  - *one-pass populate* — run `FieldReader` once, `match` each `RawField.tag`
+    into the message's `FieldSpan` slots. O(n) once; the default for full decode.
+  - *lazy accessors* — typed getters that call `find_tag(buf, body_start, TAG)`
+    on demand. O(n) per access; for sparse reads of a few fields.
+
+  No bespoke scanner, no cache machine — both shapes are thin wrappers over codec
+  primitives.
+- **DATA fields are the one sharp edge** (95/96, 90/91, 212/213, 348/349,
+  358/359). `FieldReader` is SOH-driven, and a binary DATA value can contain
+  `0x01`, which a naive pass would mis-split. Generated decoders must handle DATA
+  length-delimited: read the preceding length tag, take exactly that many bytes,
+  then re-seat a fresh `FieldReader` past the value — never let the scanner cross
+  a DATA field. The codec does not special-case this; it is codegen's job.
 
 ## Open questions
 
@@ -58,10 +68,10 @@ Generated output:
    gated so `build.rs` use degrades gracefully if absent.
 3. **Component/group nesting** — cap depth or fully recursive? Real dictionaries
    rarely exceed 2; lean fully recursive with a sane guard.
-4. **Watermark vs pure forward-pass** — given `FieldReader` is already a
-   single-pass iterator, is the `Cell<FieldSpan>` caching layer worth it, or
-   should generated decoders just expose the iterator + typed accessors and let
-   the caller pass once? Depends on #406's intended ergonomics.
+
+(The earlier watermark-vs-forward-pass question is resolved: the merged codec
+supplies both `FieldReader` and `find_tag`, so the watermark layer is dropped —
+see Decode model above.)
 
 ## Modeled after Prost (Michael's pointer)
 
@@ -96,7 +106,11 @@ layer only.
 
 ## Deltas from the plan stub (#412), now that #406 is real
 
-- Decoders build on **`FieldReader` / `find_tag`** instead of a custom watermark
-  scanner — Q4 asks whether to keep the `Cell` layer at all.
+- Decoders build on **`FieldReader` / `find_tag`** — the `Cell<FieldSpan>`
+  watermark layer is dropped; generated decoders are thin wrappers over the two
+  codec primitives (one-pass populate or lazy `find_tag`).
 - Encoders build on **`FieldWriter` / `encode_field` / `format_checksum`**, which
   already exist, so encoder generation is thinner than the stub implied.
+- The generator emits no scanning/checksum/encoding plumbing of its own — only
+  tag consts, typed enums, per-message dispatch, and group boundary logic
+  (templated on the codec's own repeating-group tests).
