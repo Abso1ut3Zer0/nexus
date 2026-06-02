@@ -15,9 +15,10 @@ awareness — and specifies the record/commit/recovery/segment layout.
 - **Commit ordering** is the correctness property: write body → release fence →
   publish commit marker. Recovery scans forward, stops at first uncommitted
   record. (Aeron sentinel + PAD frame model.)
-- **Checksums** off by default; opt-in flag for the file-backed durability
-  domain (torn page writeback, bit rot). The commit marker alone covers the
-  crash case fully.
+- **Checksums** deferred. The reviewed frame layout carries no checksum field,
+  and a config flag wired to nothing is dead code; the commit marker alone covers
+  the crash case fully. A checksum (trailing CRC + its own `commit_len`
+  accounting) is a follow-up with its own layout review.
 - **Liveness:** in-process journal (FIX same-process read+write) needs only
   Tier-1 atomic. Cross-process read-only attach uses Tier-2 OFD opt-in.
 - **Segmented layout**, default 64 MB segment size.
@@ -26,8 +27,8 @@ awareness — and specifies the record/commit/recovery/segment layout.
 
 ## Open question resolved: sequence awareness → Path C (pluggable header)
 
-`ShmJournal<H: RecordHeader>`. The journal frames `[frame_len][H][payload]` and
-reads/writes `H` but never interprets it.
+`ShmJournal<H: RecordHeader>`. The journal frames `[frame header][H][payload]`
+and reads/writes `H` but never interprets it.
 
 - FIX (#411) uses `H = FixHeader { seq: u64, timestamp: u64 }` and gets
   `read_range` by sequence.
@@ -46,40 +47,44 @@ trivially. No heap, fixed layout, valid for recovery scanning.
 
 ## Record layout
 
-Each record, 8-byte aligned:
+Each record starts on an 8-byte boundary and opens with an 8-byte frame header:
 
 ```
-┌────────────┬──────────────┬───────────────┬─────────────┐
-│ frame_len  │  header H    │   payload     │  padding    │
-│  i32 (LE)  │  size_of::<H>│   len bytes   │  to 8-byte  │
-└────────────┴──────────────┴───────────────┴─────────────┘
-     ^committed marker
+┌──────────────┬────────────┬─────────┬───────────┬───────────┬──────────┐
+│ commit_len   │ frame_type │  flags  │  header H │  payload  │ padding  │
+│   u32 (LE)   │  u16 (LE)  │ u16 (LE)│ size_of H │ len bytes │  to 8    │
+└──────────────┴────────────┴─────────┴───────────┴───────────┴──────────┘
+     ^commit marker (published last)
 ```
 
-- `frame_len` is the **commit marker** (the sentinel field). Aligned `i32`,
-  written **last**, behind a release fence. It is the **unpadded** frame size
-  (header + payload only), per the Aeron convention.
-  - `0` — uncommitted / end of log. Recovery stops here.
-  - `> 0` — committed; value is the unpadded frame size (header + payload,
-    excluding the length word itself). Reader advances by
-    `4 + align_8(frame_len)`.
-  - `< 0` — PAD frame: `-frame_len` bytes of dead space recovery wrote over an
-    uncommitted claim, or the writer wrote to skip a segment tail too small for
-    a record. Reader skips, does not yield.
-- Header and payload sizes are known from `H` and `frame_len`:
-  `payload_len = frame_len - size_of::<H>()`. Padding is recomputed from
-  alignment (`align_8(frame_len) - frame_len`), so no separate payload-length
-  field is needed and payload/padding are never ambiguous.
+This is the Aeron frame model: header size == alignment (8). The original i32
+sign-as-sentinel was Aeron's accommodation of Java's lack of unsigned types; we
+have no such constraint, so an explicit type discriminant is cleaner and removes
+an edge case (below).
 
-`i32` frame length caps a single record at 2 GiB — far below the 64 MB default
-segment, and negative space is the PAD sentinel. A claim larger than the
-configured segment size is rejected at `try_claim` (`RecordTooLarge`).
+- `commit_len` is the **commit marker**, an aligned `u32` written **last** with
+  `Ordering::Release`. It is the **unpadded** body size (`header H + payload`).
+  - `0` — uncommitted / end of log. Recovery stops here. Always unambiguous.
+  - `> 0` with `frame_type == DATA` — committed record. `payload_len =
+    commit_len - size_of::<H>()`; reader advances `8 + align_8(commit_len)`.
+  - `> 0` with `frame_type == PAD` — dead space at a segment tail too small for
+    a record. `commit_len` is the full span to skip; reader advances
+    `align_8(commit_len)`, yields nothing.
+- `flags` is reserved (0) for future use (CRC, compression, …).
 
-**Endianness:** `frame_len` and the `H` fields are written in native byte order
-(LE on x86-64, the only supported target). Cross-process readers on the same
-host see the same order. The on-disk format is not portable across architectures
-of differing endianness; if external tooling ever needs to read segments off-box
-that contract becomes explicit-LE, noted as future work.
+Because the frame header is 8 bytes and records are 8-aligned, every footprint
+(`8 + align_8(body)`) is a multiple of 8, so the space left at a segment tail is
+always either 0 or ≥ 8 — a PAD header always fits. **The "remaining == marker
+size" collision that an i32 (4-byte) marker allowed is structurally impossible.**
+
+`u32` body length caps a record at 4 GiB (and `try_claim` rejects anything larger
+than the segment), with no sign trick. A claim that can't fit an empty segment →
+`RecordTooLarge`.
+
+**Endianness:** the frame header and `H` fields are native byte order (LE on
+x86-64, the only supported target). Cross-process readers on the same host see
+the same order; the on-disk format is not portable across differing-endian
+architectures (explicit-LE would be future work).
 
 ---
 
@@ -87,48 +92,50 @@ that contract becomes explicit-LE, noted as future work.
 
 `try_claim(header, len) -> Result<WriteClaim, JournalError>`:
 
-1. Compute frame size, 8-byte aligned. If it doesn't fit the current segment's
-   remaining space, write a PAD frame over the tail and roll to the next
-   segment (see Segments). If it can't fit an empty segment → `RecordTooLarge`.
-2. Reserve the region (advance the writer's local tail). The `frame_len` slot
+1. Compute footprint (`8 + align_8(body)`). If it doesn't fit the current
+   segment's remaining space, write a PAD frame over the tail and roll to the
+   next segment (see Segments). If it can't fit an empty segment →
+   `RecordTooLarge`.
+2. Reserve the region (advance the writer's local tail). The `commit_len` slot
    stays `0`.
-3. Return `WriteClaim` exposing `header_mut()` and `as_mut_slice()` over the
-   payload region.
+3. Return `WriteClaim` exposing `as_mut_slice()` over the payload region (the
+   header is supplied at `try_claim` and written at commit).
 
 `WriteClaim::commit(self)`:
 
-1. Write header into its slot.
-2. `fence(Release)`.
-3. Store `frame_len` (positive) with `Ordering::Release` — the single aligned
-   store that publishes the record.
+1. Write header `H` and the `frame_type = DATA` / `flags = 0` fields.
+2. Zero the next slot's `commit_len` (so recovery still stops there over stale
+   bytes), then store this record's `commit_len` (`> 0`) with `Ordering::Release`
+   — the single store that publishes the record.
 
-Drop without commit leaves `frame_len == 0`; the space is reclaimed on recovery
-as the stop point (or PAD-framed if a later claim already rolled past — but SPSC
-single-writer means no later claim exists until commit, so an uncommitted claim
-is always the tail). RAII commit mirrors nexus-logbuf's `WriteClaim`.
+Drop without commit leaves `commit_len == 0`; the space is reclaimed on recovery
+as the stop point. SPSC single-writer means an uncommitted claim is always the
+tail. RAII commit mirrors nexus-logbuf's `WriteClaim`.
 
-Hot path cost: one memcpy of the payload + two small stores + one fence. No
-syscall, no allocation.
+Hot path cost: one memcpy of the payload + a few small stores. No syscall, no
+allocation.
 
 ---
 
 ## Read path
 
-`next_record() -> Option<ReadRecord<'_>>`:
+`next_record() -> Result<Option<ReadRecord<'_>>, JournalError>`:
 
-1. Load `frame_len` at the reader cursor with `Ordering::Acquire`.
-2. `0` → caught up, return `None`.
-3. `< 0` → PAD, advance by `4 + (-frame_len)`, retry.
-4. `> 0` → `fence(Acquire)` already covered by the acquire load; yield
-   `ReadRecord { header: &H, payload: &[u8] }` borrowing the mapping. Advance
-   cursor by `4 + align_8(frame_len)` on next call.
+1. Load `commit_len` at the reader cursor with `Ordering::Acquire`.
+2. `0` → caught up, return `Ok(None)`.
+3. `frame_type == PAD` → advance by `align_8(commit_len)`, retry.
+4. `frame_type == DATA` → yield `ReadRecord { header: H, payload: &[u8] }` and
+   advance cursor by `8 + align_8(commit_len)`.
 
-`ReadRecord` borrows the segment mapping (`&'a`), zero-copy. Lifetime ties the
-borrow to the reader so a segment can't be unmapped under a live record.
+The header is returned **by value** (`H: Pod` is `Copy`); the payload is a
+zero-copy `&'a [u8]` into the mapping, its lifetime tied to the reader so a
+segment can't be unmapped under a live record. Returning a result (not an
+option) lets a real I/O failure while opening a rolled segment surface as `Err`
+instead of being mistaken for end-of-log — `NotFound` alone means "caught up".
 
-Cross-process readers open segments read-only (`Mapping::open`) and run the
-same scan. `frame_len`'s acquire load + the writer's release store give the
-happens-before edge across the process boundary.
+Cross-process readers open segments and run the same scan. `commit_len`'s
+acquire load paired with the writer's release store gives the happens-before
+edge across the process boundary.
 
 ---
 
@@ -136,11 +143,9 @@ happens-before edge across the process boundary.
 
 On `open`, scan the **last** segment from its start:
 
-1. Walk records by `frame_len` (skipping PAD frames) until the first
-   `frame_len == 0` — that offset is the write tail.
-2. Optionally verify the last committed record's checksum if the durability
-   flag is on; on mismatch, treat as uncommitted (truncate to its start).
-3. The writer resumes appending at the recovered tail.
+1. Walk records by `commit_len` (skipping PAD frames) until the first
+   `commit_len == 0` — that offset is the write tail.
+2. The writer resumes appending at the recovered tail.
 
 No unwinding, no allocation — a forward pointer-walk. The sentinel guarantees
 recovery never reads a committed-but-torn record (the marker is the last store).
@@ -176,7 +181,7 @@ recovery never reads a committed-but-torn record (the marker is the last store).
 ## API sketch
 
 ```rust
-let cfg = JournalConfig { segment_size, checksum, .. };
+let cfg = JournalConfig { segment_size, map };
 let (mut writer, mut reader) = Journal::<FixHeader>::open(base_path, cfg)?;
 
 // Write (hot path)
@@ -184,8 +189,8 @@ let mut claim = writer.try_claim(FixHeader { seq, timestamp }, payload.len())?;
 claim.as_mut_slice().copy_from_slice(payload);
 claim.commit();
 
-// Sequential read
-while let Some(rec) = reader.next_record() {
+// Sequential read — Result<Option<_>>: Err is a real I/O fault, not end-of-log
+while let Some(rec) = reader.next_record()? {
     process(rec.header(), rec.payload());
 }
 
@@ -202,23 +207,26 @@ for rec in reader.read_range(start_seq..=end_seq)? {
 - `Journal<H>` open/recovery, `WriteClaim` (commit protocol), `ReadRecord`,
   segment roll, `JournalConfig`, `()` and a `FixHeader` reference header.
 - `read_range` behind `H: SeqHeader`.
-- Tests: roundtrip, multi-segment roll, recovery (uncommitted tail, PAD skip,
-  torn-with-checksum), cross-process read-only attach.
+- Tests: roundtrip, multi-segment roll, recovery (uncommitted tail), PAD skip
+  including the `remaining == frame-header` boundary, range query, too-large /
+  empty rejection.
 - Criterion bench for `try_claim`+`commit` (hot path) and `next_record`.
 
-Out of scope: the O(1) ring index, MPSC (SPSC only per the doc), the durable
-fsync policy (mmap-is-persistence; fsync is a caller concern, note it).
+Out of scope: checksum (deferred, above), the O(1) ring index, MPSC (SPSC only),
+the durable fsync policy (mmap-is-persistence; fsync is a caller concern).
 
-## Open questions — resolved in review
+## Open questions — resolved in review (#416)
 
-1. **`frame_len` as `i32`** (2 GiB cap, negative = PAD) — confirmed. Aeron
-   sign-as-sentinel, single atomic publish store.
-2. **PAD on graceful drop** — confirmed not needed. SPSC means an uncommitted
-   claim is always the tail; "leave 0, recovery stops" is sufficient.
-3. **`read_range` return** — confirmed borrowing iterator, matches
-   `next_record`; caller `.collect()`s if it needs to.
-
-Folded in from review: `frame_len` is **unpadded** (header + payload), reader
-advances `4 + align_8(frame_len)`; `try_claim` returns
-`Result<WriteClaim, JournalError>`; cross-process segment discovery and native
-byte-order contract documented above.
+1. **Frame marker** — moved from i32 sign-as-sentinel to an 8-byte frame header
+   (`u32 commit_len` + `u16 frame_type` + `u16 flags`). Header size == alignment,
+   so footprints are multiples of 8 and the "remaining == marker size" sentinel
+   collision is structurally impossible. The i32 was Aeron's Java-unsigned
+   workaround, which we don't need.
+2. **PAD on graceful drop** — not needed. SPSC means an uncommitted claim is
+   always the tail; "leave 0, recovery stops" suffices.
+3. **`read_range` return** — borrowing iterator, matches `next_record`; caller
+   `.collect()`s if needed.
+4. **`next_record` signature** — returns `Result<Option<_>>` so real I/O errors
+   surface instead of being swallowed as end-of-log.
+5. **Header access** — returned by value (`H: Pod` is `Copy`); payload stays
+   zero-copy `&[u8]`.
