@@ -1014,7 +1014,7 @@ fn stress_rotation_then_recovery() {
         // Remember what the last record in current segment looks like
         let epoch = log.epoch;
         expected_tail = ((epoch as u32 * 4)..50)
-            .flat_map(|i| i.to_le_bytes())
+            .flat_map(u32::to_le_bytes)
             .collect::<Vec<_>>();
         let _ = expected_tail; // just to silence unused if we restructure
     }
