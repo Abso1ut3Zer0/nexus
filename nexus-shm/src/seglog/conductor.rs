@@ -236,15 +236,10 @@ fn conductor_main(rx: std::sync::mpsc::Receiver<CleanRequest>) {
 /// zero, writing each as `[commit_len:u32][session_id:u32][payload...]`
 /// with no inter-frame padding. I/O errors are silently ignored.
 fn archive_segment(data: *mut u8, segment_size: usize, path: &Path) {
-    if let Some(parent) = path.parent() {
-        if std::fs::create_dir_all(parent).is_err() {
-            return;
-        }
+    if path.parent().is_some_and(|p| std::fs::create_dir_all(p).is_err()) {
+        return;
     }
-    let file = match std::fs::File::create(path) {
-        Ok(f) => f,
-        Err(_) => return,
-    };
+    let Ok(file) = std::fs::File::create(path) else { return };
     let mut writer = std::io::BufWriter::new(file);
     let mut cur = 0usize;
     while cur + FRAME_HDR <= segment_size {
