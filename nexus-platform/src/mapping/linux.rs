@@ -1,5 +1,6 @@
+use std::ffi::CStr;
 use std::num::NonZeroUsize;
-use std::os::fd::BorrowedFd;
+use std::os::fd::{AsRawFd, BorrowedFd, FromRawFd, OwnedFd};
 use std::ptr::NonNull;
 
 use nix::errno::Errno;
@@ -114,4 +115,67 @@ pub(super) fn munlock(ptr: NonNull<u8>, len: NonZeroUsize) -> Result<(), std::io
             Err(std::io::Error::last_os_error())
         }
     }
+}
+
+// ── POSIX shared memory ──────────────────────────────────────────
+
+pub(super) fn shm_open_create(name: &CStr) -> Result<OwnedFd, MapError> {
+    // SAFETY: name is a valid null-terminated C string.
+    let fd = unsafe {
+        nix::libc::shm_open(name.as_ptr(), nix::libc::O_RDWR | nix::libc::O_CREAT, 0o600)
+    };
+    if fd < 0 {
+        return Err(MapError::Io(std::io::Error::last_os_error()));
+    }
+    // SAFETY: fd is a valid, newly opened file descriptor.
+    Ok(unsafe { OwnedFd::from_raw_fd(fd) })
+}
+
+pub(super) fn shm_open_existing(name: &CStr, write: bool) -> Result<OwnedFd, MapError> {
+    let flags = if write {
+        nix::libc::O_RDWR
+    } else {
+        nix::libc::O_RDONLY
+    };
+    // SAFETY: name is a valid null-terminated C string.
+    let fd = unsafe { nix::libc::shm_open(name.as_ptr(), flags, 0) };
+    if fd < 0 {
+        return Err(MapError::Io(std::io::Error::last_os_error()));
+    }
+    // SAFETY: fd is a valid, newly opened file descriptor.
+    Ok(unsafe { OwnedFd::from_raw_fd(fd) })
+}
+
+pub(super) fn shm_unlink(name: &CStr) -> Result<(), MapError> {
+    // SAFETY: name is a valid null-terminated C string.
+    if unsafe { nix::libc::shm_unlink(name.as_ptr()) } < 0 {
+        return Err(MapError::Io(std::io::Error::last_os_error()));
+    }
+    Ok(())
+}
+
+pub(super) fn fd_size(fd: &OwnedFd) -> Result<u64, MapError> {
+    // SAFETY: stat is all-zeros initialized (valid for integer fields),
+    // fd is a valid open descriptor.
+    unsafe {
+        let mut stat = std::mem::zeroed::<nix::libc::stat>();
+        if nix::libc::fstat(fd.as_raw_fd(), &raw mut stat) < 0 {
+            return Err(MapError::Io(std::io::Error::last_os_error()));
+        }
+        Ok(stat.st_size as u64)
+    }
+}
+
+pub(super) fn ftruncate(fd: &OwnedFd, len: u64) -> Result<(), MapError> {
+    let len: nix::libc::off_t = len.try_into().map_err(|_| {
+        MapError::Io(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "size exceeds off_t range",
+        ))
+    })?;
+    // SAFETY: fd is a valid open descriptor with write access.
+    if unsafe { nix::libc::ftruncate(fd.as_raw_fd(), len) } < 0 {
+        return Err(MapError::Io(std::io::Error::last_os_error()));
+    }
+    Ok(())
 }

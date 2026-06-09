@@ -273,3 +273,25 @@ impl Drop for Mapping {
 // by the caller — the handle itself is safe to move across threads.
 unsafe impl Send for Mapping {}
 unsafe impl Sync for Mapping {}
+
+// ── POSIX shared memory (forwarded to platform backend) ──────────
+
+pub(crate) fn shm_open_create(name: &std::ffi::CStr) -> Result<OwnedFd, MapError> {
+    imp::shm_open_create(name)
+}
+
+pub(crate) fn shm_open_existing(name: &std::ffi::CStr, write: bool) -> Result<OwnedFd, MapError> {
+    imp::shm_open_existing(name, write)
+}
+
+pub(crate) fn shm_unlink(name: &std::ffi::CStr) -> Result<(), MapError> {
+    imp::shm_unlink(name)
+}
+
+pub(crate) fn fd_size(fd: &OwnedFd) -> Result<u64, MapError> {
+    imp::fd_size(fd)
+}
+
+pub(crate) fn ftruncate(fd: &OwnedFd, len: u64) -> Result<(), MapError> {
+    imp::ftruncate(fd, len)
+}

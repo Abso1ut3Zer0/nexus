@@ -6,13 +6,16 @@
 //! - [`ProcessLease`] — kernel-mediated process liveness detection
 //! - [`Liveness`] — result of probing a process lease
 //! - [`MappedFile`] — RAII file-backed memory mapping
+//! - [`SharedMemory`] — RAII POSIX shared memory mapping (`/dev/shm`)
 
 pub mod file_lock;
 pub mod lease;
 mod mapped_file;
 pub mod mapping;
+mod shared_memory;
 
 pub use file_lock::FileLock;
 pub use lease::{Liveness, ProcessLease};
 pub use mapped_file::{MappedFile, MappedFileOptions};
 pub use mapping::{Advice, MapError, Mapping, Protection, Sharing};
+pub use shared_memory::{SharedMemory, SharedMemoryOptions};
