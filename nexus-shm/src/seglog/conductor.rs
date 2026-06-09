@@ -1,35 +1,125 @@
+use std::cell::UnsafeCell;
 use std::io::{Read as _, Seek, SeekFrom, Write as _};
+use std::mem::MaybeUninit;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicU8, Ordering};
 use std::thread::JoinHandle;
+use std::time::Duration;
 
-use nexus_platform::FileLock;
+use nexus_platform::{FileLock, MapOptions};
 
-use super::frame::{FRAME_HDR, commit_len_ptr, footprint};
+use crate::segment::Segment;
+
+use super::frame::commit_len_ptr;
 
 const LOCK_FILE: &str = "conductor.lock";
 const DEFAULT_CLEAN_QUEUE_DEPTH: usize = 4;
 
 // ---------------------------------------------------------------------------
-// Internal types
+// SegmentSwap — three-state handoff between SegmentedLog and conductor
+// ---------------------------------------------------------------------------
+
+pub(crate) const SWAP_CLEAN: u8 = 0; // conductor wrote a fresh segment; SegmentedLog can rotate
+pub(crate) const SWAP_DIRTY: u8 = 1; // SegmentedLog wrote an evicted segment; conductor must process
+pub(crate) const SWAP_PENDING: u8 = 2; // sent to conductor channel; inner is uninit
+
+/// Lock-free three-state handoff cell.
+///
+/// State machine:
+/// ```text
+/// Clean  ──(rotate takes)──▶ [inner uninit] ──(store_dirty)──▶ Dirty
+/// Dirty  ──(try_flush sends)──▶ Pending
+/// Pending ──(conductor publishes)──▶ Clean
+/// ```
+///
+/// The `state` atomic provides the Acquire/Release barriers:
+/// - `Clean` Acquire: safe to read `inner` (conductor wrote it)
+/// - `Dirty` Acquire: safe to read `inner` (SegmentedLog wrote it)
+/// - `Pending`: `inner` is uninit — nobody touches it
+pub(crate) struct SegmentSwap {
+    state: AtomicU8,
+    inner: UnsafeCell<MaybeUninit<Segment>>,
+}
+
+// SAFETY: access is serialized by `state` — at most one side holds the payload
+// at any point, enforced by the state machine above.
+unsafe impl Sync for SegmentSwap {}
+
+impl SegmentSwap {
+    pub(crate) fn new_clean(segment: Segment) -> Self {
+        Self {
+            state: AtomicU8::new(SWAP_CLEAN),
+            inner: UnsafeCell::new(MaybeUninit::new(segment)),
+        }
+    }
+
+    pub(crate) fn state(&self) -> u8 {
+        self.state.load(Ordering::Acquire)
+    }
+
+    /// Take the segment out, leaving `inner` uninit.
+    ///
+    /// # Safety
+    /// `state` must be `SWAP_CLEAN` or `SWAP_DIRTY` (payload initialized).
+    pub(crate) unsafe fn take(&self) -> Segment {
+        unsafe { (*self.inner.get()).assume_init_read() }
+    }
+
+    /// Write the evicted segment into `inner` and transition to `Dirty`.
+    ///
+    /// # Safety
+    /// `inner` must be uninit (caller just called `take()`).
+    pub(crate) unsafe fn store_dirty(&self, segment: Segment) {
+        unsafe { (*self.inner.get()).write(segment) };
+        self.state.store(SWAP_DIRTY, Ordering::Release);
+    }
+
+    pub(crate) fn set_state(&self, s: u8) {
+        self.state.store(s, Ordering::Release);
+    }
+
+    /// Write a fresh replacement segment and transition to `Clean`.
+    ///
+    /// # Safety
+    /// Called only from the conductor thread after `inner` was uninit.
+    pub(crate) unsafe fn publish_clean(&self, segment: Segment) {
+        unsafe { (*self.inner.get()).write(segment) };
+        self.state.store(SWAP_CLEAN, Ordering::Release);
+    }
+}
+
+impl Drop for SegmentSwap {
+    fn drop(&mut self) {
+        let s = *self.state.get_mut();
+        if s == SWAP_CLEAN || s == SWAP_DIRTY {
+            // SAFETY: state guarantees payload is initialized.
+            unsafe { self.inner.get_mut().assume_init_drop() };
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// CleanRequest
 // ---------------------------------------------------------------------------
 
 pub(crate) struct CleanRequest {
-    pub(crate) data: *mut u8,
+    /// The evicted segment to archive (rename) then drop. `None` for
+    /// retry-only requests where the segment was already dropped.
+    pub(crate) segment: Option<Segment>,
     pub(crate) segment_size: usize,
-    pub(crate) ready: Arc<AtomicBool>,
-    /// If set, write committed frames here before zeroing.
-    pub(crate) archive_path: Option<PathBuf>,
+    pub(crate) epoch: u64,
+    pub(crate) swap: Arc<SegmentSwap>,
+    /// Path of the slot file to create fresh for the replacement segment.
+    pub(crate) seg_path: PathBuf,
+    pub(crate) map: MapOptions,
+    pub(crate) archive_dir: Option<PathBuf>,
 }
 
-// SAFETY: `data` points into a mmap'd segment that remains mapped until the
-// owning `Slot` drops, which happens only after the SegmentedLog drops. The
-// SegmentedLog holds a sender clone — dropping it before the conductor thread
-// processes the request would unmap the segment. But the segment file itself
-// remains; the conductor only touches the mmap'd data before marking ready,
-// and the SegmentedLog cannot drop until its own Drop runs (which waits for
-// no pending clean via the ready flag in practice).
+// SAFETY: `CleanRequest` carries `Segment` ownership across the channel.
+// `Segment` itself wraps a `MappedFile` (mmap handle) which is not `Send`
+// by default only because raw pointers aren't, but the mapping is stable
+// in memory. The conductor thread is the sole owner once the request is sent.
 unsafe impl Send for CleanRequest {}
 
 // ---------------------------------------------------------------------------
@@ -37,18 +127,6 @@ unsafe impl Send for CleanRequest {}
 // ---------------------------------------------------------------------------
 
 /// Builder for configuring a [`Conductor`].
-///
-/// Use this when the default configuration is not suitable — for example,
-/// to increase the clean queue depth when running many concurrent sessions.
-///
-/// ```no_run
-/// # use nexus_shm::ConductorBuilder;
-/// let mut conductor = ConductorBuilder::new("/tmp/journal")
-///     .clean_queue_depth(16)
-///     .archive(true)
-///     .open()
-///     .unwrap();
-/// ```
 pub struct ConductorBuilder {
     dir: PathBuf,
     clean_queue_depth: usize,
@@ -64,35 +142,27 @@ impl ConductorBuilder {
         }
     }
 
-    /// Maximum number of outstanding segment-clean requests (default: 4).
-    ///
-    /// Each session can have at most one outstanding clean request at a time.
-    /// If multiple sessions rotate simultaneously and the queue is full,
-    /// `append` will block briefly until the conductor thread drains one.
     pub fn clean_queue_depth(mut self, depth: usize) -> Self {
         self.clean_queue_depth = depth;
         self
     }
 
     /// Archive evicted segments to `{session_dir}/archive/seg_{epoch}.dat`
-    /// before zeroing (default: off).
+    /// before dropping them (default: off).
     ///
-    /// Archive format: committed frames written densely — each frame as
-    /// `[commit_len:u32][session_id:u32][payload...]` with no inter-frame
-    /// padding. Readable with the same `commit_len`-walk as recovery.
-    /// I/O errors during archival are silently ignored; the segment is
-    /// always zeroed and the ready flag always set.
+    /// When enabled, the segment file is fsynced then renamed (atomic on the
+    /// same filesystem) rather than zeroed. The rename preserves the exact
+    /// on-disk frame format — no copy step, no partial-write risk.
     pub fn archive(mut self, enable: bool) -> Self {
         self.archive = enable;
         self
     }
 
-    /// Open the conductor, creating the root directory if needed.
     pub fn open(self) -> Result<Conductor, super::OpenError> {
         std::fs::create_dir_all(&self.dir)?;
 
         let (tx, rx) = std::sync::mpsc::sync_channel(self.clean_queue_depth);
-        let thread = std::thread::spawn(move || conductor_main(rx));
+        let thread = std::thread::spawn(move || conductor_main(&rx));
 
         Ok(Conductor {
             dir: self.dir,
@@ -104,30 +174,6 @@ impl ConductorBuilder {
 }
 
 /// Top-level journal manager.
-///
-/// Owns the background cleanup thread and the root directory. All
-/// [`SegmentedLog`](super::SegmentedLog) instances are opened through
-/// the conductor via [`session()`](Self::session).
-///
-/// # Lifetime
-///
-/// The conductor **must** outlive all [`SegmentedLog`] instances opened
-/// through it. `Conductor::drop` joins the cleanup thread, which blocks
-/// until every session's sender is dropped. Dropping a conductor while
-/// sessions are still alive will block indefinitely.
-///
-/// # Directory layout
-///
-/// ```text
-/// {dir}/
-///   conductor.lock      <- session ID counter (OFD-locked during assignment)
-///   {session_id}/
-///     session.lock      <- OFD-locked while open (prevents double-open)
-///     journal.manifest
-///     seg0.dat, seg1.dat, seg2.dat
-///     archive/          <- present only when archival is enabled
-///       seg_{epoch}.dat
-/// ```
 pub struct Conductor {
     dir: PathBuf,
     tx: Option<std::sync::mpsc::SyncSender<CleanRequest>>,
@@ -136,20 +182,14 @@ pub struct Conductor {
 }
 
 impl Conductor {
-    /// Open a conductor rooted at `dir` with default configuration.
-    ///
-    /// Creates the directory if it does not exist. Use [`ConductorBuilder`]
-    /// for custom configuration (e.g. clean queue depth, archival).
     pub fn open(dir: impl AsRef<Path>) -> Result<Self, super::OpenError> {
         ConductorBuilder::new(dir).open()
     }
 
-    /// Return a builder for opening or creating a session log.
     pub fn session(&mut self) -> super::SegmentedLogBuilder<'_> {
         super::SegmentedLogBuilder::new(self)
     }
 
-    /// List session IDs that have manifests on disk.
     pub fn sessions_on_disk(&self) -> Result<Vec<u32>, super::OpenError> {
         let mut ids = Vec::new();
         for entry in std::fs::read_dir(&self.dir)? {
@@ -168,15 +208,10 @@ impl Conductor {
         Ok(ids)
     }
 
-    /// Atomically claim the next session ID.
-    ///
-    /// Uses a lock file (`conductor.lock`) to coordinate across processes.
-    /// Multiple conductors on the same directory will never assign the same ID.
     pub(crate) fn next_session_id(&self) -> Result<u32, super::OpenError> {
         claim_next_session_id(&self.dir)
     }
 
-    /// Ensure the lock counter won't collide with an explicitly chosen ID.
     pub(crate) fn register_explicit_id(&self, id: u32) -> Result<(), super::OpenError> {
         ensure_counter_at_least(&self.dir, id)
     }
@@ -196,8 +231,6 @@ impl Conductor {
 
 impl Drop for Conductor {
     fn drop(&mut self) {
-        // Drop our sender first so the channel closes once all SegmentedLog
-        // clones are also dropped.
         drop(self.tx.take());
         if let Some(t) = self.thread.take() {
             let _ = t.join();
@@ -206,73 +239,92 @@ impl Drop for Conductor {
 }
 
 // ---------------------------------------------------------------------------
-// Free functions
+// Conductor work loop
 // ---------------------------------------------------------------------------
 
-/// Background cleanup loop for evicted segments.
-///
-/// Runs on a dedicated thread, processing one `CleanRequest` per segment
-/// rotation. The thread stays alive as long as any `SyncSender` clone
-/// exists — the `Conductor` holds one, and each `SegmentedLog` holds
-/// another. When all senders drop, `rx.recv()` returns `Err`, the
-/// for-loop exits, and the thread returns (unblocking `Conductor::drop`'s
-/// `join()`).
-fn conductor_main(rx: std::sync::mpsc::Receiver<CleanRequest>) {
-    for req in rx {
-        if let Some(ref path) = req.archive_path {
-            archive_segment(req.data, req.segment_size, path);
+struct PendingCreate {
+    swap: Arc<SegmentSwap>,
+    seg_path: PathBuf,
+    segment_size: usize,
+    map: MapOptions,
+}
+
+fn conductor_main(rx: &std::sync::mpsc::Receiver<CleanRequest>) {
+    let mut pending: Vec<PendingCreate> = Vec::new();
+
+    loop {
+        // Retry any previously failed segment creates (e.g. ENOSPC).
+        pending.retain(|p| {
+            Segment::create(&p.seg_path, p.segment_size, p.map).map_or(true, |seg| {
+                // SAFETY: conductor is sole owner; state is Pending (inner uninit).
+                unsafe { p.swap.publish_clean(seg) };
+                false
+            })
+        });
+
+        // Non-blocking drain of new requests.
+        let mut drained = false;
+        while let Ok(req) = rx.try_recv() {
+            drained = true;
+            process_request(req, &mut pending);
         }
 
-        // SAFETY: `req.data` points to the start of a live mmap'd segment.
-        // See `CleanRequest` Send impl for lifetime reasoning.
-        unsafe { (*commit_len_ptr(req.data)).store(0, Ordering::Release) };
-        req.ready.store(true, Ordering::Release);
+        // Block only when idle; sleep briefly if still retrying.
+        if pending.is_empty() {
+            match rx.recv() {
+                Ok(req) => process_request(req, &mut pending),
+                Err(_) => break,
+            }
+        } else if !drained {
+            std::thread::sleep(Duration::from_millis(250));
+        }
     }
 }
 
-/// Write committed frames from the evicted segment to `path` as a dense blob.
-///
-/// Walks frames using `commit_len` (encoded as `body + 1`) until the first
-/// zero, writing each as `[commit_len:u32][session_id:u32][payload...]`
-/// with no inter-frame padding. I/O errors are silently ignored.
-fn archive_segment(data: *mut u8, segment_size: usize, path: &Path) {
-    if path
-        .parent()
-        .is_some_and(|p| std::fs::create_dir_all(p).is_err())
-    {
-        return;
+fn process_request(req: CleanRequest, pending: &mut Vec<PendingCreate>) {
+    if let Some(segment) = req.segment {
+        // fsync before rename so the archive file is durable.
+        let _ = segment.sync();
+
+        if let Some(ref archive_dir) = req.archive_dir
+            && std::fs::create_dir_all(archive_dir).is_ok()
+        {
+            let dst = archive_dir.join(format!("seg_{}.dat", req.epoch));
+            // Rename is atomic on the same filesystem; the mmap follows
+            // the inode so existing readers are unaffected.
+            let _ = std::fs::rename(segment.path(), dst);
+        }
+
+        // Drop the Segment (munmap). The file is either renamed or still at
+        // its original path — either way we're done with the mapping.
+        drop(segment);
     }
-    let Ok(file) = std::fs::File::create(path) else {
-        return;
-    };
-    let mut writer = std::io::BufWriter::new(file);
-    let mut cur = 0usize;
-    while cur + FRAME_HDR <= segment_size {
-        // SAFETY: `cur` is an 8-aligned offset within the mmap'd segment.
-        let stored = unsafe { (*commit_len_ptr(data.add(cur))).load(Ordering::Acquire) };
-        if stored == 0 {
-            break;
+
+    match Segment::create(&req.seg_path, req.segment_size, req.map) {
+        Ok(seg) => {
+            // Zero the first commit_len so the fresh segment reads as empty.
+            // SAFETY: fresh segment, conductor is sole owner.
+            unsafe {
+                (*commit_len_ptr(seg.data())).store(0, std::sync::atomic::Ordering::Relaxed);
+            }
+            // SAFETY: state is Pending (inner uninit after SegmentedLog took it).
+            unsafe { req.swap.publish_clean(seg) };
         }
-        let body = (stored - 1) as usize;
-        if cur + FRAME_HDR + body > segment_size {
-            break;
+        Err(_) => {
+            pending.push(PendingCreate {
+                swap: req.swap,
+                seg_path: req.seg_path,
+                segment_size: req.segment_size,
+                map: req.map,
+            });
         }
-        // Write the frame header + payload densely (no alignment padding).
-        let frame = unsafe { std::slice::from_raw_parts(data.add(cur), FRAME_HDR + body) };
-        if writer.write_all(frame).is_err() {
-            return;
-        }
-        cur += footprint(body);
     }
-    let _ = writer.flush();
 }
 
-/// Atomically claim the next session ID using a lock file.
-///
-/// Acquires an exclusive lock on `{dir}/conductor.lock`, reads the
-/// current counter, increments it, and writes back. The lock is released
-/// when the `FileLock` drops. The counter file is a plain ASCII integer
-/// for easy inspection.
+// ---------------------------------------------------------------------------
+// Session ID management
+// ---------------------------------------------------------------------------
+
 fn claim_next_session_id(dir: &Path) -> Result<u32, super::OpenError> {
     let mut lock = FileLock::lock(dir.join(LOCK_FILE))?;
     let current = read_counter(lock.file())?;
@@ -281,8 +333,6 @@ fn claim_next_session_id(dir: &Path) -> Result<u32, super::OpenError> {
     Ok(next)
 }
 
-/// Ensure the counter is at least `id` so future auto-assignments won't
-/// collide with explicitly chosen IDs.
 fn ensure_counter_at_least(dir: &Path, id: u32) -> Result<(), super::OpenError> {
     let mut lock = FileLock::lock(dir.join(LOCK_FILE))?;
     let current = read_counter(lock.file())?;

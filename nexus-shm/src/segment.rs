@@ -6,6 +6,7 @@ use nexus_platform::{Liveness, MapOptions, MappedFile, ProcessLease};
 
 use crate::control::{ControlBlock, status};
 use crate::error::ShmError;
+use std::path::PathBuf;
 
 const HEADER: NonZeroUsize = match NonZeroUsize::new(size_of::<ControlBlock>()) {
     Some(n) => n,
@@ -24,8 +25,13 @@ pub enum Status {
 /// File lifecycle (unlink, rotate, archive) is the caller's responsibility. The
 /// backing file persists after drop so a restarting peer can run crash
 /// recovery; segment owns only the mapping and its liveness signals.
+// SAFETY: the mmap pointer is stable in memory and access is governed by the
+// protocol-level atomics. Sending to another thread is safe.
+unsafe impl Send for Segment {}
+
 pub struct Segment {
     mapping: MappedFile,
+    path: PathBuf,
     creator: bool,
 }
 
@@ -50,6 +56,7 @@ impl Segment {
 
         Ok(Self {
             mapping,
+            path: path.to_path_buf(),
             creator: true,
         })
     }
@@ -59,6 +66,7 @@ impl Segment {
         Self::control_of(&mapping).validate()?;
         Ok(Self {
             mapping,
+            path: path.to_path_buf(),
             creator: false,
         })
     }
@@ -78,6 +86,14 @@ impl Segment {
 
     pub fn peer_liveness(&self) -> Liveness {
         ProcessLease::probe(self.mapping.as_fd())
+    }
+
+    pub(crate) fn path(&self) -> &Path {
+        &self.path
+    }
+
+    pub(crate) fn sync(&self) -> std::io::Result<()> {
+        self.mapping.sync()
     }
 
     pub(crate) fn data(&self) -> *mut u8 {

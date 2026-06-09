@@ -7,12 +7,12 @@ mod tests;
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::Ordering;
 
 use crate::segment::Segment;
 use nexus_platform::{FileLock, MapOptions};
 
-use conductor::CleanRequest;
+use conductor::{CleanRequest, SWAP_CLEAN, SWAP_DIRTY, SegmentSwap};
 use frame::{ALIGN, FRAME_HDR, align_up, commit_len_ptr, footprint, session_id_ptr};
 use manifest::Manifest;
 
@@ -20,7 +20,7 @@ pub use conductor::{Conductor, ConductorBuilder};
 pub use error::{LogError, OpenError};
 pub use frame::{Frame, LogOffset};
 
-const MANIFEST_FILE: &str = "journal.manifest";
+pub(crate) const MANIFEST_FILE: &str = "journal.manifest";
 const SESSION_LOCK_FILE: &str = "session.lock";
 const EPOCH_MASK: u32 = 0x3FFF_FFFF;
 
@@ -30,12 +30,12 @@ const EPOCH_MASK: u32 = 0x3FFF_FFFF;
 
 struct SessionResources {
     tx: std::sync::mpsc::SyncSender<CleanRequest>,
-    ready: Arc<AtomicBool>,
     session_lock: FileLock,
 }
 
 struct Slot {
-    _segment: Segment,
+    // None only for the standby slot (its Segment lives in the swap).
+    segment: Option<Segment>,
     data: *mut u8,
 }
 
@@ -138,7 +138,6 @@ impl<'a> SegmentedLogBuilder<'a> {
         let name_bytes = self.name.as_deref().unwrap_or("").as_bytes();
         let res = SessionResources {
             tx: self.conductor.sender(),
-            ready: Arc::new(AtomicBool::new(true)),
             session_lock,
         };
 
@@ -156,10 +155,7 @@ impl<'a> SegmentedLogBuilder<'a> {
     }
 
     fn map_options(&self) -> MapOptions {
-        MapOptions {
-            pretouch: self.pretouch,
-            huge_pages: self.huge_pages,
-        }
+        MapOptions { pretouch: self.pretouch, huge_pages: self.huge_pages }
     }
 }
 
@@ -221,17 +217,18 @@ pub struct SegmentedLog {
     slots: [Slot; 3],
     manifest: Manifest,
     tx: std::sync::mpsc::SyncSender<CleanRequest>,
-    ready: Arc<AtomicBool>,
+    swap: Arc<SegmentSwap>,
     _session_lock: FileLock,
     segment_size: usize,
     session_id: u32,
+    session_dir: PathBuf,
     current: usize,
     prev: usize,
     standby: usize,
     cursor: usize,
     epoch: u64,
     slot_gen: [u32; 3],
-    /// Archive directory for evicted segments; `None` if archival is disabled.
+    map: MapOptions,
     archive_dir: Option<PathBuf>,
 }
 
@@ -261,6 +258,7 @@ impl SegmentedLog {
     ///
     /// Panics if the conductor cleanup thread has exited (indicates a bug).
     pub fn append(&mut self, payload: &[u8]) -> Result<LogOffset, LogError> {
+        self.try_flush_dirty();
         let body = payload.len();
         let foot = footprint(body);
         if foot > self.segment_size {
@@ -433,40 +431,36 @@ impl SegmentedLog {
         let mk = |i: u8| -> Result<Slot, OpenError> {
             let seg = Segment::create(&seg_path(dir, i), size, map)?;
             let data = seg.data();
-            Ok(Slot {
-                _segment: seg,
-                data,
-            })
+            // SAFETY: freshly mapped segment, sole owner.
+            unsafe { (*commit_len_ptr(data)).store(0, Ordering::Relaxed) };
+            Ok(Slot { segment: Some(seg), data })
         };
 
         let s0 = mk(0)?;
-        let s1 = mk(1)?;
+        // Standby segment lives exclusively in the swap; slots[1] starts empty.
+        let standby_seg = Segment::create(&seg_path(dir, 1), size, map)?;
+        // SAFETY: freshly mapped segment.
+        unsafe { (*commit_len_ptr(standby_seg.data())).store(0, Ordering::Relaxed) };
+        let swap = Arc::new(SegmentSwap::new_clean(standby_seg));
+        let s1 = Slot { segment: None, data: std::ptr::null_mut() };
         let s2 = mk(2)?;
-
-        // SAFETY: each slot data pointer is the start of a freshly mapped segment
-        // with at least FRAME_HDR bytes and 4-byte alignment from mmap.
-        unsafe {
-            (*commit_len_ptr(s0.data)).store(0, Ordering::Relaxed);
-            (*commit_len_ptr(s1.data)).store(0, Ordering::Relaxed);
-            (*commit_len_ptr(s2.data)).store(0, Ordering::Relaxed);
-        }
 
         Ok(Self {
             slots: [s0, s1, s2],
             manifest,
             tx: res.tx,
-            ready: res.ready,
+            swap,
             _session_lock: res.session_lock,
             segment_size: size,
             session_id,
+            session_dir: dir.to_path_buf(),
             current: 0,
             prev: 2,
             standby: 1,
             cursor: 0,
             epoch: 0,
-            // u32::MAX marks inactive slots — no real epoch will match,
-            // so reads against prev/standby correctly return None.
             slot_gen: [0, u32::MAX, u32::MAX],
+            map,
             archive_dir,
         })
     }
@@ -509,7 +503,6 @@ impl SegmentedLog {
             _ => {
                 let c = (epoch % 3) as usize;
                 let p = ((epoch - 1) % 3) as usize;
-                // {c, p, s} is always a permutation of {0, 1, 2}
                 let s = 3 - c - p;
                 (c, p, s)
             }
@@ -523,26 +516,22 @@ impl SegmentedLog {
                 Segment::create(&path, size, map)?
             };
             let data = seg.data();
-            Ok(Slot {
-                _segment: seg,
-                data,
-            })
+            Ok(Slot { segment: Some(seg), data })
         };
 
-        let s0 = mk(0)?;
-        let s1 = mk(1)?;
-        let s2 = mk(2)?;
-        let slots = [s0, s1, s2];
+        let mut slots = [mk(0)?, mk(1)?, mk(2)?];
 
         let cursor = recover_tail(slots[current].data, size);
 
-        // The standby segment may contain stale committed frames from a
-        // previous epoch. Zero its commit_len so those frames are not
-        // mistaken for valid data when this slot becomes active.
-        // SAFETY: standby is a valid slot index into a live mmap'd segment.
-        unsafe {
-            (*commit_len_ptr(slots[standby].data)).store(0, Ordering::Relaxed);
-        }
+        // Move the standby segment into the swap; its slot becomes empty.
+        // The conductor will archive it and publish a fresh replacement on the
+        // next rotation.
+        let standby_seg = slots[standby].segment.take().expect("just created");
+        // SAFETY: standby segment, sole owner; zeroing commit_len hides any
+        // stale frames that were written in the previous session.
+        unsafe { (*commit_len_ptr(standby_seg.data())).store(0, Ordering::Relaxed) };
+        slots[standby].data = std::ptr::null_mut();
+        let swap = Arc::new(SegmentSwap::new_clean(standby_seg));
 
         let mut slot_gen = [u32::MAX; 3];
         slot_gen[current] = (epoch as u32) & EPOCH_MASK;
@@ -554,48 +543,45 @@ impl SegmentedLog {
             slots,
             manifest,
             tx: res.tx,
-            ready: res.ready,
+            swap,
             _session_lock: res.session_lock,
             segment_size: size,
             session_id,
+            session_dir: dir.to_path_buf(),
             current,
             prev,
             standby,
             cursor,
             epoch,
             slot_gen,
+            map,
             archive_dir,
         })
     }
 
     fn rotate(&mut self) -> Result<(), LogError> {
-        if !self.ready.load(Ordering::Acquire) {
+        if self.swap.state() != SWAP_CLEAN {
             return Err(LogError::StandbyNotReady);
         }
 
-        let old_prev = self.prev;
-        let archive_path = self
-            .archive_dir
-            .as_deref()
-            .map(|dir| dir.join(format!("seg_{}.dat", self.epoch)));
-        let request = CleanRequest {
-            data: self.slots[old_prev].data,
-            segment_size: self.segment_size,
-            ready: Arc::clone(&self.ready),
-            archive_path,
-        };
+        // Take the replacement segment the conductor prepared.
+        // SAFETY: state == Clean (Acquire) guarantees payload is initialized.
+        let new_seg = unsafe { self.swap.take() };
+        let new_data = new_seg.data();
 
-        self.ready.store(false, Ordering::Release);
-        match self.tx.try_send(request) {
-            Ok(()) => {}
-            Err(std::sync::mpsc::TrySendError::Full(_)) => {
-                self.ready.store(true, Ordering::Release);
-                return Err(LogError::StandbyNotReady);
-            }
-            Err(std::sync::mpsc::TrySendError::Disconnected(_)) => {
-                panic!("conductor cleanup thread has exited unexpectedly");
-            }
-        }
+        // Install replacement in standby slot (becomes new current).
+        self.slots[self.standby].segment = Some(new_seg);
+        self.slots[self.standby].data = new_data;
+
+        // Evict the prev slot (becomes new standby — empty until conductor replaces it).
+        let old_prev = self.prev;
+        let evicted = self.slots[old_prev].segment.take().expect("prev must have segment");
+        self.slots[old_prev].data = std::ptr::null_mut();
+
+        // Park the evicted segment in the swap so try_flush_dirty can send it.
+        // SAFETY: we just took from swap (inner is uninit), writing before
+        // publishing Dirty (Release).
+        unsafe { self.swap.store_dirty(evicted) };
 
         self.prev = self.current;
         self.current = self.standby;
@@ -605,20 +591,53 @@ impl SegmentedLog {
         self.slot_gen[self.current] = (self.epoch as u32) & EPOCH_MASK;
         self.manifest.set_epoch(self.epoch);
 
+        self.try_flush_dirty();
         Ok(())
+    }
+
+    fn try_flush_dirty(&mut self) {
+        if self.swap.state() != SWAP_DIRTY {
+            return;
+        }
+
+        // SAFETY: state == Dirty (Acquire) guarantees the evicted segment
+        // is in the swap and we own it.
+        let evicted = unsafe { self.swap.take() };
+
+        let request = CleanRequest {
+            segment: Some(evicted),
+            segment_size: self.segment_size,
+            epoch: self.epoch.saturating_sub(1),
+            swap: Arc::clone(&self.swap),
+            seg_path: seg_path(&self.session_dir, self.standby as u8),
+            map: self.map,
+            archive_dir: self.archive_dir.clone(),
+        };
+
+        // Transition Dirty → Pending before send.
+        self.swap.set_state(conductor::SWAP_PENDING);
+
+        match self.tx.try_send(request) {
+            Ok(()) => {}
+            Err(std::sync::mpsc::TrySendError::Full(returned)) => {
+                // Channel full; put the segment back and retry next append.
+                let segment = returned.segment.expect("just set it");
+                // SAFETY: we set Pending above; inner is uninit; restoring Dirty.
+                unsafe { self.swap.store_dirty(segment) };
+            }
+            Err(std::sync::mpsc::TrySendError::Disconnected(_)) => {
+                panic!("conductor cleanup thread has exited unexpectedly");
+            }
+        }
     }
 }
 
 impl Drop for SegmentedLog {
     fn drop(&mut self) {
-        // Wait for any in-flight clean request to finish before unmapping
-        // segments. The conductor thread holds a raw pointer into our mmap'd
-        // data — if we unmap first, it would touch freed memory.
-        //
-        // yield_now() is appropriate here because the conductor's work is a
-        // single atomic store — this spin completes in nanoseconds. A sleep
-        // would add milliseconds of unnecessary latency to drop.
-        while !self.ready.load(Ordering::Acquire) {
+        // If a request is in-flight (Pending), wait for the conductor to
+        // publish a replacement (Clean). Once Clean, the conductor is done
+        // with the evicted segment so it's safe to unmap everything.
+        while self.swap.state() == conductor::SWAP_PENDING {
             std::thread::yield_now();
         }
         // _session_lock is dropped here, releasing the OFD lock.
