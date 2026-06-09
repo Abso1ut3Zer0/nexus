@@ -13,7 +13,7 @@ use super::header::{RecordHeader, SeqHeader};
 pub struct Reader<H: RecordHeader> {
     pub(super) base: std::path::PathBuf,
     pub(super) segment_size: usize,
-    pub(super) map: nexus_platform::MapOptions,
+    pub(super) map: nexus_platform::MappedFileOptions,
     pub(super) segments: Vec<Segment>,
     pub(super) seg_idx: usize,
     pub(super) cursor: usize,

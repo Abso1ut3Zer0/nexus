@@ -10,7 +10,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use crate::segment::Segment;
-use nexus_platform::{FileLock, MapOptions};
+use nexus_platform::{FileLock, MappedFile, MappedFileOptions};
 
 use conductor::CleanRequest;
 use frame::{ALIGN, FRAME_HDR, align_up, commit_len_ptr, footprint, session_id_ptr};
@@ -155,11 +155,10 @@ impl<'a> SegmentedLogBuilder<'a> {
         }
     }
 
-    fn map_options(&self) -> MapOptions {
-        MapOptions {
-            pretouch: self.pretouch,
-            huge_pages: self.huge_pages,
-        }
+    fn map_options(&self) -> MappedFileOptions {
+        MappedFile::options()
+            .pretouch(self.pretouch)
+            .huge_pages(self.huge_pages)
     }
 }
 
@@ -422,7 +421,7 @@ impl SegmentedLog {
     fn create_fresh(
         dir: &Path,
         size: usize,
-        map: MapOptions,
+        map: MappedFileOptions,
         session_id: u32,
         name: &[u8],
         res: SessionResources,
@@ -474,7 +473,7 @@ impl SegmentedLog {
     fn recover(
         dir: &Path,
         requested_size: usize,
-        map: MapOptions,
+        map: MappedFileOptions,
         strict: bool,
         expected_session_id: u32,
         res: SessionResources,

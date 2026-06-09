@@ -11,7 +11,7 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::Ordering;
 
 use crate::segment::Segment;
-use nexus_platform::MapOptions;
+use nexus_platform::{MappedFile, MappedFileOptions};
 
 pub use error::JournalError;
 pub use header::{FixHeader, RecordHeader, SeqHeader};
@@ -26,14 +26,14 @@ const MIN_SEGMENT: usize = 64;
 #[derive(Clone, Copy)]
 pub struct JournalConfig {
     pub segment_size: usize,
-    pub map: MapOptions,
+    pub map: MappedFileOptions,
 }
 
 impl Default for JournalConfig {
     fn default() -> Self {
         Self {
             segment_size: 64 * 1024 * 1024,
-            map: MapOptions::default(),
+            map: MappedFile::options(),
         }
     }
 }
