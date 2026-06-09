@@ -11,7 +11,7 @@ use super::header::RecordHeader;
 pub struct Writer<H: RecordHeader> {
     pub(super) base: std::path::PathBuf,
     pub(super) segment_size: usize,
-    pub(super) map: nexus_platform::MappedFileOptions,
+    pub(super) map: nexus_platform::MapOptions,
     pub(super) active: Segment,
     pub(super) index: u64,
     pub(super) tail: usize,

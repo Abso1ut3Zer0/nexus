@@ -1,6 +1,6 @@
 use std::path::{Path, PathBuf};
 
-use nexus_platform::MappedFile;
+use crate::MapOptions;
 
 use super::{FixHeader, Journal, JournalConfig, JournalError};
 
@@ -26,7 +26,7 @@ fn fix(seq: u64) -> FixHeader {
 fn cfg(segment_size: usize) -> JournalConfig {
     JournalConfig {
         segment_size,
-        map: MappedFile::options(),
+        map: MapOptions::default(),
     }
 }
 

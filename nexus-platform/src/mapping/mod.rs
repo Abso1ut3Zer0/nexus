@@ -55,90 +55,17 @@ pub enum Advice {
     NoHugePage,
 }
 
-/// Platform-aware hints for mapping creation.
+/// Platform-aware hints for mapping creation. Fields are best-effort:
+/// each platform backend documents what it actually provides.
 ///
-/// Used internally by [`Mapping::new`] and the Linux backend. The public
-/// surface for callers is [`MappedFileOptions`].
+/// - `pretouch`: pre-fault pages into memory on creation.
+///   Linux: `MAP_POPULATE`. macOS: `madvise(MADV_WILLNEED)`.
+/// - `huge_pages`: request huge-page backing.
+///   Linux: `MAP_HUGETLB`. Others: best-effort or no-op.
 #[derive(Debug, Clone, Copy, Default)]
-pub(crate) struct MapOptions {
-    pub(crate) pretouch: bool,
-    pub(crate) huge_pages: bool,
-}
-
-/// Builder for creating a [`MappedFile`](super::MappedFile).
-///
-/// Obtain via [`MappedFile::options()`](super::MappedFile::options). Chain
-/// configuration methods, then call a terminal (`create`, `open`,
-/// `from_file`) to produce the mapping.
-///
-/// # Defaults
-///
-/// | field       | default                |
-/// |-------------|------------------------|
-/// | protection  | `ReadWrite`            |
-/// | sharing     | `Shared`               |
-/// | pretouch    | `false`                |
-/// | huge_pages  | `false`                |
-/// | offset      | `0`                    |
-#[derive(Debug, Clone, Copy)]
-pub struct MappedFileOptions {
-    pub(crate) prot: Protection,
-    pub(crate) sharing: Sharing,
+pub struct MapOptions {
     pub pretouch: bool,
     pub huge_pages: bool,
-    pub(crate) offset: u64,
-}
-
-impl Default for MappedFileOptions {
-    fn default() -> Self {
-        Self {
-            prot: Protection::ReadWrite,
-            sharing: Sharing::Shared,
-            pretouch: false,
-            huge_pages: false,
-            offset: 0,
-        }
-    }
-}
-
-impl MappedFileOptions {
-    pub fn read_write(mut self) -> Self {
-        self.prot = Protection::ReadWrite;
-        self
-    }
-
-    pub fn read_only(mut self) -> Self {
-        self.prot = Protection::ReadOnly;
-        self
-    }
-
-    pub fn shared(mut self) -> Self {
-        self.sharing = Sharing::Shared;
-        self
-    }
-
-    pub fn private(mut self) -> Self {
-        self.sharing = Sharing::Private;
-        self
-    }
-
-    /// Pre-fault pages into memory on creation (`MAP_POPULATE` on Linux).
-    pub fn pretouch(mut self, enable: bool) -> Self {
-        self.pretouch = enable;
-        self
-    }
-
-    /// Request huge-page backing (`MAP_HUGETLB` on Linux).
-    pub fn huge_pages(mut self, enable: bool) -> Self {
-        self.huge_pages = enable;
-        self
-    }
-
-    /// File offset for the mapping (must be page-aligned).
-    pub fn offset(mut self, off: u64) -> Self {
-        self.offset = off;
-        self
-    }
 }
 
 /// Error from memory-mapping operations.
@@ -208,14 +135,20 @@ pub struct Mapping {
 impl Mapping {
     /// Create a mapping from a raw fd. The fd must already be open and
     /// sized appropriately.
-    pub(crate) fn new(fd: OwnedFd, len: NonZeroUsize, opts: MappedFileOptions) -> Result<Self, MapError> {
-        let map_opts = MapOptions { pretouch: opts.pretouch, huge_pages: opts.huge_pages };
-        let ptr = imp::map(fd.as_fd(), len, opts.offset, opts.prot, opts.sharing, map_opts)?;
+    pub(crate) fn new(
+        fd: OwnedFd,
+        len: NonZeroUsize,
+        offset: u64,
+        prot: Protection,
+        sharing: Sharing,
+        opts: MapOptions,
+    ) -> Result<Self, MapError> {
+        let ptr = imp::map(fd.as_fd(), len, offset, prot, sharing, opts)?;
         Ok(Self {
             ptr,
             len,
             fd,
-            writable: opts.prot == Protection::ReadWrite,
+            writable: prot == Protection::ReadWrite,
         })
     }
 

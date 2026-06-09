@@ -1,12 +1,12 @@
 use std::hint::black_box;
 
 use criterion::{BatchSize, Criterion, Throughput, criterion_group, criterion_main};
-use nexus_shm::{FixHeader, Journal, JournalConfig, MappedFile};
+use nexus_shm::{FixHeader, Journal, JournalConfig, MapOptions};
 
 fn cfg(segment_size: usize) -> JournalConfig {
     JournalConfig {
         segment_size,
-        map: MappedFile::options(),
+        map: MapOptions::default(),
     }
 }
 
