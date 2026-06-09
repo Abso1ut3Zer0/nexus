@@ -3,7 +3,7 @@ use std::num::NonZeroUsize;
 use std::os::fd::OwnedFd;
 use std::path::Path;
 
-use crate::mapping::{MapError, MappedFileOptions, Mapping, Protection, Sharing};
+use crate::mapping::{MapError, MappedFileOptions, Mapping, Protection};
 
 /// RAII file-backed memory mapping. Unmaps on drop.
 ///
