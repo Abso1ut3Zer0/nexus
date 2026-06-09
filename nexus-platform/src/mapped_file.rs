@@ -72,7 +72,10 @@ impl MappedFile {
 
     /// Open an existing file read-only and map it as [`Sharing::Private`].
     pub fn open_readonly(path: &Path) -> Result<Self, MapError> {
-        MappedFileOptions::default().read_only().private().open(path)
+        MappedFileOptions::default()
+            .read_only()
+            .private()
+            .open(path)
     }
 
     /// Access the underlying [`Mapping`].
@@ -114,8 +117,7 @@ impl MappedFileOptions {
     pub fn open(self, path: &Path) -> Result<MappedFile, MapError> {
         let write = self.prot == Protection::ReadWrite;
         let file = OpenOptions::new().read(true).write(write).open(path)?;
-        let len =
-            NonZeroUsize::new(file.metadata()?.len() as usize).ok_or(MapError::EmptyFile)?;
+        let len = NonZeroUsize::new(file.metadata()?.len() as usize).ok_or(MapError::EmptyFile)?;
         let fd = OwnedFd::from(file);
         let opts = MappedFileOptions { offset: 0, ..self };
         let mapping = Mapping::new(fd, len, opts)?;

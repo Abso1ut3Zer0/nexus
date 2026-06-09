@@ -208,9 +208,23 @@ pub struct Mapping {
 impl Mapping {
     /// Create a mapping from a raw fd. The fd must already be open and
     /// sized appropriately.
-    pub(crate) fn new(fd: OwnedFd, len: NonZeroUsize, opts: MappedFileOptions) -> Result<Self, MapError> {
-        let map_opts = MapOptions { pretouch: opts.pretouch, huge_pages: opts.huge_pages };
-        let ptr = imp::map(fd.as_fd(), len, opts.offset, opts.prot, opts.sharing, map_opts)?;
+    pub(crate) fn new(
+        fd: OwnedFd,
+        len: NonZeroUsize,
+        opts: MappedFileOptions,
+    ) -> Result<Self, MapError> {
+        let map_opts = MapOptions {
+            pretouch: opts.pretouch,
+            huge_pages: opts.huge_pages,
+        };
+        let ptr = imp::map(
+            fd.as_fd(),
+            len,
+            opts.offset,
+            opts.prot,
+            opts.sharing,
+            map_opts,
+        )?;
         Ok(Self {
             ptr,
             len,
