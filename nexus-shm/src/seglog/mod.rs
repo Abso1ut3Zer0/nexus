@@ -158,7 +158,10 @@ impl<'a> SegmentedLogBuilder<'a> {
     }
 
     fn map_hints(&self) -> MapHints {
-        MapHints { pretouch: self.pretouch, huge_pages: self.huge_pages }
+        MapHints {
+            pretouch: self.pretouch,
+            huge_pages: self.huge_pages,
+        }
     }
 }
 
@@ -438,7 +441,11 @@ impl SegmentedLog {
             let data = seg.data();
             // SAFETY: freshly mapped segment, sole owner.
             unsafe { (*commit_len_ptr(data)).store(0, Ordering::Relaxed) };
-            Ok(Slot { segment: Some(seg), path, data })
+            Ok(Slot {
+                segment: Some(seg),
+                path,
+                data,
+            })
         };
 
         let s0 = mk(0)?;
@@ -449,7 +456,11 @@ impl SegmentedLog {
         // SAFETY: freshly mapped segment.
         unsafe { (*commit_len_ptr(standby_seg.data())).store(0, Ordering::Relaxed) };
         let swap = Arc::new(SegmentSwap::new_clean(standby_seg));
-        let s1 = Slot { segment: None, path: standby_path, data: std::ptr::null_mut() };
+        let s1 = Slot {
+            segment: None,
+            path: standby_path,
+            data: std::ptr::null_mut(),
+        };
         let s2 = mk(2)?;
 
         Ok(Self {
@@ -525,7 +536,11 @@ impl SegmentedLog {
                 Segment::create(mf, size, hints)?
             };
             let data = seg.data();
-            Ok(Slot { segment: Some(seg), path, data })
+            Ok(Slot {
+                segment: Some(seg),
+                path,
+                data,
+            })
         };
 
         let mut slots = [mk(0)?, mk(1)?, mk(2)?];
@@ -583,7 +598,10 @@ impl SegmentedLog {
 
         // Evict the prev slot (becomes new standby — empty until conductor replaces it).
         let old_prev = self.prev;
-        let evicted = self.slots[old_prev].segment.take().expect("prev must have segment");
+        let evicted = self.slots[old_prev]
+            .segment
+            .take()
+            .expect("prev must have segment");
         self.slots[old_prev].data = std::ptr::null_mut();
 
         // Park the evicted segment in the swap so try_flush_dirty can send it.

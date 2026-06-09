@@ -251,7 +251,9 @@ fn conductor_main(rx: &std::sync::mpsc::Receiver<CleanRequest>) {
     loop {
         // Retry any previously failed segment creates (e.g. ENOSPC).
         pending.retain(|p| {
-            let Ok(total) = Segment::total_size(p.segment_size) else { return true };
+            let Ok(total) = Segment::total_size(p.segment_size) else {
+                return true;
+            };
             file_create(&p.seg_path, total, p.hints)
                 .ok()
                 .and_then(|mf| Segment::create(mf, p.segment_size, p.hints).ok())
