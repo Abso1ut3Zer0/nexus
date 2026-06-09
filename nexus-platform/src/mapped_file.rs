@@ -3,7 +3,7 @@ use std::num::NonZeroUsize;
 use std::os::fd::OwnedFd;
 use std::path::Path;
 
-use crate::mapping::{MapError, MapOptions, Mapping, Protection, Sharing};
+use crate::mapping::{MapError, MappedFileOptions, Mapping, Protection, Sharing};
 
 /// RAII file-backed memory mapping. Unmaps on drop.
 ///
@@ -16,69 +16,63 @@ use crate::mapping::{MapError, MapOptions, Mapping, Protection, Sharing};
 /// All operations on the mapped bytes (`as_slice`, `read_at`, `write_at`,
 /// `as_ptr`) are delegated to the inner [`Mapping`]. See its documentation
 /// for the shared-mapping caveat.
+///
+/// # Usage
+///
+/// ## Convenience constructors (default options)
+///
+/// ```no_run
+/// # use nexus_platform::MappedFile;
+/// # use std::num::NonZeroUsize;
+/// # let path = std::path::Path::new("/tmp/seg");
+/// let mf = MappedFile::create(path, NonZeroUsize::new(4096).unwrap())?;
+/// let mf = MappedFile::open(path)?;
+/// let mf = MappedFile::open_readonly(path)?;
+/// # Ok::<_, nexus_platform::MapError>(())
+/// ```
+///
+/// ## Builder (full control)
+///
+/// ```no_run
+/// # use nexus_platform::MappedFile;
+/// # use std::num::NonZeroUsize;
+/// # let path = std::path::Path::new("/tmp/seg");
+/// let mf = MappedFile::options()
+///     .read_write()
+///     .shared()
+///     .pretouch(true)
+///     .create(path, NonZeroUsize::new(4096).unwrap())?;
+/// # Ok::<_, nexus_platform::MapError>(())
+/// ```
 pub struct MappedFile {
     mapping: Mapping,
 }
 
 impl MappedFile {
+    /// Return a builder for full control over protection, sharing, and hints.
+    pub fn options() -> MappedFileOptions {
+        MappedFileOptions::default()
+    }
+
     /// Create or open a file at `path`, set its length to `len`, and map it
     /// as [`Sharing::Shared`] with [`Protection::ReadWrite`].
     ///
     /// This is the common case for IPC segments. The file is created if it
     /// does not exist. If the file already exists, it is resized to `len`
     /// (extending or truncating as needed).
-    pub fn create(path: &Path, len: NonZeroUsize, opts: MapOptions) -> Result<Self, MapError> {
-        let file = OpenOptions::new()
-            .read(true)
-            .write(true)
-            .create(true)
-            .truncate(false)
-            .open(path)?;
-        file.set_len(len.get() as u64)?;
-        Self::from_file(file, len, 0, Protection::ReadWrite, Sharing::Shared, opts)
+    pub fn create(path: &Path, len: NonZeroUsize) -> Result<Self, MapError> {
+        MappedFileOptions::default().create(path, len)
     }
 
     /// Open an existing file and map it as [`Sharing::Shared`] with
     /// [`Protection::ReadWrite`] at its current length.
-    pub fn open(path: &Path, opts: MapOptions) -> Result<Self, MapError> {
-        let file = OpenOptions::new().read(true).write(true).open(path)?;
-        let len = NonZeroUsize::new(file.metadata()?.len() as usize).ok_or(MapError::EmptyFile)?;
-        Self::from_file(file, len, 0, Protection::ReadWrite, Sharing::Shared, opts)
+    pub fn open(path: &Path) -> Result<Self, MapError> {
+        MappedFileOptions::default().open(path)
     }
 
     /// Open an existing file read-only and map it as [`Sharing::Private`].
-    pub fn open_readonly(path: &Path, opts: MapOptions) -> Result<Self, MapError> {
-        let file = OpenOptions::new().read(true).open(path)?;
-        let len = NonZeroUsize::new(file.metadata()?.len() as usize).ok_or(MapError::EmptyFile)?;
-        Self::from_file(file, len, 0, Protection::ReadOnly, Sharing::Private, opts)
-    }
-
-    /// Map an already-opened file with full control over protection,
-    /// sharing mode, and file offset.
-    ///
-    /// `offset` must be page-aligned (typically 4096 on Linux). The kernel
-    /// will return an error if it is not.
-    ///
-    /// Returns [`MapError::OutOfBounds`] if `offset + len` exceeds the
-    /// file size.
-    pub fn from_file(
-        file: File,
-        len: NonZeroUsize,
-        offset: u64,
-        prot: Protection,
-        sharing: Sharing,
-        opts: MapOptions,
-    ) -> Result<Self, MapError> {
-        let file_len = file.metadata()?.len();
-        let end = offset
-            .checked_add(len.get() as u64)
-            .ok_or(MapError::OutOfBounds)?;
-        if end > file_len {
-            return Err(MapError::OutOfBounds);
-        }
-        let fd = OwnedFd::from(file);
-        let mapping = Mapping::new(fd, len, offset, prot, sharing, opts)?;
-        Ok(Self { mapping })
+    pub fn open_readonly(path: &Path) -> Result<Self, MapError> {
+        MappedFileOptions::default().read_only().private().open(path)
     }
 
     /// Access the underlying [`Mapping`].
@@ -95,6 +89,59 @@ impl std::ops::Deref for MappedFile {
     }
 }
 
+impl MappedFileOptions {
+    /// Create or open a file at `path`, set its length to `len`, and map it.
+    ///
+    /// The file is created if it does not exist. If the file already exists,
+    /// it is resized to `len` (extending or truncating as needed).
+    pub fn create(self, path: &Path, len: NonZeroUsize) -> Result<MappedFile, MapError> {
+        let file = OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .truncate(false)
+            .open(path)?;
+        file.set_len(len.get() as u64)?;
+        let fd = OwnedFd::from(file);
+        let mapping = Mapping::new(fd, len, self)?;
+        Ok(MappedFile { mapping })
+    }
+
+    /// Open an existing file and map it at its current length.
+    ///
+    /// The file is opened with the access mode implied by the protection
+    /// setting. `offset` is ignored; the whole file is mapped from the start.
+    pub fn open(self, path: &Path) -> Result<MappedFile, MapError> {
+        let write = self.prot == Protection::ReadWrite;
+        let file = OpenOptions::new().read(true).write(write).open(path)?;
+        let len =
+            NonZeroUsize::new(file.metadata()?.len() as usize).ok_or(MapError::EmptyFile)?;
+        let fd = OwnedFd::from(file);
+        let opts = MappedFileOptions { offset: 0, ..self };
+        let mapping = Mapping::new(fd, len, opts)?;
+        Ok(MappedFile { mapping })
+    }
+
+    /// Map an already-opened file with full control over length and offset.
+    ///
+    /// `self.offset` must be page-aligned (typically 4096 on Linux).
+    /// Returns [`MapError::OutOfBounds`] if `offset + len` exceeds the
+    /// file size.
+    pub fn from_file(self, file: File, len: NonZeroUsize) -> Result<MappedFile, MapError> {
+        let file_len = file.metadata()?.len();
+        let end = self
+            .offset
+            .checked_add(len.get() as u64)
+            .ok_or(MapError::OutOfBounds)?;
+        if end > file_len {
+            return Err(MapError::OutOfBounds);
+        }
+        let fd = OwnedFd::from(file);
+        let mapping = Mapping::new(fd, len, self)?;
+        Ok(MappedFile { mapping })
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -108,12 +155,7 @@ mod tests {
         let path = temp_path("rw");
         let _ = std::fs::remove_file(&path);
 
-        let m = MappedFile::create(
-            &path,
-            NonZeroUsize::new(4096).unwrap(),
-            MapOptions::default(),
-        )
-        .unwrap();
+        let m = MappedFile::create(&path, NonZeroUsize::new(4096).unwrap()).unwrap();
         assert_eq!(m.len(), 4096);
         assert!(m.is_writable());
 
@@ -130,16 +172,11 @@ mod tests {
         let path = temp_path("open");
         let _ = std::fs::remove_file(&path);
 
-        let m = MappedFile::create(
-            &path,
-            NonZeroUsize::new(256).unwrap(),
-            MapOptions::default(),
-        )
-        .unwrap();
+        let m = MappedFile::create(&path, NonZeroUsize::new(256).unwrap()).unwrap();
         m.write_at(b"hello", 10).unwrap();
         drop(m);
 
-        let m2 = MappedFile::open(&path, MapOptions::default()).unwrap();
+        let m2 = MappedFile::open(&path).unwrap();
         let mut buf = [0u8; 5];
         m2.read_at(&mut buf, 10);
         assert_eq!(&buf, b"hello");
@@ -152,16 +189,11 @@ mod tests {
         let path = temp_path("readonly");
         let _ = std::fs::remove_file(&path);
 
-        let m = MappedFile::create(
-            &path,
-            NonZeroUsize::new(128).unwrap(),
-            MapOptions::default(),
-        )
-        .unwrap();
+        let m = MappedFile::create(&path, NonZeroUsize::new(128).unwrap()).unwrap();
         m.write_at(b"data", 0).unwrap();
         drop(m);
 
-        let m2 = MappedFile::open_readonly(&path, MapOptions::default()).unwrap();
+        let m2 = MappedFile::open_readonly(&path).unwrap();
         assert!(!m2.is_writable());
         assert_eq!(&m2.as_slice()[..4], b"data");
 
@@ -173,8 +205,7 @@ mod tests {
         let path = temp_path("slice");
         let _ = std::fs::remove_file(&path);
 
-        let m = MappedFile::create(&path, NonZeroUsize::new(64).unwrap(), MapOptions::default())
-            .unwrap();
+        let m = MappedFile::create(&path, NonZeroUsize::new(64).unwrap()).unwrap();
         m.write_at(&[1, 2, 3, 4], 0).unwrap();
         assert_eq!(&m.as_slice()[..4], &[1, 2, 3, 4]);
 
@@ -186,8 +217,7 @@ mod tests {
         let path = temp_path("partial");
         let _ = std::fs::remove_file(&path);
 
-        let m = MappedFile::create(&path, NonZeroUsize::new(8).unwrap(), MapOptions::default())
-            .unwrap();
+        let m = MappedFile::create(&path, NonZeroUsize::new(8).unwrap()).unwrap();
         let mut buf = [0u8; 16];
         let n = m.read_at(&mut buf, 4);
         assert_eq!(n, 4);
@@ -200,8 +230,7 @@ mod tests {
         let path = temp_path("wpartial");
         let _ = std::fs::remove_file(&path);
 
-        let m = MappedFile::create(&path, NonZeroUsize::new(8).unwrap(), MapOptions::default())
-            .unwrap();
+        let m = MappedFile::create(&path, NonZeroUsize::new(8).unwrap()).unwrap();
         let n = m.write_at(&[1, 2, 3, 4], 6).unwrap();
         assert_eq!(n, 2);
         assert_eq!(&m.as_slice()[6..8], &[1, 2]);
@@ -214,8 +243,7 @@ mod tests {
         let path = temp_path("beyond");
         let _ = std::fs::remove_file(&path);
 
-        let m = MappedFile::create(&path, NonZeroUsize::new(8).unwrap(), MapOptions::default())
-            .unwrap();
+        let m = MappedFile::create(&path, NonZeroUsize::new(8).unwrap()).unwrap();
         let mut buf = [0u8; 4];
         let n = m.read_at(&mut buf, 100);
         assert_eq!(n, 0);
@@ -227,10 +255,7 @@ mod tests {
     fn open_empty_file_fails() {
         let path = temp_path("empty");
         std::fs::write(&path, b"").unwrap();
-        assert!(matches!(
-            MappedFile::open(&path, MapOptions::default()),
-            Err(MapError::EmptyFile)
-        ));
+        assert!(matches!(MappedFile::open(&path), Err(MapError::EmptyFile)));
         std::fs::remove_file(&path).unwrap();
     }
 
@@ -239,12 +264,7 @@ mod tests {
         let path = temp_path("sync");
         let _ = std::fs::remove_file(&path);
 
-        let m = MappedFile::create(
-            &path,
-            NonZeroUsize::new(4096).unwrap(),
-            MapOptions::default(),
-        )
-        .unwrap();
+        let m = MappedFile::create(&path, NonZeroUsize::new(4096).unwrap()).unwrap();
         m.write_at(b"durable", 0).unwrap();
         m.sync().unwrap();
 
@@ -256,16 +276,25 @@ mod tests {
         let path = temp_path("advise");
         let _ = std::fs::remove_file(&path);
 
-        let m = MappedFile::create(
-            &path,
-            NonZeroUsize::new(4096).unwrap(),
-            MapOptions::default(),
-        )
-        .unwrap();
+        let m = MappedFile::create(&path, NonZeroUsize::new(4096).unwrap()).unwrap();
         m.advise(crate::Advice::Sequential).unwrap();
         m.advise(crate::Advice::Random).unwrap();
         m.advise(crate::Advice::WillNeed).unwrap();
         m.advise(crate::Advice::Normal).unwrap();
+
+        std::fs::remove_file(&path).unwrap();
+    }
+
+    #[test]
+    fn builder_pretouch() {
+        let path = temp_path("pretouch");
+        let _ = std::fs::remove_file(&path);
+
+        let m = MappedFile::options()
+            .pretouch(true)
+            .create(&path, NonZeroUsize::new(4096).unwrap())
+            .unwrap();
+        assert!(m.is_writable());
 
         std::fs::remove_file(&path).unwrap();
     }
@@ -284,15 +313,9 @@ mod tests {
             .unwrap();
         file.set_len(8192).unwrap();
 
-        let full = MappedFile::from_file(
-            file,
-            NonZeroUsize::new(8192).unwrap(),
-            0,
-            Protection::ReadWrite,
-            Sharing::Shared,
-            MapOptions::default(),
-        )
-        .unwrap();
+        let full = MappedFile::options()
+            .from_file(file, NonZeroUsize::new(8192).unwrap())
+            .unwrap();
         full.write_at(b"offset-test", 4096).unwrap();
         drop(full);
 
@@ -301,15 +324,10 @@ mod tests {
             .write(true)
             .open(&path)
             .unwrap();
-        let window = MappedFile::from_file(
-            file,
-            NonZeroUsize::new(4096).unwrap(),
-            4096,
-            Protection::ReadWrite,
-            Sharing::Shared,
-            MapOptions::default(),
-        )
-        .unwrap();
+        let window = MappedFile::options()
+            .offset(4096)
+            .from_file(file, NonZeroUsize::new(4096).unwrap())
+            .unwrap();
         assert_eq!(&window.as_slice()[..11], b"offset-test");
 
         std::fs::remove_file(&path).unwrap();
@@ -320,16 +338,11 @@ mod tests {
         let path = temp_path("write-ro");
         let _ = std::fs::remove_file(&path);
 
-        let m = MappedFile::create(
-            &path,
-            NonZeroUsize::new(128).unwrap(),
-            MapOptions::default(),
-        )
-        .unwrap();
+        let m = MappedFile::create(&path, NonZeroUsize::new(128).unwrap()).unwrap();
         m.write_at(b"setup", 0).unwrap();
         drop(m);
 
-        let m2 = MappedFile::open_readonly(&path, MapOptions::default()).unwrap();
+        let m2 = MappedFile::open_readonly(&path).unwrap();
         let err = m2.write_at(b"nope", 0).unwrap_err();
         assert_eq!(err.kind(), std::io::ErrorKind::PermissionDenied);
 
@@ -350,14 +363,7 @@ mod tests {
             .unwrap();
         file.set_len(4096).unwrap();
 
-        let result = MappedFile::from_file(
-            file,
-            NonZeroUsize::new(8192).unwrap(),
-            0,
-            Protection::ReadWrite,
-            Sharing::Shared,
-            MapOptions::default(),
-        );
+        let result = MappedFile::options().from_file(file, NonZeroUsize::new(8192).unwrap());
         assert!(matches!(result, Err(MapError::OutOfBounds)));
 
         let file = OpenOptions::new()
@@ -365,14 +371,9 @@ mod tests {
             .write(true)
             .open(&path)
             .unwrap();
-        let result = MappedFile::from_file(
-            file,
-            NonZeroUsize::new(4096).unwrap(),
-            4096,
-            Protection::ReadWrite,
-            Sharing::Shared,
-            MapOptions::default(),
-        );
+        let result = MappedFile::options()
+            .offset(4096)
+            .from_file(file, NonZeroUsize::new(4096).unwrap());
         assert!(matches!(result, Err(MapError::OutOfBounds)));
 
         std::fs::remove_file(&path).unwrap();
@@ -383,13 +384,8 @@ mod tests {
         let path = temp_path("shared");
         let _ = std::fs::remove_file(&path);
 
-        let m1 = MappedFile::create(
-            &path,
-            NonZeroUsize::new(4096).unwrap(),
-            MapOptions::default(),
-        )
-        .unwrap();
-        let m2 = MappedFile::open(&path, MapOptions::default()).unwrap();
+        let m1 = MappedFile::create(&path, NonZeroUsize::new(4096).unwrap()).unwrap();
+        let m2 = MappedFile::open(&path).unwrap();
 
         m1.write_at(b"visible", 0).unwrap();
         let mut buf = [0u8; 7];

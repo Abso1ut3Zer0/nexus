@@ -16,7 +16,7 @@ pub use journal::{
     FixHeader, Journal, JournalConfig, JournalError, ReadRange, ReadRecord, Reader, RecordHeader,
     SeqHeader, WriteClaim, Writer,
 };
-pub use nexus_platform::{Liveness, MapOptions};
+pub use nexus_platform::{Liveness, MappedFile, MappedFileOptions};
 pub use pod::Pod;
 pub use seglog::{
     Conductor, ConductorBuilder, Frame, LogError, LogOffset, OpenError, SegmentedLog,
