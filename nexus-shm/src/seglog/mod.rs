@@ -142,11 +142,16 @@ impl<'a> SegmentedLogBuilder<'a> {
             session_lock,
         };
 
+        let archive_dir = self
+            .conductor
+            .archive()
+            .then(|| session_dir.join("archive"));
+
         let mpath = manifest_path(&session_dir);
         if mpath.exists() {
-            SegmentedLog::recover(&session_dir, size, map, strict, id, res)
+            SegmentedLog::recover(&session_dir, size, map, strict, id, res, archive_dir)
         } else {
-            SegmentedLog::create_fresh(&session_dir, size, map, id, name_bytes, res)
+            SegmentedLog::create_fresh(&session_dir, size, map, id, name_bytes, res, archive_dir)
         }
     }
 
@@ -226,6 +231,8 @@ pub struct SegmentedLog {
     cursor: usize,
     epoch: u64,
     slot_gen: [u32; 3],
+    /// Archive directory for evicted segments; `None` if archival is disabled.
+    archive_dir: Option<PathBuf>,
 }
 
 impl SegmentedLog {
@@ -419,6 +426,7 @@ impl SegmentedLog {
         session_id: u32,
         name: &[u8],
         res: SessionResources,
+        archive_dir: Option<PathBuf>,
     ) -> Result<Self, OpenError> {
         let manifest = Manifest::create(&manifest_path(dir), size as u64, session_id, name)?;
 
@@ -459,6 +467,7 @@ impl SegmentedLog {
             // u32::MAX marks inactive slots — no real epoch will match,
             // so reads against prev/standby correctly return None.
             slot_gen: [0, u32::MAX, u32::MAX],
+            archive_dir,
         })
     }
 
@@ -469,6 +478,7 @@ impl SegmentedLog {
         strict: bool,
         expected_session_id: u32,
         res: SessionResources,
+        archive_dir: Option<PathBuf>,
     ) -> Result<Self, OpenError> {
         let manifest = Manifest::open(&manifest_path(dir))?;
         let manifest_size = manifest.segment_size() as usize;
@@ -554,6 +564,7 @@ impl SegmentedLog {
             cursor,
             epoch,
             slot_gen,
+            archive_dir,
         })
     }
 
@@ -563,10 +574,15 @@ impl SegmentedLog {
         }
 
         let old_prev = self.prev;
+        let archive_path = self
+            .archive_dir
+            .as_deref()
+            .map(|dir| dir.join(format!("seg_{}.dat", self.epoch)));
         let request = CleanRequest {
             data: self.slots[old_prev].data,
             segment_size: self.segment_size,
             ready: Arc::clone(&self.ready),
+            archive_path,
         };
 
         self.ready.store(false, Ordering::Release);

@@ -6,7 +6,7 @@ use std::thread::JoinHandle;
 
 use nexus_platform::FileLock;
 
-use super::frame::commit_len_ptr;
+use super::frame::{FRAME_HDR, commit_len_ptr, footprint};
 
 const LOCK_FILE: &str = "conductor.lock";
 const DEFAULT_CLEAN_QUEUE_DEPTH: usize = 4;
@@ -19,6 +19,8 @@ pub(crate) struct CleanRequest {
     pub(crate) data: *mut u8,
     pub(crate) segment_size: usize,
     pub(crate) ready: Arc<AtomicBool>,
+    /// If set, write committed frames here before zeroing.
+    pub(crate) archive_path: Option<PathBuf>,
 }
 
 // SAFETY: `data` points into a mmap'd segment that remains mapped until the
@@ -43,12 +45,14 @@ unsafe impl Send for CleanRequest {}
 /// # use nexus_shm::ConductorBuilder;
 /// let mut conductor = ConductorBuilder::new("/tmp/journal")
 ///     .clean_queue_depth(16)
+///     .archive(true)
 ///     .open()
 ///     .unwrap();
 /// ```
 pub struct ConductorBuilder {
     dir: PathBuf,
     clean_queue_depth: usize,
+    archive: bool,
 }
 
 impl ConductorBuilder {
@@ -56,6 +60,7 @@ impl ConductorBuilder {
         Self {
             dir: dir.as_ref().to_path_buf(),
             clean_queue_depth: DEFAULT_CLEAN_QUEUE_DEPTH,
+            archive: false,
         }
     }
 
@@ -66,6 +71,19 @@ impl ConductorBuilder {
     /// `append` will block briefly until the conductor thread drains one.
     pub fn clean_queue_depth(mut self, depth: usize) -> Self {
         self.clean_queue_depth = depth;
+        self
+    }
+
+    /// Archive evicted segments to `{session_dir}/archive/seg_{epoch}.dat`
+    /// before zeroing (default: off).
+    ///
+    /// Archive format: committed frames written densely — each frame as
+    /// `[commit_len:u32][session_id:u32][payload...]` with no inter-frame
+    /// padding. Readable with the same `commit_len`-walk as recovery.
+    /// I/O errors during archival are silently ignored; the segment is
+    /// always zeroed and the ready flag always set.
+    pub fn archive(mut self, enable: bool) -> Self {
+        self.archive = enable;
         self
     }
 
@@ -80,6 +98,7 @@ impl ConductorBuilder {
             dir: self.dir,
             tx: Some(tx),
             thread: Some(thread),
+            archive: self.archive,
         })
     }
 }
@@ -106,18 +125,21 @@ impl ConductorBuilder {
 ///     session.lock      <- OFD-locked while open (prevents double-open)
 ///     journal.manifest
 ///     seg0.dat, seg1.dat, seg2.dat
+///     archive/          <- present only when archival is enabled
+///       seg_{epoch}.dat
 /// ```
 pub struct Conductor {
     dir: PathBuf,
     tx: Option<std::sync::mpsc::SyncSender<CleanRequest>>,
     thread: Option<JoinHandle<()>>,
+    archive: bool,
 }
 
 impl Conductor {
     /// Open a conductor rooted at `dir` with default configuration.
     ///
     /// Creates the directory if it does not exist. Use [`ConductorBuilder`]
-    /// for custom configuration (e.g. clean queue depth).
+    /// for custom configuration (e.g. clean queue depth, archival).
     pub fn open(dir: impl AsRef<Path>) -> Result<Self, super::OpenError> {
         ConductorBuilder::new(dir).open()
     }
@@ -166,6 +188,10 @@ impl Conductor {
     pub(crate) fn sender(&self) -> std::sync::mpsc::SyncSender<CleanRequest> {
         self.tx.as_ref().expect("conductor shut down").clone()
     }
+
+    pub(crate) fn archive(&self) -> bool {
+        self.archive
+    }
 }
 
 impl Drop for Conductor {
@@ -193,22 +219,53 @@ impl Drop for Conductor {
 /// `join()`).
 fn conductor_main(rx: std::sync::mpsc::Receiver<CleanRequest>) {
     for req in rx {
-        // TODO: archive the evicted segment to disk before cleaning
-        //       (read segment data via req.data/req.segment_size, write
-        //       to archive dir, then zero). Archival I/O errors must not
-        //       panic — a panic here leaves in-flight `ready` flags false,
-        //       causing SegmentedLog::drop to spin forever. Handle errors
-        //       gracefully (log + skip) and always proceed to the zero +
-        //       ready store below.
+        if let Some(ref path) = req.archive_path {
+            archive_segment(req.data, req.segment_size, path);
+        }
 
         // SAFETY: `req.data` points to the start of a live mmap'd segment.
         // See `CleanRequest` Send impl for lifetime reasoning.
         unsafe { (*commit_len_ptr(req.data)).store(0, Ordering::Release) };
-        // segment_size is unused today but carried for archival (will need
-        // it to know how many bytes to flush before zeroing).
-        let _ = req.segment_size;
         req.ready.store(true, Ordering::Release);
     }
+}
+
+/// Write committed frames from the evicted segment to `path` as a dense blob.
+///
+/// Walks frames using `commit_len` (encoded as `body + 1`) until the first
+/// zero, writing each as `[commit_len:u32][session_id:u32][payload...]`
+/// with no inter-frame padding. I/O errors are silently ignored.
+fn archive_segment(data: *mut u8, segment_size: usize, path: &Path) {
+    if let Some(parent) = path.parent() {
+        if std::fs::create_dir_all(parent).is_err() {
+            return;
+        }
+    }
+    let file = match std::fs::File::create(path) {
+        Ok(f) => f,
+        Err(_) => return,
+    };
+    let mut writer = std::io::BufWriter::new(file);
+    let mut cur = 0usize;
+    while cur + FRAME_HDR <= segment_size {
+        // SAFETY: `cur` is an 8-aligned offset within the mmap'd segment.
+        let stored =
+            unsafe { (*commit_len_ptr(data.add(cur))).load(Ordering::Acquire) };
+        if stored == 0 {
+            break;
+        }
+        let body = (stored - 1) as usize;
+        if cur + FRAME_HDR + body > segment_size {
+            break;
+        }
+        // Write the frame header + payload densely (no alignment padding).
+        let frame = unsafe { std::slice::from_raw_parts(data.add(cur), FRAME_HDR + body) };
+        if writer.write_all(frame).is_err() {
+            return;
+        }
+        cur += footprint(body);
+    }
+    let _ = writer.flush();
 }
 
 /// Atomically claim the next session ID using a lock file.
