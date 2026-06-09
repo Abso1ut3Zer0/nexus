@@ -10,7 +10,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use crate::segment::Segment;
-use nexus_platform::FileLock;
+use nexus_platform::{FileLock, MappedFile};
 
 use crate::MapHints;
 
@@ -425,7 +425,9 @@ impl SegmentedLog {
         let manifest = Manifest::create(&manifest_path(dir), size as u64, session_id, name)?;
 
         let mk = |i: u8| -> Result<Slot, OpenError> {
-            let seg = Segment::create(&seg_path(dir, i), size, hints)?;
+            let total = Segment::total_size(size)?;
+            let mf = file_create(&seg_path(dir, i), total, hints)?;
+            let seg = Segment::create(mf, size, hints)?;
             let data = seg.data();
             Ok(Slot {
                 _segment: seg,
@@ -510,9 +512,10 @@ impl SegmentedLog {
         let mk = |i: u8| -> Result<Slot, OpenError> {
             let path = seg_path(dir, i);
             let seg = if path.exists() {
-                Segment::attach(&path, hints)?
+                Segment::attach(file_open(&path, hints)?)?
             } else {
-                Segment::create(&path, size, hints)?
+                let total = Segment::total_size(size)?;
+                Segment::create(file_create(&path, total, hints)?, size, hints)?
             };
             let data = seg.data();
             Ok(Slot {
@@ -621,6 +624,22 @@ fn seg_path(dir: &Path, i: u8) -> PathBuf {
 
 fn manifest_path(dir: &Path) -> PathBuf {
     dir.join(MANIFEST_FILE)
+}
+
+fn file_create(
+    path: &Path,
+    len: std::num::NonZeroUsize,
+    hints: MapHints,
+) -> Result<MappedFile, nexus_platform::MapError> {
+    let mut opts = MappedFile::options();
+    opts.pretouch(hints.pretouch).huge_pages(hints.huge_pages);
+    opts.create(path, len)
+}
+
+fn file_open(path: &Path, hints: MapHints) -> Result<MappedFile, nexus_platform::MapError> {
+    let mut opts = MappedFile::options();
+    opts.pretouch(hints.pretouch).huge_pages(hints.huge_pages);
+    opts.open(path)
 }
 
 /// Scan from the start of a segment to find the write tail.

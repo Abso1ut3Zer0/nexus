@@ -81,6 +81,12 @@ impl From<std::io::Error> for OpenError {
     }
 }
 
+impl From<nexus_platform::MapError> for OpenError {
+    fn from(e: nexus_platform::MapError) -> Self {
+        Self::Shm(ShmError::from(e))
+    }
+}
+
 /// Errors from live [`SegmentedLog`](super::SegmentedLog) operations.
 ///
 /// Returned by [`append`](super::SegmentedLog::append) and internal

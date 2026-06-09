@@ -2,7 +2,6 @@ use std::marker::PhantomData;
 use std::ops::RangeBounds;
 use std::sync::atomic::Ordering;
 
-use crate::error::ShmError;
 use crate::segment::Segment;
 
 use super::error::JournalError;
@@ -77,14 +76,16 @@ impl<H: RecordHeader> Reader<H> {
     fn load_next(&mut self) -> Result<bool, JournalError> {
         let next = self.segments.len() as u64;
         let path = super::segment_path(&self.base, next);
-        match Segment::attach(&path, self.hints) {
-            Ok(seg) => {
-                self.segments.push(seg);
-                Ok(true)
+        let mf = match super::file_open(&path, self.hints) {
+            Ok(mf) => mf,
+            Err(nexus_platform::MapError::Io(e)) if e.kind() == std::io::ErrorKind::NotFound => {
+                return Ok(false);
             }
-            Err(ShmError::Os(e)) if e.kind() == std::io::ErrorKind::NotFound => Ok(false),
-            Err(e) => Err(e.into()),
-        }
+            Err(e) => return Err(crate::ShmError::from(e).into()),
+        };
+        let seg = Segment::attach(mf)?;
+        self.segments.push(seg);
+        Ok(true)
     }
 
     /// Iterate committed records whose header sequence falls in `range`.

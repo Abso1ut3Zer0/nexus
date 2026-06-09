@@ -246,6 +246,17 @@ impl SharedMemory {
     }
 }
 
+impl From<SharedMemory> for Mapping {
+    fn from(shm: SharedMemory) -> Mapping {
+        let shm = std::mem::ManuallyDrop::new(shm);
+        // SAFETY: ManuallyDrop prevents SharedMemory's Drop (which may call
+        // shm_unlink). We transfer ownership of the inner Mapping — its own
+        // Drop (munmap) will still run. The CString name is leaked; this is
+        // a small, one-time allocation at segment setup.
+        unsafe { std::ptr::read(&raw const shm.mapping) }
+    }
+}
+
 impl std::ops::Deref for SharedMemory {
     type Target = Mapping;
 

@@ -63,7 +63,12 @@ impl<H: RecordHeader> Writer<H> {
         }
         self.index += 1;
         let path = super::segment_path(&self.base, self.index);
-        self.active = Segment::create(&path, self.segment_size, self.hints)?;
+        let total = Segment::total_size(self.segment_size)?;
+        self.active = Segment::create(
+            super::file_create(&path, total, self.hints)?,
+            self.segment_size,
+            self.hints,
+        )?;
         self.tail = 0;
         Ok(())
     }

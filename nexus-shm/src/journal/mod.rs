@@ -7,8 +7,11 @@ mod tests;
 mod writer;
 
 use std::marker::PhantomData;
+use std::num::NonZeroUsize;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::Ordering;
+
+use nexus_platform::{MapError, MappedFile};
 
 use crate::MapHints;
 use crate::segment::Segment;
@@ -58,7 +61,12 @@ impl<H: RecordHeader> Journal<H> {
         }
 
         let index = last.unwrap_or(0);
-        let active = Segment::create(&segment_path(&base, index), segment_size, cfg.hints)?;
+        let total = Segment::total_size(segment_size)?;
+        let active = Segment::create(
+            file_create(&segment_path(&base, index), total, cfg.hints)?,
+            segment_size,
+            cfg.hints,
+        )?;
         let tail = recover_tail::<H>(&active, segment_size);
 
         let writer = Writer {
@@ -71,7 +79,7 @@ impl<H: RecordHeader> Journal<H> {
             _marker: PhantomData,
         };
 
-        let seg0 = Segment::attach(&segment_path(&base, 0), cfg.hints)?;
+        let seg0 = Segment::attach(file_open(&segment_path(&base, 0), cfg.hints)?)?;
         let reader = Reader {
             base,
             segment_size,
@@ -113,4 +121,20 @@ fn segment_path(base: &Path, index: u64) -> PathBuf {
     let mut p = base.as_os_str().to_owned();
     p.push(format!(".{index}"));
     PathBuf::from(p)
+}
+
+pub(super) fn file_create(
+    path: &Path,
+    len: NonZeroUsize,
+    hints: MapHints,
+) -> Result<MappedFile, MapError> {
+    let mut opts = MappedFile::options();
+    opts.pretouch(hints.pretouch).huge_pages(hints.huge_pages);
+    opts.create(path, len)
+}
+
+pub(super) fn file_open(path: &Path, hints: MapHints) -> Result<MappedFile, MapError> {
+    let mut opts = MappedFile::options();
+    opts.pretouch(hints.pretouch).huge_pages(hints.huge_pages);
+    opts.open(path)
 }

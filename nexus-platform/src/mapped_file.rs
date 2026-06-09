@@ -237,6 +237,12 @@ impl MappedFile {
     }
 }
 
+impl From<MappedFile> for Mapping {
+    fn from(mf: MappedFile) -> Mapping {
+        mf.mapping
+    }
+}
+
 impl std::ops::Deref for MappedFile {
     type Target = Mapping;
 

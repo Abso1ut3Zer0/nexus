@@ -48,3 +48,9 @@ impl From<std::io::Error> for JournalError {
         Self::Os(e)
     }
 }
+
+impl From<nexus_platform::MapError> for JournalError {
+    fn from(e: nexus_platform::MapError) -> Self {
+        Self::Shm(ShmError::from(e))
+    }
+}
