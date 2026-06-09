@@ -126,14 +126,17 @@ impl SharedMemoryOptions {
     /// Open an existing named shared memory object and map it at its
     /// current size.
     ///
-    /// File permissions are matched to the configured protection:
-    /// read-write opens with `O_RDWR`, read-only opens with `O_RDONLY`.
+    /// The fd is opened `O_RDWR` only when both `Shared` and `ReadWrite`
+    /// are set — that is the only combination where writes propagate to
+    /// the backing store. Private (COW) mappings only need read access.
     pub fn open(&self, name: &str) -> Result<SharedMemory, MapError> {
         let cname = validate_name(name)?;
-        let write = self.protection == Protection::ReadWrite;
+        let write = self.sharing == Sharing::Shared && self.protection == Protection::ReadWrite;
         let fd = mapping::shm_open_existing(&cname, write)?;
-        let size = mapping::fd_size(&fd)?;
-        let len = NonZeroUsize::new(size as usize).ok_or(MapError::EmptyFile)?;
+        let size: usize = mapping::fd_size(&fd)?
+            .try_into()
+            .map_err(|_| MapError::OutOfBounds)?;
+        let len = NonZeroUsize::new(size).ok_or(MapError::EmptyFile)?;
         let opts = MapOptions {
             pretouch: self.pretouch,
             huge_pages: self.huge_pages,
@@ -262,7 +265,7 @@ impl Drop for SharedMemory {
 // ── Name validation ───────────────────────────────────────────────
 
 fn validate_name(name: &str) -> Result<CString, MapError> {
-    if name.is_empty() {
+    if name.is_empty() || name == "/" {
         return Err(MapError::Io(std::io::Error::new(
             std::io::ErrorKind::InvalidInput,
             "shared memory name cannot be empty",
@@ -421,6 +424,11 @@ mod tests {
     #[test]
     fn empty_name_rejected() {
         assert!(SharedMemory::create("", NonZeroUsize::new(64).unwrap()).is_err());
+    }
+
+    #[test]
+    fn bare_slash_rejected() {
+        assert!(SharedMemory::create("/", NonZeroUsize::new(64).unwrap()).is_err());
     }
 
     #[test]
