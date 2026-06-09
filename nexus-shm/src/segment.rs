@@ -45,6 +45,13 @@ impl Segment {
             return Err(ShmError::EmptySegment);
         }
         let mapping = mapping.into();
+        let required = HEADER.get() + data_len;
+        if mapping.len() < required {
+            return Err(ShmError::MappingTooSmall {
+                required,
+                actual: mapping.len(),
+            });
+        }
 
         if !ProcessLease::claim(mapping.as_fd())? {
             return Err(ShmError::OwnerActive);
@@ -70,7 +77,15 @@ impl Segment {
 
     pub fn attach(mapping: impl Into<Mapping>) -> Result<Self, ShmError> {
         let mapping = mapping.into();
-        Self::control_of(&mapping).validate()?;
+        let cb = Self::control_of(&mapping);
+        cb.validate()?;
+        let required = HEADER.get() + cb.data_len() as usize;
+        if mapping.len() < required {
+            return Err(ShmError::MappingTooSmall {
+                required,
+                actual: mapping.len(),
+            });
+        }
         Ok(Self {
             mapping,
             creator: false,
