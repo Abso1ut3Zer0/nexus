@@ -2,7 +2,9 @@ use std::num::NonZeroUsize;
 use std::path::Path;
 use std::sync::atomic::AtomicU32;
 
-use nexus_platform::{Liveness, MapOptions, MappedFile, ProcessLease};
+use nexus_platform::{Liveness, MappedFile, ProcessLease};
+
+use crate::MapHints;
 
 use crate::control::{ControlBlock, status};
 use crate::error::ShmError;
@@ -30,12 +32,12 @@ pub struct Segment {
 }
 
 impl Segment {
-    pub fn create(path: &Path, data_len: usize, opts: MapOptions) -> Result<Self, ShmError> {
+    pub fn create(path: &Path, data_len: usize, hints: MapHints) -> Result<Self, ShmError> {
         if data_len == 0 {
             return Err(ShmError::EmptySegment);
         }
         let total = HEADER.checked_add(data_len).ok_or(ShmError::SizeOverflow)?;
-        let mapping = MappedFile::create(path, total, opts)?;
+        let mapping = file_opts(hints).create(path, total)?;
 
         if !ProcessLease::claim(mapping.as_fd())? {
             return Err(ShmError::OwnerActive);
@@ -46,7 +48,12 @@ impl Segment {
         // ControlBlock-aligned) covering at least the header.
         let cb = unsafe { &mut *mapping.as_ptr().cast::<ControlBlock>() };
         let generation = cb.generation().wrapping_add(1);
-        cb.write_header(flags(opts), generation, std::process::id(), data_len as u64);
+        cb.write_header(
+            flags(hints),
+            generation,
+            std::process::id(),
+            data_len as u64,
+        );
 
         Ok(Self {
             mapping,
@@ -54,8 +61,8 @@ impl Segment {
         })
     }
 
-    pub fn attach(path: &Path, opts: MapOptions) -> Result<Self, ShmError> {
-        let mapping = MappedFile::open(path, opts)?;
+    pub fn attach(path: &Path, hints: MapHints) -> Result<Self, ShmError> {
+        let mapping = file_opts(hints).open(path)?;
         Self::control_of(&mapping).validate()?;
         Ok(Self {
             mapping,
@@ -181,15 +188,21 @@ impl Drop for Segment {
     }
 }
 
-fn flags(opts: MapOptions) -> u16 {
-    u16::from(opts.pretouch) | (u16::from(opts.huge_pages) << 1)
+fn file_opts(hints: MapHints) -> nexus_platform::MappedFileOptions {
+    let mut opts = MappedFile::options();
+    opts.pretouch(hints.pretouch).huge_pages(hints.huge_pages);
+    opts
+}
+
+fn flags(hints: MapHints) -> u16 {
+    u16::from(hints.pretouch) | (u16::from(hints.huge_pages) << 1)
 }
 
 #[cfg(test)]
 mod tests {
     use super::{Liveness, Segment, Status};
+    use crate::MapHints;
     use crate::error::ShmError;
-    use nexus_platform::MapOptions;
 
     fn temp_path(name: &str) -> std::path::PathBuf {
         std::env::temp_dir().join(format!("nexus-shm-{}-{}", std::process::id(), name))
@@ -200,13 +213,13 @@ mod tests {
         let path = temp_path("roundtrip");
         let _ = std::fs::remove_file(&path);
 
-        let mut seg = Segment::create(&path, 4096, MapOptions::default()).unwrap();
+        let mut seg = Segment::create(&path, 4096, MapHints::default()).unwrap();
         assert_eq!(seg.data_len(), 4096);
         assert_eq!(seg.status(), Status::Alive);
 
         unsafe { seg.slice_mut_at(0, 1)[0] = 0xAB };
 
-        let peer = Segment::attach(&path, MapOptions::default()).unwrap();
+        let peer = Segment::attach(&path, MapHints::default()).unwrap();
         assert_eq!(peer.data_len(), 4096);
         assert_eq!(peer.status(), Status::Alive);
         assert_eq!(unsafe { peer.slice_at(0, 1)[0] }, 0xAB);
@@ -219,10 +232,10 @@ mod tests {
         let path = temp_path("dead");
         let _ = std::fs::remove_file(&path);
 
-        let seg = Segment::create(&path, 64, MapOptions::default()).unwrap();
+        let seg = Segment::create(&path, 64, MapHints::default()).unwrap();
         drop(seg);
 
-        let peer = Segment::attach(&path, MapOptions::default()).unwrap();
+        let peer = Segment::attach(&path, MapHints::default()).unwrap();
         assert_eq!(peer.status(), Status::Dead);
 
         std::fs::remove_file(&path).unwrap();
@@ -233,7 +246,7 @@ mod tests {
         let path = temp_path("zero");
         let _ = std::fs::remove_file(&path);
         assert!(matches!(
-            Segment::create(&path, 0, MapOptions::default()),
+            Segment::create(&path, 0, MapHints::default()),
             Err(ShmError::EmptySegment)
         ));
     }
@@ -243,8 +256,8 @@ mod tests {
         let path = temp_path("liveness");
         let _ = std::fs::remove_file(&path);
 
-        let owner = Segment::create(&path, 64, MapOptions::default()).unwrap();
-        let peer = Segment::attach(&path, MapOptions::default()).unwrap();
+        let owner = Segment::create(&path, 64, MapHints::default()).unwrap();
+        let peer = Segment::attach(&path, MapHints::default()).unwrap();
         assert_eq!(peer.peer_liveness(), Liveness::Alive);
 
         drop(owner);
@@ -258,7 +271,7 @@ mod tests {
         let path = temp_path("foreign");
         std::fs::write(&path, vec![0u8; 4096]).unwrap();
 
-        assert!(Segment::attach(&path, MapOptions::default()).is_err());
+        assert!(Segment::attach(&path, MapHints::default()).is_err());
 
         std::fs::remove_file(&path).unwrap();
     }

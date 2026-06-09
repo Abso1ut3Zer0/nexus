@@ -10,8 +10,8 @@ use std::marker::PhantomData;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::Ordering;
 
+use crate::MapHints;
 use crate::segment::Segment;
-use nexus_platform::MapOptions;
 
 pub use error::JournalError;
 pub use header::{FixHeader, RecordHeader, SeqHeader};
@@ -26,14 +26,14 @@ const MIN_SEGMENT: usize = 64;
 #[derive(Clone, Copy)]
 pub struct JournalConfig {
     pub segment_size: usize,
-    pub map: MapOptions,
+    pub hints: MapHints,
 }
 
 impl Default for JournalConfig {
     fn default() -> Self {
         Self {
             segment_size: 64 * 1024 * 1024,
-            map: MapOptions::default(),
+            hints: MapHints::default(),
         }
     }
 }
@@ -58,24 +58,24 @@ impl<H: RecordHeader> Journal<H> {
         }
 
         let index = last.unwrap_or(0);
-        let active = Segment::create(&segment_path(&base, index), segment_size, cfg.map)?;
+        let active = Segment::create(&segment_path(&base, index), segment_size, cfg.hints)?;
         let tail = recover_tail::<H>(&active, segment_size);
 
         let writer = Writer {
             base: base.clone(),
             segment_size,
-            map: cfg.map,
+            hints: cfg.hints,
             active,
             index,
             tail,
             _marker: PhantomData,
         };
 
-        let seg0 = Segment::attach(&segment_path(&base, 0), cfg.map)?;
+        let seg0 = Segment::attach(&segment_path(&base, 0), cfg.hints)?;
         let reader = Reader {
             base,
             segment_size,
-            map: cfg.map,
+            hints: cfg.hints,
             segments: vec![seg0],
             seg_idx: 0,
             cursor: 0,

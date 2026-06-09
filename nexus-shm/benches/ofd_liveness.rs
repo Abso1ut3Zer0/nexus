@@ -10,14 +10,14 @@
 use std::hint::black_box;
 
 use criterion::{Criterion, criterion_group, criterion_main};
-use nexus_shm::{Liveness, MapOptions, Segment};
+use nexus_shm::{Liveness, MapHints, Segment};
 
 fn bench_peer_liveness(c: &mut Criterion) {
     let path = std::env::temp_dir().join(format!("nexus-shm-bench-{}", std::process::id()));
     let _ = std::fs::remove_file(&path);
 
-    let owner = Segment::create(&path, 4096, MapOptions::default()).unwrap();
-    let peer = Segment::attach(&path, MapOptions::default()).unwrap();
+    let owner = Segment::create(&path, 4096, MapHints::default()).unwrap();
+    let peer = Segment::attach(&path, MapHints::default()).unwrap();
     assert_eq!(peer.peer_liveness(), Liveness::Alive);
 
     c.benchmark_group("ofd_liveness")

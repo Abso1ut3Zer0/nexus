@@ -14,5 +14,5 @@ pub mod mapping;
 
 pub use file_lock::FileLock;
 pub use lease::{Liveness, ProcessLease};
-pub use mapped_file::MappedFile;
-pub use mapping::{Advice, MapError, MapOptions, Mapping, Protection, Sharing};
+pub use mapped_file::{MappedFile, MappedFileOptions};
+pub use mapping::{Advice, MapError, Mapping, Protection, Sharing};

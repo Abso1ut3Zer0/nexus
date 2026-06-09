@@ -10,7 +10,9 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use crate::segment::Segment;
-use nexus_platform::{FileLock, MapOptions};
+use nexus_platform::FileLock;
+
+use crate::MapHints;
 
 use conductor::CleanRequest;
 use frame::{ALIGN, FRAME_HDR, align_up, commit_len_ptr, footprint, session_id_ptr};
@@ -130,7 +132,7 @@ impl<'a> SegmentedLogBuilder<'a> {
         let session_lock = FileLock::try_lock(session_dir.join(SESSION_LOCK_FILE))?
             .ok_or(OpenError::SessionInUse { session_id: id })?;
 
-        let map = self.map_options();
+        let hints = self.map_hints();
         let size = align_up(self.segment_size.max(FRAME_HDR * 8));
         if size > u32::MAX as usize {
             return Err(OpenError::SegmentTooLarge { size });
@@ -144,14 +146,14 @@ impl<'a> SegmentedLogBuilder<'a> {
 
         let mpath = manifest_path(&session_dir);
         if mpath.exists() {
-            SegmentedLog::recover(&session_dir, size, map, strict, id, res)
+            SegmentedLog::recover(&session_dir, size, hints, strict, id, res)
         } else {
-            SegmentedLog::create_fresh(&session_dir, size, map, id, name_bytes, res)
+            SegmentedLog::create_fresh(&session_dir, size, hints, id, name_bytes, res)
         }
     }
 
-    fn map_options(&self) -> MapOptions {
-        MapOptions {
+    fn map_hints(&self) -> MapHints {
+        MapHints {
             pretouch: self.pretouch,
             huge_pages: self.huge_pages,
         }
@@ -415,7 +417,7 @@ impl SegmentedLog {
     fn create_fresh(
         dir: &Path,
         size: usize,
-        map: MapOptions,
+        hints: MapHints,
         session_id: u32,
         name: &[u8],
         res: SessionResources,
@@ -423,7 +425,7 @@ impl SegmentedLog {
         let manifest = Manifest::create(&manifest_path(dir), size as u64, session_id, name)?;
 
         let mk = |i: u8| -> Result<Slot, OpenError> {
-            let seg = Segment::create(&seg_path(dir, i), size, map)?;
+            let seg = Segment::create(&seg_path(dir, i), size, hints)?;
             let data = seg.data();
             Ok(Slot {
                 _segment: seg,
@@ -465,7 +467,7 @@ impl SegmentedLog {
     fn recover(
         dir: &Path,
         requested_size: usize,
-        map: MapOptions,
+        hints: MapHints,
         strict: bool,
         expected_session_id: u32,
         res: SessionResources,
@@ -508,9 +510,9 @@ impl SegmentedLog {
         let mk = |i: u8| -> Result<Slot, OpenError> {
             let path = seg_path(dir, i);
             let seg = if path.exists() {
-                Segment::attach(&path, map)?
+                Segment::attach(&path, hints)?
             } else {
-                Segment::create(&path, size, map)?
+                Segment::create(&path, size, hints)?
             };
             let data = seg.data();
             Ok(Slot {

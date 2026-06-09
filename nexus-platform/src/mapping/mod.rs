@@ -55,17 +55,10 @@ pub enum Advice {
     NoHugePage,
 }
 
-/// Platform-aware hints for mapping creation. Fields are best-effort:
-/// each platform backend documents what it actually provides.
-///
-/// - `pretouch`: pre-fault pages into memory on creation.
-///   Linux: `MAP_POPULATE`. macOS: `madvise(MADV_WILLNEED)`.
-/// - `huge_pages`: request huge-page backing.
-///   Linux: `MAP_HUGETLB`. Others: best-effort or no-op.
 #[derive(Debug, Clone, Copy, Default)]
-pub struct MapOptions {
-    pub pretouch: bool,
-    pub huge_pages: bool,
+pub(crate) struct MapOptions {
+    pub(crate) pretouch: bool,
+    pub(crate) huge_pages: bool,
 }
 
 /// Error from memory-mapping operations.

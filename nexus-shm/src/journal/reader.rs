@@ -13,7 +13,7 @@ use super::header::{RecordHeader, SeqHeader};
 pub struct Reader<H: RecordHeader> {
     pub(super) base: std::path::PathBuf,
     pub(super) segment_size: usize,
-    pub(super) map: nexus_platform::MapOptions,
+    pub(super) hints: crate::MapHints,
     pub(super) segments: Vec<Segment>,
     pub(super) seg_idx: usize,
     pub(super) cursor: usize,
@@ -77,7 +77,7 @@ impl<H: RecordHeader> Reader<H> {
     fn load_next(&mut self) -> Result<bool, JournalError> {
         let next = self.segments.len() as u64;
         let path = super::segment_path(&self.base, next);
-        match Segment::attach(&path, self.map) {
+        match Segment::attach(&path, self.hints) {
             Ok(seg) => {
                 self.segments.push(seg);
                 Ok(true)

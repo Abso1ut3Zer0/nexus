@@ -1,6 +1,6 @@
 use std::path::{Path, PathBuf};
 
-use crate::MapOptions;
+use crate::MapHints;
 
 use super::{FixHeader, Journal, JournalConfig, JournalError};
 
@@ -26,7 +26,7 @@ fn fix(seq: u64) -> FixHeader {
 fn cfg(segment_size: usize) -> JournalConfig {
     JournalConfig {
         segment_size,
-        map: MapOptions::default(),
+        hints: MapHints::default(),
     }
 }
 

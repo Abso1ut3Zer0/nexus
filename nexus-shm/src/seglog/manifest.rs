@@ -2,7 +2,7 @@ use std::num::NonZeroUsize;
 use std::path::Path;
 use std::sync::atomic::{AtomicU64, Ordering};
 
-use nexus_platform::{MapOptions, MappedFile};
+use nexus_platform::MappedFile;
 
 use crate::error::ShmError;
 
@@ -80,7 +80,7 @@ impl Manifest {
         name: &[u8],
     ) -> Result<Self, ShmError> {
         let len = NonZeroUsize::new(MANIFEST_FILE_SIZE).unwrap();
-        let mapping = MappedFile::create(path, len, MapOptions::default())?;
+        let mapping = MappedFile::create(path, len)?;
 
         // SAFETY: the mapping covers at least MANIFEST_FILE_SIZE bytes and is
         // page-aligned. We hold exclusive access (just created the file).
@@ -100,7 +100,7 @@ impl Manifest {
     }
 
     pub(crate) fn open(path: &Path) -> Result<Self, ShmError> {
-        let mapping = MappedFile::open(path, MapOptions::default())?;
+        let mapping = MappedFile::open(path)?;
         let hdr = Self::header_of(&mapping);
 
         if hdr.magic != MAGIC {
