@@ -1,6 +1,6 @@
 use std::path::{Path, PathBuf};
-use std::sync::atomic::Ordering;
 
+use super::conductor::SWAP_CLEAN;
 use super::frame::footprint;
 use super::{Conductor, ConductorBuilder, OpenError, SegmentedLog};
 
@@ -39,7 +39,7 @@ fn open_id(conductor: &mut Conductor, size: usize, id: u32) -> SegmentedLog {
 
 fn wait_conductor(log: &SegmentedLog) {
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
-    while !log.ready.load(Ordering::Acquire) {
+    while log.swap.state() != SWAP_CLEAN {
         assert!(std::time::Instant::now() < deadline, "conductor timed out");
         std::thread::sleep(std::time::Duration::from_millis(1));
     }
@@ -653,7 +653,7 @@ fn conductor_builder_custom_queue_depth() {
     let mut log = open_id(&mut c, 64, 1);
     // Rotate several times — deeper queue should handle it without stalling
     for i in 0u32..40 {
-        if !log.ready.load(Ordering::Acquire) {
+        if log.swap.state() != SWAP_CLEAN {
             wait_conductor(&log);
         }
         log.append(&i.to_le_bytes()).unwrap();
@@ -953,7 +953,7 @@ fn stress_many_rotations_single_session() {
     // 100 rotations worth of data. 4 records per segment × 100 epochs.
     let total_records = 400;
     for i in 0u32..total_records {
-        if !log.ready.load(Ordering::Acquire) {
+        if log.swap.state() != SWAP_CLEAN {
             wait_conductor(&log);
         }
         log.append(&i.to_le_bytes()).unwrap();
@@ -1054,7 +1054,7 @@ fn stress_rotation_then_recovery() {
 
         // Write through many rotations
         for i in 0u32..50 {
-            if !log.ready.load(Ordering::Acquire) {
+            if log.swap.state() != SWAP_CLEAN {
                 wait_conductor(&log);
             }
             log.append(&i.to_le_bytes()).unwrap();
@@ -1089,10 +1089,10 @@ fn stress_interleaved_sessions_with_rotation() {
 
     // Interleave writes, both rotating at different rates
     for i in 0u32..40 {
-        if !log1.ready.load(Ordering::Acquire) {
+        if log1.swap.state() != SWAP_CLEAN {
             wait_conductor(&log1);
         }
-        if !log2.ready.load(Ordering::Acquire) {
+        if log2.swap.state() != SWAP_CLEAN {
             wait_conductor(&log2);
         }
         log1.append(&i.to_le_bytes()).unwrap();
@@ -1175,7 +1175,7 @@ fn stress_large_payloads() {
     let big = vec![0xABu8; 100_000];
 
     for _ in 0..20 {
-        if !log.ready.load(Ordering::Acquire) {
+        if log.swap.state() != SWAP_CLEAN {
             wait_conductor(&log);
         }
         log.append(&big).unwrap();

@@ -109,6 +109,10 @@ impl Segment {
         ProcessLease::probe(self.mapping.as_fd())
     }
 
+    pub(crate) fn sync(&self) -> std::io::Result<()> {
+        self.mapping.sync()
+    }
+
     pub(crate) fn data(&self) -> *mut u8 {
         // SAFETY: the mapping is HEADER + data_len bytes, so HEADER is in bounds.
         unsafe { self.mapping.as_ptr().add(HEADER.get()) }
