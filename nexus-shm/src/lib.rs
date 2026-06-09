@@ -18,13 +18,13 @@ pub use journal::{
 };
 pub use nexus_platform::Liveness;
 
-/// Mapping hints for segment creation.
+/// Mapping hints for segment creation and attachment.
 ///
 /// These are best-effort: the platform backend documents what it
 /// actually provides. Both default to `false`.
 #[derive(Debug, Clone, Copy, Default)]
 pub struct MapHints {
-    /// Pre-fault pages into memory on creation (`MAP_POPULATE`).
+    /// Pre-fault pages into memory (`MAP_POPULATE`).
     pub pretouch: bool,
     /// Request huge-page backing (`MAP_HUGETLB`).
     pub huge_pages: bool,

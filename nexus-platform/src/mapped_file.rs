@@ -126,7 +126,9 @@ impl MappedFileOptions {
             .offset
             .checked_add(len.get() as u64)
             .ok_or(MapError::OutOfBounds)?;
-        file.set_len(total)?;
+        if total > file.metadata()?.len() {
+            file.set_len(total)?;
+        }
         self.map_file(file, len)
     }
 
@@ -140,7 +142,11 @@ impl MappedFileOptions {
         } else {
             OpenOptions::new().read(true).open(path)?
         };
-        let len = NonZeroUsize::new(file.metadata()?.len() as usize).ok_or(MapError::EmptyFile)?;
+        let file_len = file.metadata()?.len();
+        let remaining = file_len
+            .checked_sub(self.offset)
+            .ok_or(MapError::OutOfBounds)?;
+        let len = NonZeroUsize::new(remaining as usize).ok_or(MapError::EmptyFile)?;
         self.map_file(file, len)
     }
 
