@@ -249,8 +249,7 @@ fn archive_segment(data: *mut u8, segment_size: usize, path: &Path) {
     let mut cur = 0usize;
     while cur + FRAME_HDR <= segment_size {
         // SAFETY: `cur` is an 8-aligned offset within the mmap'd segment.
-        let stored =
-            unsafe { (*commit_len_ptr(data.add(cur))).load(Ordering::Acquire) };
+        let stored = unsafe { (*commit_len_ptr(data.add(cur))).load(Ordering::Acquire) };
         if stored == 0 {
             break;
         }
