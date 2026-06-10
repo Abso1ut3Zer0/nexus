@@ -2,7 +2,7 @@ use std::path::{Path, PathBuf};
 
 use super::conductor::SWAP_CLEAN;
 use super::frame::footprint;
-use super::{Conductor, ConductorBuilder, OpenError, SegmentedLog};
+use super::{Conductor, ConductorBuilder, OpenError, RotatingJournal};
 
 struct TempDir(PathBuf);
 
@@ -24,11 +24,11 @@ impl Drop for TempDir {
     }
 }
 
-fn open(conductor: &mut Conductor, size: usize) -> SegmentedLog {
+fn open(conductor: &mut Conductor, size: usize) -> RotatingJournal {
     conductor.session().segment_size(size).open().unwrap()
 }
 
-fn open_id(conductor: &mut Conductor, size: usize, id: u32) -> SegmentedLog {
+fn open_id(conductor: &mut Conductor, size: usize, id: u32) -> RotatingJournal {
     conductor
         .session()
         .segment_size(size)
@@ -37,7 +37,7 @@ fn open_id(conductor: &mut Conductor, size: usize, id: u32) -> SegmentedLog {
         .unwrap()
 }
 
-fn wait_conductor(log: &SegmentedLog) {
+fn wait_conductor(log: &RotatingJournal) {
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
     while log.swap.state() != SWAP_CLEAN {
         assert!(std::time::Instant::now() < deadline, "conductor timed out");
@@ -980,7 +980,7 @@ fn stress_many_sessions_one_conductor() {
     let d = TempDir::new("stress-sessions");
     let mut c = Conductor::open(d.path()).unwrap();
 
-    let mut logs: Vec<SegmentedLog> = Vec::new();
+    let mut logs: Vec<RotatingJournal> = Vec::new();
     for i in 1..=20u32 {
         logs.push(open_id(&mut c, 1 << 16, i));
     }

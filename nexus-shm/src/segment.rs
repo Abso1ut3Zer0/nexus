@@ -109,11 +109,11 @@ impl Segment {
         ProcessLease::probe(self.mapping.as_fd())
     }
 
-    pub(crate) fn sync(&self) -> std::io::Result<()> {
+    pub fn sync(&self) -> std::io::Result<()> {
         self.mapping.sync()
     }
 
-    pub(crate) fn data(&self) -> *mut u8 {
+    pub fn data(&self) -> *mut u8 {
         // SAFETY: the mapping is HEADER + data_len bytes, so HEADER is in bounds.
         unsafe { self.mapping.as_ptr().add(HEADER.get()) }
     }
@@ -123,7 +123,7 @@ impl Segment {
     /// # Safety
     /// `offset` must be 4-byte-aligned and within `data_len()`.
     #[inline]
-    pub(crate) unsafe fn commit_len_at(&self, offset: usize) -> &AtomicU32 {
+    pub unsafe fn commit_len_at(&self, offset: usize) -> &AtomicU32 {
         unsafe { AtomicU32::from_ptr(self.data().add(offset).cast()) }
     }
 
@@ -133,7 +133,7 @@ impl Segment {
     /// The frame header at `offset` must be published (read after an Acquire
     /// load of `commit_len_at`) and within `data_len()`.
     #[inline]
-    pub(crate) unsafe fn frame_kind_at(&self, offset: usize) -> u16 {
+    pub unsafe fn frame_kind_at(&self, offset: usize) -> u16 {
         unsafe { std::ptr::read_unaligned(self.data().add(offset + 4).cast()) }
     }
 
@@ -143,7 +143,7 @@ impl Segment {
     /// The 8-byte frame header at `offset` must be within `data_len()` and
     /// reserved for this record.
     #[inline]
-    pub(crate) unsafe fn write_frame_kind_at(&self, offset: usize, kind: u16) {
+    pub unsafe fn write_frame_kind_at(&self, offset: usize, kind: u16) {
         unsafe {
             std::ptr::write_unaligned(self.data().add(offset + 4).cast::<u16>(), kind);
             std::ptr::write_unaligned(self.data().add(offset + 6).cast::<u16>(), 0);
@@ -156,7 +156,7 @@ impl Segment {
     /// `[offset, offset + size_of::<T>())` must be within `data_len()` and
     /// reserved for this write.
     #[inline]
-    pub(crate) unsafe fn write_at<T: Copy>(&self, offset: usize, val: T) {
+    pub unsafe fn write_at<T: Copy>(&self, offset: usize, val: T) {
         unsafe { std::ptr::write_unaligned(self.data().add(offset).cast(), val) }
     }
 
@@ -166,7 +166,7 @@ impl Segment {
     /// `[offset, offset + size_of::<T>())` must be within `data_len()` and
     /// the data must be published before this call.
     #[inline]
-    pub(crate) unsafe fn read_at<T: Copy>(&self, offset: usize) -> T {
+    pub unsafe fn read_at<T: Copy>(&self, offset: usize) -> T {
         unsafe { std::ptr::read_unaligned(self.data().add(offset).cast()) }
     }
 
@@ -176,7 +176,7 @@ impl Segment {
     /// The range must be within `data_len()` and the bytes must be published.
     /// The returned slice borrows `self` so the segment must outlive the slice.
     #[inline]
-    pub(crate) unsafe fn slice_at(&self, offset: usize, len: usize) -> &[u8] {
+    pub unsafe fn slice_at(&self, offset: usize, len: usize) -> &[u8] {
         unsafe { std::slice::from_raw_parts(self.data().add(offset), len) }
     }
 
@@ -186,7 +186,7 @@ impl Segment {
     /// The range must be within `data_len()`, exclusively reserved for this
     /// write, and the segment must outlive the slice.
     #[inline]
-    pub(crate) unsafe fn slice_mut_at(&mut self, offset: usize, len: usize) -> &mut [u8] {
+    pub unsafe fn slice_mut_at(&mut self, offset: usize, len: usize) -> &mut [u8] {
         unsafe { std::slice::from_raw_parts_mut(self.data().add(offset), len) }
     }
 

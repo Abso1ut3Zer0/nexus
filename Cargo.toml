@@ -15,6 +15,7 @@ members = [
 	"nexus-pool",
 	"nexus-queue",
 	"nexus-shm",
+	"nexus-journal",
 	"nexus-slab",
 	"nexus-slot",
 	"nexus-smartptr",

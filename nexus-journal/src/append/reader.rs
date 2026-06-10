@@ -1,19 +1,20 @@
 use std::marker::PhantomData;
 use std::ops::RangeBounds;
-use std::sync::atomic::Ordering;
 
-use crate::segment::Segment;
+use nexus_platform::Mapping;
 
-use super::error::JournalError;
-use super::frame::{FRAME_HEADER, TYPE_PAD, align_up, footprint};
+use super::error::AppendOnlyJournalError;
+use super::frame::{
+    FRAME_HEADER, TYPE_PAD, align_up, footprint, frame_kind, read_commit_len, read_val,
+};
 use super::header::{RecordHeader, SeqHeader};
 
 /// Read half of a journal: walks committed records across segments in order.
 pub struct Reader<H: RecordHeader> {
     pub(super) base: std::path::PathBuf,
     pub(super) segment_size: usize,
-    pub(super) hints: crate::MapHints,
-    pub(super) segments: Vec<Segment>,
+    pub(super) hints: nexus_platform::MapHints,
+    pub(super) segments: Vec<Mapping>,
     pub(super) seg_idx: usize,
     pub(super) cursor: usize,
     pub(super) _marker: PhantomData<H>,
@@ -23,7 +24,7 @@ impl<H: RecordHeader> Reader<H> {
     /// Yield the next committed record, or `Ok(None)` once caught up to the
     /// write tail. Real I/O failures while opening a rolled segment surface as
     /// `Err` rather than being mistaken for end-of-log.
-    pub fn next_record(&mut self) -> Result<Option<ReadRecord<'_, H>>, JournalError> {
+    pub fn next_record(&mut self) -> Result<Option<ReadRecord<'_, H>>, AppendOnlyJournalError> {
         loop {
             if self.cursor + FRAME_HEADER > self.segment_size {
                 if self.advance_segment()? {
@@ -31,14 +32,14 @@ impl<H: RecordHeader> Reader<H> {
                 }
                 return Ok(None);
             }
+            let base = self.segments[self.seg_idx].as_ptr();
             // SAFETY: cursor is an 8-aligned offset within the mapped data.
-            let cl = unsafe { self.segments[self.seg_idx].commit_len_at(self.cursor) }
-                .load(Ordering::Acquire);
+            let cl = unsafe { read_commit_len(base, self.cursor) };
             if cl == 0 {
                 return Ok(None);
             }
-            // SAFETY: cl > 0 was Acquire-loaded, so the frame header is published.
-            if unsafe { self.segments[self.seg_idx].frame_kind_at(self.cursor) } == TYPE_PAD {
+            // SAFETY: cl > 0 means the frame header is written.
+            if unsafe { frame_kind(base, self.cursor) } == TYPE_PAD {
                 self.cursor += align_up(cl as usize);
                 if self.cursor + FRAME_HEADER > self.segment_size && !self.advance_segment()? {
                     return Ok(None);
@@ -51,20 +52,19 @@ impl<H: RecordHeader> Reader<H> {
                 return Ok(None);
             }
             let off = self.cursor;
-            // Raw pointer avoids holding an immutable borrow of `self.segments`
-            // across the mutable `self.cursor` update and potential `advance_segment`.
-            // SAFETY: the committed frame is within the mapping which outlives `&mut self`.
-            let data = self.segments[self.seg_idx].data();
-            let header = unsafe { self.segments[self.seg_idx].read_at::<H>(off + FRAME_HEADER) };
+            // SAFETY: the committed frame holds `H` at `off + FRAME_HEADER`; `H: Pod`.
+            let header = unsafe { read_val::<H>(base, off + FRAME_HEADER) };
+            // SAFETY: the payload lies within the committed frame and the mapping
+            // outlives `&mut self`.
             let payload = unsafe {
-                std::slice::from_raw_parts(data.add(off + FRAME_HEADER + hsize), body - hsize)
+                std::slice::from_raw_parts(base.add(off + FRAME_HEADER + hsize), body - hsize)
             };
             self.cursor = off + footprint(body);
             return Ok(Some(ReadRecord { header, payload }));
         }
     }
 
-    fn advance_segment(&mut self) -> Result<bool, JournalError> {
+    fn advance_segment(&mut self) -> Result<bool, AppendOnlyJournalError> {
         if self.seg_idx + 1 >= self.segments.len() && !self.load_next()? {
             return Ok(false);
         }
@@ -73,7 +73,7 @@ impl<H: RecordHeader> Reader<H> {
         Ok(true)
     }
 
-    fn load_next(&mut self) -> Result<bool, JournalError> {
+    fn load_next(&mut self) -> Result<bool, AppendOnlyJournalError> {
         let next = self.segments.len() as u64;
         let path = super::segment_path(&self.base, next);
         let mf = match super::file_open(&path, self.hints) {
@@ -81,15 +81,14 @@ impl<H: RecordHeader> Reader<H> {
             Err(nexus_platform::MapError::Io(e)) if e.kind() == std::io::ErrorKind::NotFound => {
                 return Ok(false);
             }
-            Err(e) => return Err(crate::ShmError::from(e).into()),
+            Err(e) => return Err(AppendOnlyJournalError::from(e)),
         };
-        let seg = Segment::attach(mf)?;
-        self.segments.push(seg);
+        self.segments.push(mf.into());
         Ok(true)
     }
 
     /// Iterate committed records whose header sequence falls in `range`.
-    pub fn read_range<R>(&mut self, range: R) -> Result<ReadRange<'_, H>, JournalError>
+    pub fn read_range<R>(&mut self, range: R) -> Result<ReadRange<'_, H>, AppendOnlyJournalError>
     where
         H: SeqHeader,
         R: RangeBounds<u64>,
@@ -135,7 +134,7 @@ impl<H: RecordHeader> ReadRecord<'_, H> {
 
 /// Borrowing iterator over a sequence range, returned by [`Reader::read_range`].
 pub struct ReadRange<'a, H: SeqHeader> {
-    segments: &'a [Segment],
+    segments: &'a [Mapping],
     segment_size: usize,
     seg_idx: usize,
     cursor: usize,
@@ -157,14 +156,14 @@ impl<'a, H: SeqHeader> Iterator for ReadRange<'a, H> {
                 self.cursor = 0;
                 continue;
             }
-            let seg = &self.segments[self.seg_idx];
+            let base = self.segments[self.seg_idx].as_ptr();
             // SAFETY: cursor is an 8-aligned offset within the mapped data.
-            let cl = unsafe { seg.commit_len_at(self.cursor) }.load(Ordering::Acquire);
+            let cl = unsafe { read_commit_len(base, self.cursor) };
             if cl == 0 {
                 return None;
             }
-            // SAFETY: cl > 0 was Acquire-loaded, so the frame header is published.
-            if unsafe { seg.frame_kind_at(self.cursor) } == TYPE_PAD {
+            // SAFETY: cl > 0 means the frame header is written.
+            if unsafe { frame_kind(base, self.cursor) } == TYPE_PAD {
                 self.cursor += align_up(cl as usize);
                 continue;
             }
@@ -176,13 +175,15 @@ impl<'a, H: SeqHeader> Iterator for ReadRange<'a, H> {
             let off = self.cursor;
             self.cursor = off + footprint(body);
             // SAFETY: the committed frame holds `H` at `off + FRAME_HEADER`; `H: Pod`.
-            let header = unsafe { seg.read_at::<H>(off + FRAME_HEADER) };
+            let header = unsafe { read_val::<H>(base, off + FRAME_HEADER) };
             if header.seq() < self.lo || header.seq() > self.hi {
                 continue;
             }
             // SAFETY: the payload lies within the committed frame and `segments`
             // outlives `'a`.
-            let payload = unsafe { seg.slice_at(off + FRAME_HEADER + hsize, body - hsize) };
+            let payload = unsafe {
+                std::slice::from_raw_parts(base.add(off + FRAME_HEADER + hsize), body - hsize)
+            };
             return Some(ReadRecord { header, payload });
         }
     }

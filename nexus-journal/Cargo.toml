@@ -1,25 +1,24 @@
 [package]
-name = "nexus-shm"
+name = "nexus-journal"
 version = "0.1.0"
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
-description = "Shared-memory IPC primitives for multi-process trading systems"
-readme = "README.md"
+description = "Append-only and bounded-rotation mmap'd journals for trading systems"
 repository.workspace = true
-keywords = ["shared-memory", "ipc", "mmap", "low-latency", "lock-free"]
-categories = ["concurrency", "data-structures", "os::unix-apis"]
+keywords = ["journal", "append-log", "mmap", "low-latency", "trading"]
+categories = ["data-structures", "os::unix-apis"]
 
 [lints]
 workspace = true
 
 [dependencies]
-crossbeam-utils.workspace = true
 nexus-platform = { version = "0.1.0", path = "../nexus-platform" }
 
 [dev-dependencies]
 criterion = { version = "0.5", features = ["html_reports"] }
+hdrhistogram.workspace = true
 
 [[bench]]
-name = "ofd_liveness"
+name = "append"
 harness = false

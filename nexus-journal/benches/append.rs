@@ -1,10 +1,10 @@
 use std::hint::black_box;
 
 use criterion::{BatchSize, Criterion, Throughput, criterion_group, criterion_main};
-use nexus_shm::{FixHeader, Journal, JournalConfig, MapHints};
+use nexus_journal::{AppendOnlyJournal, AppendOnlyJournalConfig, FixHeader, MapHints};
 
-fn cfg(segment_size: usize) -> JournalConfig {
-    JournalConfig {
+fn cfg(segment_size: usize) -> AppendOnlyJournalConfig {
+    AppendOnlyJournalConfig {
         segment_size,
         hints: MapHints::default(),
     }
@@ -22,11 +22,11 @@ fn bench_write(c: &mut Criterion) {
     let base = std::env::temp_dir().join(format!("nexus-journal-bench-w-{}", std::process::id()));
     cleanup(&base);
 
-    let (mut w, _r) = Journal::<FixHeader>::open(&base, cfg(1 << 31)).unwrap();
+    let (mut w, _r) = AppendOnlyJournal::<FixHeader>::open(&base, cfg(1 << 31)).unwrap();
     let payload = [0u8; 32];
     let mut seq = 0u64;
 
-    c.benchmark_group("journal")
+    c.benchmark_group("append_journal")
         .bench_function("try_claim_commit", |b| {
             b.iter(|| {
                 seq += 1;
@@ -54,7 +54,7 @@ fn bench_read(c: &mut Criterion) {
 
     const N: u64 = 1000;
     {
-        let (mut w, _r) = Journal::<FixHeader>::open(&base, cfg(1 << 20)).unwrap();
+        let (mut w, _r) = AppendOnlyJournal::<FixHeader>::open(&base, cfg(1 << 20)).unwrap();
         let payload = [0u8; 32];
         for seq in 1..=N {
             let mut claim = w
@@ -71,11 +71,11 @@ fn bench_read(c: &mut Criterion) {
         }
     }
 
-    let mut group = c.benchmark_group("journal");
+    let mut group = c.benchmark_group("append_journal");
     group.throughput(Throughput::Elements(N));
     group.bench_function("next_record_drain", |b| {
         b.iter_batched(
-            || Journal::<FixHeader>::open(&base, cfg(1 << 20)).unwrap(),
+            || AppendOnlyJournal::<FixHeader>::open(&base, cfg(1 << 20)).unwrap(),
             |(w, mut r)| {
                 while let Some(rec) = r.next_record().unwrap() {
                     black_box(rec.payload());

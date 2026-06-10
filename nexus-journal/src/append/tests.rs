@@ -1,8 +1,8 @@
 use std::path::{Path, PathBuf};
 
-use crate::MapHints;
+use nexus_platform::MapHints;
 
-use super::{FixHeader, Journal, JournalConfig, JournalError};
+use super::{AppendOnlyJournal, AppendOnlyJournalConfig, AppendOnlyJournalError, FixHeader};
 
 fn base_path(name: &str) -> PathBuf {
     std::env::temp_dir().join(format!("nexus-journal-{}-{}", std::process::id(), name))
@@ -23,8 +23,8 @@ fn fix(seq: u64) -> FixHeader {
     }
 }
 
-fn cfg(segment_size: usize) -> JournalConfig {
-    JournalConfig {
+fn cfg(segment_size: usize) -> AppendOnlyJournalConfig {
+    AppendOnlyJournalConfig {
         segment_size,
         hints: MapHints::default(),
     }
@@ -35,7 +35,7 @@ fn roundtrip_fix() {
     let base = base_path("roundtrip");
     cleanup(&base);
 
-    let (mut w, mut r) = Journal::<FixHeader>::open(&base, cfg(1 << 16)).unwrap();
+    let (mut w, mut r) = AppendOnlyJournal::<FixHeader>::open(&base, cfg(1 << 16)).unwrap();
     for seq in 1..=3u64 {
         let payload = vec![seq as u8; seq as usize * 4];
         let mut claim = w.try_claim(fix(seq), payload.len()).unwrap();
@@ -59,7 +59,7 @@ fn unit_header_zero_overhead() {
     let base = base_path("unit");
     cleanup(&base);
 
-    let (mut w, mut r) = Journal::<()>::open(&base, cfg(1 << 16)).unwrap();
+    let (mut w, mut r) = AppendOnlyJournal::<()>::open(&base, cfg(1 << 16)).unwrap();
     let mut claim = w.try_claim((), 5).unwrap();
     claim.as_mut_slice().copy_from_slice(b"hello");
     claim.commit();
@@ -77,8 +77,11 @@ fn empty_unit_record_rejected() {
     let base = base_path("empty");
     cleanup(&base);
 
-    let (mut w, _r) = Journal::<()>::open(&base, cfg(1 << 16)).unwrap();
-    assert!(matches!(w.try_claim((), 0), Err(JournalError::EmptyRecord)));
+    let (mut w, _r) = AppendOnlyJournal::<()>::open(&base, cfg(1 << 16)).unwrap();
+    assert!(matches!(
+        w.try_claim((), 0),
+        Err(AppendOnlyJournalError::EmptyRecord)
+    ));
 
     drop(w);
     cleanup(&base);
@@ -89,10 +92,10 @@ fn record_too_large_rejected() {
     let base = base_path("toolarge");
     cleanup(&base);
 
-    let (mut w, _r) = Journal::<FixHeader>::open(&base, cfg(256)).unwrap();
+    let (mut w, _r) = AppendOnlyJournal::<FixHeader>::open(&base, cfg(256)).unwrap();
     assert!(matches!(
         w.try_claim(fix(1), 4096),
-        Err(JournalError::RecordTooLarge { .. })
+        Err(AppendOnlyJournalError::RecordTooLarge { .. })
     ));
 
     drop(w);
@@ -104,7 +107,7 @@ fn multi_segment_roll() {
     let base = base_path("roll");
     cleanup(&base);
 
-    let (mut w, mut r) = Journal::<FixHeader>::open(&base, cfg(128)).unwrap();
+    let (mut w, mut r) = AppendOnlyJournal::<FixHeader>::open(&base, cfg(128)).unwrap();
     for seq in 1..=20u64 {
         let payload = (seq as u32).to_le_bytes();
         let mut claim = w.try_claim(fix(seq), payload.len()).unwrap();
@@ -132,11 +135,7 @@ fn pad_at_frame_header_boundary() {
     let base = base_path("pad-boundary");
     cleanup(&base);
 
-    // segment_size 64, () header. Payloads 8,8,16 give footprints 16,16,24,
-    // leaving tail=56 and exactly FRAME_HEADER (8) bytes free — the case that
-    // collided with the uncommitted sentinel under the old i32 marker. The next
-    // claim must PAD those 8 bytes and roll, leaving all records reachable.
-    let (mut w, mut r) = Journal::<()>::open(&base, cfg(64)).unwrap();
+    let (mut w, mut r) = AppendOnlyJournal::<()>::open(&base, cfg(64)).unwrap();
     let lens = [8usize, 8, 16, 8, 8];
     for (i, &len) in lens.iter().enumerate() {
         let payload = vec![i as u8 + 1; len];
@@ -162,7 +161,7 @@ fn recovery_stops_at_uncommitted_tail() {
     cleanup(&base);
 
     {
-        let (mut w, _r) = Journal::<FixHeader>::open(&base, cfg(1 << 16)).unwrap();
+        let (mut w, _r) = AppendOnlyJournal::<FixHeader>::open(&base, cfg(1 << 16)).unwrap();
         for seq in 1..=2u64 {
             let payload = (seq as u32).to_le_bytes();
             let mut claim = w.try_claim(fix(seq), payload.len()).unwrap();
@@ -176,7 +175,7 @@ fn recovery_stops_at_uncommitted_tail() {
         drop(w);
     }
 
-    let (mut w, mut r) = Journal::<FixHeader>::open(&base, cfg(1 << 16)).unwrap();
+    let (mut w, mut r) = AppendOnlyJournal::<FixHeader>::open(&base, cfg(1 << 16)).unwrap();
     let payload = 99u32.to_le_bytes();
     let mut claim = w.try_claim(fix(3), payload.len()).unwrap();
     claim.as_mut_slice().copy_from_slice(&payload);
@@ -198,7 +197,7 @@ fn read_range_by_seq() {
     let base = base_path("range");
     cleanup(&base);
 
-    let (mut w, mut r) = Journal::<FixHeader>::open(&base, cfg(128)).unwrap();
+    let (mut w, mut r) = AppendOnlyJournal::<FixHeader>::open(&base, cfg(128)).unwrap();
     for seq in 1..=10u64 {
         let payload = (seq as u32).to_le_bytes();
         let mut claim = w.try_claim(fix(seq), payload.len()).unwrap();

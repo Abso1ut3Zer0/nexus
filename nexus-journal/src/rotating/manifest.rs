@@ -4,7 +4,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 use nexus_platform::MappedFile;
 
-use crate::error::ShmError;
+use super::error::OpenError;
 
 const MAGIC: u32 = u32::from_le_bytes(*b"NXLG");
 const VERSION: u16 = 1;
@@ -78,7 +78,7 @@ impl Manifest {
         segment_size: u64,
         session_id: u32,
         name: &[u8],
-    ) -> Result<Self, ShmError> {
+    ) -> Result<Self, OpenError> {
         let len = NonZeroUsize::new(MANIFEST_FILE_SIZE).unwrap();
         let mapping = MappedFile::create(path, len)?;
 
@@ -99,15 +99,15 @@ impl Manifest {
         Ok(Self { mapping })
     }
 
-    pub(crate) fn open(path: &Path) -> Result<Self, ShmError> {
+    pub(crate) fn open(path: &Path) -> Result<Self, OpenError> {
         let mapping = MappedFile::open(path)?;
         let hdr = Self::header_of(&mapping);
 
         if hdr.magic != MAGIC {
-            return Err(ShmError::BadMagic { found: hdr.magic });
+            return Err(OpenError::BadMagic { found: hdr.magic });
         }
         if hdr.version != VERSION {
-            return Err(ShmError::UnsupportedLayout {
+            return Err(OpenError::UnsupportedLayout {
                 found: hdr.version,
                 expected: VERSION,
             });

@@ -1,5 +1,3 @@
-use std::sync::atomic::AtomicU32;
-
 pub(crate) const FRAME_HDR: usize = 8;
 pub(crate) const ALIGN: usize = 8;
 
@@ -13,9 +11,18 @@ pub(crate) const fn footprint(body: usize) -> usize {
     FRAME_HDR + align_up(body)
 }
 
+/// # Safety
+/// `ptr` must be 4-byte-aligned and within the mapped region.
 #[inline]
-pub(crate) fn commit_len_ptr(ptr: *mut u8) -> *mut AtomicU32 {
-    ptr.cast()
+pub(crate) unsafe fn read_commit_len(ptr: *const u8) -> u32 {
+    unsafe { ptr.cast::<u32>().read() }
+}
+
+/// # Safety
+/// `ptr` must be 4-byte-aligned and within the mapped region.
+#[inline]
+pub(crate) unsafe fn write_commit_len(ptr: *mut u8, val: u32) {
+    unsafe { ptr.cast::<u32>().write(val) }
 }
 
 #[inline]
@@ -62,7 +69,7 @@ impl<'buf> Frame<'buf> {
 
 /// Opaque position handle for a record in the log.
 ///
-/// Returned by [`SegmentedLog::append`], passed to [`SegmentedLog::read`].
+/// Returned by [`RotatingJournal::append`], passed to [`RotatingJournal::read`].
 /// Valid until the slot it references is rotated out (two rotations after
 /// the write — one to move it to `prev`, one to evict).
 ///

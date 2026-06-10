@@ -5,21 +5,22 @@ mod manifest;
 #[cfg(test)]
 mod tests;
 
+use std::num::NonZeroUsize;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use std::sync::atomic::Ordering;
 
-use crate::segment::Segment;
-use nexus_platform::{FileLock, MappedFile};
+use nexus_platform::{FileLock, MappedFile, Mapping};
 
-use crate::MapHints;
+use nexus_platform::MapHints;
 
 use conductor::{CleanRequest, SWAP_CLEAN, SWAP_DIRTY, SegmentSwap};
-use frame::{ALIGN, FRAME_HDR, align_up, commit_len_ptr, footprint, session_id_ptr};
+use frame::{
+    ALIGN, FRAME_HDR, align_up, footprint, read_commit_len, session_id_ptr, write_commit_len,
+};
 use manifest::Manifest;
 
 pub use conductor::{Conductor, ConductorBuilder};
-pub use error::{LogError, OpenError};
+pub use error::{OpenError, WriteError};
 pub use frame::{Frame, LogOffset};
 
 pub(crate) const MANIFEST_FILE: &str = "journal.manifest";
@@ -36,27 +37,26 @@ struct SessionResources {
 }
 
 struct Slot {
-    // None only for the standby slot (its Segment lives in the swap).
-    segment: Option<Segment>,
+    mapping: Option<Mapping>,
     path: PathBuf,
     data: *mut u8,
 }
 
-// SAFETY: `Slot` owns an optional mmap'd Segment and a `data` pointer into it
-// (`null_mut()` when the standby slot's segment lives in the swap). The mmap
-// lives in shared memory, not thread-local state. Concurrent access is
-// governed by frame-level atomics and the SegmentSwap state machine.
+// SAFETY: `Slot` owns an optional mmap'd Mapping and a `data` pointer into it
+// (`null_mut()` when the standby slot's mapping lives in the swap). The mmap
+// is not thread-local. Concurrent access is governed by the SegmentSwap state
+// machine.
 unsafe impl Send for Slot {}
 
 // ---------------------------------------------------------------------------
 // Public API
 // ---------------------------------------------------------------------------
 
-/// Builder for configuring and opening a [`SegmentedLog`].
+/// Builder for configuring and opening a [`RotatingJournal`].
 ///
 /// Obtained via [`Conductor::session()`]. The conductor tracks session
 /// ownership and provides the background cleanup thread.
-pub struct SegmentedLogBuilder<'a> {
+pub struct RotatingJournalBuilder<'a> {
     conductor: &'a mut Conductor,
     segment_size: usize,
     session_id: Option<u32>,
@@ -65,7 +65,7 @@ pub struct SegmentedLogBuilder<'a> {
     huge_pages: bool,
 }
 
-impl<'a> SegmentedLogBuilder<'a> {
+impl<'a> RotatingJournalBuilder<'a> {
     pub(crate) fn new(conductor: &'a mut Conductor) -> Self {
         Self {
             conductor,
@@ -109,17 +109,17 @@ impl<'a> SegmentedLogBuilder<'a> {
     /// If the session directory contains an existing manifest, its structural
     /// config (segment size) takes precedence over the builder's settings.
     /// Use [`open_strict`](Self::open_strict) to error on mismatch instead.
-    pub fn open(self) -> Result<SegmentedLog, OpenError> {
+    pub fn open(self) -> Result<RotatingJournal, OpenError> {
         self.open_inner(false)
     }
 
     /// Open or recover a session log, erroring if the manifest's structural
     /// config does not match the builder's settings.
-    pub fn open_strict(self) -> Result<SegmentedLog, OpenError> {
+    pub fn open_strict(self) -> Result<RotatingJournal, OpenError> {
         self.open_inner(true)
     }
 
-    fn open_inner(self, strict: bool) -> Result<SegmentedLog, OpenError> {
+    fn open_inner(self, strict: bool) -> Result<RotatingJournal, OpenError> {
         let id = match self.session_id {
             Some(id) => {
                 self.conductor.register_explicit_id(id)?;
@@ -152,9 +152,17 @@ impl<'a> SegmentedLogBuilder<'a> {
 
         let mpath = manifest_path(&session_dir);
         if mpath.exists() {
-            SegmentedLog::recover(&session_dir, size, hints, strict, id, res, archive_dir)
+            RotatingJournal::recover(&session_dir, size, hints, strict, id, res, archive_dir)
         } else {
-            SegmentedLog::create_fresh(&session_dir, size, hints, id, name_bytes, res, archive_dir)
+            RotatingJournal::create_fresh(
+                &session_dir,
+                size,
+                hints,
+                id,
+                name_bytes,
+                res,
+                archive_dir,
+            )
         }
     }
 
@@ -220,7 +228,7 @@ impl<'a> SegmentedLogBuilder<'a> {
 /// After a crash, the on-disk epoch may lag by one rotation, causing
 /// recovery to discard the most recent segment's data. This matches
 /// the Aeron journal model: replay from the last durable point.
-pub struct SegmentedLog {
+pub struct RotatingJournal {
     slots: [Slot; 3],
     manifest: Manifest,
     tx: std::sync::mpsc::SyncSender<CleanRequest>,
@@ -238,7 +246,7 @@ pub struct SegmentedLog {
     archive_dir: Option<PathBuf>,
 }
 
-impl SegmentedLog {
+impl RotatingJournal {
     pub fn segment_size(&self) -> usize {
         self.segment_size
     }
@@ -263,12 +271,12 @@ impl SegmentedLog {
     /// # Panics
     ///
     /// Panics if the conductor cleanup thread has exited (indicates a bug).
-    pub fn append(&mut self, payload: &[u8]) -> Result<LogOffset, LogError> {
+    pub fn append(&mut self, payload: &[u8]) -> Result<LogOffset, WriteError> {
         self.try_flush_dirty();
         let body = payload.len();
         let foot = footprint(body);
         if foot > self.segment_size {
-            return Err(LogError::RecordTooLarge {
+            return Err(WriteError::RecordTooLarge {
                 max: self.segment_size.saturating_sub(FRAME_HDR),
             });
         }
@@ -278,29 +286,20 @@ impl SegmentedLog {
         let off = self.cursor;
         let data = self.slots[self.current].data;
         // SAFETY: `off + foot <= self.segment_size` (checked above or after rotate).
-        // `data` points into a live mmap'd segment that is at least `segment_size`
-        // bytes. Frame header fields are at 4-byte-aligned offsets within the
-        // segment. The sentinel store at `data.add(next)` is bounds-checked before
-        // it is written.
-        // Write order matters for lock-free correctness:
-        //   1. Copy payload bytes
-        //   2. Write session_id
-        //   3. Zero the next frame's commit_len (sentinel for readers/recovery)
-        //   4. Release-store this frame's commit_len (publishes the frame)
-        // A reader loading commit_len with Acquire sees either 0 (not yet
-        // committed) or the final value — never a partial payload.
+        // `data` points into a live mmap'd mapping that is at least `segment_size`
+        // bytes. Frame header fields are at 4-byte-aligned offsets.
+        // Write order: payload, session_id, next sentinel, then commit_len.
+        // commit_len encodes body length as `len + 1` so that zero means
+        // "uncommitted", allowing zero-length payloads.
         unsafe {
             let ptr = data.add(off);
             std::ptr::copy_nonoverlapping(payload.as_ptr(), ptr.add(FRAME_HDR), body);
             *session_id_ptr(ptr) = self.session_id;
             let next = off + foot;
             if next + FRAME_HDR <= self.segment_size {
-                (*commit_len_ptr(data.add(next))).store(0, Ordering::Relaxed);
+                write_commit_len(data.add(next), 0);
             }
-            // commit_len encodes body length as `len + 1` so that zero
-            // means "uncommitted". This allows zero-length payloads (stored
-            // as 1) while reserving 0 as the sentinel for readers/recovery.
-            (*commit_len_ptr(ptr)).store((body as u32).wrapping_add(1), Ordering::Release);
+            write_commit_len(ptr, (body as u32).wrapping_add(1));
         }
         self.cursor += foot;
         Ok(LogOffset::new(
@@ -322,13 +321,11 @@ impl SegmentedLog {
         }
         let off = offset.local_off();
         let data = self.slots[slot].data;
-        // SAFETY: `slot` is either `current` or `prev`, both of which hold live
-        // mmap'd segments. `off` is a value previously returned by `append()` for
-        // this slot, so `off < segment_size`. The bounds check on `off + FRAME_HDR
-        // + body` prevents reading past the end of the segment.
+        // SAFETY: `slot` is either `current` or `prev`, both holding live
+        // mmap'd mappings. `off` was returned by `append()` for this slot.
         unsafe {
             let ptr = data.add(off);
-            let stored = (*commit_len_ptr(ptr)).load(Ordering::Acquire);
+            let stored = read_commit_len(ptr);
             if stored == 0 {
                 return None;
             }
@@ -393,13 +390,11 @@ impl SegmentedLog {
 
         let data = self.slots[slot].data;
         // SAFETY: `slot` is `seg % 3` where `seg` is either `epoch` (current) or
-        // `epoch - 1` (prev), both live mmap'd segments. `local` is bounded by
-        // `segment_size` via the modulo. The `local + FRAME_HDR` check above ensures
-        // we don't read past the segment for the header. The `local + FRAME_HDR + body`
-        // check below prevents reading past the segment for the payload.
+        // `epoch - 1` (prev), both live mmap'd mappings. `local` is bounded by
+        // `segment_size` via the modulo.
         unsafe {
             let ptr = data.add(local);
-            let stored = (*commit_len_ptr(ptr)).load(Ordering::Acquire);
+            let stored = read_commit_len(ptr);
             if stored == 0 {
                 if seg < epoch {
                     *pos = (seg + 1) * seg_size;
@@ -433,32 +428,32 @@ impl SegmentedLog {
         archive_dir: Option<PathBuf>,
     ) -> Result<Self, OpenError> {
         let manifest = Manifest::create(&manifest_path(dir), size as u64, session_id, name)?;
-        let total = Segment::total_size(size)?;
+        let total = NonZeroUsize::new(size).expect("segment size is non-zero");
 
         let mk = |i: u8| -> Result<Slot, OpenError> {
             let path = seg_path(dir, i);
             let mf = file_create(&path, total, hints)?;
-            let seg = Segment::create(mf, size, hints)?;
-            let data = seg.data();
-            // SAFETY: freshly mapped segment, sole owner.
-            unsafe { (*commit_len_ptr(data)).store(0, Ordering::Relaxed) };
+            let mapping: Mapping = mf.into();
+            let data = mapping.as_ptr();
+            // SAFETY: freshly mapped, sole owner.
+            unsafe { write_commit_len(data, 0) };
             Ok(Slot {
-                segment: Some(seg),
+                mapping: Some(mapping),
                 path,
                 data,
             })
         };
 
         let s0 = mk(0)?;
-        // Standby segment lives exclusively in the swap; slots[1] starts empty.
+        // Standby mapping lives exclusively in the swap; slots[1] starts empty.
         let standby_path = seg_path(dir, 1);
         let standby_mf = file_create(&standby_path, total, hints)?;
-        let standby_seg = Segment::create(standby_mf, size, hints)?;
-        // SAFETY: freshly mapped segment.
-        unsafe { (*commit_len_ptr(standby_seg.data())).store(0, Ordering::Relaxed) };
-        let swap = Arc::new(SegmentSwap::new_clean(standby_seg));
+        let standby_mapping: Mapping = standby_mf.into();
+        // SAFETY: freshly mapped, sole owner.
+        unsafe { write_commit_len(standby_mapping.as_ptr(), 0) };
+        let swap = Arc::new(SegmentSwap::new_clean(standby_mapping));
         let s1 = Slot {
-            segment: None,
+            mapping: None,
             path: standby_path,
             data: std::ptr::null_mut(),
         };
@@ -526,19 +521,18 @@ impl SegmentedLog {
             }
         };
 
-        let total = Segment::total_size(size)?;
+        let total = NonZeroUsize::new(size).expect("segment size is non-zero");
 
         let mk = |i: u8| -> Result<Slot, OpenError> {
             let path = seg_path(dir, i);
-            let seg = if path.exists() {
-                Segment::attach(file_open(&path, hints)?)?
+            let mapping: Mapping = if path.exists() {
+                file_open(&path, hints)?.into()
             } else {
-                let mf = file_create(&path, total, hints)?;
-                Segment::create(mf, size, hints)?
+                file_create(&path, total, hints)?.into()
             };
-            let data = seg.data();
+            let data = mapping.as_ptr();
             Ok(Slot {
-                segment: Some(seg),
+                mapping: Some(mapping),
                 path,
                 data,
             })
@@ -548,15 +542,12 @@ impl SegmentedLog {
 
         let cursor = recover_tail(slots[current].data, size);
 
-        // Move the standby segment into the swap; its slot becomes empty.
-        // The conductor will archive it and publish a fresh replacement on the
-        // next rotation.
-        let standby_seg = slots[standby].segment.take().expect("just created");
-        // SAFETY: standby segment, sole owner; zeroing commit_len hides any
-        // stale frames that were written in the previous session.
-        unsafe { (*commit_len_ptr(standby_seg.data())).store(0, Ordering::Relaxed) };
+        // Move the standby mapping into the swap; its slot becomes empty.
+        let standby_mapping = slots[standby].mapping.take().expect("just created");
+        // SAFETY: sole owner; zeroing commit_len hides stale frames from previous session.
+        unsafe { write_commit_len(standby_mapping.as_ptr(), 0) };
         slots[standby].data = std::ptr::null_mut();
-        let swap = Arc::new(SegmentSwap::new_clean(standby_seg));
+        let swap = Arc::new(SegmentSwap::new_clean(standby_mapping));
 
         let mut slot_gen = [u32::MAX; 3];
         slot_gen[current] = (epoch as u32) & EPOCH_MASK;
@@ -583,31 +574,30 @@ impl SegmentedLog {
         })
     }
 
-    fn rotate(&mut self) -> Result<(), LogError> {
+    fn rotate(&mut self) -> Result<(), WriteError> {
         if self.swap.state() != SWAP_CLEAN {
-            return Err(LogError::StandbyNotReady);
+            return Err(WriteError::StandbyNotReady);
         }
 
-        // Take the replacement segment the conductor prepared.
-        // SAFETY: state == Clean (Acquire) guarantees payload is initialized.
-        let new_seg = unsafe { self.swap.take() };
-        let new_data = new_seg.data();
+        // Take the replacement mapping the conductor prepared.
+        // SAFETY: state == Clean guarantees payload is initialized.
+        let new_mapping = unsafe { self.swap.take() };
+        let new_data = new_mapping.as_ptr();
 
         // Install replacement in standby slot (becomes new current).
-        self.slots[self.standby].segment = Some(new_seg);
+        self.slots[self.standby].mapping = Some(new_mapping);
         self.slots[self.standby].data = new_data;
 
         // Evict the prev slot (becomes new standby — empty until conductor replaces it).
         let old_prev = self.prev;
         let evicted = self.slots[old_prev]
-            .segment
+            .mapping
             .take()
-            .expect("prev must have segment");
+            .expect("prev must have mapping");
         self.slots[old_prev].data = std::ptr::null_mut();
 
-        // Park the evicted segment in the swap so try_flush_dirty can send it.
-        // SAFETY: we just took from swap (inner is uninit), writing before
-        // publishing Dirty (Release).
+        // Park the evicted mapping in the swap so try_flush_dirty can send it.
+        // SAFETY: we just took from swap (inner is uninit).
         unsafe { self.swap.store_dirty(evicted) };
 
         self.prev = self.current;
@@ -627,12 +617,12 @@ impl SegmentedLog {
             return;
         }
 
-        // SAFETY: state == Dirty (Acquire) guarantees the evicted segment
-        // is in the swap and we own it.
+        // SAFETY: state == Dirty guarantees the evicted mapping is in the
+        // swap and we own it.
         let evicted = unsafe { self.swap.take() };
 
         let request = CleanRequest {
-            segment: Some(evicted),
+            mapping: Some(evicted),
             segment_size: self.segment_size,
             epoch: self.epoch.saturating_sub(2),
             swap: Arc::clone(&self.swap),
@@ -647,10 +637,10 @@ impl SegmentedLog {
         match self.tx.try_send(request) {
             Ok(()) => {}
             Err(std::sync::mpsc::TrySendError::Full(returned)) => {
-                // Channel full; put the segment back and retry next append.
-                let segment = returned.segment.expect("just set it");
+                // Channel full; put the mapping back and retry next append.
+                let mapping = returned.mapping.expect("just set it");
                 // SAFETY: we set Pending above; inner is uninit; restoring Dirty.
-                unsafe { self.swap.store_dirty(segment) };
+                unsafe { self.swap.store_dirty(mapping) };
             }
             Err(std::sync::mpsc::TrySendError::Disconnected(_)) => {
                 panic!("conductor cleanup thread has exited unexpectedly");
@@ -659,7 +649,7 @@ impl SegmentedLog {
     }
 }
 
-impl Drop for SegmentedLog {
+impl Drop for RotatingJournal {
     fn drop(&mut self) {
         // If a request is in-flight (Pending), wait for the conductor to
         // publish a replacement (Clean). Once Clean, the conductor is done
@@ -707,7 +697,7 @@ fn recover_tail(data: *mut u8, segment_size: usize) -> usize {
     let mut cur = 0;
     while cur + FRAME_HDR <= segment_size {
         // SAFETY: `cur` is an 8-aligned offset within the mapped data region.
-        let stored = unsafe { (*commit_len_ptr(data.add(cur))).load(Ordering::Acquire) };
+        let stored = unsafe { read_commit_len(data.add(cur)) };
         if stored == 0 {
             break;
         }

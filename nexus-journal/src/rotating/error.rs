@@ -1,10 +1,8 @@
 use std::fmt;
 
-use crate::error::ShmError;
-
-/// Errors from opening, recovering, or configuring a [`SegmentedLog`](super::SegmentedLog).
+/// Errors from opening, recovering, or configuring a [`RotatingJournal`](super::RotatingJournal).
 ///
-/// Returned by [`SegmentedLogBuilder::open`](super::SegmentedLogBuilder::open),
+/// Returned by [`RotatingJournalBuilder::open`](super::RotatingJournalBuilder::open),
 /// [`Conductor::open`](super::Conductor::open), and related setup methods.
 #[derive(Debug)]
 #[non_exhaustive]
@@ -23,7 +21,14 @@ pub enum OpenError {
     SegmentTooLarge {
         size: usize,
     },
-    Shm(ShmError),
+    BadMagic {
+        found: u32,
+    },
+    UnsupportedLayout {
+        found: u16,
+        expected: u16,
+    },
+    Map(nexus_platform::MapError),
     Io(std::io::Error),
 }
 
@@ -53,7 +58,13 @@ impl fmt::Display for OpenError {
                      local offsets into 32 bits)"
                 )
             }
-            Self::Shm(e) => write!(f, "{e}"),
+            Self::BadMagic { found } => {
+                write!(f, "not a nexus journal manifest (magic {found:#010x})")
+            }
+            Self::UnsupportedLayout { found, expected } => {
+                write!(f, "unsupported layout version {found}, expected {expected}")
+            }
+            Self::Map(e) => write!(f, "{e}"),
             Self::Io(e) => write!(f, "{e}"),
         }
     }
@@ -62,16 +73,10 @@ impl fmt::Display for OpenError {
 impl std::error::Error for OpenError {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
-            Self::Shm(e) => Some(e),
+            Self::Map(e) => Some(e),
             Self::Io(e) => Some(e),
             _ => None,
         }
-    }
-}
-
-impl From<ShmError> for OpenError {
-    fn from(e: ShmError) -> Self {
-        Self::Shm(e)
     }
 }
 
@@ -83,22 +88,22 @@ impl From<std::io::Error> for OpenError {
 
 impl From<nexus_platform::MapError> for OpenError {
     fn from(e: nexus_platform::MapError) -> Self {
-        Self::Shm(ShmError::from(e))
+        Self::Map(e)
     }
 }
 
-/// Errors from live [`SegmentedLog`](super::SegmentedLog) operations.
+/// Errors from live [`RotatingJournal`](super::RotatingJournal) operations.
 ///
-/// Returned by [`append`](super::SegmentedLog::append) and internal
+/// Returned by [`append`](super::RotatingJournal::append) and internal
 /// rotation.
 #[derive(Debug)]
 #[non_exhaustive]
-pub enum LogError {
+pub enum WriteError {
     RecordTooLarge { max: usize },
     StandbyNotReady,
 }
 
-impl fmt::Display for LogError {
+impl fmt::Display for WriteError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::RecordTooLarge { max } => {
@@ -111,4 +116,4 @@ impl fmt::Display for LogError {
     }
 }
 
-impl std::error::Error for LogError {}
+impl std::error::Error for WriteError {}
