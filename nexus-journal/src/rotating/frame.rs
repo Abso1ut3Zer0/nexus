@@ -69,7 +69,7 @@ impl<'buf> Frame<'buf> {
 
 /// Opaque position handle for a record in the log.
 ///
-/// Returned by [`RotatingJournal::append`], passed to [`RotatingJournal::read`].
+/// Returned by [`RotatingJournal::append`](super::RotatingJournal::append), passed to [`RotatingJournal::read`](super::RotatingJournal::read).
 /// Valid until the slot it references is rotated out (two rotations after
 /// the write — one to move it to `prev`, one to evict).
 ///

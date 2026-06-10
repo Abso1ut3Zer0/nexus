@@ -36,8 +36,8 @@ payload, **unpaced** (max rate), 5,000,000 appends.
 | p99.99   |  5,447 |  ~2,030 |
 | max      |122,000 | ~45,000 |
 
-Half of all appends are ~32 ns; 99.9 % are under ~110 ns; 99.99 % under ~2 µs.
-The single worst of 5 M (~45 µs) is a page-crossing append that hit kernel
+Half of all appends are \~32 ns; 99.9 % are under ~110 ns; 99.99 % under \~2 µs.
+The single worst of 5 M (\~45 µs) is a page-crossing append that hit kernel
 dirty-page machinery, or a thread preemption (non-isolated core).
 
 ### Breakdown (same run)

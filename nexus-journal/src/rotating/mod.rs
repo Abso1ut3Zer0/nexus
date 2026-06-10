@@ -366,7 +366,7 @@ impl RotatingJournal {
     /// the init order guarantees this maps directly to the physical slot index.
     ///
     /// `pos` must be frame-aligned (a multiple of 8). Values obtained from
-    /// [`read_start`] and advanced by this method satisfy this invariant.
+    /// [`read_start`](Self::read_start) and advanced by this method satisfy this invariant.
     pub fn read_next(&self, pos: &mut u64) -> Option<Frame<'_>> {
         debug_assert!(
             (*pos).is_multiple_of(ALIGN as u64),
