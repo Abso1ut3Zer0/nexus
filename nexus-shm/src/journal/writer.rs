@@ -1,10 +1,13 @@
 use std::marker::PhantomData;
+use std::num::NonZeroUsize;
 use std::sync::atomic::Ordering;
 
-use crate::segment::Segment;
+use nexus_platform::Mapping;
 
 use super::error::JournalError;
-use super::frame::{FRAME_HEADER, TYPE_DATA, TYPE_PAD, footprint};
+use super::frame::{
+    FRAME_HEADER, TYPE_DATA, TYPE_PAD, commit_len, footprint, write_frame_kind, write_val,
+};
 use super::header::RecordHeader;
 
 /// Append half of a journal: claims and commits records to the active segment.
@@ -12,7 +15,7 @@ pub struct Writer<H: RecordHeader> {
     pub(super) base: std::path::PathBuf,
     pub(super) segment_size: usize,
     pub(super) hints: crate::MapHints,
-    pub(super) active: Segment,
+    pub(super) active: Mapping,
     pub(super) index: u64,
     pub(super) tail: usize,
     pub(super) _marker: PhantomData<H>,
@@ -53,22 +56,17 @@ impl<H: RecordHeader> Writer<H> {
     fn roll(&mut self) -> Result<(), JournalError> {
         let remaining = self.segment_size - self.tail;
         if remaining >= FRAME_HEADER {
+            let base = self.active.as_ptr();
             // SAFETY: tail is an 8-aligned offset within the mapped data region.
             unsafe {
-                self.active.write_frame_kind_at(self.tail, TYPE_PAD);
-                self.active
-                    .commit_len_at(self.tail)
-                    .store(remaining as u32, Ordering::Release);
+                write_frame_kind(base, self.tail, TYPE_PAD);
+                commit_len(base, self.tail).store(remaining as u32, Ordering::Release);
             }
         }
         self.index += 1;
         let path = super::segment_path(&self.base, self.index);
-        let total = Segment::total_size(self.segment_size)?;
-        self.active = Segment::create(
-            super::file_create(&path, total, self.hints)?,
-            self.segment_size,
-            self.hints,
-        )?;
+        let total = NonZeroUsize::new(self.segment_size).expect("non-zero segment size");
+        self.active = super::file_create(&path, total, self.hints)?.into();
         self.tail = 0;
         Ok(())
     }
@@ -90,41 +88,31 @@ impl<H: RecordHeader> WriteClaim<'_, H> {
     /// The payload region to fill before committing.
     pub fn as_mut_slice(&mut self) -> &mut [u8] {
         let start = self.off + FRAME_HEADER + size_of::<H>();
+        let base = self.writer.active.as_ptr();
         // SAFETY: the region is reserved for this claim, lies within the mapped
         // data, and is exclusively borrowed through `&mut self`.
-        unsafe { self.writer.active.slice_mut_at(start, self.payload_len) }
+        unsafe { std::slice::from_raw_parts_mut(base.add(start), self.payload_len) }
     }
 
     /// Publish the record: write the header and frame kind, then release the
     /// commit length so readers observe a fully-written record.
     pub fn commit(self) {
+        let base = self.writer.active.as_ptr();
         // SAFETY: the header slot is reserved for this claim and within the
         // mapped data; `H: Pod`, so an unaligned byte write is valid.
         unsafe {
-            self.writer
-                .active
-                .write_at(self.off + FRAME_HEADER, self.header);
-            self.writer.active.write_frame_kind_at(self.off, TYPE_DATA);
+            write_val(base, self.off + FRAME_HEADER, self.header);
+            write_frame_kind(base, self.off, TYPE_DATA);
         }
 
         let next = self.off + self.foot;
         if next + FRAME_HEADER <= self.writer.segment_size {
             // SAFETY: `next` is an 8-aligned offset within the mapped data.
-            unsafe {
-                self.writer
-                    .active
-                    .commit_len_at(next)
-                    .store(0, Ordering::Relaxed);
-            }
+            unsafe { commit_len(base, next).store(0, Ordering::Relaxed) };
         }
 
         // SAFETY: the commit-length slot is 8-aligned and within the mapped data.
-        unsafe {
-            self.writer
-                .active
-                .commit_len_at(self.off)
-                .store(self.body as u32, Ordering::Release);
-        }
+        unsafe { commit_len(base, self.off).store(self.body as u32, Ordering::Release) };
         self.writer.tail = next;
     }
 }

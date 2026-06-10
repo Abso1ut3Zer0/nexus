@@ -118,6 +118,24 @@ impl Segment {
         unsafe { self.mapping.as_ptr().add(HEADER.get()) }
     }
 
+    pub fn data_len(&self) -> usize {
+        self.control().data_len() as usize
+    }
+
+    fn control(&self) -> &ControlBlock {
+        Self::control_of(&self.mapping)
+    }
+
+    fn control_of(mapping: &Mapping) -> &ControlBlock {
+        // SAFETY: mmap maps whole pages, so the control block (<= one page) is
+        // mapped and page-aligned. All control-block fields are atomic or
+        // written once before sharing, so shared `&` access is sound.
+        unsafe { &*mapping.as_ptr().cast::<ControlBlock>() }
+    }
+}
+
+#[allow(dead_code)]
+impl Segment {
     /// `AtomicU32` at `offset` within the payload (commit-length field).
     ///
     /// # Safety
@@ -188,21 +206,6 @@ impl Segment {
     #[inline]
     pub(crate) unsafe fn slice_mut_at(&mut self, offset: usize, len: usize) -> &mut [u8] {
         unsafe { std::slice::from_raw_parts_mut(self.data().add(offset), len) }
-    }
-
-    pub fn data_len(&self) -> usize {
-        self.control().data_len() as usize
-    }
-
-    fn control(&self) -> &ControlBlock {
-        Self::control_of(&self.mapping)
-    }
-
-    fn control_of(mapping: &Mapping) -> &ControlBlock {
-        // SAFETY: mmap maps whole pages, so the control block (<= one page) is
-        // mapped and page-aligned. All control-block fields are atomic or
-        // written once before sharing, so shared `&` access is sound.
-        unsafe { &*mapping.as_ptr().cast::<ControlBlock>() }
     }
 }
 

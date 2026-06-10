@@ -11,17 +11,16 @@ use std::num::NonZeroUsize;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::Ordering;
 
-use nexus_platform::{MapError, MappedFile};
+use nexus_platform::{MapError, MappedFile, Mapping};
 
 use crate::MapHints;
-use crate::segment::Segment;
 
 pub use error::JournalError;
 pub use header::{FixHeader, RecordHeader, SeqHeader};
 pub use reader::{ReadRange, ReadRecord, Reader};
 pub use writer::{WriteClaim, Writer};
 
-use frame::{FRAME_HEADER, TYPE_PAD, align_up, footprint};
+use frame::{FRAME_HEADER, TYPE_PAD, align_up, commit_len, footprint, frame_kind};
 
 const MIN_SEGMENT: usize = 64;
 
@@ -52,6 +51,7 @@ impl<H: RecordHeader> Journal<H> {
     ) -> Result<(Writer<H>, Reader<H>), JournalError> {
         let base = base.as_ref().to_path_buf();
         let segment_size = align_up(cfg.segment_size.max(MIN_SEGMENT));
+        let total = NonZeroUsize::new(segment_size).expect("segment_size >= MIN_SEGMENT");
 
         let mut last = None;
         let mut i = 0u64;
@@ -61,13 +61,8 @@ impl<H: RecordHeader> Journal<H> {
         }
 
         let index = last.unwrap_or(0);
-        let total = Segment::total_size(segment_size)?;
-        let active = Segment::create(
-            file_create(&segment_path(&base, index), total, cfg.hints)?,
-            segment_size,
-            cfg.hints,
-        )?;
-        let tail = recover_tail::<H>(&active, segment_size);
+        let active: Mapping = file_create(&segment_path(&base, index), total, cfg.hints)?.into();
+        let tail = recover_tail::<H>(active.as_ptr(), segment_size);
 
         let writer = Writer {
             base: base.clone(),
@@ -79,7 +74,7 @@ impl<H: RecordHeader> Journal<H> {
             _marker: PhantomData,
         };
 
-        let seg0 = Segment::attach(file_open(&segment_path(&base, 0), cfg.hints)?)?;
+        let seg0: Mapping = file_open(&segment_path(&base, 0), cfg.hints)?.into();
         let reader = Reader {
             base,
             segment_size,
@@ -94,17 +89,17 @@ impl<H: RecordHeader> Journal<H> {
     }
 }
 
-fn recover_tail<H: RecordHeader>(seg: &Segment, segment_size: usize) -> usize {
+fn recover_tail<H: RecordHeader>(base: *mut u8, segment_size: usize) -> usize {
     let hsize = size_of::<H>();
     let mut cur = 0;
     while cur + FRAME_HEADER <= segment_size {
         // SAFETY: `cur` is an 8-aligned offset within the mapped data region.
-        let cl = unsafe { seg.commit_len_at(cur) }.load(Ordering::Acquire);
+        let cl = unsafe { commit_len(base, cur) }.load(Ordering::Acquire);
         if cl == 0 {
             break;
         }
         // SAFETY: cl > 0 was Acquire-loaded, so the frame header is published.
-        if unsafe { seg.frame_kind_at(cur) } == TYPE_PAD {
+        if unsafe { frame_kind(base, cur) } == TYPE_PAD {
             cur += align_up(cl as usize);
             continue;
         }
