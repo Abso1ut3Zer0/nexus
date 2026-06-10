@@ -42,9 +42,10 @@ struct Slot {
     data: *mut u8,
 }
 
-// SAFETY: a `Slot` is a mmap'd segment handle plus a cached data pointer into
-// that mapping. The mapping lives in shared memory, not thread-local state.
-// Concurrent access is governed by the frame-level atomics.
+// SAFETY: `Slot` owns an optional mmap'd Segment and a `data` pointer into it
+// (`null_mut()` when the standby slot's segment lives in the swap). The mmap
+// lives in shared memory, not thread-local state. Concurrent access is
+// governed by frame-level atomics and the SegmentSwap state machine.
 unsafe impl Send for Slot {}
 
 // ---------------------------------------------------------------------------
@@ -633,7 +634,7 @@ impl SegmentedLog {
         let request = CleanRequest {
             segment: Some(evicted),
             segment_size: self.segment_size,
-            epoch: self.epoch.saturating_sub(1),
+            epoch: self.epoch.saturating_sub(2),
             swap: Arc::clone(&self.swap),
             seg_path: self.slots[self.standby].path.clone(),
             hints: self.hints,

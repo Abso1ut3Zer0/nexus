@@ -123,6 +123,9 @@ pub(crate) struct CleanRequest {
 // ---------------------------------------------------------------------------
 
 /// Builder for configuring a [`Conductor`].
+///
+/// Obtained via [`ConductorBuilder::new`]. Call [`open`](Self::open) to spawn
+/// the background thread and begin accepting sessions.
 pub struct ConductorBuilder {
     dir: PathBuf,
     clean_queue_depth: usize,
@@ -130,6 +133,7 @@ pub struct ConductorBuilder {
 }
 
 impl ConductorBuilder {
+    /// Create a builder rooted at `dir`.
     pub fn new(dir: impl AsRef<Path>) -> Self {
         Self {
             dir: dir.as_ref().to_path_buf(),
@@ -138,6 +142,7 @@ impl ConductorBuilder {
         }
     }
 
+    /// Set the backlog depth of the clean-request channel (default: 4).
     pub fn clean_queue_depth(mut self, depth: usize) -> Self {
         self.clean_queue_depth = depth;
         self
@@ -154,6 +159,7 @@ impl ConductorBuilder {
         self
     }
 
+    /// Spawn the conductor background thread and open the directory.
     pub fn open(self) -> Result<Conductor, super::OpenError> {
         std::fs::create_dir_all(&self.dir)?;
 
@@ -170,6 +176,9 @@ impl ConductorBuilder {
 }
 
 /// Top-level journal manager.
+///
+/// Owns the background cleanup thread that archives evicted segments and
+/// creates fresh replacements. Drop to shut the thread down gracefully.
 pub struct Conductor {
     dir: PathBuf,
     tx: Option<std::sync::mpsc::SyncSender<CleanRequest>>,
@@ -178,14 +187,17 @@ pub struct Conductor {
 }
 
 impl Conductor {
+    /// Shorthand for [`ConductorBuilder::new(dir).open()`](ConductorBuilder::open).
     pub fn open(dir: impl AsRef<Path>) -> Result<Self, super::OpenError> {
         ConductorBuilder::new(dir).open()
     }
 
+    /// Open a new or existing session log under this conductor.
     pub fn session(&mut self) -> super::SegmentedLogBuilder<'_> {
         super::SegmentedLogBuilder::new(self)
     }
 
+    /// List session IDs that have a manifest on disk, sorted ascending.
     pub fn sessions_on_disk(&self) -> Result<Vec<u32>, super::OpenError> {
         let mut ids = Vec::new();
         for entry in std::fs::read_dir(&self.dir)? {
@@ -254,25 +266,39 @@ fn conductor_main(rx: &std::sync::mpsc::Receiver<CleanRequest>) {
             let Ok(total) = Segment::total_size(p.segment_size) else {
                 return true;
             };
-            file_create(&p.seg_path, total, p.hints)
-                .ok()
-                .and_then(|mf| Segment::create(mf, p.segment_size, p.hints).ok())
-                .is_none_or(|seg| {
-                    // SAFETY: conductor is sole owner; state is Pending (inner uninit).
-                    unsafe {
-                        (*commit_len_ptr(seg.data()))
-                            .store(0, std::sync::atomic::Ordering::Relaxed);
-                        p.swap.publish_clean(seg);
-                    }
-                    false
-                })
+            let Some(mf) = file_create(&p.seg_path, total, p.hints).ok() else {
+                return true;
+            };
+            let Some(seg) = Segment::create(mf, p.segment_size, p.hints).ok() else {
+                return true;
+            };
+            // SAFETY: conductor is sole owner; state is Pending (inner uninit).
+            unsafe {
+                (*commit_len_ptr(seg.data())).store(0, std::sync::atomic::Ordering::Relaxed);
+                p.swap.publish_clean(seg);
+            }
+            false
         });
 
         // Non-blocking drain of new requests.
         let mut drained = false;
-        while let Ok(req) = rx.try_recv() {
-            drained = true;
-            process_request(req, &mut pending);
+        let mut disconnected = false;
+        loop {
+            match rx.try_recv() {
+                Ok(req) => {
+                    drained = true;
+                    process_request(req, &mut pending);
+                }
+                Err(std::sync::mpsc::TryRecvError::Empty) => break,
+                Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                    disconnected = true;
+                    break;
+                }
+            }
+        }
+
+        if disconnected {
+            break;
         }
 
         // Block only when idle; sleep briefly if still retrying.
