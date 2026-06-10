@@ -311,14 +311,36 @@ fn conductor_main(rx: &std::sync::mpsc::Receiver<CleanRequest>) {
 }
 
 fn process_request(req: CleanRequest, pending: &mut Vec<PendingCreate>) {
-    if let Some(mapping) = req.mapping {
-        // fsync before rename so the archive file is durable. If sync fails,
-        // skip the rename — the data is not guaranteed durable, but we still
-        // proceed to create the replacement mapping.
-        let synced = mapping.sync().is_ok();
+    // Non-archiving fast path: reuse the evicted mapping in place. The slot's
+    // replacement file *is* the evicted segment's own file, and `create()`
+    // never truncates (only grows) — so recreating it would munmap, reopen,
+    // and re-`POPULATE` pages that already hold the identical bytes and are
+    // already resident from the write that just filled them. There is nothing
+    // to do but reset the head sentinel and hand the same mapping straight
+    // back. No munmap, no open, no ftruncate, no mmap: zero syscalls, so the
+    // fs-metadata stall that delays provisioning simply cannot occur.
+    if req.archive_dir.is_none() {
+        if let Some(mapping) = req.mapping {
+            // SAFETY: swap is Pending (inner uninit) until publish_clean. Zeroing
+            // the head commit_len marks the segment empty; stale frames beyond
+            // are masked by the writer's next-sentinel protocol, exactly as on
+            // the recreate path.
+            unsafe {
+                write_commit_len(mapping.as_ptr(), 0);
+                req.swap.publish_clean(mapping);
+            }
+        }
+        return;
+    }
 
-        if synced
-            && let Some(ref archive_dir) = req.archive_dir
+    // Archiving path: the evicted file is renamed out of the slot, so a fresh
+    // replacement file must be created.
+    if let Some(mapping) = req.mapping {
+        // Durability before rename: the archive file must be on disk before it
+        // is moved into place. msync(MS_SYNC) blocks, but only the archiving
+        // path pays it.
+        if let Some(ref archive_dir) = req.archive_dir
+            && mapping.sync().is_ok()
             && std::fs::create_dir_all(archive_dir).is_ok()
         {
             let dst = archive_dir.join(format!("seg_{}.dat", req.epoch));

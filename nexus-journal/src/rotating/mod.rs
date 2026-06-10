@@ -72,7 +72,7 @@ impl<'a> RotatingJournalBuilder<'a> {
             segment_size: 4 * 1024 * 1024,
             session_id: None,
             name: None,
-            pretouch: false,
+            pretouch: true,
             huge_pages: false,
         }
     }
@@ -93,7 +93,11 @@ impl<'a> RotatingJournalBuilder<'a> {
         self
     }
 
-    /// Fault all pages into memory on creation (MAP_POPULATE).
+    /// Fault all pages into memory up front (`MAP_POPULATE`). Enabled by
+    /// default: the conductor maps every segment, so the page-fault cost is
+    /// paid on the conductor thread, off the append hot path. Disabling it
+    /// pushes those faults onto the writer — a per-page tail spike as each
+    /// fresh page is first touched while filling a segment.
     pub fn pretouch(mut self, enable: bool) -> Self {
         self.pretouch = enable;
         self
