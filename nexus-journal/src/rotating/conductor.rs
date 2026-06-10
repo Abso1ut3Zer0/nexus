@@ -12,8 +12,6 @@ use nexus_platform::{FileLock, MappedFile, Mapping};
 
 use nexus_platform::MapHints;
 
-use super::frame::write_commit_len;
-
 const LOCK_FILE: &str = "conductor.lock";
 const DEFAULT_CLEAN_QUEUE_DEPTH: usize = 4;
 
@@ -271,7 +269,7 @@ fn conductor_main(rx: &std::sync::mpsc::Receiver<CleanRequest>) {
             let mapping: Mapping = mf.into();
             // SAFETY: conductor sole owner; state is Pending (inner uninit).
             unsafe {
-                write_commit_len(mapping.as_ptr(), 0);
+                prefault(&mapping);
                 p.swap.publish_clean(mapping);
             }
             false
@@ -310,23 +308,37 @@ fn conductor_main(rx: &std::sync::mpsc::Receiver<CleanRequest>) {
     }
 }
 
+/// Prefault a freshly provisioned or reused segment before publishing it.
+///
+/// Write-touches (zeroes) every page so the `page_mkwrite` faults land here on
+/// the conductor — off the writer's append hot path — when the writer next
+/// refills the segment. Without this the writer eats the faults itself: a reused
+/// segment that sat idle long enough for the kernel to write its pages back and
+/// re-protect them re-faults on first touch. Zeroing also clears stale frames
+/// from the previous epoch.
+///
+/// # Safety
+/// `mapping` must be a live, writable mapping the conductor solely owns (swap is
+/// `Pending`, so no other thread touches it).
+unsafe fn prefault(mapping: &Mapping) {
+    // SAFETY: caller guarantees `mapping` covers `len()` writable bytes owned by
+    // this thread for the duration of the write.
+    unsafe { std::ptr::write_bytes(mapping.as_ptr(), 0, mapping.len()) };
+}
+
 fn process_request(req: CleanRequest, pending: &mut Vec<PendingCreate>) {
     // Non-archiving fast path: reuse the evicted mapping in place. The slot's
     // replacement file *is* the evicted segment's own file, and `create()`
-    // never truncates (only grows) — so recreating it would munmap, reopen,
-    // and re-`POPULATE` pages that already hold the identical bytes and are
-    // already resident from the write that just filled them. There is nothing
-    // to do but reset the head sentinel and hand the same mapping straight
-    // back. No munmap, no open, no ftruncate, no mmap: zero syscalls, so the
+    // never truncates (only grows) — so recreating it would munmap, reopen, and
+    // re-mmap the same file for nothing. We keep the mapping and just prefault
+    // it. No munmap, no open, no ftruncate, no mmap: zero syscalls, so the
     // fs-metadata stall that delays provisioning simply cannot occur.
     if req.archive_dir.is_none() {
         if let Some(mapping) = req.mapping {
-            // SAFETY: swap is Pending (inner uninit) until publish_clean. Zeroing
-            // the head commit_len marks the segment empty; stale frames beyond
-            // are masked by the writer's next-sentinel protocol, exactly as on
-            // the recreate path.
+            // SAFETY: swap is Pending (inner uninit) until publish_clean; the
+            // conductor solely owns the mapping here.
             unsafe {
-                write_commit_len(mapping.as_ptr(), 0);
+                prefault(&mapping);
                 req.swap.publish_clean(mapping);
             }
         }
@@ -365,9 +377,9 @@ fn process_request(req: CleanRequest, pending: &mut Vec<PendingCreate>) {
         .map(Mapping::from)
     {
         Some(mapping) => {
-            // SAFETY: state is Pending (inner uninit); zeroing commit_len sentinel.
+            // SAFETY: state is Pending (inner uninit); conductor solely owns it.
             unsafe {
-                write_commit_len(mapping.as_ptr(), 0);
+                prefault(&mapping);
                 req.swap.publish_clean(mapping);
             }
         }

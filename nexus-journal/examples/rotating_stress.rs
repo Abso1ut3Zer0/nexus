@@ -1,13 +1,14 @@
-use std::time::{Duration, Instant};
 use hdrhistogram::Histogram;
 use nexus_journal::Conductor;
+use std::time::{Duration, Instant};
 
 fn main() {
     let seg_size: usize = 64 * 1024; // 64KB — forces frequent rotation
     let num_writes: u64 = 100_000;
     let payload_size: usize = 64;
     let dir = std::env::temp_dir().join(format!(
-        "nexus-journal-rotating-stress-{}", std::process::id()
+        "nexus-journal-rotating-stress-{}",
+        std::process::id()
     ));
     let _ = std::fs::remove_dir_all(&dir);
 
@@ -40,7 +41,7 @@ fn main() {
         let start = Instant::now();
         match journal.append(&payload) {
             Ok(_) => {}
-            Err(nexus_journal::WriteError::StandbyNotReady { .. }) => {
+            Err(nexus_journal::WriteError::StandbyNotReady) => {
                 standby_not_ready += 1;
                 continue;
             }
@@ -63,7 +64,9 @@ fn main() {
 
     println!("--- RotatingJournal UNPACED (64KB segments) ---");
     println!("  {num_writes} writes, {payload_size}B payload, no pacing");
-    println!("  {normals} normal writes, {rotations} rotation writes, {standby_not_ready} StandbyNotReady");
+    println!(
+        "  {normals} normal writes, {rotations} rotation writes, {standby_not_ready} StandbyNotReady"
+    );
     println!();
     println!("  COMBINED:");
     println!("    p50:    {:>8} ns", hist.value_at_quantile(0.50));
@@ -81,9 +84,18 @@ fn main() {
     println!("    max:    {:>8} ns", hist_normal.max());
     println!();
     println!("  ROTATION (segment boundary):");
-    println!("    p50:    {:>8} ns", hist_rotation.value_at_quantile(0.50));
-    println!("    p90:    {:>8} ns", hist_rotation.value_at_quantile(0.90));
-    println!("    p99:    {:>8} ns", hist_rotation.value_at_quantile(0.99));
+    println!(
+        "    p50:    {:>8} ns",
+        hist_rotation.value_at_quantile(0.50)
+    );
+    println!(
+        "    p90:    {:>8} ns",
+        hist_rotation.value_at_quantile(0.90)
+    );
+    println!(
+        "    p99:    {:>8} ns",
+        hist_rotation.value_at_quantile(0.99)
+    );
     println!("    max:    {:>8} ns", hist_rotation.max());
 
     drop(journal);

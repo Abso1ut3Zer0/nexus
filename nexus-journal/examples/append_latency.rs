@@ -32,7 +32,13 @@ fn main() {
     for _ in 0..warmup {
         seq += 1;
         let mut claim = w
-            .try_claim(FixHeader { seq, timestamp: seq }, PAYLOAD_SIZE)
+            .try_claim(
+                FixHeader {
+                    seq,
+                    timestamp: seq,
+                },
+                PAYLOAD_SIZE,
+            )
             .expect("warmup");
         claim.as_mut_slice().copy_from_slice(&payload);
         claim.commit();
@@ -48,7 +54,13 @@ fn main() {
         seq += 1;
         let start = Instant::now();
         let mut claim = w
-            .try_claim(FixHeader { seq, timestamp: seq }, PAYLOAD_SIZE)
+            .try_claim(
+                FixHeader {
+                    seq,
+                    timestamp: seq,
+                },
+                PAYLOAD_SIZE,
+            )
             .expect("append");
         claim.as_mut_slice().copy_from_slice(&payload);
         claim.commit();
