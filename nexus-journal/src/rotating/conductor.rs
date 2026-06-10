@@ -4,13 +4,13 @@ use std::mem::MaybeUninit;
 use std::num::NonZeroUsize;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use std::sync::atomic::{AtomicU8, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
 use std::thread::JoinHandle;
 use std::time::Duration;
 
 use nexus_platform::{FileLock, MappedFile, Mapping};
-
 use nexus_platform::MapHints;
+use nexus_queue::mpsc;
 
 const LOCK_FILE: &str = "conductor.lock";
 const DEFAULT_CLEAN_QUEUE_DEPTH: usize = 4;
@@ -160,13 +160,22 @@ impl ConductorBuilder {
     pub fn open(self) -> Result<Conductor, super::OpenError> {
         std::fs::create_dir_all(&self.dir)?;
 
-        let (tx, rx) = std::sync::mpsc::sync_channel(self.clean_queue_depth);
-        let thread = std::thread::spawn(move || conductor_main(&rx));
+        let (tx, rx) = mpsc::ring_buffer(self.clean_queue_depth);
+        let closing = Arc::new(AtomicBool::new(false));
+        let parked = Arc::new(AtomicBool::new(false));
+
+        let closing_c = Arc::clone(&closing);
+        let parked_c = Arc::clone(&parked);
+        let thread = std::thread::spawn(move || conductor_main(&rx, &closing_c, &parked_c));
+        let wake_thread = thread.thread().clone();
 
         Ok(Conductor {
             dir: self.dir,
-            tx: Some(tx),
+            tx,
             thread: Some(thread),
+            closing,
+            parked,
+            wake_thread,
             archive: self.archive,
         })
     }
@@ -178,8 +187,11 @@ impl ConductorBuilder {
 /// creates fresh replacements. Drop to shut the thread down gracefully.
 pub struct Conductor {
     dir: PathBuf,
-    tx: Option<std::sync::mpsc::SyncSender<CleanRequest>>,
+    tx: mpsc::Producer<CleanRequest>,
     thread: Option<JoinHandle<()>>,
+    closing: Arc<AtomicBool>,
+    parked: Arc<AtomicBool>,
+    wake_thread: std::thread::Thread,
     archive: bool,
 }
 
@@ -225,8 +237,16 @@ impl Conductor {
         &self.dir
     }
 
-    pub(crate) fn sender(&self) -> std::sync::mpsc::SyncSender<CleanRequest> {
-        self.tx.as_ref().expect("conductor shut down").clone()
+    pub(crate) fn sender(&self) -> mpsc::Producer<CleanRequest> {
+        self.tx.clone()
+    }
+
+    pub(crate) fn parked(&self) -> Arc<AtomicBool> {
+        Arc::clone(&self.parked)
+    }
+
+    pub(crate) fn wake_thread(&self) -> std::thread::Thread {
+        self.wake_thread.clone()
     }
 
     pub(crate) fn archive(&self) -> bool {
@@ -236,7 +256,8 @@ impl Conductor {
 
 impl Drop for Conductor {
     fn drop(&mut self) {
-        drop(self.tx.take());
+        self.closing.store(true, Ordering::Release);
+        self.wake_thread.unpark();
         if let Some(t) = self.thread.take() {
             let _ = t.join();
         }
@@ -254,7 +275,13 @@ struct PendingCreate {
     hints: MapHints,
 }
 
-fn conductor_main(rx: &std::sync::mpsc::Receiver<CleanRequest>) {
+fn conductor_main(
+    rx: &mpsc::Consumer<CleanRequest>,
+    closing: &AtomicBool,
+    parked: &AtomicBool,
+) {
+    const MAX_SLEEP: Duration = Duration::from_secs(3);
+    let mut sleep_dur = Duration::from_millis(1);
     let mut pending: Vec<PendingCreate> = Vec::new();
 
     loop {
@@ -275,36 +302,39 @@ fn conductor_main(rx: &std::sync::mpsc::Receiver<CleanRequest>) {
             false
         });
 
-        // Non-blocking drain of new requests.
+        // Drain all available requests.
         let mut drained = false;
-        let mut disconnected = false;
-        loop {
-            match rx.try_recv() {
-                Ok(req) => {
-                    drained = true;
-                    process_request(req, &mut pending);
-                }
-                Err(std::sync::mpsc::TryRecvError::Empty) => break,
-                Err(std::sync::mpsc::TryRecvError::Disconnected) => {
-                    disconnected = true;
-                    break;
-                }
-            }
+        while let Some(req) = rx.pop() {
+            drained = true;
+            process_request(req, &mut pending);
         }
 
-        if disconnected {
+        if closing.load(Ordering::Acquire) {
             break;
         }
 
-        // Block only when idle; sleep briefly if still retrying.
-        if pending.is_empty() {
-            match rx.recv() {
-                Ok(req) => process_request(req, &mut pending),
-                Err(_) => break,
-            }
-        } else if !drained {
-            std::thread::sleep(Duration::from_millis(250));
+        if drained || !pending.is_empty() {
+            // Had activity — reset backoff and loop immediately.
+            sleep_dur = Duration::from_millis(1);
+            continue;
         }
+
+        // No work — prepare to park with adaptive backoff.
+        parked.store(true, Ordering::Release);
+        // Close the race: a producer may have pushed between our drain and the
+        // parked store. If so, process it and skip sleeping.
+        if let Some(req) = rx.pop() {
+            parked.store(false, Ordering::Relaxed);
+            process_request(req, &mut pending);
+            sleep_dur = Duration::from_millis(1);
+            continue;
+        }
+        std::thread::park_timeout(sleep_dur);
+        parked.store(false, Ordering::Relaxed);
+        if closing.load(Ordering::Acquire) {
+            break;
+        }
+        sleep_dur = (sleep_dur * 2).min(MAX_SLEEP);
     }
 }
 

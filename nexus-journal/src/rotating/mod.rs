@@ -8,10 +8,11 @@ mod tests;
 use std::num::NonZeroUsize;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use nexus_platform::{FileLock, MappedFile, Mapping};
-
 use nexus_platform::MapHints;
+use nexus_queue::mpsc;
 
 use conductor::{CleanRequest, SWAP_CLEAN, SWAP_DIRTY, SegmentSwap};
 use frame::{
@@ -32,7 +33,9 @@ const EPOCH_MASK: u32 = 0x3FFF_FFFF;
 // ---------------------------------------------------------------------------
 
 struct SessionResources {
-    tx: std::sync::mpsc::SyncSender<CleanRequest>,
+    tx: mpsc::Producer<CleanRequest>,
+    parked: Arc<AtomicBool>,
+    wake_thread: std::thread::Thread,
     session_lock: FileLock,
 }
 
@@ -146,6 +149,8 @@ impl<'a> RotatingJournalBuilder<'a> {
         let name_bytes = self.name.as_deref().unwrap_or("").as_bytes();
         let res = SessionResources {
             tx: self.conductor.sender(),
+            parked: self.conductor.parked(),
+            wake_thread: self.conductor.wake_thread(),
             session_lock,
         };
 
@@ -235,7 +240,9 @@ impl<'a> RotatingJournalBuilder<'a> {
 pub struct RotatingJournal {
     slots: [Slot; 3],
     manifest: Manifest,
-    tx: std::sync::mpsc::SyncSender<CleanRequest>,
+    tx: mpsc::Producer<CleanRequest>,
+    parked: Arc<AtomicBool>,
+    wake_thread: std::thread::Thread,
     swap: Arc<SegmentSwap>,
     _session_lock: FileLock,
     segment_size: usize,
@@ -467,6 +474,8 @@ impl RotatingJournal {
             slots: [s0, s1, s2],
             manifest,
             tx: res.tx,
+            parked: res.parked,
+            wake_thread: res.wake_thread,
             swap,
             _session_lock: res.session_lock,
             segment_size: size,
@@ -563,6 +572,8 @@ impl RotatingJournal {
             slots,
             manifest,
             tx: res.tx,
+            parked: res.parked,
+            wake_thread: res.wake_thread,
             swap,
             _session_lock: res.session_lock,
             segment_size: size,
@@ -638,16 +649,22 @@ impl RotatingJournal {
         // Transition Dirty → Pending before send.
         self.swap.mark_pending();
 
-        match self.tx.try_send(request) {
-            Ok(()) => {}
-            Err(std::sync::mpsc::TrySendError::Full(returned)) => {
-                // Channel full; put the mapping back and retry next append.
-                let mapping = returned.mapping.expect("just set it");
+        match self.tx.push(request) {
+            Ok(()) => {
+                // Unpark the conductor only if it is actually sleeping.
+                if self.parked.load(Ordering::Acquire) {
+                    self.wake_thread.unpark();
+                }
+            }
+            Err(full) => {
+                assert!(
+                    !self.tx.is_disconnected(),
+                    "conductor cleanup thread has exited unexpectedly"
+                );
+                // Queue full; put the mapping back and retry next append.
+                let mapping = full.into_inner().mapping.expect("just set it");
                 // SAFETY: we set Pending above; inner is uninit; restoring Dirty.
                 unsafe { self.swap.store_dirty(mapping) };
-            }
-            Err(std::sync::mpsc::TrySendError::Disconnected(_)) => {
-                panic!("conductor cleanup thread has exited unexpectedly");
             }
         }
     }
