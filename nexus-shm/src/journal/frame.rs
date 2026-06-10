@@ -1,4 +1,4 @@
-use std::sync::atomic::AtomicU32;
+use crate::pod::Pod;
 
 pub(crate) const FRAME_HEADER: usize = 8;
 pub(crate) const ALIGN: usize = 8;
@@ -17,8 +17,15 @@ pub(crate) const fn footprint(body: usize) -> usize {
 /// # Safety
 /// `base.add(offset)` must be 4-byte-aligned and within the mapping.
 #[inline]
-pub(crate) unsafe fn commit_len<'a>(base: *mut u8, offset: usize) -> &'a AtomicU32 {
-    unsafe { AtomicU32::from_ptr(base.add(offset).cast()) }
+pub(crate) unsafe fn read_commit_len(base: *mut u8, offset: usize) -> u32 {
+    unsafe { base.add(offset).cast::<u32>().read() }
+}
+
+/// # Safety
+/// `base.add(offset)` must be 4-byte-aligned and within the mapping.
+#[inline]
+pub(crate) unsafe fn write_commit_len(base: *mut u8, offset: usize, val: u32) {
+    unsafe { base.add(offset).cast::<u32>().write(val) }
 }
 
 /// # Safety
@@ -43,7 +50,7 @@ pub(crate) unsafe fn write_frame_kind(base: *mut u8, offset: usize, kind: u16) {
 /// `[offset, offset + size_of::<T>())` must be within the mapping and
 /// reserved for this write.
 #[inline]
-pub(crate) unsafe fn write_val<T: Copy>(base: *mut u8, offset: usize, val: T) {
+pub(crate) unsafe fn write_val<T: Pod>(base: *mut u8, offset: usize, val: T) {
     unsafe { std::ptr::write_unaligned(base.add(offset).cast(), val) }
 }
 
@@ -51,6 +58,6 @@ pub(crate) unsafe fn write_val<T: Copy>(base: *mut u8, offset: usize, val: T) {
 /// `[offset, offset + size_of::<T>())` must be within the mapping and
 /// the data must be published.
 #[inline]
-pub(crate) unsafe fn read_val<T: Copy>(base: *mut u8, offset: usize) -> T {
+pub(crate) unsafe fn read_val<T: Pod>(base: *mut u8, offset: usize) -> T {
     unsafe { std::ptr::read_unaligned(base.add(offset).cast()) }
 }

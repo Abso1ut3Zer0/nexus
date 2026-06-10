@@ -1,11 +1,12 @@
 use std::marker::PhantomData;
 use std::ops::RangeBounds;
-use std::sync::atomic::Ordering;
 
 use nexus_platform::Mapping;
 
 use super::error::JournalError;
-use super::frame::{FRAME_HEADER, TYPE_PAD, align_up, commit_len, footprint, frame_kind, read_val};
+use super::frame::{
+    FRAME_HEADER, TYPE_PAD, align_up, footprint, frame_kind, read_commit_len, read_val,
+};
 use super::header::{RecordHeader, SeqHeader};
 
 /// Read half of a journal: walks committed records across segments in order.
@@ -33,11 +34,11 @@ impl<H: RecordHeader> Reader<H> {
             }
             let base = self.segments[self.seg_idx].as_ptr();
             // SAFETY: cursor is an 8-aligned offset within the mapped data.
-            let cl = unsafe { commit_len(base, self.cursor) }.load(Ordering::Acquire);
+            let cl = unsafe { read_commit_len(base, self.cursor) };
             if cl == 0 {
                 return Ok(None);
             }
-            // SAFETY: cl > 0 was Acquire-loaded, so the frame header is published.
+            // SAFETY: cl > 0 means the frame header is written.
             if unsafe { frame_kind(base, self.cursor) } == TYPE_PAD {
                 self.cursor += align_up(cl as usize);
                 if self.cursor + FRAME_HEADER > self.segment_size && !self.advance_segment()? {
@@ -157,11 +158,11 @@ impl<'a, H: SeqHeader> Iterator for ReadRange<'a, H> {
             }
             let base = self.segments[self.seg_idx].as_ptr();
             // SAFETY: cursor is an 8-aligned offset within the mapped data.
-            let cl = unsafe { commit_len(base, self.cursor) }.load(Ordering::Acquire);
+            let cl = unsafe { read_commit_len(base, self.cursor) };
             if cl == 0 {
                 return None;
             }
-            // SAFETY: cl > 0 was Acquire-loaded, so the frame header is published.
+            // SAFETY: cl > 0 means the frame header is written.
             if unsafe { frame_kind(base, self.cursor) } == TYPE_PAD {
                 self.cursor += align_up(cl as usize);
                 continue;

@@ -9,7 +9,6 @@ mod writer;
 use std::marker::PhantomData;
 use std::num::NonZeroUsize;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::Ordering;
 
 use nexus_platform::{MapError, MappedFile, Mapping};
 
@@ -20,7 +19,7 @@ pub use header::{FixHeader, RecordHeader, SeqHeader};
 pub use reader::{ReadRange, ReadRecord, Reader};
 pub use writer::{WriteClaim, Writer};
 
-use frame::{FRAME_HEADER, TYPE_PAD, align_up, commit_len, footprint, frame_kind};
+use frame::{FRAME_HEADER, TYPE_PAD, align_up, footprint, frame_kind, read_commit_len};
 
 const MIN_SEGMENT: usize = 64;
 
@@ -94,11 +93,11 @@ fn recover_tail<H: RecordHeader>(base: *mut u8, segment_size: usize) -> usize {
     let mut cur = 0;
     while cur + FRAME_HEADER <= segment_size {
         // SAFETY: `cur` is an 8-aligned offset within the mapped data region.
-        let cl = unsafe { commit_len(base, cur) }.load(Ordering::Acquire);
+        let cl = unsafe { read_commit_len(base, cur) };
         if cl == 0 {
             break;
         }
-        // SAFETY: cl > 0 was Acquire-loaded, so the frame header is published.
+        // SAFETY: cl > 0 means the frame header is written.
         if unsafe { frame_kind(base, cur) } == TYPE_PAD {
             cur += align_up(cl as usize);
             continue;

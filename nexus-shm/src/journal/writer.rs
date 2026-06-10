@@ -1,12 +1,11 @@
 use std::marker::PhantomData;
 use std::num::NonZeroUsize;
-use std::sync::atomic::Ordering;
 
 use nexus_platform::Mapping;
 
 use super::error::JournalError;
 use super::frame::{
-    FRAME_HEADER, TYPE_DATA, TYPE_PAD, commit_len, footprint, write_frame_kind, write_val,
+    FRAME_HEADER, TYPE_DATA, TYPE_PAD, footprint, write_commit_len, write_frame_kind, write_val,
 };
 use super::header::RecordHeader;
 
@@ -60,7 +59,7 @@ impl<H: RecordHeader> Writer<H> {
             // SAFETY: tail is an 8-aligned offset within the mapped data region.
             unsafe {
                 write_frame_kind(base, self.tail, TYPE_PAD);
-                commit_len(base, self.tail).store(remaining as u32, Ordering::Release);
+                write_commit_len(base, self.tail, remaining as u32);
             }
         }
         self.index += 1;
@@ -94,7 +93,7 @@ impl<H: RecordHeader> WriteClaim<'_, H> {
         unsafe { std::slice::from_raw_parts_mut(base.add(start), self.payload_len) }
     }
 
-    /// Publish the record: write the header and frame kind, then release the
+    /// Publish the record: write the header and frame kind, then the
     /// commit length so readers observe a fully-written record.
     pub fn commit(self) {
         let base = self.writer.active.as_ptr();
@@ -108,11 +107,11 @@ impl<H: RecordHeader> WriteClaim<'_, H> {
         let next = self.off + self.foot;
         if next + FRAME_HEADER <= self.writer.segment_size {
             // SAFETY: `next` is an 8-aligned offset within the mapped data.
-            unsafe { commit_len(base, next).store(0, Ordering::Relaxed) };
+            unsafe { write_commit_len(base, next, 0) };
         }
 
         // SAFETY: the commit-length slot is 8-aligned and within the mapped data.
-        unsafe { commit_len(base, self.off).store(self.body as u32, Ordering::Release) };
+        unsafe { write_commit_len(base, self.off, self.body as u32) };
         self.writer.tail = next;
     }
 }
