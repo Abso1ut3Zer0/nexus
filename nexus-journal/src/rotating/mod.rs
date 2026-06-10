@@ -10,8 +10,8 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
-use nexus_platform::{FileLock, MappedFile, Mapping};
 use nexus_platform::MapHints;
+use nexus_platform::{FileLock, MappedFile, Mapping};
 use nexus_queue::mpsc;
 
 use conductor::{CleanRequest, SWAP_CLEAN, SWAP_DIRTY, SegmentSwap};

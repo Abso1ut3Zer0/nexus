@@ -8,8 +8,8 @@ use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
 use std::thread::JoinHandle;
 use std::time::Duration;
 
-use nexus_platform::{FileLock, MappedFile, Mapping};
 use nexus_platform::MapHints;
+use nexus_platform::{FileLock, MappedFile, Mapping};
 use nexus_queue::mpsc;
 
 const LOCK_FILE: &str = "conductor.lock";
@@ -275,11 +275,7 @@ struct PendingCreate {
     hints: MapHints,
 }
 
-fn conductor_main(
-    rx: &mpsc::Consumer<CleanRequest>,
-    closing: &AtomicBool,
-    parked: &AtomicBool,
-) {
+fn conductor_main(rx: &mpsc::Consumer<CleanRequest>, closing: &AtomicBool, parked: &AtomicBool) {
     const MAX_SLEEP: Duration = Duration::from_secs(3);
     let mut sleep_dur = Duration::from_millis(1);
     let mut pending: Vec<PendingCreate> = Vec::new();
