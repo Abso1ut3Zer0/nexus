@@ -68,6 +68,29 @@ impl<'a> FieldReader<'a> {
         }
     }
 
+    #[inline]
+    pub fn next_data_field(&mut self, len: usize) -> Result<RawField, crate::DecodeError> {
+        if len == 0 {
+            return Err(crate::DecodeError::Truncated);
+        }
+        let field_start = self.field_start;
+        let (tag, tag_len) = parse_tag(self.buf.get(field_start..).unwrap_or(b""));
+        if tag_len == 0 {
+            return Err(crate::DecodeError::InvalidTag);
+        }
+        if self.buf.get(field_start + tag_len) != Some(&b'=') {
+            return Err(crate::DecodeError::MissingSeparator);
+        }
+        let value_start = field_start + tag_len + 1;
+        let data_end = value_start + len;
+        if self.buf.get(data_end) != Some(&b'\x01') {
+            return Err(crate::DecodeError::Truncated);
+        }
+        let span = FieldSpan::new(value_start as u32, len as u32);
+        self.resync_after_data(data_end + 1);
+        Ok(RawField { tag, value: span })
+    }
+
     /// Resume scanning at `data_end`, having consumed a length-prefixed DATA
     /// field whose value may contain SOH bytes.
     ///
@@ -822,6 +845,114 @@ mod tests {
         assert_eq!(parse_checksum_bytes(b"XYZ"), None); // non-digit
         assert_eq!(parse_checksum_bytes(b"12"), None); // too short
         assert_eq!(parse_checksum_bytes(b"1234"), None); // too long
+    }
+
+    #[test]
+    fn next_data_field_embedded_soh() {
+        let msg = b"95=5\x0196=AB\x01CD\x0155=X\x01";
+        let mut r = FieldReader::new(msg, 0);
+        r.next_field();
+        let f = r.next_data_field(5).unwrap();
+        assert_eq!(f.tag, 96);
+        assert_eq!(f.value.slice(msg), b"AB\x01CD");
+        let next = r.next_field().unwrap();
+        assert_eq!(next.tag, 55);
+        assert_eq!(next.value.slice(msg), b"X");
+        assert!(r.next_field().is_none());
+    }
+
+    #[test]
+    fn next_data_field_embedded_equals() {
+        let msg = b"95=3\x0196=a=b\x0155=Y\x01";
+        let mut r = FieldReader::new(msg, 0);
+        r.next_field();
+        let f = r.next_data_field(3).unwrap();
+        assert_eq!(f.tag, 96);
+        assert_eq!(f.value.slice(msg), b"a=b");
+        assert_eq!(r.next_field().unwrap().tag, 55);
+    }
+
+    #[test]
+    fn next_data_field_last_before_checksum() {
+        let body = b"95=3\x0196=ABC\x01";
+        let sum = checksum(body);
+        let mut msg = body.to_vec();
+        msg.extend_from_slice(format!("10={sum:03}\x01").as_bytes());
+        let mut r = FieldReader::new(&msg, 0);
+        r.next_field();
+        let f = r.next_data_field(3).unwrap();
+        assert_eq!(f.value.slice(&msg), b"ABC");
+        let tag10 = r.next_field().unwrap();
+        assert_eq!(tag10.tag, 10);
+    }
+
+    #[test]
+    fn next_data_field_multiple_pairs() {
+        let msg = b"95=2\x0196=AB\x01212=3\x01213=CDE\x0155=Z\x01";
+        let mut r = FieldReader::new(msg, 0);
+        r.next_field();
+        let f1 = r.next_data_field(2).unwrap();
+        assert_eq!(f1.tag, 96);
+        assert_eq!(f1.value.slice(msg), b"AB");
+        r.next_field();
+        let f2 = r.next_data_field(3).unwrap();
+        assert_eq!(f2.tag, 213);
+        assert_eq!(f2.value.slice(msg), b"CDE");
+        assert_eq!(r.next_field().unwrap().tag, 55);
+    }
+
+    #[test]
+    fn next_data_field_inside_group() {
+        let msg = b"268=1\x0196=AB\x01CD\x01";
+        let mut r = FieldReader::new(msg, 0);
+        r.next_field(); // 268=1
+        let f = r.next_data_field(5).unwrap();
+        assert_eq!(f.tag, 96);
+        assert_eq!(f.value.slice(msg), b"AB\x01CD");
+        assert!(r.next_field().is_none());
+    }
+
+    #[test]
+    fn next_data_field_checksum_covers_embedded_soh() {
+        let body = b"95=5\x0196=AB\x01CD\x01";
+        let sum = checksum(body);
+        let mut msg = body.to_vec();
+        msg.extend_from_slice(format!("10={sum:03}\x01").as_bytes());
+        let prefix = &msg[..msg.len() - b"10=000\x01".len()];
+        assert_eq!(checksum(prefix), sum);
+    }
+
+    #[test]
+    fn next_data_field_zero_len_errors() {
+        let msg = b"95=0\x0196=\x0155=X\x01";
+        let mut r = FieldReader::new(msg, 0);
+        r.next_field();
+        assert!(matches!(
+            r.next_data_field(0),
+            Err(crate::DecodeError::Truncated)
+        ));
+    }
+
+    #[test]
+    fn next_data_field_n_exceeds_remaining() {
+        let msg = b"95=100\x0196=ABC\x01";
+        let mut r = FieldReader::new(msg, 0);
+        r.next_field();
+        assert!(matches!(
+            r.next_data_field(100),
+            Err(crate::DecodeError::Truncated)
+        ));
+    }
+
+    #[test]
+    fn next_data_field_missing_terminator() {
+        let msg = b"95=3\x0196=ABC";
+        let mut r = FieldReader::new(msg, 0);
+        r.next_field();
+        assert!(matches!(
+            r.next_data_field(3),
+            Err(crate::DecodeError::Truncated)
+        ));
     }
 
     #[test]

@@ -216,20 +216,10 @@ fn data_body(len: &RField, data: &RField) -> String {
     let mut b = String::new();
     let _ = writeln!(b, "                m.{} = f.value;", snake(&len.name));
     b.push_str("                let (n, _) = nexus_fix_codec::parse_tag(f.value.slice(buf));\n");
-    b.push_str("                let dstart = m.header.reader.pos();\n");
-    b.push_str("                let (_, dtl) = nexus_fix_codec::parse_tag(&buf[dstart..]);\n");
-    b.push_str("                let vstart = dstart + dtl + 1;\n");
-    b.push_str("                let dlen = (n as usize).min(buf.len().saturating_sub(vstart));\n");
-    let _ = writeln!(
-        b,
-        "                m.{} = nexus_fix_codec::FieldSpan::new(vstart as u32, dlen as u32);",
-        snake(&data.name)
+    b.push_str(
+        "                let data_f = m.header.reader.next_data_field(n as usize)?;\n",
     );
-    // Skip past the DATA value (which may contain SOH bytes) by repositioning
-    // the reader. The checksum is a separate pass, so there is no accumulator to
-    // keep in sync — `resync_after_data` is a pure jump.
-    b.push_str("                let dend = (vstart + dlen + 1).min(buf.len());\n");
-    b.push_str("                m.header.reader.resync_after_data(dend);\n");
+    let _ = writeln!(b, "                m.{} = data_f.value;", snake(&data.name));
     b
 }
 
