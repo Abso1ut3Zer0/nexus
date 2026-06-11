@@ -216,9 +216,7 @@ fn data_body(len: &RField, data: &RField) -> String {
     let mut b = String::new();
     let _ = writeln!(b, "                m.{} = f.value;", snake(&len.name));
     b.push_str("                let (n, _) = nexus_fix_codec::parse_tag(f.value.slice(buf));\n");
-    b.push_str(
-        "                let data_f = m.header.reader.next_data_field(n as usize)?;\n",
-    );
+    b.push_str("                let data_f = m.header.reader.next_data_field(n as usize)?;\n");
     let _ = writeln!(b, "                m.{} = data_f.value;", snake(&data.name));
     b
 }

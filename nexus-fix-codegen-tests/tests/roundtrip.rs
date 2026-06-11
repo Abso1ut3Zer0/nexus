@@ -67,12 +67,12 @@ fn alpha_decodes_data_field_with_embedded_soh() {
 }
 
 #[test]
-fn alpha_truncated_data_does_not_panic() {
+fn alpha_truncated_data_errors() {
     let msg = b"11=A\x0195=100\x0196=ab\x01";
-    let m = venue_alpha::messages::NewOrderSingle::decode(msg).unwrap();
-    assert_eq!(m.raw_data_length().unwrap().get(), 100);
-    let data = m.raw_data().unwrap().as_bytes();
-    assert!(data.len() <= msg.len());
+    assert!(matches!(
+        venue_alpha::messages::NewOrderSingle::decode(msg),
+        Err(nexus_fix_codec::DecodeError::Truncated)
+    ));
 }
 
 #[test]
