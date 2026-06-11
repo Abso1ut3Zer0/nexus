@@ -34,7 +34,7 @@ const EPOCH_MASK: u32 = 0x3FFF_FFFF;
 
 struct SessionResources {
     tx: mpsc::Producer<CleanRequest>,
-    parked: Arc<AtomicBool>,
+    alive: Arc<AtomicBool>,
     wake_thread: std::thread::Thread,
     session_lock: FileLock,
 }
@@ -149,7 +149,7 @@ impl<'a> RotatingJournalBuilder<'a> {
         let name_bytes = self.name.as_deref().unwrap_or("").as_bytes();
         let res = SessionResources {
             tx: self.conductor.sender(),
-            parked: self.conductor.parked(),
+            alive: self.conductor.alive(),
             wake_thread: self.conductor.wake_thread(),
             session_lock,
         };
@@ -241,7 +241,7 @@ pub struct RotatingJournal {
     slots: [Slot; 3],
     manifest: Manifest,
     tx: mpsc::Producer<CleanRequest>,
-    parked: Arc<AtomicBool>,
+    alive: Arc<AtomicBool>,
     wake_thread: std::thread::Thread,
     swap: Arc<SegmentSwap>,
     _session_lock: FileLock,
@@ -474,7 +474,7 @@ impl RotatingJournal {
             slots: [s0, s1, s2],
             manifest,
             tx: res.tx,
-            parked: res.parked,
+            alive: res.alive,
             wake_thread: res.wake_thread,
             swap,
             _session_lock: res.session_lock,
@@ -572,7 +572,7 @@ impl RotatingJournal {
             slots,
             manifest,
             tx: res.tx,
-            parked: res.parked,
+            alive: res.alive,
             wake_thread: res.wake_thread,
             swap,
             _session_lock: res.session_lock,
@@ -651,17 +651,13 @@ impl RotatingJournal {
 
         match self.tx.push(request) {
             Ok(()) => {
-                // Unpark the conductor only if it is actually sleeping.
-                if self.parked.load(Ordering::Acquire) {
-                    self.wake_thread.unpark();
-                }
+                self.wake_thread.unpark();
             }
             Err(full) => {
                 assert!(
-                    !self.tx.is_disconnected(),
+                    self.alive.load(Ordering::Acquire),
                     "conductor cleanup thread has exited unexpectedly"
                 );
-                // Queue full; put the mapping back and retry next append.
                 let mapping = full.into_inner().mapping.expect("just set it");
                 // SAFETY: we set Pending above; inner is uninit; restoring Dirty.
                 unsafe { self.swap.store_dirty(mapping) };

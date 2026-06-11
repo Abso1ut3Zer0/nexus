@@ -162,11 +162,11 @@ impl ConductorBuilder {
 
         let (tx, rx) = mpsc::ring_buffer(self.clean_queue_depth);
         let closing = Arc::new(AtomicBool::new(false));
-        let parked = Arc::new(AtomicBool::new(false));
+        let alive = Arc::new(AtomicBool::new(true));
 
         let closing_c = Arc::clone(&closing);
-        let parked_c = Arc::clone(&parked);
-        let thread = std::thread::spawn(move || conductor_main(&rx, &closing_c, &parked_c));
+        let alive_c = Arc::clone(&alive);
+        let thread = std::thread::spawn(move || conductor_main(&rx, &closing_c, &alive_c));
         let wake_thread = thread.thread().clone();
 
         Ok(Conductor {
@@ -174,7 +174,7 @@ impl ConductorBuilder {
             tx,
             thread: Some(thread),
             closing,
-            parked,
+            alive,
             wake_thread,
             archive: self.archive,
         })
@@ -185,12 +185,14 @@ impl ConductorBuilder {
 ///
 /// Owns the background cleanup thread that archives evicted segments and
 /// creates fresh replacements. Drop to shut the thread down gracefully.
+///
+/// Must outlive any [`RotatingJournal`](super::RotatingJournal) opened through it.
 pub struct Conductor {
     dir: PathBuf,
     tx: mpsc::Producer<CleanRequest>,
     thread: Option<JoinHandle<()>>,
     closing: Arc<AtomicBool>,
-    parked: Arc<AtomicBool>,
+    alive: Arc<AtomicBool>,
     wake_thread: std::thread::Thread,
     archive: bool,
 }
@@ -241,8 +243,8 @@ impl Conductor {
         self.tx.clone()
     }
 
-    pub(crate) fn parked(&self) -> Arc<AtomicBool> {
-        Arc::clone(&self.parked)
+    pub(crate) fn alive(&self) -> Arc<AtomicBool> {
+        Arc::clone(&self.alive)
     }
 
     pub(crate) fn wake_thread(&self) -> std::thread::Thread {
@@ -275,7 +277,7 @@ struct PendingCreate {
     hints: MapHints,
 }
 
-fn conductor_main(rx: &mpsc::Consumer<CleanRequest>, closing: &AtomicBool, parked: &AtomicBool) {
+fn conductor_main(rx: &mpsc::Consumer<CleanRequest>, closing: &AtomicBool, alive: &AtomicBool) {
     const MAX_SLEEP: Duration = Duration::from_secs(3);
     let mut sleep_dur = Duration::from_millis(1);
     let mut pending: Vec<PendingCreate> = Vec::new();
@@ -309,29 +311,19 @@ fn conductor_main(rx: &mpsc::Consumer<CleanRequest>, closing: &AtomicBool, parke
             break;
         }
 
-        if drained || !pending.is_empty() {
-            // Had activity — reset backoff and loop immediately.
+        if drained {
             sleep_dur = Duration::from_millis(1);
             continue;
         }
 
-        // No work — prepare to park with adaptive backoff.
-        parked.store(true, Ordering::Release);
-        // Close the race: a producer may have pushed between our drain and the
-        // parked store. If so, process it and skip sleeping.
-        if let Some(req) = rx.pop() {
-            parked.store(false, Ordering::Relaxed);
-            process_request(req, &mut pending);
-            sleep_dur = Duration::from_millis(1);
-            continue;
-        }
         std::thread::park_timeout(sleep_dur);
-        parked.store(false, Ordering::Relaxed);
         if closing.load(Ordering::Acquire) {
             break;
         }
         sleep_dur = (sleep_dur * 2).min(MAX_SLEEP);
     }
+
+    alive.store(false, Ordering::Release);
 }
 
 /// Prefault a freshly provisioned or reused segment before publishing it.
