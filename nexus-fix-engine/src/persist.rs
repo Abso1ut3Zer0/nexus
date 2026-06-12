@@ -1,6 +1,8 @@
 use std::path::{Path, PathBuf};
 
-use nexus_journal::{AppendOnlyJournal, AppendOnlyJournalConfig, AppendOnlyJournalError, FixHeader, Reader, Writer};
+use nexus_journal::{
+    AppendOnlyJournal, AppendOnlyJournalConfig, AppendOnlyJournalError, FixHeader, Reader, Writer,
+};
 
 use crate::store::{MessageStore, SessionStore, StoredMsg};
 
@@ -23,7 +25,10 @@ impl MessageStore for JournalMessageStore {
     type Error = AppendOnlyJournalError;
 
     fn store(&mut self, seq_num: u32, msg: &[u8]) -> Result<(), Self::Error> {
-        let header = FixHeader { seq: seq_num as u64, timestamp: 0 };
+        let header = FixHeader {
+            seq: seq_num as u64,
+            timestamp: 0,
+        };
         let mut claim = self.writer.try_claim(header, msg.len())?;
         claim.as_mut_slice().copy_from_slice(msg);
         claim.commit();
@@ -57,7 +62,9 @@ pub struct FileSessionStore {
 
 impl FileSessionStore {
     pub fn new(path: impl AsRef<Path>) -> Self {
-        Self { path: path.as_ref().to_path_buf() }
+        Self {
+            path: path.as_ref().to_path_buf(),
+        }
     }
 }
 
