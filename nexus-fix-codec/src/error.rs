@@ -2,6 +2,7 @@ use core::fmt;
 
 /// Error during FIX message decoding.
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum DecodeError {
     /// Message is too short to contain required header fields.
     Truncated,
@@ -15,6 +16,8 @@ pub enum DecodeError {
     MissingBodyLength,
     /// Checksum validation failed.
     Checksum(ChecksumError),
+    /// DATA field declared a zero or inconsistent length.
+    InvalidLength,
 }
 
 impl fmt::Display for DecodeError {
@@ -26,6 +29,7 @@ impl fmt::Display for DecodeError {
             Self::MissingBeginString => f.write_str("missing or misplaced BeginString (tag 8)"),
             Self::MissingBodyLength => f.write_str("missing or misplaced BodyLength (tag 9)"),
             Self::Checksum(e) => write!(f, "checksum: {}", e),
+            Self::InvalidLength => f.write_str("DATA field declared invalid length"),
         }
     }
 }
@@ -187,6 +191,10 @@ mod tests {
         assert_eq!(
             DecodeError::Checksum(ce).to_string(),
             "checksum: expected 178, computed 042"
+        );
+        assert_eq!(
+            DecodeError::InvalidLength.to_string(),
+            "DATA field declared invalid length"
         );
     }
 

@@ -68,10 +68,15 @@ impl<'a> FieldReader<'a> {
         }
     }
 
+    /// Consume a length-prefixed DATA field.
+    ///
+    /// `len` is the value byte count, excluding the terminating SOH. Returns
+    /// `InvalidLength` if `len == 0`, `Truncated` if the SOH is absent or the
+    /// buffer is too short.
     #[inline]
     pub fn next_data_field(&mut self, len: usize) -> Result<RawField, crate::DecodeError> {
         if len == 0 {
-            return Err(crate::DecodeError::Truncated);
+            return Err(crate::DecodeError::InvalidLength);
         }
         let field_start = self.field_start;
         let (tag, tag_len) = parse_tag(self.buf.get(field_start..).unwrap_or(b""));
@@ -82,6 +87,10 @@ impl<'a> FieldReader<'a> {
             return Err(crate::DecodeError::MissingSeparator);
         }
         let value_start = field_start + tag_len + 1;
+        let remaining = self.buf.len().saturating_sub(value_start);
+        if len > remaining {
+            return Err(crate::DecodeError::Truncated);
+        }
         let data_end = value_start + len;
         if self.buf.get(data_end) != Some(&b'\x01') {
             return Err(crate::DecodeError::Truncated);
@@ -929,7 +938,7 @@ mod tests {
         r.next_field();
         assert!(matches!(
             r.next_data_field(0),
-            Err(crate::DecodeError::Truncated)
+            Err(crate::DecodeError::InvalidLength)
         ));
     }
 
