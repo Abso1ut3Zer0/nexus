@@ -64,7 +64,10 @@ impl FixJournal {
         let hi = end.map_or(u64::MAX, |e| e as u64);
         let lo = begin as u64;
         if let Some(at) = self.offsets[begin as usize & RING_MASK as usize]
-            && self.reader.peek_header(at)?.map_or(false, |h| h.seq == begin as u64)
+            && self
+                .reader
+                .peek_header(at)?
+                .map_or(false, |h| h.seq == begin as u64)
         {
             return self.reader.read_from(at, lo, hi);
         }
@@ -74,7 +77,10 @@ impl FixJournal {
     pub fn resend_is_aged_out(&mut self, begin: u32) -> Result<bool, AppendOnlyJournalError> {
         match self.offsets[begin as usize & RING_MASK as usize] {
             None => Ok(true),
-            Some(at) => Ok(self.reader.peek_header(at)?.map_or(true, |h| h.seq != begin as u64)),
+            Some(at) => Ok(self
+                .reader
+                .peek_header(at)?
+                .map_or(true, |h| h.seq != begin as u64)),
         }
     }
 
