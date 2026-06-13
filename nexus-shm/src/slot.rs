@@ -272,8 +272,7 @@ mod tests {
 
         // Even version + Dead segment → reader still sees a consistent value.
         match reader.read() {
-            SlotRead::Fresh(v) => assert_eq!(*v, 55),
-            SlotRead::Stale(v) => assert_eq!(*v, 55),
+            SlotRead::Fresh(v) | SlotRead::Stale(v) => assert_eq!(*v, 55),
             SlotRead::Empty => panic!("unexpected Empty after write"),
         }
 
