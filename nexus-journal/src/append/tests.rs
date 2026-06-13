@@ -2,7 +2,9 @@ use std::path::{Path, PathBuf};
 
 use nexus_platform::MapHints;
 
-use super::{AppendOffset, AppendOnlyJournal, AppendOnlyJournalConfig, AppendOnlyJournalError, FixHeader};
+use super::{
+    AppendOffset, AppendOnlyJournal, AppendOnlyJournalConfig, AppendOnlyJournalError, FixHeader,
+};
 
 fn base_path(name: &str) -> PathBuf {
     std::env::temp_dir().join(format!("nexus-journal-{}-{}", std::process::id(), name))
@@ -210,7 +212,11 @@ fn commit_returns_offset_read_from_seeks() {
     let h = r.peek_header(at).unwrap().unwrap();
     assert_eq!(h.seq, 5);
 
-    let got: Vec<u64> = r.read_from(at, 5, 8).unwrap().map(|rec| rec.header().seq).collect();
+    let got: Vec<u64> = r
+        .read_from(at, 5, 8)
+        .unwrap()
+        .map(|rec| rec.header().seq)
+        .collect();
     assert_eq!(got, vec![5, 6, 7, 8]);
 
     drop((w, r));
@@ -227,7 +233,9 @@ fn last_seq_empty_and_nonempty() {
 
     for seq in 1..=5u64 {
         let mut claim = w.try_claim(fix(seq), 4).unwrap();
-        claim.as_mut_slice().copy_from_slice(&(seq as u32).to_le_bytes());
+        claim
+            .as_mut_slice()
+            .copy_from_slice(&(seq as u32).to_le_bytes());
         claim.commit();
     }
 
@@ -244,7 +252,10 @@ fn peek_header_returns_none_for_unwritten() {
     cleanup(&base);
 
     let (mut _w, mut r) = AppendOnlyJournal::<FixHeader>::open(&base, cfg(1 << 16)).unwrap();
-    let at = AppendOffset { segment: 99, offset: 0 };
+    let at = AppendOffset {
+        segment: 99,
+        offset: 0,
+    };
     assert!(r.peek_header(at).unwrap().is_none());
 
     cleanup(&base);

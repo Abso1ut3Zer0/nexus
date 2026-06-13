@@ -5,7 +5,7 @@ use nexus_platform::Mapping;
 
 use super::error::AppendOnlyJournalError;
 use super::frame::{
-    FRAME_HEADER, TYPE_PAD, align_up, footprint, frame_kind, read_commit_len, read_val,
+    align_up, footprint, frame_kind, read_commit_len, read_val, FRAME_HEADER, TYPE_PAD,
 };
 use super::header::{RecordHeader, SeqHeader};
 

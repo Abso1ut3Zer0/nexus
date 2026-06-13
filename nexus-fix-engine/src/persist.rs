@@ -44,7 +44,10 @@ impl FixJournal {
         timestamp: u64,
         msg: &[u8],
     ) -> Result<(), AppendOnlyJournalError> {
-        let header = FixHeader { seq: seq as u64, timestamp };
+        let header = FixHeader {
+            seq: seq as u64,
+            timestamp,
+        };
         let mut claim = self.writer.try_claim(header, msg.len())?;
         claim.as_mut_slice().copy_from_slice(msg);
         let at = claim.commit();
@@ -103,8 +106,8 @@ impl FixJournal {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::path::{Path, PathBuf};
     use nexus_journal::MapHints;
+    use std::path::{Path, PathBuf};
 
     fn base(name: &str) -> PathBuf {
         std::env::temp_dir().join(format!("nexus-fix-journal-{}-{}", std::process::id(), name))
@@ -119,7 +122,10 @@ mod tests {
     }
 
     fn cfg() -> AppendOnlyJournalConfig {
-        AppendOnlyJournalConfig { segment_size: 1 << 16, hints: MapHints::default() }
+        AppendOnlyJournalConfig {
+            segment_size: 1 << 16,
+            hints: MapHints::default(),
+        }
     }
 
     #[test]
@@ -132,7 +138,9 @@ mod tests {
             j.store(seq, seq as u64 * 1000, &[seq as u8; 4]).unwrap();
         }
 
-        let msgs: Vec<u32> = j.resend(2, Some(4)).unwrap()
+        let msgs: Vec<u32> = j
+            .resend(2, Some(4))
+            .unwrap()
             .map(|r| r.header().seq as u32)
             .collect();
         assert_eq!(msgs, vec![2, 3, 4]);
@@ -150,7 +158,9 @@ mod tests {
             j.store(seq, 0, &[seq as u8; 4]).unwrap();
         }
 
-        let msgs: Vec<u32> = j.resend(3, None).unwrap()
+        let msgs: Vec<u32> = j
+            .resend(3, None)
+            .unwrap()
             .map(|r| r.header().seq as u32)
             .collect();
         assert_eq!(msgs, vec![3, 4, 5]);
