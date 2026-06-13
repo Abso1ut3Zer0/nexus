@@ -90,7 +90,10 @@ impl<T: Pod> ShmRingWriter<T> {
         let segment = Segment::create(mf, data_len, hints)?;
         unsafe {
             std::ptr::write_bytes(segment.data(), 0, data_len);
-            std::ptr::write(segment.data().add(CAP_OFFSET).cast::<u64>(), capacity as u64);
+            std::ptr::write(
+                segment.data().add(CAP_OFFSET).cast::<u64>(),
+                capacity as u64,
+            );
             std::ptr::write(
                 segment.data().add(ELEM_SIZE_OFFSET).cast::<u64>(),
                 size_of::<T>() as u64,
@@ -157,7 +160,10 @@ impl<T: Pod> ShmRingReader<T> {
         }
         let elem_size = read_elem_size(&segment) as usize;
         if elem_size != size_of::<T>() {
-            return Err(ShmError::ElemSizeMismatch { written: elem_size, expected: size_of::<T>() });
+            return Err(ShmError::ElemSizeMismatch {
+                written: elem_size,
+                expected: size_of::<T>(),
+            });
         }
         Ok(Self {
             segment,

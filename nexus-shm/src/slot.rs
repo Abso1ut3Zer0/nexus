@@ -1,7 +1,7 @@
 use std::marker::PhantomData;
 use std::mem::MaybeUninit;
 use std::path::Path;
-use std::sync::atomic::{AtomicU64, Ordering, fence};
+use std::sync::atomic::{fence, AtomicU64, Ordering};
 
 use nexus_platform::{Liveness, MapHints, MappedFile};
 
@@ -80,7 +80,10 @@ impl<T: Pod> ShmSlotWriter<T> {
             std::ptr::write_bytes(segment.data(), 0, data_len);
             std::ptr::write(elem_size_ptr(&segment), size_of::<T>() as u64);
         }
-        Ok(Self { segment, _marker: PhantomData })
+        Ok(Self {
+            segment,
+            _marker: PhantomData,
+        })
     }
 
     /// Publish `value` to all readers.
@@ -119,7 +122,10 @@ impl<T: Pod> ShmSlotReader<T> {
         let segment = Segment::attach(mf)?;
         let written = unsafe { std::ptr::read(elem_size_ptr(&segment)) } as usize;
         if written != size_of::<T>() {
-            return Err(ShmError::ElemSizeMismatch { written, expected: size_of::<T>() });
+            return Err(ShmError::ElemSizeMismatch {
+                written,
+                expected: size_of::<T>(),
+            });
         }
         Ok(Self {
             segment,
@@ -249,7 +255,11 @@ mod tests {
         let _ = std::fs::remove_file(&path);
         let writer = ShmSlotWriter::<Price>::create(&path, MapHints::default()).unwrap();
         let mut reader = ShmSlotReader::<Price>::attach(&path).unwrap();
-        writer.write(&Price { bid: 100.5, ask: 100.6, seq: 7 });
+        writer.write(&Price {
+            bid: 100.5,
+            ask: 100.6,
+            seq: 7,
+        });
         match reader.read() {
             SlotRead::Fresh(p) => {
                 assert_eq!(p.bid, 100.5);
@@ -286,8 +296,14 @@ mod tests {
         let _ = std::fs::remove_file(&path);
         let _writer = ShmSlotWriter::<u64>::create(&path, MapHints::default()).unwrap();
         match ShmSlotReader::<u32>::attach(&path) {
-            Err(ShmError::ElemSizeMismatch { written: 8, expected: 4 }) => {}
-            other => panic!("expected ElemSizeMismatch{{8,4}}, got {other:?}", other = other.err()),
+            Err(ShmError::ElemSizeMismatch {
+                written: 8,
+                expected: 4,
+            }) => {}
+            other => panic!(
+                "expected ElemSizeMismatch{{8,4}}, got {other:?}",
+                other = other.err()
+            ),
         }
         std::fs::remove_file(&path).unwrap();
     }
@@ -356,11 +372,14 @@ mod tests {
 
         match reader.read() {
             SlotRead::Stale(v) => assert_eq!(*v, 42),
-            other => panic!("expected Stale, got {}", match other {
-                SlotRead::Fresh(_) => "Fresh",
-                SlotRead::Empty => "Empty",
-                SlotRead::Stale(_) => unreachable!(),
-            }),
+            other => panic!(
+                "expected Stale, got {}",
+                match other {
+                    SlotRead::Fresh(_) => "Fresh",
+                    SlotRead::Empty => "Empty",
+                    SlotRead::Stale(_) => unreachable!(),
+                }
+            ),
         }
         std::fs::remove_file(&path).unwrap();
     }

@@ -31,7 +31,10 @@ impl fmt::Display for ShmError {
             Self::OwnerActive => write!(f, "segment already owned by a live process"),
             Self::Os(e) => write!(f, "{e}"),
             Self::ElemSizeMismatch { written, expected } => {
-                write!(f, "element size mismatch: segment has {written}, reader expects {expected}")
+                write!(
+                    f,
+                    "element size mismatch: segment has {written}, reader expects {expected}"
+                )
             }
             Self::CorruptHeader => write!(f, "segment header is corrupt"),
         }
