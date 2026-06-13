@@ -11,6 +11,7 @@ use crate::segment::{Segment, Status};
 const TAIL_OFFSET: usize = 0;
 const HEAD_OFFSET: usize = 64;
 const CAP_OFFSET: usize = 128;
+const ELEM_SIZE_OFFSET: usize = 136;
 const DATA_OFFSET: usize = 192;
 
 fn ring_tail(segment: &Segment) -> &AtomicU64 {
@@ -23,6 +24,10 @@ fn ring_head(segment: &Segment) -> &AtomicU64 {
 
 fn read_capacity(segment: &Segment) -> u64 {
     unsafe { std::ptr::read(segment.data().add(CAP_OFFSET).cast::<u64>()) }
+}
+
+fn read_elem_size(segment: &Segment) -> u64 {
+    unsafe { std::ptr::read(segment.data().add(ELEM_SIZE_OFFSET).cast::<u64>()) }
 }
 
 fn slot_ptr<T>(segment: &Segment, slot_idx: u64) -> *mut T {
@@ -76,15 +81,19 @@ impl<T: Pod> ShmRingWriter<T> {
             "align_of::<T>() = {} exceeds DATA_OFFSET = {DATA_OFFSET}",
             align_of::<T>(),
         );
-        let data_len = DATA_OFFSET + capacity * size_of::<T>();
+        let data_len = capacity
+            .checked_mul(size_of::<T>())
+            .and_then(|s| s.checked_add(DATA_OFFSET))
+            .ok_or(ShmError::SizeOverflow)?;
         let total = Segment::total_size(data_len)?;
         let mf = MappedFile::create(path.as_ref(), total)?;
         let segment = Segment::create(mf, data_len, hints)?;
         unsafe {
             std::ptr::write_bytes(segment.data(), 0, data_len);
+            std::ptr::write(segment.data().add(CAP_OFFSET).cast::<u64>(), capacity as u64);
             std::ptr::write(
-                segment.data().add(CAP_OFFSET).cast::<u64>(),
-                capacity as u64,
+                segment.data().add(ELEM_SIZE_OFFSET).cast::<u64>(),
+                size_of::<T>() as u64,
             );
         }
         Ok(Self {
@@ -136,14 +145,20 @@ unsafe impl<T: Pod + Send> Send for ShmRingWriter<T> {}
 
 impl<T: Pod> ShmRingReader<T> {
     /// Attach to an existing ring buffer at `path`.
+    ///
+    /// Returns `Err` if the header is corrupt, the element size doesn't match
+    /// `size_of::<T>()`, or the mapping is too small for the stored capacity.
     pub fn attach(path: impl AsRef<Path>) -> Result<Self, ShmError> {
         let mf = MappedFile::open(path.as_ref())?;
         let segment = Segment::attach(mf)?;
         let capacity = read_capacity(&segment);
-        assert!(
-            capacity.is_power_of_two() && capacity > 0,
-            "corrupt ring buffer: capacity {capacity} is not a power of two"
-        );
+        if !capacity.is_power_of_two() || capacity == 0 {
+            return Err(ShmError::CorruptHeader);
+        }
+        let elem_size = read_elem_size(&segment) as usize;
+        if elem_size != size_of::<T>() {
+            return Err(ShmError::ElemSizeMismatch { written: elem_size, expected: size_of::<T>() });
+        }
         Ok(Self {
             segment,
             local_head: 0,

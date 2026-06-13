@@ -11,6 +11,8 @@ pub enum ShmError {
     HugePagesUnavailable(std::io::Error),
     OwnerActive,
     Os(std::io::Error),
+    ElemSizeMismatch { written: usize, expected: usize },
+    CorruptHeader,
 }
 
 impl fmt::Display for ShmError {
@@ -28,6 +30,10 @@ impl fmt::Display for ShmError {
             Self::HugePagesUnavailable(e) => write!(f, "huge pages unavailable: {e}"),
             Self::OwnerActive => write!(f, "segment already owned by a live process"),
             Self::Os(e) => write!(f, "{e}"),
+            Self::ElemSizeMismatch { written, expected } => {
+                write!(f, "element size mismatch: segment has {written}, reader expects {expected}")
+            }
+            Self::CorruptHeader => write!(f, "segment header is corrupt"),
         }
     }
 }
