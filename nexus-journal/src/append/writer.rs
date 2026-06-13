@@ -5,7 +5,7 @@ use nexus_platform::Mapping;
 
 use super::error::AppendOnlyJournalError;
 use super::frame::{
-    footprint, write_commit_len, write_frame_kind, write_val, FRAME_HEADER, TYPE_DATA, TYPE_PAD,
+    FRAME_HEADER, TYPE_DATA, TYPE_PAD, footprint, write_commit_len, write_frame_kind, write_val,
 };
 use super::header::RecordHeader;
 

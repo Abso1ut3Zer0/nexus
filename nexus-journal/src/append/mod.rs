@@ -23,7 +23,7 @@ pub struct AppendOffset {
     pub(super) offset: usize,
 }
 
-use frame::{align_up, footprint, frame_kind, read_commit_len, FRAME_HEADER, TYPE_PAD};
+use frame::{FRAME_HEADER, TYPE_PAD, align_up, footprint, frame_kind, read_commit_len};
 
 const MIN_SEGMENT: usize = 64;
 
