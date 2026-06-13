@@ -1,7 +1,7 @@
 use std::marker::PhantomData;
 use std::mem::MaybeUninit;
 use std::path::Path;
-use std::sync::atomic::{fence, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicU64, Ordering, fence};
 
 use nexus_platform::{Liveness, MapHints, MappedFile};
 
