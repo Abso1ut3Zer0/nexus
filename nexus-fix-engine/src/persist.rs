@@ -67,7 +67,7 @@ impl FixJournal {
             && self
                 .reader
                 .peek_header(at)?
-                .map_or(false, |h| h.seq == begin as u64)
+                .is_some_and(|h| h.seq == begin as u64)
         {
             return self.reader.read_from(at, lo, hi);
         }
@@ -80,7 +80,7 @@ impl FixJournal {
             Some(at) => Ok(self
                 .reader
                 .peek_header(at)?
-                .map_or(true, |h| h.seq != begin as u64)),
+                .is_none_or(|h| h.seq != begin as u64)),
         }
     }
 
