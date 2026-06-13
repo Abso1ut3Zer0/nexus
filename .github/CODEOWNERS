@@ -1,0 +1,8 @@
+# Code owners for nexus.
+#
+# Owners listed here are automatically requested for review on PRs that
+# touch matching paths, and (with branch protection's "require review from
+# Code Owners") must approve before merge.
+
+# Default owner for everything in the repo.
+* @Abso1ut3Zer0
