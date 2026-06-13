@@ -11,7 +11,7 @@ const RING_MASK: u32 = RING_CAPACITY as u32 - 1;
 pub struct FixJournal {
     writer: Writer<FixHeader>,
     reader: Reader<FixHeader>,
-    offsets: Box<[Option<AppendOffset>; RING_CAPACITY]>,
+    offsets: Box<[Option<AppendOffset>]>,
     next_outbound: u32,
     next_inbound: u32,
 }
@@ -25,7 +25,7 @@ impl FixJournal {
         Ok(Self {
             writer,
             reader,
-            offsets: Box::new([None; RING_CAPACITY]),
+            offsets: vec![None; RING_CAPACITY].into_boxed_slice(),
             next_outbound: 1,
             next_inbound: 1,
         })
@@ -63,12 +63,10 @@ impl FixJournal {
     ) -> Result<ReadRange<'_, FixHeader>, AppendOnlyJournalError> {
         let hi = end.map_or(u64::MAX, |e| e as u64);
         let lo = begin as u64;
-        if let Some(at) = self.offsets[begin as usize & RING_MASK as usize] {
-            if let Some(h) = self.reader.peek_header(at)? {
-                if h.seq == begin as u64 {
-                    return self.reader.read_from(at, lo, hi);
-                }
-            }
+        if let Some(at) = self.offsets[begin as usize & RING_MASK as usize]
+            && self.reader.peek_header(at)?.map_or(false, |h| h.seq == begin as u64)
+        {
+            return self.reader.read_from(at, lo, hi);
         }
         self.reader.read_range(lo..=hi)
     }
@@ -76,13 +74,7 @@ impl FixJournal {
     pub fn resend_is_aged_out(&mut self, begin: u32) -> Result<bool, AppendOnlyJournalError> {
         match self.offsets[begin as usize & RING_MASK as usize] {
             None => Ok(true),
-            Some(at) => {
-                let aged = match self.reader.peek_header(at)? {
-                    Some(h) => h.seq != begin as u64,
-                    None => true,
-                };
-                Ok(aged)
-            }
+            Some(at) => Ok(self.reader.peek_header(at)?.map_or(true, |h| h.seq != begin as u64)),
         }
     }
 
