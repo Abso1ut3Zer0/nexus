@@ -8,8 +8,8 @@ pub use nexus_platform::MapHints;
 pub use pod::Pod;
 
 pub use append::{
-    AppendOnlyJournal, AppendOnlyJournalConfig, AppendOnlyJournalError, FixHeader, ReadRange,
-    ReadRecord, Reader, RecordHeader, SeqHeader, WriteClaim, Writer,
+    AppendOffset, AppendOnlyJournal, AppendOnlyJournalConfig, AppendOnlyJournalError, FixHeader,
+    ReadRange, ReadRecord, Reader, RecordHeader, SeqHeader, WriteClaim, Writer,
 };
 
 pub use rotating::{

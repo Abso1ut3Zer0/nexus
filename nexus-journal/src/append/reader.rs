@@ -114,6 +114,70 @@ impl<H: RecordHeader> Reader<H> {
             _marker: PhantomData,
         })
     }
+
+    pub fn read_from(
+        &mut self,
+        at: super::AppendOffset,
+        lo: u64,
+        hi: u64,
+    ) -> Result<ReadRange<'_, H>, AppendOnlyJournalError>
+    where
+        H: SeqHeader,
+    {
+        while self.segments.len() <= at.segment as usize {
+            if !self.load_next()? {
+                break;
+            }
+        }
+        Ok(ReadRange {
+            segments: &self.segments,
+            segment_size: self.segment_size,
+            seg_idx: at.segment as usize,
+            cursor: at.offset,
+            lo,
+            hi,
+            _marker: PhantomData,
+        })
+    }
+
+    pub fn peek_header(
+        &mut self,
+        at: super::AppendOffset,
+    ) -> Result<Option<H>, AppendOnlyJournalError> {
+        while self.segments.len() <= at.segment as usize {
+            if !self.load_next()? {
+                return Ok(None);
+            }
+        }
+        let base = self.segments[at.segment as usize].as_ptr();
+        // SAFETY: at.offset is an 8-aligned position within the mapped data.
+        let cl = unsafe { read_commit_len(base, at.offset) };
+        if cl == 0 {
+            return Ok(None);
+        }
+        // SAFETY: cl > 0 means the frame header is written.
+        if unsafe { frame_kind(base, at.offset) } == TYPE_PAD {
+            return Ok(None);
+        }
+        let body = cl as usize;
+        if body < size_of::<H>() {
+            return Ok(None);
+        }
+        // SAFETY: the committed frame holds `H` at `at.offset + FRAME_HEADER`; `H: Pod`.
+        let header = unsafe { read_val::<H>(base, at.offset + FRAME_HEADER) };
+        Ok(Some(header))
+    }
+
+    pub fn last_seq(&mut self) -> Result<Option<u64>, AppendOnlyJournalError>
+    where
+        H: SeqHeader,
+    {
+        let mut last = None;
+        while let Some(rec) = self.next_record()? {
+            last = Some(rec.header().seq());
+        }
+        Ok(last)
+    }
 }
 
 /// A committed record: a copy of the header and a zero-copy view of the payload.

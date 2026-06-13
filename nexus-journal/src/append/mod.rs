@@ -17,6 +17,12 @@ pub use header::{FixHeader, RecordHeader, SeqHeader};
 pub use reader::{ReadRange, ReadRecord, Reader};
 pub use writer::{WriteClaim, Writer};
 
+#[derive(Clone, Copy)]
+pub struct AppendOffset {
+    pub(super) segment: u64,
+    pub(super) offset: usize,
+}
+
 use frame::{FRAME_HEADER, TYPE_PAD, align_up, footprint, frame_kind, read_commit_len};
 
 const MIN_SEGMENT: usize = 64;

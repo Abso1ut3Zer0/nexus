@@ -12,7 +12,6 @@ mod framework;
 #[cfg(unix)]
 pub mod persist;
 mod session;
-pub mod store;
 
 pub use frame::{
     FrameError, FrameReader, FrameReaderBuilder, FrameWriter, FrameWriterBuilder, ReadError,
