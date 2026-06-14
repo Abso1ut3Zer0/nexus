@@ -138,6 +138,7 @@ impl<T> Inner<T> {
 /// ```
 pub struct BoundedPool<T> {
     inner: Rc<Inner<T>>,
+    capacity: usize,
 }
 
 impl<T> BoundedPool<T> {
@@ -166,6 +167,7 @@ impl<T> BoundedPool<T> {
 
         Self {
             inner: Rc::new(Inner::new_bounded(data, reset)),
+            capacity,
         }
     }
 
@@ -412,6 +414,7 @@ impl<T> Drop for Pooled<T> {
 impl<T> fmt::Debug for BoundedPool<T> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("BoundedPool")
+            .field("capacity", &self.capacity)
             .field("available", &self.available())
             .finish_non_exhaustive()
     }
