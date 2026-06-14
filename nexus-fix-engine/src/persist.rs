@@ -71,7 +71,10 @@ impl FixJournal {
                 }
             }
         }
-        ResendPlan::GapFill { from: begin, to: end }
+        ResendPlan::GapFill {
+            from: begin,
+            to: end,
+        }
     }
 
     pub fn next_outbound(&self) -> u32 {
@@ -158,7 +161,10 @@ mod tests {
         j.store(1, 0, &[1u8; 4]).unwrap();
 
         match j.resend(2, Some(5)) {
-            ResendPlan::GapFill { from: 2, to: Some(5) } => {}
+            ResendPlan::GapFill {
+                from: 2,
+                to: Some(5),
+            } => {}
             _ => panic!("expected GapFill"),
         }
 
