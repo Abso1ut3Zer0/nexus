@@ -63,12 +63,12 @@ impl FixJournal {
 
     pub fn resend(&self, begin: u32, end: Option<u32>) -> ResendPlan<'_> {
         let slot = begin as usize & (self.window - 1);
-        if let Some(off) = self.offsets[slot] {
-            if let Some(frame) = self.journal.read(off) {
-                let p = frame.payload();
-                if p.len() >= 4 && u32::from_le_bytes(p[..4].try_into().unwrap()) == begin {
-                    return ResendPlan::Replay(frame);
-                }
+        if let Some(off) = self.offsets[slot]
+            && let Some(frame) = self.journal.read(off)
+        {
+            let p = frame.payload();
+            if p.len() >= 4 && u32::from_le_bytes(p[..4].try_into().unwrap()) == begin {
+                return ResendPlan::Replay(frame);
             }
         }
         ResendPlan::GapFill {
