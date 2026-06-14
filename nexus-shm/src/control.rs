@@ -84,6 +84,10 @@ impl ControlBlockInner {
         self.generation.load(Ordering::Acquire)
     }
 
+    pub(crate) fn owner_pid(&self) -> u32 {
+        self.owner_pid.load(Ordering::Acquire)
+    }
+
     pub(crate) const fn data_len(&self) -> u64 {
         self.data_len
     }

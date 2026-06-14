@@ -8,5 +8,5 @@ mod error;
 mod segment;
 
 pub use error::ShmError;
-pub use nexus_platform::{Liveness, MapHints};
+pub use nexus_platform::{Liveness, MapHints, MappedFile};
 pub use segment::{Segment, Status};
