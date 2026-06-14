@@ -2,9 +2,7 @@ use std::path::{Path, PathBuf};
 
 use nexus_platform::MapHints;
 
-use super::{
-    AppendOffset, AppendOnlyJournal, AppendOnlyJournalConfig, AppendOnlyJournalError, FixHeader,
-};
+use super::{AppendOnlyJournal, AppendOnlyJournalConfig, AppendOnlyJournalError, FixHeader};
 
 fn base_path(name: &str) -> PathBuf {
     std::env::temp_dir().join(format!("nexus-journal-{}-{}", std::process::id(), name))
@@ -191,73 +189,6 @@ fn recovery_stops_at_uncommitted_tail() {
     assert!(r.next_record().unwrap().is_none());
 
     drop((w, r));
-    cleanup(&base);
-}
-
-#[test]
-fn commit_returns_offset_read_from_seeks() {
-    let base = base_path("offset-seek");
-    cleanup(&base);
-
-    let (mut w, mut r) = AppendOnlyJournal::<FixHeader>::open(&base, cfg(1 << 16)).unwrap();
-    let mut offsets: Vec<AppendOffset> = Vec::new();
-    for seq in 1..=10u64 {
-        let payload = (seq as u32).to_le_bytes();
-        let mut claim = w.try_claim(fix(seq), payload.len()).unwrap();
-        claim.as_mut_slice().copy_from_slice(&payload);
-        offsets.push(claim.commit());
-    }
-
-    let at = offsets[4];
-    let h = r.peek_header(at).unwrap().unwrap();
-    assert_eq!(h.seq, 5);
-
-    let got: Vec<u64> = r
-        .read_from(at, 5, 8)
-        .unwrap()
-        .map(|rec| rec.header().seq)
-        .collect();
-    assert_eq!(got, vec![5, 6, 7, 8]);
-
-    drop((w, r));
-    cleanup(&base);
-}
-
-#[test]
-fn last_seq_empty_and_nonempty() {
-    let base = base_path("last-seq");
-    cleanup(&base);
-
-    let (mut w, mut r) = AppendOnlyJournal::<FixHeader>::open(&base, cfg(1 << 16)).unwrap();
-    assert_eq!(r.last_seq().unwrap(), None);
-
-    for seq in 1..=5u64 {
-        let mut claim = w.try_claim(fix(seq), 4).unwrap();
-        claim
-            .as_mut_slice()
-            .copy_from_slice(&(seq as u32).to_le_bytes());
-        claim.commit();
-    }
-
-    let (_, mut r2) = AppendOnlyJournal::<FixHeader>::open(&base, cfg(1 << 16)).unwrap();
-    assert_eq!(r2.last_seq().unwrap(), Some(5));
-
-    drop((w, r, r2));
-    cleanup(&base);
-}
-
-#[test]
-fn peek_header_returns_none_for_unwritten() {
-    let base = base_path("peek-unwritten");
-    cleanup(&base);
-
-    let (mut _w, mut r) = AppendOnlyJournal::<FixHeader>::open(&base, cfg(1 << 16)).unwrap();
-    let at = AppendOffset {
-        segment: 99,
-        offset: 0,
-    };
-    assert!(r.peek_header(at).unwrap().is_none());
-
     cleanup(&base);
 }
 

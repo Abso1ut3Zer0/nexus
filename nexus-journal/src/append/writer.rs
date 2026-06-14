@@ -93,16 +93,9 @@ impl<H: RecordHeader> WriteClaim<'_, H> {
         unsafe { std::slice::from_raw_parts_mut(base.add(start), self.payload_len) }
     }
 
-    /// Publish the record and return its on-disk position.
-    ///
-    /// Writes the header and frame kind, then the commit length so readers
-    /// observe a fully-written record. The returned [`AppendOffset`] can be
-    /// stored in an index for O(1) resend lookup via [`Reader::read_from`].
-    pub fn commit(self) -> super::AppendOffset {
-        let at = super::AppendOffset {
-            segment: self.writer.index,
-            offset: self.off,
-        };
+    /// Publish the record: write the header and frame kind, then the
+    /// commit length so readers observe a fully-written record.
+    pub fn commit(self) {
         let base = self.writer.active.as_ptr();
         // SAFETY: the header slot is reserved for this claim and within the
         // mapped data; `H: Pod`, so an unaligned byte write is valid.
@@ -120,6 +113,5 @@ impl<H: RecordHeader> WriteClaim<'_, H> {
         // SAFETY: the commit-length slot is 8-aligned and within the mapped data.
         unsafe { write_commit_len(base, self.off, self.body as u32) };
         self.writer.tail = next;
-        at
     }
 }
