@@ -223,6 +223,7 @@ impl<T> Sender<T> {
         // Park phase
         loop {
             self.shared.sender_parked.store(true, Ordering::SeqCst);
+            fence(Ordering::SeqCst);
 
             if self.producer.is_disconnected() {
                 self.shared.sender_parked.store(false, Ordering::Relaxed);
@@ -367,6 +368,7 @@ impl<T> Receiver<T> {
         // Park phase
         loop {
             self.shared.receiver_parked.store(true, Ordering::SeqCst);
+            fence(Ordering::SeqCst);
 
             if let Some(v) = self.consumer.pop() {
                 self.shared.receiver_parked.store(false, Ordering::Relaxed);
@@ -435,6 +437,7 @@ impl<T> Receiver<T> {
             }
 
             self.shared.receiver_parked.store(true, Ordering::SeqCst);
+            fence(Ordering::SeqCst);
 
             if let Some(v) = self.consumer.pop() {
                 self.shared.receiver_parked.store(false, Ordering::Relaxed);
