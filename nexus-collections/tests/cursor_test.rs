@@ -1,6 +1,6 @@
 //! Integration tests for cursor operations.
 
-use nexus_collections::list::{List, ListNode};
+use nexus_collections::slab::list::{List, ListNode};
 use nexus_slab::rc::bounded::Slab;
 
 fn make_slab() -> Slab<ListNode<u64>> {

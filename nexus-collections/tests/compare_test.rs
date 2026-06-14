@@ -1,8 +1,8 @@
 //! Tests for custom comparator support (Reverse ordering).
 
-use nexus_collections::Reverse;
-use nexus_collections::btree::{BTree, BTreeNode};
-use nexus_collections::rbtree::{RbNode, RbTree};
+use nexus_collections::slab::Reverse;
+use nexus_collections::slab::btree::{BTree, BTreeNode};
+use nexus_collections::slab::rbtree::{RbNode, RbTree};
 use nexus_slab::bounded::Slab;
 
 fn make_rb_slab() -> Slab<RbNode<u64, String>> {

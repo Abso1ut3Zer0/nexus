@@ -1,6 +1,6 @@
 //! Integration tests for the pairing heap.
 
-use nexus_collections::heap::{Heap, HeapNode};
+use nexus_collections::slab::heap::{Heap, HeapNode};
 use nexus_slab::rc::bounded::Slab;
 use nexus_slab::rc::unbounded::Slab as UnboundedSlab;
 

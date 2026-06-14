@@ -10,49 +10,90 @@ repository.workspace = true
 keywords = ["collections", "intrusive", "slab", "low-latency", "pre-allocated"]
 categories = ["data-structures"]
 
+[features]
+default = ["slab"]
+slab = ["dep:nexus-slab"]
+
 [dev-dependencies]
 hdrhistogram = "7.5"
 rand = "0.9.2"
 seq-macro.workspace = true
 
 [dependencies]
-nexus-slab = { version = "2.3.2", path = "../nexus-slab", features = ["rc"] }
+nexus-slab = { version = "2.3.2", path = "../nexus-slab", features = ["rc"], optional = true }
 
 [lints]
 workspace = true
 
+[[test]]
+name = "btree_test"
+required-features = ["slab"]
+
+[[test]]
+name = "compare_test"
+required-features = ["slab"]
+
+[[test]]
+name = "cursor_test"
+required-features = ["slab"]
+
+[[test]]
+name = "heap_test"
+required-features = ["slab"]
+
+[[test]]
+name = "list_test"
+required-features = ["slab"]
+
+[[test]]
+name = "miri_tests"
+required-features = ["slab"]
+
+[[test]]
+name = "rbtree_test"
+required-features = ["slab"]
+
 [[bench]]
 name = "perf_batched"
 harness = false
+required-features = ["slab"]
 
 [[bench]]
 name = "perf_btree"
 harness = false
+required-features = ["slab"]
 
 [[bench]]
 name = "perf_codegen"
 harness = false
+required-features = ["slab"]
 
 [[bench]]
 name = "perf_heap_cycles"
 harness = false
+required-features = ["slab"]
 
 [[bench]]
 name = "perf_list_cycles"
 harness = false
+required-features = ["slab"]
 
 [[bench]]
 name = "perf_push_hist"
 harness = false
+required-features = ["slab"]
 
 [[bench]]
 name = "perf_push_stat"
 harness = false
+required-features = ["slab"]
 
 [[bench]]
 name = "perf_rbtree"
 harness = false
+required-features = ["slab"]
 
 [[bench]]
 name = "perf_std_btreemap"
 harness = false
+required-features = ["slab"]

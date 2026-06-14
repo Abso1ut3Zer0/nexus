@@ -1,6 +1,6 @@
 //! Integration tests for the RcSlot-based list.
 
-use nexus_collections::list::{List, ListNode};
+use nexus_collections::slab::list::{List, ListNode};
 use nexus_slab::rc::bounded::Slab;
 use nexus_slab::rc::unbounded::Slab as UnboundedSlab;
 

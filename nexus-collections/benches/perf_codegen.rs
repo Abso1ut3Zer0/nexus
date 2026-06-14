@@ -5,9 +5,9 @@
 //!
 //! Then grep for `do_` functions in the .s file.
 
-use nexus_collections::RcSlot;
-use nexus_collections::heap::{Heap, HeapNode};
-use nexus_collections::list::{List, ListNode};
+use nexus_collections::slab::RcSlot;
+use nexus_collections::slab::heap::{Heap, HeapNode};
+use nexus_collections::slab::list::{List, ListNode};
 use nexus_slab::rc::bounded::Slab;
 use std::hint::black_box;
 

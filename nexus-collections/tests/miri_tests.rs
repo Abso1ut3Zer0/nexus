@@ -5,10 +5,10 @@
 
 use std::cell::Cell;
 
-use nexus_collections::btree::{BTree, BTreeNode};
-use nexus_collections::heap::{Heap, HeapNode};
-use nexus_collections::list::{List, ListNode};
-use nexus_collections::rbtree::{RbNode, RbTree};
+use nexus_collections::slab::btree::{BTree, BTreeNode};
+use nexus_collections::slab::heap::{Heap, HeapNode};
+use nexus_collections::slab::list::{List, ListNode};
+use nexus_collections::slab::rbtree::{RbNode, RbTree};
 use nexus_slab::rc::unbounded::Slab as RcSlab;
 use nexus_slab::unbounded::Slab;
 
@@ -511,31 +511,31 @@ fn rbtree_entry_api() {
 
     // Insert via vacant entry
     match tree.entry(&slab, 10) {
-        nexus_collections::rbtree::Entry::Vacant(e) => {
+        nexus_collections::slab::rbtree::Entry::Vacant(e) => {
             let v = e.insert(100);
             assert_eq!(*v, 100);
         }
-        nexus_collections::rbtree::Entry::Occupied(_) => panic!("expected vacant"),
+        nexus_collections::slab::rbtree::Entry::Occupied(_) => panic!("expected vacant"),
     }
 
     // Modify via occupied entry
     match tree.entry(&slab, 10) {
-        nexus_collections::rbtree::Entry::Occupied(mut e) => {
+        nexus_collections::slab::rbtree::Entry::Occupied(mut e) => {
             assert_eq!(*e.get(), 100);
             *e.get_mut() = 200;
         }
-        nexus_collections::rbtree::Entry::Vacant(_) => panic!("expected occupied"),
+        nexus_collections::slab::rbtree::Entry::Vacant(_) => panic!("expected occupied"),
     }
     assert_eq!(tree.get(&10), Some(&200));
 
     // Remove via occupied entry
     match tree.entry(&slab, 10) {
-        nexus_collections::rbtree::Entry::Occupied(e) => {
+        nexus_collections::slab::rbtree::Entry::Occupied(e) => {
             let (k, v) = e.remove();
             assert_eq!(k, 10);
             assert_eq!(v, 200);
         }
-        nexus_collections::rbtree::Entry::Vacant(_) => panic!("expected occupied"),
+        nexus_collections::slab::rbtree::Entry::Vacant(_) => panic!("expected occupied"),
     }
     assert!(tree.is_empty());
 
@@ -744,31 +744,31 @@ fn btree_entry_insert_and_remove() {
 
     // Insert via entry
     match tree.entry(&slab, 10) {
-        nexus_collections::btree::Entry::Vacant(e) => {
+        nexus_collections::slab::btree::Entry::Vacant(e) => {
             let v = e.insert(100);
             assert_eq!(*v, 100);
         }
-        nexus_collections::btree::Entry::Occupied(_) => panic!("expected vacant"),
+        nexus_collections::slab::btree::Entry::Occupied(_) => panic!("expected vacant"),
     }
 
     // Modify via entry
     match tree.entry(&slab, 10) {
-        nexus_collections::btree::Entry::Occupied(mut e) => {
+        nexus_collections::slab::btree::Entry::Occupied(mut e) => {
             assert_eq!(*e.get(), 100);
             *e.get_mut() = 200;
         }
-        nexus_collections::btree::Entry::Vacant(_) => panic!("expected occupied"),
+        nexus_collections::slab::btree::Entry::Vacant(_) => panic!("expected occupied"),
     }
     assert_eq!(tree.get(&10), Some(&200));
 
     // Remove via entry
     match tree.entry(&slab, 10) {
-        nexus_collections::btree::Entry::Occupied(e) => {
+        nexus_collections::slab::btree::Entry::Occupied(e) => {
             let (k, v) = e.remove();
             assert_eq!(k, 10);
             assert_eq!(v, 200);
         }
-        nexus_collections::btree::Entry::Vacant(_) => panic!("expected occupied"),
+        nexus_collections::slab::btree::Entry::Vacant(_) => panic!("expected occupied"),
     }
     assert!(tree.is_empty());
 

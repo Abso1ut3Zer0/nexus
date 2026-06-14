@@ -1,6 +1,6 @@
 //! Integration tests for the B-tree sorted map.
 
-use nexus_collections::btree::{BTree, BTreeNode};
+use nexus_collections::slab::btree::{BTree, BTreeNode};
 use nexus_slab::bounded::Slab;
 use nexus_slab::unbounded::Slab as UnboundedSlab;
 
@@ -138,11 +138,11 @@ fn entry_occupied() {
     tree.try_insert(&slab, 10, 100).unwrap();
 
     match tree.entry(&slab, 10) {
-        nexus_collections::btree::Entry::Occupied(mut e) => {
+        nexus_collections::slab::btree::Entry::Occupied(mut e) => {
             assert_eq!(*e.get(), 100);
             *e.get_mut() = 200;
         }
-        nexus_collections::btree::Entry::Vacant(_) => panic!("expected occupied"),
+        nexus_collections::slab::btree::Entry::Vacant(_) => panic!("expected occupied"),
     }
 
     assert_eq!(tree.get(&10), Some(&200));
@@ -155,8 +155,8 @@ fn entry_vacant_insert() {
     let mut tree = BTree::<u64, u64, 8>::new();
 
     match tree.entry(&slab, 10) {
-        nexus_collections::btree::Entry::Occupied(_) => panic!("expected vacant"),
-        nexus_collections::btree::Entry::Vacant(e) => {
+        nexus_collections::slab::btree::Entry::Occupied(_) => panic!("expected vacant"),
+        nexus_collections::slab::btree::Entry::Vacant(e) => {
             let v = e.insert(100);
             assert_eq!(*v, 100);
         }
