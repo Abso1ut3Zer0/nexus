@@ -42,10 +42,10 @@ impl FixJournal {
         let mut last_seq: Option<u32> = None;
         while let Some(frame) = self.journal.read_next(&mut pos) {
             let p = frame.payload();
-            if let Some(span) = find_tag(p, 0, 34) {
-                if let Ok(seq) = parse_fix_seqnum(span.slice(p)) {
-                    last_seq = Some(seq as u32);
-                }
+            if let Some(span) = find_tag(p, 0, 34)
+                && let Ok(seq) = parse_fix_seqnum(span.slice(p))
+            {
+                last_seq = Some(seq as u32);
             }
         }
         if let Some(seq) = last_seq {
@@ -66,10 +66,10 @@ impl FixJournal {
             && let Some(frame) = self.journal.read(off)
         {
             let p = frame.payload();
-            if let Some(span) = find_tag(p, 0, 34) {
-                if parse_fix_seqnum(span.slice(p)).ok().map(|s| s as u32) == Some(seq) {
-                    return ResendPlan::Replay(frame);
-                }
+            if let Some(span) = find_tag(p, 0, 34)
+                && parse_fix_seqnum(span.slice(p)).ok().map(|s| s as u32) == Some(seq)
+            {
+                return ResendPlan::Replay(frame);
             }
         }
         ResendPlan::GapFill(seq)
