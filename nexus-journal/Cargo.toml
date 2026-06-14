@@ -5,6 +5,7 @@ edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 description = "Append-only and bounded-rotation mmap'd journals for trading systems"
+readme = "README.md"
 repository.workspace = true
 keywords = ["journal", "append-log", "mmap", "low-latency", "trading"]
 categories = ["data-structures", "os::unix-apis"]
