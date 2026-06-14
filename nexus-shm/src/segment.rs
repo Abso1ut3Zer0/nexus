@@ -37,6 +37,11 @@ impl Segment {
         HEADER.checked_add(data_len).ok_or(ShmError::SizeOverflow)
     }
 
+    /// Create a new segment backed by the file at `path`, creating or truncating it.
+    ///
+    /// If the file already exists and its owner is still alive (`peer_liveness()` returns
+    /// `Alive`), returns `ShmError::OwnerActive`. If the owner is dead the segment is
+    /// re-incarnated in place and `generation()` is incremented.
     pub fn create_file(
         path: impl AsRef<Path>,
         data_len: usize,
@@ -47,6 +52,9 @@ impl Segment {
         Self::create(mf, data_len, hints)
     }
 
+    /// Attach to an existing segment backed by the file at `path`.
+    ///
+    /// Equivalent to `MappedFile::open` + `Segment::attach`.
     pub fn attach_file(path: impl AsRef<Path>) -> Result<Self, ShmError> {
         let mf = MappedFile::open(path.as_ref())?;
         Self::attach(mf)
@@ -210,10 +218,18 @@ impl Segment {
         self.control().data_len() as usize
     }
 
+    /// Incarnation counter — incremented each time the segment is re-created over the same file.
+    ///
+    /// Use this to detect that a peer has restarted and re-initialized the region since you
+    /// attached. Not suitable as a per-access validity check.
     pub fn generation(&self) -> u64 {
         self.control().generation()
     }
 
+    /// PID of the process that last called `create` or `create_file` on this segment.
+    ///
+    /// Diagnostic/observability only. PIDs are reused by the OS after a process exits, so
+    /// this is not a liveness check. Use `peer_liveness()` to determine if the owner is alive.
     pub fn owner_pid(&self) -> u32 {
         self.control().owner_pid()
     }
