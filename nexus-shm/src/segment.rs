@@ -1,7 +1,8 @@
 use std::num::NonZeroUsize;
+use std::path::Path;
 use std::sync::atomic::AtomicU32;
 
-use nexus_platform::{Liveness, Mapping, ProcessLease};
+use nexus_platform::{Liveness, MappedFile, Mapping, ProcessLease};
 
 use crate::MapHints;
 
@@ -34,6 +35,21 @@ impl Segment {
     /// The total mapping size needed for a segment with `data_len` payload bytes.
     pub fn total_size(data_len: usize) -> Result<NonZeroUsize, ShmError> {
         HEADER.checked_add(data_len).ok_or(ShmError::SizeOverflow)
+    }
+
+    pub fn create_file(
+        path: impl AsRef<Path>,
+        data_len: usize,
+        hints: MapHints,
+    ) -> Result<Self, ShmError> {
+        let total = Self::total_size(data_len)?;
+        let mf = MappedFile::create(path.as_ref(), total)?;
+        Self::create(mf, data_len, hints)
+    }
+
+    pub fn attach_file(path: impl AsRef<Path>) -> Result<Self, ShmError> {
+        let mf = MappedFile::open(path.as_ref())?;
+        Self::attach(mf)
     }
 
     pub fn create(
@@ -194,6 +210,14 @@ impl Segment {
         self.control().data_len() as usize
     }
 
+    pub fn generation(&self) -> u64 {
+        self.control().generation()
+    }
+
+    pub fn owner_pid(&self) -> u32 {
+        self.control().owner_pid()
+    }
+
     fn control(&self) -> &ControlBlock {
         Self::control_of(&self.mapping)
     }
@@ -305,6 +329,47 @@ mod tests {
         std::fs::write(&path, vec![0u8; 4096]).unwrap();
 
         assert!(Segment::attach(open_file(&path)).is_err());
+
+        std::fs::remove_file(&path).unwrap();
+    }
+
+    #[test]
+    fn create_file_attach_file_roundtrip() {
+        let path = temp_path("file-api");
+        let _ = std::fs::remove_file(&path);
+
+        let seg = Segment::create_file(&path, 512, MapHints::default()).unwrap();
+        assert_eq!(seg.status(), Status::Alive);
+
+        let peer = Segment::attach_file(&path).unwrap();
+        assert_eq!(peer.data_len(), 512);
+        assert_eq!(peer.status(), Status::Alive);
+
+        std::fs::remove_file(&path).unwrap();
+    }
+
+    #[test]
+    fn generation_increments_on_recreate() {
+        let path = temp_path("generation");
+        let _ = std::fs::remove_file(&path);
+
+        let seg = Segment::create_file(&path, 64, MapHints::default()).unwrap();
+        let gen1 = seg.generation();
+        drop(seg);
+
+        let seg2 = Segment::create_file(&path, 64, MapHints::default()).unwrap();
+        assert_eq!(seg2.generation(), gen1 + 1);
+
+        std::fs::remove_file(&path).unwrap();
+    }
+
+    #[test]
+    fn owner_pid_is_current_process() {
+        let path = temp_path("owner-pid");
+        let _ = std::fs::remove_file(&path);
+
+        let seg = Segment::create_file(&path, 64, MapHints::default()).unwrap();
+        assert_eq!(seg.owner_pid(), std::process::id());
 
         std::fs::remove_file(&path).unwrap();
     }
