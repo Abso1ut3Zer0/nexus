@@ -114,7 +114,6 @@ impl<H: RecordHeader> Reader<H> {
             _marker: PhantomData,
         })
     }
-
 }
 
 /// A committed record: a copy of the header and a zero-copy view of the payload.
