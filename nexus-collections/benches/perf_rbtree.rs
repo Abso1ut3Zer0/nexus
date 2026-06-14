@@ -11,7 +11,7 @@
 use seq_macro::seq;
 use std::hint::black_box;
 
-use nexus_collections::rbtree::{Entry, RbNode, RbTree};
+use nexus_collections::slab::rbtree::{Entry, RbNode, RbTree};
 
 const CAPACITY: usize = 200_000;
 const SAMPLES: usize = 50_000;

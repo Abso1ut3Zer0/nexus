@@ -7,6 +7,7 @@
 //! Both use LIFO ordering for cache locality.
 
 use std::cell::UnsafeCell;
+use std::fmt;
 use std::mem::{ManuallyDrop, MaybeUninit};
 use std::ops::{Deref, DerefMut};
 use std::rc::Rc;
@@ -405,6 +406,28 @@ impl<T> Drop for Pooled<T> {
         // self.inner Rc drops here: one strong-count--. If we were the
         // last guard, Inner's `data: UnsafeCell<Vec<T>>` drops, which
         // drops every value still in the pool.
+    }
+}
+
+impl<T> fmt::Debug for BoundedPool<T> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("BoundedPool")
+            .field("available", &self.available())
+            .finish_non_exhaustive()
+    }
+}
+
+impl<T> fmt::Debug for Pool<T> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("Pool")
+            .field("available", &self.available())
+            .finish_non_exhaustive()
+    }
+}
+
+impl<T> fmt::Debug for Pooled<T> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("Pooled").finish_non_exhaustive()
     }
 }
 

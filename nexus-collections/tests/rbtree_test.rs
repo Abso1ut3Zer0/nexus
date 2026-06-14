@@ -1,6 +1,6 @@
 //! Integration tests for the red-black tree.
 
-use nexus_collections::rbtree::{RbNode, RbTree};
+use nexus_collections::slab::rbtree::{RbNode, RbTree};
 use nexus_slab::bounded::Slab;
 use nexus_slab::unbounded::Slab as UnboundedSlab;
 
@@ -146,11 +146,11 @@ fn entry_occupied() {
     tree.try_insert(&slab, 10, 100).unwrap();
 
     match tree.entry(&slab, 10) {
-        nexus_collections::rbtree::Entry::Occupied(mut e) => {
+        nexus_collections::slab::rbtree::Entry::Occupied(mut e) => {
             assert_eq!(*e.get(), 100);
             *e.get_mut() = 200;
         }
-        nexus_collections::rbtree::Entry::Vacant(_) => panic!("expected occupied"),
+        nexus_collections::slab::rbtree::Entry::Vacant(_) => panic!("expected occupied"),
     }
 
     assert_eq!(tree.get(&10), Some(&200));
@@ -164,8 +164,8 @@ fn entry_vacant_insert() {
     let mut tree = RbTree::new();
 
     match tree.entry(&slab, 10) {
-        nexus_collections::rbtree::Entry::Occupied(_) => panic!("expected vacant"),
-        nexus_collections::rbtree::Entry::Vacant(e) => {
+        nexus_collections::slab::rbtree::Entry::Occupied(_) => panic!("expected vacant"),
+        nexus_collections::slab::rbtree::Entry::Vacant(e) => {
             let v = e.insert(100);
             assert_eq!(*v, 100);
         }
@@ -253,7 +253,7 @@ fn many_inserts_and_removes() {
 
 #[test]
 fn reverse_comparator() {
-    use nexus_collections::Reverse;
+    use nexus_collections::slab::Reverse;
     let slab: Slab<RbNode<u64, u64>> = unsafe { Slab::with_capacity(100) };
     let mut tree = RbTree::with_comparator(Reverse);
 
@@ -302,7 +302,7 @@ fn unbounded_insert() {
 
 #[test]
 fn slab_ops_trait_generic() {
-    use nexus_collections::SlabOps;
+    use nexus_collections::slab::SlabOps;
 
     fn insert_and_remove<S: SlabOps<RbNode<u64, u64>>>(tree: &mut RbTree<u64, u64>, slab: &S) {
         // We can't insert generically (try_insert needs concrete slab type),

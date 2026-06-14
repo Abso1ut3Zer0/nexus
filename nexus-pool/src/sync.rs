@@ -5,6 +5,7 @@
 //!
 //! Uses LIFO ordering for cache locality.
 
+use std::fmt;
 use std::mem::{ManuallyDrop, MaybeUninit};
 use std::ops::{Deref, DerefMut};
 
@@ -320,6 +321,21 @@ impl<T> Drop for Pooled<T> {
         // all readers" pattern — sufficient for the refcount alone;
         // the value transfer is independently ordered by the Release
         // CAS in `Inner::push`.
+    }
+}
+
+impl<T> fmt::Debug for Pool<T> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("Pool")
+            .field("capacity", &self.inner.slots.len())
+            .field("available", &self.available())
+            .finish_non_exhaustive()
+    }
+}
+
+impl<T> fmt::Debug for Pooled<T> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("Pooled").finish_non_exhaustive()
     }
 }
 

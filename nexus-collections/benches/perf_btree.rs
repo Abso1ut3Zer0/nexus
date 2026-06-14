@@ -11,7 +11,7 @@
 use seq_macro::seq;
 use std::hint::black_box;
 
-use nexus_collections::btree::{BTree, BTreeNode, Entry};
+use nexus_collections::slab::btree::{BTree, BTreeNode, Entry};
 
 const B: usize = 8;
 const CAPACITY: usize = 200_000;

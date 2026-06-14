@@ -10,8 +10,8 @@
 
 use std::hint::black_box;
 
-use nexus_collections::RcSlot;
-use nexus_collections::heap::{Heap, HeapNode};
+use nexus_collections::slab::RcSlot;
+use nexus_collections::slab::heap::{Heap, HeapNode};
 use nexus_slab::rc::unbounded::Slab;
 
 const COUNT: usize = 500_000;
