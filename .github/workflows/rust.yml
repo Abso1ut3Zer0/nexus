@@ -104,3 +104,11 @@ jobs:
       run: git diff --exit-code nexus-inference/tests/fixtures/lgb_*
     - name: Verify Rust matches LightGBM
       run: cargo test -p nexus-inference --features loader-lightgbm --test lightgbm_integration
+
+  loom:
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v4
+    - uses: dtolnay/rust-toolchain@1.94.0
+    - name: Loom model checks (all loom_* tests)
+      run: ./tools/loom.sh

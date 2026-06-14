@@ -365,6 +365,22 @@ mod tests {
     }
 
     #[test]
+    fn create_file_rejects_live_owner() {
+        let path = temp_path("live-owner");
+        let _ = std::fs::remove_file(&path);
+
+        // First owner stays alive (held in scope), so create_file on the same
+        // path must refuse to clobber it.
+        let _live = Segment::create_file(&path, 64, MapHints::default()).unwrap();
+        assert!(matches!(
+            Segment::create_file(&path, 64, MapHints::default()),
+            Err(ShmError::OwnerActive)
+        ));
+
+        std::fs::remove_file(&path).unwrap();
+    }
+
+    #[test]
     fn generation_increments_on_recreate() {
         let path = temp_path("generation");
         let _ = std::fs::remove_file(&path);

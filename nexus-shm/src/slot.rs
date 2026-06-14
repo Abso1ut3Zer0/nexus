@@ -3,7 +3,7 @@ use std::mem::MaybeUninit;
 use std::path::Path;
 use std::sync::atomic::{AtomicU64, Ordering, fence};
 
-use nexus_platform::{Liveness, MapHints, MappedFile};
+use nexus_platform::{Liveness, MapHints};
 
 use crate::error::ShmError;
 use crate::pod::Pod;
@@ -73,9 +73,7 @@ impl<T: Pod> ShmSlotWriter<T> {
             PAYLOAD_OFFSET,
         );
         let data_len = data_len::<T>();
-        let total = Segment::total_size(data_len)?;
-        let mf = MappedFile::create(path.as_ref(), total)?;
-        let segment = Segment::create(mf, data_len, hints)?;
+        let segment = Segment::create_file(path, data_len, hints)?;
         unsafe {
             std::ptr::write_bytes(segment.data(), 0, data_len);
             std::ptr::write(elem_size_ptr(&segment), size_of::<T>() as u64);
@@ -91,12 +89,20 @@ impl<T: Pod> ShmSlotWriter<T> {
     /// Uses the seqlock protocol: odd version marks mid-write. A `fence(Release)`
     /// after the odd-mark prevents the payload store from being reordered before it
     /// on weak-memory architectures (ARM/POWER).
+    ///
+    /// The payload store is `write_volatile`: the reader races this write under the
+    /// seqlock (it copies optimistically, then re-checks the version). A plain
+    /// store would be a data race the compiler may assume can't happen; `volatile`
+    /// tells it the memory is modified externally (another process maps the same
+    /// region) and must not be elided, fused, or reordered against the fences.
     pub fn write(&self, value: &T) {
         let ver = unsafe { &*version_ptr(&self.segment) };
         let dst = payload_ptr::<T>(&self.segment);
         ver.fetch_add(1, Ordering::Relaxed);
         fence(Ordering::Release);
-        unsafe { std::ptr::copy_nonoverlapping(value as *const T, dst, 1) };
+        // SAFETY: `dst` is a live, writable `T`-aligned slot the writer owns for
+        // the duration of this store; `value` is read by value (Pod: no Drop).
+        unsafe { dst.write_volatile(std::ptr::read(value)) };
         fence(Ordering::Release);
         ver.fetch_add(1, Ordering::Relaxed);
     }
@@ -118,8 +124,7 @@ impl<T: Pod> ShmSlotReader<T> {
     /// Returns `Err(ShmError::ElemSizeMismatch)` if the slot was created with a
     /// different element size than `size_of::<T>()`.
     pub fn attach(path: impl AsRef<Path>) -> Result<Self, ShmError> {
-        let mf = MappedFile::open(path.as_ref())?;
-        let segment = Segment::attach(mf)?;
+        let segment = Segment::attach_file(path)?;
         let written = unsafe { std::ptr::read(elem_size_ptr(&segment)) } as usize;
         if written != size_of::<T>() {
             return Err(ShmError::ElemSizeMismatch {
@@ -166,7 +171,9 @@ impl<T: Pod> ShmSlotReader<T> {
                 }
             }
             fence(Ordering::Acquire);
-            unsafe { std::ptr::copy_nonoverlapping(src, self.buf.as_mut_ptr(), 1) };
+            // SAFETY: `src` points at the live payload slot; `read_volatile` (vs a
+            // plain read) keeps the optimistic, racing read defined — see `write`.
+            unsafe { self.buf.as_mut_ptr().write(src.read_volatile()) };
             fence(Ordering::Acquire);
             let v2 = ver.load(Ordering::Relaxed);
             if v1 != v2 {

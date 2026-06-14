@@ -18,6 +18,13 @@ pub struct FixJournal {
 }
 
 impl FixJournal {
+    /// Open (or recover) the journal for a single session under `dir`.
+    ///
+    /// `window` is the resend horizon in messages (must be a power of two): the
+    /// last `window` sequence numbers are replayable, older ones are gap-filled.
+    ///
+    /// One session per journal: if a session already exists under `dir`, the
+    /// first one is reopened; otherwise a new session is created.
     pub fn open(dir: impl AsRef<Path>, window: usize) -> Result<Self, OpenError> {
         assert!(window.is_power_of_two());
         let mut conductor = Conductor::open(dir)?;
@@ -53,6 +60,13 @@ impl FixJournal {
         }
     }
 
+    /// Archive an outbound message after it has been sent.
+    ///
+    /// `msg` is the already-formatted wire message; `seq` must equal its
+    /// `MsgSeqNum` (tag 34). The send path satisfies this by construction — `seq`
+    /// is passed in only to index the resend ring without re-parsing on the hot
+    /// path; the cold paths ([`resend`](Self::resend), [`recover`](Self::recover))
+    /// read the seqnum back out of the message via tag 34.
     pub fn store(&mut self, seq: u32, msg: &[u8]) -> Result<(), WriteError> {
         let offset = self.journal.append(msg)?;
         self.offsets[seq as usize & (self.window - 1)] = Some(offset);

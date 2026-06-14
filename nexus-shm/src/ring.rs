@@ -2,7 +2,7 @@ use std::marker::PhantomData;
 use std::path::Path;
 use std::sync::atomic::{AtomicU64, Ordering};
 
-use nexus_platform::{MapHints, MappedFile};
+use nexus_platform::MapHints;
 
 use crate::error::ShmError;
 use crate::pod::Pod;
@@ -85,9 +85,7 @@ impl<T: Pod> ShmRingWriter<T> {
             .checked_mul(size_of::<T>())
             .and_then(|s| s.checked_add(DATA_OFFSET))
             .ok_or(ShmError::SizeOverflow)?;
-        let total = Segment::total_size(data_len)?;
-        let mf = MappedFile::create(path.as_ref(), total)?;
-        let segment = Segment::create(mf, data_len, hints)?;
+        let segment = Segment::create_file(path, data_len, hints)?;
         unsafe {
             std::ptr::write_bytes(segment.data(), 0, data_len);
             std::ptr::write(
@@ -152,8 +150,7 @@ impl<T: Pod> ShmRingReader<T> {
     /// Returns `Err` if the header is corrupt, the element size doesn't match
     /// `size_of::<T>()`, or the mapping is too small for the stored capacity.
     pub fn attach(path: impl AsRef<Path>) -> Result<Self, ShmError> {
-        let mf = MappedFile::open(path.as_ref())?;
-        let segment = Segment::attach(mf)?;
+        let segment = Segment::attach_file(path)?;
         let capacity = read_capacity(&segment);
         if !capacity.is_power_of_two() || capacity == 0 {
             return Err(ShmError::CorruptHeader);
