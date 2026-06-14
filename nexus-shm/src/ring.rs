@@ -356,4 +356,39 @@ mod tests {
 
         std::fs::remove_file(&path).unwrap();
     }
+
+    #[test]
+    fn threaded_spsc_torture() {
+        const COUNT: u64 = 100_000;
+        let path = temp_path("threaded");
+        let _ = std::fs::remove_file(&path);
+
+        let mut writer = ShmRingWriter::<u64>::create(&path, 256, MapHints::default()).unwrap();
+        let mut reader = ShmRingReader::<u64>::attach(&path).unwrap();
+
+        let wt = std::thread::spawn(move || {
+            for i in 0..COUNT {
+                while !writer.try_push(&i) {
+                    std::hint::spin_loop();
+                }
+            }
+        });
+
+        let rt = std::thread::spawn(move || {
+            let mut expected = 0u64;
+            while expected < COUNT {
+                match reader.try_pop() {
+                    Some(v) => {
+                        assert_eq!(v, expected, "SPSC ordering violation");
+                        expected += 1;
+                    }
+                    None => std::hint::spin_loop(),
+                }
+            }
+        });
+
+        wt.join().unwrap();
+        rt.join().unwrap();
+        std::fs::remove_file(&path).unwrap();
+    }
 }

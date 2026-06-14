@@ -17,6 +17,9 @@ workspace = true
 crossbeam-utils.workspace = true
 nexus-platform = { version = "0.1.0", path = "../nexus-platform" }
 
+[target.'cfg(loom)'.dependencies]
+loom = "0.7"
+
 [dev-dependencies]
 criterion = { version = "0.5", features = ["html_reports"] }
 
