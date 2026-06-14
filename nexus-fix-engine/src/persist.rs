@@ -1,10 +1,11 @@
 use std::path::Path;
 
+use nexus_fix_codec::{find_tag, parse_fix_seqnum};
 use nexus_journal::{Conductor, Frame, LogOffset, OpenError, RotatingJournal, WriteError};
 
 pub enum ResendPlan<'a> {
     Replay(Frame<'a>),
-    GapFill { from: u32, to: Option<u32> },
+    GapFill(u32),
 }
 
 pub struct FixJournal {
@@ -41,8 +42,10 @@ impl FixJournal {
         let mut last_seq: Option<u32> = None;
         while let Some(frame) = self.journal.read_next(&mut pos) {
             let p = frame.payload();
-            if p.len() >= 4 {
-                last_seq = Some(u32::from_le_bytes(p[..4].try_into().unwrap()));
+            if let Some(span) = find_tag(p, 0, 34) {
+                if let Ok(seq) = parse_fix_seqnum(span.slice(p)) {
+                    last_seq = Some(seq as u32);
+                }
             }
         }
         if let Some(seq) = last_seq {
@@ -50,31 +53,26 @@ impl FixJournal {
         }
     }
 
-    pub fn store(&mut self, seq: u32, timestamp: u64, msg: &[u8]) -> Result<(), WriteError> {
-        let mut payload = Vec::with_capacity(12 + msg.len());
-        payload.extend_from_slice(&seq.to_le_bytes());
-        payload.extend_from_slice(&timestamp.to_le_bytes());
-        payload.extend_from_slice(msg);
-        let offset = self.journal.append(&payload)?;
+    pub fn store(&mut self, seq: u32, msg: &[u8]) -> Result<(), WriteError> {
+        let offset = self.journal.append(msg)?;
         self.offsets[seq as usize & (self.window - 1)] = Some(offset);
         self.next_outbound = seq.wrapping_add(1);
         Ok(())
     }
 
-    pub fn resend(&self, begin: u32, end: Option<u32>) -> ResendPlan<'_> {
-        let slot = begin as usize & (self.window - 1);
+    pub fn resend(&self, seq: u32) -> ResendPlan<'_> {
+        let slot = seq as usize & (self.window - 1);
         if let Some(off) = self.offsets[slot]
             && let Some(frame) = self.journal.read(off)
         {
             let p = frame.payload();
-            if p.len() >= 4 && u32::from_le_bytes(p[..4].try_into().unwrap()) == begin {
-                return ResendPlan::Replay(frame);
+            if let Some(span) = find_tag(p, 0, 34) {
+                if parse_fix_seqnum(span.slice(p)).ok().map(|s| s as u32) == Some(seq) {
+                    return ResendPlan::Replay(frame);
+                }
             }
         }
-        ResendPlan::GapFill {
-            from: begin,
-            to: end,
-        }
+        ResendPlan::GapFill(seq)
     }
 
     pub fn next_outbound(&self) -> u32 {
@@ -108,6 +106,10 @@ mod tests {
         let _ = std::fs::remove_dir_all(dir);
     }
 
+    fn fix_msg(seq: u32) -> Vec<u8> {
+        format!("8=FIX.4.2\x0134={seq}\x0135=D\x0110=000\x01").into_bytes()
+    }
+
     #[test]
     fn store_and_resend_roundtrip() {
         let dir = tmp_dir("store-resend");
@@ -115,18 +117,14 @@ mod tests {
 
         let mut j = FixJournal::open(&dir, 64).unwrap();
         for seq in 1..=5u32 {
-            j.store(seq, seq as u64 * 1000, &[seq as u8; 4]).unwrap();
+            j.store(seq, &fix_msg(seq)).unwrap();
         }
 
-        match j.resend(3, None) {
+        match j.resend(3) {
             ResendPlan::Replay(frame) => {
-                let p = frame.payload();
-                assert_eq!(u32::from_le_bytes(p[..4].try_into().unwrap()), 3);
-                let ts = u64::from_le_bytes(p[4..12].try_into().unwrap());
-                assert_eq!(ts, 3000);
-                assert_eq!(&p[12..], &[3u8; 4]);
+                assert_eq!(frame.payload(), fix_msg(3).as_slice());
             }
-            ResendPlan::GapFill { .. } => panic!("expected Replay"),
+            ResendPlan::GapFill(_) => panic!("expected Replay"),
         }
 
         cleanup(&dir);
@@ -140,7 +138,7 @@ mod tests {
         {
             let mut j = FixJournal::open(&dir, 64).unwrap();
             for seq in 1..=7u32 {
-                j.store(seq, 0, &[0u8; 4]).unwrap();
+                j.store(seq, &fix_msg(seq)).unwrap();
             }
         }
 
@@ -158,15 +156,30 @@ mod tests {
         cleanup(&dir);
 
         let mut j = FixJournal::open(&dir, 64).unwrap();
-        j.store(1, 0, &[1u8; 4]).unwrap();
+        j.store(1, &fix_msg(1)).unwrap();
 
-        match j.resend(2, Some(5)) {
-            ResendPlan::GapFill {
-                from: 2,
-                to: Some(5),
-            } => {}
-            _ => panic!("expected GapFill"),
+        match j.resend(2) {
+            ResendPlan::GapFill(2) => {}
+            _ => panic!("expected GapFill(2)"),
         }
+
+        cleanup(&dir);
+    }
+
+    #[test]
+    fn straddle_mixed_replay_and_gapfill() {
+        let dir = tmp_dir("straddle");
+        cleanup(&dir);
+
+        let mut j = FixJournal::open(&dir, 64).unwrap();
+        for seq in [1u32, 3, 5] {
+            j.store(seq, &fix_msg(seq)).unwrap();
+        }
+
+        let results: Vec<bool> = (1u32..=5)
+            .map(|seq| matches!(j.resend(seq), ResendPlan::Replay(_)))
+            .collect();
+        assert_eq!(results, vec![true, false, true, false, true]);
 
         cleanup(&dir);
     }
