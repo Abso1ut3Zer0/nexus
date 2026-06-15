@@ -286,19 +286,17 @@ impl<S: Read + Write> FixConnection<S> {
     where
         H: FnMut(&[u8]),
     {
-        let sender_ok = find_tag(frame, 0, 49)
-            .is_some_and(|s| s.slice(frame) == self.config.target.as_bytes());
-        let target_ok = find_tag(frame, 0, 56)
-            .is_some_and(|s| s.slice(frame) == self.config.sender.as_bytes());
+        let sender_ok =
+            find_tag(frame, 0, 49).is_some_and(|s| s.slice(frame) == self.config.target.as_bytes());
+        let target_ok =
+            find_tag(frame, 0, 56).is_some_and(|s| s.slice(frame) == self.config.sender.as_bytes());
         if !sender_ok || !target_ok {
             let out = self.state.on_comp_id_mismatch(now);
             self.flush_out(out, now)?;
             return Ok(Some(DisconnectReason::CompIdMismatch));
         }
 
-        let seq = match find_tag(frame, 0, 34)
-            .and_then(|s| parse_fix_seqnum(s.slice(frame)).ok())
-        {
+        let seq = match find_tag(frame, 0, 34).and_then(|s| parse_fix_seqnum(s.slice(frame)).ok()) {
             Some(s) => s as u32,
             None => return Ok(None),
         };
@@ -321,7 +319,10 @@ impl<S: Read + Write> FixConnection<S> {
                     .and_then(|s| parse_fix_bool(s.slice(frame)).ok())
                     .unwrap_or(false);
                 let was_logon_sent = self.state.state() == State::LogonSent;
-                (self.state.on_logon(seq, hbi, reset, !was_logon_sent, now), false)
+                (
+                    self.state.on_logon(seq, hbi, reset, !was_logon_sent, now),
+                    false,
+                )
             }
             b"5" => (self.state.on_logout(seq, poss_dup, now), false),
             b"0" => (self.state.on_heartbeat(seq, poss_dup, now), false),
@@ -337,8 +338,7 @@ impl<S: Read + Write> FixConnection<S> {
                     .and_then(|s| parse_fix_seqnum(s.slice(frame)).ok())
                     .unwrap_or(0) as u32;
                 (
-                    self.state
-                        .on_resend_request(seq, poss_dup, begin, end, now),
+                    self.state.on_resend_request(seq, poss_dup, begin, end, now),
                     false,
                 )
             }
@@ -482,7 +482,8 @@ impl<S: Read + Write> FixConnection<S> {
 
     fn do_resend(&mut self, begin: u32, end: u32, now: Instant) -> Result<(), Error> {
         let mut items: Vec<ReplayItem> = Vec::new();
-        self.journal.resend_range(begin, end, |item| items.push(item));
+        self.journal
+            .resend_range(begin, end, |item| items.push(item));
 
         for item in items {
             match item {

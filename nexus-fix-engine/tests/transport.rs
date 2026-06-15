@@ -37,7 +37,11 @@ fn loopback_pair() -> (TcpStream, TcpStream) {
 
 fn tmp_dir(suffix: &str) -> PathBuf {
     let mut p = std::env::temp_dir();
-    p.push(format!("nexus_fix_transport_{}_{}", std::process::id(), suffix));
+    p.push(format!(
+        "nexus_fix_transport_{}_{}",
+        std::process::id(),
+        suffix
+    ));
     std::fs::create_dir_all(&p).unwrap();
     p
 }
@@ -52,7 +56,9 @@ struct Peer {
 
 impl Peer {
     fn new(stream: TcpStream, sender: CompId, target: CompId) -> Self {
-        stream.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
+        stream
+            .set_read_timeout(Some(Duration::from_secs(5)))
+            .unwrap();
         Self {
             stream,
             sender,
