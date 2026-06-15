@@ -396,6 +396,8 @@ impl SessionState {
         out
     }
 
+    /// Handles a received ResendRequest. Surfaces `Event::ResendRange` so the
+    /// persistence layer can drive the replay walk via [`FixJournal::resend_range`].
     pub fn on_resend_request(
         &mut self,
         seq: u32,
