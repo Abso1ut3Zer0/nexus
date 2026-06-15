@@ -120,7 +120,10 @@ impl FixJournal {
                         true
                     } else {
                         if let Some(gs) = gap_start.take() {
-                            emit(ReplayItem::GapFill { seq: gs, new_seq: seq });
+                            emit(ReplayItem::GapFill {
+                                seq: gs,
+                                new_seq: seq,
+                            });
                         }
                         emit(ReplayItem::App(reframe(p)));
                         false
@@ -204,9 +207,7 @@ fn reframe(msg: &[u8]) -> Vec<u8> {
     let mut bl_buf = [0u8; 10];
     let bl_n = encode_fix_uint(body_len as u32, &mut bl_buf);
 
-    let mut out = Vec::with_capacity(
-        2 + begin_string.len() + 1 + 2 + bl_n + 1 + body_len + 7,
-    );
+    let mut out = Vec::with_capacity(2 + begin_string.len() + 1 + 2 + bl_n + 1 + body_len + 7);
     out.extend_from_slice(b"8=");
     out.extend_from_slice(begin_string);
     out.push(0x01);
@@ -357,7 +358,10 @@ mod tests {
 
         let items = collect_range(&j, 1, 3);
         assert_eq!(items.len(), 1);
-        assert!(matches!(items[0], ReplayItem::GapFill { seq: 1, new_seq: 4 }));
+        assert!(matches!(
+            items[0],
+            ReplayItem::GapFill { seq: 1, new_seq: 4 }
+        ));
 
         cleanup(&dir);
     }
@@ -375,9 +379,15 @@ mod tests {
         let items = collect_range(&j, 1, 5);
         assert_eq!(items.len(), 5);
         assert!(matches!(items[0], ReplayItem::App(_)));
-        assert!(matches!(items[1], ReplayItem::GapFill { seq: 2, new_seq: 3 }));
+        assert!(matches!(
+            items[1],
+            ReplayItem::GapFill { seq: 2, new_seq: 3 }
+        ));
         assert!(matches!(items[2], ReplayItem::App(_)));
-        assert!(matches!(items[3], ReplayItem::GapFill { seq: 4, new_seq: 5 }));
+        assert!(matches!(
+            items[3],
+            ReplayItem::GapFill { seq: 4, new_seq: 5 }
+        ));
         assert!(matches!(items[4], ReplayItem::App(_)));
 
         cleanup(&dir);
@@ -397,7 +407,10 @@ mod tests {
         // Seqs 1..4 rotated out → one coalesced GapFill; seqs 5..8 in-window → 4 App items.
         let items = collect_range(&j, 1, 8);
         assert_eq!(items.len(), 5);
-        assert!(matches!(items[0], ReplayItem::GapFill { seq: 1, new_seq: 5 }));
+        assert!(matches!(
+            items[0],
+            ReplayItem::GapFill { seq: 1, new_seq: 5 }
+        ));
         assert!(matches!(items[1], ReplayItem::App(_)));
         assert!(matches!(items[2], ReplayItem::App(_)));
         assert!(matches!(items[3], ReplayItem::App(_)));
@@ -412,7 +425,8 @@ mod tests {
         cleanup(&dir);
 
         let mut j = FixJournal::open(&dir, 64).unwrap();
-        j.store(1, &fix_msg_with_time(1, "20240101-12:00:00")).unwrap();
+        j.store(1, &fix_msg_with_time(1, "20240101-12:00:00"))
+            .unwrap();
 
         let items = collect_range(&j, 1, 1);
         assert_eq!(items.len(), 1);
@@ -440,7 +454,10 @@ mod tests {
         let items = collect_range(&j, 1, 5);
         assert_eq!(items.len(), 3);
         assert!(matches!(items[0], ReplayItem::App(_)));
-        assert!(matches!(items[1], ReplayItem::GapFill { seq: 2, new_seq: 5 }));
+        assert!(matches!(
+            items[1],
+            ReplayItem::GapFill { seq: 2, new_seq: 5 }
+        ));
         assert!(matches!(items[2], ReplayItem::App(_)));
 
         cleanup(&dir);
@@ -458,7 +475,10 @@ mod tests {
 
         let items = collect_range(&j, 1, 3);
         assert_eq!(items.len(), 1);
-        assert!(matches!(items[0], ReplayItem::GapFill { seq: 1, new_seq: 4 }));
+        assert!(matches!(
+            items[0],
+            ReplayItem::GapFill { seq: 1, new_seq: 4 }
+        ));
 
         cleanup(&dir);
     }
