@@ -231,7 +231,7 @@ fn sequence_reset_reset_mode_ignores_seq() {
 }
 
 #[test]
-fn resend_request_is_gap_filled() {
+fn resend_request_surfaces_event() {
     let mut s = new_session();
     let now = Instant::now();
     establish(&mut s, now);
@@ -240,12 +240,9 @@ fn resend_request_is_gap_filled() {
 
     let out = s.on_resend_request(2, false, 2, 3, now);
     assert_eq!(out.event(), Some(Event::ResendRange { begin: 2, end: 3 }));
-    let admins = admin_msgs(out);
-    assert_eq!(admins.len(), 1);
-    assert!(matches!(
-        admins[0],
-        AdminMsg::SequenceReset { seq: 2, new_seq: 4 }
-    ));
+    // The replay walk (gap-fills + PossDup re-frames) is driven by the
+    // persistence layer via FixJournal::resend_range — no admin emitted here.
+    assert_eq!(admin_msgs(out).len(), 0);
 }
 
 #[test]

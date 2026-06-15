@@ -17,4 +17,6 @@ pub use frame::{
     FrameError, FrameReader, FrameReaderBuilder, FrameWriter, FrameWriterBuilder, ReadError,
 };
 pub use framework::{CompId, Message, Session, SessionConfig, SessionError};
+#[cfg(unix)]
+pub use persist::{FixJournal, ReplayItem, ResendPlan};
 pub use session::{AdminMsg, DisconnectReason, Event, Out, SessionState, State};
