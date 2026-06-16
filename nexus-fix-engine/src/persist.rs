@@ -13,9 +13,7 @@ pub enum ReplayItem<'a> {
     /// Coalesced gap-fill: encode as `SequenceReset(GapFillFlag=Y)` with
     /// `MsgSeqNum=seq` and `NewSeqNo=new_seq`.
     GapFill { seq: u32, new_seq: u32 },
-    /// Original stored bytes for the app message; the transport is responsible
-    /// for adding `PossDupFlag(43)`, `OrigSendingTime(122)`, and a fresh
-    /// `SendingTime(52)` before retransmitting.
+    /// Original stored bytes; transport reframes with `PossDupFlag` and fresh timestamps.
     App(&'a [u8]),
 }
 
@@ -106,7 +104,7 @@ impl FixJournal {
     /// admin messages (Logon, Logout, Heartbeat, TestRequest, ResendRequest,
     /// Reject, SequenceReset) are gap-filled; consecutive gap-fills are
     /// coalesced into a single `GapFill { seq, new_seq }`. App messages are
-    /// yielded as borrowed original bytes; the transport owns the reframing.
+    /// yielded as borrowed original bytes.
     pub fn resend_range<'a, F>(&'a self, begin: u32, end: u32, mut emit: F)
     where
         F: FnMut(ReplayItem<'a>),
