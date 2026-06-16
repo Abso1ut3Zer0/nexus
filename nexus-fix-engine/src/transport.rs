@@ -227,6 +227,10 @@ impl<S: Read + Write> FixConnection<S> {
         Ok(None)
     }
 
+    pub fn wants_read(&self) -> bool {
+        self.state.state() != State::Disconnected
+    }
+
     pub fn wants_write(&self) -> bool {
         !self.writer.is_empty()
     }
