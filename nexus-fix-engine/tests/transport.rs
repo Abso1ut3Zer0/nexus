@@ -11,8 +11,6 @@ use nexus_fix_engine::{
     TransportError,
 };
 
-// ── helpers ─────────────────────────────────────────────────────────────────
-
 fn sender() -> CompId {
     CompId::new(b"INITIATOR").unwrap()
 }
@@ -47,7 +45,6 @@ fn tmp_dir(suffix: &str) -> PathBuf {
     p
 }
 
-/// Drive a `FixConnection` to completion, calling `on_app` for each app frame.
 fn drive<H>(
     conn: &mut FixConnection<TcpStream>,
     mut on_app: H,
@@ -62,7 +59,6 @@ where
     }
 }
 
-/// Minimal FIX peer that can send/receive raw frames.
 struct Peer {
     stream: TcpStream,
     sender: CompId,
@@ -140,8 +136,6 @@ impl Peer {
     }
 }
 
-// ── tests ────────────────────────────────────────────────────────────────────
-
 #[test]
 fn initiator_logon_and_logout() {
     let dir = tmp_dir("logon_logout");
@@ -156,13 +150,10 @@ fn initiator_logon_and_logout() {
     let handle = std::thread::spawn(move || {
         let mut peer = Peer::new(server_sock, target(), sender());
         let mut buf = [0u8; 512];
-        // read logon from initiator
         let n = peer.recv_msg(&mut buf);
         assert!(n > 0);
-        // reply with logon then immediately logout
         peer.send_logon(30);
         peer.send_logout();
-        // absorb the initiator's logout reply
         let _ = peer.recv_msg(&mut buf);
     });
 
@@ -193,11 +184,9 @@ fn acceptor_receives_app_message() {
         let mut peer = Peer::new(client_sock, sender(), target());
         peer.send_logon(30);
         let mut buf = [0u8; 512];
-        // absorb the acceptor's logon reply
         let _ = peer.recv_msg(&mut buf);
         peer.send_app(11, b"ORD-1");
         peer.send_logout();
-        // absorb logout reply
         let _ = peer.recv_msg(&mut buf);
     });
 
@@ -233,12 +222,9 @@ fn resend_request_triggers_gap_fill() {
         let mut peer = Peer::new(server_sock, target(), sender());
         let mut buf = [0u8; 4096];
 
-        // read logon
         let _ = peer.recv_msg(&mut buf);
-        // reply logon
         peer.send_logon(30);
 
-        // send resend request for seqs 2..=3
         let mut rbuf = [0u8; 256];
         let mut fmt = FrameFormatter::new(&mut rbuf, b"FIX.4.4", b"2");
         fmt.field(34, b"2");
@@ -252,7 +238,6 @@ fn resend_request_triggers_gap_fill() {
         peer.stream.flush().unwrap();
         peer.next_out = 3;
 
-        // read the gap-fill SequenceReset reply
         let n = peer.recv_msg(&mut buf);
         assert!(n > 0);
 
@@ -269,7 +254,6 @@ fn resend_request_triggers_gap_fill() {
     );
     conn.connect(Instant::now()).unwrap();
 
-    // seqs 2 and 3 were never stored → gap-fill expected
     let reason = drive(&mut conn, |_| {}).unwrap();
     assert_eq!(reason, DisconnectReason::Logout);
 
