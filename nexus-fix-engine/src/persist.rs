@@ -8,12 +8,8 @@ pub enum ResendPlan<'a> {
     GapFill(u32),
 }
 
-/// Output of a single [`FixJournal::resend_range`] step.
 pub enum ReplayItem<'a> {
-    /// Coalesced gap-fill: encode as `SequenceReset(GapFillFlag=Y)` with
-    /// `MsgSeqNum=seq` and `NewSeqNo=new_seq`.
     GapFill { seq: u32, new_seq: u32 },
-    /// Original stored bytes; transport reframes with `PossDupFlag` and fresh timestamps.
     App(&'a [u8]),
 }
 
@@ -98,13 +94,6 @@ impl FixJournal {
         ResendPlan::GapFill(seq)
     }
 
-    /// Walk `begin..=end` and emit [`ReplayItem`]s via `emit`.
-    ///
-    /// `end == 0` means all messages up to `next_outbound - 1`. Holes and
-    /// admin messages (Logon, Logout, Heartbeat, TestRequest, ResendRequest,
-    /// Reject, SequenceReset) are gap-filled; consecutive gap-fills are
-    /// coalesced into a single `GapFill { seq, new_seq }`. App messages are
-    /// yielded as borrowed original bytes.
     pub fn resend_range<'a, F>(&'a self, begin: u32, end: u32, mut emit: F)
     where
         F: FnMut(ReplayItem<'a>),
@@ -165,7 +154,6 @@ impl FixJournal {
         self.next_inbound = self.next_inbound.wrapping_add(1);
     }
 
-    /// Caller restores from Logon's `NextExpectedMsgSeqNum` field.
     pub fn set_next_inbound(&mut self, seq: u32) {
         self.next_inbound = seq;
     }
@@ -348,13 +336,11 @@ mod tests {
         let dir = tmp_dir("rr-straddle");
         cleanup(&dir);
 
-        // Window=4: seqs 1..4 are overwritten when 5..8 are stored.
         let mut j = FixJournal::open(&dir, 4).unwrap();
         for seq in 1..=8u32 {
             j.store(seq, &fix_msg(seq)).unwrap();
         }
 
-        // Seqs 1..4 rotated out → one coalesced GapFill; seqs 5..8 in-window → 4 App items.
         let items = collect_range(&j, 1, 8);
         assert_eq!(items.len(), 5);
         assert!(matches!(
