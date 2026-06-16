@@ -1,8 +1,6 @@
 use std::path::Path;
 
-use nexus_fix_codec::{
-    FieldReader, checksum, encode_fix_uint, find_tag, format_checksum, parse_fix_seqnum,
-};
+use nexus_fix_codec::{find_tag, parse_fix_seqnum};
 use nexus_journal::{Conductor, Frame, LogOffset, OpenError, RotatingJournal, WriteError};
 
 pub enum ResendPlan<'a> {
@@ -11,13 +9,14 @@ pub enum ResendPlan<'a> {
 }
 
 /// Output of a single [`FixJournal::resend_range`] step.
-pub enum ReplayItem {
+pub enum ReplayItem<'a> {
     /// Coalesced gap-fill: encode as `SequenceReset(GapFillFlag=Y)` with
     /// `MsgSeqNum=seq` and `NewSeqNo=new_seq`.
     GapFill { seq: u32, new_seq: u32 },
-    /// Re-framed app message with `PossDupFlag(43)=Y` and
-    /// `OrigSendingTime(122)` from the original `SendingTime(52)`.
-    App(Vec<u8>),
+    /// Original stored bytes for the app message; the transport is responsible
+    /// for adding `PossDupFlag(43)`, `OrigSendingTime(122)`, and a fresh
+    /// `SendingTime(52)` before retransmitting.
+    App(&'a [u8]),
 }
 
 pub struct FixJournal {
@@ -105,13 +104,12 @@ impl FixJournal {
     ///
     /// `end == 0` means all messages up to `next_outbound - 1`. Holes and
     /// admin messages (Logon, Logout, Heartbeat, TestRequest, ResendRequest,
-    /// SequenceReset) are gap-filled; consecutive gap-fills are coalesced into
-    /// a single `GapFill { seq, new_seq }`. App messages are re-framed with
-    /// `PossDupFlag(43)=Y` and `OrigSendingTime(122)` from the stored
-    /// `SendingTime(52)`.
-    pub fn resend_range<F>(&self, begin: u32, end: u32, mut emit: F)
+    /// Reject, SequenceReset) are gap-filled; consecutive gap-fills are
+    /// coalesced into a single `GapFill { seq, new_seq }`. App messages are
+    /// yielded as borrowed original bytes; the transport owns the reframing.
+    pub fn resend_range<'a, F>(&'a self, begin: u32, end: u32, mut emit: F)
     where
-        F: FnMut(ReplayItem),
+        F: FnMut(ReplayItem<'a>),
     {
         let high = if end == 0 {
             self.next_outbound.saturating_sub(1)
@@ -139,7 +137,7 @@ impl FixJournal {
                                 new_seq: seq,
                             });
                         }
-                        emit(ReplayItem::App(reframe(p)));
+                        emit(ReplayItem::App(p));
                         false
                     }
                 }
@@ -176,72 +174,12 @@ impl FixJournal {
 }
 
 fn is_admin_type(msg_type: &[u8]) -> bool {
-    matches!(msg_type, b"A" | b"5" | b"0" | b"1" | b"2" | b"4")
-}
-
-fn push_field(buf: &mut Vec<u8>, tag: u32, value: &[u8]) {
-    let mut tmp = [0u8; 10];
-    let n = encode_fix_uint(tag, &mut tmp);
-    buf.extend_from_slice(&tmp[..n]);
-    buf.push(b'=');
-    buf.extend_from_slice(value);
-    buf.push(0x01);
-}
-
-fn reframe(msg: &[u8]) -> Vec<u8> {
-    let begin_string = find_tag(msg, 0, 8).map_or(b"FIX.4.2" as &[u8], |s| s.slice(msg));
-    let orig_time = find_tag(msg, 0, 52).map(|s| s.slice(msg));
-
-    let mut body: Vec<u8> = Vec::with_capacity(msg.len() + 32);
-    let mut poss_dup_done = false;
-
-    for field in FieldReader::new(msg, 0) {
-        match field.tag {
-            8 | 9 | 10 | 43 | 122 => {}
-            52 => {
-                push_field(&mut body, 52, field.value.slice(msg));
-                push_field(&mut body, 43, b"Y");
-                if let Some(t) = orig_time {
-                    push_field(&mut body, 122, t);
-                }
-                poss_dup_done = true;
-            }
-            _ => push_field(&mut body, field.tag, field.value.slice(msg)),
-        }
-    }
-
-    if !poss_dup_done {
-        push_field(&mut body, 43, b"Y");
-        if let Some(t) = orig_time {
-            push_field(&mut body, 122, t);
-        }
-    }
-
-    let body_len = body.len();
-    let mut bl_buf = [0u8; 10];
-    let bl_n = encode_fix_uint(body_len as u32, &mut bl_buf);
-
-    let mut out = Vec::with_capacity(2 + begin_string.len() + 1 + 2 + bl_n + 1 + body_len + 7);
-    out.extend_from_slice(b"8=");
-    out.extend_from_slice(begin_string);
-    out.push(0x01);
-    out.extend_from_slice(b"9=");
-    out.extend_from_slice(&bl_buf[..bl_n]);
-    out.push(0x01);
-    out.extend_from_slice(&body);
-
-    let sum = checksum(&out);
-    out.extend_from_slice(b"10=");
-    out.extend_from_slice(&format_checksum(sum));
-    out.push(0x01);
-
-    out
+    matches!(msg_type, b"A" | b"5" | b"0" | b"1" | b"2" | b"3" | b"4")
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use nexus_fix_codec::validate_checksum;
     use std::path::PathBuf;
 
     fn tmp_dir(name: &str) -> PathBuf {
@@ -264,7 +202,7 @@ mod tests {
         format!("8=FIX.4.2\x0134={seq}\x0135=D\x0152={time}\x0110=000\x01").into_bytes()
     }
 
-    fn collect_range(j: &FixJournal, begin: u32, end: u32) -> Vec<ReplayItem> {
+    fn collect_range<'a>(j: &'a FixJournal, begin: u32, end: u32) -> Vec<ReplayItem<'a>> {
         let mut items = Vec::new();
         j.resend_range(begin, end, |item| items.push(item));
         items
@@ -434,24 +372,20 @@ mod tests {
     }
 
     #[test]
-    fn resend_range_poss_dup_reframe() {
-        let dir = tmp_dir("rr-reframe");
+    fn resend_range_yields_original_bytes() {
+        let dir = tmp_dir("rr-original");
         cleanup(&dir);
 
         let mut j = FixJournal::open(&dir, 64).unwrap();
-        j.store(1, &fix_msg_with_time(1, "20240101-12:00:00"))
-            .unwrap();
+        let msg = fix_msg_with_time(1, "20240101-12:00:00");
+        j.store(1, &msg).unwrap();
 
         let items = collect_range(&j, 1, 1);
         assert_eq!(items.len(), 1);
-        let ReplayItem::App(ref reframed) = items[0] else {
+        let ReplayItem::App(bytes) = items[0] else {
             panic!("expected App");
         };
-        let pd = find_tag(reframed, 0, 43).expect("tag 43 missing");
-        assert_eq!(pd.slice(reframed), b"Y");
-        let osd = find_tag(reframed, 0, 122).expect("tag 122 missing");
-        assert_eq!(osd.slice(reframed), b"20240101-12:00:00");
-        validate_checksum(reframed).expect("checksum invalid");
+        assert_eq!(bytes, msg.as_slice());
 
         cleanup(&dir);
     }
