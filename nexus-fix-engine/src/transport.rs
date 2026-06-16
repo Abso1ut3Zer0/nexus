@@ -3,27 +3,27 @@ use std::net::{TcpStream, ToSocketAddrs};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use nexus_fix_codec::{
-    FrameFormatter, encode_fix_uint, find_tag, parse_fix_bool, parse_fix_seqnum, parse_fix_uint,
+    FieldReader, FrameFormatter, encode_fix_uint, find_tag, parse_fix_bool, parse_fix_seqnum,
+    parse_fix_uint,
 };
 
-use crate::frame::{FrameReader, FrameWriter};
-use crate::framework::SessionConfig;
+use crate::frame::{FrameError, FrameReader, FrameWriter};
+use crate::framework::{CompId, SessionConfig};
 use crate::persist::{FixJournal, ReplayItem};
 use crate::session::{AdminMsg, DisconnectReason, Event, Out, SessionState, State};
 use crate::timestamp::{UTC_TIMESTAMP_LEN, format_utc_timestamp};
 
-const POLL_INTERVAL: Duration = Duration::from_millis(100);
-
-/// Error from [`FixConnection`] operations.
 #[derive(Debug)]
 pub enum Error {
     Io(io::Error),
+    FrameTooLarge(usize),
 }
 
 impl std::fmt::Display for Error {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::Io(e) => write!(f, "I/O: {e}"),
+            Self::FrameTooLarge(n) => write!(f, "frame too large: {n} bytes"),
         }
     }
 }
@@ -36,15 +36,6 @@ impl From<io::Error> for Error {
     }
 }
 
-/// Synchronous TCP driver for a sans-IO FIX session.
-///
-/// Owns a socket, a [`FrameReader`]/[`FrameWriter`] pair, a [`SessionState`],
-/// and a [`FixJournal`]. The read loop fires [`SessionState`] handlers,
-/// encodes outbound admin messages, drives gap-fill replay from the journal
-/// on `Event::ResendRange`, and delivers in-sequence application frames to
-/// the caller via the `on_app` callback in [`run`](Self::run).
-///
-/// Mirrors the pattern used by `nexus-web`'s `Client<S>`.
 pub struct FixConnection<S> {
     stream: S,
     reader: FrameReader,
@@ -53,10 +44,8 @@ pub struct FixConnection<S> {
     journal: FixJournal,
     config: SessionConfig,
     begin_string: &'static [u8],
-    initiator: bool,
 }
 
-/// Builder for [`FixConnection`].
 pub struct FixConnectionBuilder {
     reader_cap: usize,
     writer_cap: usize,
@@ -85,9 +74,6 @@ impl FixConnectionBuilder {
         self
     }
 
-    /// Connect to `addr` and return an initiator-mode [`FixConnection`].
-    ///
-    /// Sets `TCP_NODELAY` and a 100 ms read timeout for timer polling.
     pub fn connect<A: ToSocketAddrs>(
         self,
         addr: A,
@@ -107,7 +93,6 @@ impl FixConnectionBuilder {
             None => TcpStream::connect(addr)?,
         };
         stream.set_nodelay(self.nodelay)?;
-        stream.set_read_timeout(Some(POLL_INTERVAL))?;
         Ok(FixConnection {
             stream,
             reader: FrameReader::builder()
@@ -120,14 +105,9 @@ impl FixConnectionBuilder {
             journal,
             config,
             begin_string,
-            initiator: true,
         })
     }
 
-    /// Wrap an already-connected stream as an acceptor-mode [`FixConnection`].
-    ///
-    /// The caller is responsible for applying socket options (nodelay, read
-    /// timeout) before calling this.
     pub fn accept<S: Read + Write>(
         self,
         stream: S,
@@ -148,7 +128,6 @@ impl FixConnectionBuilder {
             journal,
             config,
             begin_string,
-            initiator: false,
         }
     }
 }
@@ -165,14 +144,12 @@ impl FixConnection<TcpStream> {
 }
 
 impl<S: Read + Write> FixConnection<S> {
-    /// Construct from pre-built parts (useful for testing).
     pub fn from_parts(
         stream: S,
         state: SessionState,
         config: SessionConfig,
         journal: FixJournal,
         begin_string: &'static [u8],
-        initiator: bool,
     ) -> Self {
         Self {
             stream,
@@ -182,7 +159,6 @@ impl<S: Read + Write> FixConnection<S> {
             journal,
             config,
             begin_string,
-            initiator,
         }
     }
 
@@ -194,87 +170,81 @@ impl<S: Read + Write> FixConnection<S> {
         &mut self.state
     }
 
-    /// Allocate the next outbound sequence number for an app message.
     pub fn allocate_seq(&mut self) -> u32 {
         self.state.allocate_seq(Instant::now())
     }
 
-    /// Store `frame` in the journal under `seq` and write it to the stream.
-    ///
-    /// The caller must have pre-encoded the complete FIX frame (including
-    /// `MsgSeqNum(34)=seq`) and must have obtained `seq` via
-    /// [`allocate_seq`](Self::allocate_seq).
+    pub fn connect(&mut self, now: Instant) -> Result<(), Error> {
+        let out = self.state.connect(now);
+        self.flush_out(out)
+    }
+
+    pub fn recv<H>(
+        &mut self,
+        now: Instant,
+        on_app: &mut H,
+    ) -> Result<Option<DisconnectReason>, Error>
+    where
+        H: FnMut(&[u8]),
+    {
+        let spare = self.reader.spare();
+        let n = match self.stream.read(spare) {
+            Ok(0) => return Ok(Some(DisconnectReason::Logout)),
+            Ok(n) => n,
+            Err(e) if is_timeout(&e) => {
+                let out = self.state.on_timeout(now);
+                if let Some(Event::Disconnected { reason }) = out.event() {
+                    self.flush_out(out)?;
+                    return Ok(Some(reason));
+                }
+                self.flush_out(out)?;
+                return Ok(None);
+            }
+            Err(e) => return Err(Error::Io(e)),
+        };
+        self.reader.filled(n);
+
+        loop {
+            match self.reader.next() {
+                Ok(Some(frame)) => {
+                    let frame = frame.to_vec();
+                    if let Some(reason) = self.dispatch(&frame, now, on_app)? {
+                        return Ok(Some(reason));
+                    }
+                }
+                Ok(None) => break,
+                Err(FrameError::MessageTooLarge { size }) => {
+                    return Err(Error::FrameTooLarge(size));
+                }
+                Err(FrameError::Garbage { .. }) => {}
+            }
+        }
+
+        if self.reader.should_compact() {
+            self.reader.compact();
+        }
+
+        Ok(None)
+    }
+
+    pub fn wants_write(&self) -> bool {
+        !self.writer.is_empty()
+    }
+
+    pub fn flush(&mut self) -> Result<(), Error> {
+        self.flush_writer()
+    }
+
     pub fn send_app(&mut self, seq: u32, frame: &[u8]) -> Result<(), Error> {
         self.journal
             .store(seq, frame)
             .map_err(|e| Error::Io(io::Error::other(format!("{e:?}"))))?;
-        write_all(&mut self.stream, frame)?;
-        Ok(())
+        write_all(&mut self.stream, frame)
     }
 
-    /// Initiate a clean logout and flush the Logout message.
-    pub fn logout(&mut self) -> Result<(), Error> {
-        let now = Instant::now();
+    pub fn logout(&mut self, now: Instant) -> Result<(), Error> {
         let out = self.state.logout(now);
-        self.flush_out(out, now)
-    }
-
-    /// Drive the session loop until the session disconnects.
-    ///
-    /// If `initiator`, sends a Logon before entering the read loop.
-    /// Calls `on_app` for each in-sequence application message frame.
-    /// Admin messages and timers are handled internally.
-    ///
-    /// Returns the disconnect reason on a clean or protocol-level disconnect.
-    /// Returns `Err` on unrecoverable I/O failure.
-    pub fn run<H>(&mut self, mut on_app: H) -> Result<DisconnectReason, Error>
-    where
-        H: FnMut(&[u8]),
-    {
-        if self.initiator {
-            let now = Instant::now();
-            let out = self.state.connect(now);
-            self.flush_out(out, now)?;
-        }
-
-        loop {
-            // Read bytes into the frame reader's spare region.
-            let spare = self.reader.spare();
-            let n = match self.stream.read(spare) {
-                Ok(0) => return Ok(DisconnectReason::Logout),
-                Ok(n) => n,
-                Err(e) if is_timeout(&e) => {
-                    let now = Instant::now();
-                    let out = self.state.on_timeout(now);
-                    if let Some(Event::Disconnected { reason }) = out.event() {
-                        self.flush_out(out, now)?;
-                        return Ok(reason);
-                    }
-                    self.flush_out(out, now)?;
-                    continue;
-                }
-                Err(e) => return Err(Error::Io(e)),
-            };
-            self.reader.filled(n);
-
-            // Drain complete FIX messages from the buffer.
-            loop {
-                match self.reader.next() {
-                    Ok(Some(frame)) => {
-                        let frame = frame.to_vec();
-                        let now = Instant::now();
-                        if let Some(reason) = self.dispatch(&frame, now, &mut on_app)? {
-                            return Ok(reason);
-                        }
-                    }
-                    Ok(None) => break,
-                    Err(_) => {}
-                }
-            }
-            if self.reader.should_compact() {
-                self.reader.compact();
-            }
-        }
+        self.flush_out(out)
     }
 
     fn dispatch<H>(
@@ -292,7 +262,7 @@ impl<S: Read + Write> FixConnection<S> {
             find_tag(frame, 0, 56).is_some_and(|s| s.slice(frame) == self.config.sender.as_bytes());
         if !sender_ok || !target_ok {
             let out = self.state.on_comp_id_mismatch(now);
-            self.flush_out(out, now)?;
+            self.flush_out(out)?;
             return Ok(Some(DisconnectReason::CompIdMismatch));
         }
 
@@ -363,11 +333,11 @@ impl<S: Read + Write> FixConnection<S> {
             _ => (self.state.on_app(seq, poss_dup, now), true),
         };
 
-        self.flush_out(out, now)?;
+        self.flush_out(out)?;
 
         match out.event() {
             Some(Event::Disconnected { reason }) => return Ok(Some(reason)),
-            Some(Event::ResendRange { begin, end }) => self.do_resend(begin, end, now)?,
+            Some(Event::ResendRange { begin, end }) => self.do_resend(begin, end)?,
             Some(Event::App { .. }) if is_app => on_app(frame),
             _ => {}
         }
@@ -375,9 +345,9 @@ impl<S: Read + Write> FixConnection<S> {
         Ok(None)
     }
 
-    fn flush_out(&mut self, out: Out, now: Instant) -> Result<(), Error> {
+    fn flush_out(&mut self, out: Out) -> Result<(), Error> {
         for admin in out.admin_messages() {
-            self.encode_admin(admin, now);
+            self.encode_admin(admin);
         }
         if !self.writer.is_empty() {
             self.flush_writer()?;
@@ -385,13 +355,8 @@ impl<S: Read + Write> FixConnection<S> {
         Ok(())
     }
 
-    fn encode_admin(&mut self, admin: AdminMsg, _now: Instant) {
-        let unix_nanos = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_nanos() as i128;
-        let mut ts = [0u8; UTC_TIMESTAMP_LEN];
-        format_utc_timestamp(unix_nanos, &mut ts);
+    fn encode_admin(&mut self, admin: AdminMsg) {
+        let ts = make_ts();
 
         let msg_type: &[u8] = match admin {
             AdminMsg::Logon { .. } => b"A",
@@ -480,29 +445,98 @@ impl<S: Read + Write> FixConnection<S> {
         Ok(())
     }
 
-    fn do_resend(&mut self, begin: u32, end: u32, now: Instant) -> Result<(), Error> {
-        let mut items: Vec<ReplayItem> = Vec::new();
-        self.journal
-            .resend_range(begin, end, |item| items.push(item));
+    fn do_resend(&mut self, begin: u32, end: u32) -> Result<(), Error> {
+        let ts = make_ts();
+        let begin_string = self.begin_string;
+        let sender = self.config.sender;
+        let target = self.config.target;
 
-        for item in items {
-            match item {
+        {
+            let journal = &self.journal;
+            let writer = &mut self.writer;
+            journal.resend_range(begin, end, |item| match item {
                 ReplayItem::GapFill { seq, new_seq } => {
-                    self.encode_admin(AdminMsg::SequenceReset { seq, new_seq }, now);
+                    encode_gap_fill(writer, begin_string, sender, target, &ts, seq, new_seq);
                 }
-                ReplayItem::App(frame) => {
-                    if !self.writer.is_empty() {
-                        self.flush_writer()?;
-                    }
-                    write_all(&mut self.stream, &frame)?;
+                ReplayItem::App(orig) => {
+                    reframe_app(writer, &orig, &ts, begin_string);
                 }
-            }
+            });
         }
 
-        if !self.writer.is_empty() {
-            self.flush_writer()?;
+        self.flush_writer()
+    }
+}
+
+fn make_ts() -> [u8; UTC_TIMESTAMP_LEN] {
+    let unix_nanos = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_nanos() as i128;
+    let mut ts = [0u8; UTC_TIMESTAMP_LEN];
+    format_utc_timestamp(unix_nanos, &mut ts);
+    ts
+}
+
+fn encode_gap_fill(
+    writer: &mut FrameWriter,
+    begin_string: &'static [u8],
+    sender: CompId,
+    target: CompId,
+    ts: &[u8],
+    seq: u32,
+    new_seq: u32,
+) {
+    let spare = writer.spare();
+    let mut seq_buf = [0u8; 10];
+    let seq_n = encode_fix_uint(seq, &mut seq_buf);
+    let mut fmt = FrameFormatter::new(spare, begin_string, b"4");
+    fmt.field(34, &seq_buf[..seq_n]);
+    fmt.field(49, sender.as_bytes());
+    fmt.field(56, target.as_bytes());
+    fmt.field(52, ts);
+    fmt.field(43, b"Y");
+    fmt.field(123, b"Y");
+    let mut nsq_buf = [0u8; 10];
+    let nsq_n = encode_fix_uint(new_seq, &mut nsq_buf);
+    fmt.field(36, &nsq_buf[..nsq_n]);
+    if let Ok((start, len)) = fmt.finish() {
+        writer.commit(start, len);
+    }
+}
+
+fn reframe_app(writer: &mut FrameWriter, orig: &[u8], ts: &[u8], begin_string: &'static [u8]) {
+    let msg_type = find_tag(orig, 0, 35).map_or(b"D" as &[u8], |s| s.slice(orig));
+    let orig_time = find_tag(orig, 0, 52).map(|s| s.slice(orig));
+
+    let spare = writer.spare();
+    let mut fmt = FrameFormatter::new(spare, begin_string, msg_type);
+    let mut poss_dup_done = false;
+
+    for field in FieldReader::new(orig, 0) {
+        match field.tag {
+            8 | 9 | 10 | 35 | 43 | 122 => {}
+            52 => {
+                fmt.field(52, ts);
+                fmt.field(43, b"Y");
+                if let Some(t) = orig_time {
+                    fmt.field(122, t);
+                }
+                poss_dup_done = true;
+            }
+            _ => fmt.field(field.tag, field.value.slice(orig)),
         }
-        Ok(())
+    }
+
+    if !poss_dup_done {
+        fmt.field(43, b"Y");
+        if let Some(t) = orig_time {
+            fmt.field(122, t);
+        }
+    }
+
+    if let Ok((start, len)) = fmt.finish() {
+        writer.commit(start, len);
     }
 }
 

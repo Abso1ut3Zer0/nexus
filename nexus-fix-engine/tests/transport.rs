@@ -3,11 +3,12 @@
 use std::io::{Read, Write};
 use std::net::{TcpListener, TcpStream};
 use std::path::PathBuf;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use nexus_fix_codec::{FrameFormatter, encode_fix_uint};
 use nexus_fix_engine::{
     CompId, DisconnectReason, FixConnection, FixJournal, SessionConfig, SessionState,
+    TransportError,
 };
 
 // ── helpers ─────────────────────────────────────────────────────────────────
@@ -44,6 +45,21 @@ fn tmp_dir(suffix: &str) -> PathBuf {
     ));
     std::fs::create_dir_all(&p).unwrap();
     p
+}
+
+/// Drive a `FixConnection` to completion, calling `on_app` for each app frame.
+fn drive<H>(
+    conn: &mut FixConnection<TcpStream>,
+    mut on_app: H,
+) -> Result<DisconnectReason, TransportError>
+where
+    H: FnMut(&[u8]),
+{
+    loop {
+        if let Some(reason) = conn.recv(Instant::now(), &mut on_app)? {
+            return Ok(reason);
+        }
+    }
 }
 
 /// Minimal FIX peer that can send/receive raw frames.
@@ -143,7 +159,7 @@ fn initiator_logon_and_logout() {
         // read logon from initiator
         let n = peer.recv_msg(&mut buf);
         assert!(n > 0);
-        // reply with logon then immediately logout (no HB wait needed)
+        // reply with logon then immediately logout
         peer.send_logon(30);
         peer.send_logout();
         // absorb the initiator's logout reply
@@ -156,10 +172,10 @@ fn initiator_logon_and_logout() {
         session_cfg(t_sender, t_target),
         journal(&dir),
         b"FIX.4.4",
-        true, // initiator
     );
+    conn.connect(Instant::now()).unwrap();
 
-    let reason = conn.run(|_| {}).unwrap();
+    let reason = drive(&mut conn, |_| {}).unwrap();
     assert_eq!(reason, DisconnectReason::Logout);
 
     handle.join().unwrap();
@@ -175,14 +191,11 @@ fn acceptor_receives_app_message() {
 
     let handle = std::thread::spawn(move || {
         let mut peer = Peer::new(client_sock, sender(), target());
-        // initiate the session from the peer side
         peer.send_logon(30);
-        // absorb the acceptor's logon reply
         let mut buf = [0u8; 512];
+        // absorb the acceptor's logon reply
         let _ = peer.recv_msg(&mut buf);
-        // send an app message
         peer.send_app(11, b"ORD-1");
-        // send logout
         peer.send_logout();
         // absorb logout reply
         let _ = peer.recv_msg(&mut buf);
@@ -196,10 +209,9 @@ fn acceptor_receives_app_message() {
         session_cfg(target(), sender()),
         journal(&dir2),
         b"FIX.4.4",
-        false, // acceptor
     );
 
-    let reason = conn.run(|frame| received.push(frame.to_vec())).unwrap();
+    let reason = drive(&mut conn, |frame| received.push(frame.to_vec())).unwrap();
     assert_eq!(reason, DisconnectReason::Logout);
     assert_eq!(received.len(), 1);
     assert!(received[0].starts_with(b"8=FIX.4.4"));
@@ -217,8 +229,6 @@ fn resend_request_triggers_gap_fill() {
         .set_read_timeout(Some(Duration::from_millis(500)))
         .unwrap();
 
-    // The server side will pre-store app messages 2..=3 in its journal,
-    // then send a ResendRequest to the client, and verify it gets replayed.
     let handle = std::thread::spawn(move || {
         let mut peer = Peer::new(server_sock, target(), sender());
         let mut buf = [0u8; 4096];
@@ -240,7 +250,7 @@ fn resend_request_triggers_gap_fill() {
         let (start, len) = fmt.finish().unwrap();
         peer.stream.write_all(&rbuf[start..start + len]).unwrap();
         peer.stream.flush().unwrap();
-        peer.next_out = 3; // ResendRequest consumed seq 2
+        peer.next_out = 3;
 
         // read the gap-fill SequenceReset reply
         let n = peer.recv_msg(&mut buf);
@@ -256,12 +266,11 @@ fn resend_request_triggers_gap_fill() {
         session_cfg(sender(), target()),
         journal(&dir_cli),
         b"FIX.4.4",
-        true,
     );
+    conn.connect(Instant::now()).unwrap();
 
-    // initiator sends logon (seq 1), so next_out is 2 after logon
     // seqs 2 and 3 were never stored → gap-fill expected
-    let reason = conn.run(|_| {}).unwrap();
+    let reason = drive(&mut conn, |_| {}).unwrap();
     assert_eq!(reason, DisconnectReason::Logout);
 
     handle.join().unwrap();
