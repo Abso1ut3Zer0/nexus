@@ -202,7 +202,7 @@ mod tests {
         format!("8=FIX.4.2\x0134={seq}\x0135=D\x0152={time}\x0110=000\x01").into_bytes()
     }
 
-    fn collect_range<'a>(j: &'a FixJournal, begin: u32, end: u32) -> Vec<ReplayItem<'a>> {
+    fn collect_range(j: &FixJournal, begin: u32, end: u32) -> Vec<ReplayItem<'_>> {
         let mut items = Vec::new();
         j.resend_range(begin, end, |item| items.push(item));
         items
