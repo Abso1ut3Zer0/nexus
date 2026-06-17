@@ -10,6 +10,14 @@ contained.
 
 ## [Unreleased]
 
+### Removed
+
+- **`LivenessF64`** — f64 timestamps cause silent precision loss past 2^52; use `LivenessI64` or `LivenessU64`.
+
+### Added
+
+- **`LivenessU64`** — liveness detector with `u64` timestamps, mirrors `LivenessI64`.
+
 ## [3.0.1] — 2026-06-05
 
 ### Changed
