@@ -3,7 +3,7 @@ use std::path::Path;
 use nexus_fix_codec::{find_tag, parse_fix_seqnum};
 use nexus_journal::{Conductor, Frame, LogOffset, OpenError, RotatingJournal, WriteError};
 
-pub enum ResendPlan<'a> {
+enum ResendPlan<'a> {
     Replay(Frame<'a>),
     GapFill(u32),
 }
@@ -20,6 +20,59 @@ pub struct FixJournal {
     window: usize,
     next_outbound: u32,
     next_inbound: u32,
+}
+
+struct ResendIter<'a> {
+    journal: &'a FixJournal,
+    seq: u32,
+    high: u32,
+    gap_start: Option<u32>,
+    deferred: Option<ReplayItem<'a>>,
+    done: bool,
+}
+
+impl<'a> Iterator for ResendIter<'a> {
+    type Item = ReplayItem<'a>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        if let Some(item) = self.deferred.take() {
+            return Some(item);
+        }
+        loop {
+            if self.done {
+                return None;
+            }
+            if self.seq > self.high {
+                self.done = true;
+                return self.gap_start.take().map(|gs| ReplayItem::GapFill {
+                    seq: gs,
+                    new_seq: self.high.wrapping_add(1),
+                });
+            }
+            let seq = self.seq;
+            self.seq += 1;
+            let is_gap = match self.journal.resend_one(seq) {
+                ResendPlan::GapFill(_) => true,
+                ResendPlan::Replay(frame) => {
+                    let p = frame.payload();
+                    let msg_type = find_tag(p, 0, 35).map_or(b"" as &[u8], |s| s.slice(p));
+                    if is_admin_type(msg_type) {
+                        true
+                    } else {
+                        let app = ReplayItem::App(p);
+                        if let Some(gs) = self.gap_start.take() {
+                            self.deferred = Some(app);
+                            return Some(ReplayItem::GapFill { seq: gs, new_seq: seq });
+                        }
+                        return Some(app);
+                    }
+                }
+            };
+            if is_gap && self.gap_start.is_none() {
+                self.gap_start = Some(seq);
+            }
+        }
+    }
 }
 
 impl FixJournal {
@@ -79,7 +132,7 @@ impl FixJournal {
         Ok(())
     }
 
-    pub fn resend(&self, seq: u32) -> ResendPlan<'_> {
+    fn resend_one(&self, seq: u32) -> ResendPlan<'_> {
         let slot = seq as usize & (self.window - 1);
         if let Some(off) = self.offsets[slot]
             && let Some(frame) = self.journal.read(off)
@@ -94,51 +147,19 @@ impl FixJournal {
         ResendPlan::GapFill(seq)
     }
 
-    pub fn resend_range<'a, F>(&'a self, begin: u32, end: u32, mut emit: F)
-    where
-        F: FnMut(ReplayItem<'a>),
-    {
+    pub fn resend(&'_ self, begin: u32, end: u32) -> impl Iterator<Item = ReplayItem<'_>> + '_ {
         let high = if end == 0 {
             self.next_outbound.saturating_sub(1)
         } else {
             end
         };
-        if begin > high {
-            return;
-        }
-
-        let mut gap_start: Option<u32> = None;
-
-        for seq in begin..=high {
-            let is_gap = match self.resend(seq) {
-                ResendPlan::GapFill(_) => true,
-                ResendPlan::Replay(frame) => {
-                    let p = frame.payload();
-                    let msg_type = find_tag(p, 0, 35).map_or(b"" as &[u8], |s| s.slice(p));
-                    if is_admin_type(msg_type) {
-                        true
-                    } else {
-                        if let Some(gs) = gap_start.take() {
-                            emit(ReplayItem::GapFill {
-                                seq: gs,
-                                new_seq: seq,
-                            });
-                        }
-                        emit(ReplayItem::App(p));
-                        false
-                    }
-                }
-            };
-            if is_gap && gap_start.is_none() {
-                gap_start = Some(seq);
-            }
-        }
-
-        if let Some(gs) = gap_start {
-            emit(ReplayItem::GapFill {
-                seq: gs,
-                new_seq: high.wrapping_add(1),
-            });
+        ResendIter {
+            journal: self,
+            seq: begin,
+            high,
+            gap_start: None,
+            deferred: None,
+            done: begin > high,
         }
     }
 
@@ -189,9 +210,7 @@ mod tests {
     }
 
     fn collect_range(j: &FixJournal, begin: u32, end: u32) -> Vec<ReplayItem<'_>> {
-        let mut items = Vec::new();
-        j.resend_range(begin, end, |item| items.push(item));
-        items
+        j.resend(begin, end).collect()
     }
 
     #[test]
@@ -204,7 +223,7 @@ mod tests {
             j.store(seq, &fix_msg(seq)).unwrap();
         }
 
-        match j.resend(3) {
+        match j.resend_one(3) {
             ResendPlan::Replay(frame) => {
                 assert_eq!(frame.payload(), fix_msg(3).as_slice());
             }
@@ -242,7 +261,7 @@ mod tests {
         let mut j = FixJournal::open(&dir, 64).unwrap();
         j.store(1, &fix_msg(1)).unwrap();
 
-        match j.resend(2) {
+        match j.resend_one(2) {
             ResendPlan::GapFill(2) => {}
             _ => panic!("expected GapFill(2)"),
         }
@@ -261,7 +280,7 @@ mod tests {
         }
 
         let results: Vec<bool> = (1u32..=5)
-            .map(|seq| matches!(j.resend(seq), ResendPlan::Replay(_)))
+            .map(|seq| matches!(j.resend_one(seq), ResendPlan::Replay(_)))
             .collect();
         assert_eq!(results, vec![true, false, true, false, true]);
 
