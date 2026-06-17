@@ -22,7 +22,7 @@ pub use frame::{
 };
 pub use framework::{CompId, Message, Session, SessionConfig, SessionError};
 #[cfg(unix)]
-pub use persist::{FixJournal, ReplayItem, ResendPlan};
+pub use persist::{FixJournal, ReplayItem};
 pub use session::{AdminMsg, DisconnectReason, Event, Out, SessionState, State};
 #[cfg(unix)]
 pub use transport::{Error as TransportError, FixConnection, FixConnectionBuilder};

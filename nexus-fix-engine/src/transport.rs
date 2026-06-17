@@ -456,16 +456,18 @@ impl<S: Read + Write> FixConnection<S> {
         let target = self.config.target;
 
         {
-            let journal = &self.journal;
+            let iter = self.journal.resend(begin, end);
             let writer = &mut self.writer;
-            journal.resend_range(begin, end, |item| match item {
-                ReplayItem::GapFill { seq, new_seq } => {
-                    encode_gap_fill(writer, begin_string, sender, target, &ts, seq, new_seq);
+            for item in iter {
+                match item {
+                    ReplayItem::GapFill { seq, new_seq } => {
+                        encode_gap_fill(writer, begin_string, sender, target, &ts, seq, new_seq);
+                    }
+                    ReplayItem::App(orig) => {
+                        reframe_app(writer, orig, &ts, begin_string);
+                    }
                 }
-                ReplayItem::App(orig) => {
-                    reframe_app(writer, &orig, &ts, begin_string);
-                }
-            });
+            }
         }
 
         self.flush_writer()
