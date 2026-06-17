@@ -19,7 +19,7 @@ fn main() {
     let addr = listener.local_addr().unwrap();
 
     let acceptor_dir = tmp_dir("acceptor");
-    let acceptor = std::thread::spawn(move || run_acceptor(listener, &acceptor_dir));
+    let acceptor = std::thread::spawn(move || run_acceptor(&listener, &acceptor_dir));
 
     let initiator_dir = tmp_dir("initiator");
     run_initiator(addr, &initiator_dir);
@@ -27,7 +27,7 @@ fn main() {
     acceptor.join().unwrap();
 }
 
-fn run_acceptor(listener: TcpListener, dir: &Path) {
+fn run_acceptor(listener: &TcpListener, dir: &Path) {
     let (stream, _) = listener.accept().unwrap();
     stream
         .set_read_timeout(Some(Duration::from_secs(5)))
@@ -40,7 +40,7 @@ fn run_acceptor(listener: TcpListener, dir: &Path) {
             sender: CompId::new(b"ACCEPTOR").unwrap(),
             target: CompId::new(b"INITIATOR").unwrap(),
         },
-        FixJournal::open(&dir, 256).unwrap(),
+        FixJournal::open(dir, 256).unwrap(),
         BEGIN,
     );
 
@@ -69,7 +69,7 @@ fn run_initiator(addr: std::net::SocketAddr, dir: &Path) {
                 sender: CompId::new(b"INITIATOR").unwrap(),
                 target: CompId::new(b"ACCEPTOR").unwrap(),
             },
-            FixJournal::open(&dir, 256).unwrap(),
+            FixJournal::open(dir, 256).unwrap(),
             BEGIN,
         )
         .unwrap();
