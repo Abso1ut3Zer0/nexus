@@ -243,7 +243,13 @@ impl<S: Read + Write> FixConnection<S> {
         self.journal
             .store(seq, frame)
             .map_err(|e| Error::Io(io::Error::other(format!("{e:?}"))))?;
-        write_all(&mut self.stream, frame)
+        if self.writer.remaining() < frame.len() {
+            self.flush_writer()?;
+        }
+        let spare = self.writer.spare();
+        spare[..frame.len()].copy_from_slice(frame);
+        self.writer.commit(0, frame.len());
+        self.flush_writer()
     }
 
     pub fn logout(&mut self, now: Instant) -> Result<(), Error> {
@@ -438,15 +444,7 @@ impl<S: Read + Write> FixConnection<S> {
     }
 
     fn flush_writer(&mut self) -> Result<(), Error> {
-        while !self.writer.is_empty() {
-            let n = self.stream.write(self.writer.data())?;
-            if n == 0 {
-                return Err(Error::Io(io::Error::other("write returned 0")));
-            }
-            self.writer.advance(n);
-        }
-        self.stream.flush()?;
-        Ok(())
+        flush_to(&mut self.stream, &mut self.writer)
     }
 
     fn do_resend(&mut self, begin: u32, end: u32) -> Result<(), Error> {
@@ -455,22 +453,31 @@ impl<S: Read + Write> FixConnection<S> {
         let sender = self.config.sender;
         let target = self.config.target;
 
-        {
-            let iter = self.journal.resend(begin, end);
-            let writer = &mut self.writer;
-            for item in iter {
+        let iter = self.journal.resend(begin, end);
+        let writer = &mut self.writer;
+        let stream = &mut self.stream;
+
+        for item in iter {
+            let ok = match &item {
+                ReplayItem::GapFill { seq, new_seq } => {
+                    encode_gap_fill(writer, begin_string, sender, target, &ts, *seq, *new_seq)
+                }
+                ReplayItem::App(orig) => reframe_app(writer, orig, &ts, begin_string),
+            };
+            if ok.is_err() {
+                flush_to(stream, writer)?;
                 match item {
                     ReplayItem::GapFill { seq, new_seq } => {
-                        encode_gap_fill(writer, begin_string, sender, target, &ts, seq, new_seq);
+                        encode_gap_fill(writer, begin_string, sender, target, &ts, seq, new_seq)
+                            .ok();
                     }
                     ReplayItem::App(orig) => {
-                        reframe_app(writer, orig, &ts, begin_string);
+                        reframe_app(writer, orig, &ts, begin_string).ok();
                     }
                 }
             }
         }
-
-        self.flush_writer()
+        flush_to(stream, writer)
     }
 }
 
@@ -484,6 +491,18 @@ fn make_ts() -> [u8; UTC_TIMESTAMP_LEN] {
     ts
 }
 
+fn flush_to<S: Write>(stream: &mut S, writer: &mut FrameWriter) -> Result<(), Error> {
+    while !writer.is_empty() {
+        let n = stream.write(writer.data())?;
+        if n == 0 {
+            return Err(Error::Io(io::Error::other("write returned 0")));
+        }
+        writer.advance(n);
+    }
+    stream.flush()?;
+    Ok(())
+}
+
 fn encode_gap_fill(
     writer: &mut FrameWriter,
     begin_string: &'static [u8],
@@ -492,7 +511,7 @@ fn encode_gap_fill(
     ts: &[u8],
     seq: u32,
     new_seq: u32,
-) {
+) -> Result<(), ()> {
     let spare = writer.spare();
     let mut seq_buf = [0u8; 10];
     let seq_n = encode_fix_uint(seq, &mut seq_buf);
@@ -506,12 +525,17 @@ fn encode_gap_fill(
     let mut nsq_buf = [0u8; 10];
     let nsq_n = encode_fix_uint(new_seq, &mut nsq_buf);
     fmt.field(36, &nsq_buf[..nsq_n]);
-    if let Ok((start, len)) = fmt.finish() {
-        writer.commit(start, len);
-    }
+    let (start, len) = fmt.finish().map_err(|_| ())?;
+    writer.commit(start, len);
+    Ok(())
 }
 
-fn reframe_app(writer: &mut FrameWriter, orig: &[u8], ts: &[u8], begin_string: &'static [u8]) {
+fn reframe_app(
+    writer: &mut FrameWriter,
+    orig: &[u8],
+    ts: &[u8],
+    begin_string: &'static [u8],
+) -> Result<(), ()> {
     let msg_type = find_tag(orig, 0, 35).map_or(b"D" as &[u8], |s| s.slice(orig));
     let orig_time = find_tag(orig, 0, 52).map(|s| s.slice(orig));
 
@@ -541,9 +565,9 @@ fn reframe_app(writer: &mut FrameWriter, orig: &[u8], ts: &[u8], begin_string: &
         }
     }
 
-    if let Ok((start, len)) = fmt.finish() {
-        writer.commit(start, len);
-    }
+    let (start, len) = fmt.finish().map_err(|_| ())?;
+    writer.commit(start, len);
+    Ok(())
 }
 
 fn is_timeout(e: &io::Error) -> bool {
@@ -551,18 +575,6 @@ fn is_timeout(e: &io::Error) -> bool {
         e.kind(),
         io::ErrorKind::TimedOut | io::ErrorKind::WouldBlock
     )
-}
-
-fn write_all<S: Write>(stream: &mut S, data: &[u8]) -> Result<(), Error> {
-    let mut offset = 0;
-    while offset < data.len() {
-        let n = stream.write(&data[offset..]).map_err(Error::Io)?;
-        if n == 0 {
-            return Err(Error::Io(io::Error::other("write returned 0")));
-        }
-        offset += n;
-    }
-    stream.flush().map_err(Error::Io)
 }
 
 fn encode_u64(v: u64, out: &mut [u8; 20]) -> usize {
