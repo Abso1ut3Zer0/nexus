@@ -5,7 +5,7 @@ use nexus_journal::{Conductor, Frame, LogOffset, OpenError, RotatingJournal, Wri
 
 enum ResendPlan<'a> {
     Replay(Frame<'a>),
-    GapFill(u32),
+    GapFill,
 }
 
 pub enum ReplayItem<'a> {
@@ -52,7 +52,7 @@ impl<'a> Iterator for ResendIter<'a> {
             let seq = self.seq;
             self.seq += 1;
             let is_gap = match self.journal.resend_one(seq) {
-                ResendPlan::GapFill(_) => true,
+                ResendPlan::GapFill => true,
                 ResendPlan::Replay(frame) => {
                     let p = frame.payload();
                     let msg_type = find_tag(p, 0, 35).map_or(b"" as &[u8], |s| s.slice(p));
@@ -133,7 +133,7 @@ impl FixJournal {
                 return ResendPlan::Replay(frame);
             }
         }
-        ResendPlan::GapFill(seq)
+        ResendPlan::GapFill
     }
 
     pub fn resend(&'_ self, begin: u32, end: u32) -> impl Iterator<Item = ReplayItem<'_>> + '_ {
@@ -216,7 +216,7 @@ mod tests {
             ResendPlan::Replay(frame) => {
                 assert_eq!(frame.payload(), fix_msg(3).as_slice());
             }
-            ResendPlan::GapFill(_) => panic!("expected Replay"),
+            ResendPlan::GapFill => panic!("expected Replay"),
         }
 
         cleanup(&dir);
@@ -251,7 +251,7 @@ mod tests {
         j.store(1, &fix_msg(1)).unwrap();
 
         match j.resend_one(2) {
-            ResendPlan::GapFill(2) => {}
+            ResendPlan::GapFill => {}
             _ => panic!("expected GapFill(2)"),
         }
 
