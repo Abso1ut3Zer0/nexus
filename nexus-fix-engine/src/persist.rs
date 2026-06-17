@@ -62,7 +62,10 @@ impl<'a> Iterator for ResendIter<'a> {
                         let app = ReplayItem::App(p);
                         if let Some(gs) = self.gap_start.take() {
                             self.deferred = Some(app);
-                            return Some(ReplayItem::GapFill { seq: gs, new_seq: seq });
+                            return Some(ReplayItem::GapFill {
+                                seq: gs,
+                                new_seq: seq,
+                            });
                         }
                         return Some(app);
                     }
