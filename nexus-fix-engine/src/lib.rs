@@ -12,10 +12,6 @@ mod framework;
 #[cfg(unix)]
 pub mod persist;
 mod session;
-#[cfg(unix)]
-mod timestamp;
-#[cfg(unix)]
-pub mod transport;
 
 pub use frame::{
     FrameError, FrameReader, FrameReaderBuilder, FrameWriter, FrameWriterBuilder, ReadError,
@@ -24,5 +20,3 @@ pub use framework::{CompId, Message, Session, SessionConfig, SessionError};
 #[cfg(unix)]
 pub use persist::{FixJournal, ReplayItem};
 pub use session::{AdminMsg, DisconnectReason, Event, Out, SessionState, State};
-#[cfg(unix)]
-pub use transport::{Error as TransportError, FixConnection, FixConnectionBuilder};
