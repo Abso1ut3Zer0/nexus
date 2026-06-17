@@ -252,7 +252,7 @@ mod tests {
 
         match j.resend_one(2) {
             ResendPlan::GapFill => {}
-            _ => panic!("expected GapFill(2)"),
+            ResendPlan::Replay(_) => panic!("expected GapFill"),
         }
 
         cleanup(&dir);
