@@ -243,13 +243,7 @@ impl<S: Read + Write> FixConnection<S> {
         self.journal
             .store(seq, frame)
             .map_err(|e| Error::Io(io::Error::other(format!("{e:?}"))))?;
-        if self.writer.remaining() < frame.len() {
-            self.flush_writer()?;
-        }
-        let spare = self.writer.spare();
-        spare[..frame.len()].copy_from_slice(frame);
-        self.writer.commit(0, frame.len());
-        self.flush_writer()
+        write_through(&mut self.stream, &mut self.writer, frame)
     }
 
     pub fn logout(&mut self, now: Instant) -> Result<(), Error> {
@@ -466,15 +460,15 @@ impl<S: Read + Write> FixConnection<S> {
             };
             if ok.is_err() {
                 flush_to(stream, writer)?;
-                match item {
+                let retry = match item {
                     ReplayItem::GapFill { seq, new_seq } => {
                         encode_gap_fill(writer, begin_string, sender, target, &ts, seq, new_seq)
-                            .ok();
                     }
-                    ReplayItem::App(orig) => {
-                        reframe_app(writer, orig, &ts, begin_string).ok();
-                    }
-                }
+                    ReplayItem::App(orig) => reframe_app(writer, orig, &ts, begin_string),
+                };
+                retry.map_err(|_| {
+                    Error::FrameTooLarge(writer.remaining().saturating_add(1))
+                })?;
             }
         }
         flush_to(stream, writer)
@@ -501,6 +495,34 @@ fn flush_to<S: Write>(stream: &mut S, writer: &mut FrameWriter) -> Result<(), Er
     }
     stream.flush()?;
     Ok(())
+}
+
+fn write_through<S: Write>(
+    stream: &mut S,
+    writer: &mut FrameWriter,
+    frame: &[u8],
+) -> Result<(), Error> {
+    if writer.remaining() < frame.len() {
+        flush_to(stream, writer)?;
+    }
+    if writer.remaining() >= frame.len() {
+        let spare = writer.spare();
+        spare[..frame.len()].copy_from_slice(frame);
+        writer.commit(0, frame.len());
+    } else {
+        // frame exceeds writer capacity — write directly (writer is empty after flush)
+        let mut off = 0;
+        while off < frame.len() {
+            let n = stream.write(&frame[off..]).map_err(Error::Io)?;
+            if n == 0 {
+                return Err(Error::Io(io::Error::other("write returned 0")));
+            }
+            off += n;
+        }
+        stream.flush().map_err(Error::Io)?;
+        return Ok(());
+    }
+    flush_to(stream, writer)
 }
 
 fn encode_gap_fill(
