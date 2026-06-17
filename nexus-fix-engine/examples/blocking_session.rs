@@ -6,7 +6,7 @@
 //! Run with: cargo run --example blocking_session
 
 use std::net::TcpListener;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
 use nexus_fix_codec::{FrameFormatter, encode_fix_uint};
@@ -19,15 +19,15 @@ fn main() {
     let addr = listener.local_addr().unwrap();
 
     let acceptor_dir = tmp_dir("acceptor");
-    let acceptor = std::thread::spawn(move || run_acceptor(listener, acceptor_dir));
+    let acceptor = std::thread::spawn(move || run_acceptor(listener, &acceptor_dir));
 
     let initiator_dir = tmp_dir("initiator");
-    run_initiator(addr, initiator_dir);
+    run_initiator(addr, &initiator_dir);
 
     acceptor.join().unwrap();
 }
 
-fn run_acceptor(listener: TcpListener, dir: PathBuf) {
+fn run_acceptor(listener: TcpListener, dir: &Path) {
     let (stream, _) = listener.accept().unwrap();
     stream
         .set_read_timeout(Some(Duration::from_secs(5)))
@@ -60,7 +60,7 @@ fn run_acceptor(listener: TcpListener, dir: PathBuf) {
     }
 }
 
-fn run_initiator(addr: std::net::SocketAddr, dir: PathBuf) {
+fn run_initiator(addr: std::net::SocketAddr, dir: &Path) {
     let mut conn = FixConnection::builder()
         .connect(
             addr,
