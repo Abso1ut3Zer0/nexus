@@ -396,8 +396,8 @@ impl SessionState {
         out
     }
 
-    /// Handles a received ResendRequest. Emits a gap-fill SequenceReset covering
-    /// the requested range and surfaces `Event::ResendRange` for the persistence layer.
+    /// Handles a received ResendRequest. Surfaces `Event::ResendRange` so the
+    /// persistence layer can drive the replay walk via [`FixJournal::resend_range`].
     pub fn on_resend_request(
         &mut self,
         seq: u32,
@@ -416,11 +416,6 @@ impl SessionState {
         self.test_request_sent = None;
         let mut out = Out::EMPTY;
         if self.validate_seq(seq, poss_dup, now, &mut out) {
-            self.last_sent = Some(now);
-            out.push_admin(AdminMsg::SequenceReset {
-                seq: begin,
-                new_seq: self.next_outbound,
-            });
             out.push_event(Event::ResendRange { begin, end });
             self.check_resend_done();
         }

@@ -7,6 +7,7 @@
 //! are invariant across all FIX versions.
 
 use nexus_net::buf::{ReadBuf, WriteBuf};
+use nexus_net::wire::ParserSink;
 
 const SOH: u8 = 0x01;
 
@@ -297,6 +298,18 @@ impl FrameReader {
         let len = data.len();
         self.buf.advance(len);
         len
+    }
+}
+
+impl ParserSink for FrameReader {
+    #[inline]
+    fn spare(&mut self) -> &mut [u8] {
+        self.buf.spare()
+    }
+
+    #[inline]
+    fn filled(&mut self, n: usize) {
+        self.buf.filled(n);
     }
 }
 
