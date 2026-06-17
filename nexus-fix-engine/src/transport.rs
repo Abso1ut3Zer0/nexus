@@ -466,7 +466,7 @@ impl<S: Read + Write> FixConnection<S> {
                     }
                     ReplayItem::App(orig) => reframe_app(writer, orig, &ts, begin_string),
                 };
-                retry.map_err(|_| Error::FrameTooLarge(writer.remaining().saturating_add(1)))?;
+                retry.map_err(|()| Error::FrameTooLarge(writer.remaining().saturating_add(1)))?;
             }
         }
         flush_to(stream, writer)
