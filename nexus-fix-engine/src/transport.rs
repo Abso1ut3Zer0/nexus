@@ -437,7 +437,7 @@ impl<S: Read + Write> FixConnection<S> {
                             let mut tmp = vec![0u8; orig.len() + 512];
                             let (start, len) =
                                 reframe_app_into(&mut tmp, orig, &ts, begin_string)
-                                    .ok_or_else(|| Error::FrameTooLarge(orig.len()))?;
+                                    .ok_or(Error::FrameTooLarge(orig.len()))?;
                             tmp.copy_within(start..start + len, 0);
                             tmp.truncate(len);
                             write_through(stream, writer, &tmp)?;
