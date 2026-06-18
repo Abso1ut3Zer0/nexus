@@ -14,7 +14,7 @@ use nexus_stats::{
     frequency::TopK,
     learning::{EpsilonGreedyF64, Exp3F64, ThompsonBetaF64, ThompsonGammaF64, Ucb1F64},
     monitoring::{
-        CoDelI64, DrawdownF64, EventRateU64, LivenessF64, PeakHoldF64, RunningMaxF64,
+        CoDelI64, DrawdownF64, EventRateU64, LivenessU64, PeakHoldF64, RunningMaxF64,
         RunningMinF64, WindowedMaxF64, WindowedMinF64,
     },
     signal::{AutocorrelationF64, CrossCorrelationF64, EntropyF64, TransferEntropyF64},
@@ -237,21 +237,21 @@ fn bench_ewma_var_f64(samples: &mut [u64]) {
 // Phase 3: Liveness, MOSUM
 // ============================================================================
 
-fn bench_liveness_f64(samples: &mut [u64]) {
-    let mut lv = LivenessF64::builder()
-        .alpha(0.3)
-        .deadline_multiple(3.0)
+fn bench_liveness_u64(samples: &mut [u64]) {
+    let mut lv = LivenessU64::builder()
+        .span(7)
+        .deadline_multiple(3)
         .build()
         .unwrap();
     let mut rng = 12345u64;
     for i in 0..WARMUP {
-        let _ = lv.update((i as f64).mul_add(10.0, (next_val(&mut rng) % 5) as f64));
+        let _ = lv.update(i as u64 * 10 + next_val(&mut rng) % 5);
     }
-    let mut t = WARMUP as f64 * 10.0;
+    let mut t = WARMUP as u64 * 10;
     for s in samples.iter_mut() {
         let start = rdtsc_start();
         for _ in 0..BATCH {
-            t += 10.0 + (next_val(&mut rng) % 5) as f64;
+            t += 10 + next_val(&mut rng) % 5;
             let _ = black_box(lv.update(t));
         }
         let end = rdtsc_end();
@@ -983,8 +983,8 @@ fn main() {
     print_row("WindowedMaxF64::update", &mut buf);
     bench_windowed_min_f64(&mut buf);
     print_row("WindowedMinF64::update", &mut buf);
-    bench_liveness_f64(&mut buf);
-    print_row("LivenessF64::update", &mut buf);
+    bench_liveness_u64(&mut buf);
+    print_row("LivenessU64::update", &mut buf);
     bench_running_min_f64(&mut buf);
     print_row("RunningMinF64::update", &mut buf);
     bench_running_max_f64(&mut buf);
