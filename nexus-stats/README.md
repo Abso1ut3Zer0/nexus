@@ -134,7 +134,7 @@ for deep-dives on each algorithm.
 | `WindowedMaxF64` / `WindowedMinF64` | Sliding window extrema (Nichols'/BBR) | 9 |
 | `PeakHoldF64` | Peak envelope with hold + decay | 7 |
 | `MaxGaugeF64` | Reset-on-read maximum (Netflix pattern) | 5 |
-| `LivenessF64` | Source alive/dead detection | 6 |
+| `LivenessI64` / `LivenessU64` | Source alive/dead detection | 6 |
 | `EventRateU64` | Smoothed events per unit time | 6 |
 | `CoDelI64` | Queue backpressure detection (CoDel-inspired) | 7 |
 | `SaturationF64` | Resource utilization threshold (USE method) | 6 |

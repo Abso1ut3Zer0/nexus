@@ -253,10 +253,10 @@ let mut svc_monitor = CusumF64::builder(50.0)
 
 ```rust
 let mut cusum = CusumF64::builder(baseline).slack(k).threshold(h).build().unwrap();
-let mut liveness = LivenessF64::builder().span(20).deadline_multiple(5.0).build().unwrap();
+let mut liveness = LivenessU64::builder().span(20).deadline_multiple(5).build().unwrap();
 
 // On each event:
-liveness.record(now);
+liveness.update(now);
 if let Some(shift) = cusum.update(latency) {
     // Degradation detected
 }

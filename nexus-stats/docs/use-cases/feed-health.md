@@ -51,7 +51,7 @@ impl FeedMonitor {
     }
 
     fn on_message(&mut self, now_ns: i64, value: i64, latency_us: f64) {
-        self.liveness.record(now_ns);
+        self.liveness.update(now_ns);
         self.rate.tick(now_ns);
         self.jitter.update(now_ns);
 
@@ -90,7 +90,7 @@ let mut latency_cusum = CusumF64::builder(baseline_ws_latency)
     .slack(2.0).threshold(20.0).min_samples(50).build().unwrap();
 
 // On each WebSocket message:
-liveness.record(now_ns);
+liveness.update(now_ns);
 msg_rate.tick(now_ns);
 latency_cusum.update(msg_latency_ms);
 

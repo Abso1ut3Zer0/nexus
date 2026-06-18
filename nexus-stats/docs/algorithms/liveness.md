@@ -7,7 +7,7 @@ data source goes quiet.
 |----------|-------|
 | Update cost | ~6 cycles |
 | Memory | ~32 bytes |
-| Types | `LivenessF64`, `LivenessF32`, `LivenessI64`, `LivenessI32` |
+| Types | `LivenessI64`, `LivenessU64` |
 | Output | `bool` — true = alive, false = dead |
 
 ## What It Does
@@ -28,22 +28,22 @@ data source goes quiet.
 ```
 
 Two methods:
-- **`record(timestamp)`** — call when data arrives. Updates the EMA.
+- **`update(timestamp)`** — call when data arrives. Updates the EMA.
 - **`check(now)`** — call periodically (e.g., from a timer). Returns false
   if time since last event exceeds the deadline. This is how you detect
-  *silence* — `record()` can't fire if nothing arrives.
+  *silence* — `update()` can't fire if nothing arrives.
 
 ## Configuration
 
 ```rust
-let mut live = LivenessF64::builder()
+let mut live = LivenessU64::builder()
     .span(20)                  // EMA smoothing of intervals
-    .deadline_multiple(5.0)    // dead if gap > 5× smoothed interval
+    .deadline_multiple(5)      // dead if gap > 5× smoothed interval
     .min_samples(5)
     .build().unwrap();
 
 // On each event:
-live.record(now);
+live.update(now);
 
 // On timer tick (must call periodically!):
 if !live.check(now) {
@@ -62,11 +62,11 @@ if !live.check(now) {
 ```rust
 let mut feed = LivenessI64::builder()
     .span(15)
-    .deadline_multiple(5.0)
+    .deadline_multiple(5)
     .build().unwrap();
 
 // On each market data message:
-feed.record(now_ns);
+feed.update(now_ns);
 
 // On 100ms timer (nexus-rt timer driver):
 if !feed.check(now_ns) {
@@ -76,8 +76,8 @@ if !feed.check(now_ns) {
 
 ### Networking — Heartbeat Monitoring
 ```rust
-let mut heartbeat = LivenessF64::builder()
-    .deadline_absolute(30.0)  // 30 seconds absolute timeout
+let mut heartbeat = LivenessU64::builder()
+    .deadline_absolute(30)    // 30 seconds absolute timeout
     .build().unwrap();
 ```
 
@@ -85,8 +85,8 @@ let mut heartbeat = LivenessF64::builder()
 
 | Operation | p50 | p99 |
 |-----------|-----|-----|
-| `LivenessF64::record` | 6 cycles | 20 cycles |
-| `LivenessF64::check` | ~3 cycles | ~3 cycles |
+| `LivenessU64::update` | 6 cycles | 20 cycles |
+| `LivenessU64::check` | ~3 cycles | ~3 cycles |
 
-`record()` includes one EMA update. `check()` is one subtraction +
+`update()` includes one EMA update. `check()` is one subtraction +
 one comparison.

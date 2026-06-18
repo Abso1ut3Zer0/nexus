@@ -83,7 +83,7 @@ let mut live = LivenessI64::builder()
     .build().unwrap();
 
 // On each message:
-live.record(now_ns);
+live.update(now_ns);
 
 // On timer tick:
 if !live.check(now_ns) {

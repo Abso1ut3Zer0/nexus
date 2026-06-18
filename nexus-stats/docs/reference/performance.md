@@ -37,7 +37,7 @@ pinned to a single core.
 | WindowedMax/MinF64 | 9-10 | 12-34 | 3-sample promotion |
 | PeakHoldF64 | 7 | 9 | compare + decay |
 | MaxGaugeF64 | ~5 | ~5 | compare-and-swap |
-| LivenessF64 | 6 | 20 | EMA + deadline |
+| LivenessI64 / LivenessU64 | 6 | 20 | EMA + deadline |
 | EventRateU64 | 6 | 9 | bit-shift EMA + inversion |
 | CoDelI64 | 7 | 10 | WindowedMin + threshold |
 | SaturationF64 | ~6 | ~8 | EMA + threshold |
