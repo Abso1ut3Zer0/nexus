@@ -161,8 +161,7 @@ impl DecayAccumI64 {
             return;
         }
 
-        let dt = timestamp - self.last_time;
-        let dt = dt as f64;
+        let dt = timestamp.wrapping_sub(self.last_time) as f64;
         if dt > 0.0 {
             self.score *= nexus_stats_core::math::exp(-self.decay_constant * dt);
             self.last_time = timestamp;
