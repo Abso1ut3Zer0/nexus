@@ -287,7 +287,7 @@ impl LivenessU64 {
             return dt <= smoothed * (multiple as i64);
         }
         if let Some(absolute) = self.deadline_absolute {
-            return dt <= absolute as i64;
+            return dt >= 0 && (dt as u64) <= absolute;
         }
         true
     }
