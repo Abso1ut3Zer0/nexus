@@ -10,9 +10,7 @@ use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
 use nexus_fix_codec::{FrameFormatter, encode_fix_uint};
-use nexus_fix_engine::{
-    CompId, FixConnection, FixJournal, SessionConfig, SessionState, State,
-};
+use nexus_fix_engine::{CompId, FixConnection, FixJournal, SessionConfig, SessionState, State};
 
 const BEGIN: &[u8] = b"FIX.4.4";
 
@@ -31,7 +29,9 @@ fn main() {
 
 fn run_acceptor(listener: TcpListener, dir: PathBuf) {
     let (stream, _) = listener.accept().unwrap();
-    stream.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
+    stream
+        .set_read_timeout(Some(Duration::from_secs(5)))
+        .unwrap();
 
     let mut conn = FixConnection::builder().accept(
         stream,

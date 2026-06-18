@@ -429,15 +429,16 @@ impl<S: Read + Write> FixConnection<S> {
                 match item {
                     ReplayItem::GapFill { seq, new_seq } => {
                         encode_gap_fill(writer, begin_string, sender, target, &ts, seq, new_seq)
-                            .map_err(|()| Error::FrameTooLarge(writer.remaining().saturating_add(1)))?;
+                            .map_err(|()| {
+                                Error::FrameTooLarge(writer.remaining().saturating_add(1))
+                            })?;
                     }
                     ReplayItem::App(orig) => {
                         if reframe_app(writer, orig, &ts, begin_string).is_err() {
                             // frame exceeds writer capacity; reframe into a heap buffer and write through
                             let mut tmp = vec![0u8; orig.len() + 512];
-                            let (start, len) =
-                                reframe_app_into(&mut tmp, orig, &ts, begin_string)
-                                    .ok_or(Error::FrameTooLarge(orig.len()))?;
+                            let (start, len) = reframe_app_into(&mut tmp, orig, &ts, begin_string)
+                                .ok_or(Error::FrameTooLarge(orig.len()))?;
                             tmp.copy_within(start..start + len, 0);
                             tmp.truncate(len);
                             write_through(stream, writer, &tmp)?;
@@ -610,7 +611,11 @@ fn parse_frame_header(frame: &[u8]) -> Option<FrameHeader<'_>> {
     for field in FieldReader::new(frame, 0) {
         match field.tag {
             35 => msg_type = Some(field.value.slice(frame)),
-            34 => seq = parse_fix_seqnum(field.value.slice(frame)).ok().map(|s| s as u32),
+            34 => {
+                seq = parse_fix_seqnum(field.value.slice(frame))
+                    .ok()
+                    .map(|s| s as u32)
+            }
             49 => sender = field.value.slice(frame),
             56 => target = field.value.slice(frame),
             43 => poss_dup = parse_fix_bool(field.value.slice(frame)).unwrap_or(false),
