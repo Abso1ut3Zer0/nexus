@@ -260,81 +260,47 @@ impl<S: Read + Write> FixConnection<S> {
     where
         H: FnMut(&[u8]),
     {
-        let sender_ok =
-            find_tag(frame, 0, 49).is_some_and(|s| s.slice(frame) == self.config.target.as_bytes());
-        let target_ok =
-            find_tag(frame, 0, 56).is_some_and(|s| s.slice(frame) == self.config.sender.as_bytes());
-        if !sender_ok || !target_ok {
+        let Some(h) = parse_frame_header(frame) else {
+            return Ok(None);
+        };
+
+        if h.sender != self.config.target.as_bytes() || h.target != self.config.sender.as_bytes() {
             let out = self.state.on_comp_id_mismatch(now);
             self.flush_out(out)?;
             return Ok(Some(DisconnectReason::CompIdMismatch));
         }
 
-        let seq = match find_tag(frame, 0, 34).and_then(|s| parse_fix_seqnum(s.slice(frame)).ok()) {
-            Some(s) => s as u32,
-            None => return Ok(None),
-        };
-
-        let poss_dup = find_tag(frame, 0, 43)
-            .and_then(|s| parse_fix_bool(s.slice(frame)).ok())
-            .unwrap_or(false);
-
-        let msg_type = match find_tag(frame, 0, 35) {
-            Some(s) => s.slice(frame),
-            None => return Ok(None),
-        };
-
-        let (out, is_app) = match msg_type {
+        let (out, is_app) = match h.msg_type {
             b"A" => {
-                let hbi = find_tag(frame, 0, 108)
-                    .and_then(|s| parse_fix_uint(s.slice(frame)).ok())
-                    .unwrap_or(30);
-                let reset = find_tag(frame, 0, 141)
-                    .and_then(|s| parse_fix_bool(s.slice(frame)).ok())
-                    .unwrap_or(false);
                 let was_logon_sent = self.state.state() == State::LogonSent;
                 (
-                    self.state.on_logon(seq, hbi, reset, !was_logon_sent, now),
+                    self.state
+                        .on_logon(h.seq, h.heart_bt_int, h.reset, !was_logon_sent, now),
                     false,
                 )
             }
-            b"5" => (self.state.on_logout(seq, poss_dup, now), false),
-            b"0" => (self.state.on_heartbeat(seq, poss_dup, now), false),
-            b"1" => {
-                let id = find_tag(frame, 0, 112).map_or(&b""[..], |s| s.slice(frame));
-                (self.state.on_test_request(seq, poss_dup, id, now), false)
-            }
-            b"2" => {
-                let begin = find_tag(frame, 0, 7)
-                    .and_then(|s| parse_fix_seqnum(s.slice(frame)).ok())
-                    .unwrap_or(0) as u32;
-                let end = find_tag(frame, 0, 16)
-                    .and_then(|s| parse_fix_seqnum(s.slice(frame)).ok())
-                    .unwrap_or(0) as u32;
-                (
-                    self.state.on_resend_request(seq, poss_dup, begin, end, now),
-                    false,
-                )
-            }
-            b"3" => {
-                let ref_seq = find_tag(frame, 0, 45)
-                    .and_then(|s| parse_fix_seqnum(s.slice(frame)).ok())
-                    .unwrap_or(0) as u32;
-                (self.state.on_reject(seq, poss_dup, ref_seq, now), false)
-            }
-            b"4" => {
-                let new_seq = find_tag(frame, 0, 36)
-                    .and_then(|s| parse_fix_seqnum(s.slice(frame)).ok())
-                    .unwrap_or(0) as u32;
-                let gap_fill = find_tag(frame, 0, 123)
-                    .and_then(|s| parse_fix_bool(s.slice(frame)).ok())
-                    .unwrap_or(false);
-                (
-                    self.state.on_sequence_reset(seq, new_seq, gap_fill, now),
-                    false,
-                )
-            }
-            _ => (self.state.on_app(seq, poss_dup, now), true),
+            b"5" => (self.state.on_logout(h.seq, h.poss_dup, now), false),
+            b"0" => (self.state.on_heartbeat(h.seq, h.poss_dup, now), false),
+            b"1" => (
+                self.state
+                    .on_test_request(h.seq, h.poss_dup, h.test_req_id, now),
+                false,
+            ),
+            b"2" => (
+                self.state
+                    .on_resend_request(h.seq, h.poss_dup, h.begin_seq, h.end_seq, now),
+                false,
+            ),
+            b"3" => (
+                self.state.on_reject(h.seq, h.poss_dup, h.ref_seq, now),
+                false,
+            ),
+            b"4" => (
+                self.state
+                    .on_sequence_reset(h.seq, h.new_seq_no, h.gap_fill, now),
+                false,
+            ),
+            _ => (self.state.on_app(h.seq, h.poss_dup, now), true),
         };
 
         self.flush_out(out)?;
@@ -460,13 +426,25 @@ impl<S: Read + Write> FixConnection<S> {
             };
             if ok.is_err() {
                 flush_to(stream, writer)?;
-                let retry = match item {
+                match item {
                     ReplayItem::GapFill { seq, new_seq } => {
                         encode_gap_fill(writer, begin_string, sender, target, &ts, seq, new_seq)
+                            .map_err(|()| {
+                                Error::FrameTooLarge(writer.remaining().saturating_add(1))
+                            })?;
                     }
-                    ReplayItem::App(orig) => reframe_app(writer, orig, &ts, begin_string),
-                };
-                retry.map_err(|()| Error::FrameTooLarge(writer.remaining().saturating_add(1)))?;
+                    ReplayItem::App(orig) => {
+                        if reframe_app(writer, orig, &ts, begin_string).is_err() {
+                            // frame exceeds writer capacity; reframe into a heap buffer and write through
+                            let mut tmp = vec![0u8; orig.len() + 512];
+                            let (start, len) = reframe_app_into(&mut tmp, orig, &ts, begin_string)
+                                .ok_or(Error::FrameTooLarge(orig.len()))?;
+                            tmp.copy_within(start..start + len, 0);
+                            tmp.truncate(len);
+                            write_through(stream, writer, &tmp)?;
+                        }
+                    }
+                }
             }
         }
         flush_to(stream, writer)
@@ -556,11 +534,22 @@ fn reframe_app(
     ts: &[u8],
     begin_string: &'static [u8],
 ) -> Result<(), ()> {
+    let spare = writer.spare();
+    let (start, len) = reframe_app_into(spare, orig, ts, begin_string).ok_or(())?;
+    writer.commit(start, len);
+    Ok(())
+}
+
+fn reframe_app_into(
+    buf: &mut [u8],
+    orig: &[u8],
+    ts: &[u8],
+    begin_string: &'static [u8],
+) -> Option<(usize, usize)> {
     let msg_type = find_tag(orig, 0, 35).map_or(b"D" as &[u8], |s| s.slice(orig));
     let orig_time = find_tag(orig, 0, 52).map(|s| s.slice(orig));
 
-    let spare = writer.spare();
-    let mut fmt = FrameFormatter::new(spare, begin_string, msg_type);
+    let mut fmt = FrameFormatter::new(buf, begin_string, msg_type);
     let mut poss_dup_done = false;
 
     for field in FieldReader::new(orig, 0) {
@@ -585,9 +574,94 @@ fn reframe_app(
         }
     }
 
-    let (start, len) = fmt.finish().map_err(|_| ())?;
-    writer.commit(start, len);
-    Ok(())
+    fmt.finish().ok()
+}
+
+struct FrameHeader<'a> {
+    sender: &'a [u8],
+    target: &'a [u8],
+    msg_type: &'a [u8],
+    seq: u32,
+    poss_dup: bool,
+    heart_bt_int: u32,
+    reset: bool,
+    test_req_id: &'a [u8],
+    begin_seq: u32,
+    end_seq: u32,
+    ref_seq: u32,
+    new_seq_no: u32,
+    gap_fill: bool,
+}
+
+fn parse_frame_header(frame: &[u8]) -> Option<FrameHeader<'_>> {
+    let mut sender: &[u8] = b"";
+    let mut target: &[u8] = b"";
+    let mut msg_type = None::<&[u8]>;
+    let mut seq = None::<u32>;
+    let mut poss_dup = false;
+    let mut heart_bt_int = 30u32;
+    let mut reset = false;
+    let mut test_req_id: &[u8] = b"";
+    let mut begin_seq = 0u32;
+    let mut end_seq = 0u32;
+    let mut ref_seq = 0u32;
+    let mut new_seq_no = 0u32;
+    let mut gap_fill = false;
+
+    for field in FieldReader::new(frame, 0) {
+        match field.tag {
+            35 => msg_type = Some(field.value.slice(frame)),
+            34 => {
+                seq = parse_fix_seqnum(field.value.slice(frame))
+                    .ok()
+                    .map(|s| s as u32)
+            }
+            49 => sender = field.value.slice(frame),
+            56 => target = field.value.slice(frame),
+            43 => poss_dup = parse_fix_bool(field.value.slice(frame)).unwrap_or(false),
+            108 => heart_bt_int = parse_fix_uint(field.value.slice(frame)).unwrap_or(30),
+            141 => reset = parse_fix_bool(field.value.slice(frame)).unwrap_or(false),
+            112 => test_req_id = field.value.slice(frame),
+            7 => {
+                begin_seq = parse_fix_seqnum(field.value.slice(frame))
+                    .ok()
+                    .map_or(0, |s| s as u32)
+            }
+            16 => {
+                end_seq = parse_fix_seqnum(field.value.slice(frame))
+                    .ok()
+                    .map_or(0, |s| s as u32)
+            }
+            45 => {
+                ref_seq = parse_fix_seqnum(field.value.slice(frame))
+                    .ok()
+                    .map_or(0, |s| s as u32)
+            }
+            36 => {
+                new_seq_no = parse_fix_seqnum(field.value.slice(frame))
+                    .ok()
+                    .map_or(0, |s| s as u32)
+            }
+            123 => gap_fill = parse_fix_bool(field.value.slice(frame)).unwrap_or(false),
+            _ => {}
+        }
+    }
+
+    Some(FrameHeader {
+        sender,
+        target,
+        msg_type: msg_type?,
+        seq: seq?,
+        poss_dup,
+        heart_bt_int,
+        reset,
+        test_req_id,
+        begin_seq,
+        end_seq,
+        ref_seq,
+        new_seq_no,
+        gap_fill,
+    })
 }
 
 fn is_timeout(e: &io::Error) -> bool {
