@@ -37,7 +37,9 @@ fn spawn_peer(scenario: &str) -> (std::process::Child, u16) {
 
 fn connect(port: u16, dir: &PathBuf) -> FixConnection<TcpStream> {
     let stream = TcpStream::connect(("127.0.0.1", port)).unwrap();
-    stream.set_read_timeout(Some(Duration::from_secs(10))).unwrap();
+    stream
+        .set_read_timeout(Some(Duration::from_secs(10)))
+        .unwrap();
     FixConnection::from_parts(
         stream,
         SessionState::new(Duration::from_secs(30)),
