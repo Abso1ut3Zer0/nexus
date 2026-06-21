@@ -121,10 +121,8 @@ fn drive(
     conn: &mut FixConnection<TcpStream, MockDict>,
 ) -> Result<DisconnectReason, TransportError> {
     loop {
-        match conn.recv(Instant::now())? {
-            Some(Message::Disconnected { reason }) => return Ok(reason),
-            Some(_) => {}
-            None => {}
+        if let Some(Message::Disconnected { reason }) = conn.recv(Instant::now())? {
+            return Ok(reason);
         }
     }
 }

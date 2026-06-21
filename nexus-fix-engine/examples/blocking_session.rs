@@ -123,7 +123,7 @@ fn run_acceptor(listener: &TcpListener, dir: &Path) {
                 break;
             }
             Ok(Some(Message::Application { .. })) => n += 1,
-            Ok(Some(_)) | Ok(None) => {}
+            Ok(Some(_) | None) => {}
             Err(e) => {
                 eprintln!("acceptor error: {e}");
                 break;
@@ -157,7 +157,7 @@ fn run_initiator(addr: std::net::SocketAddr, dir: &Path) {
                 eprintln!("initiator error: {e}");
                 return;
             }
-            Ok(Some(_)) | Ok(None) => {}
+            Ok(Some(_) | None) => {}
         }
         if conn.state().state() == State::Active {
             break;

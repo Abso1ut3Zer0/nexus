@@ -126,9 +126,8 @@ fn connect(port: u16, dir: &PathBuf) -> FixConnection<TcpStream, MockDict> {
 
 fn drive(conn: &mut FixConnection<TcpStream, MockDict>) -> DisconnectReason {
     loop {
-        match conn.recv(Instant::now()).unwrap() {
-            Some(Message::Disconnected { reason }) => return reason,
-            Some(_) | None => {}
+        if let Some(Message::Disconnected { reason }) = conn.recv(Instant::now()).unwrap() {
+            return reason;
         }
     }
 }
@@ -177,11 +176,8 @@ fn conformance_resend() {
     conn.connect(Instant::now()).unwrap();
 
     loop {
-        match conn.recv(Instant::now()).unwrap() {
-            Some(Message::Disconnected { reason }) => {
-                panic!("disconnected before active: {reason:?}")
-            }
-            Some(_) | None => {}
+        if let Some(Message::Disconnected { reason }) = conn.recv(Instant::now()).unwrap() {
+            panic!("disconnected before active: {reason:?}");
         }
         if conn.state().state() == State::Active {
             break;
