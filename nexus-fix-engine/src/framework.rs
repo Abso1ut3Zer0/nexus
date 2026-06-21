@@ -1,12 +1,11 @@
 use core::marker::PhantomData;
-use std::time::Instant;
+use std::io::Write;
 
-use nexus_fix_codec::{
-    FixAdminMsg, FixDictionary, FixHeader, find_tag, parse_fix_bool, parse_fix_seqnum,
-    parse_fix_uint,
-};
+use nexus_fix_codec::FixDictionary;
+use nexus_net::wire::ParserSink;
 
-use crate::{DisconnectReason, SessionState, State};
+use crate::frame::{FrameReader, FrameWriter};
+use crate::session::AdminMsg;
 
 const COMP_ID_CAP: usize = 20;
 
@@ -43,7 +42,7 @@ pub struct SessionConfig {
     pub target: CompId,
 }
 
-/// Error returned by [`Session::on_message`].
+/// Error returned by the framework layer when decoding fails.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum SessionError {
     /// Tag 35 (MsgType) absent.
@@ -72,7 +71,7 @@ impl core::fmt::Display for SessionError {
 
 impl core::error::Error for SessionError {}
 
-/// Typed inbound message returned by [`Session::on_message`].
+/// Typed inbound message returned by the transport layer.
 ///
 /// Admin messages carry the dictionary's zero-copy decoder for the message type
 /// so callers can read any field — protocol-required or venue-specific — without
@@ -100,162 +99,214 @@ pub enum Message<'buf, D: FixDictionary> {
     /// Business message. Route by `header.raw_msg_type()` and decode the body.
     Application { header: D::Header<'buf> },
     /// Session disconnected (CompID mismatch, timeout, or protocol violation).
-    Disconnected { reason: DisconnectReason },
+    Disconnected { reason: crate::DisconnectReason },
 }
 
-/// Dictionary-powered FIX session router.
-///
-/// Wraps [`SessionState`] with a codec layer: decodes the header via
-/// `D::Header::decode`, validates CompIDs, routes by raw `MsgType` bytes, and
-/// dispatches to the appropriate [`SessionState`] handler. Returns a typed
-/// [`Message`] so the caller owns both encoding and venue-specific logic.
-pub struct Session<D: FixDictionary> {
-    state: SessionState,
-    config: SessionConfig,
-    _dict: PhantomData<D>,
+/// Zero-copy FIX frame reader, dictionary-aware via `D::Header`.
+pub struct MessageReader<D: FixDictionary> {
+    pub(crate) inner: FrameReader,
+    pub(crate) frame: Vec<u8>,
+    _dict: PhantomData<fn() -> D>,
 }
 
-impl<D: FixDictionary> Session<D> {
-    pub fn new(state: SessionState, config: SessionConfig) -> Self {
+impl<D: FixDictionary> MessageReader<D> {
+    pub fn new() -> Self {
         Self {
-            state,
-            config,
+            inner: FrameReader::builder().build(),
+            frame: Vec::new(),
             _dict: PhantomData,
         }
     }
 
-    pub fn state(&self) -> &SessionState {
-        &self.state
-    }
-
-    pub fn state_mut(&mut self) -> &mut SessionState {
-        &mut self.state
-    }
-
-    /// Route an inbound message.
-    ///
-    /// Decodes the header, validates CompIDs, and dispatches to the matching
-    /// [`SessionState`] handler. Returns a [`Message`] carrying either the
-    /// decoded admin message or the application header.
-    pub fn on_message<'buf>(
-        &mut self,
-        buf: &'buf [u8],
-        now: Instant,
-    ) -> Result<Message<'buf, D>, SessionError> {
-        let header = D::Header::decode(buf);
-
-        // CompID validation — mismatch → disconnect.
-        let sender_ok = header
-            .sender_comp_id()
-            .is_some_and(|v| v.as_bytes() == self.config.target.as_bytes());
-        let target_ok = header
-            .target_comp_id()
-            .is_some_and(|v| v.as_bytes() == self.config.sender.as_bytes());
-        if !sender_ok || !target_ok {
-            self.state.on_comp_id_mismatch(now);
-            return Ok(Message::Disconnected {
-                reason: DisconnectReason::CompIdMismatch,
-            });
-        }
-
-        let seq = header
-            .msg_seq_num()
-            .ok_or(SessionError::MissingMsgSeqNum)?
-            .checked()
-            .map_err(|_| SessionError::MalformedField { tag: 34 })? as u32;
-
-        let poss_dup = header
-            .poss_dup_flag()
-            .and_then(|v| v.checked().ok())
-            .unwrap_or(false);
-
-        match header.raw_msg_type().map(|v| v.as_bytes()) {
-            Some(b"A") => {
-                let hbi = find_tag(buf, 0, 108).ok_or(SessionError::MissingField { tag: 108 })?;
-                let heart_bt_int = parse_fix_uint(hbi.slice(buf))
-                    .map_err(|_| SessionError::MalformedField { tag: 108 })?;
-                let reset = find_tag(buf, 0, 141)
-                    .and_then(|s| parse_fix_bool(s.slice(buf)).ok())
-                    .unwrap_or(false);
-                let was_logon_sent = self.state.state() == State::LogonSent;
-                let send_reply = !was_logon_sent;
-                self.state
-                    .on_logon(seq, heart_bt_int, reset, send_reply, now);
-                let msg = D::Logon::decode(buf).map_err(|_| SessionError::MalformedMessage)?;
-                Ok(if was_logon_sent {
-                    Message::LogonAcknowledged { msg }
-                } else {
-                    Message::LogonRequest { msg }
-                })
-            }
-            Some(b"5") => {
-                let was_logout_pending = self.state.state() == State::LogoutPending;
-                self.state.on_logout(seq, poss_dup, now);
-                let msg = D::Logout::decode(buf).map_err(|_| SessionError::MalformedMessage)?;
-                Ok(if was_logout_pending {
-                    Message::LogoutAcknowledged { msg }
-                } else {
-                    Message::LogoutRequest { msg }
-                })
-            }
-            Some(b"0") => {
-                self.state.on_heartbeat(seq, poss_dup, now);
-                Ok(Message::Heartbeat {
-                    msg: D::Heartbeat::decode(buf).map_err(|_| SessionError::MalformedMessage)?,
-                })
-            }
-            Some(b"1") => {
-                let test_req_id =
-                    find_tag(buf, 0, 112).map_or_else(|| b"".as_ref(), |s| s.slice(buf));
-                self.state.on_test_request(seq, poss_dup, test_req_id, now);
-                Ok(Message::TestRequest {
-                    msg: D::TestRequest::decode(buf).map_err(|_| SessionError::MalformedMessage)?,
-                })
-            }
-            Some(b"2") => {
-                let begin = find_tag(buf, 0, 7).ok_or(SessionError::MissingField { tag: 7 })?;
-                let begin = parse_fix_seqnum(begin.slice(buf))
-                    .map_err(|_| SessionError::MalformedField { tag: 7 })?
-                    as u32;
-                let end = find_tag(buf, 0, 16).ok_or(SessionError::MissingField { tag: 16 })?;
-                let end = parse_fix_seqnum(end.slice(buf))
-                    .map_err(|_| SessionError::MalformedField { tag: 16 })?
-                    as u32;
-                self.state.on_resend_request(seq, poss_dup, begin, end, now);
-                Ok(Message::ResendRequest {
-                    msg: D::ResendRequest::decode(buf)
-                        .map_err(|_| SessionError::MalformedMessage)?,
-                })
-            }
-            Some(b"4") => {
-                let new_seq = find_tag(buf, 0, 36).ok_or(SessionError::MissingField { tag: 36 })?;
-                let new_seq = parse_fix_seqnum(new_seq.slice(buf))
-                    .map_err(|_| SessionError::MalformedField { tag: 36 })?
-                    as u32;
-                let gap_fill = find_tag(buf, 0, 123)
-                    .and_then(|s| parse_fix_bool(s.slice(buf)).ok())
-                    .unwrap_or(false);
-                self.state.on_sequence_reset(seq, new_seq, gap_fill, now);
-                Ok(Message::SequenceReset {
-                    msg: D::SequenceReset::decode(buf)
-                        .map_err(|_| SessionError::MalformedMessage)?,
-                })
-            }
-            Some(b"3") => {
-                let ref_seq = find_tag(buf, 0, 45).ok_or(SessionError::MissingField { tag: 45 })?;
-                let ref_seq = parse_fix_seqnum(ref_seq.slice(buf))
-                    .map_err(|_| SessionError::MalformedField { tag: 45 })?
-                    as u32;
-                self.state.on_reject(seq, poss_dup, ref_seq, now);
-                Ok(Message::Reject {
-                    msg: D::Reject::decode(buf).map_err(|_| SessionError::MalformedMessage)?,
-                })
-            }
-            Some(_) => {
-                self.state.on_app(seq, poss_dup, now);
-                Ok(Message::Application { header })
-            }
-            None => Err(SessionError::MissingMsgType),
+    pub fn with_frame_reader(inner: FrameReader) -> Self {
+        Self {
+            inner,
+            frame: Vec::new(),
+            _dict: PhantomData,
         }
     }
+}
+
+impl<D: FixDictionary> Default for MessageReader<D> {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl<D: FixDictionary> ParserSink for MessageReader<D> {
+    fn spare(&mut self) -> &mut [u8] {
+        self.inner.spare()
+    }
+
+    fn filled(&mut self, n: usize) {
+        self.inner.filled(n);
+    }
+}
+
+/// Outbound FIX message writer, dictionary-aware via `D::BEGIN_STRING`.
+pub struct MessageWriter<D: FixDictionary> {
+    pub(crate) inner: FrameWriter,
+    _dict: PhantomData<fn() -> D>,
+}
+
+impl<D: FixDictionary> MessageWriter<D> {
+    pub fn new() -> Self {
+        Self {
+            inner: FrameWriter::builder().build(),
+            _dict: PhantomData,
+        }
+    }
+
+    pub fn with_frame_writer(inner: FrameWriter) -> Self {
+        Self {
+            inner,
+            _dict: PhantomData,
+        }
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.inner.is_empty()
+    }
+
+    pub fn data(&self) -> &[u8] {
+        self.inner.data()
+    }
+
+    pub fn advance(&mut self, n: usize) {
+        self.inner.advance(n);
+    }
+
+    pub fn remaining(&self) -> usize {
+        self.inner.remaining()
+    }
+
+    pub fn flush_to<S: Write>(&mut self, stream: &mut S) -> std::io::Result<()> {
+        while !self.inner.is_empty() {
+            let n = stream.write(self.inner.data())?;
+            if n == 0 {
+                return Err(std::io::Error::other("write returned 0"));
+            }
+            self.inner.advance(n);
+        }
+        stream.flush()
+    }
+
+    #[cfg(unix)]
+    pub fn encode_admin(&mut self, admin: AdminMsg, config: &SessionConfig) {
+        use nexus_fix_codec::{FrameFormatter, encode_fix_uint};
+
+        let ts = make_ts();
+
+        let msg_type: &[u8] = match admin {
+            AdminMsg::Logon { .. } => b"A",
+            AdminMsg::Logout { .. } => b"5",
+            AdminMsg::Heartbeat { .. } => b"0",
+            AdminMsg::TestRequest { .. } => b"1",
+            AdminMsg::ResendRequest { .. } => b"2",
+            AdminMsg::SequenceReset { .. } => b"4",
+        };
+
+        let seq = match admin {
+            AdminMsg::Logon { seq, .. }
+            | AdminMsg::Logout { seq }
+            | AdminMsg::Heartbeat { seq, .. }
+            | AdminMsg::TestRequest { seq, .. }
+            | AdminMsg::ResendRequest { seq, .. }
+            | AdminMsg::SequenceReset { seq, .. } => seq,
+        };
+
+        let begin_string = D::BEGIN_STRING;
+        let sender = config.sender;
+        let target = config.target;
+
+        let mut seq_buf = [0u8; 10];
+        let seq_n = encode_fix_uint(seq, &mut seq_buf);
+
+        let (start, len) = {
+            let spare = self.inner.spare();
+            let mut fmt = FrameFormatter::new(spare, begin_string, msg_type);
+            fmt.field(34, &seq_buf[..seq_n]);
+            fmt.field(49, sender.as_bytes());
+            fmt.field(56, target.as_bytes());
+            fmt.field(52, &ts);
+
+            match admin {
+                AdminMsg::Logon { heart_bt_int_s, .. } => {
+                    let mut buf = [0u8; 10];
+                    let n = encode_fix_uint(heart_bt_int_s, &mut buf);
+                    fmt.field(108, &buf[..n]);
+                }
+                AdminMsg::Logout { .. } | AdminMsg::Heartbeat { echo: None, .. } => {}
+                AdminMsg::Heartbeat {
+                    echo: Some((id, id_len)),
+                    ..
+                } => {
+                    fmt.field(112, &id[..id_len as usize]);
+                }
+                AdminMsg::TestRequest { id, .. } => {
+                    let mut buf = [0u8; 20];
+                    let n = encode_u64(id, &mut buf);
+                    fmt.field(112, &buf[..n]);
+                }
+                AdminMsg::ResendRequest { begin, .. } => {
+                    let mut buf = [0u8; 10];
+                    let n = encode_fix_uint(begin, &mut buf);
+                    fmt.field(7, &buf[..n]);
+                    fmt.field(16, b"0");
+                }
+                AdminMsg::SequenceReset { new_seq, .. } => {
+                    fmt.field(43, b"Y");
+                    fmt.field(123, b"Y");
+                    let mut buf = [0u8; 10];
+                    let n = encode_fix_uint(new_seq, &mut buf);
+                    fmt.field(36, &buf[..n]);
+                }
+            }
+
+            match fmt.finish() {
+                Ok(sl) => sl,
+                Err(_) => return,
+            }
+        };
+
+        self.inner.commit(start, len);
+    }
+}
+
+impl<D: FixDictionary> Default for MessageWriter<D> {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+#[cfg(unix)]
+fn make_ts() -> [u8; crate::timestamp::UTC_TIMESTAMP_LEN] {
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    let unix_nanos = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_nanos() as i128;
+    let mut ts = [0u8; crate::timestamp::UTC_TIMESTAMP_LEN];
+    crate::timestamp::format_utc_timestamp(unix_nanos, &mut ts);
+    ts
+}
+
+pub(crate) fn encode_u64(v: u64, out: &mut [u8; 20]) -> usize {
+    if v == 0 {
+        out[0] = b'0';
+        return 1;
+    }
+    let mut tmp = [0u8; 20];
+    let mut n = 0;
+    let mut x = v;
+    while x > 0 {
+        tmp[n] = b'0' + (x % 10) as u8;
+        x /= 10;
+        n += 1;
+    }
+    for i in 0..n {
+        out[i] = tmp[n - 1 - i];
+    }
+    n
 }

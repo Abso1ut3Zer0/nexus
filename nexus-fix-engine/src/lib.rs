@@ -20,7 +20,7 @@ pub mod transport;
 pub use frame::{
     FrameError, FrameReader, FrameReaderBuilder, FrameWriter, FrameWriterBuilder, ReadError,
 };
-pub use framework::{CompId, Message, Session, SessionConfig, SessionError};
+pub use framework::{CompId, Message, MessageReader, MessageWriter, SessionConfig, SessionError};
 #[cfg(unix)]
 pub use persist::{FixJournal, ReplayItem};
 pub use session::{AdminMsg, DisconnectReason, Event, Out, SessionState, State};

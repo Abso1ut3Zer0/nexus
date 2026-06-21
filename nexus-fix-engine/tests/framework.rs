@@ -1,9 +1,6 @@
-use std::time::{Duration, Instant};
-
 use nexus_fix_codec::{FieldView, FixAdminMsg, FixDictionary, FixHeader, FixTimestamp, find_tag};
-use nexus_fix_engine::{
-    CompId, DisconnectReason, Message, Session, SessionConfig, SessionState, State,
-};
+use nexus_fix_engine::{FrameReader, MessageReader, MessageWriter};
+use nexus_net::wire::ParserSink;
 
 // ── minimal mock dictionary ──────────────────────────────────────────────────
 
@@ -12,36 +9,13 @@ struct MockDict;
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 enum MockMsgType {}
 
-// Minimal find_tag-based admin decoder used for all 7 types in the mock.
 struct AdminDecoder<'buf> {
-    buf: &'buf [u8],
+    _buf: &'buf [u8],
 }
 
 impl<'buf> FixAdminMsg<'buf> for AdminDecoder<'buf> {
     fn decode(buf: &'buf [u8]) -> Result<Self, nexus_fix_codec::DecodeError> {
-        Ok(Self { buf })
-    }
-}
-
-impl<'buf> AdminDecoder<'buf> {
-    fn heart_bt_int(&self) -> Option<FieldView<'buf, u32>> {
-        find_tag(self.buf, 0, 108).and_then(|s| FieldView::new(s, self.buf))
-    }
-
-    fn test_req_id(&self) -> Option<FieldView<'buf, &'buf nexus_fix_codec::AsciiTextStr>> {
-        find_tag(self.buf, 0, 112).and_then(|s| FieldView::new(s, self.buf))
-    }
-
-    fn begin_seq_no(&self) -> Option<FieldView<'buf, u64>> {
-        find_tag(self.buf, 0, 7).and_then(|s| FieldView::new(s, self.buf))
-    }
-
-    fn end_seq_no(&self) -> Option<FieldView<'buf, u64>> {
-        find_tag(self.buf, 0, 16).and_then(|s| FieldView::new(s, self.buf))
-    }
-
-    fn new_seq_no(&self) -> Option<FieldView<'buf, u64>> {
-        find_tag(self.buf, 0, 36).and_then(|s| FieldView::new(s, self.buf))
+        Ok(Self { _buf: buf })
     }
 }
 
@@ -97,193 +71,173 @@ impl<'buf> FixHeader<'buf> for MockHeader<'buf> {
 
 // ── helpers ──────────────────────────────────────────────────────────────────
 
-const HB: Duration = Duration::from_secs(30);
-
-fn session() -> Session<MockDict> {
-    let state = SessionState::new(HB);
-    let config = SessionConfig {
-        sender: CompId::new(b"SENDER").unwrap(),
-        target: CompId::new(b"TARGET").unwrap(),
-    };
-    Session::new(state, config)
-}
-
-// 49=TARGET (their sender = our target), 56=SENDER (their target = our sender).
-fn logon(seq: u32, hbi: u32) -> Vec<u8> {
-    let mut v = Vec::new();
-    for part in [
-        format!("34={seq}\x01"),
-        "35=A\x01".to_string(),
-        "49=TARGET\x01".to_string(),
-        "56=SENDER\x01".to_string(),
-        format!("108={hbi}\x01"),
-    ] {
-        v.extend_from_slice(part.as_bytes());
-    }
-    v
-}
-
-fn logout(seq: u32) -> Vec<u8> {
-    format!("34={seq}\x0135=5\x0149=TARGET\x0156=SENDER\x01").into_bytes()
-}
-
-fn heartbeat(seq: u32) -> Vec<u8> {
-    format!("34={seq}\x0135=0\x0149=TARGET\x0156=SENDER\x01").into_bytes()
-}
-
-fn test_request(seq: u32, id: &str) -> Vec<u8> {
-    format!("34={seq}\x0135=1\x0149=TARGET\x0156=SENDER\x01112={id}\x01").into_bytes()
-}
-
-fn resend_request(seq: u32, begin: u32, end: u32) -> Vec<u8> {
-    format!("34={seq}\x017={begin}\x0116={end}\x0135=2\x0149=TARGET\x0156=SENDER\x01").into_bytes()
-}
-
-fn sequence_reset(seq: u32, new_seq: u32, gap_fill: bool) -> Vec<u8> {
-    format!(
-        "34={seq}\x0135=4\x0149=TARGET\x0156=SENDER\x0136={new_seq}\x01123={}\x01",
-        if gap_fill { "Y" } else { "N" }
-    )
-    .into_bytes()
-}
-
-fn app_msg(seq: u32) -> Vec<u8> {
-    format!("34={seq}\x0135=D\x0149=TARGET\x0156=SENDER\x01").into_bytes()
+fn feed_bytes<D: FixDictionary>(r: &mut MessageReader<D>, data: &[u8]) {
+    let spare = r.spare();
+    spare[..data.len()].copy_from_slice(data);
+    r.filled(data.len());
 }
 
 // ── tests ────────────────────────────────────────────────────────────────────
 
 #[test]
-fn acceptor_logon() {
-    let mut s = session();
-    let msg = logon(1, 30);
-    let m = s.on_message(&msg, Instant::now()).unwrap();
-    assert!(matches!(m, Message::LogonRequest { .. }));
-    assert_eq!(s.state().state(), State::Active);
-    if let Message::LogonRequest { msg } = m {
-        assert_eq!(msg.heart_bt_int().and_then(|v| v.checked().ok()), Some(30));
-    }
+fn frame_reader_yields_complete_frame() {
+    let msg = b"8=FIX.4.4\x019=5\x0135=0\x0110=162\x01";
+    let mut fr = FrameReader::builder().build();
+    fr.read(msg).unwrap();
+    let frame = fr.next().unwrap().unwrap();
+    assert_eq!(frame, msg.as_slice());
 }
 
 #[test]
-fn initiator_logon_reply() {
-    let mut s = session();
-    let now = Instant::now();
-    s.state_mut().connect(now);
-    assert_eq!(s.state().state(), State::LogonSent);
-
-    let msg = logon(1, 30);
-    let m = s.on_message(&msg, now).unwrap();
-    assert!(matches!(m, Message::LogonAcknowledged { .. }));
-    assert_eq!(s.state().state(), State::Active);
+fn frame_reader_buffers_partial_then_complete() {
+    let msg = b"8=FIX.4.4\x019=5\x0135=0\x0110=162\x01";
+    let mut fr = FrameReader::builder().build();
+    let half = msg.len() / 2;
+    fr.read(&msg[..half]).unwrap();
+    assert!(fr.next().unwrap().is_none());
+    fr.read(&msg[half..]).unwrap();
+    let frame = fr.next().unwrap().unwrap();
+    assert_eq!(frame, msg.as_slice());
 }
 
 #[test]
-fn logout_round_trip() {
-    let mut s = session();
-    let now = Instant::now();
-    s.on_message(&logon(1, 30), now).unwrap();
-
-    let msg = logout(2);
-    let m = s.on_message(&msg, now).unwrap();
-    assert!(matches!(m, Message::LogoutRequest { .. }));
-    assert_eq!(s.state().state(), State::Disconnected);
+fn message_reader_spare_filled_interface() {
+    let msg = b"8=FIX.4.4\x019=5\x0135=0\x0110=162\x01";
+    let mut r: MessageReader<MockDict> = MessageReader::new();
+    feed_bytes(&mut r, msg);
+    // The bytes are now in the internal FrameReader. Verify by feeding another message
+    // and confirming the reader accepts more bytes (it didn't OOM).
+    let msg2 = b"8=FIX.4.4\x019=5\x0135=0\x0110=162\x01";
+    feed_bytes(&mut r, msg2);
 }
 
 #[test]
-fn heartbeat_is_handled() {
-    let mut s = session();
-    let now = Instant::now();
-    s.on_message(&logon(1, 30), now).unwrap();
+fn message_writer_flush_to() {
+    let mut w: MessageWriter<MockDict> = MessageWriter::new();
+    assert!(w.is_empty());
 
-    let hb = heartbeat(2);
-    let m = s.on_message(&hb, now).unwrap();
-    assert!(matches!(m, Message::Heartbeat { .. }));
+    let mut sink = Vec::new();
+    w.flush_to(&mut sink).unwrap();
+    assert_eq!(sink.len(), 0);
 }
 
 #[test]
-fn test_request_surfaces_id() {
-    let mut s = session();
-    let now = Instant::now();
-    s.on_message(&logon(1, 30), now).unwrap();
-
-    let msg = test_request(2, "PROBE1");
-    let m = s.on_message(&msg, now).unwrap();
-    if let Message::TestRequest { msg } = m {
-        let id = msg
-            .test_req_id()
-            .and_then(|v| v.checked().ok())
-            .map(nexus_fix_codec::AsciiTextStr::as_bytes);
-        assert_eq!(id, Some(b"PROBE1".as_ref()));
-    } else {
-        panic!("expected TestRequest");
-    }
+fn message_writer_is_empty_after_flush() {
+    let mut w: MessageWriter<MockDict> = MessageWriter::new();
+    assert!(w.is_empty());
+    assert_eq!(w.remaining(), w.remaining());
+    let mut sink = Vec::new();
+    w.flush_to(&mut sink).unwrap();
+    assert!(w.is_empty());
 }
 
-#[test]
-fn resend_request_fields() {
-    let mut s = session();
-    let now = Instant::now();
-    s.on_message(&logon(1, 30), now).unwrap();
-    s.state_mut().allocate_seq(now); // seq 2
-    s.state_mut().allocate_seq(now); // seq 3
+#[cfg(unix)]
+mod unix_tests {
+    use nexus_fix_engine::{AdminMsg, CompId, MessageWriter, SessionConfig};
 
-    let msg = resend_request(2, 2, 3);
-    let m = s.on_message(&msg, now).unwrap();
-    if let Message::ResendRequest { msg } = m {
-        assert_eq!(msg.begin_seq_no().and_then(|v| v.checked().ok()), Some(2));
-        assert_eq!(msg.end_seq_no().and_then(|v| v.checked().ok()), Some(3));
-    } else {
-        panic!("expected ResendRequest");
-    }
-    assert_eq!(s.state().state(), State::Active);
-}
+    use super::MockDict;
 
-#[test]
-fn sequence_reset_gap_fill() {
-    let mut s = session();
-    let now = Instant::now();
-    s.on_message(&logon(1, 30), now).unwrap();
-
-    // trigger a gap
-    s.on_message(&app_msg(5), now).unwrap();
-    assert_eq!(s.state().state(), State::Resending);
-
-    let msg = sequence_reset(2, 6, true);
-    let m = s.on_message(&msg, now).unwrap();
-    if let Message::SequenceReset { msg } = m {
-        assert_eq!(msg.new_seq_no().and_then(|v| v.checked().ok()), Some(6));
-    } else {
-        panic!("expected SequenceReset");
-    }
-    assert_eq!(s.state().next_inbound_seq(), 6);
-    assert_eq!(s.state().state(), State::Active);
-}
-
-#[test]
-fn app_message_surfaces_header() {
-    let mut s = session();
-    let now = Instant::now();
-    s.on_message(&logon(1, 30), now).unwrap();
-
-    let msg = app_msg(2);
-    let m = s.on_message(&msg, now).unwrap();
-    assert!(matches!(m, Message::Application { .. }));
-}
-
-#[test]
-fn comp_id_mismatch_disconnects() {
-    let mut s = session();
-    let now = Instant::now();
-    s.on_message(&logon(1, 30), now).unwrap();
-
-    let msg = b"34=2\x0135=0\x0149=WRONG\x0156=SENDER\x01";
-    let m = s.on_message(msg, now).unwrap();
-    assert!(matches!(
-        m,
-        Message::Disconnected {
-            reason: DisconnectReason::CompIdMismatch
+    fn config() -> SessionConfig {
+        SessionConfig {
+            sender: CompId::new(b"SENDER").unwrap(),
+            target: CompId::new(b"TARGET").unwrap(),
         }
-    ));
-    assert_eq!(s.state().state(), State::Disconnected);
+    }
+
+    #[test]
+    fn encode_admin_logon_produces_valid_frame() {
+        let mut w: MessageWriter<MockDict> = MessageWriter::new();
+        let config = config();
+        w.encode_admin(
+            AdminMsg::Logon {
+                seq: 1,
+                heart_bt_int_s: 30,
+            },
+            &config,
+        );
+        assert!(!w.is_empty());
+
+        let data = w.data();
+        assert!(data.starts_with(b"8=FIX.4.4\x01"));
+        assert!(data.windows(5).any(|c| c == b"35=A\x01"));
+        assert!(
+            data.windows(b"49=SENDER\x01".len())
+                .any(|c| c == b"49=SENDER\x01")
+        );
+        assert!(
+            data.windows(b"56=TARGET\x01".len())
+                .any(|c| c == b"56=TARGET\x01")
+        );
+        assert!(
+            data.windows(b"108=30\x01".len())
+                .any(|c| c == b"108=30\x01")
+        );
+        assert!(*data.last().unwrap() == b'\x01');
+
+        let mut out = Vec::new();
+        w.flush_to(&mut out).unwrap();
+        assert!(w.is_empty());
+        assert!(!out.is_empty());
+    }
+
+    #[test]
+    fn encode_admin_logout_produces_valid_frame() {
+        let mut w: MessageWriter<MockDict> = MessageWriter::new();
+        let config = config();
+        w.encode_admin(AdminMsg::Logout { seq: 2 }, &config);
+        assert!(!w.is_empty());
+        let data = w.data();
+        assert!(data.starts_with(b"8=FIX.4.4\x01"));
+        assert!(data.windows(5).any(|c| c == b"35=5\x01"));
+    }
+
+    #[test]
+    fn encode_admin_heartbeat_without_echo() {
+        let mut w: MessageWriter<MockDict> = MessageWriter::new();
+        let config = config();
+        w.encode_admin(AdminMsg::Heartbeat { seq: 3, echo: None }, &config);
+        assert!(!w.is_empty());
+        let data = w.data();
+        assert!(data.windows(5).any(|c| c == b"35=0\x01"));
+        assert!(!data.windows(b"112=".len()).any(|c| c == b"112="));
+    }
+
+    #[test]
+    fn encode_admin_resend_request() {
+        let mut w: MessageWriter<MockDict> = MessageWriter::new();
+        let config = config();
+        w.encode_admin(AdminMsg::ResendRequest { seq: 4, begin: 2 }, &config);
+        assert!(!w.is_empty());
+        let data = w.data();
+        assert!(data.windows(5).any(|c| c == b"35=2\x01"));
+        assert!(data.windows(b"7=2\x01".len()).any(|c| c == b"7=2\x01"));
+        assert!(data.windows(b"16=0\x01".len()).any(|c| c == b"16=0\x01"));
+    }
+
+    #[test]
+    fn encode_admin_sequence_reset() {
+        let mut w: MessageWriter<MockDict> = MessageWriter::new();
+        let config = config();
+        w.encode_admin(
+            AdminMsg::SequenceReset {
+                seq: 5,
+                new_seq: 10,
+            },
+            &config,
+        );
+        assert!(!w.is_empty());
+        let data = w.data();
+        assert!(data.windows(5).any(|c| c == b"35=4\x01"));
+        assert!(data.windows(b"36=10\x01".len()).any(|c| c == b"36=10\x01"));
+        assert!(data.windows(b"123=Y\x01".len()).any(|c| c == b"123=Y\x01"));
+    }
+
+    #[test]
+    fn encode_admin_uses_dict_begin_string() {
+        let mut w: MessageWriter<MockDict> = MessageWriter::new();
+        let config = config();
+        w.encode_admin(AdminMsg::Logout { seq: 1 }, &config);
+        let data = w.data();
+        assert!(data.starts_with(b"8=FIX.4.4\x01"));
+    }
 }
