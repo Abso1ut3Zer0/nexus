@@ -11,7 +11,7 @@ use nexus_fix_codec::{
 };
 use nexus_fix_engine::{
     CompId, DisconnectReason, FixConnection, FixJournal, Message, SessionConfig, SessionState,
-    TransportError,
+    State, TransportError,
 };
 
 // ── mock dictionary ──────────────────────────────────────────────────────────
@@ -334,4 +334,49 @@ fn resend_request_triggers_gap_fill() {
 
     handle.join().unwrap();
     let _ = dir_srv;
+}
+
+#[test]
+fn inbound_gap_sends_resend_request_and_suppresses_app_message() {
+    let dir_cli = tmp_dir("inbound_gap");
+    let (client_sock, server_sock) = loopback_pair();
+    server_sock
+        .set_read_timeout(Some(Duration::from_millis(200)))
+        .unwrap();
+
+    // Peer sends logon, then a gap app message, then drops (EOF to engine).
+    let handle = std::thread::spawn(move || {
+        let mut peer = Peer::new(client_sock, sender(), target());
+        let mut buf = [0u8; 512];
+        peer.send_logon(30);
+        let _ = peer.recv_msg(&mut buf); // consume logon ack
+        peer.next_out = 5;
+        peer.send_app(11, b"ORD-GAP"); // seq=5, gap (expected 2)
+        // Drop peer — engine sees EOF; no need to read ResendRequest here.
+    });
+
+    let mut conn: FixConnection<TcpStream, MockDict> = FixConnection::from_parts(
+        server_sock,
+        SessionState::new(Duration::from_secs(30)),
+        session_cfg(target(), sender()),
+        journal(&dir_cli),
+    );
+
+    let mut saw_app = false;
+    loop {
+        match conn.recv(Instant::now()) {
+            Ok(Some(Message::Disconnected { .. })) | Err(_) => break,
+            Ok(Some(Message::Application { .. })) => saw_app = true,
+            Ok(Some(_)) | Ok(None) => {}
+        }
+    }
+
+    assert!(!saw_app, "out-of-sequence app must not be surfaced");
+    assert_eq!(
+        conn.state().state(),
+        State::Resending,
+        "engine must enter Resending state (= ResendRequest sent) on inbound gap"
+    );
+
+    handle.join().unwrap();
 }

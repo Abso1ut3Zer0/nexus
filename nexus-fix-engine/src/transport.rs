@@ -306,7 +306,10 @@ impl<S: Read + Write, D: FixDictionary> FixConnection<S, D> {
             }));
         }
 
-        let raw_type = find_tag(frame, 0, 35).map_or(b"" as &[u8], |s| s.slice(frame));
+        let raw_type = match find_tag(frame, 0, 35) {
+            Some(s) => s.slice(frame),
+            None => return Err(Error::Protocol(SessionError::MissingMsgType)),
+        };
 
         match raw_type {
             b"A" => {
@@ -345,9 +348,6 @@ impl<S: Read + Write, D: FixDictionary> FixConnection<S, D> {
                     self.writer.flush_to(&mut self.stream).map_err(Error::Io)?;
                 }
                 if let Some(Event::Disconnected { reason }) = out.event() {
-                    let msg = D::Logout::decode(frame)
-                        .map_err(|_| Error::Protocol(SessionError::MalformedMessage))?;
-                    let _ = msg;
                     return Ok(Some(Message::Disconnected { reason }));
                 }
                 let msg = D::Logout::decode(frame)
@@ -456,9 +456,12 @@ impl<S: Read + Write, D: FixDictionary> FixConnection<S, D> {
                 if let Some(Event::Disconnected { reason }) = out.event() {
                     return Ok(Some(Message::Disconnected { reason }));
                 }
-                Ok(Some(Message::Application {
-                    header: D::Header::decode(frame),
-                }))
+                if matches!(out.event(), Some(Event::App { .. })) {
+                    return Ok(Some(Message::Application {
+                        header: D::Header::decode(frame),
+                    }));
+                }
+                Ok(None) // gap: ResendRequest queued, nothing to surface
             }
         }
     }
