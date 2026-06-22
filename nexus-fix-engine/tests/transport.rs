@@ -367,7 +367,7 @@ fn inbound_gap_sends_resend_request_and_suppresses_app_message() {
         match conn.recv(Instant::now()) {
             Ok(Some(Message::Disconnected { .. })) | Err(_) => break,
             Ok(Some(Message::Application { .. })) => saw_app = true,
-            Ok(Some(_)) | Ok(None) => {}
+            Ok(Some(_) | None) => {}
         }
     }
 
