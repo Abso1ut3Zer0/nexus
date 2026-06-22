@@ -239,7 +239,9 @@ pub fn parse_tag(buf: &[u8]) -> (u32, usize) {
     let mut tag = 0u32;
     let mut i = 0;
     while i < buf.len() && buf[i] >= b'0' && buf[i] <= b'9' {
-        tag = tag * 10 + (buf[i] - b'0') as u32;
+        tag = tag
+            .saturating_mul(10)
+            .saturating_add((buf[i] - b'0') as u32);
         i += 1;
     }
     (tag, i)
