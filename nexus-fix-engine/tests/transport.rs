@@ -5,11 +5,83 @@ use std::net::{TcpListener, TcpStream};
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
-use nexus_fix_codec::{FrameFormatter, encode_fix_uint};
-use nexus_fix_engine::{
-    CompId, DisconnectReason, FixConnection, FixJournal, SessionConfig, SessionState,
-    TransportError,
+use nexus_fix_codec::{
+    FieldView, FixAdminMsg, FixDictionary, FixHeader, FixTimestamp, FrameFormatter,
+    encode_fix_uint, find_tag,
 };
+use nexus_fix_engine::{
+    CompId, DisconnectReason, FixConnection, FixJournal, Message, SessionConfig, SessionState,
+    State, TransportError,
+};
+
+// ── mock dictionary ──────────────────────────────────────────────────────────
+
+struct MockDict;
+
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+enum MockMsgType {}
+
+struct AdminDecoder<'buf> {
+    _buf: &'buf [u8],
+}
+
+impl<'buf> FixAdminMsg<'buf> for AdminDecoder<'buf> {
+    fn decode(buf: &'buf [u8]) -> Result<Self, nexus_fix_codec::DecodeError> {
+        Ok(Self { _buf: buf })
+    }
+}
+
+impl FixDictionary for MockDict {
+    type MsgType = MockMsgType;
+    type Header<'buf> = MockHeader<'buf>;
+    type Logon<'buf> = AdminDecoder<'buf>;
+    type Logout<'buf> = AdminDecoder<'buf>;
+    type Heartbeat<'buf> = AdminDecoder<'buf>;
+    type TestRequest<'buf> = AdminDecoder<'buf>;
+    type ResendRequest<'buf> = AdminDecoder<'buf>;
+    type SequenceReset<'buf> = AdminDecoder<'buf>;
+    type Reject<'buf> = AdminDecoder<'buf>;
+    const BEGIN_STRING: &'static [u8] = b"FIX.4.4";
+    fn is_admin(_: MockMsgType) -> bool {
+        false
+    }
+}
+
+struct MockHeader<'buf> {
+    buf: &'buf [u8],
+}
+
+impl<'buf> FixHeader<'buf> for MockHeader<'buf> {
+    fn decode(buf: &'buf [u8]) -> Self {
+        Self { buf }
+    }
+
+    fn raw_msg_type(&self) -> Option<FieldView<'buf, &'buf [u8]>> {
+        find_tag(self.buf, 0, 35).and_then(|s| FieldView::new(s, self.buf))
+    }
+
+    fn msg_seq_num(&self) -> Option<FieldView<'buf, u64>> {
+        find_tag(self.buf, 0, 34).and_then(|s| FieldView::new(s, self.buf))
+    }
+
+    fn sender_comp_id(&self) -> Option<FieldView<'buf, &'buf nexus_fix_codec::AsciiTextStr>> {
+        find_tag(self.buf, 0, 49).and_then(|s| FieldView::new(s, self.buf))
+    }
+
+    fn target_comp_id(&self) -> Option<FieldView<'buf, &'buf nexus_fix_codec::AsciiTextStr>> {
+        find_tag(self.buf, 0, 56).and_then(|s| FieldView::new(s, self.buf))
+    }
+
+    fn poss_dup_flag(&self) -> Option<FieldView<'buf, bool>> {
+        find_tag(self.buf, 0, 43).and_then(|s| FieldView::new(s, self.buf))
+    }
+
+    fn sending_time(&self) -> Option<FieldView<'buf, FixTimestamp>> {
+        None
+    }
+}
+
+// ── helpers ──────────────────────────────────────────────────────────────────
 
 fn sender() -> CompId {
     CompId::new(b"INITIATOR").unwrap()
@@ -45,15 +117,11 @@ fn tmp_dir(suffix: &str) -> PathBuf {
     p
 }
 
-fn drive<H>(
-    conn: &mut FixConnection<TcpStream>,
-    mut on_app: H,
-) -> Result<DisconnectReason, TransportError>
-where
-    H: FnMut(&[u8]),
-{
+fn drive(
+    conn: &mut FixConnection<TcpStream, MockDict>,
+) -> Result<DisconnectReason, TransportError> {
     loop {
-        if let Some(reason) = conn.recv(Instant::now(), &mut on_app)? {
+        if let Some(Message::Disconnected { reason }) = conn.recv(Instant::now())? {
             return Ok(reason);
         }
     }
@@ -136,6 +204,8 @@ impl Peer {
     }
 }
 
+// ── tests ────────────────────────────────────────────────────────────────────
+
 #[test]
 fn initiator_logon_and_logout() {
     let dir = tmp_dir("logon_logout");
@@ -157,16 +227,15 @@ fn initiator_logon_and_logout() {
         let _ = peer.recv_msg(&mut buf);
     });
 
-    let mut conn = FixConnection::from_parts(
+    let mut conn: FixConnection<TcpStream, MockDict> = FixConnection::from_parts(
         client_sock,
         SessionState::new(Duration::from_secs(30)),
         session_cfg(t_sender, t_target),
         journal(&dir),
-        b"FIX.4.4",
     );
     conn.connect(Instant::now()).unwrap();
 
-    let reason = drive(&mut conn, |_| {}).unwrap();
+    let reason = drive(&mut conn).unwrap();
     assert_eq!(reason, DisconnectReason::Logout);
 
     handle.join().unwrap();
@@ -190,20 +259,27 @@ fn acceptor_receives_app_message() {
         let _ = peer.recv_msg(&mut buf);
     });
 
-    let mut received: Vec<Vec<u8>> = Vec::new();
+    let mut received_app = 0usize;
     let dir2 = tmp_dir("acceptor_app_srv");
-    let mut conn = FixConnection::from_parts(
+    let mut conn: FixConnection<TcpStream, MockDict> = FixConnection::from_parts(
         server_sock,
         SessionState::new(Duration::from_secs(30)),
         session_cfg(target(), sender()),
         journal(&dir2),
-        b"FIX.4.4",
     );
 
-    let reason = drive(&mut conn, |frame| received.push(frame.to_vec())).unwrap();
+    let reason = loop {
+        match conn.recv(Instant::now()).unwrap() {
+            Some(Message::Disconnected { reason }) => break reason,
+            Some(Message::Application { header: _ }) => {
+                received_app += 1;
+            }
+            Some(_) | None => {}
+        }
+    };
+
     assert_eq!(reason, DisconnectReason::Logout);
-    assert_eq!(received.len(), 1);
-    assert!(received[0].starts_with(b"8=FIX.4.4"));
+    assert_eq!(received_app, 1);
 
     handle.join().unwrap();
     let _ = dir;
@@ -245,18 +321,62 @@ fn resend_request_triggers_gap_fill() {
         let _ = peer.recv_msg(&mut buf);
     });
 
-    let mut conn = FixConnection::from_parts(
+    let mut conn: FixConnection<TcpStream, MockDict> = FixConnection::from_parts(
         client_sock,
         SessionState::new(Duration::from_secs(30)),
         session_cfg(sender(), target()),
         journal(&dir_cli),
-        b"FIX.4.4",
     );
     conn.connect(Instant::now()).unwrap();
 
-    let reason = drive(&mut conn, |_| {}).unwrap();
+    let reason = drive(&mut conn).unwrap();
     assert_eq!(reason, DisconnectReason::Logout);
 
     handle.join().unwrap();
     let _ = dir_srv;
+}
+
+#[test]
+fn inbound_gap_sends_resend_request_and_suppresses_app_message() {
+    let dir_cli = tmp_dir("inbound_gap");
+    let (client_sock, server_sock) = loopback_pair();
+    server_sock
+        .set_read_timeout(Some(Duration::from_millis(200)))
+        .unwrap();
+
+    // Peer sends logon, then a gap app message, then drops (EOF to engine).
+    let handle = std::thread::spawn(move || {
+        let mut peer = Peer::new(client_sock, sender(), target());
+        let mut buf = [0u8; 512];
+        peer.send_logon(30);
+        let _ = peer.recv_msg(&mut buf); // consume logon ack
+        peer.next_out = 5;
+        peer.send_app(11, b"ORD-GAP"); // seq=5, gap (expected 2)
+        // Drop peer — engine sees EOF; no need to read ResendRequest here.
+    });
+
+    let mut conn: FixConnection<TcpStream, MockDict> = FixConnection::from_parts(
+        server_sock,
+        SessionState::new(Duration::from_secs(30)),
+        session_cfg(target(), sender()),
+        journal(&dir_cli),
+    );
+
+    let mut saw_app = false;
+    loop {
+        match conn.recv(Instant::now()) {
+            Ok(Some(Message::Disconnected { .. })) | Err(_) => break,
+            Ok(Some(Message::Application { .. })) => saw_app = true,
+            Ok(Some(_) | None) => {}
+        }
+    }
+
+    assert!(!saw_app, "out-of-sequence app must not be surfaced");
+    assert_eq!(
+        conn.state().state(),
+        State::Resending,
+        "engine must enter Resending state (= ResendRequest sent) on inbound gap"
+    );
+
+    handle.join().unwrap();
 }

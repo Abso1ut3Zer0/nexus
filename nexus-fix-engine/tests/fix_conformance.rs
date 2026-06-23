@@ -1,17 +1,90 @@
 #![cfg(unix)]
 
-use std::io::{BufRead, BufReader};
+use std::io::BufRead;
+use std::io::BufReader;
 use std::net::TcpStream;
 use std::path::PathBuf;
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
 
-use nexus_fix_codec::{FrameFormatter, encode_fix_uint};
+use nexus_fix_codec::{
+    FieldView, FixAdminMsg, FixDictionary, FixHeader, FixTimestamp, FrameFormatter,
+    encode_fix_uint, find_tag,
+};
 use nexus_fix_engine::{
-    CompId, DisconnectReason, FixConnection, FixJournal, SessionConfig, SessionState, State,
+    CompId, DisconnectReason, FixConnection, FixJournal, Message, SessionConfig, SessionState,
+    State,
 };
 
-const BEGIN: &[u8] = b"FIX.4.4";
+// ── mock dictionary ──────────────────────────────────────────────────────────
+
+struct MockDict;
+
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+enum MockMsgType {}
+
+struct AdminDecoder<'buf> {
+    _buf: &'buf [u8],
+}
+
+impl<'buf> FixAdminMsg<'buf> for AdminDecoder<'buf> {
+    fn decode(buf: &'buf [u8]) -> Result<Self, nexus_fix_codec::DecodeError> {
+        Ok(Self { _buf: buf })
+    }
+}
+
+impl FixDictionary for MockDict {
+    type MsgType = MockMsgType;
+    type Header<'buf> = MockHeader<'buf>;
+    type Logon<'buf> = AdminDecoder<'buf>;
+    type Logout<'buf> = AdminDecoder<'buf>;
+    type Heartbeat<'buf> = AdminDecoder<'buf>;
+    type TestRequest<'buf> = AdminDecoder<'buf>;
+    type ResendRequest<'buf> = AdminDecoder<'buf>;
+    type SequenceReset<'buf> = AdminDecoder<'buf>;
+    type Reject<'buf> = AdminDecoder<'buf>;
+    const BEGIN_STRING: &'static [u8] = b"FIX.4.4";
+    fn is_admin(_: MockMsgType) -> bool {
+        false
+    }
+}
+
+struct MockHeader<'buf> {
+    buf: &'buf [u8],
+}
+
+impl<'buf> FixHeader<'buf> for MockHeader<'buf> {
+    fn decode(buf: &'buf [u8]) -> Self {
+        Self { buf }
+    }
+
+    fn raw_msg_type(&self) -> Option<FieldView<'buf, &'buf [u8]>> {
+        find_tag(self.buf, 0, 35).and_then(|s| FieldView::new(s, self.buf))
+    }
+
+    fn msg_seq_num(&self) -> Option<FieldView<'buf, u64>> {
+        find_tag(self.buf, 0, 34).and_then(|s| FieldView::new(s, self.buf))
+    }
+
+    fn sender_comp_id(&self) -> Option<FieldView<'buf, &'buf nexus_fix_codec::AsciiTextStr>> {
+        find_tag(self.buf, 0, 49).and_then(|s| FieldView::new(s, self.buf))
+    }
+
+    fn target_comp_id(&self) -> Option<FieldView<'buf, &'buf nexus_fix_codec::AsciiTextStr>> {
+        find_tag(self.buf, 0, 56).and_then(|s| FieldView::new(s, self.buf))
+    }
+
+    fn poss_dup_flag(&self) -> Option<FieldView<'buf, bool>> {
+        find_tag(self.buf, 0, 43).and_then(|s| FieldView::new(s, self.buf))
+    }
+
+    fn sending_time(&self) -> Option<FieldView<'buf, FixTimestamp>> {
+        None
+    }
+}
+
+// ── helpers ──────────────────────────────────────────────────────────────────
+
 const PEER: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/fix_peer.py");
 
 fn tmp_dir(suffix: &str) -> PathBuf {
@@ -35,7 +108,7 @@ fn spawn_peer(scenario: &str) -> (std::process::Child, u16) {
     (child, port)
 }
 
-fn connect(port: u16, dir: &PathBuf) -> FixConnection<TcpStream> {
+fn connect(port: u16, dir: &PathBuf) -> FixConnection<TcpStream, MockDict> {
     let stream = TcpStream::connect(("127.0.0.1", port)).unwrap();
     stream
         .set_read_timeout(Some(Duration::from_secs(10)))
@@ -48,14 +121,13 @@ fn connect(port: u16, dir: &PathBuf) -> FixConnection<TcpStream> {
             target: CompId::new(b"PEER").unwrap(),
         },
         FixJournal::open(dir, 256).unwrap(),
-        BEGIN,
     )
 }
 
-fn drive(conn: &mut FixConnection<TcpStream>) -> DisconnectReason {
+fn drive(conn: &mut FixConnection<TcpStream, MockDict>) -> DisconnectReason {
     loop {
-        if let Some(r) = conn.recv(Instant::now(), &mut |_| {}).unwrap() {
-            return r;
+        if let Some(Message::Disconnected { reason }) = conn.recv(Instant::now()).unwrap() {
+            return reason;
         }
     }
 }
@@ -64,7 +136,7 @@ fn new_order(seq: u32) -> Vec<u8> {
     let mut buf = [0u8; 512];
     let mut seq_buf = [0u8; 10];
     let n = encode_fix_uint(seq, &mut seq_buf);
-    let mut fmt = FrameFormatter::new(&mut buf, BEGIN, b"D");
+    let mut fmt = FrameFormatter::new(&mut buf, b"FIX.4.4", b"D");
     fmt.field(34, &seq_buf[..n]);
     fmt.field(49, b"ENGINE");
     fmt.field(56, b"PEER");
@@ -73,6 +145,8 @@ fn new_order(seq: u32) -> Vec<u8> {
     let (start, len) = fmt.finish().unwrap();
     buf[start..start + len].to_vec()
 }
+
+// ── tests ────────────────────────────────────────────────────────────────────
 
 #[test]
 fn conformance_logon_logout() {
@@ -102,10 +176,11 @@ fn conformance_resend() {
     conn.connect(Instant::now()).unwrap();
 
     loop {
-        match conn.recv(Instant::now(), &mut |_| {}).unwrap() {
-            Some(r) => panic!("disconnected before active: {r:?}"),
-            None if conn.state().state() == State::Active => break,
-            None => {}
+        if let Some(Message::Disconnected { reason }) = conn.recv(Instant::now()).unwrap() {
+            panic!("disconnected before active: {reason:?}");
+        }
+        if conn.state().state() == State::Active {
+            break;
         }
     }
 
