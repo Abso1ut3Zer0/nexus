@@ -81,7 +81,7 @@ fn feed_bytes<D: FixDictionary>(r: &mut MessageReader<D>, data: &[u8]) {
 
 #[test]
 fn frame_reader_yields_complete_frame() {
-    let msg = b"8=FIX.4.4\x019=5\x0135=0\x0110=162\x01";
+    let msg = b"8=FIX.4.4\x019=5\x0135=0\x0110=163\x01";
     let mut fr = FrameReader::builder().build();
     fr.read(msg).unwrap();
     let frame = fr.next().unwrap().unwrap();
@@ -90,7 +90,7 @@ fn frame_reader_yields_complete_frame() {
 
 #[test]
 fn frame_reader_buffers_partial_then_complete() {
-    let msg = b"8=FIX.4.4\x019=5\x0135=0\x0110=162\x01";
+    let msg = b"8=FIX.4.4\x019=5\x0135=0\x0110=163\x01";
     let mut fr = FrameReader::builder().build();
     let half = msg.len() / 2;
     fr.read(&msg[..half]).unwrap();
@@ -102,12 +102,12 @@ fn frame_reader_buffers_partial_then_complete() {
 
 #[test]
 fn message_reader_spare_filled_interface() {
-    let msg = b"8=FIX.4.4\x019=5\x0135=0\x0110=162\x01";
+    let msg = b"8=FIX.4.4\x019=5\x0135=0\x0110=163\x01";
     let mut r: MessageReader<MockDict> = MessageReader::new();
     feed_bytes(&mut r, msg);
     // The bytes are now in the internal FrameReader. Verify by feeding another message
     // and confirming the reader accepts more bytes (it didn't OOM).
-    let msg2 = b"8=FIX.4.4\x019=5\x0135=0\x0110=162\x01";
+    let msg2 = b"8=FIX.4.4\x019=5\x0135=0\x0110=163\x01";
     feed_bytes(&mut r, msg2);
 }
 
