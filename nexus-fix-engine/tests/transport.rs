@@ -202,6 +202,65 @@ impl Peer {
     fn recv_msg(&mut self, buf: &mut [u8]) -> usize {
         self.stream.read(buf).unwrap()
     }
+
+    fn send_resend_request(&mut self, begin: u32, end: u32) {
+        let seq = self.next_out;
+        self.next_out += 1;
+        let mut buf = [0u8; 256];
+        let mut seq_buf = [0u8; 10];
+        let seq_n = encode_fix_uint(seq, &mut seq_buf);
+        let mut begin_buf = [0u8; 10];
+        let begin_n = encode_fix_uint(begin, &mut begin_buf);
+        let mut end_buf = [0u8; 10];
+        let end_n = encode_fix_uint(end, &mut end_buf);
+        let mut fmt = FrameFormatter::new(&mut buf, b"FIX.4.4", b"2");
+        fmt.field(34, &seq_buf[..seq_n]);
+        fmt.field(49, self.sender.as_bytes());
+        fmt.field(56, self.target.as_bytes());
+        fmt.field(52, b"20260615-12:00:00.000");
+        fmt.field(7, &begin_buf[..begin_n]);
+        fmt.field(16, &end_buf[..end_n]);
+        let (start, len) = fmt.finish().unwrap();
+        self.stream.write_all(&buf[start..start + len]).unwrap();
+        self.stream.flush().unwrap();
+    }
+
+    fn send_sequence_reset_reset(&mut self, new_seq: u32) {
+        let seq = self.next_out;
+        self.next_out += 1;
+        let mut buf = [0u8; 256];
+        let mut seq_buf = [0u8; 10];
+        let seq_n = encode_fix_uint(seq, &mut seq_buf);
+        let mut nsq_buf = [0u8; 10];
+        let nsq_n = encode_fix_uint(new_seq, &mut nsq_buf);
+        let mut fmt = FrameFormatter::new(&mut buf, b"FIX.4.4", b"4");
+        fmt.field(34, &seq_buf[..seq_n]);
+        fmt.field(49, self.sender.as_bytes());
+        fmt.field(56, self.target.as_bytes());
+        fmt.field(52, b"20260615-12:00:00.000");
+        fmt.field(36, &nsq_buf[..nsq_n]);
+        // No GapFillFlag(123) → Reset mode
+        let (start, len) = fmt.finish().unwrap();
+        self.stream.write_all(&buf[start..start + len]).unwrap();
+        self.stream.flush().unwrap();
+    }
+
+    fn send_corrupt_heartbeat(&mut self) {
+        let seq = self.next_out;
+        self.next_out += 1;
+        let mut buf = [0u8; 256];
+        let mut seq_buf = [0u8; 10];
+        let seq_n = encode_fix_uint(seq, &mut seq_buf);
+        let mut fmt = FrameFormatter::new(&mut buf, b"FIX.4.4", b"0");
+        fmt.field(34, &seq_buf[..seq_n]);
+        fmt.field(49, self.sender.as_bytes());
+        fmt.field(56, self.target.as_bytes());
+        fmt.field(52, b"20260615-12:00:00.000");
+        let (start, len) = fmt.finish().unwrap();
+        buf[start + len - 2] ^= 1; // corrupt last checksum digit
+        self.stream.write_all(&buf[start..start + len]).unwrap();
+        self.stream.flush().unwrap();
+    }
 }
 
 // ── tests ────────────────────────────────────────────────────────────────────
@@ -378,5 +437,160 @@ fn inbound_gap_sends_resend_request_and_suppresses_app_message() {
         "engine must enter Resending state (= ResendRequest sent) on inbound gap"
     );
 
+    handle.join().unwrap();
+}
+
+#[test]
+fn resend_request_huge_end_seq_clamped() {
+    // Fix 1: peer sends EndSeqNo=4_000_000_000; engine must clamp to next_outbound-1
+    // and respond immediately (not iterate 4B times).
+    let dir = tmp_dir("resend_huge");
+    let (client_sock, server_sock) = loopback_pair();
+    client_sock
+        .set_read_timeout(Some(Duration::from_millis(500)))
+        .unwrap();
+
+    let handle = std::thread::spawn(move || {
+        let mut peer = Peer::new(server_sock, target(), sender());
+        let mut buf = [0u8; 4096];
+        let _ = peer.recv_msg(&mut buf); // initiator logon
+        peer.send_logon(30);
+        peer.send_resend_request(1, 4_000_000_000); // seq=2, begin=1, end=4B
+        let n = peer.recv_msg(&mut buf); // must receive GapFill quickly
+        assert!(n > 0, "engine must respond to clamped ResendRequest");
+        peer.send_logout();
+        let _ = peer.recv_msg(&mut buf);
+    });
+
+    let mut conn: FixConnection<TcpStream, MockDict> = FixConnection::from_parts(
+        client_sock,
+        SessionState::new(Duration::from_secs(30)),
+        session_cfg(sender(), target()),
+        journal(&dir),
+    );
+    conn.connect(Instant::now()).unwrap();
+    let reason = drive(&mut conn).unwrap();
+    assert_eq!(reason, DisconnectReason::Logout);
+    handle.join().unwrap();
+}
+
+#[test]
+fn corrupt_checksum_frame_counted_as_garbage() {
+    // Fix 2: a frame with a bad checksum must be detected at the frame boundary
+    // and counted in garbage_frame_count.
+    let dir = tmp_dir("corrupt_cs");
+    let (client_sock, server_sock) = loopback_pair();
+    server_sock
+        .set_read_timeout(Some(Duration::from_millis(200)))
+        .unwrap();
+
+    let handle = std::thread::spawn(move || {
+        let mut peer = Peer::new(client_sock, sender(), target());
+        let mut buf = [0u8; 512];
+        peer.send_logon(30);
+        let _ = peer.recv_msg(&mut buf);
+        peer.send_corrupt_heartbeat();
+        // Drop peer
+    });
+
+    let mut conn: FixConnection<TcpStream, MockDict> = FixConnection::from_parts(
+        server_sock,
+        SessionState::new(Duration::from_secs(30)),
+        session_cfg(target(), sender()),
+        journal(&dir),
+    );
+
+    loop {
+        match conn.recv(Instant::now()) {
+            Ok(Some(Message::Disconnected { .. })) | Err(_) => break,
+            _ => {}
+        }
+    }
+
+    assert!(
+        conn.garbage_frame_count() > 0,
+        "corrupt checksum must increment garbage_frame_count"
+    );
+    handle.join().unwrap();
+}
+
+#[test]
+fn garbage_bytes_increment_counter() {
+    // Fix 3: raw non-FIX bytes from a misbehaving peer must be counted.
+    let dir = tmp_dir("garbage_count");
+    let (client_sock, server_sock) = loopback_pair();
+    server_sock
+        .set_read_timeout(Some(Duration::from_millis(200)))
+        .unwrap();
+
+    let handle = std::thread::spawn(move || {
+        let mut peer = Peer::new(client_sock, sender(), target());
+        let mut buf = [0u8; 512];
+        peer.send_logon(30);
+        let _ = peer.recv_msg(&mut buf);
+        peer.stream.write_all(b"GARBAGE_NOT_FIX").unwrap();
+        peer.stream.flush().unwrap();
+        // Drop peer
+    });
+
+    let mut conn: FixConnection<TcpStream, MockDict> = FixConnection::from_parts(
+        server_sock,
+        SessionState::new(Duration::from_secs(30)),
+        session_cfg(target(), sender()),
+        journal(&dir),
+    );
+
+    loop {
+        match conn.recv(Instant::now()) {
+            Ok(Some(Message::Disconnected { .. })) | Err(_) => break,
+            _ => {}
+        }
+    }
+
+    assert!(
+        conn.garbage_frame_count() > 0,
+        "raw garbage bytes must increment garbage_frame_count"
+    );
+    handle.join().unwrap();
+}
+
+#[test]
+fn sequence_reset_backward_ignored() {
+    // Fix 4: SequenceReset Reset-mode with new_seq < next_inbound must be ignored.
+    let dir = tmp_dir("seqreset_bwd");
+    let (client_sock, server_sock) = loopback_pair();
+    server_sock
+        .set_read_timeout(Some(Duration::from_millis(200)))
+        .unwrap();
+
+    let handle = std::thread::spawn(move || {
+        let mut peer = Peer::new(client_sock, sender(), target());
+        let mut buf = [0u8; 512];
+        peer.send_logon(30); // seq=1; server next_inbound becomes 2
+        let _ = peer.recv_msg(&mut buf);
+        peer.send_sequence_reset_reset(1); // new_seq=1 < next_inbound=2 → ignored
+        peer.send_sequence_reset_reset(0); // new_seq=0 → ignored
+        // Drop peer
+    });
+
+    let mut conn: FixConnection<TcpStream, MockDict> = FixConnection::from_parts(
+        server_sock,
+        SessionState::new(Duration::from_secs(30)),
+        session_cfg(target(), sender()),
+        journal(&dir),
+    );
+
+    loop {
+        match conn.recv(Instant::now()) {
+            Ok(Some(Message::Disconnected { .. })) | Err(_) => break,
+            _ => {}
+        }
+    }
+
+    assert_eq!(
+        conn.state().next_inbound_seq(),
+        2,
+        "backward/zero SequenceReset Reset must not rewind next_inbound"
+    );
     handle.join().unwrap();
 }

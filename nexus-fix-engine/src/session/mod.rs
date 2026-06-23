@@ -444,6 +444,9 @@ impl SessionState {
         self.test_request_sent = None;
         let mut out = Out::EMPTY;
         if !gap_fill {
+            if new_seq == 0 || new_seq < self.next_inbound {
+                return out;
+            }
             self.next_inbound = new_seq;
             out.push_event(Event::SequenceReset { new_seq });
             self.check_resend_done();

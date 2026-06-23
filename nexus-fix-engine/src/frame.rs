@@ -6,6 +6,7 @@
 //! tags `8=` (BeginString), `9=` (BodyLength), and `10=` (CheckSum) that
 //! are invariant across all FIX versions.
 
+use nexus_fix_codec::validate_checksum;
 use nexus_net::buf::{ReadBuf, WriteBuf};
 use nexus_net::wire::ParserSink;
 
@@ -280,6 +281,10 @@ impl FrameReader {
 
         if data.len() < message_end {
             return ParseResult::Incomplete;
+        }
+
+        if validate_checksum(&data[..message_end]).is_err() {
+            return ParseResult::Garbage;
         }
 
         ParseResult::Complete(message_end)
@@ -979,5 +984,30 @@ mod tests {
         // data() should start right at the message — no gap.
         assert!(writer.data().starts_with(b"8=FIX.4.4\x01"));
         assert_eq!(writer.data().len(), len);
+    }
+
+    // ---- checksum validation ----
+
+    #[test]
+    fn corrupt_checksum_rejected() {
+        let mut msg = heartbeat();
+        let n = msg.len();
+        msg[n - 2] ^= 1; // flip the last checksum digit
+
+        let mut reader = FrameReader::builder().build();
+        reader.read(&msg).unwrap();
+        let err = reader.next().unwrap_err();
+        assert!(
+            matches!(err, FrameError::Garbage { .. }),
+            "corrupt checksum must be treated as garbage"
+        );
+    }
+
+    #[test]
+    fn valid_checksum_accepted() {
+        let msg = heartbeat();
+        let mut reader = FrameReader::builder().build();
+        reader.read(&msg).unwrap();
+        assert!(reader.next().unwrap().is_some());
     }
 }
