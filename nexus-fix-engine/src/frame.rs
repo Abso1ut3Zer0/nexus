@@ -90,7 +90,7 @@ impl std::error::Error for FrameError {}
 ///     .build();
 ///
 /// // A complete Heartbeat message.
-/// let msg = b"8=FIX.4.4\x019=5\x0135=0\x0110=162\x01";
+/// let msg = b"8=FIX.4.4\x019=5\x0135=0\x0110=163\x01";
 /// reader.read(msg).unwrap();
 ///
 /// let frame = reader.next().unwrap().unwrap();
