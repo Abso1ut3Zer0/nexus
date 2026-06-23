@@ -409,6 +409,11 @@ impl<S: Read + Write, D: FixDictionary> FixConnection<S, D> {
                     self.writer.flush_to(&mut self.stream).map_err(Error::Io)?;
                 }
                 if let Some(Event::ResendRange { begin: rb, end: re }) = out.event() {
+                    let re = if re == 0 {
+                        self.state.next_outbound_seq().saturating_sub(1)
+                    } else {
+                        re.min(self.state.next_outbound_seq())
+                    };
                     do_resend::<S, D>(
                         rb,
                         re,

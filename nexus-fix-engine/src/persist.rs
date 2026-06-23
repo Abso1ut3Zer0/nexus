@@ -50,7 +50,7 @@ impl<'a> Iterator for ResendIter<'a> {
                 });
             }
             let seq = self.seq;
-            self.seq += 1;
+            self.seq = self.seq.saturating_add(1);
             let is_gap = match self.journal.resend_one(seq) {
                 ResendPlan::GapFill => true,
                 ResendPlan::Replay(frame) => {
@@ -154,7 +154,7 @@ impl FixJournal {
         let high = if end == 0 {
             self.next_outbound.saturating_sub(1)
         } else {
-            end.min(self.next_outbound.saturating_sub(1))
+            end
         };
         ResendIter {
             journal: self,
@@ -450,39 +450,6 @@ mod tests {
         let items = collect_range(&j, 1, 0);
         assert_eq!(items.len(), 3);
         assert!(items.iter().all(|i| matches!(i, ReplayItem::App(_))));
-
-        cleanup(&dir);
-    }
-
-    #[test]
-    fn resend_peer_end_clamped_to_next_outbound() {
-        let dir = tmp_dir("rr-clamp");
-        cleanup(&dir);
-
-        let mut j = FixJournal::open(&dir, 64).unwrap();
-        j.store(1, &fix_msg(1)).unwrap();
-        j.store(2, &fix_msg(2)).unwrap();
-        // next_outbound = 3; peer sends EndSeqNo = 4_000_000_000
-        let items = collect_range(&j, 1, 4_000_000_000);
-        assert_eq!(items.len(), 2, "end must be clamped to next_outbound-1");
-        assert!(items.iter().all(|i| matches!(i, ReplayItem::App(_))));
-
-        cleanup(&dir);
-    }
-
-    #[test]
-    fn resend_begin_after_clamped_end_yields_empty() {
-        let dir = tmp_dir("rr-empty");
-        cleanup(&dir);
-
-        // next_outbound = 1 (nothing stored); peer requests begin=1, end=4B → clamped high=0
-        let j = FixJournal::open(&dir, 64).unwrap();
-        let items = collect_range(&j, 1, 4_000_000_000);
-        assert_eq!(
-            items.len(),
-            0,
-            "begin > clamped high must yield empty iterator"
-        );
 
         cleanup(&dir);
     }
