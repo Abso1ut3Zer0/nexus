@@ -478,7 +478,11 @@ mod tests {
         // next_outbound = 1 (nothing stored); peer requests begin=1, end=4B → clamped high=0
         let j = FixJournal::open(&dir, 64).unwrap();
         let items = collect_range(&j, 1, 4_000_000_000);
-        assert_eq!(items.len(), 0, "begin > clamped high must yield empty iterator");
+        assert_eq!(
+            items.len(),
+            0,
+            "begin > clamped high must yield empty iterator"
+        );
 
         cleanup(&dir);
     }
