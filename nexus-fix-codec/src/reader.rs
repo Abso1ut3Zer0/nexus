@@ -713,6 +713,21 @@ mod tests {
     }
 
     #[test]
+    fn parse_tag_overflow() {
+        assert_eq!(parse_tag(b"99999999999=x"), (u32::MAX, 5));
+    }
+
+    #[test]
+    fn overflowed_tag_dropped_by_field_reader() {
+        let msg = b"8=FIX.4.4\x013400000=1\x0135=A\x01";
+        assert!(find_tag(msg, 0, 3_400_000).is_none());
+        // Also none because iterator returns infinite for each tag after the large one
+        assert!(find_tag(msg, 0, 35).is_none());
+        // Since 8 is found before the large tag, it successfully retrieves the value
+        assert!(find_tag(msg, 0, 8).is_some());
+    }
+
+    #[test]
     fn swar_mask_conversion() {
         // Single match at byte 0: bit 7 set
         assert_eq!(swar_to_byte_mask(0x80), 0x01);
