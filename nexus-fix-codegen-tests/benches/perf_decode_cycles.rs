@@ -110,18 +110,9 @@ fn build_alpha_nos_no_groups() -> Vec<u8> {
 
 fn build_beta_md_with_groups() -> Vec<u8> {
     let mut buf = [0u8; 512];
-    let px_bid = nexus_fix_codec::FixDecimal {
-        mantissa: 11050,
-        scale: 4,
-    };
-    let px_offer = nexus_fix_codec::FixDecimal {
-        mantissa: 11052,
-        scale: 4,
-    };
-    let sz = nexus_fix_codec::FixDecimal {
-        mantissa: 1_000_000,
-        scale: 0,
-    };
+    let px_bid = nexus_fix_codec::FixDecimal::new(11050, 4).unwrap();
+    let px_offer = nexus_fix_codec::FixDecimal::new(11052, 4).unwrap();
+    let sz = nexus_fix_codec::FixDecimal::new(1_000_000, 0).unwrap();
     let (start, len) = venue_beta::encoders::MarketDataSnapshotFullRefreshEncoder::wrap(&mut buf)
         .header_encoder()
         .finish()
@@ -262,18 +253,9 @@ fn main() {
         black_box(len)
     });
 
-    let px_bid = nexus_fix_codec::FixDecimal {
-        mantissa: 11050,
-        scale: 4,
-    };
-    let px_offer = nexus_fix_codec::FixDecimal {
-        mantissa: 11052,
-        scale: 4,
-    };
-    let sz = nexus_fix_codec::FixDecimal {
-        mantissa: 1_000_000,
-        scale: 0,
-    };
+    let px_bid = nexus_fix_codec::FixDecimal::new(11050, 4).unwrap();
+    let px_offer = nexus_fix_codec::FixDecimal::new(11052, 4).unwrap();
+    let sz = nexus_fix_codec::FixDecimal::new(1_000_000, 0).unwrap();
     measure("beta MD encode  (2 entries)", || {
         let mut buf = [0u8; 512];
         let (_, len) =

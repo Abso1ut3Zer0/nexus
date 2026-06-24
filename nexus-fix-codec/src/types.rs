@@ -18,11 +18,23 @@ use crate::error::FixValueError;
 /// ```
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub struct FixDecimal {
-    pub mantissa: i64,
-    pub scale: u8,
+    mantissa: i64,
+    scale: u8,
 }
 
 impl FixDecimal {
+
+    pub fn new(mantissa: i64, scale: u8) -> Result<Self, FixValueError> {
+        if scale > 19 {
+            return Err(FixValueError::Overflow);
+        }
+        
+        Ok(Self {
+            mantissa,
+            scale,
+        })
+    }
+
     /// Parse a FIX decimal from wire bytes.
     ///
     /// Accepts: optional sign, digits, optional `.` + fractional digits.

@@ -51,7 +51,7 @@ proptest! {
 
     #[test]
     fn decimal_roundtrip(mantissa in any::<i64>(), scale in 0u8..=19) {
-        let d = FixDecimal { mantissa, scale };
+        let d = FixDecimal::new( mantissa, scale).unwrap();
         let mut buf = [0u8; 22];
         let n = d.encode(&mut buf);
         prop_assert_eq!(FixDecimal::parse(&buf[..n]).unwrap(), d);
