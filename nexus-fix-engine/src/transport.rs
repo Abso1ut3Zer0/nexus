@@ -412,7 +412,7 @@ impl<S: Read + Write, D: FixDictionary> FixConnection<S, D> {
                     let re = if re == 0 {
                         self.state.next_outbound_seq().saturating_sub(1)
                     } else {
-                        re.min(self.state.next_outbound_seq())
+                        re.min(self.state.next_outbound_seq().saturating_sub(1))
                     };
                     do_resend::<S, D>(
                         rb,

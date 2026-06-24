@@ -366,8 +366,8 @@ fn resend_request_triggers_gap_fill() {
         fmt.field(49, b"ACCEPTOR");
         fmt.field(56, b"INITIATOR");
         fmt.field(52, b"20260615-12:00:00.000");
-        fmt.field(7, b"2");
-        fmt.field(16, b"3");
+        fmt.field(7, b"1");
+        fmt.field(16, b"1");
         let (start, len) = fmt.finish().unwrap();
         peer.stream.write_all(&rbuf[start..start + len]).unwrap();
         peer.stream.flush().unwrap();
