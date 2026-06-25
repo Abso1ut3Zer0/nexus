@@ -1579,10 +1579,10 @@ mod decimal_conv {
 
             let scaled = if D >= d.scale {
                 d.mantissa
-                    .checked_mul(10_i64.pow((D - d.scale) as u32))
+                    .checked_mul(10_i64.checked_pow((D - d.scale) as u32).ok_or_else(err)?)
                     .ok_or_else(err)?
             } else {
-                d.mantissa / 10_i64.pow((d.scale - D) as u32)
+                d.mantissa / 10_i64.checked_pow((d.scale - D) as u32).ok_or_else(err)?
             };
             Ok(Self::from_raw(scaled))
         }
@@ -1603,10 +1603,10 @@ mod decimal_conv {
 
             let scaled = if D >= d.scale {
                 d.mantissa
-                    .checked_mul(10_i64.pow((D - d.scale) as u32))
+                    .checked_mul(10_i64.checked_pow((D - d.scale) as u32).ok_or_else(err)?)
                     .ok_or_else(err)?
             } else {
-                d.mantissa / 10_i64.pow((d.scale - D) as u32)
+                d.mantissa / 10_i64.checked_pow((d.scale - D) as u32).ok_or_else(err)?
             };
             let narrow = i32::try_from(scaled).map_err(|_| err())?;
             Ok(Self::from_raw(narrow))
