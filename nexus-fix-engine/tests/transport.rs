@@ -640,6 +640,6 @@ fn overflowed_tag_34_yields_missing_seq_num() {
             result,
             Err(TransportError::Protocol(SessionError::MissingMsgSeqNum))
         ),
-        "expected MissingMsgSeqNum, got {result:?}"
+        "expected MissingMsgSeqNum"
     );
 }
