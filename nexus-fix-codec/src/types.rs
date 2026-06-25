@@ -23,16 +23,12 @@ pub struct FixDecimal {
 }
 
 impl FixDecimal {
-
     pub fn new(mantissa: i64, scale: u8) -> Result<Self, FixValueError> {
         if scale > 19 {
             return Err(FixValueError::Overflow);
         }
-        
-        Ok(Self {
-            mantissa,
-            scale,
-        })
+
+        Ok(Self { mantissa, scale })
     }
 
     /// Parse a FIX decimal from wire bytes.
@@ -142,6 +138,11 @@ impl FixDecimal {
 
         let abs = self.mantissa.unsigned_abs();
 
+        debug_assert!(
+            self.scale <= 19,
+            "FixDecimal::encode: scale over 19 ({}) will result in an integer overflow",
+            self.scale
+        );
         if self.scale == 0 {
             pos += encode_u64(abs, &mut buf[pos..]);
             return pos;
@@ -177,6 +178,11 @@ impl From<FixDecimal> for f32 {
 
 impl fmt::Display for FixDecimal {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        debug_assert!(
+            self.scale <= 19,
+            "<FixDecimal as std::fmt::Display>::fmt: scale over 19 ({}) will result in an integer overflow",
+            self.scale
+        );
         if self.scale == 0 {
             return write!(f, "{}", self.mantissa);
         }
