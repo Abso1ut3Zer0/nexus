@@ -140,7 +140,7 @@ impl SessionState {
     /// and updates the outbound activity timestamp used by the heartbeat timer.
     pub fn allocate_seq(&mut self, now: Instant) -> u32 {
         let s = self.next_outbound;
-        self.next_outbound += 1;
+        self.next_outbound = self.next_outbound.wrapping_add(1);
         self.last_sent = Some(now);
         s
     }
@@ -171,7 +171,7 @@ impl SessionState {
         }
         let mut out = Out::EMPTY;
         let seq = self.next_outbound;
-        self.next_outbound += 1;
+        self.next_outbound = self.next_outbound.wrapping_add(1);
         self.last_sent = Some(now);
         out.push_admin(AdminMsg::Logon {
             seq,
@@ -190,7 +190,7 @@ impl SessionState {
         }
         let mut out = Out::EMPTY;
         let seq = self.next_outbound;
-        self.next_outbound += 1;
+        self.next_outbound = self.next_outbound.wrapping_add(1);
         self.last_sent = Some(now);
         out.push_admin(AdminMsg::Logout { seq });
         self.state = State::LogoutPending;
@@ -222,7 +222,7 @@ impl SessionState {
                 if let Some(t) = self.test_request_sent {
                     if now.duration_since(t) >= self.hb {
                         let seq = self.next_outbound;
-                        self.next_outbound += 1;
+                        self.next_outbound = self.next_outbound.wrapping_add(1);
                         self.last_sent = Some(now);
                         out.push_admin(AdminMsg::Logout { seq });
                         self.disconnect(DisconnectReason::TestRequestTimeout, &mut out);
@@ -233,7 +233,7 @@ impl SessionState {
                 {
                     self.test_req_counter += 1;
                     let seq = self.next_outbound;
-                    self.next_outbound += 1;
+                    self.next_outbound = self.next_outbound.wrapping_add(1);
                     self.last_sent = Some(now);
                     out.push_admin(AdminMsg::TestRequest {
                         seq,
@@ -245,7 +245,7 @@ impl SessionState {
                     && now.duration_since(t) >= self.hb
                 {
                     let seq = self.next_outbound;
-                    self.next_outbound += 1;
+                    self.next_outbound = self.next_outbound.wrapping_add(1);
                     self.last_sent = Some(now);
                     out.push_admin(AdminMsg::Heartbeat { seq, echo: None });
                 }
@@ -287,7 +287,7 @@ impl SessionState {
         let mut out = Out::EMPTY;
         if send_reply {
             let reply_seq = self.next_outbound;
-            self.next_outbound += 1;
+            self.next_outbound = self.next_outbound.wrapping_add(1);
             self.last_sent = Some(now);
             out.push_admin(AdminMsg::Logon {
                 seq: reply_seq,
@@ -297,7 +297,7 @@ impl SessionState {
 
         if seq < self.next_inbound {
             let logout_seq = self.next_outbound;
-            self.next_outbound += 1;
+            self.next_outbound = self.next_outbound.wrapping_add(1);
             self.last_sent = Some(now);
             out.push_admin(AdminMsg::Logout { seq: logout_seq });
             self.disconnect(DisconnectReason::SeqNumTooLow, &mut out);
@@ -309,7 +309,7 @@ impl SessionState {
         if seq > self.next_inbound {
             self.gap_high = seq;
             let rr_seq = self.next_outbound;
-            self.next_outbound += 1;
+            self.next_outbound = self.next_outbound.wrapping_add(1);
             self.last_sent = Some(now);
             out.push_admin(AdminMsg::ResendRequest {
                 seq: rr_seq,
@@ -317,7 +317,7 @@ impl SessionState {
             });
             self.state = State::Resending;
         } else {
-            self.next_inbound += 1;
+            self.next_inbound = self.next_inbound.wrapping_add(1);
             self.state = State::Active;
         }
         out
@@ -337,7 +337,7 @@ impl SessionState {
         {
             if self.state != State::LogoutPending {
                 let logout_seq = self.next_outbound;
-                self.next_outbound += 1;
+                self.next_outbound = self.next_outbound.wrapping_add(1);
                 self.last_sent = Some(now);
                 out.push_admin(AdminMsg::Logout { seq: logout_seq });
             }
@@ -385,7 +385,7 @@ impl SessionState {
             let id_len = test_req_id.len().min(TEST_REQ_ID_CAP);
             echo[..id_len].copy_from_slice(&test_req_id[..id_len]);
             let hb_seq = self.next_outbound;
-            self.next_outbound += 1;
+            self.next_outbound = self.next_outbound.wrapping_add(1);
             self.last_sent = Some(now);
             out.push_admin(AdminMsg::Heartbeat {
                 seq: hb_seq,
@@ -506,7 +506,7 @@ impl SessionState {
         }
         let mut out = Out::EMPTY;
         let seq = self.next_outbound;
-        self.next_outbound += 1;
+        self.next_outbound = self.next_outbound.wrapping_add(1);
         self.last_sent = Some(now);
         out.push_admin(AdminMsg::Logout { seq });
         self.disconnect(DisconnectReason::CompIdMismatch, &mut out);
@@ -520,7 +520,7 @@ impl SessionState {
             }
             if self.state != State::Resending {
                 let rr_seq = self.next_outbound;
-                self.next_outbound += 1;
+                self.next_outbound = self.next_outbound.wrapping_add(1);
                 self.last_sent = Some(now);
                 out.push_admin(AdminMsg::ResendRequest {
                     seq: rr_seq,
@@ -537,13 +537,13 @@ impl SessionState {
                 return false;
             }
             let logout_seq = self.next_outbound;
-            self.next_outbound += 1;
+            self.next_outbound = self.next_outbound.wrapping_add(1);
             self.last_sent = Some(now);
             out.push_admin(AdminMsg::Logout { seq: logout_seq });
             self.disconnect(DisconnectReason::SeqNumTooLow, out);
             return false;
         }
-        self.next_inbound += 1;
+        self.next_inbound = self.next_inbound.wrapping_add(1);
         true
     }
 
