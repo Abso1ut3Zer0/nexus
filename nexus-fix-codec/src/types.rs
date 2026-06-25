@@ -1541,19 +1541,26 @@ mod decimal_conv {
 
     impl std::error::Error for DecimalConvError {}
 
-    // i128 backing: infallible — i128 always has headroom for i64 mantissa rescale.
-    impl<const D: u8> From<FixDecimal> for Decimal<i128, D>
+    impl<const D: u8> TryFrom<FixDecimal> for Decimal<i128, D>
     where
         i128: Backing,
     {
-        fn from(d: FixDecimal) -> Self {
+        type Error = DecimalConvError;
+
+        fn try_from(d: FixDecimal) -> Result<Self, Self::Error> {
+            let err = || DecimalConvError {
+                mantissa: d.mantissa,
+                scale: d.scale,
+            };
             let mantissa = d.mantissa as i128;
             let scaled = if D >= d.scale {
-                mantissa * 10_i128.pow((D - d.scale) as u32)
+                mantissa
+                    .checked_mul(10_i128.checked_pow((D - d.scale) as u32).ok_or_else(err)?)
+                    .ok_or_else(err)?
             } else {
-                mantissa / 10_i128.pow((d.scale - D) as u32)
+                mantissa / 10_i128.checked_pow((d.scale - D) as u32).ok_or_else(err)?
             };
-            Self::from_raw(scaled)
+            Ok(Self::from_raw(scaled))
         }
     }
 
@@ -3114,14 +3121,14 @@ mod tests {
         #[test]
         fn to_i128_decimal_widening() {
             let d = FixDecimal::parse(b"123.45").unwrap();
-            let dec: Decimal<i128, 8> = d.into();
+            let dec: Decimal<i128, 8> = d.try_into().unwrap();
             assert_eq!(dec.to_raw(), 12_345_000_000);
         }
 
         #[test]
         fn to_i128_decimal_narrowing() {
             let d = FixDecimal::parse(b"1.123456789").unwrap();
-            let dec: Decimal<i128, 4> = d.into();
+            let dec: Decimal<i128, 4> = d.try_into().unwrap();
             assert_eq!(dec.to_raw(), 11234);
         }
 
