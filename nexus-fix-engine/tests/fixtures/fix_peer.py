@@ -95,13 +95,9 @@ def resend(conn: socket.socket):
     assert msg.get("35") == "D", f"expected NewOrder, got {msg.get('35')}"
     conn.sendall(build("2", seq, [(7, "2"), (16, "2")]))
     seq += 1
-    while True:
-        msg = recv_msg(conn)
-        if msg.get("43") == "Y":
-            assert msg.get("122"), "OrigSendingTime (122) must be set on PossDup replay"
-            break
-        if msg.get("35") == "4":
-            break
+    msg = recv_msg(conn)
+    assert msg.get("43") == "Y", f"expected replay (43=Y), got 35={msg.get('35')}"
+    assert msg.get("122"), "OrigSendingTime (122) must be set on PossDup replay"
     conn.sendall(build("5", seq))
     seq += 1
     msg = recv_msg(conn)
@@ -119,7 +115,7 @@ def gap_fill(conn: socket.socket):
     conn.sendall(build("5", seq))
     seq += 1
     msg = recv_msg(conn)
-    assert msg.get("35") == "5"
+    assert msg.get("35") == "5", f"expected Logout, got 35={msg.get('35')}"
 
 
 def seq_reset(conn: socket.socket):
@@ -133,7 +129,7 @@ def seq_reset(conn: socket.socket):
     conn.sendall(build("5", seq))
     seq += 1
     msg = recv_msg(conn)
-    assert msg.get("35") == "5"
+    assert msg.get("35") == "5", f"expected Logout, got 35={msg.get('35')}"
 
 
 SCENARIOS = {

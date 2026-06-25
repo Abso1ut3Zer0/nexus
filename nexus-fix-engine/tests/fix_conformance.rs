@@ -94,7 +94,21 @@ fn tmp_dir(suffix: &str) -> PathBuf {
     p
 }
 
-fn spawn_peer(scenario: &str) -> (std::process::Child, u16) {
+struct ChildGuard(std::process::Child);
+
+impl Drop for ChildGuard {
+    fn drop(&mut self) {
+        let _ = self.0.kill();
+    }
+}
+
+impl ChildGuard {
+    fn wait(&mut self) -> std::io::Result<std::process::ExitStatus> {
+        self.0.wait()
+    }
+}
+
+fn spawn_peer(scenario: &str) -> (ChildGuard, u16) {
     let mut child = Command::new("python3")
         .arg(PEER)
         .arg(scenario)
@@ -105,7 +119,7 @@ fn spawn_peer(scenario: &str) -> (std::process::Child, u16) {
     let mut line = String::new();
     BufReader::new(stdout).read_line(&mut line).unwrap();
     let port: u16 = line.trim().parse().unwrap();
-    (child, port)
+    (ChildGuard(child), port)
 }
 
 fn connect(port: u16, dir: &PathBuf) -> FixConnection<TcpStream, MockDict> {
