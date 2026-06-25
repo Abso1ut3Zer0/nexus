@@ -793,18 +793,9 @@ fn alpha_nested_group_encode_round_trip() {
 
 #[test]
 fn beta_group_encode_round_trip() {
-    let px_bid = nexus_fix_codec::FixDecimal::new(
-        11050,
-        4,
-    ).unwrap();
-    let px_offer = nexus_fix_codec::FixDecimal::new(
-        11052,
-        4,
-    ).unwrap();
-    let sz = nexus_fix_codec::FixDecimal::new(
-        1_000_000,
-        0,
-    ).unwrap();
+    let px_bid = nexus_fix_codec::FixDecimal::new(11050, 4).unwrap();
+    let px_offer = nexus_fix_codec::FixDecimal::new(11052, 4).unwrap();
+    let sz = nexus_fix_codec::FixDecimal::new(1_000_000, 0).unwrap();
 
     let mut buf = [0u8; 512];
     let (start, len) = venue_beta::encoders::MarketDataSnapshotFullRefreshEncoder::wrap(&mut buf)
