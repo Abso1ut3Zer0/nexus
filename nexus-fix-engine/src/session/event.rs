@@ -30,6 +30,8 @@ pub enum DisconnectReason {
     SeqNumTooLow,
     /// Counterparty violated the session protocol.
     ProtocolViolation,
+    /// Outbound sequence number reached i32::MAX; caller must force a sequence reset.
+    SeqNumExhausted,
 }
 
 /// Session event returned in [`Out::event`](super::Out::event).
