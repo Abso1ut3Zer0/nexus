@@ -22,6 +22,29 @@ pub struct FixDecimal {
     scale: u8,
 }
 
+const POW10: [u64; 20] = [
+    1,
+    10,
+    100,
+    1_000,
+    10_000,
+    100_000,
+    1_000_000,
+    10_000_000,
+    100_000_000,
+    1_000_000_000,
+    10_000_000_000,
+    100_000_000_000,
+    1_000_000_000_000,
+    10_000_000_000_000,
+    100_000_000_000_000,
+    1_000_000_000_000_000,
+    10_000_000_000_000_000,
+    100_000_000_000_000_000,
+    1_000_000_000_000_000_000,
+    10_000_000_000_000_000_000,
+];
+
 impl FixDecimal {
     pub const fn new(mantissa: i64, scale: u8) -> Option<Self> {
         if scale > 19 {
@@ -157,9 +180,7 @@ impl FixDecimal {
             return pos;
         }
 
-        let scale_pow = 10u64
-            .checked_pow(self.scale as u32)
-            .expect("scale ≤ 19 by constructor");
+        let scale_pow = POW10[self.scale as usize];
         let integer = abs / scale_pow;
         let frac = abs % scale_pow;
 
@@ -192,11 +213,7 @@ impl fmt::Display for FixDecimal {
         if self.scale == 0 {
             return write!(f, "{}", self.mantissa);
         }
-        // u64 divisor: scale can reach 19, and 10^19 overflows i64 (it fits in
-        // u64). Split the magnitude in u64 and carry the sign separately.
-        let divisor = 10_u64
-            .checked_pow(self.scale as u32)
-            .expect("scale ≤ 19 by constructor");
+        let divisor = POW10[self.scale as usize];
         let abs = self.mantissa.unsigned_abs();
         let integer = abs / divisor;
         let frac = abs % divisor;

@@ -458,6 +458,11 @@ fn resend_request_huge_end_seq_clamped() {
         peer.send_resend_request(1, 4_000_000_000); // seq=2, begin=1, end=4B
         let n = peer.recv_msg(&mut buf); // must receive GapFill quickly
         assert!(n > 0, "engine must respond to clamped ResendRequest");
+        let new_seq: u32 = find_tag(&buf[..n], 0, 36)
+            .and_then(|s| FieldView::new(s, &buf[..n]))
+            .expect("GapFill must contain NewSeqNo(36)")
+            .get();
+        assert_eq!(new_seq, 2u32, "GapFill new_seq must equal next_outbound");
         peer.send_logout();
         let _ = peer.recv_msg(&mut buf);
     });
