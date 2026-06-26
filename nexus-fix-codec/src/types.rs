@@ -138,17 +138,14 @@ impl FixDecimal {
 
         let abs = self.mantissa.unsigned_abs();
 
-        debug_assert!(
-            self.scale <= 19,
-            "FixDecimal::encode: scale over 19 ({}) will result in an integer overflow",
-            self.scale
-        );
         if self.scale == 0 {
             pos += encode_u64(abs, &mut buf[pos..]);
             return pos;
         }
 
-        let scale_pow = 10u64.pow(self.scale as u32);
+        let scale_pow = 10u64
+            .checked_pow(self.scale as u32)
+            .expect("scale ≤ 19 by constructor");
         let integer = abs / scale_pow;
         let frac = abs % scale_pow;
 
@@ -178,17 +175,14 @@ impl From<FixDecimal> for f32 {
 
 impl fmt::Display for FixDecimal {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        debug_assert!(
-            self.scale <= 19,
-            "<FixDecimal as std::fmt::Display>::fmt: scale over 19 ({}) will result in an integer overflow",
-            self.scale
-        );
         if self.scale == 0 {
             return write!(f, "{}", self.mantissa);
         }
         // u64 divisor: scale can reach 19, and 10^19 overflows i64 (it fits in
         // u64). Split the magnitude in u64 and carry the sign separately.
-        let divisor = 10_u64.pow(self.scale as u32);
+        let divisor = 10_u64
+            .checked_pow(self.scale as u32)
+            .expect("scale ≤ 19 by constructor");
         let abs = self.mantissa.unsigned_abs();
         let integer = abs / divisor;
         let frac = abs % divisor;
