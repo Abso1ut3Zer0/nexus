@@ -8,10 +8,7 @@ fn alpha_decodes_scalar_fields_and_enum() {
     assert_eq!(m.symbol().unwrap().as_bytes(), &b"BTC-USD"[..]);
     assert_eq!(
         m.order_qty().unwrap().get(),
-        nexus_fix_codec::FixDecimal {
-            mantissa: 10,
-            scale: 0,
-        }
+        nexus_fix_codec::FixDecimal::new(10, 0,).unwrap()
     );
     assert_eq!(m.side(), Some(venue_alpha::fields::Side::BUY));
 }
@@ -110,17 +107,11 @@ fn alpha_decodes_execution_report() {
     assert_eq!(m.ord_status(), Some(venue_alpha::fields::OrdStatus::FILLED));
     assert_eq!(
         m.last_qty().unwrap().get(),
-        nexus_fix_codec::FixDecimal {
-            mantissa: 5,
-            scale: 0,
-        }
+        nexus_fix_codec::FixDecimal::new(5, 0,).unwrap()
     );
     assert_eq!(
         m.last_px().unwrap().get(),
-        nexus_fix_codec::FixDecimal {
-            mantissa: 10050,
-            scale: 2,
-        }
+        nexus_fix_codec::FixDecimal::new(10050, 2,).unwrap()
     );
 }
 
@@ -174,10 +165,7 @@ fn alpha_encodes_round_trip() {
 
 #[test]
 fn alpha_encodes_typed_decimal_and_optional_header() {
-    let qty = nexus_fix_codec::FixDecimal {
-        mantissa: 1050,
-        scale: 1,
-    };
+    let qty = nexus_fix_codec::FixDecimal::new(1050, 1).unwrap();
     let mut buf = [0u8; 256];
     let (start, len) = venue_alpha::encoders::NewOrderSingleEncoder::wrap(&mut buf)
         .header_encoder()
@@ -234,10 +222,7 @@ fn beta_decodes_market_data_group() {
     );
     assert_eq!(
         entries[0].md_entry_px().unwrap().get(),
-        nexus_fix_codec::FixDecimal {
-            mantissa: 11050,
-            scale: 4,
-        }
+        nexus_fix_codec::FixDecimal::new(11050, 4,).unwrap()
     );
     assert_eq!(
         entries[1].md_entry_type(),
@@ -245,10 +230,7 @@ fn beta_decodes_market_data_group() {
     );
     assert_eq!(
         entries[1].md_entry_size().unwrap().get(),
-        nexus_fix_codec::FixDecimal {
-            mantissa: 2_000_000,
-            scale: 0,
-        }
+        nexus_fix_codec::FixDecimal::new(2_000_000, 0,).unwrap()
     );
 }
 
@@ -380,10 +362,7 @@ fn alpha_raw_matches_typed_for_qty() {
     assert_eq!(m.order_qty().unwrap().as_bytes(), &b"12345.67"[..]);
     assert_eq!(
         m.order_qty().unwrap().get(),
-        nexus_fix_codec::FixDecimal {
-            mantissa: 1_234_567,
-            scale: 2,
-        }
+        nexus_fix_codec::FixDecimal::new(1_234_567, 2,).unwrap()
     );
 }
 
@@ -562,10 +541,7 @@ fn alpha_exec_report_typed_and_raw_consistency() {
     assert_eq!(m.last_px().unwrap().as_bytes(), &b"50.25"[..]);
     assert_eq!(
         m.last_px().unwrap().get(),
-        nexus_fix_codec::FixDecimal {
-            mantissa: 5025,
-            scale: 2,
-        }
+        nexus_fix_codec::FixDecimal::new(5025, 2,).unwrap()
     );
     assert_eq!(m.side(), Some(venue_alpha::fields::Side::SELL));
     assert_eq!(m.exec_type(), Some(venue_alpha::fields::ExecType::NEW));
@@ -620,18 +596,12 @@ fn beta_group_entry_typed_accessors() {
     );
     assert_eq!(
         entries[0].md_entry_px().unwrap().get(),
-        nexus_fix_codec::FixDecimal {
-            mantissa: 4_200_050,
-            scale: 2,
-        }
+        nexus_fix_codec::FixDecimal::new(4_200_050, 2,).unwrap()
     );
     assert_eq!(entries[0].md_entry_size().unwrap().as_bytes(), &b"3"[..]);
     assert_eq!(
         entries[0].md_entry_size().unwrap().get(),
-        nexus_fix_codec::FixDecimal {
-            mantissa: 3,
-            scale: 0,
-        }
+        nexus_fix_codec::FixDecimal::new(3, 0,).unwrap()
     );
 }
 
@@ -823,18 +793,9 @@ fn alpha_nested_group_encode_round_trip() {
 
 #[test]
 fn beta_group_encode_round_trip() {
-    let px_bid = nexus_fix_codec::FixDecimal {
-        mantissa: 11050,
-        scale: 4,
-    };
-    let px_offer = nexus_fix_codec::FixDecimal {
-        mantissa: 11052,
-        scale: 4,
-    };
-    let sz = nexus_fix_codec::FixDecimal {
-        mantissa: 1_000_000,
-        scale: 0,
-    };
+    let px_bid = nexus_fix_codec::FixDecimal::new(11050, 4).unwrap();
+    let px_offer = nexus_fix_codec::FixDecimal::new(11052, 4).unwrap();
+    let sz = nexus_fix_codec::FixDecimal::new(1_000_000, 0).unwrap();
 
     let mut buf = [0u8; 512];
     let (start, len) = venue_beta::encoders::MarketDataSnapshotFullRefreshEncoder::wrap(&mut buf)

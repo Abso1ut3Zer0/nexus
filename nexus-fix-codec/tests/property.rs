@@ -9,8 +9,9 @@
 use core::num::NonZeroU32;
 use nexus_fix_codec::{
     FixDate, FixDecimal, FixMonthYear, FixTenor, FixTime, FixTimestamp, FixTzTime, FixTzTimestamp,
-    TenorUnit, parse_fix_bool, parse_fix_char, parse_fix_day_of_month, parse_fix_int,
-    parse_fix_multi_char, parse_fix_multi_string, parse_fix_seqnum, parse_fix_text, parse_fix_uint,
+    FixValueError, TenorUnit, parse_fix_bool, parse_fix_char, parse_fix_day_of_month,
+    parse_fix_int, parse_fix_multi_char, parse_fix_multi_string, parse_fix_seqnum, parse_fix_text,
+    parse_fix_uint,
 };
 use proptest::prelude::*;
 
@@ -50,8 +51,16 @@ proptest! {
     // -- Round-trip: construct -> encode -> parse --
 
     #[test]
+    fn decimal_roundtrip_reject_overflow(mantissa in any::<i64>(), scale in 20..=255u8) {
+        prop_assert!(matches!(
+            FixDecimal::new(mantissa, scale),
+            Err(FixValueError::Overflow)
+        ));
+    }
+
+    #[test]
     fn decimal_roundtrip(mantissa in any::<i64>(), scale in 0u8..=19) {
-        let d = FixDecimal { mantissa, scale };
+        let d = FixDecimal::new( mantissa, scale).unwrap();
         let mut buf = [0u8; 22];
         let n = d.encode(&mut buf);
         prop_assert_eq!(FixDecimal::parse(&buf[..n]).unwrap(), d);

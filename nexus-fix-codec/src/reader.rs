@@ -239,7 +239,9 @@ pub fn parse_tag(buf: &[u8]) -> (u32, usize) {
     let mut tag = 0u32;
     let mut i = 0;
     while i < buf.len() && buf[i] >= b'0' && buf[i] <= b'9' {
-        tag = tag * 10 + (buf[i] - b'0') as u32;
+        tag = tag
+            .saturating_mul(10)
+            .saturating_add((buf[i] - b'0') as u32);
         i += 1;
     }
     (tag, i)
@@ -707,6 +709,14 @@ mod tests {
     fn parse_tag_empty() {
         assert_eq!(parse_tag(b""), (0, 0));
         assert_eq!(parse_tag(b"=value"), (0, 0));
+    }
+
+    #[test]
+    fn parse_tag_overflow_saturates() {
+        // 11-digit tag overflows u32; saturates to MAX and consumes all digits.
+        assert_eq!(parse_tag(b"99999999999=x"), (u32::MAX, 11));
+        // Digits still consumed past the saturation point.
+        assert_eq!(parse_tag(b"123456789012345=v"), (u32::MAX, 15));
     }
 
     #[test]

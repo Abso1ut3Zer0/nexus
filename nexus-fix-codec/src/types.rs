@@ -18,11 +18,19 @@ use crate::error::FixValueError;
 /// ```
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub struct FixDecimal {
-    pub mantissa: i64,
-    pub scale: u8,
+    mantissa: i64,
+    scale: u8,
 }
 
 impl FixDecimal {
+    pub fn new(mantissa: i64, scale: u8) -> Result<Self, FixValueError> {
+        if scale > 19 {
+            return Err(FixValueError::Overflow);
+        }
+
+        Ok(Self { mantissa, scale })
+    }
+
     /// Parse a FIX decimal from wire bytes.
     ///
     /// Accepts: optional sign, digits, optional `.` + fractional digits.
@@ -130,6 +138,11 @@ impl FixDecimal {
 
         let abs = self.mantissa.unsigned_abs();
 
+        debug_assert!(
+            self.scale <= 19,
+            "FixDecimal::encode: scale over 19 ({}) will result in an integer overflow",
+            self.scale
+        );
         if self.scale == 0 {
             pos += encode_u64(abs, &mut buf[pos..]);
             return pos;
@@ -165,6 +178,11 @@ impl From<FixDecimal> for f32 {
 
 impl fmt::Display for FixDecimal {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        debug_assert!(
+            self.scale <= 19,
+            "<FixDecimal as std::fmt::Display>::fmt: scale over 19 ({}) will result in an integer overflow",
+            self.scale
+        );
         if self.scale == 0 {
             return write!(f, "{}", self.mantissa);
         }
@@ -1523,19 +1541,26 @@ mod decimal_conv {
 
     impl std::error::Error for DecimalConvError {}
 
-    // i128 backing: infallible — i128 always has headroom for i64 mantissa rescale.
-    impl<const D: u8> From<FixDecimal> for Decimal<i128, D>
+    impl<const D: u8> TryFrom<FixDecimal> for Decimal<i128, D>
     where
         i128: Backing,
     {
-        fn from(d: FixDecimal) -> Self {
+        type Error = DecimalConvError;
+
+        fn try_from(d: FixDecimal) -> Result<Self, Self::Error> {
+            let err = || DecimalConvError {
+                mantissa: d.mantissa,
+                scale: d.scale,
+            };
             let mantissa = d.mantissa as i128;
             let scaled = if D >= d.scale {
-                mantissa * 10_i128.pow((D - d.scale) as u32)
+                mantissa
+                    .checked_mul(10_i128.checked_pow((D - d.scale) as u32).ok_or_else(err)?)
+                    .ok_or_else(err)?
             } else {
-                mantissa / 10_i128.pow((d.scale - D) as u32)
+                mantissa / 10_i128.checked_pow((d.scale - D) as u32).ok_or_else(err)?
             };
-            Self::from_raw(scaled)
+            Ok(Self::from_raw(scaled))
         }
     }
 
@@ -1554,10 +1579,10 @@ mod decimal_conv {
 
             let scaled = if D >= d.scale {
                 d.mantissa
-                    .checked_mul(10_i64.pow((D - d.scale) as u32))
+                    .checked_mul(10_i64.checked_pow((D - d.scale) as u32).ok_or_else(err)?)
                     .ok_or_else(err)?
             } else {
-                d.mantissa / 10_i64.pow((d.scale - D) as u32)
+                d.mantissa / 10_i64.checked_pow((d.scale - D) as u32).ok_or_else(err)?
             };
             Ok(Self::from_raw(scaled))
         }
@@ -1578,10 +1603,10 @@ mod decimal_conv {
 
             let scaled = if D >= d.scale {
                 d.mantissa
-                    .checked_mul(10_i64.pow((D - d.scale) as u32))
+                    .checked_mul(10_i64.checked_pow((D - d.scale) as u32).ok_or_else(err)?)
                     .ok_or_else(err)?
             } else {
-                d.mantissa / 10_i64.pow((d.scale - D) as u32)
+                d.mantissa / 10_i64.checked_pow((d.scale - D) as u32).ok_or_else(err)?
             };
             let narrow = i32::try_from(scaled).map_err(|_| err())?;
             Ok(Self::from_raw(narrow))
@@ -3096,14 +3121,14 @@ mod tests {
         #[test]
         fn to_i128_decimal_widening() {
             let d = FixDecimal::parse(b"123.45").unwrap();
-            let dec: Decimal<i128, 8> = d.into();
+            let dec: Decimal<i128, 8> = d.try_into().unwrap();
             assert_eq!(dec.to_raw(), 12_345_000_000);
         }
 
         #[test]
         fn to_i128_decimal_narrowing() {
             let d = FixDecimal::parse(b"1.123456789").unwrap();
-            let dec: Decimal<i128, 4> = d.into();
+            let dec: Decimal<i128, 4> = d.try_into().unwrap();
             assert_eq!(dec.to_raw(), 11234);
         }
 

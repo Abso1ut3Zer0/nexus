@@ -10,8 +10,8 @@ use nexus_fix_codec::{
     encode_fix_uint, find_tag,
 };
 use nexus_fix_engine::{
-    CompId, DisconnectReason, FixConnection, FixJournal, Message, SessionConfig, SessionState,
-    State, TransportError,
+    CompId, DisconnectReason, FixConnection, FixJournal, Message, SessionConfig, SessionError,
+    SessionState, State, TransportError,
 };
 
 // ── mock dictionary ──────────────────────────────────────────────────────────
@@ -593,4 +593,53 @@ fn sequence_reset_backward_ignored() {
         "backward/zero SequenceReset Reset must not rewind next_inbound"
     );
     handle.join().unwrap();
+}
+
+#[test]
+fn overflowed_tag_34_yields_missing_seq_num() {
+    let dir = tmp_dir("overflow_tag34");
+    let (client_sock, server_sock) = loopback_pair();
+    server_sock
+        .set_read_timeout(Some(Duration::from_millis(500)))
+        .unwrap();
+
+    // Build a raw FIX frame where tag 34 is written with an overflowing digit
+    // sequence (9999999999 > u32::MAX). parse_tag returns u32::MAX, so find_tag(34)
+    // returns None → MissingMsgSeqNum.
+    let body: &[u8] = b"35=A\x019999999999=1\x0149=ACCEPTOR\x0156=INITIATOR\x0152=20260615-12:00:00.000\x01108=30\x01";
+    let header = format!("8=FIX.4.4\x019={}\x01", body.len());
+    let precheck: u8 = header
+        .bytes()
+        .chain(body.iter().copied())
+        .fold(0u32, |a, b| a.wrapping_add(b as u32)) as u8;
+    let frame = {
+        let mut v = header.into_bytes();
+        v.extend_from_slice(body);
+        v.extend_from_slice(format!("10={precheck:03}\x01").as_bytes());
+        v
+    };
+
+    let handle = std::thread::spawn(move || {
+        let mut s = client_sock;
+        s.write_all(&frame).unwrap();
+        s.flush().unwrap();
+    });
+
+    let mut conn: FixConnection<TcpStream, MockDict> = FixConnection::from_parts(
+        server_sock,
+        SessionState::new(Duration::from_secs(30)),
+        session_cfg(target(), sender()),
+        journal(&dir),
+    );
+
+    let result = conn.recv(Instant::now());
+    handle.join().unwrap();
+
+    assert!(
+        matches!(
+            result,
+            Err(TransportError::Protocol(SessionError::MissingMsgSeqNum))
+        ),
+        "expected MissingMsgSeqNum"
+    );
 }
