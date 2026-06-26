@@ -30,7 +30,10 @@ impl FixDecimal {
         Some(Self { mantissa, scale })
     }
 
+    /// Construct without checking `scale <= 19`. Caller must ensure the
+    /// invariant; violating it causes incorrect output from `encode`/`Display`.
     pub const fn new_unchecked(mantissa: i64, scale: u8) -> Self {
+        debug_assert!(scale <= 19, "scale must be <= 19");
         Self { mantissa, scale }
     }
 

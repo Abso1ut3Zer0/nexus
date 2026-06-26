@@ -14,7 +14,7 @@ use nexus_fix_codec::{
     encode_fix_uint, find_tag,
 };
 use nexus_fix_engine::{
-    CompId, FixConnection, FixJournal, Message, SessionConfig, SessionState, State,
+    CompId, FixConnection, FixJournal, Message, SessionConfig, SessionError, SessionState, State,
 };
 
 // ── minimal FIX 4.4 dictionary ───────────────────────────────────────────────
@@ -164,7 +164,17 @@ fn run_initiator(addr: std::net::SocketAddr, dir: &Path) {
         }
     }
 
-    let seq = conn.allocate_seq().unwrap();
+    let seq = match conn.allocate_seq() {
+        Ok(s) => s,
+        Err(SessionError::SeqNumExhausted) => {
+            eprintln!("initiator: sequence number exhausted; force a sequence reset");
+            return;
+        }
+        Err(e) => {
+            eprintln!("initiator: allocate_seq error: {e}");
+            return;
+        }
+    };
     let msg = new_order(seq);
     conn.send_app(seq, &msg).unwrap();
 
