@@ -183,7 +183,7 @@ impl<S: Read + Write, D: FixDictionary> FixConnection<S, D> {
         self.garbage_frames
     }
 
-    pub fn allocate_seq(&mut self) -> u32 {
+    pub fn allocate_seq(&mut self) -> Result<u32, SessionError> {
         self.state.allocate_seq(Instant::now())
     }
 

@@ -15,7 +15,7 @@ use nexus_fix_codec::{
 };
 use nexus_fix_engine::{
     AdminMsg, CompId, DisconnectReason, Event, FixJournal, FrameError, FrameReader, FrameWriter,
-    Out, ReplayItem, SessionConfig, SessionState, State,
+    Out, ReplayItem, SessionConfig, SessionError, SessionState, State,
 };
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use tokio::time::timeout_at;
@@ -88,7 +88,7 @@ impl<S: AsyncRead + AsyncWrite + Unpin> AsyncFixConnection<S> {
         &mut self.state
     }
 
-    pub fn allocate_seq(&mut self) -> u32 {
+    pub fn allocate_seq(&mut self) -> Result<u32, SessionError> {
         self.state.allocate_seq(Instant::now())
     }
 

@@ -164,7 +164,7 @@ fn run_initiator(addr: std::net::SocketAddr, dir: &Path) {
         }
     }
 
-    let seq = conn.allocate_seq();
+    let seq = conn.allocate_seq().unwrap();
     let msg = new_order(seq);
     conn.send_app(seq, &msg).unwrap();
 

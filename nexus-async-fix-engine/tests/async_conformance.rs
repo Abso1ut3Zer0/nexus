@@ -109,7 +109,7 @@ async fn conformance_resend() {
         }
     }
 
-    let seq = conn.allocate_seq();
+    let seq = conn.allocate_seq().unwrap();
     conn.send_app(seq, &new_order(seq)).await.unwrap();
 
     assert_eq!(drive(&mut conn).await, DisconnectReason::Logout);

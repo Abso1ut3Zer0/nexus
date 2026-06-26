@@ -95,17 +95,19 @@ impl FixJournal {
         } else {
             conductor.session().open()?
         };
-        Ok(Self {
+        let mut this = Self {
             journal,
             _conductor: conductor,
             offsets: vec![None; window].into_boxed_slice(),
             window,
             next_outbound: 1,
             next_inbound: 1,
-        })
+        };
+        this.recover_from_journal();
+        Ok(this)
     }
 
-    pub fn recover(&mut self) {
+    fn recover_from_journal(&mut self) {
         let mut pos = self.journal.read_start();
         let mut last_seq: Option<u32> = None;
         while let Some(frame) = self.journal.read_next(&mut pos) {
@@ -237,7 +239,7 @@ mod tests {
     }
 
     #[test]
-    fn recover_sets_next_outbound() {
+    fn open_recovers_next_outbound() {
         let dir = tmp_dir("recover");
         cleanup(&dir);
 
@@ -248,9 +250,7 @@ mod tests {
             }
         }
 
-        let mut j = FixJournal::open(&dir, 64).unwrap();
-        assert_eq!(j.next_outbound(), 1);
-        j.recover();
+        let j = FixJournal::open(&dir, 64).unwrap();
         assert_eq!(j.next_outbound(), 8);
 
         cleanup(&dir);
