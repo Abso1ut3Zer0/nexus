@@ -4,6 +4,10 @@ use std::time::{Duration, Instant};
 
 pub use event::{DisconnectReason, Event, State};
 
+use crate::framework::SessionError;
+
+const SEQ_MAX: u32 = i32::MAX as u32;
+
 const TEST_REQ_ID_CAP: usize = 64;
 
 /// An outbound admin message that the framework must sequence and encode.
@@ -138,11 +142,28 @@ impl SessionState {
 
     /// Allocates the next outbound sequence number for an application message
     /// and updates the outbound activity timestamp used by the heartbeat timer.
-    pub fn allocate_seq(&mut self, now: Instant) -> u32 {
+    ///
+    /// Returns `Err(SeqNumExhausted)` when `next_outbound` has reached `i32::MAX`.
+    /// The caller must initiate a sequence reset or logout before sending further messages.
+    pub fn allocate_seq(&mut self, now: Instant) -> Result<u32, SessionError> {
+        if self.next_outbound > SEQ_MAX {
+            return Err(SessionError::SeqNumExhausted);
+        }
         let s = self.next_outbound;
         self.next_outbound += 1;
         self.last_sent = Some(now);
-        s
+        Ok(s)
+    }
+
+    fn bump_outbound(&mut self, now: Instant, out: &mut Out) -> Option<u32> {
+        if self.next_outbound > SEQ_MAX {
+            self.disconnect(DisconnectReason::SeqNumExhausted, out);
+            return None;
+        }
+        let s = self.next_outbound;
+        self.next_outbound += 1;
+        self.last_sent = Some(now);
+        Some(s)
     }
 
     /// Earliest instant at which [`on_timeout`](Self::on_timeout) has work.
@@ -170,9 +191,9 @@ impl SessionState {
             return Out::EMPTY;
         }
         let mut out = Out::EMPTY;
-        let seq = self.next_outbound;
-        self.next_outbound += 1;
-        self.last_sent = Some(now);
+        let Some(seq) = self.bump_outbound(now, &mut out) else {
+            return out;
+        };
         out.push_admin(AdminMsg::Logon {
             seq,
             heart_bt_int_s: self.hb.as_secs() as u32,
@@ -189,9 +210,9 @@ impl SessionState {
             return Out::EMPTY;
         }
         let mut out = Out::EMPTY;
-        let seq = self.next_outbound;
-        self.next_outbound += 1;
-        self.last_sent = Some(now);
+        let Some(seq) = self.bump_outbound(now, &mut out) else {
+            return out;
+        };
         out.push_admin(AdminMsg::Logout { seq });
         self.state = State::LogoutPending;
         self.state_entered = Some(now);
@@ -221,9 +242,9 @@ impl SessionState {
             State::Active | State::Resending => {
                 if let Some(t) = self.test_request_sent {
                     if now.duration_since(t) >= self.hb {
-                        let seq = self.next_outbound;
-                        self.next_outbound += 1;
-                        self.last_sent = Some(now);
+                        let Some(seq) = self.bump_outbound(now, &mut out) else {
+                            return out;
+                        };
                         out.push_admin(AdminMsg::Logout { seq });
                         self.disconnect(DisconnectReason::TestRequestTimeout, &mut out);
                         return out;
@@ -232,9 +253,9 @@ impl SessionState {
                     && now.duration_since(t) >= self.inbound_grace()
                 {
                     self.test_req_counter += 1;
-                    let seq = self.next_outbound;
-                    self.next_outbound += 1;
-                    self.last_sent = Some(now);
+                    let Some(seq) = self.bump_outbound(now, &mut out) else {
+                        return out;
+                    };
                     out.push_admin(AdminMsg::TestRequest {
                         seq,
                         id: self.test_req_counter,
@@ -244,9 +265,9 @@ impl SessionState {
                 if let Some(t) = self.last_sent
                     && now.duration_since(t) >= self.hb
                 {
-                    let seq = self.next_outbound;
-                    self.next_outbound += 1;
-                    self.last_sent = Some(now);
+                    let Some(seq) = self.bump_outbound(now, &mut out) else {
+                        return out;
+                    };
                     out.push_admin(AdminMsg::Heartbeat { seq, echo: None });
                 }
             }
@@ -286,9 +307,9 @@ impl SessionState {
 
         let mut out = Out::EMPTY;
         if send_reply {
-            let reply_seq = self.next_outbound;
-            self.next_outbound += 1;
-            self.last_sent = Some(now);
+            let Some(reply_seq) = self.bump_outbound(now, &mut out) else {
+                return out;
+            };
             out.push_admin(AdminMsg::Logon {
                 seq: reply_seq,
                 heart_bt_int_s,
@@ -296,9 +317,9 @@ impl SessionState {
         }
 
         if seq < self.next_inbound {
-            let logout_seq = self.next_outbound;
-            self.next_outbound += 1;
-            self.last_sent = Some(now);
+            let Some(logout_seq) = self.bump_outbound(now, &mut out) else {
+                return out;
+            };
             out.push_admin(AdminMsg::Logout { seq: logout_seq });
             self.disconnect(DisconnectReason::SeqNumTooLow, &mut out);
             return out;
@@ -308,9 +329,9 @@ impl SessionState {
 
         if seq > self.next_inbound {
             self.gap_high = seq;
-            let rr_seq = self.next_outbound;
-            self.next_outbound += 1;
-            self.last_sent = Some(now);
+            let Some(rr_seq) = self.bump_outbound(now, &mut out) else {
+                return out;
+            };
             out.push_admin(AdminMsg::ResendRequest {
                 seq: rr_seq,
                 begin: self.next_inbound,
@@ -336,9 +357,9 @@ impl SessionState {
         ) && self.validate_seq(seq, poss_dup, now, &mut out)
         {
             if self.state != State::LogoutPending {
-                let logout_seq = self.next_outbound;
-                self.next_outbound += 1;
-                self.last_sent = Some(now);
+                let Some(logout_seq) = self.bump_outbound(now, &mut out) else {
+                    return out;
+                };
                 out.push_admin(AdminMsg::Logout { seq: logout_seq });
             }
             self.disconnect(DisconnectReason::Logout, &mut out);
@@ -384,9 +405,9 @@ impl SessionState {
             let mut echo = [0u8; TEST_REQ_ID_CAP];
             let id_len = test_req_id.len().min(TEST_REQ_ID_CAP);
             echo[..id_len].copy_from_slice(&test_req_id[..id_len]);
-            let hb_seq = self.next_outbound;
-            self.next_outbound += 1;
-            self.last_sent = Some(now);
+            let Some(hb_seq) = self.bump_outbound(now, &mut out) else {
+                return out;
+            };
             out.push_admin(AdminMsg::Heartbeat {
                 seq: hb_seq,
                 echo: Some((echo, id_len as u8)),
@@ -505,9 +526,9 @@ impl SessionState {
             return Out::EMPTY;
         }
         let mut out = Out::EMPTY;
-        let seq = self.next_outbound;
-        self.next_outbound += 1;
-        self.last_sent = Some(now);
+        let Some(seq) = self.bump_outbound(now, &mut out) else {
+            return out;
+        };
         out.push_admin(AdminMsg::Logout { seq });
         self.disconnect(DisconnectReason::CompIdMismatch, &mut out);
         out
@@ -519,9 +540,9 @@ impl SessionState {
                 self.gap_high = seq;
             }
             if self.state != State::Resending {
-                let rr_seq = self.next_outbound;
-                self.next_outbound += 1;
-                self.last_sent = Some(now);
+                let Some(rr_seq) = self.bump_outbound(now, out) else {
+                    return false;
+                };
                 out.push_admin(AdminMsg::ResendRequest {
                     seq: rr_seq,
                     begin: self.next_inbound,
@@ -536,9 +557,9 @@ impl SessionState {
             if poss_dup {
                 return false;
             }
-            let logout_seq = self.next_outbound;
-            self.next_outbound += 1;
-            self.last_sent = Some(now);
+            let Some(logout_seq) = self.bump_outbound(now, out) else {
+                return false;
+            };
             out.push_admin(AdminMsg::Logout { seq: logout_seq });
             self.disconnect(DisconnectReason::SeqNumTooLow, out);
             return false;
@@ -562,5 +583,36 @@ impl SessionState {
 
     fn inbound_grace(&self) -> Duration {
         self.hb + self.hb / 5
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn allocate_seq_errors_at_i32_max() {
+        let mut s = SessionState::new(Duration::from_secs(30));
+        let now = Instant::now();
+        s.connect(now);
+        s.on_logon(1, 30, false, false, now);
+        s.next_outbound = SEQ_MAX + 1;
+        assert_eq!(s.allocate_seq(now), Err(SessionError::SeqNumExhausted));
+    }
+
+    #[test]
+    fn bump_outbound_disconnects_at_i32_max() {
+        let mut s = SessionState::new(Duration::from_secs(30));
+        let now = Instant::now();
+        s.connect(now);
+        s.on_logon(1, 30, false, false, now);
+        s.next_outbound = SEQ_MAX + 1;
+        let out = s.logout(now);
+        assert_eq!(
+            out.event(),
+            Some(Event::Disconnected {
+                reason: DisconnectReason::SeqNumExhausted
+            })
+        );
     }
 }

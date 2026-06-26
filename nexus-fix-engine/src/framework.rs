@@ -55,6 +55,8 @@ pub enum SessionError {
     MalformedField { tag: u32 },
     /// Admin message decoder failed.
     MalformedMessage,
+    /// Outbound sequence number reached i32::MAX; caller must force a sequence reset.
+    SeqNumExhausted,
 }
 
 impl core::fmt::Display for SessionError {
@@ -65,6 +67,7 @@ impl core::fmt::Display for SessionError {
             Self::MissingField { tag } => write!(f, "required tag {tag} missing"),
             Self::MalformedField { tag } => write!(f, "tag {tag} malformed"),
             Self::MalformedMessage => write!(f, "admin message malformed"),
+            Self::SeqNumExhausted => write!(f, "outbound sequence number exhausted (i32::MAX)"),
         }
     }
 }

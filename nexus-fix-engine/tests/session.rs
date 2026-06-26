@@ -235,8 +235,8 @@ fn resend_request_surfaces_event() {
     let mut s = new_session();
     let now = Instant::now();
     establish(&mut s, now);
-    s.allocate_seq(now); // seq 2
-    s.allocate_seq(now); // seq 3
+    s.allocate_seq(now).unwrap(); // seq 2
+    s.allocate_seq(now).unwrap(); // seq 3
 
     let out = s.on_resend_request(2, false, 2, 3, now);
     assert_eq!(out.event(), Some(Event::ResendRange { begin: 2, end: 3 }));
@@ -386,7 +386,7 @@ fn seq_nums_survive_reconnect() {
     let mut s = new_session();
     let now = Instant::now();
     establish(&mut s, now);
-    s.allocate_seq(now); // outbound seq 2
+    s.allocate_seq(now).unwrap(); // outbound seq 2
 
     s.on_logout(2, false, now); // counterparty logout at inbound seq 2; session replies (seq 3), disconnects
 
