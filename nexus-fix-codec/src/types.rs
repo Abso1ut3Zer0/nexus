@@ -23,12 +23,23 @@ pub struct FixDecimal {
 }
 
 impl FixDecimal {
-    pub fn new(mantissa: i64, scale: u8) -> Result<Self, FixValueError> {
+    pub const fn new(mantissa: i64, scale: u8) -> Option<Self> {
         if scale > 19 {
-            return Err(FixValueError::Overflow);
+            return None;
         }
+        Some(Self { mantissa, scale })
+    }
 
-        Ok(Self { mantissa, scale })
+    pub const fn new_unchecked(mantissa: i64, scale: u8) -> Self {
+        Self { mantissa, scale }
+    }
+
+    pub const fn mantissa(&self) -> i64 {
+        self.mantissa
+    }
+
+    pub const fn scale(&self) -> u8 {
+        self.scale
     }
 
     /// Parse a FIX decimal from wire bytes.
