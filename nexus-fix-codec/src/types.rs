@@ -180,7 +180,8 @@ impl FixDecimal {
             return pos;
         }
 
-        let scale_pow = POW10[self.scale as usize];
+        debug_assert!(self.scale <= 19);
+        let scale_pow = unsafe { *POW10.get_unchecked(self.scale as usize) };
         let integer = abs / scale_pow;
         let frac = abs % scale_pow;
 
@@ -213,7 +214,8 @@ impl fmt::Display for FixDecimal {
         if self.scale == 0 {
             return write!(f, "{}", self.mantissa);
         }
-        let divisor = POW10[self.scale as usize];
+        debug_assert!(self.scale <= 19);
+        let divisor = unsafe { *POW10.get_unchecked(self.scale as usize) };
         let abs = self.mantissa.unsigned_abs();
         let integer = abs / divisor;
         let frac = abs % divisor;
