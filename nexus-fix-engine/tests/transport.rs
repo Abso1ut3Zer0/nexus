@@ -648,3 +648,41 @@ fn overflowed_tag_34_yields_missing_seq_num() {
         "expected MissingMsgSeqNum"
     );
 }
+
+#[test]
+fn journal_recovers_admin_seqnums() {
+    let dir = tmp_dir("journal_admin_seqnums");
+    let (client_sock, server_sock) = loopback_pair();
+    client_sock
+        .set_read_timeout(Some(Duration::from_millis(200)))
+        .unwrap();
+
+    let handle = std::thread::spawn(move || {
+        let mut peer = Peer::new(server_sock, target(), sender());
+        let mut buf = [0u8; 512];
+        let _ = peer.recv_msg(&mut buf);
+        peer.send_logon(30);
+        peer.send_logout();
+        let _ = peer.recv_msg(&mut buf);
+    });
+
+    let mut conn: FixConnection<TcpStream, MockDict> = FixConnection::from_parts(
+        client_sock,
+        SessionState::new(Duration::from_secs(30)),
+        session_cfg(sender(), target()),
+        journal(&dir),
+    );
+    conn.connect(Instant::now()).unwrap();
+    let reason = drive(&mut conn).unwrap();
+    assert_eq!(reason, DisconnectReason::Logout);
+    handle.join().unwrap();
+    drop(conn);
+
+    // seq=1 logon + seq=2 logout-ack → next_outbound must be 3 after recovery
+    let recovered = FixJournal::open(&dir, 256).unwrap();
+    assert_eq!(
+        recovered.next_outbound(),
+        3,
+        "journal must include admin seqnums"
+    );
+}

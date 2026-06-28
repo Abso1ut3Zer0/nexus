@@ -166,6 +166,13 @@ impl SessionState {
         Some(s)
     }
 
+    /// Restores outbound and inbound sequence numbers from a recovered journal.
+    /// Call before connecting to resume a prior session without gaps.
+    pub fn reset_seq_nums(&mut self, next_outbound: u32, next_inbound: u32) {
+        self.next_outbound = next_outbound;
+        self.next_inbound = next_inbound;
+    }
+
     /// Earliest instant at which [`on_timeout`](Self::on_timeout) has work.
     pub fn next_timeout(&self) -> Option<Instant> {
         match self.state {

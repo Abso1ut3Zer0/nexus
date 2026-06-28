@@ -10,7 +10,7 @@ use nexus_fix_codec::{
 use crate::frame::{FrameError, FrameWriter};
 use crate::framework::{Message, MessageReader, MessageWriter, SessionConfig, SessionError};
 use crate::persist::{FixJournal, ReplayItem};
-use crate::session::{DisconnectReason, Event, SessionState, State};
+use crate::session::{AdminMsg, DisconnectReason, Event, SessionState, State};
 use crate::timestamp::UTC_TIMESTAMP_LEN;
 
 #[derive(Debug)]
@@ -202,7 +202,7 @@ impl<S: Read + Write, D: FixDictionary> FixConnection<S, D> {
     pub fn connect(&mut self, now: Instant) -> Result<(), Error> {
         let out = self.state.connect(now);
         for admin in out.admin_messages() {
-            self.writer.encode_admin(admin, &self.config);
+            store_admin(admin, &mut self.writer, &mut self.journal, &self.config)?;
         }
         if !self.writer.is_empty() {
             self.writer.flush_to(&mut self.stream).map_err(Error::Io)?;
@@ -220,7 +220,7 @@ impl<S: Read + Write, D: FixDictionary> FixConnection<S, D> {
     pub fn logout(&mut self, now: Instant) -> Result<(), Error> {
         let out = self.state.logout(now);
         for admin in out.admin_messages() {
-            self.writer.encode_admin(admin, &self.config);
+            store_admin(admin, &mut self.writer, &mut self.journal, &self.config)?;
         }
         if !self.writer.is_empty() {
             self.writer.flush_to(&mut self.stream).map_err(Error::Io)?;
@@ -249,7 +249,7 @@ impl<S: Read + Write, D: FixDictionary> FixConnection<S, D> {
                             Err(e) if is_timeout(&e) => {
                                 let out = self.state.on_timeout(now);
                                 for admin in out.admin_messages() {
-                                    self.writer.encode_admin(admin, &self.config);
+                                    store_admin(admin, &mut self.writer, &mut self.journal, &self.config)?;
                                 }
                                 if !self.writer.is_empty() {
                                     self.writer.flush_to(&mut self.stream).map_err(Error::Io)?;
@@ -306,7 +306,7 @@ impl<S: Read + Write, D: FixDictionary> FixConnection<S, D> {
         if !sender_ok || !target_ok {
             let out = self.state.on_comp_id_mismatch(now);
             for admin in out.admin_messages() {
-                self.writer.encode_admin(admin, &self.config);
+                store_admin(admin, &mut self.writer, &mut self.journal, &self.config)?;
             }
             if !self.writer.is_empty() {
                 self.writer.flush_to(&mut self.stream).map_err(Error::Io)?;
@@ -332,7 +332,7 @@ impl<S: Read + Write, D: FixDictionary> FixConnection<S, D> {
                 let was_logon_sent = self.state.state() == State::LogonSent;
                 let out = self.state.on_logon(seq, hbi, reset, !was_logon_sent, now);
                 for admin in out.admin_messages() {
-                    self.writer.encode_admin(admin, &self.config);
+                    store_admin(admin, &mut self.writer, &mut self.journal, &self.config)?;
                 }
                 if !self.writer.is_empty() {
                     self.writer.flush_to(&mut self.stream).map_err(Error::Io)?;
@@ -352,7 +352,7 @@ impl<S: Read + Write, D: FixDictionary> FixConnection<S, D> {
                 let was_logout_pending = self.state.state() == State::LogoutPending;
                 let out = self.state.on_logout(seq, poss_dup, now);
                 for admin in out.admin_messages() {
-                    self.writer.encode_admin(admin, &self.config);
+                    store_admin(admin, &mut self.writer, &mut self.journal, &self.config)?;
                 }
                 if !self.writer.is_empty() {
                     self.writer.flush_to(&mut self.stream).map_err(Error::Io)?;
@@ -371,7 +371,7 @@ impl<S: Read + Write, D: FixDictionary> FixConnection<S, D> {
             b"0" => {
                 let out = self.state.on_heartbeat(seq, poss_dup, now);
                 for admin in out.admin_messages() {
-                    self.writer.encode_admin(admin, &self.config);
+                    store_admin(admin, &mut self.writer, &mut self.journal, &self.config)?;
                 }
                 if !self.writer.is_empty() {
                     self.writer.flush_to(&mut self.stream).map_err(Error::Io)?;
@@ -385,7 +385,7 @@ impl<S: Read + Write, D: FixDictionary> FixConnection<S, D> {
                     find_tag(frame, 0, 112).map_or_else(|| b"".as_ref(), |s| s.slice(frame));
                 let out = self.state.on_test_request(seq, poss_dup, test_req_id, now);
                 for admin in out.admin_messages() {
-                    self.writer.encode_admin(admin, &self.config);
+                    store_admin(admin, &mut self.writer, &mut self.journal, &self.config)?;
                 }
                 if !self.writer.is_empty() {
                     self.writer.flush_to(&mut self.stream).map_err(Error::Io)?;
@@ -403,7 +403,7 @@ impl<S: Read + Write, D: FixDictionary> FixConnection<S, D> {
                     .map_or(0, |v| v as u32);
                 let out = self.state.on_resend_request(seq, poss_dup, begin, end, now);
                 for admin in out.admin_messages() {
-                    self.writer.encode_admin(admin, &self.config);
+                    store_admin(admin, &mut self.writer, &mut self.journal, &self.config)?;
                 }
                 if !self.writer.is_empty() {
                     self.writer.flush_to(&mut self.stream).map_err(Error::Io)?;
@@ -436,7 +436,7 @@ impl<S: Read + Write, D: FixDictionary> FixConnection<S, D> {
                     .unwrap_or(false);
                 let out = self.state.on_sequence_reset(seq, new_seq, gap_fill, now);
                 for admin in out.admin_messages() {
-                    self.writer.encode_admin(admin, &self.config);
+                    store_admin(admin, &mut self.writer, &mut self.journal, &self.config)?;
                 }
                 if !self.writer.is_empty() {
                     self.writer.flush_to(&mut self.stream).map_err(Error::Io)?;
@@ -451,7 +451,7 @@ impl<S: Read + Write, D: FixDictionary> FixConnection<S, D> {
                     .map_or(0, |v| v as u32);
                 let out = self.state.on_reject(seq, poss_dup, ref_seq, now);
                 for admin in out.admin_messages() {
-                    self.writer.encode_admin(admin, &self.config);
+                    store_admin(admin, &mut self.writer, &mut self.journal, &self.config)?;
                 }
                 if !self.writer.is_empty() {
                     self.writer.flush_to(&mut self.stream).map_err(Error::Io)?;
@@ -463,7 +463,7 @@ impl<S: Read + Write, D: FixDictionary> FixConnection<S, D> {
             _ => {
                 let out = self.state.on_app(seq, poss_dup, now);
                 for admin in out.admin_messages() {
-                    self.writer.encode_admin(admin, &self.config);
+                    store_admin(admin, &mut self.writer, &mut self.journal, &self.config)?;
                 }
                 if !self.writer.is_empty() {
                     self.writer.flush_to(&mut self.stream).map_err(Error::Io)?;
@@ -543,6 +543,31 @@ fn do_resend<S: Write, D: FixDictionary>(
         }
     }
     writer.flush_to(stream).map_err(Error::Io)
+}
+
+fn store_admin<D: FixDictionary>(
+    admin: AdminMsg,
+    writer: &mut MessageWriter<D>,
+    journal: &mut FixJournal,
+    config: &SessionConfig,
+) -> Result<(), Error> {
+    let seq = match admin {
+        AdminMsg::Logon { seq, .. }
+        | AdminMsg::Logout { seq }
+        | AdminMsg::Heartbeat { seq, .. }
+        | AdminMsg::TestRequest { seq, .. }
+        | AdminMsg::ResendRequest { seq, .. }
+        | AdminMsg::SequenceReset { seq, .. } => seq,
+    };
+    let before = writer.inner.data().len();
+    writer.encode_admin(admin, config);
+    let frame = &writer.inner.data()[before..];
+    if !frame.is_empty() {
+        journal
+            .store(seq, frame)
+            .map_err(|e| Error::Io(io::Error::other(format!("{e:?}"))))?;
+    }
+    Ok(())
 }
 
 fn write_through<S: Write>(
