@@ -323,7 +323,16 @@ impl<S: Read + Write, D: FixDictionary> FixConnection<S, D> {
 
         let raw_type = match find_tag(frame, 0, 35) {
             Some(s) => s.slice(frame),
-            None => return Err(Error::Protocol(SessionError::MissingMsgType)),
+            None => {
+                let out = self.state.on_reject_inbound(seq, Some(35), 1, now);
+                for admin in out.admin_messages() {
+                    self.writer.encode_admin(admin, &self.config);
+                }
+                if !self.writer.is_empty() {
+                    self.writer.flush_to(&mut self.stream).map_err(Error::Io)?;
+                }
+                return Ok(None);
+            }
         };
 
         match raw_type {
