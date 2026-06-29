@@ -47,7 +47,7 @@ async fn connect(port: u16, dir: &Path) -> AsyncFixConnection<TcpStream> {
             sender: CompId::new(b"ENGINE").unwrap(),
             target: CompId::new(b"PEER").unwrap(),
         },
-        FixJournal::open(dir, 256).unwrap(),
+        FixJournal::open(dir, 0, 256).unwrap(),
         BEGIN,
     )
 }

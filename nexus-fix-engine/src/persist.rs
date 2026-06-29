@@ -218,7 +218,7 @@ mod tests {
         let dir = tmp_dir("store-resend");
         cleanup(&dir);
 
-        let mut j = FixJournal::open(&dir, 64).unwrap();
+        let mut j = FixJournal::open(&dir, 0, 64).unwrap();
         for seq in 1..=5u32 {
             j.store(seq, &fix_msg(seq)).unwrap();
         }
@@ -239,13 +239,13 @@ mod tests {
         cleanup(&dir);
 
         {
-            let mut j = FixJournal::open(&dir, 64).unwrap();
+            let mut j = FixJournal::open(&dir, 0, 64).unwrap();
             for seq in 1..=7u32 {
                 j.store(seq, &fix_msg(seq)).unwrap();
             }
         }
 
-        let j = FixJournal::open(&dir, 64).unwrap();
+        let j = FixJournal::open(&dir, 0, 64).unwrap();
         assert_eq!(j.next_outbound(), 8);
 
         cleanup(&dir);
@@ -256,7 +256,7 @@ mod tests {
         let dir = tmp_dir("gapfill");
         cleanup(&dir);
 
-        let mut j = FixJournal::open(&dir, 64).unwrap();
+        let mut j = FixJournal::open(&dir, 0, 64).unwrap();
         j.store(1, &fix_msg(1)).unwrap();
 
         match j.resend_one(2) {
@@ -272,7 +272,7 @@ mod tests {
         let dir = tmp_dir("straddle");
         cleanup(&dir);
 
-        let mut j = FixJournal::open(&dir, 64).unwrap();
+        let mut j = FixJournal::open(&dir, 0, 64).unwrap();
         for seq in [1u32, 3, 5] {
             j.store(seq, &fix_msg(seq)).unwrap();
         }
@@ -290,7 +290,7 @@ mod tests {
         let dir = tmp_dir("inbound");
         cleanup(&dir);
 
-        let mut j = FixJournal::open(&dir, 64).unwrap();
+        let mut j = FixJournal::open(&dir, 0, 64).unwrap();
         assert_eq!(j.next_inbound(), 1);
         j.advance_inbound();
         j.advance_inbound();
@@ -306,7 +306,7 @@ mod tests {
         let dir = tmp_dir("rr-admin-skip");
         cleanup(&dir);
 
-        let mut j = FixJournal::open(&dir, 64).unwrap();
+        let mut j = FixJournal::open(&dir, 0, 64).unwrap();
         j.store(1, &fix_admin(1, "A")).unwrap();
         j.store(2, &fix_admin(2, "0")).unwrap();
         j.store(3, &fix_admin(3, "5")).unwrap();
@@ -326,7 +326,7 @@ mod tests {
         let dir = tmp_dir("rr-holes");
         cleanup(&dir);
 
-        let mut j = FixJournal::open(&dir, 64).unwrap();
+        let mut j = FixJournal::open(&dir, 0, 64).unwrap();
         for seq in [1u32, 3, 5] {
             j.store(seq, &fix_msg(seq)).unwrap();
         }
@@ -353,7 +353,7 @@ mod tests {
         let dir = tmp_dir("rr-straddle");
         cleanup(&dir);
 
-        let mut j = FixJournal::open(&dir, 4).unwrap();
+        let mut j = FixJournal::open(&dir, 0, 4).unwrap();
         for seq in 1..=8u32 {
             j.store(seq, &fix_msg(seq)).unwrap();
         }
@@ -377,7 +377,7 @@ mod tests {
         let dir = tmp_dir("rr-original");
         cleanup(&dir);
 
-        let mut j = FixJournal::open(&dir, 64).unwrap();
+        let mut j = FixJournal::open(&dir, 0, 64).unwrap();
         let msg = fix_msg_with_time(1, "20240101-12:00:00");
         j.store(1, &msg).unwrap();
 
@@ -396,7 +396,7 @@ mod tests {
         let dir = tmp_dir("rr-coalesced");
         cleanup(&dir);
 
-        let mut j = FixJournal::open(&dir, 64).unwrap();
+        let mut j = FixJournal::open(&dir, 0, 64).unwrap();
         j.store(1, &fix_msg(1)).unwrap();
         j.store(5, &fix_msg(5)).unwrap();
 
@@ -417,7 +417,7 @@ mod tests {
         let dir = tmp_dir("rr-allgap");
         cleanup(&dir);
 
-        let mut j = FixJournal::open(&dir, 64).unwrap();
+        let mut j = FixJournal::open(&dir, 0, 64).unwrap();
         j.store(1, &fix_admin(1, "A")).unwrap();
         j.store(2, &fix_admin(2, "1")).unwrap();
         j.store(3, &fix_admin(3, "2")).unwrap();
@@ -437,7 +437,7 @@ mod tests {
         let dir = tmp_dir("rr-endzero");
         cleanup(&dir);
 
-        let mut j = FixJournal::open(&dir, 64).unwrap();
+        let mut j = FixJournal::open(&dir, 0, 64).unwrap();
         for seq in 1..=3u32 {
             j.store(seq, &fix_msg(seq)).unwrap();
         }

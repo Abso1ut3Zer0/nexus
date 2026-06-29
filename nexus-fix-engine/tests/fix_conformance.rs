@@ -134,7 +134,7 @@ fn connect(port: u16, dir: &PathBuf) -> FixConnection<TcpStream, MockDict> {
             sender: CompId::new(b"ENGINE").unwrap(),
             target: CompId::new(b"PEER").unwrap(),
         },
-        FixJournal::open(dir, 256).unwrap(),
+        FixJournal::open(dir, 0, 256).unwrap(),
     )
 }
 

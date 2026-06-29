@@ -95,7 +95,7 @@ fn session_cfg(sender: CompId, target: CompId) -> SessionConfig {
 }
 
 fn journal(dir: &PathBuf) -> FixJournal {
-    FixJournal::open(dir, 256).unwrap()
+    FixJournal::open(dir, 0, 256).unwrap()
 }
 
 fn loopback_pair() -> (TcpStream, TcpStream) {
