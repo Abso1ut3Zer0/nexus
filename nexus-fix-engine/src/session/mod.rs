@@ -735,6 +735,10 @@ mod tests {
             matches!(admins[0], AdminMsg::ResendRequest { begin: 2, .. }),
             "expected ResendRequest, got {admins:?}"
         );
-        assert_eq!(s.next_inbound_seq(), 2, "next_inbound must not advance on gap");
+        assert_eq!(
+            s.next_inbound_seq(),
+            2,
+            "next_inbound must not advance on gap"
+        );
     }
 }

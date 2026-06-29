@@ -324,7 +324,9 @@ impl<S: Read + Write, D: FixDictionary> FixConnection<S, D> {
         let raw_type = if let Some(s) = find_tag(frame, 0, 35) {
             s.slice(frame)
         } else {
-            let out = self.state.on_reject_inbound(seq, poss_dup, Some(35), 1, now);
+            let out = self
+                .state
+                .on_reject_inbound(seq, poss_dup, Some(35), 1, now);
             for admin in out.admin_messages() {
                 self.writer.encode_admin(admin, &self.config);
             }
