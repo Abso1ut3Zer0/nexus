@@ -448,4 +448,33 @@ mod tests {
 
         cleanup(&dir);
     }
+
+    #[test]
+    fn two_sessions_in_one_directory_are_independent() {
+        let dir = tmp_dir("two-sessions");
+        cleanup(&dir);
+
+        {
+            let mut j0 = FixJournal::open(&dir, 0, 64).unwrap();
+            let mut j1 = FixJournal::open(&dir, 1, 64).unwrap();
+
+            for seq in 1..=3u32 {
+                j0.store(seq, &fix_msg(seq)).unwrap();
+            }
+            for seq in 1..=5u32 {
+                j1.store(seq, &fix_msg(seq)).unwrap();
+            }
+
+            assert_eq!(j0.next_outbound(), 4);
+            assert_eq!(j1.next_outbound(), 6);
+        }
+
+        // Reopen both and verify each recovers its own next_outbound independently.
+        let j0 = FixJournal::open(&dir, 0, 64).unwrap();
+        let j1 = FixJournal::open(&dir, 1, 64).unwrap();
+        assert_eq!(j0.next_outbound(), 4);
+        assert_eq!(j1.next_outbound(), 6);
+
+        cleanup(&dir);
+    }
 }
