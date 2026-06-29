@@ -86,15 +86,10 @@ impl FixJournal {
     ///
     /// One session per journal: if a session already exists under `dir`, the
     /// first one is reopened; otherwise a new session is created.
-    pub fn open(dir: impl AsRef<Path>, window: usize) -> Result<Self, OpenError> {
+    pub fn open(dir: impl AsRef<Path>, session_id: u32, window: usize) -> Result<Self, OpenError> {
         assert!(window.is_power_of_two());
         let mut conductor = Conductor::open(dir)?;
-        let existing = conductor.sessions_on_disk()?;
-        let journal = if let Some(&id) = existing.first() {
-            conductor.session().session_id(id).open()?
-        } else {
-            conductor.session().open()?
-        };
+        let journal: RotatingJournal = conductor.session().session_id(session_id).open()?;
         let mut this = Self {
             journal,
             _conductor: conductor,
