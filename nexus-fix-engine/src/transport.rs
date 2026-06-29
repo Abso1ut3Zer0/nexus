@@ -570,7 +570,8 @@ fn store_admin<D: FixDictionary>(
         | AdminMsg::Heartbeat { seq, .. }
         | AdminMsg::TestRequest { seq, .. }
         | AdminMsg::ResendRequest { seq, .. }
-        | AdminMsg::SequenceReset { seq, .. } => seq,
+        | AdminMsg::SequenceReset { seq, .. }
+        | AdminMsg::Reject { seq, .. } => seq,
     };
     let before = writer.inner.data().len();
     writer.encode_admin(admin, config);
