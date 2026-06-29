@@ -545,9 +545,8 @@ impl SessionState {
 
     /// Sends a session-level Reject (35=3) for a received message that cannot be processed.
     ///
-    /// Validates `inbound_seq` and, if in-sequence, sends a Reject and advances `next_inbound`.
-    /// A gap triggers a ResendRequest instead; a too-low seq triggers Logout.
-    /// The session remains alive on in-sequence rejection. No-op if not in an active state.
+    /// Validates sequence then sends a Reject for `inbound_seq`. A gap sends ResendRequest instead.
+    /// The session remains alive. No-op if the session is not in an active state.
     pub fn on_reject_inbound(
         &mut self,
         inbound_seq: u32,
