@@ -366,7 +366,8 @@ impl<S: AsyncRead + AsyncWrite + Unpin> AsyncFixConnection<S> {
                         let n = encode_fix_uint(tag, &mut buf);
                         fmt.field(371, &buf[..n]);
                     }
-                    fmt.field(373, &[b'0' + session_reject_reason]);
+                    let n = encode_fix_uint(session_reject_reason as u32, &mut buf);
+                    fmt.field(373, &buf[..n]);
                 }
             }
 
