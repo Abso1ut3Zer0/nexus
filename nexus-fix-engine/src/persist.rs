@@ -79,13 +79,16 @@ impl<'a> Iterator for ResendIter<'a> {
 }
 
 impl FixJournal {
-    /// Open (or recover) the journal for a single session under `dir`.
+    /// Open (or create) the journal for `session_id` under `dir`.
+    ///
+    /// If a manifest for `session_id` already exists under `dir`, the session
+    /// is recovered and `next_outbound` is restored from the stored messages.
+    /// If no manifest exists, a fresh session is created. Multiple sessions
+    /// can coexist under the same `dir` with distinct `session_id` values,
+    /// each with independent sequence number state.
     ///
     /// `window` is the resend horizon in messages (must be a power of two): the
     /// last `window` sequence numbers are replayable, older ones are gap-filled.
-    ///
-    /// One session per journal: if a session already exists under `dir`, the
-    /// first one is reopened; otherwise a new session is created.
     pub fn open(dir: impl AsRef<Path>, session_id: u32, window: usize) -> Result<Self, OpenError> {
         assert!(window.is_power_of_two());
         let mut conductor = Conductor::open(dir)?;
