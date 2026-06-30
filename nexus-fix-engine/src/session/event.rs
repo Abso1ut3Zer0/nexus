@@ -11,6 +11,10 @@ pub enum State {
     Resending,
     /// Logout sent, awaiting the counterparty's Logout confirm.
     LogoutPending,
+    /// In-session reset initiated: TestRequest sent, awaiting Heartbeat to confirm drain.
+    AwaitingResetDrain,
+    /// Drain confirmed: Logon(141=Y) sent, awaiting counterparty's Logon(141=Y) ack.
+    AwaitingResetAck,
 }
 
 /// Why the session disconnected.
@@ -32,6 +36,8 @@ pub enum DisconnectReason {
     ProtocolViolation,
     /// Outbound sequence number reached i32::MAX; caller must force a sequence reset.
     SeqNumExhausted,
+    /// Counterparty did not complete the reset handshake within the timeout.
+    ResetTimeout,
 }
 
 /// Session event returned in [`Out::event`](super::Out::event).

@@ -106,6 +106,24 @@ impl<S: AsyncRead + AsyncWrite + Unpin> AsyncFixConnection<S> {
         self.flush_out(out).await
     }
 
+    /// Initiates a session with `ResetSeqNumFlag(141)=Y`.
+    pub async fn connect_reset(&mut self) -> Result<(), Error> {
+        let out = self
+            .state
+            .connect_reset(Instant::now())
+            .map_err(|e| Error::Io(io::Error::other(e.to_string())))?;
+        self.flush_out(out).await
+    }
+
+    /// Initiates an in-session sequence reset.
+    pub async fn reset_sequence(&mut self) -> Result<(), Error> {
+        let out = self
+            .state
+            .reset_sequence(Instant::now())
+            .map_err(|e| Error::Io(io::Error::other(e.to_string())))?;
+        self.flush_out(out).await
+    }
+
     /// Receives one batch of bytes, dispatches all complete frames, and
     /// fires any due timers. Returns `Some(reason)` when the session ends.
     pub async fn recv<H>(&mut self, on_app: &mut H) -> Result<Option<DisconnectReason>, Error>
@@ -224,7 +242,11 @@ impl<S: AsyncRead + AsyncWrite + Unpin> AsyncFixConnection<S> {
                 )
             }
             b"5" => (self.state.on_logout(seq, poss_dup, now), false),
-            b"0" => (self.state.on_heartbeat(seq, poss_dup, now), false),
+            b"0" => {
+                let echo_id =
+                    find_tag(frame, 0, 112).and_then(|s| parse_fix_seqnum(s.slice(frame)).ok());
+                (self.state.on_heartbeat(seq, poss_dup, echo_id, now), false)
+            }
             b"1" => {
                 let id = find_tag(frame, 0, 112).map_or(&b""[..], |s| s.slice(frame));
                 (self.state.on_test_request(seq, poss_dup, id, now), false)
@@ -288,7 +310,7 @@ impl<S: AsyncRead + AsyncWrite + Unpin> AsyncFixConnection<S> {
         let ts = make_ts();
 
         let msg_type: &[u8] = match admin {
-            AdminMsg::Logon { .. } => b"A",
+            AdminMsg::Logon { .. } | AdminMsg::LogonReset { .. } => b"A",
             AdminMsg::Logout { .. } => b"5",
             AdminMsg::Heartbeat { .. } => b"0",
             AdminMsg::TestRequest { .. } => b"1",
@@ -299,6 +321,7 @@ impl<S: AsyncRead + AsyncWrite + Unpin> AsyncFixConnection<S> {
 
         let seq = match admin {
             AdminMsg::Logon { seq, .. }
+            | AdminMsg::LogonReset { seq, .. }
             | AdminMsg::Logout { seq }
             | AdminMsg::Heartbeat { seq, .. }
             | AdminMsg::TestRequest { seq, .. }
@@ -323,7 +346,8 @@ impl<S: AsyncRead + AsyncWrite + Unpin> AsyncFixConnection<S> {
             fmt.field(52, &ts);
 
             match admin {
-                AdminMsg::Logon { heart_bt_int_s, .. } => {
+                AdminMsg::Logon { heart_bt_int_s, .. }
+                | AdminMsg::LogonReset { heart_bt_int_s, .. } => {
                     let mut buf = [0u8; 10];
                     let n = encode_fix_uint(heart_bt_int_s, &mut buf);
                     fmt.field(108, &buf[..n]);

@@ -31,7 +31,8 @@ fn initiator_handshake() {
         admins[0],
         AdminMsg::Logon {
             seq: 1,
-            heart_bt_int_s: 30
+            heart_bt_int_s: 30,
+            ..
         }
     ));
 
@@ -57,7 +58,8 @@ fn acceptor_handshake() {
         admins[0],
         AdminMsg::Logon {
             seq: 1,
-            heart_bt_int_s: 15
+            heart_bt_int_s: 15,
+            ..
         }
     ));
 }
@@ -71,7 +73,7 @@ fn logon_reset_seq_num_flag() {
     assert_eq!(s.state(), State::Active);
     let admins = admin_msgs(out);
     assert_eq!(admins.len(), 1);
-    assert!(matches!(admins[0], AdminMsg::Logon { seq: 1, .. }));
+    assert!(matches!(admins[0], AdminMsg::LogonReset { seq: 1, .. }));
 }
 
 #[test]
@@ -174,7 +176,7 @@ fn probe_answered_keeps_session_alive() {
 
     let probe_at = now + Duration::from_secs(36);
     s.on_timeout(probe_at);
-    s.on_heartbeat(2, false, probe_at + Duration::from_secs(1));
+    s.on_heartbeat(2, false, None, probe_at + Duration::from_secs(1));
 
     s.on_timeout(probe_at + HB);
     assert_eq!(s.state(), State::Active);
