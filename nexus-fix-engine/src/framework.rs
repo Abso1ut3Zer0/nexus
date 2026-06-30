@@ -207,6 +207,7 @@ impl<D: FixDictionary> MessageWriter<D> {
             AdminMsg::TestRequest { .. } => b"1",
             AdminMsg::ResendRequest { .. } => b"2",
             AdminMsg::SequenceReset { .. } => b"4",
+            AdminMsg::Reject { .. } => b"3",
         };
 
         let seq = match admin {
@@ -215,7 +216,8 @@ impl<D: FixDictionary> MessageWriter<D> {
             | AdminMsg::Heartbeat { seq, .. }
             | AdminMsg::TestRequest { seq, .. }
             | AdminMsg::ResendRequest { seq, .. }
-            | AdminMsg::SequenceReset { seq, .. } => seq,
+            | AdminMsg::SequenceReset { seq, .. }
+            | AdminMsg::Reject { seq, .. } => seq,
         };
 
         let begin_string = D::BEGIN_STRING;
@@ -263,6 +265,22 @@ impl<D: FixDictionary> MessageWriter<D> {
                     let mut buf = [0u8; 10];
                     let n = encode_fix_uint(new_seq, &mut buf);
                     fmt.field(36, &buf[..n]);
+                }
+                AdminMsg::Reject {
+                    ref_seq_num,
+                    ref_tag_id,
+                    session_reject_reason,
+                    ..
+                } => {
+                    let mut buf = [0u8; 10];
+                    let n = encode_fix_uint(ref_seq_num, &mut buf);
+                    fmt.field(45, &buf[..n]);
+                    if let Some(tag) = ref_tag_id {
+                        let n = encode_fix_uint(tag, &mut buf);
+                        fmt.field(371, &buf[..n]);
+                    }
+                    let n = encode_fix_uint(session_reject_reason as u32, &mut buf);
+                    fmt.field(373, &buf[..n]);
                 }
             }
 

@@ -87,16 +87,28 @@ impl<'buf> FixHeader<'buf> for Fix44Header<'buf> {
 // ── main ─────────────────────────────────────────────────────────────────────
 
 fn main() {
-    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let port: u16 = std::env::var("FIX_PORT")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(0);
+    let listener = TcpListener::bind(("127.0.0.1", port)).unwrap();
     let addr = listener.local_addr().unwrap();
+    println!("listening on {addr}");
 
-    let acceptor_dir = tmp_dir("acceptor");
-    let acceptor = std::thread::spawn(move || run_acceptor(&listener, &acceptor_dir));
-
-    let initiator_dir = tmp_dir("initiator");
-    run_initiator(addr, &initiator_dir);
-
-    acceptor.join().unwrap();
+    if port != 0 {
+        let mut n = 0u64;
+        loop {
+            let dir = tmp_dir(&format!("acceptor_{n}"));
+            n += 1;
+            run_acceptor(&listener, &dir);
+        }
+    } else {
+        let acceptor_dir = tmp_dir("acceptor");
+        let acceptor = std::thread::spawn(move || run_acceptor(&listener, &acceptor_dir));
+        let initiator_dir = tmp_dir("initiator");
+        run_initiator(addr, &initiator_dir);
+        acceptor.join().unwrap();
+    }
 }
 
 fn run_acceptor(listener: &TcpListener, dir: &Path) {
