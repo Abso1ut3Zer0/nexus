@@ -43,6 +43,14 @@ pub enum AdminMsg {
         seq: u32,
         new_seq: u32,
     },
+    /// Session-level Reject (35=3). Sent in response to a malformed or
+    /// semantically invalid inbound message. Keeps the session alive.
+    Reject {
+        seq: u32,
+        ref_seq_num: u32,
+        ref_tag_id: Option<u32>,
+        session_reject_reason: u8,
+    },
 }
 
 /// Output of a [`SessionState`] handler call.
@@ -473,6 +481,14 @@ impl SessionState {
         let mut out = Out::EMPTY;
         if !gap_fill {
             if new_seq == 0 || new_seq < self.next_inbound {
+                if let Some(reject_seq) = self.bump_outbound(now, &mut out) {
+                    out.push_admin(AdminMsg::Reject {
+                        seq: reject_seq,
+                        ref_seq_num: seq,
+                        ref_tag_id: Some(36),
+                        session_reject_reason: 5,
+                    });
+                }
                 return out;
             }
             self.next_inbound = new_seq;
@@ -524,6 +540,41 @@ impl SessionState {
             });
             self.check_resend_done();
         }
+        out
+    }
+
+    /// Sends a session-level Reject (35=3) for a received message that cannot be processed.
+    ///
+    /// Validates sequence then sends a Reject for `inbound_seq`. A gap sends ResendRequest instead.
+    /// The session remains alive. No-op if the session is not in an active state.
+    pub fn on_reject_inbound(
+        &mut self,
+        inbound_seq: u32,
+        poss_dup: bool,
+        ref_tag_id: Option<u32>,
+        session_reject_reason: u8,
+        now: Instant,
+    ) -> Out {
+        if !matches!(
+            self.state,
+            State::Active | State::Resending | State::LogoutPending
+        ) {
+            return Out::EMPTY;
+        }
+        self.last_received = Some(now);
+        let mut out = Out::EMPTY;
+        if !self.validate_seq(inbound_seq, poss_dup, now, &mut out) {
+            return out;
+        }
+        let Some(seq) = self.bump_outbound(now, &mut out) else {
+            return out;
+        };
+        out.push_admin(AdminMsg::Reject {
+            seq,
+            ref_seq_num: inbound_seq,
+            ref_tag_id,
+            session_reject_reason,
+        });
         out
     }
 
@@ -620,6 +671,74 @@ mod tests {
             Some(Event::Disconnected {
                 reason: DisconnectReason::SeqNumExhausted
             })
+        );
+    }
+
+    #[test]
+    fn sequence_reset_backward_sends_reject() {
+        let mut s = SessionState::new(Duration::from_secs(30));
+        let now = Instant::now();
+        s.connect(now);
+        s.on_logon(1, 30, false, false, now);
+        let out = s.on_sequence_reset(100, 1, false, now);
+        let admins: Vec<_> = out.admin_messages().collect();
+        assert_eq!(admins.len(), 1);
+        assert!(
+            matches!(
+                admins[0],
+                AdminMsg::Reject {
+                    ref_seq_num: 100,
+                    ref_tag_id: Some(36),
+                    session_reject_reason: 5,
+                    ..
+                }
+            ),
+            "expected Reject, got {admins:?}"
+        );
+        assert_eq!(s.next_inbound_seq(), 2, "next_inbound must not advance");
+    }
+
+    #[test]
+    fn reject_inbound_sends_reject_and_advances_seq() {
+        let mut s = SessionState::new(Duration::from_secs(30));
+        let now = Instant::now();
+        s.connect(now);
+        s.on_logon(1, 30, false, false, now);
+        let out = s.on_reject_inbound(2, false, Some(35), 1, now);
+        let admins: Vec<_> = out.admin_messages().collect();
+        assert_eq!(admins.len(), 1);
+        assert!(
+            matches!(
+                admins[0],
+                AdminMsg::Reject {
+                    ref_seq_num: 2,
+                    ref_tag_id: Some(35),
+                    session_reject_reason: 1,
+                    ..
+                }
+            ),
+            "expected Reject, got {admins:?}"
+        );
+        assert_eq!(s.next_inbound_seq(), 3);
+    }
+
+    #[test]
+    fn reject_inbound_gap_sends_resend_request() {
+        let mut s = SessionState::new(Duration::from_secs(30));
+        let now = Instant::now();
+        s.connect(now);
+        s.on_logon(1, 30, false, false, now);
+        let out = s.on_reject_inbound(5, false, Some(35), 1, now);
+        let admins: Vec<_> = out.admin_messages().collect();
+        assert_eq!(admins.len(), 1);
+        assert!(
+            matches!(admins[0], AdminMsg::ResendRequest { begin: 2, .. }),
+            "expected ResendRequest, got {admins:?}"
+        );
+        assert_eq!(
+            s.next_inbound_seq(),
+            2,
+            "next_inbound must not advance on gap"
         );
     }
 }
