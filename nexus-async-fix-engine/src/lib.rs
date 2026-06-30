@@ -346,11 +346,16 @@ impl<S: AsyncRead + AsyncWrite + Unpin> AsyncFixConnection<S> {
             fmt.field(52, &ts);
 
             match admin {
-                AdminMsg::Logon { heart_bt_int_s, .. }
-                | AdminMsg::LogonReset { heart_bt_int_s, .. } => {
+                AdminMsg::Logon { heart_bt_int_s, .. } => {
                     let mut buf = [0u8; 10];
                     let n = encode_fix_uint(heart_bt_int_s, &mut buf);
                     fmt.field(108, &buf[..n]);
+                }
+                AdminMsg::LogonReset { heart_bt_int_s, .. } => {
+                    let mut buf = [0u8; 10];
+                    let n = encode_fix_uint(heart_bt_int_s, &mut buf);
+                    fmt.field(108, &buf[..n]);
+                    fmt.field(141, b"Y");
                 }
                 AdminMsg::Logout { .. } | AdminMsg::Heartbeat { echo: None, .. } => {}
                 AdminMsg::Heartbeat {

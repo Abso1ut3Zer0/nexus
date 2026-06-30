@@ -203,103 +203,57 @@ impl<D: FixDictionary> MessageWriter<D> {
 
     #[cfg(unix)]
     pub fn encode_admin(&mut self, admin: AdminMsg, config: &SessionConfig) {
-        use nexus_fix_codec::{FrameFormatter, encode_fix_uint};
+        use nexus_fix_codec::AdminHeader;
 
         let ts = make_ts();
-
-        let msg_type: &[u8] = match admin {
-            AdminMsg::Logon { .. } | AdminMsg::LogonReset { .. } => b"A",
-            AdminMsg::Logout { .. } => b"5",
-            AdminMsg::Heartbeat { .. } => b"0",
-            AdminMsg::TestRequest { .. } => b"1",
-            AdminMsg::ResendRequest { .. } => b"2",
-            AdminMsg::SequenceReset { .. } => b"4",
-            AdminMsg::Reject { .. } => b"3",
+        let sender = config.sender.as_bytes();
+        let target = config.target.as_bytes();
+        let mk_hdr = |seq: u32| AdminHeader {
+            seq,
+            sender,
+            target,
+            ts: &ts,
         };
 
-        let seq = match admin {
-            AdminMsg::Logon { seq, .. }
-            | AdminMsg::LogonReset { seq, .. }
-            | AdminMsg::Logout { seq }
-            | AdminMsg::Heartbeat { seq, .. }
-            | AdminMsg::TestRequest { seq, .. }
-            | AdminMsg::ResendRequest { seq, .. }
-            | AdminMsg::SequenceReset { seq, .. }
-            | AdminMsg::Reject { seq, .. } => seq,
-        };
-
-        let begin_string = D::BEGIN_STRING;
-        let sender = config.sender;
-        let target = config.target;
-
-        let mut seq_buf = [0u8; 10];
-        let seq_n = encode_fix_uint(seq, &mut seq_buf);
-
-        let (start, len) = {
-            let spare = self.inner.spare();
-            let mut fmt = FrameFormatter::new(spare, begin_string, msg_type);
-            fmt.field(34, &seq_buf[..seq_n]);
-            fmt.field(49, sender.as_bytes());
-            fmt.field(56, target.as_bytes());
-            fmt.field(52, &ts);
-
-            match admin {
-                AdminMsg::Logon { heart_bt_int_s, .. }
-                | AdminMsg::LogonReset { heart_bt_int_s, .. } => {
-                    let mut buf = [0u8; 10];
-                    let n = encode_fix_uint(heart_bt_int_s, &mut buf);
-                    fmt.field(108, &buf[..n]);
-                }
-                AdminMsg::Logout { .. } | AdminMsg::Heartbeat { echo: None, .. } => {}
-                AdminMsg::Heartbeat {
-                    echo: Some((id, id_len)),
-                    ..
-                } => {
-                    fmt.field(112, &id[..id_len as usize]);
-                }
-                AdminMsg::TestRequest { id, .. } => {
-                    let mut buf = [0u8; 20];
-                    let n = encode_u64(id, &mut buf);
-                    fmt.field(112, &buf[..n]);
-                }
-                AdminMsg::ResendRequest { begin, .. } => {
-                    let mut buf = [0u8; 10];
-                    let n = encode_fix_uint(begin, &mut buf);
-                    fmt.field(7, &buf[..n]);
-                    fmt.field(16, b"0");
-                }
-                AdminMsg::SequenceReset { new_seq, .. } => {
-                    fmt.field(43, b"Y");
-                    fmt.field(123, b"Y");
-                    let mut buf = [0u8; 10];
-                    let n = encode_fix_uint(new_seq, &mut buf);
-                    fmt.field(36, &buf[..n]);
-                }
-                AdminMsg::Reject {
-                    ref_seq_num,
-                    ref_tag_id,
-                    session_reject_reason,
-                    ..
-                } => {
-                    let mut buf = [0u8; 10];
-                    let n = encode_fix_uint(ref_seq_num, &mut buf);
-                    fmt.field(45, &buf[..n]);
-                    if let Some(tag) = ref_tag_id {
-                        let n = encode_fix_uint(tag, &mut buf);
-                        fmt.field(371, &buf[..n]);
-                    }
-                    let n = encode_fix_uint(session_reject_reason as u32, &mut buf);
-                    fmt.field(373, &buf[..n]);
-                }
+        let spare = self.inner.spare();
+        let result = match admin {
+            AdminMsg::Logon {
+                seq,
+                heart_bt_int_s,
+            } => D::encode_logon(spare, mk_hdr(seq), heart_bt_int_s),
+            AdminMsg::LogonReset {
+                seq,
+                heart_bt_int_s,
+            } => D::encode_logon_reset(spare, mk_hdr(seq), heart_bt_int_s),
+            AdminMsg::Logout { seq } => D::encode_logout(spare, mk_hdr(seq)),
+            AdminMsg::Heartbeat { seq, echo } => {
+                let echo_bytes = echo.as_ref().map(|(id, len)| &id[..*len as usize]);
+                D::encode_heartbeat(spare, mk_hdr(seq), echo_bytes)
             }
-
-            match fmt.finish() {
-                Ok(sl) => sl,
-                Err(_) => return,
+            AdminMsg::TestRequest { seq, id } => D::encode_test_request(spare, mk_hdr(seq), id),
+            AdminMsg::ResendRequest { seq, begin } => {
+                D::encode_resend_request(spare, mk_hdr(seq), begin)
             }
+            AdminMsg::SequenceReset { seq, new_seq } => {
+                D::encode_sequence_reset(spare, mk_hdr(seq), new_seq)
+            }
+            AdminMsg::Reject {
+                seq,
+                ref_seq_num,
+                ref_tag_id,
+                session_reject_reason,
+            } => D::encode_reject(
+                spare,
+                mk_hdr(seq),
+                ref_seq_num,
+                ref_tag_id,
+                session_reject_reason,
+            ),
         };
 
-        self.inner.commit(start, len);
+        if let Some((start, len)) = result {
+            self.inner.commit(start, len);
+        }
     }
 }
 
@@ -320,24 +274,4 @@ fn make_ts() -> [u8; crate::timestamp::UTC_TIMESTAMP_LEN] {
     let mut ts = [0u8; crate::timestamp::UTC_TIMESTAMP_LEN];
     crate::timestamp::format_utc_timestamp(unix_nanos, &mut ts);
     ts
-}
-
-#[cfg(unix)]
-pub(crate) fn encode_u64(v: u64, out: &mut [u8; 20]) -> usize {
-    if v == 0 {
-        out[0] = b'0';
-        return 1;
-    }
-    let mut tmp = [0u8; 20];
-    let mut n = 0;
-    let mut x = v;
-    while x > 0 {
-        tmp[n] = b'0' + (x % 10) as u8;
-        x /= 10;
-        n += 1;
-    }
-    for i in 0..n {
-        out[i] = tmp[n - 1 - i];
-    }
-    n
 }
