@@ -79,22 +79,20 @@ impl<'a> Iterator for ResendIter<'a> {
 }
 
 impl FixJournal {
-    /// Open (or recover) the journal for a single session under `dir`.
+    /// Open (or create) the journal for `session_id` under `dir`.
+    ///
+    /// If a manifest for `session_id` already exists under `dir`, the session
+    /// is recovered and `next_outbound` is restored from the stored messages.
+    /// If no manifest exists, a fresh session is created. Multiple sessions
+    /// can coexist under the same `dir` with distinct `session_id` values,
+    /// each with independent sequence number state.
     ///
     /// `window` is the resend horizon in messages (must be a power of two): the
     /// last `window` sequence numbers are replayable, older ones are gap-filled.
-    ///
-    /// One session per journal: if a session already exists under `dir`, the
-    /// first one is reopened; otherwise a new session is created.
-    pub fn open(dir: impl AsRef<Path>, window: usize) -> Result<Self, OpenError> {
+    pub fn open(dir: impl AsRef<Path>, session_id: u32, window: usize) -> Result<Self, OpenError> {
         assert!(window.is_power_of_two());
         let mut conductor = Conductor::open(dir)?;
-        let existing = conductor.sessions_on_disk()?;
-        let journal = if let Some(&id) = existing.first() {
-            conductor.session().session_id(id).open()?
-        } else {
-            conductor.session().open()?
-        };
+        let journal: RotatingJournal = conductor.session().session_id(session_id).open()?;
         let mut this = Self {
             journal,
             _conductor: conductor,
@@ -223,7 +221,7 @@ mod tests {
         let dir = tmp_dir("store-resend");
         cleanup(&dir);
 
-        let mut j = FixJournal::open(&dir, 64).unwrap();
+        let mut j = FixJournal::open(&dir, 0, 64).unwrap();
         for seq in 1..=5u32 {
             j.store(seq, &fix_msg(seq)).unwrap();
         }
@@ -244,13 +242,13 @@ mod tests {
         cleanup(&dir);
 
         {
-            let mut j = FixJournal::open(&dir, 64).unwrap();
+            let mut j = FixJournal::open(&dir, 0, 64).unwrap();
             for seq in 1..=7u32 {
                 j.store(seq, &fix_msg(seq)).unwrap();
             }
         }
 
-        let j = FixJournal::open(&dir, 64).unwrap();
+        let j = FixJournal::open(&dir, 0, 64).unwrap();
         assert_eq!(j.next_outbound(), 8);
 
         cleanup(&dir);
@@ -261,7 +259,7 @@ mod tests {
         let dir = tmp_dir("gapfill");
         cleanup(&dir);
 
-        let mut j = FixJournal::open(&dir, 64).unwrap();
+        let mut j = FixJournal::open(&dir, 0, 64).unwrap();
         j.store(1, &fix_msg(1)).unwrap();
 
         match j.resend_one(2) {
@@ -277,7 +275,7 @@ mod tests {
         let dir = tmp_dir("straddle");
         cleanup(&dir);
 
-        let mut j = FixJournal::open(&dir, 64).unwrap();
+        let mut j = FixJournal::open(&dir, 0, 64).unwrap();
         for seq in [1u32, 3, 5] {
             j.store(seq, &fix_msg(seq)).unwrap();
         }
@@ -295,7 +293,7 @@ mod tests {
         let dir = tmp_dir("inbound");
         cleanup(&dir);
 
-        let mut j = FixJournal::open(&dir, 64).unwrap();
+        let mut j = FixJournal::open(&dir, 0, 64).unwrap();
         assert_eq!(j.next_inbound(), 1);
         j.advance_inbound();
         j.advance_inbound();
@@ -311,7 +309,7 @@ mod tests {
         let dir = tmp_dir("rr-admin-skip");
         cleanup(&dir);
 
-        let mut j = FixJournal::open(&dir, 64).unwrap();
+        let mut j = FixJournal::open(&dir, 0, 64).unwrap();
         j.store(1, &fix_admin(1, "A")).unwrap();
         j.store(2, &fix_admin(2, "0")).unwrap();
         j.store(3, &fix_admin(3, "5")).unwrap();
@@ -331,7 +329,7 @@ mod tests {
         let dir = tmp_dir("rr-holes");
         cleanup(&dir);
 
-        let mut j = FixJournal::open(&dir, 64).unwrap();
+        let mut j = FixJournal::open(&dir, 0, 64).unwrap();
         for seq in [1u32, 3, 5] {
             j.store(seq, &fix_msg(seq)).unwrap();
         }
@@ -358,7 +356,7 @@ mod tests {
         let dir = tmp_dir("rr-straddle");
         cleanup(&dir);
 
-        let mut j = FixJournal::open(&dir, 4).unwrap();
+        let mut j = FixJournal::open(&dir, 0, 4).unwrap();
         for seq in 1..=8u32 {
             j.store(seq, &fix_msg(seq)).unwrap();
         }
@@ -382,7 +380,7 @@ mod tests {
         let dir = tmp_dir("rr-original");
         cleanup(&dir);
 
-        let mut j = FixJournal::open(&dir, 64).unwrap();
+        let mut j = FixJournal::open(&dir, 0, 64).unwrap();
         let msg = fix_msg_with_time(1, "20240101-12:00:00");
         j.store(1, &msg).unwrap();
 
@@ -401,7 +399,7 @@ mod tests {
         let dir = tmp_dir("rr-coalesced");
         cleanup(&dir);
 
-        let mut j = FixJournal::open(&dir, 64).unwrap();
+        let mut j = FixJournal::open(&dir, 0, 64).unwrap();
         j.store(1, &fix_msg(1)).unwrap();
         j.store(5, &fix_msg(5)).unwrap();
 
@@ -422,7 +420,7 @@ mod tests {
         let dir = tmp_dir("rr-allgap");
         cleanup(&dir);
 
-        let mut j = FixJournal::open(&dir, 64).unwrap();
+        let mut j = FixJournal::open(&dir, 0, 64).unwrap();
         j.store(1, &fix_admin(1, "A")).unwrap();
         j.store(2, &fix_admin(2, "1")).unwrap();
         j.store(3, &fix_admin(3, "2")).unwrap();
@@ -442,7 +440,7 @@ mod tests {
         let dir = tmp_dir("rr-endzero");
         cleanup(&dir);
 
-        let mut j = FixJournal::open(&dir, 64).unwrap();
+        let mut j = FixJournal::open(&dir, 0, 64).unwrap();
         for seq in 1..=3u32 {
             j.store(seq, &fix_msg(seq)).unwrap();
         }
@@ -450,6 +448,35 @@ mod tests {
         let items = collect_range(&j, 1, 0);
         assert_eq!(items.len(), 3);
         assert!(items.iter().all(|i| matches!(i, ReplayItem::App(_))));
+
+        cleanup(&dir);
+    }
+
+    #[test]
+    fn two_sessions_in_one_directory_are_independent() {
+        let dir = tmp_dir("two-sessions");
+        cleanup(&dir);
+
+        {
+            let mut j0 = FixJournal::open(&dir, 0, 64).unwrap();
+            let mut j1 = FixJournal::open(&dir, 1, 64).unwrap();
+
+            for seq in 1..=3u32 {
+                j0.store(seq, &fix_msg(seq)).unwrap();
+            }
+            for seq in 1..=5u32 {
+                j1.store(seq, &fix_msg(seq)).unwrap();
+            }
+
+            assert_eq!(j0.next_outbound(), 4);
+            assert_eq!(j1.next_outbound(), 6);
+        }
+
+        // Reopen both and verify each recovers its own next_outbound independently.
+        let j0 = FixJournal::open(&dir, 0, 64).unwrap();
+        let j1 = FixJournal::open(&dir, 1, 64).unwrap();
+        assert_eq!(j0.next_outbound(), 4);
+        assert_eq!(j1.next_outbound(), 6);
 
         cleanup(&dir);
     }

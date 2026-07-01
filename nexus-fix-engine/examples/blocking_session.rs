@@ -124,7 +124,7 @@ fn run_acceptor(listener: &TcpListener, dir: &Path) {
             sender: CompId::new(b"ACCEPTOR").unwrap(),
             target: CompId::new(b"INITIATOR").unwrap(),
         },
-        FixJournal::open(dir, 256).unwrap(),
+        FixJournal::open(dir, 0, 256).unwrap(),
     );
 
     let mut n = 0usize;
@@ -153,7 +153,7 @@ fn run_initiator(addr: std::net::SocketAddr, dir: &Path) {
                 sender: CompId::new(b"INITIATOR").unwrap(),
                 target: CompId::new(b"ACCEPTOR").unwrap(),
             },
-            FixJournal::open(dir, 256).unwrap(),
+            FixJournal::open(dir, 0, 256).unwrap(),
         )
         .unwrap();
 

@@ -95,7 +95,7 @@ fn session_cfg(sender: CompId, target: CompId) -> SessionConfig {
 }
 
 fn journal(dir: &PathBuf) -> FixJournal {
-    FixJournal::open(dir, 256).unwrap()
+    FixJournal::open(dir, 0, 256).unwrap()
 }
 
 fn loopback_pair() -> (TcpStream, TcpStream) {
@@ -679,7 +679,7 @@ fn journal_recovers_admin_seqnums() {
     drop(conn);
 
     // seq=1 logon + seq=2 logout-ack → next_outbound must be 3 after recovery
-    let recovered = FixJournal::open(&dir, 256).unwrap();
+    let recovered = FixJournal::open(&dir, 0, 256).unwrap();
     assert_eq!(
         recovered.next_outbound(),
         3,
