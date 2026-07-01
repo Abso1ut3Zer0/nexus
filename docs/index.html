@@ -1,0 +1,445 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Nexus · Low-latency Rust primitives</title>
+<meta name="description" content="A focused ecosystem of Rust crates for systems where tail latency, jitter, and predictability matter more than generality. Safe abstractions, audited down to the assembly.">
+<style>
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+:root {
+  --bg: #0a0a09;
+  --surface-0: #0e0e0d;
+  --surface-1: #141413;
+  --surface-2: #1c1c1a;
+  --surface-3: #242422;
+  --border: rgba(255,255,255,0.06);
+  --border-strong: rgba(255,255,255,0.11);
+  --text-primary: #edece5;
+  --text-secondary: #9b9a92;
+  --text-muted: #5a5955;
+  --accent: #2a78d6;
+  --accent-bright: #5ba3f5;
+  --green: #1baf7a;
+  --amber: #c98500;
+  --red: #d03b3b;
+  --mono: 'JetBrains Mono','Fira Code','SF Mono','Cascadia Code',ui-monospace,monospace;
+  --sans: -apple-system,BlinkMacSystemFont,'Segoe UI',Inter,sans-serif;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after { animation-duration: 0.001ms !important; animation-iteration-count: 1 !important; transition-duration: 0.001ms !important; }
+}
+
+html { scroll-behavior: smooth; }
+body { background: var(--bg); color: var(--text-primary); font-family: var(--mono); line-height: 1.5; -webkit-font-smoothing: antialiased; overflow-x: hidden; }
+
+a { color: inherit; text-decoration: none; }
+
+.wrap { max-width: 1140px; margin: 0 auto; padding: 0 1.5rem; }
+
+/* NAV */
+.nav { position: sticky; top: 0; z-index: 50; background: rgba(10,10,9,0.82); backdrop-filter: blur(12px); border-bottom: 0.5px solid var(--border); }
+.nav-inner { display: flex; align-items: center; height: 56px; gap: 1.5rem; }
+.brand { font-size: 14px; font-weight: 600; letter-spacing: 0.02em; }
+.brand .dot { color: var(--accent-bright); }
+.nav-links { margin-left: auto; display: flex; gap: 1.5rem; align-items: center; }
+.nav-links a { font-size: 12px; color: var(--text-secondary); transition: color 0.15s; font-family: var(--sans); }
+.nav-links a:hover { color: var(--text-primary); }
+.nav-gh { display: inline-flex; align-items: center; gap: 6px; padding: 5px 12px; border: 0.5px solid var(--border-strong); border-radius: 5px; font-size: 12px; color: var(--text-primary) !important; transition: all 0.15s; }
+.nav-gh:hover { background: var(--surface-2); border-color: var(--accent); }
+
+@media (max-width: 720px) { .nav-links a:not(.nav-gh) { display: none; } }
+
+/* HERO */
+.hero { padding: 5rem 0 3rem; position: relative; }
+.hero-grid { display: grid; grid-template-columns: 1.05fr 0.95fr; gap: 3rem; align-items: center; }
+@media (max-width: 900px) { .hero-grid { grid-template-columns: 1fr; gap: 2rem; } }
+
+.eyebrow { display: inline-flex; align-items: center; gap: 8px; font-size: 11px; color: var(--text-muted); font-family: var(--sans); text-transform: uppercase; letter-spacing: 0.12em; margin-bottom: 1.5rem; }
+
+.hero h1 { font-size: clamp(2.1rem, 5vw, 3.4rem); line-height: 1.04; letter-spacing: -0.02em; font-weight: 600; margin-bottom: 1.25rem; }
+.hero h1 .em { color: var(--accent-bright); }
+.hero p.lede { font-size: 15px; color: var(--text-secondary); font-family: var(--sans); line-height: 1.6; max-width: 30rem; margin-bottom: 2rem; }
+
+.cta-row { display: flex; gap: 10px; flex-wrap: wrap; }
+.btn { display: inline-flex; align-items: center; gap: 8px; padding: 9px 18px; border-radius: 6px; font-size: 13px; font-family: var(--sans); font-weight: 500; cursor: pointer; transition: all 0.15s; border: 0.5px solid transparent; }
+.btn-primary { background: var(--accent); color: #fff; }
+.btn-primary:hover { background: #3585e8; transform: translateY(-1px); }
+.btn-ghost { background: var(--surface-1); color: var(--text-primary); border-color: var(--border-strong); }
+.btn-ghost:hover { background: var(--surface-2); border-color: var(--accent); }
+
+/* HERO PROOF PANEL */
+.proof-panel { background: var(--surface-0); border: 0.5px solid var(--border-strong); border-radius: 10px; padding: 1.2rem; box-shadow: 0 24px 60px rgba(0,0,0,0.5); }
+.proof-head { font-size: 10px; color: var(--text-muted); text-transform: uppercase; letter-spacing: 0.1em; font-family: var(--sans); margin-bottom: 1rem; }
+.proof-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+.proof { background: var(--surface-2); border: 0.5px solid var(--border); border-radius: 7px; padding: 12px 12px 13px; }
+.proof-v { font-size: 20px; font-weight: 600; font-variant-numeric: tabular-nums; letter-spacing: -0.01em; line-height: 1; }
+.proof-v.g { color: var(--green); } .proof-v.b { color: var(--accent-bright); } .proof-v.a { color: var(--amber); }
+.proof-k { font-size: 10.5px; color: var(--text-secondary); font-family: var(--sans); margin-top: 7px; line-height: 1.35; }
+.proof-foot { margin-top: 10px; padding-top: 10px; border-top: 0.5px solid var(--border); font-size: 10.5px; color: var(--text-muted); font-family: var(--sans); display: flex; align-items: center; gap: 7px; }
+.proof-foot .d { width: 5px; height: 5px; border-radius: 50%; background: var(--green); flex-shrink: 0; }
+
+/* MARQUEE STRIP */
+.strip { border-top: 0.5px solid var(--border); border-bottom: 0.5px solid var(--border); background: var(--surface-0); padding: 1rem 0; }
+.strip-inner { display: flex; gap: 2.5rem; flex-wrap: wrap; justify-content: center; align-items: center; }
+.strip-item { font-size: 11px; color: var(--text-secondary); font-family: var(--sans); display: flex; align-items: center; gap: 8px; }
+.strip-item b { color: var(--text-primary); font-family: var(--mono); font-weight: 500; }
+.strip-sep { color: var(--text-muted); }
+
+/* SECTION SHELL */
+.section { padding: 4.5rem 0; }
+.sec-eyebrow { font-size: 11px; color: var(--accent-bright); text-transform: uppercase; letter-spacing: 0.14em; font-family: var(--sans); margin-bottom: 0.85rem; }
+.sec-title { font-size: clamp(1.5rem, 3vw, 2.1rem); letter-spacing: -0.01em; font-weight: 600; line-height: 1.12; margin-bottom: 1rem; max-width: 26rem; }
+.sec-lede { font-size: 14px; color: var(--text-secondary); font-family: var(--sans); max-width: 34rem; line-height: 1.6; }
+
+/* PHILOSOPHY */
+.phil-grid { display: grid; grid-template-columns: repeat(3,1fr); gap: 1px; background: var(--border); border: 0.5px solid var(--border); border-radius: 8px; overflow: hidden; margin-top: 2.5rem; }
+@media (max-width: 760px) { .phil-grid { grid-template-columns: 1fr; } }
+.phil { background: var(--surface-0); padding: 1.5rem 1.4rem; }
+.phil-n { font-size: 10px; color: var(--text-muted); font-variant-numeric: tabular-nums; margin-bottom: 0.85rem; letter-spacing: 0.1em; }
+.phil h3 { font-size: 14px; font-weight: 600; margin-bottom: 0.5rem; color: var(--accent-bright); }
+.phil p { font-size: 12.5px; color: var(--text-secondary); font-family: var(--sans); line-height: 1.55; }
+
+/* PERFORMANCE / ASSEMBLY */
+.perf { background: var(--surface-0); border-top: 0.5px solid var(--border); border-bottom: 0.5px solid var(--border); }
+.perf-list { display: grid; grid-template-columns: repeat(auto-fit, minmax(255px, 1fr)); gap: 1.5rem 2rem; margin-top: 2.25rem; }
+.perf-item { display: flex; gap: 12px; align-items: flex-start; }
+.perf-item .mk { color: var(--accent-bright); font-size: 13px; margin-top: 1px; flex-shrink: 0; }
+.perf-item h4 { font-size: 13.5px; font-weight: 600; margin-bottom: 0.25rem; }
+.perf-item p { font-size: 12.5px; color: var(--text-secondary); font-family: var(--sans); line-height: 1.55; }
+.cd { width: 9px; height: 9px; border-radius: 50%; }
+.cd.r { background: #e0584f; } .cd.y { background: #e0a93f; } .cd.g { background: #4faf6f; }
+
+/* CRATES */
+.crate-grid { display: grid; grid-template-columns: repeat(2,1fr); gap: 10px; margin-top: 2.5rem; }
+@media (max-width: 760px) { .crate-grid { grid-template-columns: 1fr; } }
+.crate { background: var(--surface-1); border: 0.5px solid var(--border); border-radius: 8px; padding: 1.3rem 1.4rem; transition: border-color 0.2s, transform 0.2s; }
+.crate:hover { border-color: var(--border-strong); transform: translateY(-2px); }
+.crate-cat { font-size: 10px; color: var(--text-muted); text-transform: uppercase; letter-spacing: 0.1em; font-family: var(--sans); margin-bottom: 0.5rem; }
+.crate h3 { font-size: 15px; font-weight: 600; margin-bottom: 0.75rem; }
+.crate-tag { font-size: 10px; color: var(--green); font-family: var(--sans); }
+.crate-tag.soon { color: var(--amber); }
+.crate-list { list-style: none; display: flex; flex-direction: column; gap: 6px; margin-top: 0.5rem; }
+.crate-list li { font-size: 12px; color: var(--text-secondary); display: flex; gap: 8px; align-items: baseline; }
+.crate-list .nm { color: var(--accent-bright); font-weight: 500; flex-shrink: 0; }
+.crate-list .ds { color: var(--text-secondary); font-family: var(--sans); }
+.crate-note { font-size: 12px; color: var(--text-secondary); font-family: var(--sans); line-height: 1.55; }
+
+/* GET STARTED */
+.gs { background: var(--surface-0); border: 0.5px solid var(--border-strong); border-radius: 12px; padding: 2.25rem; display: grid; grid-template-columns: 1fr 1fr; gap: 2.5rem; align-items: center; margin-top: 2.5rem; }
+@media (max-width: 760px) { .gs { grid-template-columns: 1fr; gap: 1.75rem; padding: 1.6rem; } }
+.gs h2 { font-size: 1.5rem; font-weight: 600; letter-spacing: -0.01em; margin-bottom: 0.75rem; }
+.gs p { font-size: 13px; color: var(--text-secondary); font-family: var(--sans); margin-bottom: 1.5rem; line-height: 1.55; }
+.gs-links { display: flex; gap: 10px; flex-wrap: wrap; }
+.gs-link { font-size: 12px; color: var(--text-secondary); font-family: var(--sans); padding: 6px 12px; border: 0.5px solid var(--border); border-radius: 5px; transition: all 0.15s; }
+.gs-link:hover { color: var(--text-primary); border-color: var(--accent); }
+
+.code-block { background: #08080740; border: 0.5px solid var(--border-strong); border-radius: 8px; overflow: hidden; }
+.code-head { display: flex; align-items: center; gap: 6px; padding: 8px 12px; border-bottom: 0.5px solid var(--border); background: var(--surface-1); }
+.code-head .fn { font-size: 10px; color: var(--text-muted); font-family: var(--sans); margin-left: 4px; }
+.code-body { padding: 14px 16px; font-size: 12px; line-height: 1.75; overflow-x: auto; }
+.code-body .k { color: var(--accent-bright); }
+.code-body .s { color: var(--green); }
+.code-body .c { color: var(--text-muted); }
+.copy-btn { margin-left: auto; font-size: 10px; color: var(--text-muted); font-family: var(--sans); cursor: pointer; background: none; border: none; transition: color 0.15s; }
+.copy-btn:hover { color: var(--text-primary); }
+
+/* DOCS HUB */
+.docs-grid { display: grid; grid-template-columns: repeat(3,1fr); gap: 10px; margin-top: 2.5rem; }
+@media (max-width: 760px) { .docs-grid { grid-template-columns: 1fr 1fr; } }
+.doc-card { background: var(--surface-1); border: 0.5px solid var(--border); border-radius: 8px; padding: 1.1rem 1.2rem; transition: border-color 0.2s, transform 0.2s; display: block; }
+.doc-card:hover { border-color: var(--accent); transform: translateY(-2px); }
+.doc-card h4 { font-size: 13px; font-weight: 600; margin-bottom: 0.35rem; color: var(--accent-bright); }
+.doc-card p { font-size: 11.5px; color: var(--text-secondary); font-family: var(--sans); line-height: 1.5; }
+
+/* FOOTER */
+.footer { border-top: 0.5px solid var(--border); padding: 2.5rem 0; margin-top: 2rem; }
+.footer-inner { display: flex; align-items: center; justify-content: space-between; gap: 1.5rem; flex-wrap: wrap; }
+.footer-credit { font-size: 12px; color: var(--text-secondary); font-family: var(--sans); }
+.footer-credit a { color: var(--accent-bright); }
+.footer-credit .sep { color: var(--text-muted); margin: 0 8px; }
+.footer-links { display: flex; gap: 1.25rem; }
+.footer-links a { font-size: 12px; color: var(--text-muted); font-family: var(--sans); transition: color 0.15s; }
+.footer-links a:hover { color: var(--text-primary); }
+.footer-license { font-size: 11px; color: var(--text-muted); font-family: var(--sans); margin-top: 0.75rem; }
+
+/* reveal on scroll */
+.reveal { opacity: 0; transform: translateY(14px); transition: opacity 0.6s ease, transform 0.6s ease; }
+.reveal.in { opacity: 1; transform: none; }
+</style>
+</head>
+<body>
+
+<nav class="nav">
+  <div class="wrap nav-inner">
+    <span class="brand">nexus<span class="dot">.</span></span>
+    <div class="nav-links">
+      <a href="#philosophy">Philosophy</a>
+      <a href="#performance">Performance</a>
+      <a href="#crates">Crates</a>
+      <a href="#docs">Docs</a>
+      <a class="nav-gh" href="https://github.com/Abso1ut3Zer0/nexus" target="_blank" rel="noopener">
+        <svg width="13" height="13" viewBox="0 0 16 16" fill="currentColor"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.01 8.01 0 0016 8c0-4.42-3.58-8-8-8z"/></svg>
+        GitHub
+      </a>
+    </div>
+  </div>
+</nav>
+
+<header class="hero">
+  <div class="wrap hero-grid">
+    <div>
+      <div class="eyebrow">Low-latency Rust primitives</div>
+      <h1>Predictable primitives for systems where <span class="em">microseconds</span> matter.</h1>
+      <p class="lede">A focused ecosystem of Rust crates built for speed you can count on — tight tail latency, low jitter, no surprises at runtime. Bounded, pre-allocated, and audited down to the assembly.</p>
+      <div class="cta-row">
+        <a class="btn btn-primary" href="#crates">Explore the crates</a>
+        <a class="btn btn-ghost" href="https://github.com/Abso1ut3Zer0/nexus" target="_blank" rel="noopener">Star on GitHub</a>
+      </div>
+    </div>
+    <div>
+      <div class="proof-panel">
+        <div class="proof-head">what you're getting</div>
+        <div class="proof-grid">
+          <div class="proof">
+            <div class="proof-v g">30+</div>
+            <div class="proof-k">specialized crates, published on crates.io</div>
+          </div>
+          <div class="proof">
+            <div class="proof-v b">asm</div>
+            <div class="proof-k">hot paths audited — codegen validated optimal</div>
+          </div>
+          <div class="proof">
+            <div class="proof-v a">cycles</div>
+            <div class="proof-k">benchmarked with cores pinned, turbo off</div>
+          </div>
+          <div class="proof">
+            <div class="proof-v b">517<span style="color:var(--text-muted)">/517</span></div>
+            <div class="proof-k">Autobahn WebSocket conformance</div>
+          </div>
+        </div>
+        <div class="proof-foot"><span class="d"></span>every unsafe path Miri-tested where reachable</div>
+      </div>
+    </div>
+  </div>
+</header>
+
+<div class="strip">
+  <div class="wrap strip-inner">
+    <span class="strip-item"><b>3.5×</b> faster than tokio-tungstenite</span>
+    <span class="strip-sep">·</span>
+    <span class="strip-item"><b>O(1)</b> per-update streaming stats</span>
+    <span class="strip-sep">·</span>
+    <span class="strip-item"><b>0</b> alloc on the hot path</span>
+    <span class="strip-sep">·</span>
+    <span class="strip-item"><b>sans-IO</b> protocol cores</span>
+  </div>
+</div>
+
+<section class="section" id="philosophy">
+  <div class="wrap">
+    <div class="sec-eyebrow reveal">Philosophy</div>
+    <h2 class="sec-title reveal">Predictability over generality.</h2>
+    <p class="sec-lede reveal">Most systems don't need unbounded queues, dynamic allocation, or multi-producer flexibility. They need bounded, specialized primitives that do one thing well and never surprise you at runtime. Every crate is small, focused, and honest about its constraints — because the constraint is where the performance comes from.</p>
+    <div class="phil-grid reveal">
+      <div class="phil">
+        <div class="phil-n">01</div>
+        <h3>SPSC over MPMC</h3>
+        <p>One producer, one consumer? Don't pay for synchronization you don't need. The constraint is the performance.</p>
+      </div>
+      <div class="phil">
+        <div class="phil-n">02</div>
+        <h3>Pre-allocation</h3>
+        <p>Allocate at startup, never on the hot path. You pay the cost once, not when processing the millionth message.</p>
+      </div>
+      <div class="phil">
+        <div class="phil-n">03</div>
+        <h3>Bounded over unbounded</h3>
+        <p>Know your capacity. Reject rather than allocate. Unbounded growth is a design smell that hides latency cliffs.</p>
+      </div>
+      <div class="phil">
+        <div class="phil-n">04</div>
+        <h3>Specialization</h3>
+        <p>A conflation slot isn't a queue of size 1. It's a different thing entirely. Different problems deserve different solutions.</p>
+      </div>
+      <div class="phil">
+        <div class="phil-n">05</div>
+        <h3>Single writer</h3>
+        <p>One owner of mutable state, no contention. Coordination you can reason about beats cleverness you can't.</p>
+      </div>
+      <div class="phil">
+        <div class="phil-n">06</div>
+        <h3>Honest constraints</h3>
+        <p>SPSC means SPSC. Every crate documents exactly what it guarantees and what it doesn't — no sneaking in extra producers.</p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section class="perf" id="performance">
+  <div class="wrap section">
+    <div class="sec-eyebrow reveal">Performance, proven</div>
+    <h2 class="sec-title reveal">Safe abstractions, optimal codegen — nothing in between.</h2>
+    <p class="sec-lede reveal">Every hot path is safe by default and audited down to the instruction. The safe abstraction compiles to the same code you'd write by hand — we verify that, we don't assume it.</p>
+    <div class="perf-list reveal">
+      <div class="perf-item"><span class="mk">▸</span><div><h4>Safe by default</h4><p>Bounded, typed, invariant-checked APIs that are hard to misuse.</p></div></div>
+      <div class="perf-item"><span class="mk">▸</span><div><h4>Power-user bypasses</h4><p><code>_unchecked</code> fast paths for when you've already proven the invariant. You opt into the risk; you don't pay for it by default.</p></div></div>
+      <div class="perf-item"><span class="mk">▸</span><div><h4>Minimal checks, audited</h4><p>Every check on the hot path is audited down to the absolute minimum. No redundant bounds checks, no defensive cruft.</p></div></div>
+      <div class="perf-item"><span class="mk">▸</span><div><h4>Validated in the assembly</h4><p>We read the generated code for hot paths and confirm it's optimal — down to registers and branches.</p></div></div>
+      <div class="perf-item"><span class="mk">▸</span><div><h4>Unsafe is Miri-tested</h4><p>The bypasses stay sound. Every unsafe path Miri can reach is covered.</p></div></div>
+    </div>
+  </div>
+</section>
+
+<section class="section" id="crates">
+  <div class="wrap">
+    <div class="sec-eyebrow reveal">Modular by design</div>
+    <h2 class="sec-title reveal">Specialized crates for real workloads.</h2>
+    <p class="sec-lede reveal">Small, focused crates with honest constraints. Pick only the primitives your workload needs — each stands alone with a minimal dependency tree.</p>
+    <div class="crate-grid">
+      <div class="crate reveal">
+        <div class="crate-cat">Types &amp; Encoding</div>
+        <h3>Zero-cost abstractions</h3>
+        <ul class="crate-list">
+          <li><span class="nm">nexus-bits</span><span class="ds">bit-packed integer newtypes, tagged enums</span></li>
+          <li><span class="nm">nexus-decimal</span><span class="ds">fixed-point financial arithmetic, const fn</span></li>
+          <li><span class="nm">nexus-id</span><span class="ds">Snowflake, UUID, ULID, SIMD hex</span></li>
+        </ul>
+      </div>
+      <div class="crate reveal">
+        <div class="crate-cat">Concurrency &amp; Communication</div>
+        <h3>Lock-free &amp; predictable</h3>
+        <ul class="crate-list">
+          <li><span class="nm">nexus-queue</span><span class="ds">lock-free SPSC / MPSC / SPMC ring buffers</span></li>
+          <li><span class="nm">nexus-slot</span><span class="ds">latest-value conflation slot</span></li>
+          <li><span class="nm">nexus-notify</span><span class="ds">cross-thread event queue with conflation</span></li>
+        </ul>
+      </div>
+      <div class="crate reveal">
+        <div class="crate-cat">Memory Management</div>
+        <h3>No hot-path allocation</h3>
+        <ul class="crate-list">
+          <li><span class="nm">nexus-slab</span><span class="ds">pre-allocated slab, stable keys, O(1)</span></li>
+          <li><span class="nm">nexus-pool</span><span class="ds">object pools, RAII or manual</span></li>
+          <li><span class="nm">nexus-collections</span><span class="ds">slab-backed list, heap, rb-tree, b-tree</span></li>
+        </ul>
+      </div>
+      <div class="crate reveal">
+        <div class="crate-cat">Streaming Statistics</div>
+        <h3>Zero-allocation analytics</h3>
+        <p class="crate-note">Welford moments, EMA, CUSUM, online regression, Kalman filters, change detection and control primitives across <span class="nm" style="color:var(--accent-bright)">nexus-stats</span>. Every type is O(1) per update with fixed memory.</p>
+      </div>
+      <div class="crate reveal">
+        <div class="crate-cat">Real-time Inference</div>
+        <h3>Sub-microsecond CPU inference</h3>
+        <p class="crate-note"><span class="nm" style="color:var(--accent-bright)">nexus-inference</span> — twelve model types: GBDT, MLP, LUT, BNN, QuantizedMLP, LSTM, GRU, stacked variants, S4/S4D, causal conv, TCN. SafeTensors &amp; LightGBM loaders, AVX2 / SSE2 accelerated, validated against PyTorch within 1e-5.</p>
+      </div>
+      <div class="crate reveal">
+        <div class="crate-cat">Low-Latency Networking</div>
+        <h3>Zero-copy &amp; sans-IO</h3>
+        <ul class="crate-list">
+          <li><span class="nm">nexus-web</span><span class="ds">sans-IO WebSocket (RFC 6455), HTTP/1.1</span></li>
+          <li><span class="nm">nexus-async-web</span><span class="ds">Tokio adapters, self-healing ClientPool</span></li>
+          <li><span class="nm">nexus-net</span><span class="ds">buffers, TLS codec, wire primitives</span></li>
+        </ul>
+        <p class="crate-tag" style="margin-top:0.6rem;">3.5× faster than tokio-tungstenite · 517/517 Autobahn</p>
+      </div>
+      <div class="crate reveal">
+        <div class="crate-cat">Runtime &amp; Timing</div>
+        <h3>Deterministic execution</h3>
+        <ul class="crate-list">
+          <li><span class="nm">nexus-rt</span><span class="ds">event-driven runtime, explicit poll loops</span></li>
+          <li><span class="nm">nexus-timer</span><span class="ds">O(1) hierarchical timer wheel, no cascade</span></li>
+        </ul>
+        <p class="crate-tag" style="margin-top:0.6rem;">No async/await overhead · monomorphized dispatch</p>
+      </div>
+      <div class="crate reveal">
+        <div class="crate-cat">In the pipeline</div>
+        <h3>FIX engine suite</h3>
+        <p class="crate-note">A sans-IO FIX session layer — codec, session state machine, codegen, and a rotating journal for replay. Currently in active development.</p>
+        <p class="crate-tag soon" style="margin-top:0.6rem;">Coming soon to crates.io</p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section class="section" id="start">
+  <div class="wrap">
+    <div class="sec-eyebrow reveal">Get started</div>
+    <h2 class="sec-title reveal">Start building with Nexus.</h2>
+    <p class="sec-lede reveal">Open source under MIT and Apache-2.0, published on crates.io.</p>
+    <div class="gs reveal">
+      <div>
+        <h2>Add to your project</h2>
+        <p>Pull in only the crates your workload needs. Each one stands alone with a small, intentional dependency tree.</p>
+        <div class="gs-links">
+          <a class="gs-link" href="https://github.com/Abso1ut3Zer0/nexus" target="_blank" rel="noopener">View on GitHub</a>
+          <a class="gs-link" href="https://docs.rs/nexus-queue" target="_blank" rel="noopener">docs.rs</a>
+          <a class="gs-link" href="https://crates.io/search?q=nexus" target="_blank" rel="noopener">crates.io</a>
+        </div>
+      </div>
+      <div class="code-block">
+        <div class="code-head">
+          <span class="cd r"></span><span class="cd y"></span><span class="cd g"></span>
+          <span class="fn">Cargo.toml</span>
+          <button class="copy-btn" id="copyBtn" onclick="copyDeps()">copy</button>
+        </div>
+        <div class="code-body" id="deps"><span class="c"># pick what your workload needs</span>
+<span class="k">nexus-queue</span> = <span class="s">"1.3"</span>
+<span class="k">nexus-slot</span>  = <span class="s">"1.1"</span>
+<span class="k">nexus-stats</span> = <span class="s">"6.0"</span>
+<span class="k">nexus-web</span>   = <span class="s">"0.8"</span></div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section class="section" id="docs" style="padding-top:1rem;">
+  <div class="wrap">
+    <div class="sec-eyebrow reveal">Docs &amp; deeper reading</div>
+    <h2 class="sec-title reveal">Go as deep as you want.</h2>
+    <div class="docs-grid reveal">
+      <a class="doc-card" href="https://docs.rs/nexus-queue" target="_blank" rel="noopener"><h4>API reference →</h4><p>Full per-crate documentation on docs.rs.</p></a>
+      <a class="doc-card" href="https://github.com/Abso1ut3Zer0/nexus/tree/main/docs" target="_blank" rel="noopener"><h4>Architecture →</h4><p>Design docs and the reasoning behind each subsystem.</p></a>
+      <a class="doc-card" href="https://github.com/Abso1ut3Zer0/nexus/blob/main/ROADMAP.md" target="_blank" rel="noopener"><h4>Roadmap →</h4><p>What's shipped, what's in progress, what's next.</p></a>
+    </div>
+  </div>
+</section>
+
+<footer class="footer">
+  <div class="wrap footer-inner">
+    <div>
+      <div class="footer-credit">
+        Maintained by <a href="https://www.linkedin.com/in/michael-hart-5a2122127/" target="_blank" rel="noopener">Michael Hart</a>
+        <span class="sep">·</span>
+        Core contributor <a href="https://www.linkedin.com/in/ACoAACgt8_wB4cit0Gn1Xf7c7Kyvl4XlZ35eC14" target="_blank" rel="noopener">Altug Tatlisu</a>
+      </div>
+      <div class="footer-license">Open source under MIT and Apache-2.0. Fast where it counts, predictable where it matters.</div>
+    </div>
+    <div class="footer-links">
+      <a href="https://github.com/Abso1ut3Zer0/nexus" target="_blank" rel="noopener">GitHub</a>
+      <a href="https://crates.io/search?q=nexus" target="_blank" rel="noopener">crates.io</a>
+      <a href="https://docs.rs/nexus-queue" target="_blank" rel="noopener">docs.rs</a>
+    </div>
+  </div>
+</footer>
+
+<script>
+function copyDeps() {
+  const text = `nexus-queue = "1.3"\nnexus-slot  = "1.1"\nnexus-stats = "6.0"\nnexus-web   = "0.8"`;
+  navigator.clipboard.writeText(text).then(() => {
+    const btn = document.getElementById('copyBtn');
+    btn.textContent = 'copied';
+    setTimeout(() => { btn.textContent = 'copy'; }, 1600);
+  });
+}
+
+const io = new IntersectionObserver((entries) => {
+  entries.forEach(e => { if (e.isIntersecting) { e.target.classList.add('in'); io.unobserve(e.target); } });
+}, { threshold: 0.12 });
+document.querySelectorAll('.reveal').forEach(el => io.observe(el));
+</script>
+</body>
+</html>
