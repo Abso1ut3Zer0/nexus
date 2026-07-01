@@ -147,12 +147,6 @@ a { color: inherit; text-decoration: none; }
 .copy-btn:hover { color: var(--text-primary); }
 
 /* DOCS HUB */
-.docs-grid { display: grid; grid-template-columns: repeat(3,1fr); gap: 10px; margin-top: 2.5rem; }
-@media (max-width: 760px) { .docs-grid { grid-template-columns: 1fr 1fr; } }
-.doc-card { background: var(--surface-1); border: 0.5px solid var(--border); border-radius: 8px; padding: 1.1rem 1.2rem; transition: border-color 0.2s, transform 0.2s; display: block; }
-.doc-card:hover { border-color: var(--accent); transform: translateY(-2px); }
-.doc-card h4 { font-size: 13px; font-weight: 600; margin-bottom: 0.35rem; color: var(--accent-bright); }
-.doc-card p { font-size: 11.5px; color: var(--text-secondary); font-family: var(--sans); line-height: 1.5; }
 
 /* FOOTER */
 .footer { border-top: 0.5px solid var(--border); padding: 2.5rem 0; margin-top: 2rem; }
@@ -179,7 +173,6 @@ a { color: inherit; text-decoration: none; }
       <a href="#philosophy">Philosophy</a>
       <a href="#performance">Performance</a>
       <a href="#crates">Crates</a>
-      <a href="#docs">Docs</a>
       <a class="nav-gh" href="https://github.com/Abso1ut3Zer0/nexus" target="_blank" rel="noopener">
         <svg width="13" height="13" viewBox="0 0 16 16" fill="currentColor"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.01 8.01 0 0016 8c0-4.42-3.58-8-8-8z"/></svg>
         GitHub
@@ -193,7 +186,7 @@ a { color: inherit; text-decoration: none; }
     <div>
       <div class="eyebrow">Low-latency Rust primitives</div>
       <h1>Predictable primitives for systems where <span class="em">microseconds</span> matter.</h1>
-      <p class="lede">A focused ecosystem of Rust crates built for speed you can count on — tight tail latency, low jitter, no surprises at runtime. Bounded, pre-allocated, and audited down to the assembly.</p>
+      <p class="lede">A focused ecosystem of Rust crates built for speed you can count on. Tight tail latency, low jitter, and no surprises at runtime. Bounded, pre-allocated, and audited down to the assembly.</p>
       <div class="cta-row">
         <a class="btn btn-primary" href="#crates">Explore the crates</a>
         <a class="btn btn-ghost" href="https://github.com/Abso1ut3Zer0/nexus" target="_blank" rel="noopener">Star on GitHub</a>
@@ -204,20 +197,20 @@ a { color: inherit; text-decoration: none; }
         <div class="proof-head">what you're getting</div>
         <div class="proof-grid">
           <div class="proof">
-            <div class="proof-v g">30+</div>
+            <div class="proof-v g">lock-free</div>
+            <div class="proof-k">no blocking, no syscalls on the hot path</div>
+          </div>
+          <div class="proof">
+            <div class="proof-v b">sub-µs</div>
+            <div class="proof-k">latencies proven in cycle-level benchmarks</div>
+          </div>
+          <div class="proof">
+            <div class="proof-v a">asm</div>
+            <div class="proof-k">assembly audited for fully optimized hot paths</div>
+          </div>
+          <div class="proof">
+            <div class="proof-v b">30+</div>
             <div class="proof-k">specialized crates, published on crates.io</div>
-          </div>
-          <div class="proof">
-            <div class="proof-v b">asm</div>
-            <div class="proof-k">hot paths audited — codegen validated optimal</div>
-          </div>
-          <div class="proof">
-            <div class="proof-v a">cycles</div>
-            <div class="proof-k">benchmarked with cores pinned, turbo off</div>
-          </div>
-          <div class="proof">
-            <div class="proof-v b">517<span style="color:var(--text-muted)">/517</span></div>
-            <div class="proof-k">Autobahn WebSocket conformance</div>
           </div>
         </div>
         <div class="proof-foot"><span class="d"></span>every unsafe path Miri-tested where reachable</div>
@@ -228,7 +221,7 @@ a { color: inherit; text-decoration: none; }
 
 <div class="strip">
   <div class="wrap strip-inner">
-    <span class="strip-item"><b>3.5×</b> faster than tokio-tungstenite</span>
+    <span class="strip-item"><b>zero-copy</b> networking primitives</span>
     <span class="strip-sep">·</span>
     <span class="strip-item"><b>O(1)</b> per-update streaming stats</span>
     <span class="strip-sep">·</span>
@@ -242,7 +235,7 @@ a { color: inherit; text-decoration: none; }
   <div class="wrap">
     <div class="sec-eyebrow reveal">Philosophy</div>
     <h2 class="sec-title reveal">Predictability over generality.</h2>
-    <p class="sec-lede reveal">Most systems don't need unbounded queues, dynamic allocation, or multi-producer flexibility. They need bounded, specialized primitives that do one thing well and never surprise you at runtime. Every crate is small, focused, and honest about its constraints — because the constraint is where the performance comes from.</p>
+    <p class="sec-lede reveal">Most systems don't need unbounded queues, dynamic allocation, or multi-producer flexibility. They need bounded, specialized primitives that do one thing well and never surprise you at runtime. Every crate is small, focused, and honest about its constraints, because the constraint is where the performance comes from.</p>
     <div class="phil-grid reveal">
       <div class="phil">
         <div class="phil-n">01</div>
@@ -272,7 +265,22 @@ a { color: inherit; text-decoration: none; }
       <div class="phil">
         <div class="phil-n">06</div>
         <h3>Honest constraints</h3>
-        <p>SPSC means SPSC. Every crate documents exactly what it guarantees and what it doesn't — no sneaking in extra producers.</p>
+        <p>SPSC means SPSC. Every crate documents exactly what it guarantees and what it doesn't. No sneaking in extra producers.</p>
+      </div>
+      <div class="phil">
+        <div class="phil-n">07</div>
+        <h3>Mechanical sympathy</h3>
+        <p>Cache-line-aware layouts, no false sharing. The data structure is designed around how the machine actually works.</p>
+      </div>
+      <div class="phil">
+        <div class="phil-n">08</div>
+        <h3>Sans-IO</h3>
+        <p>Protocol cores are pure state machines with no sockets and no runtime. You own the IO, and the logic stays testable and portable.</p>
+      </div>
+      <div class="phil">
+        <div class="phil-n">09</div>
+        <h3>Measure, don't guess</h3>
+        <p>Benchmarked in cycles with cores pinned. Your intuition about performance is probably wrong, so we check it.</p>
       </div>
     </div>
   </div>
@@ -281,14 +289,16 @@ a { color: inherit; text-decoration: none; }
 <section class="perf" id="performance">
   <div class="wrap section">
     <div class="sec-eyebrow reveal">Performance, proven</div>
-    <h2 class="sec-title reveal">Safe abstractions, optimal codegen — nothing in between.</h2>
-    <p class="sec-lede reveal">Every hot path is safe by default and audited down to the instruction. The safe abstraction compiles to the same code you'd write by hand — we verify that, we don't assume it.</p>
+    <h2 class="sec-title reveal">Safe abstractions with optimal codegen.</h2>
+    <p class="sec-lede reveal">Every hot path is safe by default and audited down to the instruction. The safe abstraction compiles to the same code you'd write by hand, and we verify that rather than assume it.</p>
     <div class="perf-list reveal">
       <div class="perf-item"><span class="mk">▸</span><div><h4>Safe by default</h4><p>Bounded, typed, invariant-checked APIs that are hard to misuse.</p></div></div>
       <div class="perf-item"><span class="mk">▸</span><div><h4>Power-user bypasses</h4><p><code>_unchecked</code> fast paths for when you've already proven the invariant. You opt into the risk; you don't pay for it by default.</p></div></div>
       <div class="perf-item"><span class="mk">▸</span><div><h4>Minimal checks, audited</h4><p>Every check on the hot path is audited down to the absolute minimum. No redundant bounds checks, no defensive cruft.</p></div></div>
-      <div class="perf-item"><span class="mk">▸</span><div><h4>Validated in the assembly</h4><p>We read the generated code for hot paths and confirm it's optimal — down to registers and branches.</p></div></div>
+      <div class="perf-item"><span class="mk">▸</span><div><h4>Validated in the assembly</h4><p>We read the generated code for hot paths and confirm it's optimal, down to registers and branches.</p></div></div>
       <div class="perf-item"><span class="mk">▸</span><div><h4>Unsafe is Miri-tested</h4><p>The bypasses stay sound. Every unsafe path Miri can reach is covered.</p></div></div>
+      <div class="perf-item"><span class="mk">▸</span><div><h4>Cache-line &amp; layout aware</h4><p>Layouts designed around cache lines and false sharing. The data structure <em>is</em> the optimization.</p></div></div>
+      <div class="perf-item"><span class="mk">▸</span><div><h4>Lean by design</h4><p>Every method earns its place. No convenience bloat for what's two lines of your own code, nothing to trip over.</p></div></div>
     </div>
   </div>
 </section>
@@ -297,7 +307,7 @@ a { color: inherit; text-decoration: none; }
   <div class="wrap">
     <div class="sec-eyebrow reveal">Modular by design</div>
     <h2 class="sec-title reveal">Specialized crates for real workloads.</h2>
-    <p class="sec-lede reveal">Small, focused crates with honest constraints. Pick only the primitives your workload needs — each stands alone with a minimal dependency tree.</p>
+    <p class="sec-lede reveal">Small, focused crates with honest constraints. Pick only the primitives your workload needs. Each stands alone with a minimal dependency tree.</p>
     <div class="crate-grid">
       <div class="crate reveal">
         <div class="crate-cat">Types &amp; Encoding</div>
@@ -329,12 +339,16 @@ a { color: inherit; text-decoration: none; }
       <div class="crate reveal">
         <div class="crate-cat">Streaming Statistics</div>
         <h3>Zero-allocation analytics</h3>
-        <p class="crate-note">Welford moments, EMA, CUSUM, online regression, Kalman filters, change detection and control primitives across <span class="nm" style="color:var(--accent-bright)">nexus-stats</span>. Every type is O(1) per update with fixed memory.</p>
+        <ul class="crate-list">
+          <li><span class="nm">nexus-stats</span><span class="ds">Welford, EMA, CUSUM, Kalman at O(1), fixed memory</span></li>
+          <li><span class="nm">-smoothing / -detection</span><span class="ds">filters, change &amp; anomaly detection</span></li>
+          <li><span class="nm">-regression / -control</span><span class="ds">online regression, control primitives</span></li>
+        </ul>
       </div>
       <div class="crate reveal">
         <div class="crate-cat">Real-time Inference</div>
-        <h3>Sub-microsecond CPU inference</h3>
-        <p class="crate-note"><span class="nm" style="color:var(--accent-bright)">nexus-inference</span> — twelve model types: GBDT, MLP, LUT, BNN, QuantizedMLP, LSTM, GRU, stacked variants, S4/S4D, causal conv, TCN. SafeTensors &amp; LightGBM loaders, AVX2 / SSE2 accelerated, validated against PyTorch within 1e-5.</p>
+        <h3>SIMD inference kernels</h3>
+        <p class="crate-note"><span class="nm" style="color:var(--accent-bright)">nexus-inference</span>. Fast-path model inference for smaller models with SIMD kernels (AVX2 / SSE2). Twelve model types including GBDT, MLP, LSTM, GRU, SSM and TCN. SafeTensors and LightGBM loaders, validated against PyTorch within 1e-5.</p>
       </div>
       <div class="crate reveal">
         <div class="crate-cat">Low-Latency Networking</div>
@@ -344,7 +358,7 @@ a { color: inherit; text-decoration: none; }
           <li><span class="nm">nexus-async-web</span><span class="ds">Tokio adapters, self-healing ClientPool</span></li>
           <li><span class="nm">nexus-net</span><span class="ds">buffers, TLS codec, wire primitives</span></li>
         </ul>
-        <p class="crate-tag" style="margin-top:0.6rem;">3.5× faster than tokio-tungstenite · 517/517 Autobahn</p>
+        <p class="crate-tag" style="margin-top:0.6rem;">sans-IO · zero-copy framing · optional TLS</p>
       </div>
       <div class="crate reveal">
         <div class="crate-cat">Runtime &amp; Timing</div>
@@ -356,9 +370,25 @@ a { color: inherit; text-decoration: none; }
         <p class="crate-tag" style="margin-top:0.6rem;">No async/await overhead · monomorphized dispatch</p>
       </div>
       <div class="crate reveal">
+        <div class="crate-cat">Platform &amp; OS</div>
+        <h3>Cross-platform primitives</h3>
+        <ul class="crate-list">
+          <li><span class="nm">nexus-platform</span><span class="ds">file locks, memory maps, POSIX shared memory</span></li>
+        </ul>
+        <p class="crate-tag soon" style="margin-top:0.6rem;">0.1 · in progress</p>
+      </div>
+      <div class="crate reveal">
+        <div class="crate-cat">Shared Memory &amp; IPC</div>
+        <h3>Cross-process zero-copy</h3>
+        <ul class="crate-list">
+          <li><span class="nm">nexus-shm</span><span class="ds">mapped segments, SPSC shm slot, cross-process liveness</span></li>
+        </ul>
+        <p class="crate-tag soon" style="margin-top:0.6rem;">0.1 · in progress</p>
+      </div>
+      <div class="crate reveal">
         <div class="crate-cat">In the pipeline</div>
         <h3>FIX engine suite</h3>
-        <p class="crate-note">A sans-IO FIX session layer — codec, session state machine, codegen, and a rotating journal for replay. Currently in active development.</p>
+        <p class="crate-note">A sans-IO FIX session layer: codec, session state machine, codegen, and a rotating journal for replay. Currently in active development.</p>
         <p class="crate-tag soon" style="margin-top:0.6rem;">Coming soon to crates.io</p>
       </div>
     </div>
@@ -376,8 +406,7 @@ a { color: inherit; text-decoration: none; }
         <p>Pull in only the crates your workload needs. Each one stands alone with a small, intentional dependency tree.</p>
         <div class="gs-links">
           <a class="gs-link" href="https://github.com/Abso1ut3Zer0/nexus" target="_blank" rel="noopener">View on GitHub</a>
-          <a class="gs-link" href="https://docs.rs/nexus-queue" target="_blank" rel="noopener">docs.rs</a>
-          <a class="gs-link" href="https://crates.io/search?q=nexus" target="_blank" rel="noopener">crates.io</a>
+          <a class="gs-link" href="https://crates.io/search?q=nexus" target="_blank" rel="noopener">Browse on crates.io</a>
         </div>
       </div>
       <div class="code-block">
@@ -396,18 +425,6 @@ a { color: inherit; text-decoration: none; }
   </div>
 </section>
 
-<section class="section" id="docs" style="padding-top:1rem;">
-  <div class="wrap">
-    <div class="sec-eyebrow reveal">Docs &amp; deeper reading</div>
-    <h2 class="sec-title reveal">Go as deep as you want.</h2>
-    <div class="docs-grid reveal">
-      <a class="doc-card" href="https://docs.rs/nexus-queue" target="_blank" rel="noopener"><h4>API reference →</h4><p>Full per-crate documentation on docs.rs.</p></a>
-      <a class="doc-card" href="https://github.com/Abso1ut3Zer0/nexus/tree/main/docs" target="_blank" rel="noopener"><h4>Architecture →</h4><p>Design docs and the reasoning behind each subsystem.</p></a>
-      <a class="doc-card" href="https://github.com/Abso1ut3Zer0/nexus/blob/main/ROADMAP.md" target="_blank" rel="noopener"><h4>Roadmap →</h4><p>What's shipped, what's in progress, what's next.</p></a>
-    </div>
-  </div>
-</section>
-
 <footer class="footer">
   <div class="wrap footer-inner">
     <div>
@@ -421,7 +438,6 @@ a { color: inherit; text-decoration: none; }
     <div class="footer-links">
       <a href="https://github.com/Abso1ut3Zer0/nexus" target="_blank" rel="noopener">GitHub</a>
       <a href="https://crates.io/search?q=nexus" target="_blank" rel="noopener">crates.io</a>
-      <a href="https://docs.rs/nexus-queue" target="_blank" rel="noopener">docs.rs</a>
     </div>
   </div>
 </footer>
