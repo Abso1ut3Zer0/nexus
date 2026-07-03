@@ -1,0 +1,15 @@
+[package]
+name = "nexus-fix-harness"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "FIX conformance harness server"
+repository.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+nexus-fix-codec = { path = "../nexus-fix-codec" }
+nexus-fix-engine = { path = "../nexus-fix-engine" }

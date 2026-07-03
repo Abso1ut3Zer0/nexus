@@ -7,7 +7,7 @@ HARNESS_DIR="$REPO_ROOT/tools/fix-harness"
 
 podman build -t fix-harness "$HARNESS_DIR"
 
-FIX_PORT=$FIX_PORT cargo run -p nexus-fix-engine --example blocking_session &
+FIX_PORT=$FIX_PORT cargo run -p nexus-fix-harness &
 ENGINE_PID=$!
 trap "kill $ENGINE_PID 2>/dev/null || true" EXIT
 

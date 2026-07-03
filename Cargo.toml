@@ -39,6 +39,7 @@ members = [
 	"nexus-fix-codegen-tests",
 	"nexus-fix-engine",
 	"nexus-async-fix-engine",
+	"nexus-fix-harness",
 	"nexus-platform",
 ]
 
