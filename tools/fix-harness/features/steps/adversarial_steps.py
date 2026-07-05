@@ -118,12 +118,12 @@ def step_raw_logon(context):
 
 @when("the peer sends a Heartbeat with a bad checksum")
 def step_raw_bad_checksum(context):
-    context.raw_peer.send("0", bad_checksum=True)
+    context.raw_peer.send("0", seq=context.raw_peer._seq, bad_checksum=True)
 
 
 @when("the peer sends a Heartbeat with BodyLength {n:d}")
 def step_raw_bad_body_len(context, n):
-    context.raw_peer.send("0", body_len_override=n)
+    context.raw_peer.send("0", seq=context.raw_peer._seq, body_len_override=n)
 
 
 @when("the peer sends garbage bytes")
@@ -139,6 +139,24 @@ def step_raw_explicit_seq(context, n):
 @when("the peer sends a ResendRequest with EndSeqNo {n:d}")
 def step_raw_resend_request(context, n):
     context.raw_peer.send("2", [(7, "1"), (16, str(n))])
+
+
+@when("the peer sends a TestRequest")
+def step_raw_send_test_request(context):
+    context.raw_peer.send("1", [(112, "PROBE")])
+
+
+@then("the engine replies with Heartbeat")
+def step_raw_heartbeat_reply(context):
+    deadline = time.monotonic() + 10.0
+    while time.monotonic() < deadline:
+        try:
+            msg = context.raw_peer.recv()
+            if msg.get("35") == "0" and msg.get("112") == "PROBE":
+                return
+        except (EOFError, socket.timeout, OSError):
+            break
+    assert False, "engine did not reply with Heartbeat within 10s"
 
 
 @then("the engine closes the connection")
