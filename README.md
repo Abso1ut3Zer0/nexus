@@ -30,6 +30,9 @@ Each crate is small, focused, and honest about its constraints. No kitchen sinks
 │                        *Runtime*                        │
 │             rt · async-rt* · timer · + tokio            │
 ├─────────────────────────────────────────────────────────┤
+│                     *FIX Protocol*                      │
+│       fix-codec · fix-engine · async-fix-engine         │
+├─────────────────────────────────────────────────────────┤
 │                       *Analytics*                       │
 │                   stats-* · inference                   │
 ├─────────────────────────────────────────────────────────┤
@@ -43,7 +46,7 @@ Each crate is small, focused, and honest about its constraints. No kitchen sinks
 │                    collections · rate                   │
 ├─────────────────────────────────────────────────────────┤
 │                        *Storage*                        │
-│                  slab · pool · smartptr                 │
+│             slab · pool · smartptr · journal            │
 ├─────────────────────────────────────────────────────────┤
 │                         *Types*                         │
 │               bits · ascii · id · decimal               │
@@ -70,6 +73,7 @@ Each crate is small, focused, and honest about its constraints. No kitchen sinks
 | [**nexus-slab**](./nexus-slab) | Manual memory management with SLUB-style slab allocation. `bounded::Slab` (fixed capacity) and `unbounded::Slab` (growable via chunks). `rc` feature adds `RcSlot` with borrow guards for shared ownership. 1 cycle alloc, sub-cycle free ([benchmarks](./nexus-slab/BENCHMARKS.md)). |
 | [**nexus-pool**](./nexus-pool) | Object pools with RAII guards. Single-threaded `BoundedPool` and thread-safe `sync::Pool` (one acquirer, any returner). |
 | [**nexus-smartptr**](./nexus-smartptr) | Inline and flexible smart pointers for type-erased storage. `FlatBox` (fixed inline), `FlexBox` (inline or heap). Avoids boxing for small handler types. |
+| [**nexus-journal**](./nexus-journal) | Append-only and bounded-rotation mmap'd journals for trading systems. Segment-based, fsync-free on the write path, crash-safe. Used by `nexus-fix-engine` for outbound message persistence and replay. |
 
 ### Collections
 
@@ -100,6 +104,22 @@ Each crate is small, focused, and honest about its constraints. No kitchen sinks
 | [**nexus-net**](./nexus-net) | Low-latency networking primitives: buffers (`ReadBuf`, `WriteBuf`), TLS codec (rustls), wire abstractions (`WireStream`, `ParserSink`), `MaybeTls` transport. Foundation for nexus-web and nexus-async-web. |
 | [**nexus-web**](./nexus-web) | Sans-IO WebSocket (RFC 6455), HTTP/1.1, and REST primitives. Zero-copy, SIMD-accelerated. 3x faster than tungstenite, 3x faster than reqwest. Typestate request builder, chunked transfer encoding, connection poisoning. 517/517 Autobahn + 16/16 httpbin conformance. |
 | [**nexus-async-web**](./nexus-async-web) | Async adapters for nexus-web. Tokio-compatible. WebSocket `WsReader`/`WsWriter`, HTTP `HttpConnection<S>`, and `ClientPool`/`AtomicClientPool` with self-healing reconnect. `try_acquire` (fast path) and `acquire` (patient path with backoff). 3.5x faster than tokio-tungstenite ([benchmarks](./nexus-async-web/BENCHMARKS.md)). |
+
+### FIX Protocol
+
+| Crate | Description |
+|-------|-------------|
+| [**nexus-fix-codec**](./nexus-fix-codec) | Zero-copy FIX 4.x read/write primitives. SIMD-accelerated field scanning and checksum validation. `FrameFormatter` for outbound encoding, `FieldReader` and `validate_checksum` for inbound parsing. Dictionary-independent at the framing layer. |
+| [**nexus-fix-engine**](./nexus-fix-engine) | Sans-IO FIX 4.4 session layer. Handles Logon/Logout, heartbeat supervision, sequence number management, gap detection, and durable recovery via `FixJournal`. `FixConnection` drives framing and session dispatch with no runtime or async dependency. |
+| [**nexus-fix-codegen**](./nexus-fix-codegen) | Dictionary-driven code generator for `nexus-fix-codec`. Produces typed decode/encode implementations from FIX XML spec files. |
+| [**nexus-async-fix-engine**](./nexus-async-fix-engine) | Tokio async adapter for `nexus-fix-engine`. Wraps `FixConnection` in a task-friendly interface without altering session semantics. |
+
+### Platform
+
+| Crate | Description |
+|-------|-------------|
+| [**nexus-platform**](./nexus-platform) | Platform-specific OS primitives behind a portable Rust API. File locking and memory-mapped I/O with consistent semantics across Linux, macOS, and Windows. |
+| [**nexus-shm**](./nexus-shm) | Shared-memory IPC primitives for multi-process trading systems. Zero-copy data transfer across process boundaries. |
 
 ### Runtime
 
