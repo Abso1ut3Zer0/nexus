@@ -105,6 +105,33 @@ impl FixJournal {
         Ok(this)
     }
 
+    /// Open an existing session journal, returning [`OpenError::SessionNotFound`]
+    /// when no manifest exists for `session_id`.
+    ///
+    /// Unlike [`open`](Self::open) this never creates a new session. Use for
+    /// reconnect callers that must recover state — a wrong `session_id` is an
+    /// error rather than a silent fresh start.
+    pub fn open_existing(
+        dir: impl AsRef<Path>,
+        session_id: u32,
+        window: usize,
+    ) -> Result<Self, OpenError> {
+        assert!(window.is_power_of_two());
+        let mut conductor = Conductor::open(dir)?;
+        let journal: RotatingJournal =
+            conductor.session().session_id(session_id).open_existing()?;
+        let mut this = Self {
+            journal,
+            _conductor: conductor,
+            offsets: vec![None; window].into_boxed_slice(),
+            window,
+            next_outbound: 1,
+            next_inbound: 1,
+        };
+        this.recover_from_journal();
+        Ok(this)
+    }
+
     fn recover_from_journal(&mut self) {
         let mut pos = self.journal.read_start();
         let mut last_seq: Option<u32> = None;
@@ -214,6 +241,49 @@ mod tests {
 
     fn collect_range(j: &FixJournal, begin: u32, end: u32) -> Vec<ReplayItem<'_>> {
         j.resend(begin, end).collect()
+    }
+
+    #[test]
+    fn open_existing_missing_returns_not_found() {
+        let dir = tmp_dir("oe-missing");
+        cleanup(&dir);
+        let result = FixJournal::open_existing(&dir, 0, 64);
+        assert!(
+            matches!(result, Err(OpenError::SessionNotFound { .. })),
+            "expected SessionNotFound"
+        );
+        cleanup(&dir);
+    }
+
+    #[test]
+    fn open_existing_wrong_id_returns_not_found() {
+        let dir = tmp_dir("oe-wrongid");
+        cleanup(&dir);
+        {
+            let mut j = FixJournal::open(&dir, 0, 64).unwrap();
+            j.store(1, &fix_msg(1)).unwrap();
+        }
+        let result = FixJournal::open_existing(&dir, 1, 64);
+        assert!(
+            matches!(result, Err(OpenError::SessionNotFound { .. })),
+            "expected SessionNotFound for wrong id"
+        );
+        cleanup(&dir);
+    }
+
+    #[test]
+    fn open_existing_recovers_correct_session() {
+        let dir = tmp_dir("oe-recover");
+        cleanup(&dir);
+        {
+            let mut j = FixJournal::open(&dir, 0, 64).unwrap();
+            for seq in 1..=3u32 {
+                j.store(seq, &fix_msg(seq)).unwrap();
+            }
+        }
+        let j = FixJournal::open_existing(&dir, 0, 64).unwrap();
+        assert_eq!(j.next_outbound(), 4);
+        cleanup(&dir);
     }
 
     #[test]

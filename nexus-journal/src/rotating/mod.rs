@@ -126,6 +126,26 @@ impl<'a> RotatingJournalBuilder<'a> {
         self.open_inner(true)
     }
 
+    /// Open an existing session log.
+    ///
+    /// Returns [`OpenError::SessionNotFound`] when no manifest exists for
+    /// the requested `session_id`. Unlike [`open`](Self::open), this never
+    /// creates a new session — a wrong or typo'd id is an error, not a silent
+    /// fresh start that drops all replay state.
+    ///
+    /// Requires [`session_id`](Self::session_id) to have been set; without it
+    /// the call returns `SessionNotFound { session_id: 0 }`.
+    pub fn open_existing(self) -> Result<RotatingJournal, OpenError> {
+        let id = self
+            .session_id
+            .ok_or(OpenError::SessionNotFound { session_id: 0 })?;
+        let session_dir = self.conductor.dir().join(id.to_string());
+        if !manifest_path(&session_dir).exists() {
+            return Err(OpenError::SessionNotFound { session_id: id });
+        }
+        self.open_inner(false)
+    }
+
     fn open_inner(self, strict: bool) -> Result<RotatingJournal, OpenError> {
         let id = match self.session_id {
             Some(id) => {

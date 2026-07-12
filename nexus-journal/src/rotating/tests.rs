@@ -1215,3 +1215,44 @@ fn session_id_mismatch_on_corrupted_directory() {
         })
     ));
 }
+
+#[test]
+fn open_existing_missing_session_returns_not_found() {
+    let d = TempDir::new("oe-missing");
+    let mut c = Conductor::open(d.path()).unwrap();
+    let result = c.session().session_id(99).open_existing();
+    assert!(
+        matches!(result, Err(OpenError::SessionNotFound { session_id: 99 })),
+        "expected SessionNotFound(99)"
+    );
+}
+
+#[test]
+fn open_existing_wrong_id_returns_not_found() {
+    let d = TempDir::new("oe-wrongid");
+    let mut c = Conductor::open(d.path()).unwrap();
+    // Create session 1
+    let _log = open_id(&mut c, 1 << 16, 1);
+    drop(_log);
+    // Reopen conductor; session 2 doesn't exist
+    let mut c2 = Conductor::open(d.path()).unwrap();
+    let result = c2.session().session_id(2).open_existing();
+    assert!(
+        matches!(result, Err(OpenError::SessionNotFound { session_id: 2 })),
+        "expected SessionNotFound(2)"
+    );
+}
+
+#[test]
+fn open_existing_recovers_existing_session() {
+    let d = TempDir::new("oe-recover");
+    let mut c = Conductor::open(d.path()).unwrap();
+    {
+        let mut log = open_id(&mut c, 1 << 16, 5);
+        log.append(b"hello").unwrap();
+    }
+    let mut c2 = Conductor::open(d.path()).unwrap();
+    let log = c2.session().session_id(5).open_existing().unwrap();
+    let mut pos = log.read_start();
+    assert_eq!(log.read_next(&mut pos).unwrap().payload(), b"hello");
+}
