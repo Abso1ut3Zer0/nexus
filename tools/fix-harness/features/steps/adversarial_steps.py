@@ -136,6 +136,26 @@ def step_raw_explicit_seq(context, n):
     context.raw_peer.send("0", seq=n)
 
 
+@when("the peer sends a TestRequest with seqnum {n:d}")
+def step_raw_test_request_seq(context, n):
+    context.raw_peer.send("1", [(112, "PROBE")], seq=n)
+
+
+@when("the peer sends a ResendRequest with seqnum {n:d}")
+def step_raw_resend_request_seq(context, n):
+    context.raw_peer.send("2", [(7, "1"), (16, "2")], seq=n)
+
+
+@when("the peer sends a SequenceReset with seqnum {n:d}")
+def step_raw_sequence_reset_seq(context, n):
+    context.raw_peer.send("4", [(36, "10")], seq=n)
+
+
+@when("the peer sends a Reject with seqnum {n:d}")
+def step_raw_reject_seq(context, n):
+    context.raw_peer.send("3", [(45, "1")], seq=n)
+
+
 @when("the peer sends a ResendRequest with EndSeqNo {n:d}")
 def step_raw_resend_request(context, n):
     context.raw_peer.send("2", [(7, "1"), (16, str(n))])
