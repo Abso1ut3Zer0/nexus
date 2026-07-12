@@ -283,6 +283,10 @@ impl FrameReader {
             return ParseResult::Incomplete;
         }
 
+        if !data[message_end - CHECKSUM_LEN..message_end].starts_with(b"10=") {
+            return ParseResult::Garbage;
+        }
+
         if validate_checksum(&data[..message_end]).is_err() {
             return ParseResult::Garbage;
         }
@@ -807,6 +811,24 @@ mod tests {
 
         let frame = reader.next().unwrap().unwrap();
         assert_eq!(frame, msg.as_slice());
+    }
+
+    #[test]
+    fn garbage_lying_body_length() {
+        // BodyLength=5 but real body is longer; message_end lands before 10=.
+        let lying = b"8=FIX.4.4\x019=5\x0135=0\x0149=S\x0156=T\x0110=123\x01";
+        let valid = heartbeat();
+        let mut data = lying.to_vec();
+        data.extend_from_slice(&valid);
+
+        let mut reader = FrameReader::builder().build();
+        reader.read(&data).unwrap();
+
+        let err = reader.next().unwrap_err();
+        assert!(matches!(err, FrameError::Garbage { .. }));
+
+        let frame = reader.next().unwrap().unwrap();
+        assert_eq!(frame, valid.as_slice());
     }
 
     // ---- message too large ----

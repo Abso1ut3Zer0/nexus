@@ -415,6 +415,9 @@ impl<S: Read + Write, D: FixDictionary> FixConnection<S, D> {
                 if !self.writer.is_empty() {
                     self.writer.flush_to(&mut self.stream).map_err(Error::Io)?;
                 }
+                if let Some(Event::Disconnected { reason }) = out.event() {
+                    return Ok(Some(Message::Disconnected { reason }));
+                }
                 let msg = D::Heartbeat::decode(frame)
                     .map_err(|_| Error::Protocol(SessionError::MalformedMessage))?;
                 Ok(Some(Message::Heartbeat { msg }))
@@ -428,6 +431,9 @@ impl<S: Read + Write, D: FixDictionary> FixConnection<S, D> {
                 }
                 if !self.writer.is_empty() {
                     self.writer.flush_to(&mut self.stream).map_err(Error::Io)?;
+                }
+                if let Some(Event::Disconnected { reason }) = out.event() {
+                    return Ok(Some(Message::Disconnected { reason }));
                 }
                 let msg = D::TestRequest::decode(frame)
                     .map_err(|_| Error::Protocol(SessionError::MalformedMessage))?;
@@ -446,6 +452,9 @@ impl<S: Read + Write, D: FixDictionary> FixConnection<S, D> {
                 }
                 if !self.writer.is_empty() {
                     self.writer.flush_to(&mut self.stream).map_err(Error::Io)?;
+                }
+                if let Some(Event::Disconnected { reason }) = out.event() {
+                    return Ok(Some(Message::Disconnected { reason }));
                 }
                 if let Some(Event::ResendRange { begin: rb, end: re }) = out.event() {
                     let re = if re == 0 {
@@ -480,6 +489,9 @@ impl<S: Read + Write, D: FixDictionary> FixConnection<S, D> {
                 if !self.writer.is_empty() {
                     self.writer.flush_to(&mut self.stream).map_err(Error::Io)?;
                 }
+                if let Some(Event::Disconnected { reason }) = out.event() {
+                    return Ok(Some(Message::Disconnected { reason }));
+                }
                 let msg = D::SequenceReset::decode(frame)
                     .map_err(|_| Error::Protocol(SessionError::MalformedMessage))?;
                 Ok(Some(Message::SequenceReset { msg }))
@@ -494,6 +506,9 @@ impl<S: Read + Write, D: FixDictionary> FixConnection<S, D> {
                 }
                 if !self.writer.is_empty() {
                     self.writer.flush_to(&mut self.stream).map_err(Error::Io)?;
+                }
+                if let Some(Event::Disconnected { reason }) = out.event() {
+                    return Ok(Some(Message::Disconnected { reason }));
                 }
                 let msg = D::Reject::decode(frame)
                     .map_err(|_| Error::Protocol(SessionError::MalformedMessage))?;
