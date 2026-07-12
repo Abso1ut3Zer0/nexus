@@ -3,6 +3,29 @@ use std::path::Path;
 use nexus_fix_codec::{find_tag, parse_fix_seqnum};
 use nexus_journal::{Conductor, Frame, LogOffset, OpenError, RotatingJournal, WriteError};
 
+const INBOUND_MARKER: &[u8] = b"NI=";
+
+fn encode_inbound_checkpoint(seq: u32, buf: &mut [u8; 13]) -> usize {
+    buf[0] = b'N';
+    buf[1] = b'I';
+    buf[2] = b'=';
+    if seq == 0 {
+        buf[3] = b'0';
+        return 4;
+    }
+    let mut tmp = [0u8; 10];
+    let mut len = 0;
+    let mut n = seq;
+    while n > 0 {
+        tmp[len] = b'0' + (n % 10) as u8;
+        len += 1;
+        n /= 10;
+    }
+    tmp[..len].reverse();
+    buf[3..3 + len].copy_from_slice(&tmp[..len]);
+    3 + len
+}
+
 enum ResendPlan<'a> {
     Replay(Frame<'a>),
     GapFill,
@@ -108,9 +131,14 @@ impl FixJournal {
     fn recover_from_journal(&mut self) {
         let mut pos = self.journal.read_start();
         let mut last_seq: Option<u32> = None;
+        let mut last_inbound: Option<u32> = None;
         while let Some(frame) = self.journal.read_next(&mut pos) {
             let p = frame.payload();
-            if let Some(span) = find_tag(p, 0, 34)
+            if let Some(rest) = p.strip_prefix(INBOUND_MARKER) {
+                if let Some(n) = std::str::from_utf8(rest).ok().and_then(|s| s.parse().ok()) {
+                    last_inbound = Some(n);
+                }
+            } else if let Some(span) = find_tag(p, 0, 34)
                 && let Ok(seq) = parse_fix_seqnum(span.slice(p))
             {
                 last_seq = Some(seq as u32);
@@ -118,6 +146,9 @@ impl FixJournal {
         }
         if let Some(seq) = last_seq {
             self.next_outbound = seq.wrapping_add(1);
+        }
+        if let Some(n) = last_inbound {
+            self.next_inbound = n;
         }
     }
 
@@ -175,11 +206,17 @@ impl FixJournal {
     }
 
     pub fn advance_inbound(&mut self) {
-        self.next_inbound = self.next_inbound.wrapping_add(1);
+        self.set_next_inbound(self.next_inbound.wrapping_add(1));
     }
 
     pub fn set_next_inbound(&mut self, seq: u32) {
+        if seq == self.next_inbound {
+            return;
+        }
         self.next_inbound = seq;
+        let mut buf = [0u8; 13];
+        let len = encode_inbound_checkpoint(seq, &mut buf);
+        let _ = self.journal.append(&buf[..len]);
     }
 }
 
@@ -250,6 +287,26 @@ mod tests {
 
         let j = FixJournal::open(&dir, 0, 64).unwrap();
         assert_eq!(j.next_outbound(), 8);
+
+        cleanup(&dir);
+    }
+
+    #[test]
+    fn open_recovers_next_inbound() {
+        let dir = tmp_dir("recover-inbound");
+        cleanup(&dir);
+
+        {
+            let mut j = FixJournal::open(&dir, 0, 64).unwrap();
+            j.store(1, &fix_msg(1)).unwrap();
+            j.advance_inbound();
+            j.advance_inbound();
+            j.set_next_inbound(42);
+        }
+
+        let j = FixJournal::open(&dir, 0, 64).unwrap();
+        assert_eq!(j.next_inbound(), 42);
+        assert_eq!(j.next_outbound(), 2);
 
         cleanup(&dir);
     }

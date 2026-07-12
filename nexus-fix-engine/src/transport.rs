@@ -251,6 +251,11 @@ impl<S: Read + Write, D: FixDictionary> FixConnection<S, D> {
     }
 
     pub fn recv(&mut self, now: Instant) -> Result<Option<Message<'_, D>>, Error> {
+        let n = self.state.next_inbound_seq();
+        if n != self.journal.next_inbound() {
+            self.journal.set_next_inbound(n);
+        }
+
         loop {
             if self.reader.inner.should_compact() {
                 self.reader.inner.compact();
