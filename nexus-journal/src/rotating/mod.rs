@@ -136,9 +136,13 @@ impl<'a> RotatingJournalBuilder<'a> {
     ///
     /// A session id must be set via [`session_id`](Self::session_id) for
     /// [`OpenMode::OpenExisting`]; for the create modes an id is auto-assigned
-    /// when unset. A structural config mismatch against an existing manifest is
-    /// always an error ([`OpenError::ConfigMismatch`]) — there is no lenient
-    /// mode.
+    /// when unset.
+    ///
+    /// Recovering an existing session uses its manifest's stored `segment_size`;
+    /// the builder's value applies only when creating a fresh session, since a
+    /// journal cannot be remapped to a different size. A manifest whose stored
+    /// session id does not match the requested id is rejected with
+    /// [`OpenError::ConfigMismatch`].
     pub fn open(self, mode: OpenMode) -> Result<RotatingJournal, OpenError> {
         let id = match self.session_id {
             Some(id) => id,
@@ -183,6 +187,23 @@ impl<'a> RotatingJournalBuilder<'a> {
             .conductor
             .archive()
             .then(|| session_dir.join("archive"));
+
+        // Overwrite discards any existing session. Delete its on-disk segments
+        // and archive so create_fresh rebuilds them at exactly `size`:
+        // `MappedFileOptions::create` only grows a file, so reusing larger stale
+        // segments would leave them mapped at their old length on the next
+        // recover (wasting address space, and with pretouch, faulted memory).
+        if mode == OpenMode::Overwrite && manifest_exists {
+            for i in 0u8..3 {
+                let seg = seg_path(&session_dir, i);
+                if seg.exists() {
+                    std::fs::remove_file(&seg)?;
+                }
+            }
+            if let Some(ref archive) = archive_dir {
+                std::fs::remove_dir_all(archive).ok();
+            }
+        }
 
         // Overwrite always creates fresh (discarding any existing session); the
         // others recover an existing manifest and only create when absent.

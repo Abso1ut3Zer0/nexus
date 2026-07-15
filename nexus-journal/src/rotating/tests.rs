@@ -1349,3 +1349,45 @@ fn overwrite_discards_existing_session() {
     let mut pos = log.read_start();
     assert!(log.read_next(&mut pos).is_none());
 }
+
+#[test]
+fn overwrite_shrinks_reused_segment_files() {
+    let d = TempDir::new("overwrite_shrink");
+    let big = 1 << 20; // 1 MiB
+    let small = 1 << 16; // 64 KiB
+    let session_dir = d.path().join("5");
+
+    // A large session leaves 1 MiB segment files on disk.
+    {
+        let mut c = Conductor::open(d.path()).unwrap();
+        let _ = open_id(&mut c, big, 5);
+    }
+    assert_eq!(
+        std::fs::metadata(super::seg_path(&session_dir, 0))
+            .unwrap()
+            .len(),
+        big as u64,
+    );
+
+    // Overwriting with a smaller segment size must rebuild the files at the new
+    // size. `create` only grows a file, so a stale 1 MiB segment would otherwise
+    // be remapped in full on the next recover.
+    {
+        let mut c = Conductor::open(d.path()).unwrap();
+        let _ = c
+            .session()
+            .segment_size(small)
+            .session_id(5)
+            .open(OpenMode::Overwrite)
+            .unwrap();
+    }
+    for i in 0u8..3 {
+        let len = std::fs::metadata(super::seg_path(&session_dir, i))
+            .unwrap()
+            .len();
+        assert_eq!(
+            len, small as u64,
+            "seg{i} not resized to the new segment_size"
+        );
+    }
+}
