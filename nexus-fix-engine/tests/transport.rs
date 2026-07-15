@@ -686,3 +686,25 @@ fn journal_recovers_admin_seqnums() {
         "journal must include admin seqnums"
     );
 }
+
+#[test]
+fn send_app_rejects_oversized_frame() {
+    // A frame larger than the writer capacity minus reframe headroom is a
+    // configuration error — the caller sizes the writer up front — not a
+    // runtime fallback. The cap fires before any journal or socket write.
+    let dir = tmp_dir("oversized");
+    let (client_sock, _server_sock) = loopback_pair();
+    let mut conn: FixConnection<TcpStream, MockDict> = FixConnection::from_parts(
+        client_sock,
+        SessionState::new(Duration::from_secs(30)),
+        session_cfg(sender(), target()),
+        journal(&dir),
+    );
+
+    // The default writer is 64 KiB; a 64 KiB frame exceeds cap - headroom.
+    let oversized = vec![0u8; 64 * 1024];
+    assert!(matches!(
+        conn.send_app(1, &oversized),
+        Err(TransportError::FrameTooLarge(_))
+    ));
+}

@@ -25,4 +25,6 @@ pub use framework::{CompId, Message, MessageReader, MessageWriter, SessionConfig
 pub use persist::{FixJournal, ReplayItem};
 pub use session::{AdminMsg, DisconnectReason, Event, Out, SessionState, State};
 #[cfg(unix)]
-pub use transport::{Error as TransportError, FixConnection, FixConnectionBuilder};
+pub use transport::{
+    Error as TransportError, FixConnection, FixConnectionBuilder, REFRAME_HEADROOM,
+};

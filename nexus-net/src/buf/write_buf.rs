@@ -201,6 +201,12 @@ impl WriteBuf {
         self.head
     }
 
+    /// Total backing-buffer capacity in bytes (fixed at construction).
+    #[inline]
+    pub fn capacity(&self) -> usize {
+        self.buf.len()
+    }
+
     /// Bytes available for append.
     #[inline]
     pub fn tailroom(&self) -> usize {

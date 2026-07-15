@@ -190,6 +190,11 @@ impl<D: FixDictionary> MessageWriter<D> {
         self.inner.remaining()
     }
 
+    /// Total buffer capacity in bytes (fixed at construction).
+    pub fn capacity(&self) -> usize {
+        self.inner.capacity()
+    }
+
     pub fn flush_to<S: Write>(&mut self, stream: &mut S) -> std::io::Result<()> {
         while !self.inner.is_empty() {
             let n = stream.write(self.inner.data())?;
