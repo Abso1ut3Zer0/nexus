@@ -8,13 +8,81 @@
 use std::io;
 use std::pin::Pin;
 use std::task::{Context, Poll};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
-use nexus_async_fix_engine::AsyncFixConnection;
+use nexus_async_fix_engine::FixConnection;
+use nexus_fix_codec::{FieldView, FixAdminMsg, FixDictionary, FixHeader, FixTimestamp, find_tag};
 use nexus_fix_engine::{CompId, FixJournal, SessionConfig, SessionState};
 use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
 
-const BEGIN: &[u8] = b"FIX.4.4";
+// ── mock dictionary (mirrors the sync engine's tests) ────────────────────────
+
+struct MockDict;
+
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+enum MockMsgType {}
+
+struct AdminDecoder<'buf> {
+    _buf: &'buf [u8],
+}
+
+impl<'buf> FixAdminMsg<'buf> for AdminDecoder<'buf> {
+    fn decode(buf: &'buf [u8]) -> Result<Self, nexus_fix_codec::DecodeError> {
+        Ok(Self { _buf: buf })
+    }
+}
+
+impl FixDictionary for MockDict {
+    type MsgType = MockMsgType;
+    type Header<'buf> = MockHeader<'buf>;
+    type Logon<'buf> = AdminDecoder<'buf>;
+    type Logout<'buf> = AdminDecoder<'buf>;
+    type Heartbeat<'buf> = AdminDecoder<'buf>;
+    type TestRequest<'buf> = AdminDecoder<'buf>;
+    type ResendRequest<'buf> = AdminDecoder<'buf>;
+    type SequenceReset<'buf> = AdminDecoder<'buf>;
+    type Reject<'buf> = AdminDecoder<'buf>;
+    const BEGIN_STRING: &'static [u8] = b"FIX.4.4";
+    fn is_admin(_: MockMsgType) -> bool {
+        false
+    }
+}
+
+struct MockHeader<'buf> {
+    buf: &'buf [u8],
+}
+
+impl<'buf> FixHeader<'buf> for MockHeader<'buf> {
+    fn decode(buf: &'buf [u8]) -> Self {
+        Self { buf }
+    }
+
+    fn raw_msg_type(&self) -> Option<FieldView<'buf, &'buf [u8]>> {
+        find_tag(self.buf, 0, 35).and_then(|s| FieldView::new(s, self.buf))
+    }
+
+    fn msg_seq_num(&self) -> Option<FieldView<'buf, u64>> {
+        find_tag(self.buf, 0, 34).and_then(|s| FieldView::new(s, self.buf))
+    }
+
+    fn sender_comp_id(&self) -> Option<FieldView<'buf, &'buf nexus_fix_codec::AsciiTextStr>> {
+        find_tag(self.buf, 0, 49).and_then(|s| FieldView::new(s, self.buf))
+    }
+
+    fn target_comp_id(&self) -> Option<FieldView<'buf, &'buf nexus_fix_codec::AsciiTextStr>> {
+        find_tag(self.buf, 0, 56).and_then(|s| FieldView::new(s, self.buf))
+    }
+
+    fn poss_dup_flag(&self) -> Option<FieldView<'buf, bool>> {
+        find_tag(self.buf, 0, 43).and_then(|s| FieldView::new(s, self.buf))
+    }
+
+    fn sending_time(&self) -> Option<FieldView<'buf, FixTimestamp>> {
+        None
+    }
+}
+
+// ── helpers ──────────────────────────────────────────────────────────────────
 
 fn tmp_dir(suffix: &str) -> std::path::PathBuf {
     let mut p = std::env::temp_dir();
@@ -72,7 +140,7 @@ async fn outbound_admin_is_journaled() {
     let dir = tmp_dir("logon");
 
     {
-        let mut conn = AsyncFixConnection::from_parts(
+        let mut conn: FixConnection<SinkStream, MockDict> = FixConnection::from_parts(
             SinkStream::default(),
             SessionState::new(Duration::from_secs(30)),
             SessionConfig {
@@ -80,10 +148,9 @@ async fn outbound_admin_is_journaled() {
                 target: CompId::new(b"PEER").unwrap(),
             },
             FixJournal::open(&dir, 0, 256).unwrap(),
-            BEGIN,
         );
         // Sends the opening Logon at seq 1; the write is accepted by the sink.
-        conn.connect().await.unwrap();
+        conn.connect(Instant::now()).await.unwrap();
     }
 
     // The Logon (seq 1) must be present in the outbound journal: recovering the
