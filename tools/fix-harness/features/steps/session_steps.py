@@ -78,7 +78,7 @@ def _start_initiator(context):
     cfg_path = _make_cfg(context.sender, context.target, FIX_PORT)
     settings = fix.SessionSettings(cfg_path)
     context.app = HarnessApp()
-    store = fix.MemoryStoreFactory(settings)
+    store = fix.MemoryStoreFactory()
     log = fix.ScreenLogFactory(settings)
     context.initiator = fix.SocketInitiator(context.app, store, log, settings)
     context.initiator.start()
