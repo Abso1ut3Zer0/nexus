@@ -759,6 +759,6 @@ fn send_app_rejects_oversized_frame() {
     let oversized = vec![0u8; 64 * 1024];
     assert!(matches!(
         conn.send_app(1, &oversized),
-        Err(TransportError::FrameTooLarge(_))
+        Err(TransportError::MessageTooLarge(_))
     ));
 }
