@@ -6,11 +6,16 @@
 //! outbound buffer, both `.await`ed. All protocol logic (framing, the state
 //! machine, journaling, resend) lives in [`FixSession`]; this crate is the exact
 //! async analog of the blocking
-//! [`nexus_fix_engine::FixConnection`](nexus_fix_engine::FixConnection), differing
+//! [`nexus_fix_engine::FixConnection`], differing
 //! only in that socket I/O is `.await`ed and heartbeat/TestRequest deadlines use
 //! `tokio::time`.
 
 #![cfg(unix)]
+#![deny(
+    rustdoc::broken_intra_doc_links,
+    rustdoc::private_intra_doc_links,
+    rustdoc::redundant_explicit_links
+)]
 
 use std::io;
 use std::marker::PhantomData;
@@ -37,7 +42,7 @@ pub use nexus_fix_engine::TransportError as Error;
 /// Thin wrapper over [`FixSession`]: the socket calls are `.await`ed; everything
 /// else — framing, the [`SessionState`] machine, journaling, resend — is in the
 /// shared core. This is the async twin of
-/// [`nexus_fix_engine::FixConnection`](nexus_fix_engine::FixConnection).
+/// [`nexus_fix_engine::FixConnection`].
 pub struct FixConnection<S, D: FixDictionary> {
     stream: S,
     session: FixSession<D>,

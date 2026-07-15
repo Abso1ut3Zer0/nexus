@@ -12,6 +12,13 @@ contained.
 
 ### Changed
 
+- `FixConnection<S, D>` is now a thin socket wrapper over a new sans-IO
+  `FixSession<D>` core (the thin-adapter half of #544). All protocol logic —
+  frame decode, the `SessionState` machine, journaling, encode, and resend —
+  lives in `FixSession`; the connection does only the blocking socket I/O.
+  Resend is resumable: `FixSession::poll` surfaces `PollOutcome::ResendPending`
+  so a partial retransmission resumes across reads instead of restarting. The
+  public `FixConnection` API is unchanged.
 - `FixJournal` reworked from an outbound-only resend log into a **two-journal**
   (outbound + inbound) both-sides archive that serves resend *and* visibility.
   Direction is implicit in which journal a frame lands in — no per-frame

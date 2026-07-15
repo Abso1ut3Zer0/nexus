@@ -26,5 +26,15 @@ contained.
 
 ### Changed
 
-- `AsyncFixConnection::encode_admin` returns `Result<(), Error>` (was `()`) so
-  outbound-admin journal writes can propagate; `flush_out` forwards the error.
+- `AsyncFixConnection<S>` renamed to `FixConnection<S, D>` (now generic over the
+  `FixDictionary` `D`) and rewritten as a thin tokio wrapper over the shared
+  sans-IO `FixSession<D>` core (the thin-adapter half of #544). The hand-rolled
+  inbound frame parsing, admin encoding, resend loop, and UNIX-nanos timestamp
+  code are deleted — all of that now lives in `FixSession`; the wrapper does only
+  the `.await`ed socket I/O.
+- `recv` is no longer callback-based. It is now
+  `recv(now) -> Result<Option<Message<'_, D>>, Error>`, returning the next typed
+  `Message` borrowed from the session buffer (was
+  `recv(on_app: &mut impl FnMut(&[u8])) -> Result<Option<DisconnectReason>, Error>`).
+  Outbound admin, journaling, and resend that the old `recv` drove by hand are
+  now handled inside the core.

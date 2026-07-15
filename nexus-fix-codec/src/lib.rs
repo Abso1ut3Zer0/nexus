@@ -16,6 +16,12 @@
 //!
 //! Generated FIX codecs (from `nexus-fix-codegen`) depend on these primitives.
 
+#![deny(
+    rustdoc::broken_intra_doc_links,
+    rustdoc::private_intra_doc_links,
+    rustdoc::redundant_explicit_links
+)]
+
 pub mod dict;
 mod error;
 mod field;
