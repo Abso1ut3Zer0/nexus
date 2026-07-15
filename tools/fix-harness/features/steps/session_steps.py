@@ -57,6 +57,9 @@ def _make_cfg(sender, target, port):
     cfg = (
         "[DEFAULT]\n"
         "ConnectionType=initiator\n"
+        "UseDataDictionary=N\n"
+        "StartTime=00:00:00\n"
+        "EndTime=00:00:00\n"
         "HeartBtInt=30\n"
         f"SenderCompID={sender}\n"
         f"TargetCompID={target}\n"
@@ -80,7 +83,7 @@ def _start_initiator(context):
     context.app = HarnessApp()
     store = fix.MemoryStoreFactory()
     log = fix.ScreenLogFactory(settings)
-    context.initiator = fix.SocketInitiator(context.app, store, log, settings)
+    context.initiator = fix.SocketInitiator(context.app, store, settings, log)
     context.initiator.start()
 
 
