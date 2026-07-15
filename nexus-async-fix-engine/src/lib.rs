@@ -20,20 +20,22 @@ use nexus_fix_engine::{
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use tokio::time::timeout_at;
 
+use nexus_fix_engine::WriteError;
+
 const TS_LEN: usize = 21;
 
 /// Error from [`AsyncFixConnection`].
 #[derive(Debug)]
 pub enum Error {
     Io(io::Error),
-    FrameTooLarge(usize),
+    MessageTooLarge(usize),
 }
 
 impl std::fmt::Display for Error {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::Io(e) => write!(f, "I/O: {e}"),
-            Self::FrameTooLarge(n) => write!(f, "frame too large: {n} bytes"),
+            Self::MessageTooLarge(n) => write!(f, "message too large: {n} bytes"),
         }
     }
 }
@@ -154,7 +156,7 @@ impl<S: AsyncRead + AsyncWrite + Unpin> AsyncFixConnection<S> {
 
         self.reader
             .read(&tmp[..n])
-            .map_err(|_| Error::FrameTooLarge(n))?;
+            .map_err(|_| Error::MessageTooLarge(n))?;
 
         let now = Instant::now();
         loop {
@@ -167,7 +169,7 @@ impl<S: AsyncRead + AsyncWrite + Unpin> AsyncFixConnection<S> {
                 }
                 Ok(None) => break,
                 Err(FrameError::MessageTooLarge { size }) => {
-                    return Err(Error::FrameTooLarge(size));
+                    return Err(Error::MessageTooLarge(size));
                 }
                 Err(FrameError::Garbage { .. }) => {}
             }
@@ -186,11 +188,21 @@ impl<S: AsyncRead + AsyncWrite + Unpin> AsyncFixConnection<S> {
         // for a later resend reframe. Size the buffer up front for larger
         // messages; see the sync `FixConnection::send_app`.
         if frame.len() > self.writer.capacity().saturating_sub(REFRAME_HEADROOM) {
-            return Err(Error::FrameTooLarge(frame.len()));
+            return Err(Error::MessageTooLarge(frame.len()));
         }
-        self.journal
-            .store(seq, frame)
-            .map_err(|e| Error::Io(io::Error::other(format!("{e:?}"))))?;
+        // Unbounded on purpose. StandbyNotReady is transient backpressure the
+        // conductor clears in sub-ms; the only way this loops forever is a
+        // full/failing disk, which must be caught by observability. Retrying
+        // beats the alternative of dropping a message from a resend/audit
+        // journal. We yield rather than spin so the tokio executor keeps
+        // driving the conductor and other tasks.
+        loop {
+            match self.journal.store(seq, frame) {
+                Ok(()) => break,
+                Err(WriteError::StandbyNotReady) => tokio::task::yield_now().await,
+                Err(_) => return Err(Error::MessageTooLarge(frame.len())),
+            }
+        }
         self.write_through(frame).await
     }
 
@@ -217,6 +229,17 @@ impl<S: AsyncRead + AsyncWrite + Unpin> AsyncFixConnection<S> {
             let out = self.state.on_comp_id_mismatch(now);
             self.flush_out(out).await?;
             return Ok(Some(DisconnectReason::CompIdMismatch));
+        }
+
+        // Well-framed and comp-id-valid: archive the inbound message for
+        // visibility/audit. Garbage and foreign frames never reach here.
+        // Unbounded retry on transient standby backpressure; see `send_app`.
+        loop {
+            match self.journal.store_inbound(frame) {
+                Ok(()) => break,
+                Err(WriteError::StandbyNotReady) => tokio::task::yield_now().await,
+                Err(_) => return Err(Error::MessageTooLarge(frame.len())),
+            }
         }
 
         let seq = match find_tag(frame, 0, 34).and_then(|s| parse_fix_seqnum(s.slice(frame)).ok()) {
@@ -304,7 +327,7 @@ impl<S: AsyncRead + AsyncWrite + Unpin> AsyncFixConnection<S> {
 
     async fn flush_out(&mut self, out: Out) -> Result<(), Error> {
         for admin in out.admin_messages() {
-            self.encode_admin(admin);
+            self.encode_admin(admin).await?;
         }
         if !self.writer.is_empty() {
             self.flush_writer().await?;
@@ -312,7 +335,7 @@ impl<S: AsyncRead + AsyncWrite + Unpin> AsyncFixConnection<S> {
         Ok(())
     }
 
-    fn encode_admin(&mut self, admin: AdminMsg) {
+    async fn encode_admin(&mut self, admin: AdminMsg) -> Result<(), Error> {
         let ts = make_ts();
 
         let msg_type: &[u8] = match admin {
@@ -408,11 +431,29 @@ impl<S: AsyncRead + AsyncWrite + Unpin> AsyncFixConnection<S> {
 
             match fmt.finish() {
                 Ok(sl) => sl,
-                Err(_) => return,
+                Err(_) => return Ok(()),
             }
         };
 
+        // Journal the outbound admin frame, mirroring the sync `store_admin`:
+        // capture the frame slice from the writer after commit so it is
+        // contiguous and correctly sized. `self.journal` and `self.writer` are
+        // disjoint fields, so the mutable-journal / shared-writer borrows do not
+        // conflict. Unbounded retry on transient standby backpressure; see
+        // `send_app`. This keeps async sessions' outbound admin in the archive.
+        let before = self.writer.data().len();
         self.writer.commit(start, len);
+        let frame = &self.writer.data()[before..];
+        if !frame.is_empty() {
+            loop {
+                match self.journal.store(seq, frame) {
+                    Ok(()) => break,
+                    Err(WriteError::StandbyNotReady) => tokio::task::yield_now().await,
+                    Err(_) => return Err(Error::MessageTooLarge(frame.len())),
+                }
+            }
+        }
+        Ok(())
     }
 
     async fn flush_writer(&mut self) -> Result<(), Error> {
@@ -434,7 +475,7 @@ impl<S: AsyncRead + AsyncWrite + Unpin> AsyncFixConnection<S> {
         if self.writer.remaining() < frame.len() {
             // Exceeds the pre-allocated buffer even when empty; `send_app` caps
             // app frames below this, so this is an undersized-buffer config error.
-            return Err(Error::FrameTooLarge(frame.len()));
+            return Err(Error::MessageTooLarge(frame.len()));
         }
         let spare = self.writer.spare();
         spare[..frame.len()].copy_from_slice(frame);
@@ -490,7 +531,7 @@ impl<S: AsyncRead + AsyncWrite + Unpin> AsyncFixConnection<S> {
                     Item::App(data) => reframe_app(&mut self.writer, data, &ts, begin_string),
                 };
                 retry.map_err(|()| {
-                    Error::FrameTooLarge(self.writer.remaining().saturating_add(1))
+                    Error::MessageTooLarge(self.writer.remaining().saturating_add(1))
                 })?;
             }
         }

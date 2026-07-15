@@ -6,6 +6,7 @@ use nexus_fix_codec::{
     FieldReader, FixAdminMsg, FixDictionary, FixHeader, FrameFormatter, encode_fix_uint, find_tag,
     parse_fix_bool, parse_fix_seqnum, parse_fix_uint,
 };
+use nexus_journal::WriteError;
 
 use crate::frame::{FrameError, FrameWriter};
 use crate::framework::{Message, MessageReader, MessageWriter, SessionConfig, SessionError};
@@ -16,7 +17,7 @@ use crate::timestamp::UTC_TIMESTAMP_LEN;
 #[derive(Debug)]
 pub enum Error {
     Io(io::Error),
-    FrameTooLarge(usize),
+    MessageTooLarge(usize),
     Protocol(SessionError),
 }
 
@@ -24,7 +25,7 @@ impl std::fmt::Display for Error {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::Io(e) => write!(f, "I/O: {e}"),
-            Self::FrameTooLarge(n) => write!(f, "frame too large: {n} bytes"),
+            Self::MessageTooLarge(n) => write!(f, "message too large: {n} bytes"),
             Self::Protocol(e) => write!(f, "protocol: {e}"),
         }
     }
@@ -250,11 +251,9 @@ impl<S: Read + Write, D: FixDictionary> FixConnection<S, D> {
         // for a later resend reframe. An application that sends larger messages
         // sizes the buffer up front via `writer_capacity(...)`.
         if frame.len() > self.writer.capacity().saturating_sub(REFRAME_HEADROOM) {
-            return Err(Error::FrameTooLarge(frame.len()));
+            return Err(Error::MessageTooLarge(frame.len()));
         }
-        self.journal
-            .store(seq, frame)
-            .map_err(|e| Error::Io(io::Error::other(format!("{e:?}"))))?;
+        journal_write(frame.len(), || self.journal.store(seq, frame))?;
         write_through(&mut self.stream, &mut self.writer.inner, frame)
     }
 
@@ -282,7 +281,7 @@ impl<S: Read + Write, D: FixDictionary> FixConnection<S, D> {
 
             match self.reader.inner.next() {
                 Err(FrameError::MessageTooLarge { size }) => {
-                    return Err(Error::FrameTooLarge(size));
+                    return Err(Error::MessageTooLarge(size));
                 }
                 Err(FrameError::Garbage { .. }) => {
                     self.garbage_frames += 1;
@@ -366,6 +365,11 @@ impl<S: Read + Write, D: FixDictionary> FixConnection<S, D> {
                 reason: DisconnectReason::CompIdMismatch,
             }));
         }
+
+        // Well-framed and comp-id-valid: archive the inbound message for
+        // visibility/audit. Garbage and foreign (comp-id-mismatched) frames are
+        // not journaled — they never reach here.
+        journal_write(frame.len(), || self.journal.store_inbound(frame))?;
 
         let raw_type = if let Some(s) = find_tag(frame, 0, 35) {
             s.slice(frame)
@@ -607,10 +611,40 @@ fn do_resend<S: Write, D: FixDictionary>(
             };
             // `send_app`'s headroom guarantees a reframe fits an empty buffer;
             // a failure here means the writer was sized too small.
-            retry.map_err(|()| Error::FrameTooLarge(writer.inner.remaining().saturating_add(1)))?;
+            retry
+                .map_err(|()| Error::MessageTooLarge(writer.inner.remaining().saturating_add(1)))?;
         }
     }
     writer.flush_to(stream).map_err(Error::Io)
+}
+
+/// Write to the journal, retrying on transient standby backpressure.
+///
+/// `store` is one of `FixJournal::store` / `store_inbound`, `size` its frame
+/// length. On [`WriteError::StandbyNotReady`] (transient backpressure) we spin
+/// and retry; a [`WriteError::RecordTooLarge`] misconfiguration surfaces as
+/// [`Error::MessageTooLarge`].
+///
+/// Unbounded on purpose. StandbyNotReady is transient backpressure the conductor
+/// clears in sub-ms; the only way this spins forever is a full/failing disk,
+/// which must be caught by observability. Spinning beats the alternative of
+/// dropping a message from a resend/audit journal. Spinning (rather than
+/// blocking) is fine here: the conductor makes progress on its own thread, and
+/// `recv` already blocks on the socket read.
+#[inline]
+fn journal_write(
+    size: usize,
+    mut store: impl FnMut() -> Result<(), WriteError>,
+) -> Result<(), Error> {
+    loop {
+        match store() {
+            Ok(()) => return Ok(()),
+            Err(WriteError::StandbyNotReady) => std::hint::spin_loop(),
+            // Only RecordTooLarge today; WriteError is non-exhaustive, so any
+            // other (non-backpressure) journal write error surfaces the same way.
+            Err(_) => return Err(Error::MessageTooLarge(size)),
+        }
+    }
 }
 
 fn store_admin<D: FixDictionary>(
@@ -633,9 +667,7 @@ fn store_admin<D: FixDictionary>(
     writer.encode_admin(admin, config);
     let frame = &writer.inner.data()[before..];
     if !frame.is_empty() {
-        journal
-            .store(seq, frame)
-            .map_err(|e| Error::Io(io::Error::other(format!("{e:?}"))))?;
+        journal_write(frame.len(), || journal.store(seq, frame))?;
     }
     Ok(())
 }
@@ -652,7 +684,7 @@ fn write_through<S: Write>(
         // The frame exceeds the pre-allocated buffer even when empty. `send_app`
         // caps app frames below this, so reaching here means the buffer is
         // undersized for the workload — a configuration error, not a fallback.
-        return Err(Error::FrameTooLarge(frame.len()));
+        return Err(Error::MessageTooLarge(frame.len()));
     }
     let spare = writer.spare();
     spare[..frame.len()].copy_from_slice(frame);

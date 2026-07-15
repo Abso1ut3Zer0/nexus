@@ -48,6 +48,7 @@ interval sends a TestRequest; no answer within another interval
 disconnects.
 
 Inbound ResendRequests are answered with a gap-fill SequenceReset and
-surfaced as `Event::ResendRange`; store-backed retransmission arrives
-with the persistence layer (#411). TCP framing and checksum validation
+surfaced as `Event::ResendRange`; store-backed retransmission replays
+the original messages from `FixJournal`, a two-journal (outbound +
+inbound) both-sides archive. TCP framing and checksum validation
 happen before `handle_message` (#410).
