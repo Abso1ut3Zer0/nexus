@@ -182,6 +182,22 @@ impl Peer {
         self.stream.flush().unwrap();
     }
 
+    /// Send a Heartbeat (35=0) with an explicit `MsgSeqNum` (not the auto-counter),
+    /// so a test can drive a stale/too-low seqnum.
+    fn send_heartbeat_seq(&mut self, seq: u32) {
+        let mut buf = [0u8; 256];
+        let mut seq_buf = [0u8; 10];
+        let seq_n = encode_fix_uint(seq, &mut seq_buf);
+        let mut fmt = FrameFormatter::new(&mut buf, b"FIX.4.4", b"0");
+        fmt.field(34, &seq_buf[..seq_n]);
+        fmt.field(49, self.sender.as_bytes());
+        fmt.field(56, self.target.as_bytes());
+        fmt.field(52, b"20260615-12:00:00.000");
+        let (start, len) = fmt.finish().unwrap();
+        self.stream.write_all(&buf[start..start + len]).unwrap();
+        self.stream.flush().unwrap();
+    }
+
     fn send_app(&mut self, extra_tag: u32, extra_val: &[u8]) {
         let seq = self.next_out;
         self.next_out += 1;
@@ -342,6 +358,44 @@ fn acceptor_receives_app_message() {
 
     handle.join().unwrap();
     let _ = dir;
+}
+
+#[test]
+fn heartbeat_stale_seqnum_disconnects() {
+    // Regression for #588: a too-low MsgSeqNum in a Heartbeat must surface as a
+    // SeqNumTooLow disconnect — not be swallowed and returned as a normal
+    // Heartbeat while the session silently dies.
+    let dir = tmp_dir("hb_stale_seq");
+    let (client_sock, server_sock) = loopback_pair();
+    server_sock
+        .set_read_timeout(Some(Duration::from_millis(200)))
+        .unwrap();
+
+    let handle = std::thread::spawn(move || {
+        let mut peer = Peer::new(client_sock, sender(), target());
+        peer.send_logon(30);
+        let mut buf = [0u8; 512];
+        let _ = peer.recv_msg(&mut buf); // engine's Logon reply
+        // Engine now expects inbound seq 2; a Heartbeat at seq 1 is too-low.
+        peer.send_heartbeat_seq(1);
+        let _ = peer.recv_msg(&mut buf); // drain the engine's Logout
+    });
+
+    let mut conn: FixConnection<TcpStream, MockDict> = FixConnection::from_parts(
+        server_sock,
+        SessionState::new(Duration::from_secs(30)),
+        session_cfg(target(), sender()),
+        journal(&dir),
+    );
+
+    let reason = loop {
+        if let Some(Message::Disconnected { reason }) = conn.recv(Instant::now()).unwrap() {
+            break reason;
+        }
+    };
+    assert_eq!(reason, DisconnectReason::SeqNumTooLow);
+
+    handle.join().unwrap();
 }
 
 #[test]

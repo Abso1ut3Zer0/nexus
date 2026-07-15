@@ -127,6 +127,28 @@ jobs:
     - name: Async FIX conformance tests (Python peer + tokio adapter)
       run: cargo test -p nexus-async-fix-engine --test async_conformance
 
+  verify-fix-harness:
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v4
+    - uses: dtolnay/rust-toolchain@1.94.0
+    - uses: actions/setup-python@v5
+      with:
+        python-version: '3.12'
+    - name: Install harness dependencies (behave + quickfix)
+      run: pip install -r tools/fix-harness/requirements.txt
+    - name: Build harness server
+      run: cargo build -p nexus-fix-harness
+    - name: Run FIX conformance harness (behave)
+      run: |
+        FIX_PORT=9878 cargo run -q -p nexus-fix-harness &
+        trap 'kill %1 2>/dev/null || true' EXIT
+        for _ in $(seq 1 80); do
+          (exec 3<>/dev/tcp/127.0.0.1/9878) 2>/dev/null && { exec 3>&-; break; }
+          sleep 0.25
+        done
+        FIX_PORT=9878 behave tools/fix-harness/features
+
   loom:
     runs-on: ubuntu-latest
     steps:
