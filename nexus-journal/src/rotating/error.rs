@@ -18,6 +18,14 @@ pub enum OpenError {
     SessionNotFound {
         session_id: u32,
     },
+    /// A manifest exists for the session but the on-disk segments are
+    /// structurally broken (e.g. an active segment file was deleted). Distinct
+    /// from [`SessionNotFound`](Self::SessionNotFound): the session is present
+    /// but unrecoverable, so it is never silently replaced with a fresh one.
+    CorruptSession {
+        session_id: u32,
+        reason: &'static str,
+    },
     SegmentTooLarge {
         size: usize,
     },
@@ -50,6 +58,9 @@ impl fmt::Display for OpenError {
             }
             Self::SessionNotFound { session_id } => {
                 write!(f, "no manifest found for session {session_id}")
+            }
+            Self::CorruptSession { session_id, reason } => {
+                write!(f, "session {session_id} is structurally corrupt: {reason}")
             }
             Self::SegmentTooLarge { size } => {
                 write!(

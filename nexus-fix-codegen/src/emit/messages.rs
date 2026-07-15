@@ -165,10 +165,13 @@ fn emit_wrap(
     );
     s.push_str(&body);
     // Verify the CheckSum iff tag 10 was *seen* (the span is no longer EMPTY),
-    // not iff it has a non-empty value. A present-but-empty CheckSum (`10=\x01`)
-    // is malformed and must be rejected; gating on `is_present()` (len > 0) would
-    // skip it and accept the message, diverging from `validate_checksum`. The
-    // empty value falls into `verify_checksum`, which rejects it.
+    // not iff it has a non-empty value. `decode` is a field extractor: it accepts
+    // a bare message body with no CheckSum (nothing to verify) but rejects a
+    // present-but-empty CheckSum (`10=\x01`), which has a non-EMPTY span and falls
+    // into `verify_checksum`. This intentionally differs from the frame-layer
+    // `validate_checksum`, which is strict about a trailing CheckSum because it
+    // gates complete frames; in production `decode` only ever sees framed messages
+    // that already carry one.
     s.push_str("        if m.checksum != nexus_fix_codec::FieldSpan::EMPTY {\n");
     s.push_str(
         "            m.header.reader.verify_checksum(m.checksum).map_err(nexus_fix_codec::DecodeError::Checksum)?;\n",

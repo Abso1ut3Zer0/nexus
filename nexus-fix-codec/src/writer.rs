@@ -633,6 +633,26 @@ mod tests {
     }
 
     #[test]
+    fn frame_formatter_checksum_is_last_field() {
+        // The CheckSum (tag 10) must always be the final field — the invariant
+        // `validate_checksum`'s positional lookup relies on.
+        let mut buf = [0u8; 1024];
+        let mut f = FrameFormatter::new(&mut buf, b"FIX.4.4", b"D");
+        f.field(49, b"SENDER");
+        f.field(56, b"TARGET");
+        f.field(34, b"1");
+        let (start, len) = f.finish().unwrap();
+        let msg = &buf[start..start + len];
+
+        // The trailing bytes are exactly `10=DDD\x01`, and our own reader agrees
+        // the final field is tag 10.
+        assert_eq!(&msg[len - 7..len - 4], b"10=");
+        assert_eq!(msg[len - 1], b'\x01');
+        assert_eq!(crate::FieldReader::new(msg, 0).last().unwrap().tag, 10);
+        assert!(crate::validate_checksum(msg).is_ok());
+    }
+
+    #[test]
     fn frame_buffer_full_no_panic() {
         // Too small even for the prefix — must error, never panic.
         let mut buf = [0u8; 8];

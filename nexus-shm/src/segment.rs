@@ -313,6 +313,23 @@ mod tests {
     }
 
     #[test]
+    fn attach_to_uninitialized_rejected() {
+        let path = temp_path("uninit");
+        let _ = std::fs::remove_file(&path);
+
+        // A correctly-sized but never-created (all-zero) mapping: `status` is
+        // still UNINIT and the header is unpopulated, so `attach` rejects it
+        // rather than trusting a zeroed control block.
+        let mf = create_file(&path, 64);
+        assert!(matches!(
+            Segment::attach(mf),
+            Err(ShmError::BadMagic { found: 0 })
+        ));
+
+        std::fs::remove_file(&path).unwrap();
+    }
+
+    #[test]
     fn rejects_zero_data_len() {
         let path = temp_path("zero");
         let _ = std::fs::remove_file(&path);

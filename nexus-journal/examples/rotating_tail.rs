@@ -44,7 +44,7 @@ fn main() {
 )]
 mod imp {
     use hdrhistogram::Histogram;
-    use nexus_journal::{ConductorBuilder, WriteError};
+    use nexus_journal::{ConductorBuilder, OpenMode, WriteError};
 
     const PAGE: u64 = 4096;
     const FRAME_HDR: usize = 8; // mirrors nexus_journal's frame header layout
@@ -130,7 +130,7 @@ mod imp {
             .session()
             .segment_size(seg)
             .pretouch(pretouch)
-            .open()
+            .open(OpenMode::OpenOrCreate)
             .expect("journal open");
 
         let payload = vec![0xABu8; payload_size];

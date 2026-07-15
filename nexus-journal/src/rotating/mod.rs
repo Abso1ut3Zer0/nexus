@@ -55,6 +55,27 @@ unsafe impl Send for Slot {}
 // Public API
 // ---------------------------------------------------------------------------
 
+/// How [`RotatingJournalBuilder::open`] resolves a session.
+///
+/// The existence/creation intent is explicit, mirroring the standard library:
+/// [`OpenExisting`](Self::OpenExisting) is `File::open` (must exist),
+/// [`OpenOrCreate`](Self::OpenOrCreate) is `OpenOptions::create` (open or make),
+/// [`Overwrite`](Self::Overwrite) is `File::create` (fresh, discarding any
+/// existing session).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum OpenMode {
+    /// Recover an existing session. [`OpenError::SessionNotFound`] if no
+    /// manifest exists for the session id, with no filesystem state created on
+    /// that path.
+    OpenExisting,
+    /// Recover the session if it exists, otherwise create it fresh. Never
+    /// discards existing data.
+    OpenOrCreate,
+    /// Create a fresh session, discarding any existing one. Destructive: all
+    /// prior replay state for this session id is lost.
+    Overwrite,
+}
+
 /// Builder for configuring and opening a [`RotatingJournal`].
 ///
 /// Obtained via [`Conductor::session()`]. The conductor tracks session
@@ -111,51 +132,36 @@ impl<'a> RotatingJournalBuilder<'a> {
         self
     }
 
-    /// Open or recover a session log.
+    /// Open a session log with the given [`OpenMode`].
     ///
-    /// If the session directory contains an existing manifest, its structural
-    /// config (segment size) takes precedence over the builder's settings.
-    /// Use [`open_strict`](Self::open_strict) to error on mismatch instead.
-    pub fn open(self) -> Result<RotatingJournal, OpenError> {
-        self.open_inner(false)
-    }
-
-    /// Open or recover a session log, erroring if the manifest's structural
-    /// config does not match the builder's settings.
-    pub fn open_strict(self) -> Result<RotatingJournal, OpenError> {
-        self.open_inner(true)
-    }
-
-    /// Open an existing session log.
-    ///
-    /// Returns [`OpenError::SessionNotFound`] when no manifest exists for
-    /// the requested `session_id`. Unlike [`open`](Self::open), this never
-    /// creates a new session — a wrong or typo'd id is an error, not a silent
-    /// fresh start that drops all replay state.
-    ///
-    /// Requires [`session_id`](Self::session_id) to have been set; without it
-    /// the call returns `SessionNotFound { session_id: 0 }`.
-    pub fn open_existing(self) -> Result<RotatingJournal, OpenError> {
-        let id = self
-            .session_id
-            .ok_or(OpenError::SessionNotFound { session_id: 0 })?;
-        let session_dir = self.conductor.dir().join(id.to_string());
-        if !manifest_path(&session_dir).exists() {
-            return Err(OpenError::SessionNotFound { session_id: id });
-        }
-        self.open_inner(false)
-    }
-
-    fn open_inner(self, strict: bool) -> Result<RotatingJournal, OpenError> {
+    /// A session id must be set via [`session_id`](Self::session_id) for
+    /// [`OpenMode::OpenExisting`]; for the create modes an id is auto-assigned
+    /// when unset. A structural config mismatch against an existing manifest is
+    /// always an error ([`OpenError::ConfigMismatch`]) — there is no lenient
+    /// mode.
+    pub fn open(self, mode: OpenMode) -> Result<RotatingJournal, OpenError> {
         let id = match self.session_id {
-            Some(id) => {
-                self.conductor.register_explicit_id(id)?;
-                id
-            }
-            None => self.conductor.next_session_id()?,
+            Some(id) => id,
+            None => match mode {
+                OpenMode::OpenExisting => {
+                    return Err(OpenError::SessionNotFound { session_id: 0 });
+                }
+                OpenMode::OpenOrCreate | OpenMode::Overwrite => self.conductor.next_session_id()?,
+            },
         };
 
         let session_dir = self.conductor.dir().join(id.to_string());
+        let manifest_exists = manifest_path(&session_dir).exists();
+
+        // OpenExisting must find an existing session — and must not create any
+        // filesystem state (counter bump, directory, lock) when it does not.
+        if mode == OpenMode::OpenExisting && !manifest_exists {
+            return Err(OpenError::SessionNotFound { session_id: id });
+        }
+
+        if self.session_id.is_some() {
+            self.conductor.register_explicit_id(id)?;
+        }
         std::fs::create_dir_all(&session_dir)?;
 
         let session_lock = FileLock::try_lock(session_dir.join(SESSION_LOCK_FILE))?
@@ -173,15 +179,16 @@ impl<'a> RotatingJournalBuilder<'a> {
             wake_thread: self.conductor.wake_thread(),
             session_lock,
         };
-
         let archive_dir = self
             .conductor
             .archive()
             .then(|| session_dir.join("archive"));
 
-        let mpath = manifest_path(&session_dir);
-        if mpath.exists() {
-            RotatingJournal::recover(&session_dir, size, hints, strict, id, res, archive_dir)
+        // Overwrite always creates fresh (discarding any existing session); the
+        // others recover an existing manifest and only create when absent.
+        let recover = manifest_exists && mode != OpenMode::Overwrite;
+        if recover {
+            RotatingJournal::recover(&session_dir, hints, id, res, archive_dir)
         } else {
             RotatingJournal::create_fresh(
                 &session_dir,
@@ -513,9 +520,7 @@ impl RotatingJournal {
 
     fn recover(
         dir: &Path,
-        requested_size: usize,
         hints: MapHints,
-        strict: bool,
         expected_session_id: u32,
         res: SessionResources,
         archive_dir: Option<PathBuf>,
@@ -524,6 +529,8 @@ impl RotatingJournal {
         let manifest_size = manifest.segment_size() as usize;
         let session_id = manifest.session_id();
 
+        // A manifest whose stored id differs from the one requested means the
+        // session directory was renamed or corrupted — never silently adopt it.
         if session_id != expected_session_id {
             return Err(OpenError::ConfigMismatch {
                 field: "session_id",
@@ -532,14 +539,9 @@ impl RotatingJournal {
             });
         }
 
-        if strict && manifest_size != requested_size {
-            return Err(OpenError::ConfigMismatch {
-                field: "segment_size",
-                expected: requested_size as u64,
-                found: manifest_size as u64,
-            });
-        }
-
+        // The stored segment size is authoritative on recovery — a journal
+        // cannot be remapped to a different size. The builder's `segment_size`
+        // only applies when creating a fresh session.
         let size = manifest_size;
         let epoch = manifest.epoch();
 
@@ -553,6 +555,19 @@ impl RotatingJournal {
                 (c, p, s)
             }
         };
+
+        // The active and previous segments hold live journal data and are never
+        // removed during normal operation; a missing one means the session was
+        // tampered with. (The standby may be transiently absent mid-clean in
+        // archive mode, and recover rebuilds it below — so it is not checked.)
+        for slot in [current, prev] {
+            if !seg_path(dir, slot as u8).exists() {
+                return Err(OpenError::CorruptSession {
+                    session_id: expected_session_id,
+                    reason: "active or previous segment file missing",
+                });
+            }
+        }
 
         let total = NonZeroUsize::new(size).expect("segment size is non-zero");
 

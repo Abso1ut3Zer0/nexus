@@ -1,7 +1,9 @@
 use std::path::Path;
 
 use nexus_fix_codec::{find_tag, parse_fix_seqnum};
-use nexus_journal::{Conductor, Frame, LogOffset, OpenError, RotatingJournal, WriteError};
+use nexus_journal::{
+    Conductor, Frame, LogOffset, OpenError, OpenMode, RotatingJournal, WriteError,
+};
 
 const INBOUND_MARKER: &[u8] = b"NI=";
 
@@ -115,7 +117,10 @@ impl FixJournal {
     pub fn open(dir: impl AsRef<Path>, session_id: u32, window: usize) -> Result<Self, OpenError> {
         assert!(window.is_power_of_two());
         let mut conductor = Conductor::open(dir)?;
-        let journal: RotatingJournal = conductor.session().session_id(session_id).open()?;
+        let journal: RotatingJournal = conductor
+            .session()
+            .session_id(session_id)
+            .open(OpenMode::OpenOrCreate)?;
         let mut this = Self {
             journal,
             _conductor: conductor,
@@ -140,9 +145,16 @@ impl FixJournal {
         window: usize,
     ) -> Result<Self, OpenError> {
         assert!(window.is_power_of_two());
+        // No filesystem side-effects when the journal root does not exist: a
+        // typo'd path must not materialize an empty conductor directory.
+        if !dir.as_ref().exists() {
+            return Err(OpenError::SessionNotFound { session_id });
+        }
         let mut conductor = Conductor::open(dir)?;
-        let journal: RotatingJournal =
-            conductor.session().session_id(session_id).open_existing()?;
+        let journal: RotatingJournal = conductor
+            .session()
+            .session_id(session_id)
+            .open(OpenMode::OpenExisting)?;
         let mut this = Self {
             journal,
             _conductor: conductor,
