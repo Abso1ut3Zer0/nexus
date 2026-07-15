@@ -1,5 +1,5 @@
 use hdrhistogram::Histogram;
-use nexus_journal::Conductor;
+use nexus_journal::{Conductor, OpenMode};
 use std::time::{Duration, Instant};
 
 fn main() {
@@ -17,7 +17,7 @@ fn main() {
         .session()
         .segment_size(seg_size)
         .pretouch(true)
-        .open()
+        .open(OpenMode::OpenOrCreate)
         .expect("journal open");
 
     let payload = [0xABu8; 64];

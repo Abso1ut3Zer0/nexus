@@ -1,3 +1,23 @@
+//! Dictionary-driven code generator for `nexus-fix-codec`.
+//!
+//! Reads a FIX XML dictionary and emits typed, zero-copy decode/encode Rust for
+//! its messages, fields, and repeating groups — named message types, named field
+//! accessors, and typed field enums — built on the hand-written codec primitives
+//! (`FieldReader`, `FrameFormatter`, ...).
+//!
+//! Intended to run from a `build.rs`:
+//!
+//! ```no_run
+//! nexus_fix_codegen::generate()
+//!     .dictionary("dict/fix44.xml")
+//!     .out_dir(std::env::var("OUT_DIR").unwrap())
+//!     .run()
+//!     .expect("FIX codegen failed");
+//! ```
+//!
+//! Multiple dictionaries generate into per-dictionary subdirectories. Errors
+//! surface as [`CodegenError`] (I/O, [`ParseError`], or [`EmitError`]).
+
 mod dict;
 mod emit;
 

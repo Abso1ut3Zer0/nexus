@@ -38,6 +38,19 @@ impl From<io::Error> for Error {
     }
 }
 
+/// Bytes reserved per app message for a later resend reframe.
+///
+/// A reframe adds `PossDupFlag` (`43=Y`), `OrigSendingTime` (`122=<UTC
+/// timestamp>`), and a little `BodyLength` digit growth. `send_app` keeps app
+/// frames this far below the writer capacity so a stored message always
+/// reframes back into the pre-allocated buffer — no runtime allocation on the
+/// resend path.
+///
+/// Exposed so callers sizing a writer via `writer_capacity(...)` know the
+/// per-message reserve: the largest app frame they can send is
+/// `writer_capacity - REFRAME_HEADROOM`.
+pub const REFRAME_HEADROOM: usize = 64;
+
 pub struct FixConnection<S, D: FixDictionary> {
     stream: S,
     reader: MessageReader<D>,
@@ -233,6 +246,12 @@ impl<S: Read + Write, D: FixDictionary> FixConnection<S, D> {
     }
 
     pub fn send_app(&mut self, seq: u32, frame: &[u8]) -> Result<(), Error> {
+        // Every outbound frame must fit the pre-allocated writer, with headroom
+        // for a later resend reframe. An application that sends larger messages
+        // sizes the buffer up front via `writer_capacity(...)`.
+        if frame.len() > self.writer.capacity().saturating_sub(REFRAME_HEADROOM) {
+            return Err(Error::FrameTooLarge(frame.len()));
+        }
         self.journal
             .store(seq, frame)
             .map_err(|e| Error::Io(io::Error::other(format!("{e:?}"))))?;
@@ -573,32 +592,22 @@ fn do_resend<S: Write, D: FixDictionary>(
             ReplayItem::App(orig) => reframe_app(&mut writer.inner, orig, &ts, D::BEGIN_STRING),
         };
         if ok.is_err() {
+            // Flush what is buffered, then retry into the now-empty buffer.
             writer.flush_to(stream).map_err(Error::Io)?;
-            match item {
-                ReplayItem::GapFill { seq, new_seq } => {
-                    encode_gap_fill(
-                        &mut writer.inner,
-                        D::BEGIN_STRING,
-                        config,
-                        &ts,
-                        seq,
-                        new_seq,
-                    )
-                    .map_err(|()| {
-                        Error::FrameTooLarge(writer.inner.remaining().saturating_add(1))
-                    })?;
-                }
-                ReplayItem::App(orig) => {
-                    if reframe_app(&mut writer.inner, orig, &ts, D::BEGIN_STRING).is_err() {
-                        let mut tmp = vec![0u8; orig.len() + 512];
-                        let (start, len) = reframe_app_into(&mut tmp, orig, &ts, D::BEGIN_STRING)
-                            .ok_or(Error::FrameTooLarge(orig.len()))?;
-                        tmp.copy_within(start..start + len, 0);
-                        tmp.truncate(len);
-                        write_through(stream, &mut writer.inner, &tmp)?;
-                    }
-                }
-            }
+            let retry = match &item {
+                ReplayItem::GapFill { seq, new_seq } => encode_gap_fill(
+                    &mut writer.inner,
+                    D::BEGIN_STRING,
+                    config,
+                    &ts,
+                    *seq,
+                    *new_seq,
+                ),
+                ReplayItem::App(orig) => reframe_app(&mut writer.inner, orig, &ts, D::BEGIN_STRING),
+            };
+            // `send_app`'s headroom guarantees a reframe fits an empty buffer;
+            // a failure here means the writer was sized too small.
+            retry.map_err(|()| Error::FrameTooLarge(writer.inner.remaining().saturating_add(1)))?;
         }
     }
     writer.flush_to(stream).map_err(Error::Io)
@@ -639,22 +648,15 @@ fn write_through<S: Write>(
     if writer.remaining() < frame.len() {
         flush_to(stream, writer)?;
     }
-    if writer.remaining() >= frame.len() {
-        let spare = writer.spare();
-        spare[..frame.len()].copy_from_slice(frame);
-        writer.commit(0, frame.len());
-    } else {
-        let mut off = 0;
-        while off < frame.len() {
-            let n = stream.write(&frame[off..]).map_err(Error::Io)?;
-            if n == 0 {
-                return Err(Error::Io(io::Error::other("write returned 0")));
-            }
-            off += n;
-        }
-        stream.flush().map_err(Error::Io)?;
-        return Ok(());
+    if writer.remaining() < frame.len() {
+        // The frame exceeds the pre-allocated buffer even when empty. `send_app`
+        // caps app frames below this, so reaching here means the buffer is
+        // undersized for the workload — a configuration error, not a fallback.
+        return Err(Error::FrameTooLarge(frame.len()));
     }
+    let spare = writer.spare();
+    spare[..frame.len()].copy_from_slice(frame);
+    writer.commit(0, frame.len());
     flush_to(stream, writer)
 }
 
@@ -750,4 +752,39 @@ fn is_timeout(e: &io::Error) -> bool {
         e.kind(),
         io::ErrorKind::TimedOut | io::ErrorKind::WouldBlock
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use nexus_fix_codec::FrameFormatter;
+
+    #[test]
+    fn reframe_stays_within_headroom() {
+        // A resend reframe adds PossDupFlag (43=Y), OrigSendingTime (122=...),
+        // and a little BodyLength growth. It must never grow a message by more
+        // than REFRAME_HEADROOM, so a stored app frame always reframes back into
+        // the pre-allocated writer buffer without a runtime allocation.
+        let mut orig_buf = [0u8; 512];
+        let (s, l) = {
+            let mut fmt = FrameFormatter::new(&mut orig_buf, b"FIX.4.4", b"D");
+            fmt.field(34, b"5");
+            fmt.field(49, b"SENDER");
+            fmt.field(56, b"TARGET");
+            fmt.field(52, b"20260101-00:00:00.000");
+            fmt.field(11, b"ORDER-1");
+            fmt.finish().unwrap()
+        };
+        let orig = &orig_buf[s..s + l];
+
+        let ts = b"20260102-12:34:56.789";
+        let mut out = [0u8; 1024];
+        let (_start, len) = super::reframe_app_into(&mut out, orig, ts, b"FIX.4.4").unwrap();
+
+        assert!(
+            len <= orig.len() + super::REFRAME_HEADROOM,
+            "reframe grew message by {} bytes, exceeding REFRAME_HEADROOM ({})",
+            len - orig.len(),
+            super::REFRAME_HEADROOM
+        );
+    }
 }

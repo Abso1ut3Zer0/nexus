@@ -1,7 +1,7 @@
 use std::collections::HashSet;
 use std::fmt::Write;
 
-use super::{HEADER, RField, emit_value_accessor, snake};
+use super::{EmitError, HEADER, RField, emit_value_accessor, snake};
 
 /// Tag numbers that are always scanned by the header decoder regardless of
 /// what the dictionary's `<header>` section declares.  These are protocol-
@@ -17,7 +17,7 @@ const SESSION_TAGS: &[u32] = &[
     52, // SendingTime
 ];
 
-pub fn emit(header_fields: &[RField]) -> String {
+pub fn emit(header_fields: &[RField]) -> Result<String, EmitError> {
     let mut s = String::new();
     s.push_str(HEADER);
 
@@ -45,11 +45,11 @@ pub fn emit(header_fields: &[RField]) -> String {
 
     emit_struct(&mut s, &ordered);
     emit_decode(&mut s, &ordered);
-    emit_fix_header_impl(&mut s, &ordered);
+    emit_fix_header_impl(&mut s, &ordered)?;
     emit_msg_type_accessor(&mut s);
     emit_accessors(&mut s, &ordered);
 
-    s
+    Ok(s)
 }
 
 /// Synthesise RField entries for session tags that the dictionary didn't declare.
@@ -136,7 +136,7 @@ fn emit_decode(s: &mut String, fields: &[&RField]) {
     s.push_str("}\n\n");
 }
 
-fn emit_fix_header_impl(s: &mut String, fields: &[&RField]) {
+fn emit_fix_header_impl(s: &mut String, fields: &[&RField]) -> Result<(), EmitError> {
     s.push_str("impl<'buf> nexus_fix_codec::FixHeader<'buf> for HeaderDecoder<'buf> {\n");
     s.push_str("    fn decode(buf: &'buf [u8]) -> Self {\n");
     s.push_str("        Self::decode(buf)\n");
@@ -152,10 +152,10 @@ fn emit_fix_header_impl(s: &mut String, fields: &[&RField]) {
     ];
 
     for &(method, tag, ty) in trait_methods {
-        let field_name = fields.iter().find(|f| f.number == tag).map_or_else(
-            || panic!("session tag {tag} missing from header fields"),
-            |f| snake(&f.name),
-        );
+        let field_name = match fields.iter().find(|f| f.number == tag) {
+            Some(f) => snake(&f.name),
+            None => return Err(EmitError::MissingSessionTag(tag)),
+        };
         let _ = write!(
             s,
             "    fn {method}(&self) -> Option<nexus_fix_codec::FieldView<'buf, {ty}>> {{\n        \
@@ -164,6 +164,7 @@ fn emit_fix_header_impl(s: &mut String, fields: &[&RField]) {
         );
     }
     s.push_str("}\n\n");
+    Ok(())
 }
 
 fn emit_msg_type_accessor(s: &mut String) {

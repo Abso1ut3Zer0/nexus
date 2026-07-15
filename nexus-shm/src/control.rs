@@ -60,6 +60,16 @@ impl ControlBlockInner {
     }
 
     pub(crate) fn validate(&self) -> Result<(), ShmError> {
+        // Acquire the creator's `status` publish before reading the non-atomic
+        // header. `write_header` writes magic/layout/data_len and *then* stores
+        // `status = ALIVE` with Release; this paired Acquire load is what makes
+        // those header reads here (and `data_len()` back in `attach`) observe the
+        // creator's writes on weakly-ordered architectures (ARM/POWER). Both
+        // ALIVE and DEAD were published this way, so either is safe to read; a
+        // still-`UNINIT` (0) status means the segment was never published.
+        if self.status.load(Ordering::Acquire) == 0 {
+            return Err(ShmError::BadMagic { found: self.magic });
+        }
         if self.magic != MAGIC {
             return Err(ShmError::BadMagic { found: self.magic });
         }

@@ -17,8 +17,17 @@ fn wrlck() -> libc::flock {
 
 /// Acquire an exclusive OFD lock on `file`, blocking until available.
 pub(super) fn lock_exclusive_blocking(file: &File) -> Result<(), std::io::Error> {
-    fcntl(file.as_fd(), FcntlArg::F_OFD_SETLKW(&wrlck())).map_err(std::io::Error::from)?;
-    Ok(())
+    // `F_OFD_SETLKW` blocks, and a signal can interrupt the wait with `EINTR`.
+    // "Blocking" must mean "blocks until acquired," so retry on interrupt rather
+    // than surface it as a failure.
+    loop {
+        match fcntl(file.as_fd(), FcntlArg::F_OFD_SETLKW(&wrlck())) {
+            Ok(_) => return Ok(()),
+            // Interrupted before the lock was acquired: fall through and retry.
+            Err(Errno::EINTR) => {}
+            Err(e) => return Err(std::io::Error::from(e)),
+        }
+    }
 }
 
 /// Try to acquire an exclusive OFD lock without blocking.

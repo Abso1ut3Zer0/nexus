@@ -77,6 +77,11 @@ impl Out {
         admin_len: 0,
     };
 
+    /// Push an admin message. Capacity is two — the most any handler emits (a
+    /// reply plus a `Logout`/`ResendRequest` on the too-low-seqnum and gap
+    /// paths). The `debug_assert` catches any future handler that exceeds it in
+    /// tests; in release a third push is dropped rather than panicking on the hot
+    /// path, so the two-message invariant must be upheld by the handlers.
     fn push_admin(&mut self, msg: AdminMsg) {
         debug_assert!((self.admin_len as usize) < 2, "Out admin overflow");
         if (self.admin_len as usize) < 2 {

@@ -24,7 +24,12 @@ const MIN_SEGMENT: usize = 64;
 /// Configuration for opening an append-only journal.
 #[derive(Clone, Copy)]
 pub struct AppendOnlyJournalConfig {
+    /// Size in bytes of each numbered segment file; a new segment is rolled when
+    /// the current one fills. Rounded up to the page size, with a small minimum
+    /// floor. Default: 64 MiB.
     pub segment_size: usize,
+    /// Memory-mapping hints (page pretouch, huge pages) applied to each segment.
+    /// Default: platform default (no pretouch, no huge pages).
     pub hints: MapHints,
 }
 

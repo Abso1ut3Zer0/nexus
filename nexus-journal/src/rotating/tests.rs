@@ -2,7 +2,7 @@ use std::path::{Path, PathBuf};
 
 use super::conductor::SWAP_CLEAN;
 use super::frame::footprint;
-use super::{Conductor, ConductorBuilder, OpenError, RotatingJournal};
+use super::{Conductor, ConductorBuilder, OpenError, OpenMode, RotatingJournal};
 
 struct TempDir(PathBuf);
 
@@ -25,7 +25,11 @@ impl Drop for TempDir {
 }
 
 fn open(conductor: &mut Conductor, size: usize) -> RotatingJournal {
-    conductor.session().segment_size(size).open().unwrap()
+    conductor
+        .session()
+        .segment_size(size)
+        .open(OpenMode::OpenOrCreate)
+        .unwrap()
 }
 
 fn open_id(conductor: &mut Conductor, size: usize, id: u32) -> RotatingJournal {
@@ -33,7 +37,7 @@ fn open_id(conductor: &mut Conductor, size: usize, id: u32) -> RotatingJournal {
         .session()
         .segment_size(size)
         .session_id(id)
-        .open()
+        .open(OpenMode::OpenOrCreate)
         .unwrap()
 }
 
@@ -215,7 +219,7 @@ fn session_name_roundtrip() {
         .segment_size(1 << 16)
         .session_id(1)
         .name("fix-binance-prod")
-        .open()
+        .open(OpenMode::OpenOrCreate)
         .unwrap();
     assert_eq!(log.session_name(), "fix-binance-prod");
 }
@@ -239,7 +243,7 @@ fn session_name_survives_recovery() {
             .segment_size(1 << 16)
             .session_id(1)
             .name("fix-session-alpha")
-            .open()
+            .open(OpenMode::OpenOrCreate)
             .unwrap();
         log.append(b"data").unwrap();
     }
@@ -602,34 +606,23 @@ fn recover_continues_appending_after_rotation() {
 // ---- builder / conductor options ----
 
 #[test]
-fn open_strict_rejects_mismatch() {
-    let d = TempDir::new("strict");
-
-    {
-        let mut c = Conductor::open(d.path()).unwrap();
-        let _log = open_id(&mut c, 1 << 16, 1);
-    }
-
-    let mut c = Conductor::open(d.path()).unwrap();
-    let result = c
-        .session()
-        .segment_size(1 << 20)
-        .session_id(1)
-        .open_strict();
-    assert!(matches!(result, Err(OpenError::ConfigMismatch { .. })));
-}
-
-#[test]
-fn open_non_strict_uses_manifest_config() {
-    let d = TempDir::new("nonstrict");
+fn reopen_uses_stored_segment_size() {
+    let d = TempDir::new("reopen-size");
 
     {
         let mut c = Conductor::open(d.path()).unwrap();
         let _log = open_id(&mut c, 64, 1);
     }
 
+    // The stored segment size is authoritative on recovery: reopening with a
+    // different builder `segment_size` uses the stored value without error.
     let mut c = Conductor::open(d.path()).unwrap();
-    let mut log = c.session().segment_size(1024).session_id(1).open().unwrap();
+    let mut log = c
+        .session()
+        .segment_size(1024)
+        .session_id(1)
+        .open(OpenMode::OpenOrCreate)
+        .unwrap();
     assert_eq!(log.segment_size(), 64);
     log.append(&[0u8; 8]).unwrap();
 }
@@ -638,7 +631,11 @@ fn open_non_strict_uses_manifest_config() {
 fn builder_creates_fresh() {
     let d = TempDir::new("builder-fresh");
     let mut c = Conductor::open(d.path()).unwrap();
-    let mut log = c.session().segment_size(128).open().unwrap();
+    let mut log = c
+        .session()
+        .segment_size(128)
+        .open(OpenMode::OpenOrCreate)
+        .unwrap();
     let off = log.append(b"test").unwrap();
     assert_eq!(log.read(off).unwrap().payload(), b"test");
 }
@@ -686,7 +683,11 @@ fn conductor_session_in_use_rejected() {
     let mut c = Conductor::open(d.path()).unwrap();
     let _log = open_id(&mut c, 1 << 16, 5);
 
-    let result = c.session().segment_size(1 << 16).session_id(5).open();
+    let result = c
+        .session()
+        .segment_size(1 << 16)
+        .session_id(5)
+        .open(OpenMode::OpenOrCreate);
     assert!(matches!(
         result,
         Err(OpenError::SessionInUse { session_id: 5 })
@@ -721,7 +722,11 @@ fn session_lock_cross_conductor() {
 
     // Conductor 2 (simulating another process) tries the same session
     let mut c2 = Conductor::open(d.path()).unwrap();
-    let result = c2.session().segment_size(1 << 16).session_id(5).open();
+    let result = c2
+        .session()
+        .segment_size(1 << 16)
+        .session_id(5)
+        .open(OpenMode::OpenOrCreate);
     assert!(matches!(
         result,
         Err(OpenError::SessionInUse { session_id: 5 })
@@ -733,11 +738,19 @@ fn conductor_auto_assigns_session_id() {
     let d = TempDir::new("auto-id");
     let mut c = Conductor::open(d.path()).unwrap();
 
-    let log1 = c.session().segment_size(1 << 16).open().unwrap();
+    let log1 = c
+        .session()
+        .segment_size(1 << 16)
+        .open(OpenMode::OpenOrCreate)
+        .unwrap();
     let id1 = log1.session_id();
     assert!(id1 > 0);
 
-    let log2 = c.session().segment_size(1 << 16).open().unwrap();
+    let log2 = c
+        .session()
+        .segment_size(1 << 16)
+        .open(OpenMode::OpenOrCreate)
+        .unwrap();
     let id2 = log2.session_id();
     assert_ne!(id1, id2);
 }
@@ -767,7 +780,11 @@ fn conductor_auto_id_skips_existing_on_disk() {
     }
 
     let mut c = Conductor::open(d.path()).unwrap();
-    let log = c.session().segment_size(1 << 16).open().unwrap();
+    let log = c
+        .session()
+        .segment_size(1 << 16)
+        .open(OpenMode::OpenOrCreate)
+        .unwrap();
     assert!(log.session_id() > 5);
 }
 
@@ -780,8 +797,16 @@ fn two_conductors_no_id_collision() {
     let mut c1 = Conductor::open(d.path()).unwrap();
     let mut c2 = Conductor::open(d.path()).unwrap();
 
-    let log1 = c1.session().segment_size(1 << 16).open().unwrap();
-    let log2 = c2.session().segment_size(1 << 16).open().unwrap();
+    let log1 = c1
+        .session()
+        .segment_size(1 << 16)
+        .open(OpenMode::OpenOrCreate)
+        .unwrap();
+    let log2 = c2
+        .session()
+        .segment_size(1 << 16)
+        .open(OpenMode::OpenOrCreate)
+        .unwrap();
 
     assert_ne!(log1.session_id(), log2.session_id());
 }
@@ -796,7 +821,11 @@ fn two_conductors_explicit_then_auto() {
 
     // Process 2 auto-assigns — must be > 10
     let mut c2 = Conductor::open(d.path()).unwrap();
-    let log2 = c2.session().segment_size(1 << 16).open().unwrap();
+    let log2 = c2
+        .session()
+        .segment_size(1 << 16)
+        .open(OpenMode::OpenOrCreate)
+        .unwrap();
     assert!(log2.session_id() > 10);
 }
 
@@ -865,7 +894,7 @@ fn builder_pretouch_option() {
         .segment_size(1 << 16)
         .session_id(1)
         .pretouch(true)
-        .open()
+        .open(OpenMode::OpenOrCreate)
         .unwrap();
     let off = log.append(b"pretouched").unwrap();
     assert_eq!(log.read(off).unwrap().payload(), b"pretouched");
@@ -1018,7 +1047,11 @@ fn stress_concurrent_id_assignment() {
                 let mut c = Conductor::open(&p).unwrap();
                 let mut ids = Vec::new();
                 for _ in 0..5 {
-                    let log = c.session().segment_size(1 << 16).open().unwrap();
+                    let log = c
+                        .session()
+                        .segment_size(1 << 16)
+                        .open(OpenMode::OpenOrCreate)
+                        .unwrap();
                     ids.push(log.session_id());
                 }
                 ids
@@ -1206,7 +1239,11 @@ fn session_id_mismatch_on_corrupted_directory() {
 
     // Now try to open session 20 — the manifest inside says session_id=10
     let mut c = Conductor::open(d.path()).unwrap();
-    let result = c.session().segment_size(1 << 16).session_id(20).open();
+    let result = c
+        .session()
+        .segment_size(1 << 16)
+        .session_id(20)
+        .open(OpenMode::OpenOrCreate);
     assert!(matches!(
         result,
         Err(OpenError::ConfigMismatch {
@@ -1220,7 +1257,7 @@ fn session_id_mismatch_on_corrupted_directory() {
 fn open_existing_missing_session_returns_not_found() {
     let d = TempDir::new("oe-missing");
     let mut c = Conductor::open(d.path()).unwrap();
-    let result = c.session().session_id(99).open_existing();
+    let result = c.session().session_id(99).open(OpenMode::OpenExisting);
     assert!(
         matches!(result, Err(OpenError::SessionNotFound { session_id: 99 })),
         "expected SessionNotFound(99)"
@@ -1236,7 +1273,7 @@ fn open_existing_wrong_id_returns_not_found() {
     drop(_log);
     // Reopen conductor; session 2 doesn't exist
     let mut c2 = Conductor::open(d.path()).unwrap();
-    let result = c2.session().session_id(2).open_existing();
+    let result = c2.session().session_id(2).open(OpenMode::OpenExisting);
     assert!(
         matches!(result, Err(OpenError::SessionNotFound { session_id: 2 })),
         "expected SessionNotFound(2)"
@@ -1252,7 +1289,105 @@ fn open_existing_recovers_existing_session() {
         log.append(b"hello").unwrap();
     }
     let mut c2 = Conductor::open(d.path()).unwrap();
-    let log = c2.session().session_id(5).open_existing().unwrap();
+    let log = c2
+        .session()
+        .session_id(5)
+        .open(OpenMode::OpenExisting)
+        .unwrap();
     let mut pos = log.read_start();
     assert_eq!(log.read_next(&mut pos).unwrap().payload(), b"hello");
+}
+
+#[test]
+fn open_existing_leaves_no_fs_state_on_not_found() {
+    let d = TempDir::new("oe-no-side-effect");
+    let mut c = Conductor::open(d.path()).unwrap();
+    let result = c.session().session_id(99).open(OpenMode::OpenExisting);
+    assert!(matches!(
+        result,
+        Err(OpenError::SessionNotFound { session_id: 99 })
+    ));
+    // The not-found path must not have created the session directory.
+    assert!(!d.path().join("99").exists());
+}
+
+#[test]
+fn corrupt_session_missing_active_segment() {
+    let d = TempDir::new("corrupt-seg");
+    {
+        let mut c = Conductor::open(d.path()).unwrap();
+        let mut log = open_id(&mut c, 1 << 16, 5);
+        log.append(b"data").unwrap();
+    }
+    // Delete the active segment file — structural corruption, not a fresh start.
+    std::fs::remove_file(d.path().join("5").join("seg0.dat")).unwrap();
+
+    let mut c = Conductor::open(d.path()).unwrap();
+    let result = c.session().session_id(5).open(OpenMode::OpenExisting);
+    assert!(
+        matches!(result, Err(OpenError::CorruptSession { session_id: 5, .. })),
+        "expected CorruptSession"
+    );
+}
+
+#[test]
+fn overwrite_discards_existing_session() {
+    let d = TempDir::new("overwrite");
+    {
+        let mut c = Conductor::open(d.path()).unwrap();
+        let mut log = open_id(&mut c, 1 << 16, 5);
+        log.append(b"stale").unwrap();
+    }
+    // Overwrite creates a fresh session, discarding the prior data.
+    let mut c = Conductor::open(d.path()).unwrap();
+    let log = c
+        .session()
+        .segment_size(1 << 16)
+        .session_id(5)
+        .open(OpenMode::Overwrite)
+        .unwrap();
+    let mut pos = log.read_start();
+    assert!(log.read_next(&mut pos).is_none());
+}
+
+#[test]
+fn overwrite_shrinks_reused_segment_files() {
+    let d = TempDir::new("overwrite_shrink");
+    let big = 1 << 20; // 1 MiB
+    let small = 1 << 16; // 64 KiB
+    let session_dir = d.path().join("5");
+
+    // A large session leaves 1 MiB segment files on disk.
+    {
+        let mut c = Conductor::open(d.path()).unwrap();
+        let _ = open_id(&mut c, big, 5);
+    }
+    assert_eq!(
+        std::fs::metadata(super::seg_path(&session_dir, 0))
+            .unwrap()
+            .len(),
+        big as u64,
+    );
+
+    // Overwriting with a smaller segment size must rebuild the files at the new
+    // size. `create` only grows a file, so a stale 1 MiB segment would otherwise
+    // be remapped in full on the next recover.
+    {
+        let mut c = Conductor::open(d.path()).unwrap();
+        let _ = c
+            .session()
+            .segment_size(small)
+            .session_id(5)
+            .open(OpenMode::Overwrite)
+            .unwrap();
+    }
+    for i in 0u8..3 {
+        let len = std::fs::metadata(super::seg_path(&session_dir, i))
+            .unwrap()
+            .len();
+        assert_eq!(
+            len, small as u64,
+            "seg{i} not resized to the new segment_size"
+        );
+    }
 }

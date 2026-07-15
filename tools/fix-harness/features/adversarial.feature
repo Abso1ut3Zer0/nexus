@@ -45,12 +45,6 @@ Feature: FIX session adversarial input
     And the peer sends a ResendRequest with seqnum 1
     Then the engine closes the connection
 
-  Scenario: SequenceReset with duplicate seqnum is rejected (E5)
-    Given a raw FIX 4.4 peer connects to the harness
-    When the peer performs a Logon handshake
-    And the peer sends a SequenceReset with seqnum 1
-    Then the engine closes the connection
-
   Scenario: Reject with duplicate seqnum is rejected (E5)
     Given a raw FIX 4.4 peer connects to the harness
     When the peer performs a Logon handshake

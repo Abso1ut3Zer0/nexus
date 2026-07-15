@@ -15,6 +15,7 @@ pub enum EmitError {
     UnknownComponent(String),
     EmptyGroup(String),
     DataInGroup(String),
+    MissingSessionTag(u32),
 }
 
 impl fmt::Display for EmitError {
@@ -30,6 +31,9 @@ impl fmt::Display for EmitError {
                     f,
                     "group '{n}' contains a DATA field; not supported in this version"
                 )
+            }
+            Self::MissingSessionTag(tag) => {
+                write!(f, "session tag {tag} missing from header fields")
             }
         }
     }
@@ -102,7 +106,7 @@ pub fn generate(dict: &Dictionary) -> Result<Vec<GeneratedFile>, EmitError> {
         },
         GeneratedFile {
             name: "header.rs".to_string(),
-            source: header::emit(&header_fields),
+            source: header::emit(&header_fields)?,
         },
         GeneratedFile {
             name: "messages.rs".to_string(),

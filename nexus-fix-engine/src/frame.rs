@@ -518,6 +518,12 @@ impl FrameWriter {
     pub fn remaining(&self) -> usize {
         self.0.tailroom()
     }
+
+    /// Total buffer capacity in bytes (fixed at construction).
+    #[inline]
+    pub fn capacity(&self) -> usize {
+        self.0.capacity()
+    }
 }
 
 impl FrameWriterBuilder {

@@ -13,6 +13,6 @@ pub use append::{
 };
 
 pub use rotating::{
-    Conductor, ConductorBuilder, Frame, LogOffset, OpenError, RotatingJournal,
+    Conductor, ConductorBuilder, Frame, LogOffset, OpenError, OpenMode, RotatingJournal,
     RotatingJournalBuilder, WriteError,
 };

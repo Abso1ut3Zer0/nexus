@@ -51,18 +51,23 @@ impl From<ChecksumError> for DecodeError {
 
 /// Checksum validation failure.
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
-pub struct ChecksumError {
-    pub expected: u8,
-    pub computed: u8,
+pub enum ChecksumError {
+    /// A CheckSum (tag 10) is present but its value does not match the checksum
+    /// computed over the message body. A present-but-malformed CheckSum (not
+    /// exactly three digits) also reports here, with `expected` as a placeholder.
+    Mismatch { expected: u8, computed: u8 },
+    /// No CheckSum (tag 10) field is present where one is required.
+    Missing,
 }
 
 impl fmt::Display for ChecksumError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(
-            f,
-            "expected {:03}, computed {:03}",
-            self.expected, self.computed
-        )
+        match self {
+            Self::Mismatch { expected, computed } => {
+                write!(f, "expected {expected:03}, computed {computed:03}")
+            }
+            Self::Missing => f.write_str("CheckSum (tag 10) missing"),
+        }
     }
 }
 
@@ -151,7 +156,7 @@ mod tests {
 
     #[test]
     fn checksum_error_display() {
-        let e = ChecksumError {
+        let e = ChecksumError::Mismatch {
             expected: 178,
             computed: 42,
         };
@@ -160,7 +165,7 @@ mod tests {
 
     #[test]
     fn decode_error_from_checksum() {
-        let ce = ChecksumError {
+        let ce = ChecksumError::Mismatch {
             expected: 1,
             computed: 2,
         };
@@ -184,7 +189,7 @@ mod tests {
             DecodeError::MissingBodyLength.to_string(),
             "missing or misplaced BodyLength (tag 9)"
         );
-        let ce = ChecksumError {
+        let ce = ChecksumError::Mismatch {
             expected: 178,
             computed: 42,
         };
@@ -206,7 +211,7 @@ mod tests {
         assert!(DecodeError::MissingSeparator.source().is_none());
         assert!(DecodeError::InvalidTag.source().is_none());
 
-        let ce = ChecksumError {
+        let ce = ChecksumError::Mismatch {
             expected: 1,
             computed: 2,
         };

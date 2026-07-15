@@ -435,6 +435,10 @@ fn alpha_checksum_invalid() {
 
 #[test]
 fn alpha_checksum_absent_is_ok() {
+    // `decode` is a field extractor: a bare message body with no CheckSum(10) has
+    // nothing to verify and is accepted. (The frame layer's `validate_checksum`
+    // is the strict gate for complete frames; see the codegen note in
+    // `emit/messages.rs`.)
     let msg = b"8=FIX.4.4\x0135=0\x01112=HB\x01";
     let m = venue_alpha::messages::Heartbeat::decode(msg).unwrap();
     assert_eq!(m.test_req_id().unwrap().as_bytes(), &b"HB"[..]);

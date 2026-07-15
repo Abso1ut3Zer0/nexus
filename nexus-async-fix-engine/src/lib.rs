@@ -15,7 +15,7 @@ use nexus_fix_codec::{
 };
 use nexus_fix_engine::{
     AdminMsg, CompId, DisconnectReason, Event, FixJournal, FrameError, FrameReader, FrameWriter,
-    Out, ReplayItem, SessionConfig, SessionError, SessionState, State,
+    Out, REFRAME_HEADROOM, ReplayItem, SessionConfig, SessionError, SessionState, State,
 };
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use tokio::time::timeout_at;
@@ -182,6 +182,12 @@ impl<S: AsyncRead + AsyncWrite + Unpin> AsyncFixConnection<S> {
 
     /// Stores the frame in the journal and writes it to the stream.
     pub async fn send_app(&mut self, seq: u32, frame: &[u8]) -> Result<(), Error> {
+        // Every outbound frame must fit the pre-allocated writer, with headroom
+        // for a later resend reframe. Size the buffer up front for larger
+        // messages; see the sync `FixConnection::send_app`.
+        if frame.len() > self.writer.capacity().saturating_sub(REFRAME_HEADROOM) {
+            return Err(Error::FrameTooLarge(frame.len()));
+        }
         self.journal
             .store(seq, frame)
             .map_err(|e| Error::Io(io::Error::other(format!("{e:?}"))))?;
@@ -425,15 +431,14 @@ impl<S: AsyncRead + AsyncWrite + Unpin> AsyncFixConnection<S> {
         if self.writer.remaining() < frame.len() {
             self.flush_writer().await?;
         }
-        if self.writer.remaining() >= frame.len() {
-            let spare = self.writer.spare();
-            spare[..frame.len()].copy_from_slice(frame);
-            self.writer.commit(0, frame.len());
-        } else {
-            self.stream.write_all(frame).await?;
-            self.stream.flush().await?;
-            return Ok(());
+        if self.writer.remaining() < frame.len() {
+            // Exceeds the pre-allocated buffer even when empty; `send_app` caps
+            // app frames below this, so this is an undersized-buffer config error.
+            return Err(Error::FrameTooLarge(frame.len()));
         }
+        let spare = self.writer.spare();
+        spare[..frame.len()].copy_from_slice(frame);
+        self.writer.commit(0, frame.len());
         self.flush_writer().await
     }
 

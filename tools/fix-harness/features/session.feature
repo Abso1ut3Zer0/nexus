@@ -1,3 +1,6 @@
+# Local-only smoke test: drives the engine with the quickfix Python client.
+# Not gated in CI because quickfix 1.15.1 segfaults on interpreter shutdown
+# (exit 139) even when every scenario passes. Run manually via tools/fix-harness.
 Feature: FIX session management
 
   Scenario: valid logon is accepted

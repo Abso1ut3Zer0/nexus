@@ -143,16 +143,7 @@ impl<'a> FieldReader<'a> {
     pub fn verify_checksum(&self, checksum_span: FieldSpan) -> Result<(), ChecksumError> {
         let body_end = (checksum_span.offset as usize).saturating_sub(3);
         let computed = checksum(&self.buf[..body_end.min(self.buf.len())]);
-        match parse_checksum_bytes(checksum_span.slice(self.buf)) {
-            Some(expected) if expected == computed => Ok(()),
-            Some(expected) => Err(ChecksumError { expected, computed }),
-            // Malformed CheckSum field (not three digits): reject regardless of
-            // `computed`. `expected` is a placeholder — there is no valid value.
-            None => Err(ChecksumError {
-                expected: 0,
-                computed,
-            }),
-        }
+        compare_checksum(computed, checksum_span.slice(self.buf))
     }
 
     /// Parse the next `tag=value\x01` field.
@@ -277,23 +268,43 @@ pub fn find_tag(buf: &[u8], start: usize, tag: u32) -> Option<FieldSpan> {
 
 /// Validate a FIX message checksum against tag 10.
 ///
-/// Scans for the tag 10 (`CheckSum`) field, then verifies via a single
-/// contiguous checksum pass over the preceding bytes.
+/// The `CheckSum` (tag 10) is always the final field of a FIX message, exactly
+/// `10=DDD\x01` (seven bytes). It is located positionally from the end rather
+/// than by scanning fields: a DATA field value can contain embedded SOH bytes
+/// that a plain SOH scan would mis-split, so a scan could miss tag 10 entirely.
 ///
-/// Returns `Ok(())` if valid, `Err(ChecksumError)` on mismatch.
-/// Returns `Ok(())` if tag 10 is absent (nothing to validate
-/// against — structural validation is the decoder's job).
+/// Returns `Ok(())` if valid, [`Err(ChecksumError::Mismatch)`](ChecksumError::Mismatch)
+/// on a wrong value, and [`Err(ChecksumError::Missing)`](ChecksumError::Missing)
+/// when the message does not end in a well-formed CheckSum field. A message with
+/// no CheckSum is malformed, not implicitly valid — treating absence as `Ok`
+/// would let a truncated or checksumless frame pass verification.
 pub fn validate_checksum(msg: &[u8]) -> Result<(), ChecksumError> {
-    let mut parser = FieldReader::new(msg, 0);
-    let mut expected_span = None;
-
-    while let Some(field) = parser.next_field() {
-        if field.tag == 10 {
-            expected_span = Some(field.value);
-        }
+    const CHECKSUM_FIELD_LEN: usize = 7; // "10=" + three digits + SOH
+    if msg.len() < CHECKSUM_FIELD_LEN {
+        return Err(ChecksumError::Missing);
     }
+    let field_start = msg.len() - CHECKSUM_FIELD_LEN;
+    if &msg[field_start..field_start + 3] != b"10=" || msg[msg.len() - 1] != b'\x01' {
+        return Err(ChecksumError::Missing);
+    }
+    let computed = checksum(&msg[..field_start]);
+    compare_checksum(computed, &msg[field_start + 3..msg.len() - 1])
+}
 
-    expected_span.map_or(Ok(()), |span| parser.verify_checksum(span))
+/// Compare a computed checksum against the raw CheckSum(10) value bytes.
+///
+/// A malformed CheckSum (not exactly three digits) is rejected regardless of
+/// `computed`; the `expected` in the returned error is then a placeholder, as
+/// there is no valid value to report.
+fn compare_checksum(computed: u8, digits: &[u8]) -> Result<(), ChecksumError> {
+    match parse_checksum_bytes(digits) {
+        Some(expected) if expected == computed => Ok(()),
+        Some(expected) => Err(ChecksumError::Mismatch { expected, computed }),
+        None => Err(ChecksumError::Mismatch {
+            expected: 0,
+            computed,
+        }),
+    }
 }
 
 /// Parse a FIX CheckSum (tag 10) value: exactly three ASCII digits.
@@ -813,16 +824,17 @@ mod tests {
     fn validate_checksum_invalid() {
         let msg = b"8=FIX.4.4\x0135=D\x0149=SENDER\x0110=000\x01";
         let result = validate_checksum(msg);
-        assert!(result.is_err());
-        let err = result.unwrap_err();
-        assert_eq!(err.expected, 0);
-        assert_ne!(err.computed, 0);
+        assert!(matches!(
+            result,
+            Err(ChecksumError::Mismatch { expected: 0, computed }) if computed != 0
+        ));
     }
 
     #[test]
     fn validate_checksum_no_tag10() {
+        // A message with no CheckSum(10) is malformed, not implicitly valid.
         let msg = b"8=FIX.4.4\x0135=D\x01";
-        assert!(validate_checksum(msg).is_ok());
+        assert_eq!(validate_checksum(msg), Err(ChecksumError::Missing));
     }
 
     #[test]
@@ -833,6 +845,39 @@ mod tests {
         let mut msg = body.to_vec();
         msg.extend_from_slice(format!("10={:03}\x01", sum).as_bytes());
         assert!(validate_checksum(&msg).is_ok());
+    }
+
+    #[test]
+    fn validate_checksum_data_field_embedded_soh() {
+        // A DATA field value can contain SOH bytes (here RawData `x\x01y`). The
+        // CheckSum must still validate — it is located positionally, not by an
+        // SOH scan that would mis-split the value and miss tag 10 entirely.
+        let body = b"8=FIX.4.4\x019=20\x0135=D\x0195=3\x0196=x\x01y\x01";
+        let sum = checksum(body);
+        let mut msg = body.to_vec();
+        msg.extend_from_slice(format!("10={sum:03}\x01").as_bytes());
+        assert!(validate_checksum(&msg).is_ok());
+    }
+
+    #[test]
+    fn validate_checksum_too_short() {
+        assert_eq!(validate_checksum(b""), Err(ChecksumError::Missing));
+        assert_eq!(validate_checksum(b"10="), Err(ChecksumError::Missing));
+    }
+
+    #[test]
+    fn validate_checksum_present_but_empty() {
+        // `10=\x01` has no digits — not a well-formed trailing CheckSum field.
+        let msg = b"8=FIX.4.4\x0135=D\x0110=\x01";
+        assert_eq!(validate_checksum(msg), Err(ChecksumError::Missing));
+    }
+
+    #[test]
+    fn validate_checksum_tag10_not_last() {
+        // A field follows the CheckSum, so tag 10 is not the final field and the
+        // trailing bytes are not `10=DDD\x01` — validation must reject it.
+        let msg = b"8=FIX.4.4\x0110=123\x0158=X\x01";
+        assert_eq!(validate_checksum(msg), Err(ChecksumError::Missing));
     }
 
     #[test]
