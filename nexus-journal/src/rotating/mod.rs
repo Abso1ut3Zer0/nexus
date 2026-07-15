@@ -319,6 +319,30 @@ impl RotatingJournal {
         std::str::from_utf8(bytes).unwrap_or("")
     }
 
+    /// Read the opaque metadata slot stored in the manifest.
+    ///
+    /// The journal never interprets this value — it is a reserved `u64` the
+    /// owner writes via [`set_meta`](Self::set_meta) and reads here. It
+    /// survives rotation and recovery (persisted in the manifest, like the
+    /// rotation epoch). A freshly created session, or one created by a build
+    /// predating this slot, reads back `0`.
+    ///
+    /// Typical use is a small application checkpoint (e.g. a FIX sequence
+    /// number) that must be recovered in O(1) without scanning the log.
+    pub fn meta(&self) -> u64 {
+        self.manifest.meta()
+    }
+
+    /// Write the opaque metadata slot in the manifest, in place.
+    ///
+    /// Persisted like the rotation epoch: an mmap store to the manifest page,
+    /// no syscall on the hot path, not fsynced (process-crash-safe, not
+    /// power-loss-safe — matching the journal's durability model). The value
+    /// is read back by [`meta`](Self::meta) after recovery.
+    pub fn set_meta(&self, val: u64) {
+        self.manifest.set_meta(val);
+    }
+
     /// Append `payload` to the active segment.
     ///
     /// The session ID is set by the conductor at open time and written into
@@ -331,9 +355,31 @@ impl RotatingJournal {
     ///
     /// Panics if the conductor cleanup thread has exited (indicates a bug).
     pub fn append(&mut self, payload: &[u8]) -> Result<LogOffset, WriteError> {
+        self.append_prefixed(&[], payload)
+    }
+
+    /// Append `prefix` immediately followed by `body` as a single frame.
+    ///
+    /// The two slices are written contiguously into one frame — the stored
+    /// payload is `[prefix][body]`, indistinguishable on read from a single
+    /// `append` of the concatenation. This costs exactly one copy of each
+    /// slice (the same total copy as `append`), letting a caller prepend a
+    /// small header (e.g. a timestamp) without staging the concatenation in a
+    /// temporary buffer first.
+    ///
+    /// The session ID is set by the conductor at open time and written into
+    /// every frame header automatically.
+    ///
+    /// Returns a [`LogOffset`] valid for reads until the slot is rotated out
+    /// (two rotations after this write).
+    ///
+    /// # Panics
+    ///
+    /// Panics if the conductor cleanup thread has exited (indicates a bug).
+    pub fn append_prefixed(&mut self, prefix: &[u8], body: &[u8]) -> Result<LogOffset, WriteError> {
         self.try_flush_dirty();
-        let body = payload.len();
-        let foot = footprint(body);
+        let payload_len = prefix.len() + body.len();
+        let foot = footprint(payload_len);
         if foot > self.segment_size {
             return Err(WriteError::RecordTooLarge {
                 max: self.segment_size.saturating_sub(FRAME_HDR),
@@ -346,19 +392,23 @@ impl RotatingJournal {
         let data = self.slots[self.current].data;
         // SAFETY: `off + foot <= self.segment_size` (checked above or after rotate).
         // `data` points into a live mmap'd mapping that is at least `segment_size`
-        // bytes. Frame header fields are at 4-byte-aligned offsets.
+        // bytes. Frame header fields are at 4-byte-aligned offsets. `prefix` and
+        // `body` are written back-to-back starting at `ptr + FRAME_HDR`; their
+        // combined length is `payload_len`, which fits within `foot`.
         // Write order: payload, session_id, next sentinel, then commit_len.
         // commit_len encodes body length as `len + 1` so that zero means
         // "uncommitted", allowing zero-length payloads.
         unsafe {
             let ptr = data.add(off);
-            std::ptr::copy_nonoverlapping(payload.as_ptr(), ptr.add(FRAME_HDR), body);
+            let dst = ptr.add(FRAME_HDR);
+            std::ptr::copy_nonoverlapping(prefix.as_ptr(), dst, prefix.len());
+            std::ptr::copy_nonoverlapping(body.as_ptr(), dst.add(prefix.len()), body.len());
             *session_id_ptr(ptr) = self.session_id;
             let next = off + foot;
             if next + FRAME_HDR <= self.segment_size {
                 write_commit_len(data.add(next), 0);
             }
-            write_commit_len(ptr, (body as u32).wrapping_add(1));
+            write_commit_len(ptr, (payload_len as u32).wrapping_add(1));
         }
         self.cursor += foot;
         Ok(LogOffset::new(
@@ -398,6 +448,36 @@ impl RotatingJournal {
                 *session_id_ptr(ptr),
             ))
         }
+    }
+
+    /// Reconstruct a [`LogOffset`] for a frame at global offset `global`.
+    ///
+    /// [`Frame::offset`] yields a *global* byte position (spanning all
+    /// segments), but [`read`](Self::read) takes a slot-addressed
+    /// [`LogOffset`]. This bridges the two: given a global offset obtained
+    /// from a frame **currently in the readable window** (i.e. just returned
+    /// by [`read_next`](Self::read_next)), it returns a handle that
+    /// [`read`](Self::read) resolves to the same frame.
+    ///
+    /// The handle is tagged with the current generation of the slot the offset
+    /// lands in, so it behaves like one returned by [`append`](Self::append):
+    /// valid until that slot rotates out, after which [`read`](Self::read)
+    /// returns `None` (the generation check fails).
+    ///
+    /// # Contract
+    ///
+    /// `global` must reference a frame that is readable *now* — pass it
+    /// straight from a live scan. A global offset saved from a segment that
+    /// has since been reused by a newer one is not detectable here (the slot
+    /// index collides); the resulting handle would resolve against the new
+    /// segment's contents. This is the same staleness window as any
+    /// [`LogOffset`], surfaced through a different constructor.
+    pub fn log_offset_at(&self, global: u64) -> LogOffset {
+        let seg_size = self.segment_size as u64;
+        let seg = global / seg_size;
+        let local = (global % seg_size) as usize;
+        let slot = (seg % 3) as usize;
+        LogOffset::new(slot as u8, local, self.slot_gen[slot])
     }
 
     /// Monotonically increasing global offset at the current write position.

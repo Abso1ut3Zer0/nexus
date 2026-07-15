@@ -6,6 +6,7 @@ use nexus_fix_codec::{
     FieldReader, FixAdminMsg, FixDictionary, FixHeader, FrameFormatter, encode_fix_uint, find_tag,
     parse_fix_bool, parse_fix_seqnum, parse_fix_uint,
 };
+use nexus_journal::WriteError;
 
 use crate::frame::{FrameError, FrameWriter};
 use crate::framework::{Message, MessageReader, MessageWriter, SessionConfig, SessionError};
@@ -18,6 +19,7 @@ pub enum Error {
     Io(io::Error),
     FrameTooLarge(usize),
     Protocol(SessionError),
+    Journal(WriteError),
 }
 
 impl std::fmt::Display for Error {
@@ -26,6 +28,7 @@ impl std::fmt::Display for Error {
             Self::Io(e) => write!(f, "I/O: {e}"),
             Self::FrameTooLarge(n) => write!(f, "frame too large: {n} bytes"),
             Self::Protocol(e) => write!(f, "protocol: {e}"),
+            Self::Journal(e) => write!(f, "journal: {e}"),
         }
     }
 }
@@ -252,9 +255,7 @@ impl<S: Read + Write, D: FixDictionary> FixConnection<S, D> {
         if frame.len() > self.writer.capacity().saturating_sub(REFRAME_HEADROOM) {
             return Err(Error::FrameTooLarge(frame.len()));
         }
-        self.journal
-            .store(seq, frame)
-            .map_err(|e| Error::Io(io::Error::other(format!("{e:?}"))))?;
+        journal_write(|| self.journal.store(seq, frame))?;
         write_through(&mut self.stream, &mut self.writer.inner, frame)
     }
 
@@ -366,6 +367,11 @@ impl<S: Read + Write, D: FixDictionary> FixConnection<S, D> {
                 reason: DisconnectReason::CompIdMismatch,
             }));
         }
+
+        // Well-framed and comp-id-valid: archive the inbound message for
+        // visibility/audit. Garbage and foreign (comp-id-mismatched) frames are
+        // not journaled — they never reach here.
+        journal_write(|| self.journal.store_inbound(frame))?;
 
         let raw_type = if let Some(s) = find_tag(frame, 0, 35) {
             s.slice(frame)
@@ -613,6 +619,30 @@ fn do_resend<S: Write, D: FixDictionary>(
     writer.flush_to(stream).map_err(Error::Io)
 }
 
+/// Write to the journal, retrying on transient standby backpressure.
+///
+/// `store` is one of `FixJournal::store` / `store_inbound`. On
+/// [`WriteError::StandbyNotReady`] we spin and retry; any other error (a static
+/// [`WriteError::RecordTooLarge`] misconfiguration) is returned as
+/// [`Error::Journal`].
+///
+/// Unbounded on purpose. StandbyNotReady is transient backpressure the conductor
+/// clears in sub-ms; the only way this spins forever is a full/failing disk,
+/// which must be caught by observability. Spinning beats the alternative of
+/// dropping a message from a resend/audit journal. Spinning (rather than
+/// blocking) is fine here: the conductor makes progress on its own thread, and
+/// `recv` already blocks on the socket read.
+#[inline]
+fn journal_write(mut store: impl FnMut() -> Result<(), WriteError>) -> Result<(), Error> {
+    loop {
+        match store() {
+            Ok(()) => return Ok(()),
+            Err(WriteError::StandbyNotReady) => std::hint::spin_loop(),
+            Err(e) => return Err(Error::Journal(e)),
+        }
+    }
+}
+
 fn store_admin<D: FixDictionary>(
     admin: AdminMsg,
     writer: &mut MessageWriter<D>,
@@ -633,9 +663,7 @@ fn store_admin<D: FixDictionary>(
     writer.encode_admin(admin, config);
     let frame = &writer.inner.data()[before..];
     if !frame.is_empty() {
-        journal
-            .store(seq, frame)
-            .map_err(|e| Error::Io(io::Error::other(format!("{e:?}"))))?;
+        journal_write(|| journal.store(seq, frame))?;
     }
     Ok(())
 }

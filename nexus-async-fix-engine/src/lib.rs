@@ -20,6 +20,12 @@ use nexus_fix_engine::{
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use tokio::time::timeout_at;
 
+/// Transient/misconfiguration errors from the FIX journal write path.
+///
+/// Re-exported so callers matching on [`Error::Journal`] can name its inner
+/// type without depending on `nexus-fix-engine` directly.
+pub use nexus_fix_engine::WriteError;
+
 const TS_LEN: usize = 21;
 
 /// Error from [`AsyncFixConnection`].
@@ -27,6 +33,7 @@ const TS_LEN: usize = 21;
 pub enum Error {
     Io(io::Error),
     FrameTooLarge(usize),
+    Journal(WriteError),
 }
 
 impl std::fmt::Display for Error {
@@ -34,6 +41,7 @@ impl std::fmt::Display for Error {
         match self {
             Self::Io(e) => write!(f, "I/O: {e}"),
             Self::FrameTooLarge(n) => write!(f, "frame too large: {n} bytes"),
+            Self::Journal(e) => write!(f, "journal: {e}"),
         }
     }
 }
@@ -188,9 +196,19 @@ impl<S: AsyncRead + AsyncWrite + Unpin> AsyncFixConnection<S> {
         if frame.len() > self.writer.capacity().saturating_sub(REFRAME_HEADROOM) {
             return Err(Error::FrameTooLarge(frame.len()));
         }
-        self.journal
-            .store(seq, frame)
-            .map_err(|e| Error::Io(io::Error::other(format!("{e:?}"))))?;
+        // Unbounded on purpose. StandbyNotReady is transient backpressure the
+        // conductor clears in sub-ms; the only way this loops forever is a
+        // full/failing disk, which must be caught by observability. Retrying
+        // beats the alternative of dropping a message from a resend/audit
+        // journal. We yield rather than spin so the tokio executor keeps
+        // driving the conductor and other tasks.
+        loop {
+            match self.journal.store(seq, frame) {
+                Ok(()) => break,
+                Err(WriteError::StandbyNotReady) => tokio::task::yield_now().await,
+                Err(e) => return Err(Error::Journal(e)),
+            }
+        }
         self.write_through(frame).await
     }
 
@@ -217,6 +235,17 @@ impl<S: AsyncRead + AsyncWrite + Unpin> AsyncFixConnection<S> {
             let out = self.state.on_comp_id_mismatch(now);
             self.flush_out(out).await?;
             return Ok(Some(DisconnectReason::CompIdMismatch));
+        }
+
+        // Well-framed and comp-id-valid: archive the inbound message for
+        // visibility/audit. Garbage and foreign frames never reach here.
+        // Unbounded retry on transient standby backpressure; see `send_app`.
+        loop {
+            match self.journal.store_inbound(frame) {
+                Ok(()) => break,
+                Err(WriteError::StandbyNotReady) => tokio::task::yield_now().await,
+                Err(e) => return Err(Error::Journal(e)),
+            }
         }
 
         let seq = match find_tag(frame, 0, 34).and_then(|s| parse_fix_seqnum(s.slice(frame)).ok()) {
@@ -304,7 +333,7 @@ impl<S: AsyncRead + AsyncWrite + Unpin> AsyncFixConnection<S> {
 
     async fn flush_out(&mut self, out: Out) -> Result<(), Error> {
         for admin in out.admin_messages() {
-            self.encode_admin(admin);
+            self.encode_admin(admin).await?;
         }
         if !self.writer.is_empty() {
             self.flush_writer().await?;
@@ -312,7 +341,7 @@ impl<S: AsyncRead + AsyncWrite + Unpin> AsyncFixConnection<S> {
         Ok(())
     }
 
-    fn encode_admin(&mut self, admin: AdminMsg) {
+    async fn encode_admin(&mut self, admin: AdminMsg) -> Result<(), Error> {
         let ts = make_ts();
 
         let msg_type: &[u8] = match admin {
@@ -408,11 +437,29 @@ impl<S: AsyncRead + AsyncWrite + Unpin> AsyncFixConnection<S> {
 
             match fmt.finish() {
                 Ok(sl) => sl,
-                Err(_) => return,
+                Err(_) => return Ok(()),
             }
         };
 
+        // Journal the outbound admin frame, mirroring the sync `store_admin`:
+        // capture the frame slice from the writer after commit so it is
+        // contiguous and correctly sized. `self.journal` and `self.writer` are
+        // disjoint fields, so the mutable-journal / shared-writer borrows do not
+        // conflict. Unbounded retry on transient standby backpressure; see
+        // `send_app`. This keeps async sessions' outbound admin in the archive.
+        let before = self.writer.data().len();
         self.writer.commit(start, len);
+        let frame = &self.writer.data()[before..];
+        if !frame.is_empty() {
+            loop {
+                match self.journal.store(seq, frame) {
+                    Ok(()) => break,
+                    Err(WriteError::StandbyNotReady) => tokio::task::yield_now().await,
+                    Err(e) => return Err(Error::Journal(e)),
+                }
+            }
+        }
+        Ok(())
     }
 
     async fn flush_writer(&mut self) -> Result<(), Error> {

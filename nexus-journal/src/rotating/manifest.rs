@@ -14,12 +14,14 @@ pub(crate) const SESSION_NAME_LEN: usize = 64;
 /// Fixed-size header at the start of `journal.manifest`.
 ///
 /// Mmap'd directly — reads and writes go through the page cache with no
-/// serialization layer. All fields except `epoch` are written once at
-/// creation and never change. `epoch` is atomically updated on each
+/// serialization layer. All fields except `epoch` and `meta` are written
+/// once at creation and never change. `epoch` is atomically updated on each
 /// segment rotation, which is how crash recovery knows which slot was
-/// active: `slot_index = epoch % 3`.
+/// active: `slot_index = epoch % 3`. `meta` is an opaque `u64` slot the
+/// journal never interprets; the owner (e.g. a FIX engine storing a seqnum
+/// checkpoint) reads and writes it in place.
 ///
-/// # Binary layout (96 bytes, 8-byte aligned)
+/// # Binary layout (104 bytes, 8-byte aligned)
 ///
 /// ```text
 ///  offset  size  field
@@ -32,7 +34,12 @@ pub(crate) const SESSION_NAME_LEN: usize = 64;
 ///   88       2   version          (format version, currently 1)
 ///   90       1   name_len         (valid bytes in name[])
 ///   91       5   _pad
+///   96       8   meta             (AtomicU64, opaque owner-defined slot)
 /// ```
+///
+/// `meta` is appended after the original 96-byte layout so existing offsets
+/// are unchanged; a manifest written by an earlier build (which zero-extends
+/// the 4 KiB file) reads `meta` back as `0`.
 #[repr(C)]
 struct ManifestHeader {
     name: [u8; SESSION_NAME_LEN],
@@ -43,10 +50,11 @@ struct ManifestHeader {
     version: u16,
     name_len: u8,
     _pad: [u8; 5],
+    meta: AtomicU64,
 }
 
 const _: () = {
-    assert!(size_of::<ManifestHeader>() == 96);
+    assert!(size_of::<ManifestHeader>() == 104);
     assert!(align_of::<ManifestHeader>() == 8);
 };
 
@@ -95,6 +103,7 @@ impl Manifest {
         hdr.version = VERSION;
         hdr.name_len = n as u8;
         hdr._pad = [0; 5];
+        *hdr.meta.get_mut() = 0;
 
         Ok(Self { mapping })
     }
@@ -138,13 +147,21 @@ impl Manifest {
         self.header().epoch.store(epoch, Ordering::Release);
     }
 
+    pub(crate) fn meta(&self) -> u64 {
+        self.header().meta.load(Ordering::Acquire)
+    }
+
+    pub(crate) fn set_meta(&self, val: u64) {
+        self.header().meta.store(val, Ordering::Release);
+    }
+
     fn header(&self) -> &ManifestHeader {
         Self::header_of(&self.mapping)
     }
 
     fn header_of(mapping: &MappedFile) -> &ManifestHeader {
         // SAFETY: the mapping is at least MANIFEST_FILE_SIZE bytes and
-        // page-aligned. ManifestHeader is 96 bytes with 8-byte alignment.
+        // page-aligned. ManifestHeader is 104 bytes with 8-byte alignment.
         unsafe { &*mapping.as_ptr().cast::<ManifestHeader>() }
     }
 }

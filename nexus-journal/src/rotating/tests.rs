@@ -1391,3 +1391,235 @@ fn overwrite_shrinks_reused_segment_files() {
         );
     }
 }
+
+// ---- meta slot (1a) ----
+
+#[test]
+fn meta_defaults_to_zero() {
+    let d = TempDir::new("meta-default");
+    let mut c = Conductor::open(d.path()).unwrap();
+    let log = open_id(&mut c, 1 << 16, 1);
+    assert_eq!(log.meta(), 0);
+}
+
+#[test]
+fn meta_roundtrips_in_memory() {
+    let d = TempDir::new("meta-mem");
+    let mut c = Conductor::open(d.path()).unwrap();
+    let log = open_id(&mut c, 1 << 16, 1);
+    log.set_meta(0xDEAD_BEEF_CAFE_F00D);
+    assert_eq!(log.meta(), 0xDEAD_BEEF_CAFE_F00D);
+    log.set_meta(42);
+    assert_eq!(log.meta(), 42);
+}
+
+#[test]
+fn meta_survives_recovery() {
+    let d = TempDir::new("meta-recover");
+
+    {
+        let mut c = Conductor::open(d.path()).unwrap();
+        let mut log = open_id(&mut c, 1 << 16, 1);
+        log.append(b"data").unwrap();
+        log.set_meta(0x0123_4567_89AB_CDEF);
+    }
+
+    let mut c = Conductor::open(d.path()).unwrap();
+    let log = c
+        .session()
+        .session_id(1)
+        .open(OpenMode::OpenExisting)
+        .unwrap();
+    assert_eq!(log.meta(), 0x0123_4567_89AB_CDEF);
+}
+
+#[test]
+fn meta_independent_across_sessions() {
+    let d = TempDir::new("meta-multi");
+    let mut c = Conductor::open(d.path()).unwrap();
+    let log1 = open_id(&mut c, 1 << 16, 1);
+    let log2 = open_id(&mut c, 1 << 16, 2);
+    log1.set_meta(111);
+    log2.set_meta(222);
+    assert_eq!(log1.meta(), 111);
+    assert_eq!(log2.meta(), 222);
+}
+
+#[test]
+fn meta_survives_rotation() {
+    // The meta-slot lives in the manifest, not the segments, so a counter
+    // stored there must survive the segments rotating out from under it — the
+    // whole reason FixJournal recovers seqnums from it instead of scanning a
+    // window that ages out.
+    let d = TempDir::new("meta-rotation");
+    {
+        let mut c = Conductor::open(d.path()).unwrap();
+        let mut log = open_id(&mut c, 64, 1);
+        // Interleave set_meta with appends that force many rotations, mirroring
+        // FixJournal updating next_outbound on every store. Retry across rotation
+        // backpressure (StandbyNotReady until the conductor cleans the standby),
+        // as the engine does on the hot path; an 8-byte record can only fail that
+        // way here.
+        for i in 1..=20u64 {
+            while log.append(&[0u8; 8]).is_err() {
+                wait_conductor(&log);
+            }
+            log.set_meta(i);
+        }
+        wait_conductor(&log);
+        assert_eq!(log.meta(), 20, "meta corrupted by rotation");
+    }
+    // Recovers after all that rotation, with the counted records long aged out.
+    let mut c = Conductor::open(d.path()).unwrap();
+    let log = c
+        .session()
+        .session_id(1)
+        .open(OpenMode::OpenExisting)
+        .unwrap();
+    assert_eq!(log.meta(), 20);
+}
+
+// ---- log_offset_at (1b) ----
+
+#[test]
+fn log_offset_at_roundtrips_scanned_frames() {
+    let d = TempDir::new("logoff-rt");
+    let mut c = Conductor::open(d.path()).unwrap();
+    let mut log = open(&mut c, 1 << 16);
+
+    let payloads: Vec<Vec<u8>> = (0u8..8).map(|i| vec![i; (i as usize) + 1]).collect();
+    for p in &payloads {
+        log.append(p).unwrap();
+    }
+
+    // Scan the readable window, capturing each frame's global offset.
+    let mut scanned: Vec<(u64, Vec<u8>)> = Vec::new();
+    let mut pos = log.read_start();
+    while let Some(frame) = log.read_next(&mut pos) {
+        scanned.push((frame.offset(), frame.payload().to_vec()));
+    }
+    assert_eq!(scanned.len(), payloads.len());
+
+    // Reconstruct a LogOffset from each global offset and read it back.
+    for (global, expected) in &scanned {
+        let lo = log.log_offset_at(*global);
+        let frame = log.read(lo).expect("reconstructed offset must read");
+        assert_eq!(frame.payload(), expected.as_slice());
+        assert_eq!(frame.offset(), *global);
+    }
+}
+
+#[test]
+fn log_offset_at_roundtrips_across_rotation() {
+    let d = TempDir::new("logoff-rot");
+    let mut c = Conductor::open(d.path()).unwrap();
+    // 4 records per 64-byte segment. Write into current + prev, both readable.
+    let mut log = open_id(&mut c, 64, 1);
+    for i in 0..6u8 {
+        log.append(&[i; 8]).unwrap();
+    }
+
+    let mut scanned: Vec<(u64, [u8; 8])> = Vec::new();
+    let mut pos = log.read_start();
+    while let Some(frame) = log.read_next(&mut pos) {
+        scanned.push((frame.offset(), frame.payload().try_into().unwrap()));
+    }
+    // prev (epoch 0) evicted-empty at init, so readable window is the 4 in
+    // prev slot (recs 2..6) plus current — verify each round-trips.
+    assert!(!scanned.is_empty());
+    for (global, expected) in &scanned {
+        let lo = log.log_offset_at(*global);
+        let frame = log.read(lo).expect("reconstructed offset must read");
+        assert_eq!(frame.payload(), expected);
+    }
+}
+
+#[test]
+fn log_offset_at_evicted_reads_none() {
+    let d = TempDir::new("logoff-evict");
+    let mut c = Conductor::open(d.path()).unwrap();
+    let mut log = open_id(&mut c, 64, 1);
+
+    // Capture a global offset in the first segment, then rotate it out.
+    log.append(&[7u8; 8]).unwrap();
+    let mut pos = log.read_start();
+    let stale_global = log.read_next(&mut pos).unwrap().offset();
+
+    for _ in 1..4 {
+        log.append(&[0u8; 8]).unwrap();
+    }
+    for _ in 0..4 {
+        log.append(&[0u8; 8]).unwrap();
+    }
+    wait_conductor(&log);
+    log.append(&[0u8; 8]).unwrap();
+
+    // The segment holding stale_global has been evicted; the reconstructed
+    // handle must fail the generation check rather than mis-read.
+    let lo = log.log_offset_at(stale_global);
+    assert!(log.read(lo).is_none());
+}
+
+// ---- append_prefixed (1c) ----
+
+#[test]
+fn append_prefixed_concatenates() {
+    let d = TempDir::new("prefix-cat");
+    let mut c = Conductor::open(d.path()).unwrap();
+    let mut log = open(&mut c, 1 << 16);
+
+    let ts = 0x0102_0304_0506_0708u64.to_le_bytes();
+    let msg = b"8=FIX.4.4\x0135=D\x01";
+    let off = log.append_prefixed(&ts, msg).unwrap();
+
+    let mut expected = Vec::new();
+    expected.extend_from_slice(&ts);
+    expected.extend_from_slice(msg);
+    assert_eq!(log.read(off).unwrap().payload(), expected.as_slice());
+}
+
+#[test]
+fn append_prefixed_empty_prefix_equals_append() {
+    let d = TempDir::new("prefix-empty-pfx");
+    let mut c = Conductor::open(d.path()).unwrap();
+    let mut log = open(&mut c, 1 << 16);
+    let off = log.append_prefixed(&[], b"hello").unwrap();
+    assert_eq!(log.read(off).unwrap().payload(), b"hello");
+}
+
+#[test]
+fn append_prefixed_empty_body() {
+    let d = TempDir::new("prefix-empty-body");
+    let mut c = Conductor::open(d.path()).unwrap();
+    let mut log = open(&mut c, 1 << 16);
+    let ts = 99u64.to_le_bytes();
+    let off = log.append_prefixed(&ts, &[]).unwrap();
+    assert_eq!(log.read(off).unwrap().payload(), &ts);
+}
+
+#[test]
+fn append_prefixed_scans_as_one_frame() {
+    let d = TempDir::new("prefix-scan");
+    let mut c = Conductor::open(d.path()).unwrap();
+    let mut log = open(&mut c, 1 << 16);
+    log.append_prefixed(&[0xAAu8; 8], b"one").unwrap();
+    log.append_prefixed(&[0xBBu8; 8], b"two").unwrap();
+
+    let mut pos = log.read_start();
+    let f1 = log.read_next(&mut pos).unwrap();
+    assert_eq!(&f1.payload()[..8], &[0xAAu8; 8]);
+    assert_eq!(&f1.payload()[8..], b"one");
+    let f2 = log.read_next(&mut pos).unwrap();
+    assert_eq!(&f2.payload()[..8], &[0xBBu8; 8]);
+    assert_eq!(&f2.payload()[8..], b"two");
+    assert!(log.read_next(&mut pos).is_none());
+}
+
+#[test]
+fn append_prefixed_too_large_rejected() {
+    let d = TempDir::new("prefix-large");
+    let mut c = Conductor::open(d.path()).unwrap();
+    let mut log = open(&mut c, 64);
+    // prefix + body exceeds a single frame's capacity.
+    assert!(log.append_prefixed(&[0u8; 32], &[0u8; 64]).is_err());
+}
