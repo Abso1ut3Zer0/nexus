@@ -7,6 +7,8 @@
 //! session event. The framework layer above encodes those messages and drives
 //! the transport.
 
+#[cfg(unix)]
+pub mod fix_session;
 mod frame;
 mod framework;
 #[cfg(unix)]
@@ -17,6 +19,8 @@ mod timestamp;
 #[cfg(unix)]
 pub mod transport;
 
+#[cfg(unix)]
+pub use fix_session::{FixSession, PollOutcome};
 pub use frame::{
     FrameError, FrameReader, FrameReaderBuilder, FrameWriter, FrameWriterBuilder, ReadError,
 };
