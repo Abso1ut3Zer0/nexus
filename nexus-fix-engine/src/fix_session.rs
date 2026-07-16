@@ -388,13 +388,9 @@ impl<D: FixDictionary> FixSession<D> {
                     Message::LogonRequest { msg }
                 }
             }
-            Control::Logout { acknowledged } => {
+            Control::Logout => {
                 let msg = D::Logout::decode(frame).expect("frame decoded in poll");
-                if acknowledged {
-                    Message::LogoutAcknowledged { msg }
-                } else {
-                    Message::LogoutRequest { msg }
-                }
+                Message::LogoutRequest { msg }
             }
             Control::Heartbeat => {
                 let msg = D::Heartbeat::decode(frame).expect("frame decoded in poll");

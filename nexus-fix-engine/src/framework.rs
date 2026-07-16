@@ -92,10 +92,11 @@ pub enum Message<'buf, D: FixDictionary> {
     LogonRequest { msg: D::Logon<'buf> },
     /// Counterparty acknowledged our Logon (initiator role). Session is live.
     LogonAcknowledged { msg: D::Logon<'buf> },
-    /// Counterparty initiated a Logout. Send a Logout acknowledgement.
+    /// A Logout (35=5) that did not end the session, which only happens
+    /// out-of-state (e.g. mid-reset). The engine answers and closes an
+    /// in-sequence logout itself; that surfaces as
+    /// [`Message::Disconnected`] with [`DisconnectReason::Logout`].
     LogoutRequest { msg: D::Logout<'buf> },
-    /// Counterparty acknowledged our Logout. Session is done.
-    LogoutAcknowledged { msg: D::Logout<'buf> },
     /// Heartbeat (35=0). No reply required unless it carries a TestReqID.
     Heartbeat { msg: D::Heartbeat<'buf> },
     /// TestRequest (35=1). Echo the `TestReqID` in a Heartbeat reply.

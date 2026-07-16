@@ -62,3 +62,21 @@ contained.
 - `FixJournal::store_inbound`: archive an inbound frame for visibility/audit.
 - `Error::Journal(WriteError)`: journal write-path failures now surface through
   the transport error type; `WriteError` is re-exported for callers matching on it.
+
+### Removed
+
+- `Message::LogoutAcknowledged`, and the `acknowledged` field on
+  `Control::Logout` (now a unit variant). A completed logout exchange
+  disconnects and surfaces as `Message::Disconnected { reason: Logout }`, so
+  the acknowledging variant was unreachable: the only path that ever produced a
+  `Logout` *message* was the out-of-sequence one, which was itself a bug (see
+  the suppression fix above). `Message::LogoutRequest` remains, reachable when
+  a Logout arrives out-of-state (e.g. mid-reset).
+
+### Fixed
+
+- `SessionState::on_reject_inbound` did not clear `test_request_sent`, unlike
+  the eight other inbound handlers. A counterparty that answered a TestRequest
+  probe with a frame the engine could not dispatch (e.g. missing `MsgType(35)`)
+  left the probe armed, so the next timeout dropped a live session with
+  `TestRequestTimeout` despite the inbound message proving liveness.

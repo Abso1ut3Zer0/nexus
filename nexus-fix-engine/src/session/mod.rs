@@ -478,11 +478,8 @@ impl SessionState {
             }
         }
         // Out-of-state (e.g. mid-reset) Logout. The in-sequence path above always
-        // disconnects, so this arm never carries a LogoutPending ack — surfacing
-        // Control::Logout here is now the only path that constructs the variant.
-        Ok(Control::Logout {
-            acknowledged: false,
-        })
+        // disconnects, so this is the only path that surfaces a Logout message.
+        Ok(Control::Logout)
     }
 
     /// Handles a received Heartbeat. `echo_id` is `TestReqID(112)` parsed as `u64`, if present.
@@ -755,6 +752,7 @@ impl SessionState {
             return Ok(Control::None);
         }
         self.last_received = Some(now);
+        self.test_request_sent = None;
         match self.validate_seq(inbound_seq, poss_dup, now, emit)? {
             Control::Proceed => {}
             ctrl => return Ok(ctrl),

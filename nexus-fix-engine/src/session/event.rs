@@ -71,12 +71,10 @@ pub enum Control {
         /// Whether this Logon acknowledged our own (vs. requesting one).
         acknowledged: bool,
     },
-    /// A Logout (35=5) was processed. `acknowledged` is `true` when it confirmed
-    /// our pending Logout, `false` when the counterparty initiated it.
-    Logout {
-        /// Whether this Logout acknowledged our own (vs. initiating one).
-        acknowledged: bool,
-    },
+    /// A Logout (35=5) was processed without ending the session. This only
+    /// happens out-of-state (e.g. mid-reset); an in-sequence Logout completes
+    /// the exchange and surfaces as [`Control::Disconnected`] instead.
+    Logout,
     /// A Heartbeat (35=0) was processed.
     Heartbeat,
     /// A TestRequest (35=1) was processed.

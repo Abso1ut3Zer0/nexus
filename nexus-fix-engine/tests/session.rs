@@ -217,6 +217,46 @@ fn probe_answered_keeps_session_alive() {
     assert_eq!(s.state(), State::Active);
 }
 
+/// A peer that answers a probe with a frame we cannot dispatch (e.g. no MsgType)
+/// has still demonstrated liveness, so the probe must be disarmed. Otherwise the
+/// next timeout drops a live session with `TestRequestTimeout`.
+#[test]
+fn probe_answered_by_unprocessable_message_keeps_session_alive() {
+    let mut s = new_session();
+    let now = Instant::now();
+    establish(&mut s, now);
+
+    let probe_at = now + Duration::from_secs(36);
+    let mut sent = Vec::new();
+    s.on_timeout(probe_at, &mut recorder(&mut sent)).unwrap();
+    assert!(
+        sent.iter()
+            .any(|a| matches!(a, AdminMsg::TestRequest { .. }))
+    );
+
+    sent.clear();
+    s.on_reject_inbound(
+        2,
+        false,
+        Some(35),
+        1,
+        probe_at + Duration::from_secs(1),
+        &mut recorder(&mut sent),
+    )
+    .unwrap();
+
+    let ctrl = s
+        .on_timeout(probe_at + HB, &mut recorder(&mut sent))
+        .unwrap();
+    assert_eq!(s.state(), State::Active);
+    assert_ne!(
+        ctrl,
+        Control::Disconnected {
+            reason: DisconnectReason::TestRequestTimeout
+        }
+    );
+}
+
 #[test]
 fn gap_triggers_resend_request() {
     let mut s = new_session();
