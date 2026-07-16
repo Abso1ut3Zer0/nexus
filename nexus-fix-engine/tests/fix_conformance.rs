@@ -3,7 +3,7 @@
 use std::io::BufRead;
 use std::io::BufReader;
 use std::net::TcpStream;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
 
@@ -87,11 +87,39 @@ impl<'buf> FixHeader<'buf> for MockHeader<'buf> {
 
 const PEER: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/fix_peer.py");
 
-fn tmp_dir(suffix: &str) -> PathBuf {
-    let mut p = std::env::temp_dir();
-    p.push(format!("nexus_fix_conf_{}_{}", std::process::id(), suffix));
-    std::fs::create_dir_all(&p).unwrap();
-    p
+/// RAII scratch directory. `FixJournal::open` preallocates tens of megabytes
+/// into each of these, so they must not outlive the test that made them.
+/// `Drop` also runs while unwinding, so a *failing* test cleans up too — which
+/// a manual `cleanup(&dir)` at the end of the body would not.
+///
+/// Bind it to a live local (`let dir = tmp_dir(..)`), never `let _ = ..`, or
+/// the directory is removed before the test can use it.
+struct TempDir(PathBuf);
+
+impl TempDir {
+    fn new(suffix: &str) -> Self {
+        let mut p = std::env::temp_dir();
+        p.push(format!("nexus_fix_conf_{}_{}", std::process::id(), suffix));
+        // A previous run killed by a signal can leave the tree behind, and PIDs
+        // get recycled -- start from a clean slate.
+        let _ = std::fs::remove_dir_all(&p);
+        std::fs::create_dir_all(&p).unwrap();
+        Self(p)
+    }
+
+    fn path(&self) -> &Path {
+        &self.0
+    }
+}
+
+impl Drop for TempDir {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.0);
+    }
+}
+
+fn tmp_dir(suffix: &str) -> TempDir {
+    TempDir::new(suffix)
 }
 
 struct ChildGuard(std::process::Child);
@@ -122,7 +150,7 @@ fn spawn_peer(scenario: &str) -> (ChildGuard, u16) {
     (ChildGuard(child), port)
 }
 
-fn connect(port: u16, dir: &PathBuf) -> FixConnection<TcpStream, MockDict> {
+fn connect(port: u16, dir: &Path) -> FixConnection<TcpStream, MockDict> {
     let stream = TcpStream::connect(("127.0.0.1", port)).unwrap();
     stream
         .set_read_timeout(Some(Duration::from_secs(10)))
@@ -166,7 +194,7 @@ fn new_order(seq: u32) -> Vec<u8> {
 fn conformance_logon_logout() {
     let dir = tmp_dir("logon_logout");
     let (mut child, port) = spawn_peer("logon_logout");
-    let mut conn = connect(port, &dir);
+    let mut conn = connect(port, dir.path());
     conn.connect(Instant::now()).unwrap();
     assert_eq!(drive(&mut conn), DisconnectReason::Logout);
     assert!(child.wait().unwrap().success());
@@ -176,7 +204,7 @@ fn conformance_logon_logout() {
 fn conformance_heartbeat() {
     let dir = tmp_dir("heartbeat");
     let (mut child, port) = spawn_peer("heartbeat");
-    let mut conn = connect(port, &dir);
+    let mut conn = connect(port, dir.path());
     conn.connect(Instant::now()).unwrap();
     assert_eq!(drive(&mut conn), DisconnectReason::Logout);
     assert!(child.wait().unwrap().success());
@@ -186,7 +214,7 @@ fn conformance_heartbeat() {
 fn conformance_resend() {
     let dir = tmp_dir("resend");
     let (mut child, port) = spawn_peer("resend");
-    let mut conn = connect(port, &dir);
+    let mut conn = connect(port, dir.path());
     conn.connect(Instant::now()).unwrap();
 
     loop {
@@ -209,7 +237,7 @@ fn conformance_resend() {
 fn conformance_gap_fill() {
     let dir = tmp_dir("gap_fill");
     let (mut child, port) = spawn_peer("gap_fill");
-    let mut conn = connect(port, &dir);
+    let mut conn = connect(port, dir.path());
     conn.connect(Instant::now()).unwrap();
     assert_eq!(drive(&mut conn), DisconnectReason::Logout);
     assert!(child.wait().unwrap().success());
@@ -219,7 +247,7 @@ fn conformance_gap_fill() {
 fn conformance_seq_reset() {
     let dir = tmp_dir("seq_reset");
     let (mut child, port) = spawn_peer("seq_reset");
-    let mut conn = connect(port, &dir);
+    let mut conn = connect(port, dir.path());
     conn.connect(Instant::now()).unwrap();
     assert_eq!(drive(&mut conn), DisconnectReason::Logout);
     assert!(child.wait().unwrap().success());

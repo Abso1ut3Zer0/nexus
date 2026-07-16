@@ -10,6 +10,19 @@ contained.
 
 ## [Unreleased]
 
+### Internal
+
+- Test scratch directories are now removed on drop. The `tmp_dir` helpers in
+  `tests/transport.rs`, `tests/fix_conformance.rs`, `src/fix_session.rs`, and
+  `src/persist.rs` return an RAII `TempDir` guard instead of a bare `PathBuf`.
+  Each test opens a `FixJournal`, which preallocates ~25M, and the directories
+  were never removed — a full run leaked hundreds of megabytes into `$TMPDIR`,
+  and the PID in each name meant every run minted a fresh set rather than
+  reusing the last. The guard's `Drop` also runs while unwinding, so a
+  *failing* test now cleans up too; the manual `cleanup(&dir)` calls it
+  replaces did not. Mirrors the existing guard in
+  `nexus-journal/src/rotating/tests.rs`.
+
 ### Changed
 
 - `SessionState` handler API reworked: the `Out` and `Event` types are

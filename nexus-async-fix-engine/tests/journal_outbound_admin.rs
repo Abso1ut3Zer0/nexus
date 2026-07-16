@@ -84,15 +84,43 @@ impl<'buf> FixHeader<'buf> for MockHeader<'buf> {
 
 // ── helpers ──────────────────────────────────────────────────────────────────
 
-fn tmp_dir(suffix: &str) -> std::path::PathBuf {
-    let mut p = std::env::temp_dir();
-    p.push(format!(
-        "nexus_async_fix_admin_{}_{}",
-        std::process::id(),
-        suffix
-    ));
-    std::fs::create_dir_all(&p).unwrap();
-    p
+/// RAII scratch directory. `FixJournal::open` preallocates tens of megabytes
+/// into each of these, so they must not outlive the test that made them.
+/// `Drop` also runs while unwinding, so a *failing* test cleans up too — which
+/// a manual `cleanup(&dir)` at the end of the body would not.
+///
+/// Bind it to a live local (`let dir = tmp_dir(..)`), never `let _ = ..`, or
+/// the directory is removed before the test can use it.
+struct TempDir(std::path::PathBuf);
+
+impl TempDir {
+    fn new(suffix: &str) -> Self {
+        let mut p = std::env::temp_dir();
+        p.push(format!(
+            "nexus_async_fix_admin_{}_{}",
+            std::process::id(),
+            suffix
+        ));
+        // A previous run killed by a signal can leave the tree behind, and PIDs
+        // get recycled -- start from a clean slate.
+        let _ = std::fs::remove_dir_all(&p);
+        std::fs::create_dir_all(&p).unwrap();
+        Self(p)
+    }
+
+    fn path(&self) -> &std::path::Path {
+        &self.0
+    }
+}
+
+impl Drop for TempDir {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.0);
+    }
+}
+
+fn tmp_dir(suffix: &str) -> TempDir {
+    TempDir::new(suffix)
 }
 
 /// In-memory stream: writes are accepted (and buffered), reads block forever.
@@ -147,7 +175,7 @@ async fn outbound_admin_is_journaled() {
                 sender: CompId::new(b"ENGINE").unwrap(),
                 target: CompId::new(b"PEER").unwrap(),
             },
-            FixJournal::open(&dir, 0, 256).unwrap(),
+            FixJournal::open(dir.path(), 0, 256).unwrap(),
         );
         // Sends the opening Logon at seq 1; the write is accepted by the sink.
         conn.connect(Instant::now()).await.unwrap();
@@ -156,7 +184,7 @@ async fn outbound_admin_is_journaled() {
     // The Logon (seq 1) must be present in the outbound journal: recovering the
     // outbound counter from the meta-slot yields 2 only if `store(1, ..)` ran.
     // A journal that never stored anything recovers to 1.
-    let recovered = FixJournal::open(&dir, 0, 256).unwrap();
+    let recovered = FixJournal::open(dir.path(), 0, 256).unwrap();
     assert_eq!(
         recovered.next_outbound(),
         2,

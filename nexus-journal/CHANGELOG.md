@@ -10,6 +10,15 @@ contained.
 
 ## [Unreleased]
 
+### Internal
+
+- `src/append/tests.rs` scratch segments are now removed on drop. `base_path`
+  returns an RAII `TempBase` guard that deletes the numbered segment files
+  (`base.0`, `base.1`, …) via the existing `segment_path` helper, replacing the
+  manual `cleanup(&base)` calls. `Drop` also runs while unwinding, so a
+  *failing* test now cleans up too — the manual calls did not. Mirrors the
+  existing guard in `src/rotating/tests.rs`.
+
 ### Added
 
 - `RotatingJournal::meta` / `set_meta`: an opaque `u64` manifest meta-slot,

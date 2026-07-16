@@ -97,15 +97,43 @@ fn target() -> CompId {
     CompId::new(b"ACCEPTOR").unwrap()
 }
 
-fn tmp_dir(suffix: &str) -> std::path::PathBuf {
-    let mut p = std::env::temp_dir();
-    p.push(format!(
-        "nexus_async_fix_toolarge_{}_{}",
-        std::process::id(),
-        suffix
-    ));
-    std::fs::create_dir_all(&p).unwrap();
-    p
+/// RAII scratch directory. `FixJournal::open` preallocates tens of megabytes
+/// into each of these, so they must not outlive the test that made them.
+/// `Drop` also runs while unwinding, so a *failing* test cleans up too — which
+/// a manual `cleanup(&dir)` at the end of the body would not.
+///
+/// Bind it to a live local (`let dir = tmp_dir(..)`), never `let _ = ..`, or
+/// the directory is removed before the test can use it.
+struct TempDir(std::path::PathBuf);
+
+impl TempDir {
+    fn new(suffix: &str) -> Self {
+        let mut p = std::env::temp_dir();
+        p.push(format!(
+            "nexus_async_fix_toolarge_{}_{}",
+            std::process::id(),
+            suffix
+        ));
+        // A previous run killed by a signal can leave the tree behind, and PIDs
+        // get recycled -- start from a clean slate.
+        let _ = std::fs::remove_dir_all(&p);
+        std::fs::create_dir_all(&p).unwrap();
+        Self(p)
+    }
+
+    fn path(&self) -> &std::path::Path {
+        &self.0
+    }
+}
+
+impl Drop for TempDir {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.0);
+    }
+}
+
+fn tmp_dir(suffix: &str) -> TempDir {
+    TempDir::new(suffix)
 }
 
 /// Async stream that hands out queued inbound bytes (never more than the
@@ -188,7 +216,7 @@ async fn frame_exceeding_reader_buffer_is_message_too_large_not_disconnect() {
                 sender: target(),
                 target: sender(),
             },
-            FixJournal::open(&dir, 0, 256).unwrap(),
+            FixJournal::open(dir.path(), 0, 256).unwrap(),
         );
 
     match conn.recv(Instant::now()).await {
