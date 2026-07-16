@@ -12,6 +12,25 @@ contained.
 
 ### Changed
 
+- `SessionState` handler API reworked: the `Out` and `Event` types are
+  removed. Each handler (`on_logon`, `on_app`, `on_timeout`, …) now takes an
+  `emit: &mut F` closure (`F: FnMut(AdminMsg) -> Result<(), E>`) for outbound
+  admin messages and returns the owned `Control` verdict instead of an `Out`
+  bundling admin messages plus an `Event`. `Control` (re-exported from the
+  crate root, replacing `Event`) is the single owned enum the state machine
+  returns; the driver reconstructs the borrowed `Message` from it. Reset
+  initiators (`connect_reset`, `reset_sequence`) require `E: From<SessionError>`
+  for the wrong-state guard; a new `From<SessionError>` impl on the session-core
+  `Error` covers production callers.
+- Out-of-sequence and duplicate admin messages are now **suppressed** rather than
+  surfaced. On a sequence gap the handler emits a `ResendRequest` and returns
+  `Control::None`; a `PossDup` duplicate below the expected seqnum is ignored
+  (no resend, no disconnect, not surfaced). This makes `on_heartbeat`,
+  `on_test_request`, `on_reject`, `on_logout`, and GapFill-mode
+  `on_sequence_reset` consistent with `on_app`/`on_resend_request`: only
+  in-sequence, first-time messages reach the application via `message()`.
+  Proceed-only work (the TestRequest Heartbeat echo, the GapFill `next_inbound`
+  advance, the Logout exchange) no longer runs on a gap or duplicate.
 - `FixConnection<S, D>` is now a thin socket wrapper over a new sans-IO
   `FixSession<D>` core (the thin-adapter half of #544). All protocol logic —
   frame decode, the `SessionState` machine, journaling, encode, and resend —

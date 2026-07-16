@@ -38,7 +38,7 @@ use nexus_journal::WriteError;
 use crate::frame::{FrameError, FrameWriter};
 use crate::framework::{Message, MessageReader, MessageWriter, SessionConfig, SessionError};
 use crate::persist::{FixJournal, ReplayItem};
-use crate::session::{AdminMsg, DisconnectReason, Event, SessionState, State};
+use crate::session::{AdminMsg, Control, DisconnectReason, SessionState, State};
 use crate::timestamp::UTC_TIMESTAMP_LEN;
 
 /// Error surfaced by the sans-IO session core.
@@ -68,6 +68,12 @@ impl std::error::Error for Error {}
 impl From<std::io::Error> for Error {
     fn from(e: std::io::Error) -> Self {
         Self::Io(e)
+    }
+}
+
+impl From<SessionError> for Error {
+    fn from(e: SessionError) -> Self {
+        Self::Protocol(e)
     }
 }
 
@@ -108,23 +114,6 @@ pub enum PollOutcome {
     Disconnected(DisconnectReason),
 }
 
-/// Which typed [`Message`] [`FixSession::message`] should reconstruct from the
-/// stable frame buffer. All arms decode from `reader.frame`, so this carries only
-/// the per-arm flags the borrowed message needs.
-#[derive(Debug, Clone, Copy)]
-enum PendingKind {
-    None,
-    Logon { acknowledged: bool },
-    Logout { acknowledged: bool },
-    Heartbeat,
-    TestRequest,
-    ResendRequest,
-    SequenceReset,
-    Reject,
-    Application,
-    Disconnected { reason: DisconnectReason },
-}
-
 /// Resumable resend state. A resend can enqueue more bytes than the outbound
 /// buffer holds; on overflow the wrapper drains the buffer and re-polls, which
 /// resumes here. `drained` counts fully-encoded [`ReplayItem`]s so re-deriving
@@ -151,8 +140,10 @@ pub struct FixSession<D: FixDictionary> {
     garbage_frames: u64,
     /// In-progress resend, if any (see [`ResendState`]).
     resend: Option<ResendState>,
-    /// What [`message`](Self::message) reconstructs after a [`PollOutcome::Message`].
-    pending: PendingKind,
+    /// The verdict the state machine last returned. [`message`](Self::message)
+    /// reconstructs the borrowed [`Message`] from it after a
+    /// [`PollOutcome::Message`]; see [`Control`].
+    pending: Control,
 }
 
 impl<D: FixDictionary> FixSession<D> {
@@ -167,7 +158,7 @@ impl<D: FixDictionary> FixSession<D> {
             config,
             garbage_frames: 0,
             resend: None,
-            pending: PendingKind::None,
+            pending: Control::None,
         }
     }
 
@@ -187,7 +178,7 @@ impl<D: FixDictionary> FixSession<D> {
             config,
             garbage_frames: 0,
             resend: None,
-            pending: PendingKind::None,
+            pending: Control::None,
         }
     }
 
@@ -279,37 +270,29 @@ impl<D: FixDictionary> FixSession<D> {
     /// Enqueues a Logon (initiate the session). Outbound bytes land in the writer
     /// buffer; the wrapper drains them.
     pub fn connect(&mut self, now: Instant) -> Result<(), Error> {
-        let out = self.state.connect(now);
-        for admin in out.admin_messages() {
-            store_admin(admin, &mut self.writer, &mut self.journal, &self.config)?;
-        }
+        let mut emit = |m| store_admin(m, &mut self.writer, &mut self.journal, &self.config);
+        self.state.connect(now, &mut emit)?;
         Ok(())
     }
 
     /// Enqueues a Logon with `ResetSeqNumFlag=Y`.
     pub fn connect_reset(&mut self, now: Instant) -> Result<(), Error> {
-        let out = self.state.connect_reset(now).map_err(Error::Protocol)?;
-        for admin in out.admin_messages() {
-            store_admin(admin, &mut self.writer, &mut self.journal, &self.config)?;
-        }
+        let mut emit = |m| store_admin(m, &mut self.writer, &mut self.journal, &self.config);
+        self.state.connect_reset(now, &mut emit)?;
         Ok(())
     }
 
     /// Enqueues an in-session sequence reset handshake.
     pub fn reset_sequence(&mut self, now: Instant) -> Result<(), Error> {
-        let out = self.state.reset_sequence(now).map_err(Error::Protocol)?;
-        for admin in out.admin_messages() {
-            store_admin(admin, &mut self.writer, &mut self.journal, &self.config)?;
-        }
+        let mut emit = |m| store_admin(m, &mut self.writer, &mut self.journal, &self.config);
+        self.state.reset_sequence(now, &mut emit)?;
         Ok(())
     }
 
     /// Enqueues a Logout.
     pub fn logout(&mut self, now: Instant) -> Result<(), Error> {
-        let out = self.state.logout(now);
-        for admin in out.admin_messages() {
-            store_admin(admin, &mut self.writer, &mut self.journal, &self.config)?;
-        }
+        let mut emit = |m| store_admin(m, &mut self.writer, &mut self.journal, &self.config);
+        self.state.logout(now, &mut emit)?;
         Ok(())
     }
 
@@ -330,14 +313,15 @@ impl<D: FixDictionary> FixSession<D> {
     /// Advances heartbeat/test-request timers; enqueues any resulting admin
     /// messages. Returns `Some(reason)` if the timeout drove a disconnect.
     pub fn on_timeout(&mut self, now: Instant) -> Result<Option<DisconnectReason>, Error> {
-        let out = self.state.on_timeout(now);
-        for admin in out.admin_messages() {
-            store_admin(admin, &mut self.writer, &mut self.journal, &self.config)?;
-        }
-        if let Some(Event::Disconnected { reason }) = out.event() {
-            return Ok(Some(reason));
-        }
-        Ok(None)
+        let ctrl = {
+            let mut emit = |m| store_admin(m, &mut self.writer, &mut self.journal, &self.config);
+            self.state.on_timeout(now, &mut emit)?
+        };
+        Ok(if let Control::Disconnected { reason } = ctrl {
+            Some(reason)
+        } else {
+            None
+        })
     }
 
     // ── inbound processing ───────────────────────────────────────────────────
@@ -355,7 +339,7 @@ impl<D: FixDictionary> FixSession<D> {
                 return Ok(PollOutcome::ResendPending);
             }
             // Resend finished: surface the ResendRequest that triggered it.
-            self.pending = PendingKind::ResendRequest;
+            self.pending = Control::ResendRequest;
             return Ok(PollOutcome::Message);
         }
 
@@ -396,7 +380,7 @@ impl<D: FixDictionary> FixSession<D> {
     pub fn message(&self) -> Message<'_, D> {
         let frame = &self.reader.frame[..];
         match self.pending {
-            PendingKind::Logon { acknowledged } => {
+            Control::Logon { acknowledged } => {
                 let msg = D::Logon::decode(frame).expect("frame decoded in poll");
                 if acknowledged {
                     Message::LogonAcknowledged { msg }
@@ -404,7 +388,7 @@ impl<D: FixDictionary> FixSession<D> {
                     Message::LogonRequest { msg }
                 }
             }
-            PendingKind::Logout { acknowledged } => {
+            Control::Logout { acknowledged } => {
                 let msg = D::Logout::decode(frame).expect("frame decoded in poll");
                 if acknowledged {
                     Message::LogoutAcknowledged { msg }
@@ -412,31 +396,33 @@ impl<D: FixDictionary> FixSession<D> {
                     Message::LogoutRequest { msg }
                 }
             }
-            PendingKind::Heartbeat => {
+            Control::Heartbeat => {
                 let msg = D::Heartbeat::decode(frame).expect("frame decoded in poll");
                 Message::Heartbeat { msg }
             }
-            PendingKind::TestRequest => {
+            Control::TestRequest => {
                 let msg = D::TestRequest::decode(frame).expect("frame decoded in poll");
                 Message::TestRequest { msg }
             }
-            PendingKind::ResendRequest => {
+            Control::ResendRequest => {
                 let msg = D::ResendRequest::decode(frame).expect("frame decoded in poll");
                 Message::ResendRequest { msg }
             }
-            PendingKind::SequenceReset => {
+            Control::SequenceReset => {
                 let msg = D::SequenceReset::decode(frame).expect("frame decoded in poll");
                 Message::SequenceReset { msg }
             }
-            PendingKind::Reject => {
+            Control::Reject => {
                 let msg = D::Reject::decode(frame).expect("frame decoded in poll");
                 Message::Reject { msg }
             }
-            PendingKind::Application => Message::Application {
+            Control::Application => Message::Application {
                 header: D::Header::decode(frame),
             },
-            PendingKind::Disconnected { reason } => Message::Disconnected { reason },
-            PendingKind::None => unreachable!("message() called without a pending message"),
+            Control::Disconnected { reason } => Message::Disconnected { reason },
+            Control::None | Control::Proceed => {
+                unreachable!("message() called without a pending message")
+            }
         }
     }
 
@@ -471,11 +457,16 @@ impl<D: FixDictionary> FixSession<D> {
         };
 
         if !sender_ok || !target_ok {
-            let out = self.state.on_comp_id_mismatch(now);
-            for admin in out.admin_messages() {
-                store_admin(admin, &mut self.writer, &mut self.journal, &self.config)?;
+            {
+                let mut emit =
+                    |m| store_admin(m, &mut self.writer, &mut self.journal, &self.config);
+                self.state.on_comp_id_mismatch(now, &mut emit)?;
             }
-            return Ok(self.disconnected(DisconnectReason::CompIdMismatch));
+            // Always surface CompIdMismatch here, mirroring the original driver:
+            // the handler disconnects the state machine; the reason is fixed.
+            return Ok(self.dispose(Control::Disconnected {
+                reason: DisconnectReason::CompIdMismatch,
+            }));
         }
 
         // Well-framed and comp-id-valid: archive the inbound message for
@@ -487,13 +478,15 @@ impl<D: FixDictionary> FixSession<D> {
         let raw_type = if let Some(s) = find_tag(frame, 0, 35) {
             s.slice(frame)
         } else {
-            let out = self
-                .state
-                .on_reject_inbound(seq, poss_dup, Some(35), 1, now);
-            for admin in out.admin_messages() {
-                // Matches the original: this reject is NOT journaled.
-                self.writer.encode_admin(admin, &self.config);
-            }
+            // The missing-tag-35 reject is NOT journaled (matches the original):
+            // this call site passes an encode-only closure while every other site
+            // passes the journaling `store_admin` closure.
+            let mut emit = |m| -> Result<(), Error> {
+                self.writer.encode_admin(m, &self.config);
+                Ok(())
+            };
+            self.state
+                .on_reject_inbound(seq, poss_dup, Some(35), 1, now, &mut emit)?;
             return Ok(PollOutcome::Suppressed);
         };
 
@@ -501,11 +494,12 @@ impl<D: FixDictionary> FixSession<D> {
             b"A" => {
                 // Validate the typed decode before any side effect: a malformed
                 // admin (e.g. a Logon missing a required field) must error with
-                // MalformedMessage, not drive the state machine and then panic in
-                // `message()`'s `.expect("frame decoded in poll")`. `process_frame`
-                // sets `PendingKind` from tag 35 alone, so this decode is the only
-                // place the typed parse runs — it makes that `.expect()` genuinely
-                // safe. Discard the value; this is validation only.
+                // MalformedMessage, not drive the state machine and then surface a
+                // `Control` whose `message()` reconstruction panics in
+                // `.expect("frame decoded in poll")`. The handler returns the
+                // message kind from tag 35 regardless of the typed body, so this
+                // decode is the only place the typed parse runs — it makes that
+                // `.expect()` genuinely safe. Discard the value; validation only.
                 D::Logon::decode(frame)
                     .map_err(|_| Error::Protocol(SessionError::MalformedMessage))?;
                 let hbi = find_tag(frame, 0, 108)
@@ -515,34 +509,24 @@ impl<D: FixDictionary> FixSession<D> {
                     .and_then(|s| parse_fix_bool(s.slice(frame)).ok())
                     .unwrap_or(false);
                 let was_logon_sent = self.state.state() == State::LogonSent;
-                let out = self.state.on_logon(seq, hbi, reset, !was_logon_sent, now);
-                for admin in out.admin_messages() {
-                    store_admin(admin, &mut self.writer, &mut self.journal, &self.config)?;
-                }
-                if let Some(Event::Disconnected { reason }) = out.event() {
-                    return Ok(self.disconnected(reason));
-                }
-                self.pending = PendingKind::Logon {
-                    acknowledged: was_logon_sent,
+                let ctrl = {
+                    let mut emit =
+                        |m| store_admin(m, &mut self.writer, &mut self.journal, &self.config);
+                    self.state
+                        .on_logon(seq, hbi, reset, !was_logon_sent, now, &mut emit)?
                 };
-                Ok(PollOutcome::Message)
+                Ok(self.dispose(ctrl))
             }
             b"5" => {
                 // Validate the typed decode before any side effect (see `b"A"`).
                 D::Logout::decode(frame)
                     .map_err(|_| Error::Protocol(SessionError::MalformedMessage))?;
-                let was_logout_pending = self.state.state() == State::LogoutPending;
-                let out = self.state.on_logout(seq, poss_dup, now);
-                for admin in out.admin_messages() {
-                    store_admin(admin, &mut self.writer, &mut self.journal, &self.config)?;
-                }
-                if let Some(Event::Disconnected { reason }) = out.event() {
-                    return Ok(self.disconnected(reason));
-                }
-                self.pending = PendingKind::Logout {
-                    acknowledged: was_logout_pending,
+                let ctrl = {
+                    let mut emit =
+                        |m| store_admin(m, &mut self.writer, &mut self.journal, &self.config);
+                    self.state.on_logout(seq, poss_dup, now, &mut emit)?
                 };
-                Ok(PollOutcome::Message)
+                Ok(self.dispose(ctrl))
             }
             b"0" => {
                 // Validate the typed decode before any side effect (see `b"A"`).
@@ -550,15 +534,13 @@ impl<D: FixDictionary> FixSession<D> {
                     .map_err(|_| Error::Protocol(SessionError::MalformedMessage))?;
                 let echo_id =
                     find_tag(frame, 0, 112).and_then(|s| parse_fix_seqnum(s.slice(frame)).ok());
-                let out = self.state.on_heartbeat(seq, poss_dup, echo_id, now);
-                for admin in out.admin_messages() {
-                    store_admin(admin, &mut self.writer, &mut self.journal, &self.config)?;
-                }
-                if let Some(Event::Disconnected { reason }) = out.event() {
-                    return Ok(self.disconnected(reason));
-                }
-                self.pending = PendingKind::Heartbeat;
-                Ok(PollOutcome::Message)
+                let ctrl = {
+                    let mut emit =
+                        |m| store_admin(m, &mut self.writer, &mut self.journal, &self.config);
+                    self.state
+                        .on_heartbeat(seq, poss_dup, echo_id, now, &mut emit)?
+                };
+                Ok(self.dispose(ctrl))
             }
             b"1" => {
                 // Validate the typed decode before any side effect (see `b"A"`).
@@ -566,15 +548,13 @@ impl<D: FixDictionary> FixSession<D> {
                     .map_err(|_| Error::Protocol(SessionError::MalformedMessage))?;
                 let test_req_id =
                     find_tag(frame, 0, 112).map_or_else(|| b"".as_ref(), |s| s.slice(frame));
-                let out = self.state.on_test_request(seq, poss_dup, test_req_id, now);
-                for admin in out.admin_messages() {
-                    store_admin(admin, &mut self.writer, &mut self.journal, &self.config)?;
-                }
-                if let Some(Event::Disconnected { reason }) = out.event() {
-                    return Ok(self.disconnected(reason));
-                }
-                self.pending = PendingKind::TestRequest;
-                Ok(PollOutcome::Message)
+                let ctrl = {
+                    let mut emit =
+                        |m| store_admin(m, &mut self.writer, &mut self.journal, &self.config);
+                    self.state
+                        .on_test_request(seq, poss_dup, test_req_id, now, &mut emit)?
+                };
+                Ok(self.dispose(ctrl))
             }
             b"2" => {
                 // Validate the typed decode before any side effect (see `b"A"`).
@@ -586,27 +566,32 @@ impl<D: FixDictionary> FixSession<D> {
                 let end = find_tag(frame, 0, 16)
                     .and_then(|s| parse_fix_seqnum(s.slice(frame)).ok())
                     .map_or(0, |v| v as u32);
-                let out = self.state.on_resend_request(seq, poss_dup, begin, end, now);
-                for admin in out.admin_messages() {
-                    store_admin(admin, &mut self.writer, &mut self.journal, &self.config)?;
-                }
-                if let Some(Event::Disconnected { reason }) = out.event() {
-                    return Ok(self.disconnected(reason));
-                }
-                if let Some(Event::ResendRange { begin: rb, end: re }) = out.event() {
-                    let re = if re == 0 {
-                        self.state.next_outbound_seq().saturating_sub(1)
-                    } else {
-                        re.min(self.state.next_outbound_seq().saturating_sub(1))
-                    };
-                    self.begin_resend(rb, re);
-                    if self.drive_resend()? {
-                        // Buffer filled mid-resend: wrapper drains, re-polls.
-                        return Ok(PollOutcome::ResendPending);
+                let ctrl = {
+                    let mut emit =
+                        |m| store_admin(m, &mut self.writer, &mut self.journal, &self.config);
+                    self.state
+                        .on_resend_request(seq, poss_dup, now, &mut emit)?
+                };
+                // ResendRequest is the one kind the driver acts on beyond
+                // surfacing the message: it drives the replay from the locally
+                // parsed `begin`/`end`.
+                match ctrl {
+                    Control::ResendRequest => {
+                        let re = if end == 0 {
+                            self.state.next_outbound_seq().saturating_sub(1)
+                        } else {
+                            end.min(self.state.next_outbound_seq().saturating_sub(1))
+                        };
+                        self.begin_resend(begin, re);
+                        if self.drive_resend()? {
+                            // Buffer filled mid-resend: wrapper drains, re-polls.
+                            return Ok(PollOutcome::ResendPending);
+                        }
+                        self.pending = Control::ResendRequest;
+                        Ok(PollOutcome::Message)
                     }
+                    other => Ok(self.dispose(other)),
                 }
-                self.pending = PendingKind::ResendRequest;
-                Ok(PollOutcome::Message)
             }
             b"4" => {
                 // Validate the typed decode before any side effect (see `b"A"`).
@@ -618,55 +603,47 @@ impl<D: FixDictionary> FixSession<D> {
                 let gap_fill = find_tag(frame, 0, 123)
                     .and_then(|s| parse_fix_bool(s.slice(frame)).ok())
                     .unwrap_or(false);
-                let out = self.state.on_sequence_reset(seq, new_seq, gap_fill, now);
-                for admin in out.admin_messages() {
-                    store_admin(admin, &mut self.writer, &mut self.journal, &self.config)?;
-                }
-                if let Some(Event::Disconnected { reason }) = out.event() {
-                    return Ok(self.disconnected(reason));
-                }
-                self.pending = PendingKind::SequenceReset;
-                Ok(PollOutcome::Message)
+                let ctrl = {
+                    let mut emit =
+                        |m| store_admin(m, &mut self.writer, &mut self.journal, &self.config);
+                    self.state
+                        .on_sequence_reset(seq, new_seq, gap_fill, now, &mut emit)?
+                };
+                Ok(self.dispose(ctrl))
             }
             b"3" => {
                 // Validate the typed decode before any side effect (see `b"A"`).
                 D::Reject::decode(frame)
                     .map_err(|_| Error::Protocol(SessionError::MalformedMessage))?;
-                let ref_seq = find_tag(frame, 0, 45)
-                    .and_then(|s| parse_fix_seqnum(s.slice(frame)).ok())
-                    .map_or(0, |v| v as u32);
-                let out = self.state.on_reject(seq, poss_dup, ref_seq, now);
-                for admin in out.admin_messages() {
-                    store_admin(admin, &mut self.writer, &mut self.journal, &self.config)?;
-                }
-                if let Some(Event::Disconnected { reason }) = out.event() {
-                    return Ok(self.disconnected(reason));
-                }
-                self.pending = PendingKind::Reject;
-                Ok(PollOutcome::Message)
+                let ctrl = {
+                    let mut emit =
+                        |m| store_admin(m, &mut self.writer, &mut self.journal, &self.config);
+                    self.state.on_reject(seq, poss_dup, now, &mut emit)?
+                };
+                Ok(self.dispose(ctrl))
             }
             _ => {
-                let out = self.state.on_app(seq, poss_dup, now);
-                for admin in out.admin_messages() {
-                    store_admin(admin, &mut self.writer, &mut self.journal, &self.config)?;
-                }
-                if let Some(Event::Disconnected { reason }) = out.event() {
-                    return Ok(self.disconnected(reason));
-                }
-                if matches!(out.event(), Some(Event::App { .. })) {
-                    self.pending = PendingKind::Application;
-                    return Ok(PollOutcome::Message);
-                }
-                // gap: ResendRequest queued, nothing to surface
-                Ok(PollOutcome::Suppressed)
+                let ctrl = {
+                    let mut emit =
+                        |m| store_admin(m, &mut self.writer, &mut self.journal, &self.config);
+                    self.state.on_app(seq, poss_dup, now, &mut emit)?
+                };
+                Ok(self.dispose(ctrl))
             }
         }
     }
 
-    /// Records a disconnect for [`message`](Self::message) and returns the outcome.
-    fn disconnected(&mut self, reason: DisconnectReason) -> PollOutcome {
-        self.pending = PendingKind::Disconnected { reason };
-        PollOutcome::Disconnected(reason)
+    /// Stores the state machine's verdict for [`message`](Self::message) and maps
+    /// it to a [`PollOutcome`]. Centralizes the outcome mapping every non-resend
+    /// arm shares.
+    fn dispose(&mut self, ctrl: Control) -> PollOutcome {
+        self.pending = ctrl;
+        match ctrl {
+            Control::None => PollOutcome::Suppressed,
+            Control::Disconnected { reason } => PollOutcome::Disconnected(reason),
+            Control::Proceed => unreachable!("Proceed is transient; handlers never return it"),
+            _ => PollOutcome::Message,
+        }
     }
 
     // ── resend ───────────────────────────────────────────────────────────────
@@ -916,6 +893,25 @@ mod tests {
     use crate::persist::FixJournal;
     use crate::session::SessionState;
 
+    /// Emit closure that discards admin messages. These rig helpers drive the raw
+    /// `SessionState` only to advance sequence numbers before wrapping it in a
+    /// `FixSession`; the emitted admin is not routed to the session's writer (as
+    /// the pre-refactor setup discarded the returned `Out`). The `Result` return
+    /// is required by the `FnMut(AdminMsg) -> Result<(), E>` handler bound.
+    #[allow(clippy::unnecessary_wraps)]
+    fn drop_emit(_m: crate::session::AdminMsg) -> Result<(), std::convert::Infallible> {
+        Ok(())
+    }
+
+    /// Drives the initiator Logon exchange on a raw `SessionState`: sends Logon
+    /// (outbound seq 1) and accepts the peer's Logon at seq 1, reaching `Active`.
+    fn establish_state(state: &mut SessionState, now: Instant) {
+        state.connect(now, &mut drop_emit).unwrap();
+        state
+            .on_logon(1, 30, false, false, now, &mut drop_emit)
+            .unwrap();
+    }
+
     // ── minimal mock dictionary (mirrors tests/transport.rs) ─────────────────
 
     struct MockDict;
@@ -1064,8 +1060,7 @@ mod tests {
         let now = Instant::now();
         // Establish (initiator): Logon consumes outbound seq 1, peer's Logon at
         // seq 1 advances next_inbound to 2 and moves to Active.
-        state.connect(now);
-        state.on_logon(1, 30, false, false, now);
+        establish_state(&mut state, now);
         // Align outbound with the journal we are about to fill (next = N + 1) so
         // the resend `end` clamp (`re.min(next_outbound - 1)`) does not chop the
         // range. Keep next_inbound at 2 for the incoming ResendRequest.
@@ -1411,7 +1406,7 @@ mod tests {
         let mut state = SessionState::new(Duration::from_secs(30));
         // Initiate: engine sends Logon (outbound seq 1), moves to LogonSent, and
         // expects the peer's Logon at inbound seq 1.
-        state.connect(now);
+        state.connect(now, &mut drop_emit).unwrap();
 
         let journal = FixJournal::open(&dir, 0, 256).unwrap();
         let mut session: FixSession<StrictDict> = FixSession::from_buffers(
@@ -1437,7 +1432,7 @@ mod tests {
                 FrameWriter::builder().buffer_capacity(4096).build(),
             );
             let mut state = SessionState::new(Duration::from_secs(30));
-            state.connect(now);
+            state.connect(now, &mut drop_emit).unwrap();
             let journal = FixJournal::open(&dir_ok, 0, 256).unwrap();
             let mut ok_session: FixSession<StrictDict> = FixSession::from_buffers(
                 reader,
@@ -1521,8 +1516,7 @@ mod tests {
             MessageWriter::with_frame_writer(FrameWriter::builder().buffer_capacity(4096).build());
         let mut state = SessionState::new(Duration::from_secs(30));
         let now = Instant::now();
-        state.connect(now);
-        state.on_logon(1, 30, false, false, now); // peer Logon at seq 1 → Active, next_inbound = 2
+        establish_state(&mut state, now); // peer Logon at seq 1 → Active, next_inbound = 2
         let journal = FixJournal::open(dir, 0, 256).unwrap();
         let mut session = FixSession::from_buffers(
             reader,

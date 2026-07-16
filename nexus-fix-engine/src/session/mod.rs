@@ -2,7 +2,7 @@ mod event;
 
 use std::time::{Duration, Instant};
 
-pub use event::{DisconnectReason, Event, State};
+pub use event::{Control, DisconnectReason, State};
 
 use crate::framework::SessionError;
 
@@ -58,61 +58,29 @@ pub enum AdminMsg {
     },
 }
 
-/// Output of a [`SessionState`] handler call.
+/// Bumps the next outbound sequence number, returning early with a graceful
+/// disconnect if it is exhausted.
 ///
-/// Carries at most two outbound admin messages and one session event.
-/// Drain these immediately after each handler invocation — they are not
-/// buffered anywhere inside the session.
-#[derive(Clone, Copy, Debug)]
-pub struct Out {
-    admin: [Option<AdminMsg>; 2],
-    event: Option<Event>,
-    admin_len: u8,
-}
-
-impl Out {
-    const EMPTY: Self = Self {
-        admin: [None, None],
-        event: None,
-        admin_len: 0,
-    };
-
-    /// Push an admin message. Capacity is two — the most any handler emits (a
-    /// reply plus a `Logout`/`ResendRequest` on the too-low-seqnum and gap
-    /// paths). The `debug_assert` catches any future handler that exceeds it in
-    /// tests; in release a third push is dropped rather than panicking on the hot
-    /// path, so the two-message invariant must be upheld by the handlers.
-    fn push_admin(&mut self, msg: AdminMsg) {
-        debug_assert!((self.admin_len as usize) < 2, "Out admin overflow");
-        if (self.admin_len as usize) < 2 {
-            self.admin[self.admin_len as usize] = Some(msg);
-            self.admin_len += 1;
+/// [`SessionState::bump_outbound`] returns `Option<u32>` (`None` on exhaustion),
+/// but the exhaustion path returns a *success* value (`Ok(Control::Disconnected)`,
+/// surfaced as `Message::Disconnected`) rather than an `Err`, so it cannot ride
+/// `?`. This macro packages the `match` + early `return` so the ~8 handler sites
+/// that consume an outbound seqnum share one definition of disconnect-on-exhaustion.
+macro_rules! seq {
+    ($self:ident, $now:ident) => {
+        match $self.bump_outbound($now) {
+            Some(s) => s,
+            None => return Ok($self.disconnect(DisconnectReason::SeqNumExhausted)),
         }
-    }
-
-    fn push_event(&mut self, ev: Event) {
-        self.event = Some(ev);
-    }
-
-    /// Outbound admin messages to encode and send, in order.
-    pub fn admin_messages(&self) -> impl Iterator<Item = AdminMsg> + '_ {
-        self.admin[..self.admin_len as usize]
-            .iter()
-            .filter_map(|a| *a)
-    }
-
-    /// Session event to deliver to the application layer, if any.
-    pub fn event(&self) -> Option<Event> {
-        self.event
-    }
+    };
 }
 
 /// Pure FIX session state machine.
 ///
 /// Owns sequence numbers, timers, and state transitions. The framework above
 /// owns the transport, clock, and wire encoding. Each typed handler receives
-/// pre-decoded admin fields and returns an [`Out`] containing any outbound
-/// admin messages and a session event. Never allocates.
+/// pre-decoded admin fields plus an `emit` closure for outbound admin messages,
+/// and returns a [`Control`] verdict. Never allocates.
 pub struct SessionState {
     state: State,
     hb: Duration,
@@ -186,9 +154,12 @@ impl SessionState {
         Ok(s)
     }
 
-    fn bump_outbound(&mut self, now: Instant, out: &mut Out) -> Option<u32> {
+    /// Bumps the next outbound sequence number, updating the outbound activity
+    /// timestamp. Returns `None` when exhausted (`next_outbound > i32::MAX`); the
+    /// caller decides the disconnect (see the [`seq!`] macro). No internal side
+    /// effect on exhaustion.
+    fn bump_outbound(&mut self, now: Instant) -> Option<u32> {
         if self.next_outbound > SEQ_MAX {
-            self.disconnect(DisconnectReason::SeqNumExhausted, out);
             return None;
         }
         let s = self.next_outbound;
@@ -220,44 +191,46 @@ impl SessionState {
     }
 
     /// Initiates a session: sends a Logon. No-op if not disconnected.
-    pub fn connect(&mut self, now: Instant) -> Out {
+    pub fn connect<F, E>(&mut self, now: Instant, emit: &mut F) -> Result<Control, E>
+    where
+        F: FnMut(AdminMsg) -> Result<(), E>,
+    {
         if self.state != State::Disconnected {
-            return Out::EMPTY;
+            return Ok(Control::None);
         }
-        let mut out = Out::EMPTY;
-        let Some(seq) = self.bump_outbound(now, &mut out) else {
-            return out;
-        };
-        out.push_admin(AdminMsg::Logon {
+        let seq = seq!(self, now);
+        emit(AdminMsg::Logon {
             seq,
             heart_bt_int_s: self.hb.as_secs() as u32,
-        });
+        })?;
         self.state = State::LogonSent;
         self.state_entered = Some(now);
         self.last_received = Some(now);
-        out
+        Ok(Control::None)
     }
 
     /// Initiates a session with `ResetSeqNumFlag(141)=Y`: resets both sequence
-    /// counters to 1 and sends a Logon. Returns `Err(InvalidState)` if not disconnected.
-    pub fn connect_reset(&mut self, now: Instant) -> Result<Out, SessionError> {
+    /// counters to 1 and sends a Logon. Returns `Err(SessionError::InvalidState)`
+    /// if not disconnected.
+    pub fn connect_reset<F, E>(&mut self, now: Instant, emit: &mut F) -> Result<Control, E>
+    where
+        F: FnMut(AdminMsg) -> Result<(), E>,
+        E: From<SessionError>,
+    {
         if self.state != State::Disconnected {
-            return Err(SessionError::InvalidState);
+            return Err(SessionError::InvalidState.into());
         }
         self.next_outbound = 1;
         self.next_inbound = 1;
-        let mut out = Out::EMPTY;
-        let Some(seq) = self.bump_outbound(now, &mut out) else {
-            return Ok(out);
-        };
-        out.push_admin(AdminMsg::LogonReset {
+        let seq = seq!(self, now);
+        emit(AdminMsg::LogonReset {
             seq,
             heart_bt_int_s: self.hb.as_secs() as u32,
-        });
+        })?;
         self.state = State::LogonSent;
         self.state_entered = Some(now);
         self.last_received = Some(now);
-        Ok(out)
+        Ok(Control::None)
     }
 
     /// Initiates an in-session sequence reset. Only valid while `Active`.
@@ -266,153 +239,153 @@ impl SessionState {
     /// the engine sends `Logon(141=Y, seqNum=1)` and enters `AwaitingResetAck`.
     /// The reset completes when the counterparty's `Logon(141=Y)` arrives.
     /// `allocate_seq` returns `ResetInProgress` until the handshake completes.
-    /// Returns `Err(InvalidState)` if not Active.
-    pub fn reset_sequence(&mut self, now: Instant) -> Result<Out, SessionError> {
+    /// Returns `Err(SessionError::InvalidState)` if not Active.
+    pub fn reset_sequence<F, E>(&mut self, now: Instant, emit: &mut F) -> Result<Control, E>
+    where
+        F: FnMut(AdminMsg) -> Result<(), E>,
+        E: From<SessionError>,
+    {
         if self.state != State::Active {
-            return Err(SessionError::InvalidState);
+            return Err(SessionError::InvalidState.into());
         }
-        let mut out = Out::EMPTY;
         self.test_req_counter += 1;
-        let Some(seq) = self.bump_outbound(now, &mut out) else {
-            return Ok(out);
-        };
-        out.push_admin(AdminMsg::TestRequest {
+        let seq = seq!(self, now);
+        emit(AdminMsg::TestRequest {
             seq,
             id: self.test_req_counter,
-        });
+        })?;
         self.test_request_sent = Some(now);
         self.state = State::AwaitingResetDrain;
         self.state_entered = Some(now);
-        Ok(out)
+        Ok(Control::None)
     }
 
     /// Initiates a clean logout. No-op unless in an active state.
-    pub fn logout(&mut self, now: Instant) -> Out {
+    pub fn logout<F, E>(&mut self, now: Instant, emit: &mut F) -> Result<Control, E>
+    where
+        F: FnMut(AdminMsg) -> Result<(), E>,
+    {
         if !matches!(self.state, State::Active | State::Resending) {
-            return Out::EMPTY;
+            return Ok(Control::None);
         }
-        let mut out = Out::EMPTY;
-        let Some(seq) = self.bump_outbound(now, &mut out) else {
-            return out;
-        };
-        out.push_admin(AdminMsg::Logout { seq });
+        let seq = seq!(self, now);
+        emit(AdminMsg::Logout { seq })?;
         self.state = State::LogoutPending;
         self.state_entered = Some(now);
-        out
+        Ok(Control::None)
     }
 
     /// Fires due timers: logon/logout/reset timeouts, heartbeat emission, and
     /// TestRequest probing. Call at or after [`next_timeout`](Self::next_timeout).
-    pub fn on_timeout(&mut self, now: Instant) -> Out {
-        let mut out = Out::EMPTY;
+    ///
+    /// Returns [`Control::Disconnected`] if a timeout drove a disconnect,
+    /// otherwise [`Control::None`].
+    pub fn on_timeout<F, E>(&mut self, now: Instant, emit: &mut F) -> Result<Control, E>
+    where
+        F: FnMut(AdminMsg) -> Result<(), E>,
+    {
         match self.state {
             State::Disconnected => {}
             State::LogonSent => {
                 if let Some(t) = self.state_entered
                     && now.duration_since(t) >= self.hb
                 {
-                    self.disconnect(DisconnectReason::LogonTimeout, &mut out);
+                    return Ok(self.disconnect(DisconnectReason::LogonTimeout));
                 }
             }
             State::LogoutPending => {
                 if let Some(t) = self.state_entered
                     && now.duration_since(t) >= self.hb
                 {
-                    self.disconnect(DisconnectReason::LogoutTimeout, &mut out);
+                    return Ok(self.disconnect(DisconnectReason::LogoutTimeout));
                 }
             }
             State::AwaitingResetDrain | State::AwaitingResetAck => {
                 if let Some(t) = self.state_entered
                     && now.duration_since(t) >= self.hb
                 {
-                    self.disconnect(DisconnectReason::ResetTimeout, &mut out);
+                    return Ok(self.disconnect(DisconnectReason::ResetTimeout));
                 }
             }
             State::Active | State::Resending => {
                 if let Some(t) = self.test_request_sent {
                     if now.duration_since(t) >= self.hb {
-                        let Some(seq) = self.bump_outbound(now, &mut out) else {
-                            return out;
-                        };
-                        out.push_admin(AdminMsg::Logout { seq });
-                        self.disconnect(DisconnectReason::TestRequestTimeout, &mut out);
-                        return out;
+                        let seq = seq!(self, now);
+                        emit(AdminMsg::Logout { seq })?;
+                        return Ok(self.disconnect(DisconnectReason::TestRequestTimeout));
                     }
                 } else if let Some(t) = self.last_received
                     && now.duration_since(t) >= self.inbound_grace()
                 {
                     self.test_req_counter += 1;
-                    let Some(seq) = self.bump_outbound(now, &mut out) else {
-                        return out;
-                    };
-                    out.push_admin(AdminMsg::TestRequest {
+                    let seq = seq!(self, now);
+                    emit(AdminMsg::TestRequest {
                         seq,
                         id: self.test_req_counter,
-                    });
+                    })?;
                     self.test_request_sent = Some(now);
                 }
                 if let Some(t) = self.last_sent
                     && now.duration_since(t) >= self.hb
                 {
-                    let Some(seq) = self.bump_outbound(now, &mut out) else {
-                        return out;
-                    };
-                    out.push_admin(AdminMsg::Heartbeat { seq, echo: None });
+                    let seq = seq!(self, now);
+                    emit(AdminMsg::Heartbeat { seq, echo: None })?;
                 }
             }
         }
-        out
+        Ok(Control::None)
     }
 
     /// Handles a received Logon.
     ///
-    /// Set `send_reply = true` when acting as acceptor; the session includes a
-    /// Logon in the output. Pass `false` for the initiator's incoming reply.
-    pub fn on_logon(
+    /// Set `send_reply = true` when acting as acceptor; the session emits a Logon
+    /// reply via `emit`. Pass `false` for the initiator's incoming reply. Returns
+    /// [`Control::Logon`] with `acknowledged = !send_reply`.
+    pub fn on_logon<F, E>(
         &mut self,
         seq: u32,
         heart_bt_int_s: u32,
         reset_seq_num: bool,
         send_reply: bool,
         now: Instant,
-    ) -> Out {
-        let mut out = Out::EMPTY;
+        emit: &mut F,
+    ) -> Result<Control, E>
+    where
+        F: FnMut(AdminMsg) -> Result<(), E>,
+    {
+        // Acceptor sends its own Logon reply; the initiator receives an ack.
+        // `acknowledged` is the mirror of `send_reply`.
+        let acknowledged = !send_reply;
         self.last_received = Some(now);
         self.test_request_sent = None;
 
         // Reset ack: we initiated the reset and peer is confirming.
         if self.state == State::AwaitingResetAck {
             if !reset_seq_num || seq != 1 {
-                self.disconnect(DisconnectReason::ProtocolViolation, &mut out);
-                return out;
+                return Ok(self.disconnect(DisconnectReason::ProtocolViolation));
             }
             self.hb = Duration::from_secs(u64::from(heart_bt_int_s));
             self.next_inbound = 2;
             self.state = State::Active;
             self.state_entered = None;
-            out.push_event(Event::Established { heart_bt_int_s });
-            return out;
+            return Ok(Control::Logon { acknowledged });
         }
 
         // Peer-initiated reset while we are active.
         if matches!(self.state, State::Active | State::Resending) && reset_seq_num {
             if seq != 1 {
-                self.disconnect(DisconnectReason::ProtocolViolation, &mut out);
-                return out;
+                return Ok(self.disconnect(DisconnectReason::ProtocolViolation));
             }
             self.hb = Duration::from_secs(u64::from(heart_bt_int_s));
             self.next_outbound = 1;
-            let Some(reply_seq) = self.bump_outbound(now, &mut out) else {
-                return out;
-            };
-            out.push_admin(AdminMsg::LogonReset {
+            let reply_seq = seq!(self, now);
+            emit(AdminMsg::LogonReset {
                 seq: reply_seq,
                 heart_bt_int_s: self.hb.as_secs() as u32,
-            });
+            })?;
             self.next_inbound = 2;
             self.state = State::Active;
-            out.push_event(Event::Established { heart_bt_int_s });
-            return out;
+            return Ok(Control::Logon { acknowledged });
         }
 
         // Normal logon: acceptor or initiator's ack.
@@ -422,7 +395,7 @@ impl SessionState {
             self.state == State::LogonSent
         };
         if !valid {
-            return Out::EMPTY;
+            return Ok(Control::Logon { acknowledged });
         }
 
         if reset_seq_num {
@@ -434,84 +407,98 @@ impl SessionState {
         self.hb = Duration::from_secs(u64::from(heart_bt_int_s));
 
         if send_reply {
-            let Some(reply_seq) = self.bump_outbound(now, &mut out) else {
-                return out;
-            };
+            let reply_seq = seq!(self, now);
             if reset_seq_num {
-                out.push_admin(AdminMsg::LogonReset {
+                emit(AdminMsg::LogonReset {
                     seq: reply_seq,
                     heart_bt_int_s,
-                });
+                })?;
             } else {
-                out.push_admin(AdminMsg::Logon {
+                emit(AdminMsg::Logon {
                     seq: reply_seq,
                     heart_bt_int_s,
-                });
+                })?;
             }
         }
 
         if seq < self.next_inbound {
-            let Some(logout_seq) = self.bump_outbound(now, &mut out) else {
-                return out;
-            };
-            out.push_admin(AdminMsg::Logout { seq: logout_seq });
-            self.disconnect(DisconnectReason::SeqNumTooLow, &mut out);
-            return out;
+            let logout_seq = seq!(self, now);
+            emit(AdminMsg::Logout { seq: logout_seq })?;
+            return Ok(self.disconnect(DisconnectReason::SeqNumTooLow));
         }
-
-        out.push_event(Event::Established { heart_bt_int_s });
 
         if seq > self.next_inbound {
             self.gap_high = seq;
-            let Some(rr_seq) = self.bump_outbound(now, &mut out) else {
-                return out;
-            };
-            out.push_admin(AdminMsg::ResendRequest {
+            let rr_seq = seq!(self, now);
+            emit(AdminMsg::ResendRequest {
                 seq: rr_seq,
                 begin: self.next_inbound,
-            });
+            })?;
             self.state = State::Resending;
         } else {
             self.next_inbound += 1;
             self.state = State::Active;
         }
-        out
+        Ok(Control::Logon { acknowledged })
     }
 
     /// Handles a received Logout.
-    pub fn on_logout(&mut self, seq: u32, poss_dup: bool, now: Instant) -> Out {
+    pub fn on_logout<F, E>(
+        &mut self,
+        seq: u32,
+        poss_dup: bool,
+        now: Instant,
+        emit: &mut F,
+    ) -> Result<Control, E>
+    where
+        F: FnMut(AdminMsg) -> Result<(), E>,
+    {
         self.last_received = Some(now);
         self.test_request_sent = None;
-        let mut out = Out::EMPTY;
         if self.state == State::LogonSent {
-            self.disconnect(DisconnectReason::Logout, &mut out);
-        } else if matches!(
+            return Ok(self.disconnect(DisconnectReason::Logout));
+        }
+        if matches!(
             self.state,
             State::Active | State::Resending | State::LogoutPending
-        ) && self.validate_seq(seq, poss_dup, now, &mut out)
-        {
-            if self.state != State::LogoutPending {
-                let Some(logout_seq) = self.bump_outbound(now, &mut out) else {
-                    return out;
-                };
-                out.push_admin(AdminMsg::Logout { seq: logout_seq });
+        ) {
+            match self.validate_seq(seq, poss_dup, now, emit)? {
+                // In-sequence Logout: complete the exchange and disconnect.
+                Control::Proceed => {
+                    if self.state != State::LogoutPending {
+                        let logout_seq = seq!(self, now);
+                        emit(AdminMsg::Logout { seq: logout_seq })?;
+                    }
+                    return Ok(self.disconnect(DisconnectReason::Logout));
+                }
+                // Gap/duplicate: suppressed (ResendRequest already emitted, or a
+                // PossDup-too-low frame ignored). Too-low without PossDup:
+                // disconnect. Neither surfaces the Logout.
+                ctrl => return Ok(ctrl),
             }
-            self.disconnect(DisconnectReason::Logout, &mut out);
         }
-        out
+        // Out-of-state (e.g. mid-reset) Logout. The in-sequence path above always
+        // disconnects, so this arm never carries a LogoutPending ack — surfacing
+        // Control::Logout here is now the only path that constructs the variant.
+        Ok(Control::Logout {
+            acknowledged: false,
+        })
     }
 
     /// Handles a received Heartbeat. `echo_id` is `TestReqID(112)` parsed as `u64`, if present.
-    pub fn on_heartbeat(
+    pub fn on_heartbeat<F, E>(
         &mut self,
         seq: u32,
         poss_dup: bool,
         echo_id: Option<u64>,
         now: Instant,
-    ) -> Out {
+        emit: &mut F,
+    ) -> Result<Control, E>
+    where
+        F: FnMut(AdminMsg) -> Result<(), E>,
+    {
         self.last_received = Some(now);
         self.test_request_sent = None;
-        let mut out = Out::EMPTY;
 
         if self.state == State::AwaitingResetDrain {
             let echo_matches = echo_id == Some(self.test_req_counter);
@@ -519,44 +506,50 @@ impl SessionState {
                 // Drain confirmed: all in-flight messages received, send LogonReset.
                 self.next_inbound += 1;
                 self.next_outbound = 1;
-                let Some(logon_seq) = self.bump_outbound(now, &mut out) else {
-                    return out;
-                };
-                out.push_admin(AdminMsg::LogonReset {
+                let logon_seq = seq!(self, now);
+                emit(AdminMsg::LogonReset {
                     seq: logon_seq,
                     heart_bt_int_s: self.hb.as_secs() as u32,
-                });
+                })?;
                 self.state = State::AwaitingResetAck;
                 self.state_entered = Some(now);
-                return out;
+                return Ok(Control::Heartbeat);
             }
             // Not the drain confirm: validate sequence normally.
-            if self.validate_seq(seq, poss_dup, now, &mut out) {
-                self.check_resend_done();
+            match self.validate_seq(seq, poss_dup, now, emit)? {
+                Control::Proceed => self.check_resend_done(),
+                // Gap/duplicate: suppressed, not surfaced.
+                ctrl => return Ok(ctrl),
             }
-            return out;
+            return Ok(Control::Heartbeat);
         }
 
         if !matches!(
             self.state,
             State::Active | State::Resending | State::LogoutPending | State::AwaitingResetAck
         ) {
-            return Out::EMPTY;
+            return Ok(Control::Heartbeat);
         }
-        if self.validate_seq(seq, poss_dup, now, &mut out) {
-            self.check_resend_done();
+        match self.validate_seq(seq, poss_dup, now, emit)? {
+            Control::Proceed => self.check_resend_done(),
+            // Gap/duplicate: suppressed, not surfaced.
+            ctrl => return Ok(ctrl),
         }
-        out
+        Ok(Control::Heartbeat)
     }
 
     /// Handles a received TestRequest. Replies with a Heartbeat echoing the TestReqID.
-    pub fn on_test_request(
+    pub fn on_test_request<F, E>(
         &mut self,
         seq: u32,
         poss_dup: bool,
         test_req_id: &[u8],
         now: Instant,
-    ) -> Out {
+        emit: &mut F,
+    ) -> Result<Control, E>
+    where
+        F: FnMut(AdminMsg) -> Result<(), E>,
+    {
         if !matches!(
             self.state,
             State::Active
@@ -565,51 +558,61 @@ impl SessionState {
                 | State::AwaitingResetDrain
                 | State::AwaitingResetAck
         ) {
-            return Out::EMPTY;
+            return Ok(Control::TestRequest);
         }
         self.last_received = Some(now);
         self.test_request_sent = None;
-        let mut out = Out::EMPTY;
-        if self.validate_seq(seq, poss_dup, now, &mut out) {
-            let mut echo = [0u8; TEST_REQ_ID_CAP];
-            let id_len = test_req_id.len().min(TEST_REQ_ID_CAP);
-            echo[..id_len].copy_from_slice(&test_req_id[..id_len]);
-            let Some(hb_seq) = self.bump_outbound(now, &mut out) else {
-                return out;
-            };
-            out.push_admin(AdminMsg::Heartbeat {
-                seq: hb_seq,
-                echo: Some((echo, id_len as u8)),
-            });
-            self.check_resend_done();
+        match self.validate_seq(seq, poss_dup, now, emit)? {
+            // In-sequence only: reply with the echoing Heartbeat. A gap/dup must
+            // not trigger a Heartbeat reply — it is a recovery event.
+            Control::Proceed => {
+                let mut echo = [0u8; TEST_REQ_ID_CAP];
+                let id_len = test_req_id.len().min(TEST_REQ_ID_CAP);
+                echo[..id_len].copy_from_slice(&test_req_id[..id_len]);
+                let hb_seq = seq!(self, now);
+                emit(AdminMsg::Heartbeat {
+                    seq: hb_seq,
+                    echo: Some((echo, id_len as u8)),
+                })?;
+                self.check_resend_done();
+            }
+            // Gap/duplicate: suppressed, not surfaced.
+            ctrl => return Ok(ctrl),
         }
-        out
+        Ok(Control::TestRequest)
     }
 
-    /// Handles a received ResendRequest. Surfaces `Event::ResendRange` so the
-    /// persistence layer can drive the replay walk via `FixJournal::resend`.
-    pub fn on_resend_request(
+    /// Handles a received ResendRequest. On an in-sequence request returns
+    /// [`Control::ResendRequest`] so the driver drives the replay walk via
+    /// `FixJournal::resend` (it parses `begin`/`end` locally). A gap, duplicate,
+    /// or out-of-state request returns [`Control::None`]: the driver does not
+    /// replay, and there is nothing to surface.
+    pub fn on_resend_request<F, E>(
         &mut self,
         seq: u32,
         poss_dup: bool,
-        begin: u32,
-        end: u32,
         now: Instant,
-    ) -> Out {
+        emit: &mut F,
+    ) -> Result<Control, E>
+    where
+        F: FnMut(AdminMsg) -> Result<(), E>,
+    {
         if !matches!(
             self.state,
             State::Active | State::Resending | State::LogoutPending
         ) {
-            return Out::EMPTY;
+            return Ok(Control::None);
         }
         self.last_received = Some(now);
         self.test_request_sent = None;
-        let mut out = Out::EMPTY;
-        if self.validate_seq(seq, poss_dup, now, &mut out) {
-            out.push_event(Event::ResendRange { begin, end });
-            self.check_resend_done();
+        match self.validate_seq(seq, poss_dup, now, emit)? {
+            Control::Proceed => {
+                self.check_resend_done();
+                Ok(Control::ResendRequest)
+            }
+            Control::None => Ok(Control::None),
+            ctrl => Ok(ctrl),
         }
-        out
     }
 
     /// Handles a received SequenceReset or GapFill.
@@ -617,67 +620,98 @@ impl SessionState {
     /// `gap_fill = false` is Reset mode: ignores `MsgSeqNum`, sets
     /// `next_inbound` to `new_seq`. `gap_fill = true` is GapFill mode:
     /// validates sequence, advances `next_inbound` to `new_seq`.
-    pub fn on_sequence_reset(
+    pub fn on_sequence_reset<F, E>(
         &mut self,
         seq: u32,
         new_seq: u32,
         gap_fill: bool,
         now: Instant,
-    ) -> Out {
+        emit: &mut F,
+    ) -> Result<Control, E>
+    where
+        F: FnMut(AdminMsg) -> Result<(), E>,
+    {
         if !matches!(
             self.state,
             State::Active | State::Resending | State::LogoutPending
         ) {
-            return Out::EMPTY;
+            return Ok(Control::SequenceReset);
         }
         self.last_received = Some(now);
         self.test_request_sent = None;
-        let mut out = Out::EMPTY;
-        if !gap_fill {
+        if gap_fill {
+            match self.validate_seq(seq, false, now, emit)? {
+                // In-sequence GapFill only: advance next_inbound to NewSeqNo. A
+                // gap/dup must not advance — it is a recovery event.
+                Control::Proceed => {
+                    if new_seq > self.next_inbound {
+                        self.next_inbound = new_seq;
+                    }
+                    self.check_resend_done();
+                }
+                // Gap/duplicate: suppressed, not surfaced.
+                ctrl => return Ok(ctrl),
+            }
+        } else {
+            // Reset mode: ignores MsgSeqNum. A backward/zero NewSeqNo is rejected.
             if new_seq == 0 || new_seq < self.next_inbound {
-                if let Some(reject_seq) = self.bump_outbound(now, &mut out) {
-                    out.push_admin(AdminMsg::Reject {
+                if let Some(reject_seq) = self.bump_outbound(now) {
+                    emit(AdminMsg::Reject {
                         seq: reject_seq,
                         ref_seq_num: seq,
                         ref_tag_id: Some(36),
                         session_reject_reason: 5,
-                    });
+                    })?;
                 }
-                return out;
+                return Ok(Control::SequenceReset);
             }
             self.next_inbound = new_seq;
-            out.push_event(Event::SequenceReset { new_seq });
-            self.check_resend_done();
-        } else if self.validate_seq(seq, false, now, &mut out) {
-            if new_seq > self.next_inbound {
-                self.next_inbound = new_seq;
-            }
-            out.push_event(Event::SequenceReset { new_seq });
             self.check_resend_done();
         }
-        out
+        Ok(Control::SequenceReset)
     }
 
     /// Handles a received Reject.
-    pub fn on_reject(&mut self, seq: u32, poss_dup: bool, ref_seq_num: u32, now: Instant) -> Out {
+    pub fn on_reject<F, E>(
+        &mut self,
+        seq: u32,
+        poss_dup: bool,
+        now: Instant,
+        emit: &mut F,
+    ) -> Result<Control, E>
+    where
+        F: FnMut(AdminMsg) -> Result<(), E>,
+    {
         if !matches!(
             self.state,
             State::Active | State::Resending | State::LogoutPending
         ) {
-            return Out::EMPTY;
+            return Ok(Control::Reject);
         }
         self.last_received = Some(now);
         self.test_request_sent = None;
-        let mut out = Out::EMPTY;
-        if self.validate_seq(seq, poss_dup, now, &mut out) {
-            out.push_event(Event::RejectReceived { ref_seq_num });
-            self.check_resend_done();
+        match self.validate_seq(seq, poss_dup, now, emit)? {
+            Control::Proceed => self.check_resend_done(),
+            // Gap/duplicate: suppressed, not surfaced.
+            ctrl => return Ok(ctrl),
         }
-        out
+        Ok(Control::Reject)
     }
 
-    /// Handles an in-sequence application message.
-    pub fn on_app(&mut self, seq: u32, poss_dup: bool, now: Instant) -> Out {
+    /// Handles an in-sequence application message. Returns
+    /// [`Control::Application`] when the sequence is in order, [`Control::None`]
+    /// when it is a gap/duplicate or the session is not active (nothing to
+    /// surface), or [`Control::Disconnected`] on a too-low seqnum.
+    pub fn on_app<F, E>(
+        &mut self,
+        seq: u32,
+        poss_dup: bool,
+        now: Instant,
+        emit: &mut F,
+    ) -> Result<Control, E>
+    where
+        F: FnMut(AdminMsg) -> Result<(), E>,
+    {
         if !matches!(
             self.state,
             State::Active
@@ -686,109 +720,121 @@ impl SessionState {
                 | State::AwaitingResetDrain
                 | State::AwaitingResetAck
         ) {
-            return Out::EMPTY;
+            return Ok(Control::None);
         }
         self.last_received = Some(now);
         self.test_request_sent = None;
-        let mut out = Out::EMPTY;
-        if self.validate_seq(seq, poss_dup, now, &mut out) {
-            out.push_event(Event::App {
-                seq_num: seq,
-                poss_dup,
-            });
-            self.check_resend_done();
+        match self.validate_seq(seq, poss_dup, now, emit)? {
+            Control::Proceed => {}
+            ctrl => return Ok(ctrl),
         }
-        out
+        self.check_resend_done();
+        Ok(Control::Application)
     }
 
     /// Sends a session-level Reject (35=3) for a received message that cannot be processed.
     ///
     /// Validates sequence then sends a Reject for `inbound_seq`. A gap sends ResendRequest instead.
     /// The session remains alive. No-op if the session is not in an active state.
-    pub fn on_reject_inbound(
+    pub fn on_reject_inbound<F, E>(
         &mut self,
         inbound_seq: u32,
         poss_dup: bool,
         ref_tag_id: Option<u32>,
         session_reject_reason: u8,
         now: Instant,
-    ) -> Out {
+        emit: &mut F,
+    ) -> Result<Control, E>
+    where
+        F: FnMut(AdminMsg) -> Result<(), E>,
+    {
         if !matches!(
             self.state,
             State::Active | State::Resending | State::LogoutPending
         ) {
-            return Out::EMPTY;
+            return Ok(Control::None);
         }
         self.last_received = Some(now);
-        let mut out = Out::EMPTY;
-        if !self.validate_seq(inbound_seq, poss_dup, now, &mut out) {
-            return out;
+        match self.validate_seq(inbound_seq, poss_dup, now, emit)? {
+            Control::Proceed => {}
+            ctrl => return Ok(ctrl),
         }
-        let Some(seq) = self.bump_outbound(now, &mut out) else {
-            return out;
-        };
-        out.push_admin(AdminMsg::Reject {
+        let seq = seq!(self, now);
+        emit(AdminMsg::Reject {
             seq,
             ref_seq_num: inbound_seq,
             ref_tag_id,
             session_reject_reason,
-        });
-        out
+        })?;
+        Ok(Control::None)
     }
 
     /// Handles a CompID mismatch detected by the framework. Sends Logout and disconnects.
-    pub fn on_comp_id_mismatch(&mut self, now: Instant) -> Out {
+    pub fn on_comp_id_mismatch<F, E>(&mut self, now: Instant, emit: &mut F) -> Result<Control, E>
+    where
+        F: FnMut(AdminMsg) -> Result<(), E>,
+    {
         if self.state == State::Disconnected {
-            return Out::EMPTY;
+            return Ok(Control::None);
         }
-        let mut out = Out::EMPTY;
-        let Some(seq) = self.bump_outbound(now, &mut out) else {
-            return out;
-        };
-        out.push_admin(AdminMsg::Logout { seq });
-        self.disconnect(DisconnectReason::CompIdMismatch, &mut out);
-        out
+        let seq = seq!(self, now);
+        emit(AdminMsg::Logout { seq })?;
+        Ok(self.disconnect(DisconnectReason::CompIdMismatch))
     }
 
-    fn validate_seq(&mut self, seq: u32, poss_dup: bool, now: Instant, out: &mut Out) -> bool {
+    /// Validates an inbound sequence number, emitting a ResendRequest on a gap or
+    /// a Logout on a too-low seqnum. Returns:
+    /// - [`Control::Proceed`] — seq matched and advanced; caller keeps processing.
+    /// - [`Control::None`] — a gap (ResendRequest emitted) or a `poss_dup`-too-low
+    ///   frame (ignored). The caller propagates this as its own verdict, so the
+    ///   message is suppressed: an out-of-sequence or duplicate frame is a recovery
+    ///   event, never surfaced to the application.
+    /// - [`Control::Disconnected`] — a too-low seqnum without `poss_dup`, or
+    ///   outbound exhaustion while emitting.
+    fn validate_seq<F, E>(
+        &mut self,
+        seq: u32,
+        poss_dup: bool,
+        now: Instant,
+        emit: &mut F,
+    ) -> Result<Control, E>
+    where
+        F: FnMut(AdminMsg) -> Result<(), E>,
+    {
         if seq > self.next_inbound {
             if self.gap_high < seq {
                 self.gap_high = seq;
             }
             if self.state != State::Resending {
-                let Some(rr_seq) = self.bump_outbound(now, out) else {
-                    return false;
-                };
-                out.push_admin(AdminMsg::ResendRequest {
+                let rr_seq = seq!(self, now);
+                emit(AdminMsg::ResendRequest {
                     seq: rr_seq,
                     begin: self.next_inbound,
-                });
+                })?;
                 if self.state == State::Active {
                     self.state = State::Resending;
                 }
             }
-            return false;
+            return Ok(Control::None);
         }
         if seq < self.next_inbound {
             if poss_dup {
-                return false;
+                return Ok(Control::None);
             }
-            let Some(logout_seq) = self.bump_outbound(now, out) else {
-                return false;
-            };
-            out.push_admin(AdminMsg::Logout { seq: logout_seq });
-            self.disconnect(DisconnectReason::SeqNumTooLow, out);
-            return false;
+            let logout_seq = seq!(self, now);
+            emit(AdminMsg::Logout { seq: logout_seq })?;
+            return Ok(self.disconnect(DisconnectReason::SeqNumTooLow));
         }
         self.next_inbound += 1;
-        true
+        Ok(Control::Proceed)
     }
 
-    fn disconnect(&mut self, reason: DisconnectReason, out: &mut Out) {
+    /// Transitions to `Disconnected` and returns the matching verdict.
+    fn disconnect(&mut self, reason: DisconnectReason) -> Control {
         self.state = State::Disconnected;
         self.test_request_sent = None;
         self.state_entered = None;
-        out.push_event(Event::Disconnected { reason });
+        Control::Disconnected { reason }
     }
 
     fn check_resend_done(&mut self) {
@@ -804,11 +850,37 @@ impl SessionState {
 
 #[cfg(test)]
 mod tests {
+    use std::convert::Infallible;
+
     use super::*;
 
+    /// A recording emit closure: pushes each admin message into `sent`, never
+    /// errors (`E = Infallible`). Tests read `sent` for the admin assertions and
+    /// the returned [`Control`] for the verdict.
+    fn recorder(sent: &mut Vec<AdminMsg>) -> impl FnMut(AdminMsg) -> Result<(), Infallible> + '_ {
+        move |m| {
+            sent.push(m);
+            Ok(())
+        }
+    }
+
+    /// Recording emit closure with `E = SessionError`, for the reset initiators
+    /// (`connect_reset`/`reset_sequence`) whose wrong-state guard requires
+    /// `E: From<SessionError>`. Success-path calls never produce an error.
+    fn recorder_se(
+        sent: &mut Vec<AdminMsg>,
+    ) -> impl FnMut(AdminMsg) -> Result<(), SessionError> + '_ {
+        move |m| {
+            sent.push(m);
+            Ok(())
+        }
+    }
+
     fn establish(s: &mut SessionState, now: Instant) {
-        s.connect(now);
-        s.on_logon(1, 30, false, false, now);
+        let mut sent = Vec::new();
+        s.connect(now, &mut recorder(&mut sent)).unwrap();
+        s.on_logon(1, 30, false, false, now, &mut recorder(&mut sent))
+            .unwrap();
     }
 
     #[test]
@@ -826,12 +898,13 @@ mod tests {
         let now = Instant::now();
         establish(&mut s, now);
         s.next_outbound = SEQ_MAX + 1;
-        let out = s.logout(now);
+        let mut sent = Vec::new();
+        let ctrl = s.logout(now, &mut recorder(&mut sent)).unwrap();
         assert_eq!(
-            out.event(),
-            Some(Event::Disconnected {
+            ctrl,
+            Control::Disconnected {
                 reason: DisconnectReason::SeqNumExhausted
-            })
+            }
         );
     }
 
@@ -841,12 +914,14 @@ mod tests {
         let now = Instant::now();
         establish(&mut s, now);
         s.allocate_seq(now).unwrap();
-        s.on_logout(2, false, now);
+        let mut sent = Vec::new();
+        s.on_logout(2, false, now, &mut recorder(&mut sent))
+            .unwrap();
         assert_eq!(s.state(), State::Disconnected);
-        let out = s.connect_reset(now).unwrap();
-        let admins: Vec<_> = out.admin_messages().collect();
-        assert_eq!(admins.len(), 1);
-        assert!(matches!(admins[0], AdminMsg::LogonReset { seq: 1, .. }));
+        sent.clear();
+        s.connect_reset(now, &mut recorder_se(&mut sent)).unwrap();
+        assert_eq!(sent.len(), 1);
+        assert!(matches!(sent[0], AdminMsg::LogonReset { seq: 1, .. }));
         assert_eq!(s.next_outbound_seq(), 2);
         assert_eq!(s.next_inbound_seq(), 1);
     }
@@ -856,16 +931,29 @@ mod tests {
         let mut s = SessionState::new(Duration::from_secs(30));
         let now = Instant::now();
         establish(&mut s, now);
-        assert!(s.connect_reset(now).is_err());
+        // Instantiate `E = SessionError` to observe the wrong-state guard. The
+        // guard returns before any emit, so the closure need not record.
+        let mut emit = |_m: AdminMsg| -> Result<(), SessionError> { Ok(()) };
+        assert_eq!(
+            s.connect_reset(now, &mut emit),
+            Err(SessionError::InvalidState)
+        );
     }
 
     #[test]
     fn reset_sequence_wrong_state_returns_err() {
         let mut s = SessionState::new(Duration::from_secs(30));
         let now = Instant::now();
-        assert!(s.reset_sequence(now).is_err()); // Disconnected
-        s.connect(now);
-        assert!(s.reset_sequence(now).is_err()); // LogonSent
+        let mut emit = |_m: AdminMsg| -> Result<(), SessionError> { Ok(()) };
+        assert_eq!(
+            s.reset_sequence(now, &mut emit),
+            Err(SessionError::InvalidState)
+        ); // Disconnected
+        s.connect(now, &mut emit).unwrap();
+        assert_eq!(
+            s.reset_sequence(now, &mut emit),
+            Err(SessionError::InvalidState)
+        ); // LogonSent
     }
 
     #[test]
@@ -877,33 +965,39 @@ mod tests {
         s.allocate_seq(now).unwrap(); // seq 3
 
         // Initiate reset: sends TestRequest, enters AwaitingResetDrain.
-        let out = s.reset_sequence(now).unwrap();
+        let mut sent = Vec::new();
+        s.reset_sequence(now, &mut recorder_se(&mut sent)).unwrap();
         assert_eq!(s.state(), State::AwaitingResetDrain);
-        let admins: Vec<_> = out.admin_messages().collect();
-        assert_eq!(admins.len(), 1);
-        assert!(matches!(admins[0], AdminMsg::TestRequest { id: 1, .. }));
+        assert_eq!(sent.len(), 1);
+        assert!(matches!(sent[0], AdminMsg::TestRequest { id: 1, .. }));
 
         // allocate_seq blocked.
         assert_eq!(s.allocate_seq(now), Err(SessionError::ResetInProgress));
 
         // Non-drain heartbeat: wrong echo — drain NOT triggered.
-        let out = s.on_heartbeat(2, false, None, now);
+        sent.clear();
+        s.on_heartbeat(2, false, None, now, &mut recorder(&mut sent))
+            .unwrap();
         assert_eq!(s.state(), State::AwaitingResetDrain);
-        assert_eq!(out.admin_messages().count(), 0);
+        assert_eq!(sent.len(), 0);
 
         // Drain heartbeat: correct echo + seq in order → sends LogonReset(seq=1), → AwaitingResetAck.
-        let out = s.on_heartbeat(3, false, Some(1), now);
+        sent.clear();
+        s.on_heartbeat(3, false, Some(1), now, &mut recorder(&mut sent))
+            .unwrap();
         assert_eq!(s.state(), State::AwaitingResetAck);
         assert_eq!(s.next_outbound_seq(), 2); // LogonReset consumed seq 1
-        let admins: Vec<_> = out.admin_messages().collect();
-        assert_eq!(admins.len(), 1);
-        assert!(matches!(admins[0], AdminMsg::LogonReset { seq: 1, .. }));
+        assert_eq!(sent.len(), 1);
+        assert!(matches!(sent[0], AdminMsg::LogonReset { seq: 1, .. }));
 
         // Peer acks with Logon(141=Y, seq=1): reset complete, → Active.
-        let out = s.on_logon(1, 30, true, false, now);
+        sent.clear();
+        let ctrl = s
+            .on_logon(1, 30, true, false, now, &mut recorder(&mut sent))
+            .unwrap();
         assert_eq!(s.state(), State::Active);
         assert_eq!(s.next_inbound_seq(), 2);
-        assert_eq!(out.event(), Some(Event::Established { heart_bt_int_s: 30 }));
+        assert_eq!(ctrl, Control::Logon { acknowledged: true });
     }
 
     #[test]
@@ -913,18 +1007,14 @@ mod tests {
         establish(&mut s, now);
         s.allocate_seq(now).unwrap(); // seq 2
 
-        s.reset_sequence(now).unwrap(); // → AwaitingResetDrain
+        let mut sent = Vec::new();
+        s.reset_sequence(now, &mut recorder_se(&mut sent)).unwrap(); // → AwaitingResetDrain
         assert_eq!(s.state(), State::AwaitingResetDrain);
 
         // App message arrives with old inbound seq while draining.
-        let out = s.on_app(2, false, now);
-        assert_eq!(
-            out.event(),
-            Some(Event::App {
-                seq_num: 2,
-                poss_dup: false
-            })
-        );
+        sent.clear();
+        let ctrl = s.on_app(2, false, now, &mut recorder(&mut sent)).unwrap();
+        assert_eq!(ctrl, Control::Application);
         assert_eq!(s.next_inbound_seq(), 3);
         assert_eq!(s.state(), State::AwaitingResetDrain);
     }
@@ -938,14 +1028,22 @@ mod tests {
         s.allocate_seq(now).unwrap(); // seq 3
 
         // Peer sends Logon(141=Y, seq=1) while we are Active.
-        let out = s.on_logon(1, 30, true, true, now);
+        let mut sent = Vec::new();
+        let ctrl = s
+            .on_logon(1, 30, true, true, now, &mut recorder(&mut sent))
+            .unwrap();
         assert_eq!(s.state(), State::Active);
         assert_eq!(s.next_outbound_seq(), 2); // reply Logon consumed seq 1
         assert_eq!(s.next_inbound_seq(), 2);
-        let admins: Vec<_> = out.admin_messages().collect();
-        assert_eq!(admins.len(), 1);
-        assert!(matches!(admins[0], AdminMsg::LogonReset { seq: 1, .. }));
-        assert_eq!(out.event(), Some(Event::Established { heart_bt_int_s: 30 }));
+        assert_eq!(sent.len(), 1);
+        assert!(matches!(sent[0], AdminMsg::LogonReset { seq: 1, .. }));
+        // send_reply = true → this Logon is one we answer, not an ack.
+        assert_eq!(
+            ctrl,
+            Control::Logon {
+                acknowledged: false
+            }
+        );
     }
 
     #[test]
@@ -953,16 +1051,20 @@ mod tests {
         let mut s = SessionState::new(Duration::from_secs(30));
         let now = Instant::now();
         establish(&mut s, now);
-        s.reset_sequence(now).unwrap();
-        s.on_heartbeat(2, false, Some(1), now); // → AwaitingResetAck
+        let mut sent = Vec::new();
+        s.reset_sequence(now, &mut recorder_se(&mut sent)).unwrap();
+        s.on_heartbeat(2, false, Some(1), now, &mut recorder(&mut sent))
+            .unwrap(); // → AwaitingResetAck
 
         // Peer replies without 141=Y.
-        let out = s.on_logon(1, 30, false, false, now);
+        let ctrl = s
+            .on_logon(1, 30, false, false, now, &mut recorder(&mut sent))
+            .unwrap();
         assert_eq!(
-            out.event(),
-            Some(Event::Disconnected {
+            ctrl,
+            Control::Disconnected {
                 reason: DisconnectReason::ProtocolViolation
-            })
+            }
         );
     }
 
@@ -971,14 +1073,18 @@ mod tests {
         let mut s = SessionState::new(Duration::from_secs(30));
         let now = Instant::now();
         establish(&mut s, now);
-        s.reset_sequence(now).unwrap();
-        s.on_heartbeat(2, false, Some(1), now); // → AwaitingResetAck
-        let out = s.on_timeout(now + Duration::from_secs(31));
+        let mut sent = Vec::new();
+        s.reset_sequence(now, &mut recorder_se(&mut sent)).unwrap();
+        s.on_heartbeat(2, false, Some(1), now, &mut recorder(&mut sent))
+            .unwrap(); // → AwaitingResetAck
+        let ctrl = s
+            .on_timeout(now + Duration::from_secs(31), &mut recorder(&mut sent))
+            .unwrap();
         assert_eq!(
-            out.event(),
-            Some(Event::Disconnected {
+            ctrl,
+            Control::Disconnected {
                 reason: DisconnectReason::ResetTimeout
-            })
+            }
         );
     }
 
@@ -986,14 +1092,16 @@ mod tests {
     fn sequence_reset_backward_sends_reject() {
         let mut s = SessionState::new(Duration::from_secs(30));
         let now = Instant::now();
-        s.connect(now);
-        s.on_logon(1, 30, false, false, now);
-        let out = s.on_sequence_reset(100, 1, false, now);
-        let admins: Vec<_> = out.admin_messages().collect();
-        assert_eq!(admins.len(), 1);
+        establish(&mut s, now);
+        let mut sent = Vec::new();
+        let ctrl = s
+            .on_sequence_reset(100, 1, false, now, &mut recorder(&mut sent))
+            .unwrap();
+        assert_eq!(ctrl, Control::SequenceReset);
+        assert_eq!(sent.len(), 1);
         assert!(
             matches!(
-                admins[0],
+                sent[0],
                 AdminMsg::Reject {
                     ref_seq_num: 100,
                     ref_tag_id: Some(36),
@@ -1001,7 +1109,7 @@ mod tests {
                     ..
                 }
             ),
-            "expected Reject, got {admins:?}"
+            "expected Reject, got {sent:?}"
         );
         assert_eq!(s.next_inbound_seq(), 2, "next_inbound must not advance");
     }
@@ -1010,14 +1118,14 @@ mod tests {
     fn reject_inbound_sends_reject_and_advances_seq() {
         let mut s = SessionState::new(Duration::from_secs(30));
         let now = Instant::now();
-        s.connect(now);
-        s.on_logon(1, 30, false, false, now);
-        let out = s.on_reject_inbound(2, false, Some(35), 1, now);
-        let admins: Vec<_> = out.admin_messages().collect();
-        assert_eq!(admins.len(), 1);
+        establish(&mut s, now);
+        let mut sent = Vec::new();
+        s.on_reject_inbound(2, false, Some(35), 1, now, &mut recorder(&mut sent))
+            .unwrap();
+        assert_eq!(sent.len(), 1);
         assert!(
             matches!(
-                admins[0],
+                sent[0],
                 AdminMsg::Reject {
                     ref_seq_num: 2,
                     ref_tag_id: Some(35),
@@ -1025,7 +1133,7 @@ mod tests {
                     ..
                 }
             ),
-            "expected Reject, got {admins:?}"
+            "expected Reject, got {sent:?}"
         );
         assert_eq!(s.next_inbound_seq(), 3);
     }
@@ -1034,19 +1142,276 @@ mod tests {
     fn reject_inbound_gap_sends_resend_request() {
         let mut s = SessionState::new(Duration::from_secs(30));
         let now = Instant::now();
-        s.connect(now);
-        s.on_logon(1, 30, false, false, now);
-        let out = s.on_reject_inbound(5, false, Some(35), 1, now);
-        let admins: Vec<_> = out.admin_messages().collect();
-        assert_eq!(admins.len(), 1);
+        establish(&mut s, now);
+        let mut sent = Vec::new();
+        s.on_reject_inbound(5, false, Some(35), 1, now, &mut recorder(&mut sent))
+            .unwrap();
+        assert_eq!(sent.len(), 1);
         assert!(
-            matches!(admins[0], AdminMsg::ResendRequest { begin: 2, .. }),
-            "expected ResendRequest, got {admins:?}"
+            matches!(sent[0], AdminMsg::ResendRequest { begin: 2, .. }),
+            "expected ResendRequest, got {sent:?}"
         );
         assert_eq!(
             s.next_inbound_seq(),
             2,
             "next_inbound must not advance on gap"
+        );
+    }
+
+    // ── suppression on gap/duplicate for the admin handlers ──────────────────
+    //
+    // The session layer surfaces only in-sequence, first-time admin messages.
+    // An out-of-sequence frame is a recovery event (emit a ResendRequest, do not
+    // surface); a PossDup duplicate below the expected seqnum is ignored (no
+    // ResendRequest, no disconnect, not surfaced). Each handler returns
+    // `Control::None` in both cases. In-sequence, it surfaces its own kind.
+
+    /// Advances `next_inbound` from 2 to 3 by consuming an in-sequence app at
+    /// seq 2, so a later `seq 2` PossDup frame is a genuine duplicate (< 3).
+    fn consume_seq_2(s: &mut SessionState, now: Instant) {
+        let mut sent = Vec::new();
+        assert_eq!(
+            s.on_app(2, false, now, &mut recorder(&mut sent)).unwrap(),
+            Control::Application
+        );
+        assert_eq!(s.next_inbound_seq(), 3);
+    }
+
+    #[test]
+    fn heartbeat_out_of_sequence_suppressed_and_resends() {
+        let mut s = SessionState::new(Duration::from_secs(30));
+        let now = Instant::now();
+        establish(&mut s, now); // next_inbound = 2
+        let mut sent = Vec::new();
+        // seq 5 > 2: gap.
+        let ctrl = s
+            .on_heartbeat(5, false, None, now, &mut recorder(&mut sent))
+            .unwrap();
+        assert_eq!(ctrl, Control::None, "gap Heartbeat must be suppressed");
+        assert_eq!(sent.len(), 1);
+        assert!(
+            matches!(sent[0], AdminMsg::ResendRequest { begin: 2, .. }),
+            "gap must emit a ResendRequest, got {sent:?}"
+        );
+        assert_eq!(s.state(), State::Resending);
+    }
+
+    #[test]
+    fn heartbeat_duplicate_suppressed_no_resend() {
+        let mut s = SessionState::new(Duration::from_secs(30));
+        let now = Instant::now();
+        establish(&mut s, now);
+        consume_seq_2(&mut s, now); // next_inbound = 3
+        let mut sent = Vec::new();
+        // seq 2 < 3 with PossDup: duplicate.
+        let ctrl = s
+            .on_heartbeat(2, true, None, now, &mut recorder(&mut sent))
+            .unwrap();
+        assert_eq!(
+            ctrl,
+            Control::None,
+            "duplicate Heartbeat must be suppressed"
+        );
+        assert_eq!(sent.len(), 0, "duplicate must not emit a ResendRequest");
+        assert_eq!(s.state(), State::Active, "duplicate must not disconnect");
+    }
+
+    #[test]
+    fn heartbeat_in_sequence_surfaces() {
+        let mut s = SessionState::new(Duration::from_secs(30));
+        let now = Instant::now();
+        establish(&mut s, now);
+        let mut sent = Vec::new();
+        let ctrl = s
+            .on_heartbeat(2, false, None, now, &mut recorder(&mut sent))
+            .unwrap();
+        assert_eq!(ctrl, Control::Heartbeat);
+        assert_eq!(sent.len(), 0);
+    }
+
+    #[test]
+    fn test_request_out_of_sequence_suppressed_no_echo() {
+        let mut s = SessionState::new(Duration::from_secs(30));
+        let now = Instant::now();
+        establish(&mut s, now);
+        let mut sent = Vec::new();
+        let ctrl = s
+            .on_test_request(5, false, b"PROBE", now, &mut recorder(&mut sent))
+            .unwrap();
+        assert_eq!(ctrl, Control::None, "gap TestRequest must be suppressed");
+        // A gap emits a ResendRequest and NOT the Heartbeat echo (which is
+        // Proceed-only work).
+        assert_eq!(sent.len(), 1);
+        assert!(
+            matches!(sent[0], AdminMsg::ResendRequest { begin: 2, .. }),
+            "gap must emit ResendRequest, not a Heartbeat echo, got {sent:?}"
+        );
+    }
+
+    #[test]
+    fn test_request_duplicate_suppressed_no_echo() {
+        let mut s = SessionState::new(Duration::from_secs(30));
+        let now = Instant::now();
+        establish(&mut s, now);
+        consume_seq_2(&mut s, now); // next_inbound = 3
+        let mut sent = Vec::new();
+        let ctrl = s
+            .on_test_request(2, true, b"PROBE", now, &mut recorder(&mut sent))
+            .unwrap();
+        assert_eq!(
+            ctrl,
+            Control::None,
+            "duplicate TestRequest must be suppressed"
+        );
+        assert_eq!(
+            sent.len(),
+            0,
+            "duplicate must not emit a Heartbeat echo or ResendRequest"
+        );
+        assert_eq!(s.state(), State::Active);
+    }
+
+    #[test]
+    fn reject_out_of_sequence_suppressed_and_resends() {
+        let mut s = SessionState::new(Duration::from_secs(30));
+        let now = Instant::now();
+        establish(&mut s, now);
+        let mut sent = Vec::new();
+        let ctrl = s
+            .on_reject(5, false, now, &mut recorder(&mut sent))
+            .unwrap();
+        assert_eq!(ctrl, Control::None, "gap Reject must be suppressed");
+        assert_eq!(sent.len(), 1);
+        assert!(
+            matches!(sent[0], AdminMsg::ResendRequest { begin: 2, .. }),
+            "gap must emit ResendRequest, got {sent:?}"
+        );
+        assert_eq!(s.state(), State::Resending);
+    }
+
+    #[test]
+    fn reject_duplicate_suppressed_no_resend() {
+        let mut s = SessionState::new(Duration::from_secs(30));
+        let now = Instant::now();
+        establish(&mut s, now);
+        consume_seq_2(&mut s, now); // next_inbound = 3
+        let mut sent = Vec::new();
+        let ctrl = s.on_reject(2, true, now, &mut recorder(&mut sent)).unwrap();
+        assert_eq!(ctrl, Control::None, "duplicate Reject must be suppressed");
+        assert_eq!(sent.len(), 0);
+        assert_eq!(s.state(), State::Active);
+    }
+
+    #[test]
+    fn sequence_reset_gap_fill_out_of_sequence_suppressed_and_resends() {
+        let mut s = SessionState::new(Duration::from_secs(30));
+        let now = Instant::now();
+        establish(&mut s, now); // next_inbound = 2
+        let mut sent = Vec::new();
+        // GapFill (gap_fill = true) at seq 5 > 2: out of sequence.
+        let ctrl = s
+            .on_sequence_reset(5, 9, true, now, &mut recorder(&mut sent))
+            .unwrap();
+        assert_eq!(
+            ctrl,
+            Control::None,
+            "out-of-sequence GapFill must be suppressed"
+        );
+        assert_eq!(sent.len(), 1);
+        assert!(
+            matches!(sent[0], AdminMsg::ResendRequest { begin: 2, .. }),
+            "gap must emit ResendRequest, got {sent:?}"
+        );
+        // Proceed-only work (advance to new_seq) must NOT run on a gap.
+        assert_eq!(
+            s.next_inbound_seq(),
+            2,
+            "next_inbound must not advance to new_seq on a gap"
+        );
+    }
+
+    #[test]
+    fn sequence_reset_gap_fill_duplicate_suppressed_no_advance() {
+        let mut s = SessionState::new(Duration::from_secs(30));
+        let now = Instant::now();
+        establish(&mut s, now);
+        consume_seq_2(&mut s, now); // next_inbound = 3
+        let mut sent = Vec::new();
+        // Note: on_sequence_reset validates GapFill with poss_dup = false
+        // internally, so a below-expected GapFill is a too-low-without-PossDup
+        // case → Disconnected, NOT a silent duplicate. Assert that path here so
+        // the GapFill duplicate semantics are pinned. seq 2 < 3.
+        let ctrl = s
+            .on_sequence_reset(2, 9, true, now, &mut recorder(&mut sent))
+            .unwrap();
+        assert_eq!(
+            ctrl,
+            Control::Disconnected {
+                reason: DisconnectReason::SeqNumTooLow
+            },
+            "a below-expected GapFill (validated with PossDup=false) disconnects"
+        );
+        assert_eq!(
+            s.next_inbound_seq(),
+            3,
+            "next_inbound must not advance on the too-low GapFill"
+        );
+    }
+
+    #[test]
+    fn sequence_reset_gap_fill_in_sequence_surfaces_and_advances() {
+        let mut s = SessionState::new(Duration::from_secs(30));
+        let now = Instant::now();
+        establish(&mut s, now); // next_inbound = 2
+        let mut sent = Vec::new();
+        // In-sequence GapFill at seq 2 advancing to new_seq 7.
+        let ctrl = s
+            .on_sequence_reset(2, 7, true, now, &mut recorder(&mut sent))
+            .unwrap();
+        assert_eq!(ctrl, Control::SequenceReset);
+        assert_eq!(s.next_inbound_seq(), 7, "in-sequence GapFill advances");
+        assert_eq!(sent.len(), 0);
+    }
+
+    #[test]
+    fn logout_out_of_sequence_suppressed_and_resends() {
+        let mut s = SessionState::new(Duration::from_secs(30));
+        let now = Instant::now();
+        establish(&mut s, now); // Active, next_inbound = 2
+        let mut sent = Vec::new();
+        // seq 5 > 2: gap. A gap Logout must be suppressed (ResendRequest), NOT
+        // treated as a logout exchange.
+        let ctrl = s
+            .on_logout(5, false, now, &mut recorder(&mut sent))
+            .unwrap();
+        assert_eq!(ctrl, Control::None, "gap Logout must be suppressed");
+        assert_eq!(sent.len(), 1);
+        assert!(
+            matches!(sent[0], AdminMsg::ResendRequest { begin: 2, .. }),
+            "gap must emit ResendRequest, not a Logout, got {sent:?}"
+        );
+        assert_eq!(
+            s.state(),
+            State::Resending,
+            "gap Logout must not disconnect the session"
+        );
+    }
+
+    #[test]
+    fn logout_duplicate_suppressed_no_disconnect() {
+        let mut s = SessionState::new(Duration::from_secs(30));
+        let now = Instant::now();
+        establish(&mut s, now);
+        consume_seq_2(&mut s, now); // next_inbound = 3
+        let mut sent = Vec::new();
+        // seq 2 < 3 with PossDup: duplicate Logout — ignored, session survives.
+        let ctrl = s.on_logout(2, true, now, &mut recorder(&mut sent)).unwrap();
+        assert_eq!(ctrl, Control::None, "duplicate Logout must be suppressed");
+        assert_eq!(sent.len(), 0);
+        assert_eq!(
+            s.state(),
+            State::Active,
+            "duplicate Logout must not disconnect the session"
         );
     }
 }
