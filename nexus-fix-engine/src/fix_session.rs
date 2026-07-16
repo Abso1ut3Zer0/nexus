@@ -224,12 +224,32 @@ impl<D: FixDictionary> FixSession<D> {
         self.writer.capacity()
     }
 
+    /// Inbound reader buffer capacity in bytes (fixed at construction).
+    ///
+    /// The largest single frame the reader can buffer. A wrapper reports this as
+    /// the size in [`Error::MessageTooLarge`] when [`read_spare`](Self::read_spare)
+    /// returns an empty slice — the buffer is full with one incomplete frame that
+    /// cannot grow.
+    pub fn reader_capacity(&self) -> usize {
+        self.reader.inner.capacity()
+    }
+
     // ── inbound byte-buffer seam ─────────────────────────────────────────────
 
     /// Spare region of the inbound buffer for the wrapper to read socket bytes
     /// into. Commit the number actually read with [`read_filled`](Self::read_filled).
+    ///
+    /// Compacts on the usual `should_compact()` threshold, but *also* whenever the
+    /// buffer is full (`remaining() == 0`) even below that threshold. Without the
+    /// full-buffer case a buffer that is full but <50% consumed would return an
+    /// empty spare slice; the wrapper's `stream.read(&mut [])` then returns
+    /// `Ok(0)` and is misread as EOF/disconnect. Compacting reclaims all consumed
+    /// space, so the spare is non-empty whenever there is anything to reclaim. If
+    /// nothing is reclaimable (a single incomplete frame already fills the whole
+    /// buffer) the spare stays empty, and the wrapper turns that into
+    /// [`Error::MessageTooLarge`] rather than reading into a zero-length slice.
     pub fn read_spare(&mut self) -> &mut [u8] {
-        if self.reader.inner.should_compact() {
+        if self.reader.inner.should_compact() || self.reader.inner.remaining() == 0 {
             self.reader.inner.compact();
         }
         self.reader.inner.spare()
@@ -479,6 +499,15 @@ impl<D: FixDictionary> FixSession<D> {
 
         match raw_type {
             b"A" => {
+                // Validate the typed decode before any side effect: a malformed
+                // admin (e.g. a Logon missing a required field) must error with
+                // MalformedMessage, not drive the state machine and then panic in
+                // `message()`'s `.expect("frame decoded in poll")`. `process_frame`
+                // sets `PendingKind` from tag 35 alone, so this decode is the only
+                // place the typed parse runs — it makes that `.expect()` genuinely
+                // safe. Discard the value; this is validation only.
+                D::Logon::decode(frame)
+                    .map_err(|_| Error::Protocol(SessionError::MalformedMessage))?;
                 let hbi = find_tag(frame, 0, 108)
                     .and_then(|s| parse_fix_uint(s.slice(frame)).ok())
                     .unwrap_or(30);
@@ -499,6 +528,9 @@ impl<D: FixDictionary> FixSession<D> {
                 Ok(PollOutcome::Message)
             }
             b"5" => {
+                // Validate the typed decode before any side effect (see `b"A"`).
+                D::Logout::decode(frame)
+                    .map_err(|_| Error::Protocol(SessionError::MalformedMessage))?;
                 let was_logout_pending = self.state.state() == State::LogoutPending;
                 let out = self.state.on_logout(seq, poss_dup, now);
                 for admin in out.admin_messages() {
@@ -513,6 +545,9 @@ impl<D: FixDictionary> FixSession<D> {
                 Ok(PollOutcome::Message)
             }
             b"0" => {
+                // Validate the typed decode before any side effect (see `b"A"`).
+                D::Heartbeat::decode(frame)
+                    .map_err(|_| Error::Protocol(SessionError::MalformedMessage))?;
                 let echo_id =
                     find_tag(frame, 0, 112).and_then(|s| parse_fix_seqnum(s.slice(frame)).ok());
                 let out = self.state.on_heartbeat(seq, poss_dup, echo_id, now);
@@ -526,6 +561,9 @@ impl<D: FixDictionary> FixSession<D> {
                 Ok(PollOutcome::Message)
             }
             b"1" => {
+                // Validate the typed decode before any side effect (see `b"A"`).
+                D::TestRequest::decode(frame)
+                    .map_err(|_| Error::Protocol(SessionError::MalformedMessage))?;
                 let test_req_id =
                     find_tag(frame, 0, 112).map_or_else(|| b"".as_ref(), |s| s.slice(frame));
                 let out = self.state.on_test_request(seq, poss_dup, test_req_id, now);
@@ -539,6 +577,9 @@ impl<D: FixDictionary> FixSession<D> {
                 Ok(PollOutcome::Message)
             }
             b"2" => {
+                // Validate the typed decode before any side effect (see `b"A"`).
+                D::ResendRequest::decode(frame)
+                    .map_err(|_| Error::Protocol(SessionError::MalformedMessage))?;
                 let begin = find_tag(frame, 0, 7)
                     .and_then(|s| parse_fix_seqnum(s.slice(frame)).ok())
                     .map_or(0, |v| v as u32);
@@ -568,6 +609,9 @@ impl<D: FixDictionary> FixSession<D> {
                 Ok(PollOutcome::Message)
             }
             b"4" => {
+                // Validate the typed decode before any side effect (see `b"A"`).
+                D::SequenceReset::decode(frame)
+                    .map_err(|_| Error::Protocol(SessionError::MalformedMessage))?;
                 let new_seq = find_tag(frame, 0, 36)
                     .and_then(|s| parse_fix_seqnum(s.slice(frame)).ok())
                     .map_or(0, |v| v as u32);
@@ -585,6 +629,9 @@ impl<D: FixDictionary> FixSession<D> {
                 Ok(PollOutcome::Message)
             }
             b"3" => {
+                // Validate the typed decode before any side effect (see `b"A"`).
+                D::Reject::decode(frame)
+                    .map_err(|_| Error::Protocol(SessionError::MalformedMessage))?;
                 let ref_seq = find_tag(frame, 0, 45)
                     .and_then(|s| parse_fix_seqnum(s.slice(frame)).ok())
                     .map_or(0, |v| v as u32);
@@ -865,7 +912,7 @@ mod tests {
 
     use super::{FixSession, PollOutcome};
     use crate::frame::{FrameReader, FrameWriter};
-    use crate::framework::{CompId, MessageReader, MessageWriter, SessionConfig};
+    use crate::framework::{CompId, Message, MessageReader, MessageWriter, SessionConfig};
     use crate::persist::FixJournal;
     use crate::session::SessionState;
 
@@ -1281,5 +1328,319 @@ mod tests {
             len - orig.len(),
             super::REFRAME_HEADROOM
         );
+    }
+
+    // ── strict dictionary: admin decode fails on a missing required field ─────
+
+    /// A dictionary whose admin decode rejects a Logon that lacks HeartBtInt
+    /// (tag 108). Real generated dictionaries fail the typed decode when a
+    /// required field is absent; `MockDict`'s always-`Ok` decoder cannot model
+    /// that, so this second dictionary exercises the malformed-admin path.
+    struct StrictDict;
+
+    struct StrictAdmin<'buf> {
+        _buf: &'buf [u8],
+    }
+
+    impl<'buf> FixAdminMsg<'buf> for StrictAdmin<'buf> {
+        fn decode(buf: &'buf [u8]) -> Result<Self, DecodeError> {
+            // Require HeartBtInt(108) — a well-formed Logon carries it. Its
+            // absence stands in for any required-field violation the typed
+            // decoder would reject.
+            if find_tag(buf, 0, 108).is_some() {
+                Ok(Self { _buf: buf })
+            } else {
+                Err(DecodeError::Truncated)
+            }
+        }
+    }
+
+    impl FixDictionary for StrictDict {
+        type MsgType = MockMsgType;
+        type Header<'buf> = MockHeader<'buf>;
+        type Logon<'buf> = StrictAdmin<'buf>;
+        type Logout<'buf> = StrictAdmin<'buf>;
+        type Heartbeat<'buf> = StrictAdmin<'buf>;
+        type TestRequest<'buf> = StrictAdmin<'buf>;
+        type ResendRequest<'buf> = StrictAdmin<'buf>;
+        type SequenceReset<'buf> = StrictAdmin<'buf>;
+        type Reject<'buf> = StrictAdmin<'buf>;
+        const BEGIN_STRING: &'static [u8] = b"FIX.4.4";
+        fn is_admin(_: MockMsgType) -> bool {
+            false
+        }
+    }
+
+    /// Build a well-framed Logon (35=A) from the peer at `seq`, optionally
+    /// omitting HeartBtInt(108). Comp IDs are peer→engine (49=ACCEPTOR,
+    /// 56=INITIATOR) so the frame passes comp-id validation.
+    fn peer_logon_frame(seq: u32, with_hbi: bool, buf: &mut [u8]) -> usize {
+        let mut seq_buf = [0u8; 10];
+        let seq_n = nexus_fix_codec::encode_fix_uint(seq, &mut seq_buf);
+        let mut fmt = FrameFormatter::new(buf, b"FIX.4.4", b"A");
+        fmt.field(34, &seq_buf[..seq_n]);
+        fmt.field(49, peer_id().as_bytes()); // peer is the SENDER of the Logon
+        fmt.field(56, our_id().as_bytes());
+        fmt.field(52, b"20260615-12:00:00.000");
+        if with_hbi {
+            fmt.field(108, b"30");
+        }
+        let (start, len) = fmt.finish().unwrap();
+        buf.copy_within(start..start + len, 0);
+        len
+    }
+
+    /// A well-framed, comp-id-valid, valid-seqnum admin message (Logon) whose
+    /// *typed* decode fails (missing a required field) must surface as
+    /// `Error::Protocol(MalformedMessage)` — never panic. Before the fix,
+    /// `process_frame` set `PendingKind` from tag 35 alone and never ran the
+    /// typed decode, so `message()`'s `.expect("frame decoded in poll")` panicked
+    /// the process on a malformed admin. Regression for the sans-IO refactor
+    /// (this is what the pre-refactor transport returned via its per-arm
+    /// decode-then-`map_err`).
+    #[test]
+    fn malformed_admin_errors_not_panics() {
+        use crate::framework::SessionError;
+
+        let dir = tmp_dir("malformed_admin");
+        let now = Instant::now();
+
+        let reader = MessageReader::with_frame_reader(FrameReader::builder().build());
+        let writer =
+            MessageWriter::with_frame_writer(FrameWriter::builder().buffer_capacity(4096).build());
+        let mut state = SessionState::new(Duration::from_secs(30));
+        // Initiate: engine sends Logon (outbound seq 1), moves to LogonSent, and
+        // expects the peer's Logon at inbound seq 1.
+        state.connect(now);
+
+        let journal = FixJournal::open(&dir, 0, 256).unwrap();
+        let mut session: FixSession<StrictDict> = FixSession::from_buffers(
+            reader,
+            writer,
+            state,
+            SessionConfig {
+                sender: our_id(),
+                target: peer_id(),
+            },
+            journal,
+        );
+        // Drain the opening Logon the engine staged so only inbound is exercised.
+        let n = session.outbound().len();
+        session.advance_outbound(n);
+
+        // Sanity: the *same* frame WITH tag 108 decodes and surfaces as a Message
+        // (guards against the frame being rejected for an unrelated reason).
+        {
+            let dir_ok = tmp_dir("malformed_admin_ok");
+            let reader = MessageReader::with_frame_reader(FrameReader::builder().build());
+            let writer = MessageWriter::with_frame_writer(
+                FrameWriter::builder().buffer_capacity(4096).build(),
+            );
+            let mut state = SessionState::new(Duration::from_secs(30));
+            state.connect(now);
+            let journal = FixJournal::open(&dir_ok, 0, 256).unwrap();
+            let mut ok_session: FixSession<StrictDict> = FixSession::from_buffers(
+                reader,
+                writer,
+                state,
+                SessionConfig {
+                    sender: our_id(),
+                    target: peer_id(),
+                },
+                journal,
+            );
+            let n = ok_session.outbound().len();
+            ok_session.advance_outbound(n);
+
+            let mut buf = vec![0u8; 256];
+            let len = peer_logon_frame(1, true, &mut buf);
+            let spare = ok_session.read_spare();
+            spare[..len].copy_from_slice(&buf[..len]);
+            ok_session.read_filled(len);
+            assert_eq!(
+                ok_session.poll(now).expect("valid Logon must not error"),
+                PollOutcome::Message,
+                "a well-formed Logon (with tag 108) must surface as a Message"
+            );
+            let _ = std::fs::remove_dir_all(&dir_ok);
+        }
+
+        // The malformed Logon: missing HeartBtInt(108) → typed decode fails.
+        let mut buf = vec![0u8; 256];
+        let len = peer_logon_frame(1, false, &mut buf);
+        let spare = session.read_spare();
+        spare[..len].copy_from_slice(&buf[..len]);
+        session.read_filled(len);
+
+        // Drive poll → message exactly as the wrapper's `recv` does. WITH the fix,
+        // `poll` returns the error before ever yielding `Message`, so `message()`
+        // is never reached. WITHOUT the fix, `poll` yields `Message` and the
+        // `message()` call below panics on `.expect("frame decoded in poll")` —
+        // this call is what makes the regression observable end-to-end.
+        match session.poll(now) {
+            Err(super::Error::Protocol(SessionError::MalformedMessage)) => {}
+            Ok(PollOutcome::Message) => {
+                let _ = session.message(); // panics without the fix
+                panic!("malformed admin surfaced as a Message instead of an error");
+            }
+            other => {
+                panic!("malformed admin must return Protocol(MalformedMessage), got {other:?}")
+            }
+        }
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    // ── Fix B part 1: compaction when the buffer is full below the threshold ──
+
+    /// Build an inbound app frame (35=D) from the peer at `seq` with a `58=Text`
+    /// filler of `fill` bytes. Comp IDs are peer→engine (49=ACCEPTOR,56=INITIATOR)
+    /// so it passes comp-id validation on an Active session.
+    fn inbound_app_frame(seq: u32, fill: usize, buf: &mut [u8]) -> usize {
+        let mut seq_buf = [0u8; 10];
+        let seq_n = nexus_fix_codec::encode_fix_uint(seq, &mut seq_buf);
+        let filler = vec![b'y'; fill];
+        let mut fmt = FrameFormatter::new(buf, b"FIX.4.4", b"D");
+        fmt.field(34, &seq_buf[..seq_n]);
+        fmt.field(49, peer_id().as_bytes());
+        fmt.field(56, our_id().as_bytes());
+        fmt.field(52, b"20260615-12:00:00.000");
+        fmt.field(58, &filler);
+        let (start, len) = fmt.finish().unwrap();
+        buf.copy_within(start..start + len, 0);
+        len
+    }
+
+    /// Build an Active session (post-logon, `next_inbound == 2`) with the given
+    /// reader capacity, ready to receive inbound app frames.
+    fn active_session(dir: &PathBuf, reader_cap: usize) -> FixSession<MockDict> {
+        let reader = MessageReader::with_frame_reader(
+            FrameReader::builder().buffer_capacity(reader_cap).build(),
+        );
+        let writer =
+            MessageWriter::with_frame_writer(FrameWriter::builder().buffer_capacity(4096).build());
+        let mut state = SessionState::new(Duration::from_secs(30));
+        let now = Instant::now();
+        state.connect(now);
+        state.on_logon(1, 30, false, false, now); // peer Logon at seq 1 → Active, next_inbound = 2
+        let journal = FixJournal::open(dir, 0, 256).unwrap();
+        let mut session = FixSession::from_buffers(
+            reader,
+            writer,
+            state,
+            SessionConfig {
+                sender: our_id(),
+                target: peer_id(),
+            },
+            journal,
+        );
+        let n = session.outbound().len();
+        session.advance_outbound(n); // drain the engine's opening Logon
+        session
+    }
+
+    /// Fix B: when the reader buffer is full but consumed below the compaction
+    /// threshold (`remaining() == 0 && !should_compact()`), `read_spare` must
+    /// still compact so the spare is non-empty — otherwise the wrapper reads into
+    /// a zero-length slice and false-EOFs. A large frame that needs compaction
+    /// mid-stream must be buffered and delivered, not dropped.
+    #[test]
+    fn full_buffer_below_threshold_compacts_and_delivers() {
+        let dir = tmp_dir("compact_below_threshold");
+        let now = Instant::now();
+
+        // Reader cap 512 → compact threshold at 256 bytes consumed.
+        const READER_CAP: usize = 512;
+        let mut session = active_session(&dir, READER_CAP);
+
+        // Small app (seq 2): once consumed it leaves < 256 bytes behind, so the
+        // buffer will be "full but below the compaction threshold" after we top
+        // it up — exactly the state Fix B fixes.
+        let mut small = vec![0u8; 256];
+        let small_len = inbound_app_frame(2, 6, &mut small);
+        assert!(
+            small_len < 128,
+            "small frame ({small_len}) must stay well under the compact threshold"
+        );
+
+        // A large app (seq 3) that FITS the buffer on its own but NOT beside the
+        // small frame's consumed residue — so completing it requires a compaction
+        // that reclaims the small frame's space. (Distinct from scenario (a),
+        // where the frame exceeds the buffer outright.)
+        let mut large = vec![0u8; 1024];
+        let large_len = inbound_app_frame(3, 400, &mut large);
+        assert!(
+            large_len <= READER_CAP,
+            "large frame ({large_len}) must fit the reader buffer ({READER_CAP}) on its own"
+        );
+        assert!(
+            large_len > READER_CAP - small_len,
+            "large frame ({large_len}) must not fit beside the small frame's residue \
+             ({small_len}) — that is what forces the mid-stream compaction"
+        );
+
+        // 1) Deliver the small frame.
+        let spare = session.read_spare();
+        spare[..small_len].copy_from_slice(&small[..small_len]);
+        session.read_filled(small_len);
+        assert_eq!(
+            session.poll(now).expect("poll small"),
+            PollOutcome::Message,
+            "small app must surface"
+        );
+
+        // 2) Fill the rest of the buffer with the head of the large frame. The
+        //    small frame's bytes are now consumed (< threshold) and the buffer is
+        //    full: should_compact() is false, remaining() is 0.
+        let head = READER_CAP - small_len;
+        let spare = session.read_spare();
+        let take = head.min(spare.len());
+        spare[..take].copy_from_slice(&large[..take]);
+        session.read_filled(take);
+
+        // The frame is still incomplete → NeedMoreBytes.
+        assert_eq!(
+            session.poll(now).expect("poll large head"),
+            PollOutcome::NeedMoreBytes,
+            "partial large frame must ask for more"
+        );
+
+        // 3) The fix: read_spare must be NON-EMPTY here (it compacts because the
+        //    buffer is full even though should_compact() is false). Without the
+        //    fix this slice is empty and the wrapper false-EOFs.
+        let spare = session.read_spare();
+        assert!(
+            !spare.is_empty(),
+            "read_spare must compact a full-but-below-threshold buffer to a \
+             non-empty spare (Fix B); empty spare would false-EOF the wrapper"
+        );
+
+        // 4) Feed the remainder and confirm the large frame is delivered intact.
+        let rest = &large[take..large_len];
+        let mut fed = 0;
+        while fed < rest.len() {
+            let spare = session.read_spare();
+            assert!(
+                !spare.is_empty(),
+                "spare must stay non-empty while draining"
+            );
+            let n = (rest.len() - fed).min(spare.len());
+            spare[..n].copy_from_slice(&rest[fed..fed + n]);
+            session.read_filled(n);
+            fed += n;
+        }
+        assert_eq!(
+            session.poll(now).expect("poll large complete"),
+            PollOutcome::Message,
+            "large app must be delivered after compaction — no false disconnect"
+        );
+        // The delivered frame is the seq-3 app we sent (byte-for-byte).
+        let msg = session.message();
+        assert!(
+            matches!(msg, Message::Application { .. }),
+            "delivered message must be the reassembled application frame"
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

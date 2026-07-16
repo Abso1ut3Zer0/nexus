@@ -204,6 +204,16 @@ impl<S: Read + Write, D: FixDictionary> FixConnection<S, D> {
                 // Buffer already drained above; loop to continue the resend.
                 PollOutcome::ResendPending => {}
                 PollOutcome::NeedMoreBytes => {
+                    // An empty spare means the reader buffer is full with a single
+                    // incomplete frame that cannot grow (compaction reclaimed
+                    // nothing). Reading into a zero-length slice yields `Ok(0)`,
+                    // which the `Ok(0)` arm below would misread as EOF. Surface it
+                    // as the real cause: a frame larger than the reader buffer.
+                    if self.session.read_spare().is_empty() {
+                        return Err(Error::MessageTooLarge(
+                            self.session.reader_capacity().saturating_add(1),
+                        ));
+                    }
                     let spare = self.session.read_spare();
                     match self.stream.read(spare) {
                         Ok(0) => {

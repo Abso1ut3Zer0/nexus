@@ -195,6 +195,12 @@ impl FrameReader {
         self.buf.remaining()
     }
 
+    /// Total buffer capacity in bytes (fixed at construction).
+    #[inline]
+    pub fn capacity(&self) -> usize {
+        self.buf.capacity()
+    }
+
     /// Parse the next complete FIX message.
     ///
     /// Returns the full message bytes (`8=…` through `10=XXX\x01`) or
