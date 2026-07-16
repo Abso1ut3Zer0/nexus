@@ -875,7 +875,7 @@ fn reframe_app_into(
 
 #[cfg(test)]
 mod tests {
-    use std::path::PathBuf;
+    use std::path::{Path, PathBuf};
     use std::time::{Duration, Instant};
 
     use nexus_fix_codec::{
@@ -980,16 +980,43 @@ mod tests {
         CompId::new(b"ACCEPTOR").unwrap()
     }
 
-    fn tmp_dir(suffix: &str) -> PathBuf {
-        let mut p = std::env::temp_dir();
-        p.push(format!(
-            "nexus_fix_session_{}_{}",
-            std::process::id(),
-            suffix
-        ));
-        let _ = std::fs::remove_dir_all(&p);
-        std::fs::create_dir_all(&p).unwrap();
-        p
+    /// RAII scratch directory. `FixJournal::open` preallocates tens of megabytes
+    /// into each of these, so they must not outlive the test that made them.
+    /// `Drop` also runs while unwinding, so a *failing* test cleans up too —
+    /// which a manual `remove_dir_all` at the end of the body would not.
+    ///
+    /// Bind it to a live local (`let dir = tmp_dir(..)`), never `let _ = ..`, or
+    /// the directory is removed before the test can use it.
+    struct TempDir(PathBuf);
+
+    impl TempDir {
+        fn new(suffix: &str) -> Self {
+            let mut p = std::env::temp_dir();
+            p.push(format!(
+                "nexus_fix_session_{}_{}",
+                std::process::id(),
+                suffix
+            ));
+            // A previous run killed by a signal can leave the tree behind, and
+            // PIDs get recycled -- start from a clean slate.
+            let _ = std::fs::remove_dir_all(&p);
+            std::fs::create_dir_all(&p).unwrap();
+            Self(p)
+        }
+
+        fn path(&self) -> &Path {
+            &self.0
+        }
+    }
+
+    impl Drop for TempDir {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+
+    fn tmp_dir(suffix: &str) -> TempDir {
+        TempDir::new(suffix)
     }
 
     /// Build a stored app frame at `seq` with a filler `58=Text` field whose
@@ -1047,7 +1074,7 @@ mod tests {
     /// `writer_cap` sizes only the outbound writer — the shared journal content
     /// is byte-identical across runs, so the two resends differ only in the
     /// resend `SendingTime` (normalized away by the oracle).
-    fn build_session(dir: &PathBuf, writer_cap: usize) -> FixSession<MockDict> {
+    fn build_session(dir: &Path, writer_cap: usize) -> FixSession<MockDict> {
         let reader = MessageReader::with_frame_reader(FrameReader::builder().build());
         let writer = MessageWriter::with_frame_writer(
             FrameWriter::builder().buffer_capacity(writer_cap).build(),
@@ -1185,7 +1212,7 @@ mod tests {
         let dir_small = tmp_dir("resume_small");
 
         // Large writer: whole resend fits in one pass.
-        let mut big = build_session(&dir_big, 64 * 1024);
+        let mut big = build_session(dir_big.path(), 64 * 1024);
         let (big_stream, big_pending) = drive_resend_stream(&mut big);
         assert_eq!(big_pending, 0, "large-writer resend must be a single pass");
 
@@ -1193,7 +1220,7 @@ mod tests {
         // 200 bytes holds one reframed item (< ~180) but never two (>= ~250),
         // and comfortably exceeds the largest single frame so the empty-buffer
         // MessageTooLarge guard never fires.
-        let mut small = build_session(&dir_small, 200);
+        let mut small = build_session(dir_small.path(), 200);
         let (small_stream, small_pending) = drive_resend_stream(&mut small);
 
         // The path was actually exercised, not trivially skipped.
@@ -1286,9 +1313,6 @@ mod tests {
             let tags: Vec<u32> = FieldReader::new(f, 0).map(|fld| fld.tag).collect();
             assert!(tags.contains(&8) && tags.contains(&34) && tags.contains(&52));
         }
-
-        let _ = std::fs::remove_dir_all(&dir_big);
-        let _ = std::fs::remove_dir_all(&dir_small);
     }
 
     #[test]
@@ -1404,7 +1428,7 @@ mod tests {
         // expects the peer's Logon at inbound seq 1.
         state.connect(now, &mut drop_emit).unwrap();
 
-        let journal = FixJournal::open(&dir, 0, 256).unwrap();
+        let journal = FixJournal::open(dir.path(), 0, 256).unwrap();
         let mut session: FixSession<StrictDict> = FixSession::from_buffers(
             reader,
             writer,
@@ -1429,7 +1453,7 @@ mod tests {
             );
             let mut state = SessionState::new(Duration::from_secs(30));
             state.connect(now, &mut drop_emit).unwrap();
-            let journal = FixJournal::open(&dir_ok, 0, 256).unwrap();
+            let journal = FixJournal::open(dir_ok.path(), 0, 256).unwrap();
             let mut ok_session: FixSession<StrictDict> = FixSession::from_buffers(
                 reader,
                 writer,
@@ -1453,7 +1477,6 @@ mod tests {
                 PollOutcome::Message,
                 "a well-formed Logon (with tag 108) must surface as a Message"
             );
-            let _ = std::fs::remove_dir_all(&dir_ok);
         }
 
         // The malformed Logon: missing HeartBtInt(108) → typed decode fails.
@@ -1478,8 +1501,6 @@ mod tests {
                 panic!("malformed admin must return Protocol(MalformedMessage), got {other:?}")
             }
         }
-
-        let _ = std::fs::remove_dir_all(&dir);
     }
 
     // ── Fix B part 1: compaction when the buffer is full below the threshold ──
@@ -1504,7 +1525,7 @@ mod tests {
 
     /// Build an Active session (post-logon, `next_inbound == 2`) with the given
     /// reader capacity, ready to receive inbound app frames.
-    fn active_session(dir: &PathBuf, reader_cap: usize) -> FixSession<MockDict> {
+    fn active_session(dir: &Path, reader_cap: usize) -> FixSession<MockDict> {
         let reader = MessageReader::with_frame_reader(
             FrameReader::builder().buffer_capacity(reader_cap).build(),
         );
@@ -1541,7 +1562,7 @@ mod tests {
 
         // Reader cap 512 → compact threshold at 256 bytes consumed.
         const READER_CAP: usize = 512;
-        let mut session = active_session(&dir, READER_CAP);
+        let mut session = active_session(dir.path(), READER_CAP);
 
         // Small app (seq 2): once consumed it leaves < 256 bytes behind, so the
         // buffer will be "full but below the compaction threshold" after we top
@@ -1630,7 +1651,5 @@ mod tests {
             matches!(msg, Message::Application { .. }),
             "delivered message must be the reassembled application frame"
         );
-
-        let _ = std::fs::remove_dir_all(&dir);
     }
 }

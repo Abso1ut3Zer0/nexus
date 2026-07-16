@@ -4,16 +4,82 @@ use nexus_platform::MapHints;
 
 use super::{AppendOnlyJournal, AppendOnlyJournalConfig, AppendOnlyJournalError, FixHeader};
 
-fn base_path(name: &str) -> PathBuf {
-    std::env::temp_dir().join(format!("nexus-journal-{}-{}", std::process::id(), name))
+/// RAII scratch path *prefix*. Unlike the other journals, an
+/// [`AppendOnlyJournal`] does not own a directory: it writes sibling segment
+/// files `base.0`, `base.1`, ... So this guard removes the numbered segments
+/// rather than a tree.
+///
+/// `Drop` also runs while unwinding, so a *failing* test cleans up too — which
+/// the old manual `cleanup(&base)` at the end of the body did not.
+///
+/// Bind it to a live local (`let base = base_path(..)`), never `let _ = ..`, or
+/// the segments are removed before the test can use them.
+struct TempBase(PathBuf);
+
+impl TempBase {
+    fn new(name: &str) -> Self {
+        let p = std::env::temp_dir().join(format!("nexus-journal-{}-{}", std::process::id(), name));
+        let this = Self(p);
+        // A previous run killed by a signal can leave segments behind, and PIDs
+        // get recycled -- start from a clean slate.
+        this.remove_segments();
+        this
+    }
+
+    fn path(&self) -> &Path {
+        &self.0
+    }
+
+    /// Remove every segment this base could have produced. The tests here never
+    /// roll past a handful of segments; 32 covers them all with room to spare.
+    fn remove_segments(&self) {
+        for i in 0..32u64 {
+            let _ = std::fs::remove_file(super::segment_path(&self.0, i));
+        }
+    }
 }
 
-fn cleanup(base: &Path) {
-    for i in 0..32u64 {
-        let mut p = base.as_os_str().to_owned();
-        p.push(format!(".{i}"));
-        let _ = std::fs::remove_file(PathBuf::from(p));
+impl Drop for TempBase {
+    fn drop(&mut self) {
+        self.remove_segments();
     }
+}
+
+/// Cleanup must survive a panic. `Drop` running during unwind is the whole
+/// reason this is RAII rather than the `cleanup(base)` call this replaced: a
+/// panicking test never reaches such a call, which is exactly how the previous
+/// convention leaked segments. If a refactor drops the `Drop` impl or reverts to
+/// manual cleanup, this fails.
+#[test]
+fn temp_base_cleans_up_while_unwinding() {
+    let captured: std::sync::Mutex<Option<PathBuf>> = std::sync::Mutex::new(None);
+
+    let res = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let base = TempBase::new("panic_cleanup");
+        std::fs::write(super::segment_path(base.path(), 0), b"x").unwrap();
+        *captured.lock().unwrap() = Some(base.path().to_path_buf());
+        assert!(super::segment_path(base.path(), 0).exists());
+        // Deliberate: this message is expected in an otherwise-passing run. The
+        // global panic hook is left alone on purpose; overriding it would race
+        // with other tests panicking in parallel and swallow their output.
+        panic!("deliberate panic: exercising TempBase cleanup during unwind");
+    }));
+    assert!(res.is_err(), "the closure must have panicked");
+
+    let p = captured
+        .lock()
+        .unwrap()
+        .take()
+        .expect("path captured before the panic");
+    assert!(
+        !super::segment_path(&p, 0).exists(),
+        "TempBase must remove its segments while unwinding: {}",
+        p.display()
+    );
+}
+
+fn base_path(name: &str) -> TempBase {
+    TempBase::new(name)
 }
 
 fn fix(seq: u64) -> FixHeader {
@@ -33,9 +99,8 @@ fn cfg(segment_size: usize) -> AppendOnlyJournalConfig {
 #[test]
 fn roundtrip_fix() {
     let base = base_path("roundtrip");
-    cleanup(&base);
 
-    let (mut w, mut r) = AppendOnlyJournal::<FixHeader>::open(&base, cfg(1 << 16)).unwrap();
+    let (mut w, mut r) = AppendOnlyJournal::<FixHeader>::open(base.path(), cfg(1 << 16)).unwrap();
     for seq in 1..=3u64 {
         let payload = vec![seq as u8; seq as usize * 4];
         let mut claim = w.try_claim(fix(seq), payload.len()).unwrap();
@@ -51,15 +116,13 @@ fn roundtrip_fix() {
     assert!(r.next_record().unwrap().is_none());
 
     drop((w, r));
-    cleanup(&base);
 }
 
 #[test]
 fn unit_header_zero_overhead() {
     let base = base_path("unit");
-    cleanup(&base);
 
-    let (mut w, mut r) = AppendOnlyJournal::<()>::open(&base, cfg(1 << 16)).unwrap();
+    let (mut w, mut r) = AppendOnlyJournal::<()>::open(base.path(), cfg(1 << 16)).unwrap();
     let mut claim = w.try_claim((), 5).unwrap();
     claim.as_mut_slice().copy_from_slice(b"hello");
     claim.commit();
@@ -69,45 +132,39 @@ fn unit_header_zero_overhead() {
     assert!(r.next_record().unwrap().is_none());
 
     drop((w, r));
-    cleanup(&base);
 }
 
 #[test]
 fn empty_unit_record_rejected() {
     let base = base_path("empty");
-    cleanup(&base);
 
-    let (mut w, _r) = AppendOnlyJournal::<()>::open(&base, cfg(1 << 16)).unwrap();
+    let (mut w, _r) = AppendOnlyJournal::<()>::open(base.path(), cfg(1 << 16)).unwrap();
     assert!(matches!(
         w.try_claim((), 0),
         Err(AppendOnlyJournalError::EmptyRecord)
     ));
 
     drop(w);
-    cleanup(&base);
 }
 
 #[test]
 fn record_too_large_rejected() {
     let base = base_path("toolarge");
-    cleanup(&base);
 
-    let (mut w, _r) = AppendOnlyJournal::<FixHeader>::open(&base, cfg(256)).unwrap();
+    let (mut w, _r) = AppendOnlyJournal::<FixHeader>::open(base.path(), cfg(256)).unwrap();
     assert!(matches!(
         w.try_claim(fix(1), 4096),
         Err(AppendOnlyJournalError::RecordTooLarge { .. })
     ));
 
     drop(w);
-    cleanup(&base);
 }
 
 #[test]
 fn multi_segment_roll() {
     let base = base_path("roll");
-    cleanup(&base);
 
-    let (mut w, mut r) = AppendOnlyJournal::<FixHeader>::open(&base, cfg(128)).unwrap();
+    let (mut w, mut r) = AppendOnlyJournal::<FixHeader>::open(base.path(), cfg(128)).unwrap();
     for seq in 1..=20u64 {
         let payload = (seq as u32).to_le_bytes();
         let mut claim = w.try_claim(fix(seq), payload.len()).unwrap();
@@ -124,18 +181,16 @@ fn multi_segment_roll() {
     }
     assert_eq!(seen, 20);
     assert!(r.next_record().unwrap().is_none());
-    assert!(super::segment_path(&base, 1).exists());
+    assert!(super::segment_path(base.path(), 1).exists());
 
     drop((w, r));
-    cleanup(&base);
 }
 
 #[test]
 fn pad_at_frame_header_boundary() {
     let base = base_path("pad-boundary");
-    cleanup(&base);
 
-    let (mut w, mut r) = AppendOnlyJournal::<()>::open(&base, cfg(64)).unwrap();
+    let (mut w, mut r) = AppendOnlyJournal::<()>::open(base.path(), cfg(64)).unwrap();
     let lens = [8usize, 8, 16, 8, 8];
     for (i, &len) in lens.iter().enumerate() {
         let payload = vec![i as u8 + 1; len];
@@ -143,7 +198,7 @@ fn pad_at_frame_header_boundary() {
         claim.as_mut_slice().copy_from_slice(&payload);
         claim.commit();
     }
-    assert!(super::segment_path(&base, 1).exists());
+    assert!(super::segment_path(base.path(), 1).exists());
 
     for (i, &len) in lens.iter().enumerate() {
         let rec = r.next_record().unwrap().unwrap();
@@ -152,16 +207,14 @@ fn pad_at_frame_header_boundary() {
     assert!(r.next_record().unwrap().is_none());
 
     drop((w, r));
-    cleanup(&base);
 }
 
 #[test]
 fn recovery_stops_at_uncommitted_tail() {
     let base = base_path("recovery");
-    cleanup(&base);
 
     {
-        let (mut w, _r) = AppendOnlyJournal::<FixHeader>::open(&base, cfg(1 << 16)).unwrap();
+        let (mut w, _r) = AppendOnlyJournal::<FixHeader>::open(base.path(), cfg(1 << 16)).unwrap();
         for seq in 1..=2u64 {
             let payload = (seq as u32).to_le_bytes();
             let mut claim = w.try_claim(fix(seq), payload.len()).unwrap();
@@ -175,7 +228,7 @@ fn recovery_stops_at_uncommitted_tail() {
         drop(w);
     }
 
-    let (mut w, mut r) = AppendOnlyJournal::<FixHeader>::open(&base, cfg(1 << 16)).unwrap();
+    let (mut w, mut r) = AppendOnlyJournal::<FixHeader>::open(base.path(), cfg(1 << 16)).unwrap();
     let payload = 99u32.to_le_bytes();
     let mut claim = w.try_claim(fix(3), payload.len()).unwrap();
     claim.as_mut_slice().copy_from_slice(&payload);
@@ -189,15 +242,13 @@ fn recovery_stops_at_uncommitted_tail() {
     assert!(r.next_record().unwrap().is_none());
 
     drop((w, r));
-    cleanup(&base);
 }
 
 #[test]
 fn read_range_by_seq() {
     let base = base_path("range");
-    cleanup(&base);
 
-    let (mut w, mut r) = AppendOnlyJournal::<FixHeader>::open(&base, cfg(128)).unwrap();
+    let (mut w, mut r) = AppendOnlyJournal::<FixHeader>::open(base.path(), cfg(128)).unwrap();
     for seq in 1..=10u64 {
         let payload = (seq as u32).to_le_bytes();
         let mut claim = w.try_claim(fix(seq), payload.len()).unwrap();
@@ -220,5 +271,4 @@ fn read_range_by_seq() {
     assert_eq!(got, vec![8, 9, 10]);
 
     drop((w, r));
-    cleanup(&base);
 }

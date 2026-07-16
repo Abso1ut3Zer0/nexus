@@ -10,6 +10,18 @@ contained.
 
 ## [Unreleased]
 
+### Internal
+
+- Test scratch directories are now removed on drop. The `tmp_dir` helpers in
+  `tests/async_conformance.rs`, `tests/journal_outbound_admin.rs`, and
+  `tests/frame_too_large.rs` return an RAII `TempDir` guard instead of a bare
+  `PathBuf`. Each test opens a `FixJournal`, which preallocates ~25M, and the
+  directories were never removed — a full run leaked into `$TMPDIR`, and the
+  PID in each name meant every run minted a fresh set rather than reusing the
+  last. The guard's `Drop` also runs while unwinding, so a *failing* test now
+  cleans up too. Mirrors the existing guard in
+  `nexus-journal/src/rotating/tests.rs`.
+
 ### Added
 
 - Inbound message journaling: well-framed, comp-id-valid inbound frames are

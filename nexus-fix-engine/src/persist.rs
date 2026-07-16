@@ -363,14 +363,80 @@ fn is_admin_type(msg_type: &[u8]) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::path::PathBuf;
+    use std::path::{Path, PathBuf};
 
-    fn tmp_dir(name: &str) -> PathBuf {
-        std::env::temp_dir().join(format!("nexus-fix-journal-{}-{}", std::process::id(), name))
+    /// RAII scratch directory. `FixJournal::open` preallocates tens of megabytes
+    /// into each of these, so they must not outlive the test that made them.
+    /// `Drop` also runs while unwinding, so a *failing* test cleans up too —
+    /// which the old manual `cleanup(&dir)` at the end of the body did not.
+    ///
+    /// Bind it to a live local (`let dir = tmp_dir(..)`), never `let _ = ..`, or
+    /// the directory is removed before the test can use it.
+    ///
+    /// Deliberately does not create the directory: the journal creates it on
+    /// `open`, and the `open_existing`-on-missing-dir tests depend on it being
+    /// absent.
+    struct TempDir(PathBuf);
+
+    impl TempDir {
+        fn new(name: &str) -> Self {
+            let p = std::env::temp_dir().join(format!(
+                "nexus-fix-journal-{}-{}",
+                std::process::id(),
+                name
+            ));
+            // A previous run killed by a signal can leave the tree behind, and
+            // PIDs get recycled -- start from a clean slate.
+            let _ = std::fs::remove_dir_all(&p);
+            Self(p)
+        }
+
+        fn path(&self) -> &Path {
+            &self.0
+        }
     }
 
-    fn cleanup(dir: &PathBuf) {
-        let _ = std::fs::remove_dir_all(dir);
+    impl Drop for TempDir {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+
+    /// Cleanup must survive a panic. `Drop` running during unwind is the whole
+    /// reason this is RAII rather than a `cleanup(&dir)` call at the end of each
+    /// test: a panicking test never reaches such a call, which is exactly how
+    /// the previous convention leaked. If a refactor drops the `Drop` impl or
+    /// reverts to manual cleanup, this fails.
+    #[test]
+    fn temp_dir_cleans_up_while_unwinding() {
+        let captured: std::sync::Mutex<Option<PathBuf>> = std::sync::Mutex::new(None);
+
+        let res = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let dir = TempDir::new("panic_cleanup");
+            std::fs::create_dir_all(dir.path()).unwrap();
+            *captured.lock().unwrap() = Some(dir.path().to_path_buf());
+            assert!(dir.path().exists());
+            // Deliberate: this message is expected in an otherwise-passing run.
+            // The global panic hook is left alone on purpose; overriding it would
+            // race with other tests panicking in parallel and swallow their output.
+            panic!("deliberate panic: exercising TempDir cleanup during unwind");
+        }));
+        assert!(res.is_err(), "the closure must have panicked");
+
+        let p = captured
+            .lock()
+            .unwrap()
+            .take()
+            .expect("path captured before the panic");
+        assert!(
+            !p.exists(),
+            "TempDir must remove its directory while unwinding: {}",
+            p.display()
+        );
+    }
+
+    fn tmp_dir(name: &str) -> TempDir {
+        TempDir::new(name)
     }
 
     fn fix_msg(seq: u32) -> Vec<u8> {
@@ -392,52 +458,45 @@ mod tests {
     #[test]
     fn open_existing_missing_returns_not_found() {
         let dir = tmp_dir("oe-missing");
-        cleanup(&dir);
-        let result = FixJournal::open_existing(&dir, 0, 64);
+        let result = FixJournal::open_existing(dir.path(), 0, 64);
         assert!(
             matches!(result, Err(OpenError::SessionNotFound { .. })),
             "expected SessionNotFound"
         );
-        cleanup(&dir);
     }
 
     #[test]
     fn open_existing_wrong_id_returns_not_found() {
         let dir = tmp_dir("oe-wrongid");
-        cleanup(&dir);
         {
-            let mut j = FixJournal::open(&dir, 0, 64).unwrap();
+            let mut j = FixJournal::open(dir.path(), 0, 64).unwrap();
             j.store(1, &fix_msg(1)).unwrap();
         }
-        let result = FixJournal::open_existing(&dir, 1, 64);
+        let result = FixJournal::open_existing(dir.path(), 1, 64);
         assert!(
             matches!(result, Err(OpenError::SessionNotFound { .. })),
             "expected SessionNotFound for wrong id"
         );
-        cleanup(&dir);
     }
 
     #[test]
     fn open_existing_recovers_correct_session() {
         let dir = tmp_dir("oe-recover");
-        cleanup(&dir);
         {
-            let mut j = FixJournal::open(&dir, 0, 64).unwrap();
+            let mut j = FixJournal::open(dir.path(), 0, 64).unwrap();
             for seq in 1..=3u32 {
                 j.store(seq, &fix_msg(seq)).unwrap();
             }
         }
-        let j = FixJournal::open_existing(&dir, 0, 64).unwrap();
+        let j = FixJournal::open_existing(dir.path(), 0, 64).unwrap();
         assert_eq!(j.next_outbound(), 4);
-        cleanup(&dir);
     }
 
     #[test]
     fn store_and_resend_roundtrip() {
         let dir = tmp_dir("store-resend");
-        cleanup(&dir);
 
-        let mut j = FixJournal::open(&dir, 0, 64).unwrap();
+        let mut j = FixJournal::open(dir.path(), 0, 64).unwrap();
         for seq in 1..=5u32 {
             j.store(seq, &fix_msg(seq)).unwrap();
         }
@@ -449,46 +508,38 @@ mod tests {
             panic!("expected App");
         };
         assert_eq!(bytes, fix_msg(3).as_slice());
-
-        cleanup(&dir);
     }
 
     #[test]
     fn open_recovers_next_outbound() {
         let dir = tmp_dir("recover");
-        cleanup(&dir);
 
         {
-            let mut j = FixJournal::open(&dir, 0, 64).unwrap();
+            let mut j = FixJournal::open(dir.path(), 0, 64).unwrap();
             for seq in 1..=7u32 {
                 j.store(seq, &fix_msg(seq)).unwrap();
             }
         }
 
-        let j = FixJournal::open(&dir, 0, 64).unwrap();
+        let j = FixJournal::open(dir.path(), 0, 64).unwrap();
         assert_eq!(j.next_outbound(), 8);
-
-        cleanup(&dir);
     }
 
     #[test]
     fn open_recovers_next_inbound() {
         let dir = tmp_dir("recover-inbound");
-        cleanup(&dir);
 
         {
-            let mut j = FixJournal::open(&dir, 0, 64).unwrap();
+            let mut j = FixJournal::open(dir.path(), 0, 64).unwrap();
             j.store(1, &fix_msg(1)).unwrap();
             j.advance_inbound();
             j.advance_inbound();
             j.set_next_inbound(42);
         }
 
-        let j = FixJournal::open(&dir, 0, 64).unwrap();
+        let j = FixJournal::open(dir.path(), 0, 64).unwrap();
         assert_eq!(j.next_inbound(), 42);
         assert_eq!(j.next_outbound(), 2);
-
-        cleanup(&dir);
     }
 
     #[test]
@@ -496,11 +547,10 @@ mod tests {
         // The point of rebuilding the resend ring on recovery: after a restart,
         // in-window seqnums replay the ACTUAL stored bytes, not a gap-fill.
         let dir = tmp_dir("cross-restart");
-        cleanup(&dir);
 
         let msgs: Vec<Vec<u8>> = (1..=5u32).map(fix_msg).collect();
         {
-            let mut j = FixJournal::open(&dir, 0, 64).unwrap();
+            let mut j = FixJournal::open(dir.path(), 0, 64).unwrap();
             for (i, m) in msgs.iter().enumerate() {
                 j.store(i as u32 + 1, m).unwrap();
             }
@@ -508,7 +558,7 @@ mod tests {
 
         // Reopen: offsets table is empty until `recover()` rebuilds it from the
         // outbound hot window.
-        let j = FixJournal::open_existing(&dir, 0, 64).unwrap();
+        let j = FixJournal::open_existing(dir.path(), 0, 64).unwrap();
         assert_eq!(j.next_outbound(), 6);
 
         let items = collect_range(&j, 1, 5);
@@ -519,17 +569,14 @@ mod tests {
             };
             assert_eq!(*bytes, msgs[i].as_slice(), "seq {} bytes mismatch", i + 1);
         }
-
-        cleanup(&dir);
     }
 
     #[test]
     fn store_inbound_is_archival_only() {
         // store_inbound must not touch the outbound resend path or counters.
         let dir = tmp_dir("store-inbound");
-        cleanup(&dir);
 
-        let mut j = FixJournal::open(&dir, 0, 64).unwrap();
+        let mut j = FixJournal::open(dir.path(), 0, 64).unwrap();
         j.store(1, &fix_msg(1)).unwrap();
         j.store_inbound(&fix_msg(9)).unwrap();
         j.store_inbound(&fix_msg(10)).unwrap();
@@ -539,32 +586,26 @@ mod tests {
         let items = collect_range(&j, 1, 1);
         assert_eq!(items.len(), 1);
         assert!(matches!(items[0], ReplayItem::App(_)));
-
-        cleanup(&dir);
     }
 
     #[test]
     fn gapfill_for_unstored_seq() {
         let dir = tmp_dir("gapfill");
-        cleanup(&dir);
 
-        let mut j = FixJournal::open(&dir, 0, 64).unwrap();
+        let mut j = FixJournal::open(dir.path(), 0, 64).unwrap();
         j.store(1, &fix_msg(1)).unwrap();
 
         match j.resend_one(2) {
             ResendPlan::GapFill => {}
             ResendPlan::Replay(_) => panic!("expected GapFill"),
         }
-
-        cleanup(&dir);
     }
 
     #[test]
     fn straddle_mixed_replay_and_gapfill() {
         let dir = tmp_dir("straddle");
-        cleanup(&dir);
 
-        let mut j = FixJournal::open(&dir, 0, 64).unwrap();
+        let mut j = FixJournal::open(dir.path(), 0, 64).unwrap();
         for seq in [1u32, 3, 5] {
             j.store(seq, &fix_msg(seq)).unwrap();
         }
@@ -573,32 +614,26 @@ mod tests {
             .map(|seq| matches!(j.resend_one(seq), ResendPlan::Replay(_)))
             .collect();
         assert_eq!(results, vec![true, false, true, false, true]);
-
-        cleanup(&dir);
     }
 
     #[test]
     fn inbound_counter() {
         let dir = tmp_dir("inbound");
-        cleanup(&dir);
 
-        let mut j = FixJournal::open(&dir, 0, 64).unwrap();
+        let mut j = FixJournal::open(dir.path(), 0, 64).unwrap();
         assert_eq!(j.next_inbound(), 1);
         j.advance_inbound();
         j.advance_inbound();
         assert_eq!(j.next_inbound(), 3);
         j.set_next_inbound(10);
         assert_eq!(j.next_inbound(), 10);
-
-        cleanup(&dir);
     }
 
     #[test]
     fn resend_range_admin_skip() {
         let dir = tmp_dir("rr-admin-skip");
-        cleanup(&dir);
 
-        let mut j = FixJournal::open(&dir, 0, 64).unwrap();
+        let mut j = FixJournal::open(dir.path(), 0, 64).unwrap();
         j.store(1, &fix_admin(1, "A")).unwrap();
         j.store(2, &fix_admin(2, "0")).unwrap();
         j.store(3, &fix_admin(3, "5")).unwrap();
@@ -609,16 +644,13 @@ mod tests {
             items[0],
             ReplayItem::GapFill { seq: 1, new_seq: 4 }
         ));
-
-        cleanup(&dir);
     }
 
     #[test]
     fn resend_range_interior_holes() {
         let dir = tmp_dir("rr-holes");
-        cleanup(&dir);
 
-        let mut j = FixJournal::open(&dir, 0, 64).unwrap();
+        let mut j = FixJournal::open(dir.path(), 0, 64).unwrap();
         for seq in [1u32, 3, 5] {
             j.store(seq, &fix_msg(seq)).unwrap();
         }
@@ -636,16 +668,13 @@ mod tests {
             ReplayItem::GapFill { seq: 4, new_seq: 5 }
         ));
         assert!(matches!(items[4], ReplayItem::App(_)));
-
-        cleanup(&dir);
     }
 
     #[test]
     fn resend_range_straddle_window() {
         let dir = tmp_dir("rr-straddle");
-        cleanup(&dir);
 
-        let mut j = FixJournal::open(&dir, 0, 4).unwrap();
+        let mut j = FixJournal::open(dir.path(), 0, 4).unwrap();
         for seq in 1..=8u32 {
             j.store(seq, &fix_msg(seq)).unwrap();
         }
@@ -660,16 +689,13 @@ mod tests {
         assert!(matches!(items[2], ReplayItem::App(_)));
         assert!(matches!(items[3], ReplayItem::App(_)));
         assert!(matches!(items[4], ReplayItem::App(_)));
-
-        cleanup(&dir);
     }
 
     #[test]
     fn resend_range_yields_original_bytes() {
         let dir = tmp_dir("rr-original");
-        cleanup(&dir);
 
-        let mut j = FixJournal::open(&dir, 0, 64).unwrap();
+        let mut j = FixJournal::open(dir.path(), 0, 64).unwrap();
         let msg = fix_msg_with_time(1, "20240101-12:00:00");
         j.store(1, &msg).unwrap();
 
@@ -679,16 +705,13 @@ mod tests {
             panic!("expected App");
         };
         assert_eq!(bytes, msg.as_slice());
-
-        cleanup(&dir);
     }
 
     #[test]
     fn resend_range_coalesced_gapfill() {
         let dir = tmp_dir("rr-coalesced");
-        cleanup(&dir);
 
-        let mut j = FixJournal::open(&dir, 0, 64).unwrap();
+        let mut j = FixJournal::open(dir.path(), 0, 64).unwrap();
         j.store(1, &fix_msg(1)).unwrap();
         j.store(5, &fix_msg(5)).unwrap();
 
@@ -700,16 +723,13 @@ mod tests {
             ReplayItem::GapFill { seq: 2, new_seq: 5 }
         ));
         assert!(matches!(items[2], ReplayItem::App(_)));
-
-        cleanup(&dir);
     }
 
     #[test]
     fn resend_range_all_gapfill() {
         let dir = tmp_dir("rr-allgap");
-        cleanup(&dir);
 
-        let mut j = FixJournal::open(&dir, 0, 64).unwrap();
+        let mut j = FixJournal::open(dir.path(), 0, 64).unwrap();
         j.store(1, &fix_admin(1, "A")).unwrap();
         j.store(2, &fix_admin(2, "1")).unwrap();
         j.store(3, &fix_admin(3, "2")).unwrap();
@@ -720,16 +740,13 @@ mod tests {
             items[0],
             ReplayItem::GapFill { seq: 1, new_seq: 4 }
         ));
-
-        cleanup(&dir);
     }
 
     #[test]
     fn resend_range_end_zero_means_all() {
         let dir = tmp_dir("rr-endzero");
-        cleanup(&dir);
 
-        let mut j = FixJournal::open(&dir, 0, 64).unwrap();
+        let mut j = FixJournal::open(dir.path(), 0, 64).unwrap();
         for seq in 1..=3u32 {
             j.store(seq, &fix_msg(seq)).unwrap();
         }
@@ -737,17 +754,17 @@ mod tests {
         let items = collect_range(&j, 1, 0);
         assert_eq!(items.len(), 3);
         assert!(items.iter().all(|i| matches!(i, ReplayItem::App(_))));
-
-        cleanup(&dir);
     }
 
     #[test]
     fn two_sessions_in_one_directory_are_independent() {
         let dir = tmp_dir("two-sessions");
-        cleanup(&dir);
 
         {
-            let mut conductor = ConductorBuilder::new(&dir).archive(true).open().unwrap();
+            let mut conductor = ConductorBuilder::new(dir.path())
+                .archive(true)
+                .open()
+                .unwrap();
             let mut j0 =
                 FixJournal::open_in(&mut conductor, 0, 64, OpenMode::OpenOrCreate).unwrap();
             let mut j1 =
@@ -766,13 +783,14 @@ mod tests {
 
         // Reopen both through a fresh shared conductor and verify each recovers
         // its own next_outbound independently.
-        let mut conductor = ConductorBuilder::new(&dir).archive(true).open().unwrap();
+        let mut conductor = ConductorBuilder::new(dir.path())
+            .archive(true)
+            .open()
+            .unwrap();
         let j0 = FixJournal::open_in(&mut conductor, 0, 64, OpenMode::OpenExisting).unwrap();
         let j1 = FixJournal::open_in(&mut conductor, 1, 64, OpenMode::OpenExisting).unwrap();
         assert_eq!(j0.next_outbound(), 4);
         assert_eq!(j1.next_outbound(), 6);
-
-        cleanup(&dir);
     }
 
     #[test]
@@ -780,9 +798,11 @@ mod tests {
         // Two FIX sessions under one conductor use disjoint conductor session
         // ids (2n / 2n+1) and stay independent.
         let dir = tmp_dir("open-in-shared");
-        cleanup(&dir);
 
-        let mut conductor = ConductorBuilder::new(&dir).archive(true).open().unwrap();
+        let mut conductor = ConductorBuilder::new(dir.path())
+            .archive(true)
+            .open()
+            .unwrap();
         let mut a = FixJournal::open_in(&mut conductor, 0, 64, OpenMode::OpenOrCreate).unwrap();
         let mut b = FixJournal::open_in(&mut conductor, 7, 64, OpenMode::OpenOrCreate).unwrap();
 
@@ -792,7 +812,5 @@ mod tests {
 
         assert_eq!(a.next_outbound(), 3);
         assert_eq!(b.next_outbound(), 2);
-
-        cleanup(&dir);
     }
 }

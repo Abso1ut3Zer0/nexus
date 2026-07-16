@@ -2,7 +2,7 @@
 
 use std::io::{Read, Write};
 use std::net::{TcpListener, TcpStream};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
 use nexus_fix_codec::{
@@ -94,7 +94,7 @@ fn session_cfg(sender: CompId, target: CompId) -> SessionConfig {
     SessionConfig { sender, target }
 }
 
-fn journal(dir: &PathBuf) -> FixJournal {
+fn journal(dir: &Path) -> FixJournal {
     FixJournal::open(dir, 0, 256).unwrap()
 }
 
@@ -106,15 +106,43 @@ fn loopback_pair() -> (TcpStream, TcpStream) {
     (client, server)
 }
 
-fn tmp_dir(suffix: &str) -> PathBuf {
-    let mut p = std::env::temp_dir();
-    p.push(format!(
-        "nexus_fix_transport_{}_{}",
-        std::process::id(),
-        suffix
-    ));
-    std::fs::create_dir_all(&p).unwrap();
-    p
+/// RAII scratch directory. `FixJournal::open` preallocates tens of megabytes
+/// into each of these, so they must not outlive the test that made them.
+/// `Drop` also runs while unwinding, so a *failing* test cleans up too — which
+/// a manual `cleanup(&dir)` at the end of the body would not.
+///
+/// Bind it to a live local (`let dir = tmp_dir(..)`), never `let _ = ..`, or
+/// the directory is removed before the test can use it.
+struct TempDir(PathBuf);
+
+impl TempDir {
+    fn new(suffix: &str) -> Self {
+        let mut p = std::env::temp_dir();
+        p.push(format!(
+            "nexus_fix_transport_{}_{}",
+            std::process::id(),
+            suffix
+        ));
+        // A previous run killed by a signal can leave the tree behind, and PIDs
+        // get recycled -- start from a clean slate.
+        let _ = std::fs::remove_dir_all(&p);
+        std::fs::create_dir_all(&p).unwrap();
+        Self(p)
+    }
+
+    fn path(&self) -> &Path {
+        &self.0
+    }
+}
+
+impl Drop for TempDir {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.0);
+    }
+}
+
+fn tmp_dir(suffix: &str) -> TempDir {
+    TempDir::new(suffix)
 }
 
 fn drive(
@@ -324,7 +352,7 @@ fn initiator_logon_and_logout() {
         client_sock,
         SessionState::new(Duration::from_secs(30)),
         session_cfg(t_sender, t_target),
-        journal(&dir),
+        journal(dir.path()),
     );
     conn.connect(Instant::now()).unwrap();
 
@@ -358,7 +386,7 @@ fn acceptor_receives_app_message() {
         server_sock,
         SessionState::new(Duration::from_secs(30)),
         session_cfg(target(), sender()),
-        journal(&dir2),
+        journal(dir2.path()),
     );
 
     let reason = loop {
@@ -403,7 +431,7 @@ fn heartbeat_stale_seqnum_disconnects() {
         server_sock,
         SessionState::new(Duration::from_secs(30)),
         session_cfg(target(), sender()),
-        journal(&dir),
+        journal(dir.path()),
     );
 
     let reason = loop {
@@ -456,7 +484,7 @@ fn resend_request_triggers_gap_fill() {
         client_sock,
         SessionState::new(Duration::from_secs(30)),
         session_cfg(sender(), target()),
-        journal(&dir_cli),
+        journal(dir_cli.path()),
     );
     conn.connect(Instant::now()).unwrap();
 
@@ -490,7 +518,7 @@ fn inbound_gap_sends_resend_request_and_suppresses_app_message() {
         server_sock,
         SessionState::new(Duration::from_secs(30)),
         session_cfg(target(), sender()),
-        journal(&dir_cli),
+        journal(dir_cli.path()),
     );
 
     let mut saw_app = false;
@@ -554,7 +582,7 @@ fn out_of_sequence_admin_suppressed_and_resends() {
         server_sock,
         SessionState::new(Duration::from_secs(30)),
         session_cfg(target(), sender()),
-        journal(&dir),
+        journal(dir.path()),
     );
 
     let mut saw_admin = false;
@@ -606,7 +634,7 @@ fn duplicate_admin_suppressed_no_resend() {
         server_sock,
         SessionState::new(Duration::from_secs(30)),
         session_cfg(target(), sender()),
-        journal(&dir),
+        journal(dir.path()),
     );
 
     let mut saw_dup_admin = false;
@@ -672,7 +700,7 @@ fn resend_request_huge_end_seq_clamped() {
         client_sock,
         SessionState::new(Duration::from_secs(30)),
         session_cfg(sender(), target()),
-        journal(&dir),
+        journal(dir.path()),
     );
     conn.connect(Instant::now()).unwrap();
     let reason = drive(&mut conn).unwrap();
@@ -703,7 +731,7 @@ fn corrupt_checksum_frame_counted_as_garbage() {
         server_sock,
         SessionState::new(Duration::from_secs(30)),
         session_cfg(target(), sender()),
-        journal(&dir),
+        journal(dir.path()),
     );
 
     loop {
@@ -743,7 +771,7 @@ fn garbage_bytes_increment_counter() {
         server_sock,
         SessionState::new(Duration::from_secs(30)),
         session_cfg(target(), sender()),
-        journal(&dir),
+        journal(dir.path()),
     );
 
     loop {
@@ -783,7 +811,7 @@ fn sequence_reset_backward_ignored() {
         server_sock,
         SessionState::new(Duration::from_secs(30)),
         session_cfg(target(), sender()),
-        journal(&dir),
+        journal(dir.path()),
     );
 
     loop {
@@ -835,7 +863,7 @@ fn overflowed_tag_34_yields_missing_seq_num() {
         server_sock,
         SessionState::new(Duration::from_secs(30)),
         session_cfg(target(), sender()),
-        journal(&dir),
+        journal(dir.path()),
     );
 
     let result = conn.recv(Instant::now());
@@ -871,7 +899,7 @@ fn journal_recovers_admin_seqnums() {
         client_sock,
         SessionState::new(Duration::from_secs(30)),
         session_cfg(sender(), target()),
-        journal(&dir),
+        journal(dir.path()),
     );
     conn.connect(Instant::now()).unwrap();
     let reason = drive(&mut conn).unwrap();
@@ -880,7 +908,7 @@ fn journal_recovers_admin_seqnums() {
     drop(conn);
 
     // seq=1 logon + seq=2 logout-ack → next_outbound must be 3 after recovery
-    let recovered = FixJournal::open(&dir, 0, 256).unwrap();
+    let recovered = FixJournal::open(dir.path(), 0, 256).unwrap();
     assert_eq!(
         recovered.next_outbound(),
         3,
@@ -899,7 +927,7 @@ fn send_app_rejects_oversized_frame() {
         client_sock,
         SessionState::new(Duration::from_secs(30)),
         session_cfg(sender(), target()),
-        journal(&dir),
+        journal(dir.path()),
     );
 
     // The default writer is 64 KiB; a 64 KiB frame exceeds cap - headroom.
@@ -980,7 +1008,7 @@ fn frame_exceeding_reader_buffer_is_message_too_large_not_disconnect() {
             stream,
             SessionState::new(Duration::from_secs(30)),
             session_cfg(target(), sender()),
-            journal(&dir),
+            journal(dir.path()),
         );
 
     match conn.recv(Instant::now()) {
