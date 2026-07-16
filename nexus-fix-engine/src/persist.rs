@@ -402,6 +402,39 @@ mod tests {
         }
     }
 
+    /// Cleanup must survive a panic. `Drop` running during unwind is the whole
+    /// reason this is RAII rather than a `cleanup(&dir)` call at the end of each
+    /// test: a panicking test never reaches such a call, which is exactly how
+    /// the previous convention leaked. If a refactor drops the `Drop` impl or
+    /// reverts to manual cleanup, this fails.
+    #[test]
+    fn temp_dir_cleans_up_while_unwinding() {
+        let captured: std::sync::Mutex<Option<PathBuf>> = std::sync::Mutex::new(None);
+
+        let res = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let dir = TempDir::new("panic_cleanup");
+            std::fs::create_dir_all(dir.path()).unwrap();
+            *captured.lock().unwrap() = Some(dir.path().to_path_buf());
+            assert!(dir.path().exists());
+            // Deliberate: this message is expected in an otherwise-passing run.
+            // The global panic hook is left alone on purpose; overriding it would
+            // race with other tests panicking in parallel and swallow their output.
+            panic!("deliberate panic: exercising TempDir cleanup during unwind");
+        }));
+        assert!(res.is_err(), "the closure must have panicked");
+
+        let p = captured
+            .lock()
+            .unwrap()
+            .take()
+            .expect("path captured before the panic");
+        assert!(
+            !p.exists(),
+            "TempDir must remove its directory while unwinding: {}",
+            p.display()
+        );
+    }
+
     fn tmp_dir(name: &str) -> TempDir {
         TempDir::new(name)
     }

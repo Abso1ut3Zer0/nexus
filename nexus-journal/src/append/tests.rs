@@ -45,6 +45,39 @@ impl Drop for TempBase {
     }
 }
 
+/// Cleanup must survive a panic. `Drop` running during unwind is the whole
+/// reason this is RAII rather than the `cleanup(base)` call this replaced: a
+/// panicking test never reaches such a call, which is exactly how the previous
+/// convention leaked segments. If a refactor drops the `Drop` impl or reverts to
+/// manual cleanup, this fails.
+#[test]
+fn temp_base_cleans_up_while_unwinding() {
+    let captured: std::sync::Mutex<Option<PathBuf>> = std::sync::Mutex::new(None);
+
+    let res = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let base = TempBase::new("panic_cleanup");
+        std::fs::write(super::segment_path(base.path(), 0), b"x").unwrap();
+        *captured.lock().unwrap() = Some(base.path().to_path_buf());
+        assert!(super::segment_path(base.path(), 0).exists());
+        // Deliberate: this message is expected in an otherwise-passing run. The
+        // global panic hook is left alone on purpose; overriding it would race
+        // with other tests panicking in parallel and swallow their output.
+        panic!("deliberate panic: exercising TempBase cleanup during unwind");
+    }));
+    assert!(res.is_err(), "the closure must have panicked");
+
+    let p = captured
+        .lock()
+        .unwrap()
+        .take()
+        .expect("path captured before the panic");
+    assert!(
+        !super::segment_path(&p, 0).exists(),
+        "TempBase must remove its segments while unwinding: {}",
+        p.display()
+    );
+}
+
 fn base_path(name: &str) -> TempBase {
     TempBase::new(name)
 }
