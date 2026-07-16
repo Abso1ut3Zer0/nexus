@@ -3,9 +3,9 @@
 //! [`SessionState`] is a pure state machine: the caller owns the transport,
 //! the clock, and the wire encoding. Each typed handler (e.g.
 //! [`SessionState::on_logon`], [`SessionState::on_app`]) receives pre-decoded
-//! fields and returns an [`Out`] containing any outbound admin messages and a
-//! session event. The framework layer above encodes those messages and drives
-//! the transport.
+//! fields plus an `emit` closure for outbound admin messages, and returns a
+//! [`Control`] verdict. The framework layer above supplies the closure (which
+//! encodes and journals) and reconstructs the borrowed message from the verdict.
 //!
 //! # Layering
 //!
@@ -47,7 +47,7 @@ pub use framework::{CompId, Message, MessageReader, MessageWriter, SessionConfig
 pub use nexus_journal::{Conductor, ConductorBuilder, OpenError, OpenMode, WriteError};
 #[cfg(unix)]
 pub use persist::{FixJournal, ReplayItem};
-pub use session::{AdminMsg, DisconnectReason, Event, Out, SessionState, State};
+pub use session::{AdminMsg, Control, DisconnectReason, SessionState, State};
 #[cfg(unix)]
 pub use transport::{
     Error as TransportError, FixConnection, FixConnectionBuilder, REFRAME_HEADROOM,

@@ -183,7 +183,7 @@ impl Peer {
     }
 
     /// Send a Heartbeat (35=0) with an explicit `MsgSeqNum` (not the auto-counter),
-    /// so a test can drive a stale/too-low seqnum.
+    /// so a test can drive a stale/too-low or forward-gap seqnum.
     fn send_heartbeat_seq(&mut self, seq: u32) {
         let mut buf = [0u8; 256];
         let mut seq_buf = [0u8; 10];
@@ -193,6 +193,24 @@ impl Peer {
         fmt.field(49, self.sender.as_bytes());
         fmt.field(56, self.target.as_bytes());
         fmt.field(52, b"20260615-12:00:00.000");
+        let (start, len) = fmt.finish().unwrap();
+        self.stream.write_all(&buf[start..start + len]).unwrap();
+        self.stream.flush().unwrap();
+    }
+
+    /// Send a Heartbeat (35=0) with an explicit `MsgSeqNum` and `PossDupFlag=Y`,
+    /// so a test can drive a below-expected duplicate (which must be ignored,
+    /// not disconnect).
+    fn send_heartbeat_poss_dup(&mut self, seq: u32) {
+        let mut buf = [0u8; 256];
+        let mut seq_buf = [0u8; 10];
+        let seq_n = encode_fix_uint(seq, &mut seq_buf);
+        let mut fmt = FrameFormatter::new(&mut buf, b"FIX.4.4", b"0");
+        fmt.field(34, &seq_buf[..seq_n]);
+        fmt.field(49, self.sender.as_bytes());
+        fmt.field(56, self.target.as_bytes());
+        fmt.field(52, b"20260615-12:00:00.000");
+        fmt.field(43, b"Y");
         let (start, len) = fmt.finish().unwrap();
         self.stream.write_all(&buf[start..start + len]).unwrap();
         self.stream.flush().unwrap();
@@ -489,6 +507,135 @@ fn inbound_gap_sends_resend_request_and_suppresses_app_message() {
         conn.state().state(),
         State::Resending,
         "engine must enter Resending state (= ResendRequest sent) on inbound gap"
+    );
+
+    handle.join().unwrap();
+}
+
+#[test]
+fn out_of_sequence_admin_suppressed_and_resends() {
+    // An out-of-sequence admin (Heartbeat at a forward-gap seqnum) must NOT be
+    // surfaced to the application: it is a recovery event. The engine emits a
+    // ResendRequest and yields no admin message (Suppressed → Ok(None)). This is
+    // the admin analogue of `inbound_gap_sends_resend_request_and_suppresses_app_message`.
+    let dir = tmp_dir("oos_admin_suppress");
+    let (client_sock, server_sock) = loopback_pair();
+    server_sock
+        .set_read_timeout(Some(Duration::from_millis(200)))
+        .unwrap();
+
+    let handle = std::thread::spawn(move || {
+        let mut peer = Peer::new(client_sock, sender(), target());
+        let mut buf = [0u8; 512];
+        peer.send_logon(30); // seq 1 → engine Active, expects inbound seq 2
+        let _ = peer.recv_msg(&mut buf); // consume the engine's Logon reply
+        // Heartbeat at seq 5 (expected 2): a forward gap, not a duplicate.
+        peer.send_heartbeat_seq(5);
+        // The engine must answer the gap with a ResendRequest (35=2). Read it off
+        // the wire and assert on it directly, so the resend is observed at the
+        // transport boundary, not just via engine state.
+        let n = peer.recv_msg(&mut buf);
+        assert!(n > 0, "engine must send a ResendRequest on the admin gap");
+        let msg_type = find_tag(&buf[..n], 0, 35).map(|s| s.slice(&buf[..n]));
+        assert_eq!(
+            msg_type,
+            Some(b"2".as_ref()),
+            "engine must respond to an out-of-sequence admin with a ResendRequest (35=2)"
+        );
+        let begin: u32 = find_tag(&buf[..n], 0, 7)
+            .and_then(|s| FieldView::new(s, &buf[..n]))
+            .expect("ResendRequest must carry BeginSeqNo(7)")
+            .get();
+        assert_eq!(begin, 2, "ResendRequest must start at the expected seqnum");
+        // Drop peer → engine sees EOF and disconnects, ending the recv loop.
+    });
+
+    let mut conn: FixConnection<TcpStream, MockDict> = FixConnection::from_parts(
+        server_sock,
+        SessionState::new(Duration::from_secs(30)),
+        session_cfg(target(), sender()),
+        journal(&dir),
+    );
+
+    let mut saw_admin = false;
+    loop {
+        match conn.recv(Instant::now()) {
+            Ok(Some(Message::Disconnected { .. })) | Err(_) => break,
+            // The out-of-sequence Heartbeat must never surface.
+            Ok(Some(Message::Heartbeat { .. })) => saw_admin = true,
+            Ok(Some(_) | None) => {}
+        }
+    }
+
+    assert!(
+        !saw_admin,
+        "out-of-sequence admin (Heartbeat) must not be surfaced to the application"
+    );
+    assert_eq!(
+        conn.state().state(),
+        State::Resending,
+        "engine must enter Resending (= ResendRequest sent) on an out-of-sequence admin"
+    );
+
+    handle.join().unwrap();
+}
+
+#[test]
+fn duplicate_admin_suppressed_no_resend() {
+    // A PossDup duplicate admin below the expected seqnum must be ignored: not
+    // surfaced, no ResendRequest, and the session stays alive. This pins the
+    // duplicate (vs. gap) branch at the transport boundary.
+    let dir = tmp_dir("dup_admin_suppress");
+    let (client_sock, server_sock) = loopback_pair();
+    server_sock
+        .set_read_timeout(Some(Duration::from_millis(200)))
+        .unwrap();
+
+    let handle = std::thread::spawn(move || {
+        let mut peer = Peer::new(client_sock, sender(), target());
+        let mut buf = [0u8; 512];
+        peer.send_logon(30); // seq 1 → engine Active, expects inbound seq 2
+        let _ = peer.recv_msg(&mut buf); // consume the engine's Logon reply
+        peer.send_app(11, b"ORD-1"); // seq 2, in-sequence → engine expects 3 next
+        // Duplicate Heartbeat at seq 2 (< 3) WITH PossDup=Y: ignored silently.
+        peer.send_heartbeat_poss_dup(2);
+        // Drop peer → engine sees EOF and disconnects.
+    });
+
+    let mut conn: FixConnection<TcpStream, MockDict> = FixConnection::from_parts(
+        server_sock,
+        SessionState::new(Duration::from_secs(30)),
+        session_cfg(target(), sender()),
+        journal(&dir),
+    );
+
+    let mut saw_dup_admin = false;
+    let mut saw_app = false;
+    loop {
+        match conn.recv(Instant::now()) {
+            Ok(Some(Message::Disconnected { .. })) | Err(_) => break,
+            Ok(Some(Message::Application { .. })) => saw_app = true,
+            Ok(Some(Message::Heartbeat { .. })) => saw_dup_admin = true,
+            Ok(Some(_) | None) => {}
+        }
+    }
+
+    assert!(saw_app, "the in-sequence app (seq 2) must surface");
+    assert!(
+        !saw_dup_admin,
+        "a PossDup duplicate admin must not be surfaced"
+    );
+    assert_eq!(
+        conn.state().state(),
+        State::Active,
+        "a duplicate admin must not enter Resending or disconnect the session"
+    );
+    // The engine consumed exactly the in-sequence app (next_inbound advanced to 3
+    // and stayed there — the duplicate did not advance it).
+    assert_eq!(
+        conn.state().next_inbound_seq(),
+        3,
+        "duplicate admin must not advance next_inbound"
     );
 
     handle.join().unwrap();

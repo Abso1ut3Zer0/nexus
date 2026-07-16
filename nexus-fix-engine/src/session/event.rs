@@ -40,41 +40,54 @@ pub enum DisconnectReason {
     ResetTimeout,
 }
 
-/// Session event returned in [`Out::event`](super::Out::event).
+/// The owned verdict a [`SessionState`](super::SessionState) handler returns.
+///
+/// The driver stores it across the `poll`/`message` borrow and reconstructs the
+/// borrowed [`Message`](crate::Message) from it. It is `D`-free and owns no
+/// borrow of the frame, so it can outlive the handler call that produced it —
+/// unlike `Message`, which borrows the frame buffer.
+///
+/// Each inbound handler returns the kind of message it processed (or
+/// [`Control::None`] when there is nothing to surface, e.g. an outbound-initiated
+/// action or a suppressed gap/dup). The two exhaustion/precondition cases
+/// ([`Control::Disconnected`] and the transient [`Control::Proceed`]) are covered
+/// below.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Event {
-    /// Logon exchange completed; the session is live.
-    Established {
-        /// Negotiated heartbeat interval in seconds.
-        heart_bt_int_s: u32,
+pub enum Control {
+    /// Nothing to surface to the application: an outbound-initiated action, or
+    /// an inbound gap/duplicate the handler already answered (a ResendRequest was
+    /// emitted, or a `PossDup`-too-low frame was ignored). Doubles as the initial
+    /// `pending` value in the driver.
+    None,
+    /// Transient: [`validate_seq`](super::SessionState) matched the sequence and
+    /// advanced it, so the caller should keep processing and return its own kind.
+    /// Never a final verdict — a handler consumes it and returns its own
+    /// `Control`; it is `unreachable!` in the driver's `message()`/`dispose()`.
+    Proceed,
+    /// A Logon (35=A) was processed. `acknowledged` is `true` when it acked our
+    /// outbound Logon (initiator role), `false` when it initiates one we must
+    /// answer (acceptor role).
+    Logon {
+        /// Whether this Logon acknowledged our own (vs. requesting one).
+        acknowledged: bool,
     },
-    /// An in-sequence application message; decode it from the buffer
-    /// passed to `handle_message`.
-    App {
-        /// Inbound MsgSeqNum of the message.
-        seq_num: u32,
-        /// `PossDupFlag(43)=Y` was set (replayed message).
-        poss_dup: bool,
-    },
-    /// Counterparty requested retransmission of our messages. The session
-    /// gap-fills the range automatically; store-backed replay lands with
-    /// the persistence layer.
-    ResendRange {
-        /// First requested sequence number.
-        begin: u32,
-        /// Last requested sequence number, `0` for all subsequent.
-        end: u32,
-    },
-    /// Counterparty reset the inbound sequence via SequenceReset.
-    SequenceReset {
-        /// Next inbound sequence number after the reset.
-        new_seq: u32,
-    },
-    /// Counterparty rejected one of our messages at the session level.
-    RejectReceived {
-        /// RefSeqNum(45) of the rejected message, `0` if absent.
-        ref_seq_num: u32,
-    },
+    /// A Logout (35=5) was processed without ending the session. This only
+    /// happens out-of-state (e.g. mid-reset); an in-sequence Logout completes
+    /// the exchange and surfaces as [`Control::Disconnected`] instead.
+    Logout,
+    /// A Heartbeat (35=0) was processed.
+    Heartbeat,
+    /// A TestRequest (35=1) was processed.
+    TestRequest,
+    /// A ResendRequest (35=2) was processed. The driver drives the replay walk
+    /// from its locally parsed `begin`/`end`, so this carries no fields.
+    ResendRequest,
+    /// A SequenceReset (35=4) was processed.
+    SequenceReset,
+    /// A Reject (35=3) was processed.
+    Reject,
+    /// An in-sequence application message was processed.
+    Application,
     /// The session left the connected states.
     Disconnected {
         /// Why the session ended.
