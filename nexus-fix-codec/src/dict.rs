@@ -6,7 +6,7 @@ use nexus_ascii::AsciiTextStr;
 ///
 /// Implemented by every generated admin message type in `admin::*`.
 /// The session framework calls `decode` to construct the decoder and hands it
-/// to the caller via [`Message`](crate::Message); the caller then uses the
+/// to the caller via the engine's `Message` type; the caller then uses the
 /// typed accessor methods to read fields.
 pub trait FixAdminMsg<'buf>: Sized {
     /// Construct the decoder from a raw FIX message buffer.

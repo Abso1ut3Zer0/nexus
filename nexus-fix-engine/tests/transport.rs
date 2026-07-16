@@ -762,3 +762,88 @@ fn send_app_rejects_oversized_frame() {
         Err(TransportError::MessageTooLarge(_))
     ));
 }
+
+/// In-memory stream that hands out queued bytes on `read` (never more than the
+/// caller's spare) and swallows writes. Lets a test feed a single oversized frame
+/// through the wrapper without a socket.
+struct ChunkStream {
+    inbound: std::collections::VecDeque<u8>,
+}
+
+impl ChunkStream {
+    fn new(bytes: &[u8]) -> Self {
+        Self {
+            inbound: bytes.iter().copied().collect(),
+        }
+    }
+}
+
+impl Read for ChunkStream {
+    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        let n = buf.len().min(self.inbound.len());
+        for slot in buf.iter_mut().take(n) {
+            *slot = self.inbound.pop_front().unwrap();
+        }
+        Ok(n)
+    }
+}
+
+impl Write for ChunkStream {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        Ok(buf.len())
+    }
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+
+#[test]
+fn frame_exceeding_reader_buffer_is_message_too_large_not_disconnect() {
+    // Fix B: a single inbound frame larger than the reader buffer fills the
+    // buffer with one incomplete frame. `read_spare` then returns an empty slice
+    // (nothing to compact — the whole buffer is one partial frame). The wrapper
+    // must surface this as MessageTooLarge, NOT read into a zero-length slice and
+    // misread the resulting `Ok(0)` as EOF/Disconnected.
+    let dir = tmp_dir("reader_buf_too_large");
+
+    // Build one valid, self-delimiting FIX frame bigger than a tiny reader
+    // buffer but well under the 1 MiB frame-reader max (so the too-large trips
+    // at the buffer, not at max_message_size).
+    const READER_CAP: usize = 256;
+    let mut buf = vec![0u8; 4096];
+    let big_filler = vec![b'x'; 512]; // frame will be ~570 bytes > READER_CAP
+    let frame = {
+        let mut fmt = FrameFormatter::new(&mut buf, b"FIX.4.4", b"D");
+        fmt.field(34, b"1");
+        fmt.field(49, sender().as_bytes());
+        fmt.field(56, target().as_bytes());
+        fmt.field(52, b"20260615-12:00:00.000");
+        fmt.field(58, &big_filler);
+        let (start, len) = fmt.finish().unwrap();
+        buf[start..start + len].to_vec()
+    };
+    assert!(
+        frame.len() > READER_CAP,
+        "frame must exceed the reader buffer to trip the guard"
+    );
+
+    let stream = ChunkStream::new(&frame);
+    let mut conn: FixConnection<ChunkStream, MockDict> =
+        FixConnection::builder().reader_capacity(READER_CAP).accept(
+            stream,
+            SessionState::new(Duration::from_secs(30)),
+            session_cfg(target(), sender()),
+            journal(&dir),
+        );
+
+    match conn.recv(Instant::now()) {
+        Err(TransportError::MessageTooLarge(_)) => {}
+        Err(other) => panic!(
+            "an inbound frame exceeding the reader buffer must be MessageTooLarge, got {other:?}"
+        ),
+        Ok(Some(Message::Disconnected { reason })) => {
+            panic!("frame exceeding reader buffer was misread as a disconnect: {reason:?}")
+        }
+        Ok(_) => panic!("frame exceeding reader buffer must not surface a message"),
+    }
+}

@@ -3,12 +3,86 @@
 use std::io::{BufRead, BufReader};
 use std::path::Path;
 use std::process::{Command, Stdio};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
-use nexus_async_fix_engine::AsyncFixConnection;
-use nexus_fix_codec::{FrameFormatter, encode_fix_uint};
-use nexus_fix_engine::{CompId, DisconnectReason, FixJournal, SessionConfig, SessionState, State};
+use nexus_async_fix_engine::FixConnection;
+use nexus_fix_codec::{
+    FieldView, FixAdminMsg, FixDictionary, FixHeader, FixTimestamp, FrameFormatter,
+    encode_fix_uint, find_tag,
+};
+use nexus_fix_engine::{
+    CompId, DisconnectReason, FixJournal, Message, SessionConfig, SessionState, State,
+};
 use tokio::net::TcpStream;
+
+// ── mock dictionary (mirrors the sync engine's tests) ────────────────────────
+
+struct MockDict;
+
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+enum MockMsgType {}
+
+struct AdminDecoder<'buf> {
+    _buf: &'buf [u8],
+}
+
+impl<'buf> FixAdminMsg<'buf> for AdminDecoder<'buf> {
+    fn decode(buf: &'buf [u8]) -> Result<Self, nexus_fix_codec::DecodeError> {
+        Ok(Self { _buf: buf })
+    }
+}
+
+impl FixDictionary for MockDict {
+    type MsgType = MockMsgType;
+    type Header<'buf> = MockHeader<'buf>;
+    type Logon<'buf> = AdminDecoder<'buf>;
+    type Logout<'buf> = AdminDecoder<'buf>;
+    type Heartbeat<'buf> = AdminDecoder<'buf>;
+    type TestRequest<'buf> = AdminDecoder<'buf>;
+    type ResendRequest<'buf> = AdminDecoder<'buf>;
+    type SequenceReset<'buf> = AdminDecoder<'buf>;
+    type Reject<'buf> = AdminDecoder<'buf>;
+    const BEGIN_STRING: &'static [u8] = b"FIX.4.4";
+    fn is_admin(_: MockMsgType) -> bool {
+        false
+    }
+}
+
+struct MockHeader<'buf> {
+    buf: &'buf [u8],
+}
+
+impl<'buf> FixHeader<'buf> for MockHeader<'buf> {
+    fn decode(buf: &'buf [u8]) -> Self {
+        Self { buf }
+    }
+
+    fn raw_msg_type(&self) -> Option<FieldView<'buf, &'buf [u8]>> {
+        find_tag(self.buf, 0, 35).and_then(|s| FieldView::new(s, self.buf))
+    }
+
+    fn msg_seq_num(&self) -> Option<FieldView<'buf, u64>> {
+        find_tag(self.buf, 0, 34).and_then(|s| FieldView::new(s, self.buf))
+    }
+
+    fn sender_comp_id(&self) -> Option<FieldView<'buf, &'buf nexus_fix_codec::AsciiTextStr>> {
+        find_tag(self.buf, 0, 49).and_then(|s| FieldView::new(s, self.buf))
+    }
+
+    fn target_comp_id(&self) -> Option<FieldView<'buf, &'buf nexus_fix_codec::AsciiTextStr>> {
+        find_tag(self.buf, 0, 56).and_then(|s| FieldView::new(s, self.buf))
+    }
+
+    fn poss_dup_flag(&self) -> Option<FieldView<'buf, bool>> {
+        find_tag(self.buf, 0, 43).and_then(|s| FieldView::new(s, self.buf))
+    }
+
+    fn sending_time(&self) -> Option<FieldView<'buf, FixTimestamp>> {
+        None
+    }
+}
+
+// ── helpers ──────────────────────────────────────────────────────────────────
 
 const BEGIN: &[u8] = b"FIX.4.4";
 const PEER: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/fix_peer.py");
@@ -38,9 +112,9 @@ fn spawn_peer(scenario: &str) -> (std::process::Child, u16) {
     (child, port)
 }
 
-async fn connect(port: u16, dir: &Path) -> AsyncFixConnection<TcpStream> {
+async fn connect(port: u16, dir: &Path) -> FixConnection<TcpStream, MockDict> {
     let stream = TcpStream::connect(("127.0.0.1", port)).await.unwrap();
-    AsyncFixConnection::from_parts(
+    FixConnection::from_parts(
         stream,
         SessionState::new(Duration::from_secs(30)),
         SessionConfig {
@@ -48,14 +122,13 @@ async fn connect(port: u16, dir: &Path) -> AsyncFixConnection<TcpStream> {
             target: CompId::new(b"PEER").unwrap(),
         },
         FixJournal::open(dir, 0, 256).unwrap(),
-        BEGIN,
     )
 }
 
-async fn drive(conn: &mut AsyncFixConnection<TcpStream>) -> DisconnectReason {
+async fn drive(conn: &mut FixConnection<TcpStream, MockDict>) -> DisconnectReason {
     loop {
-        if let Some(r) = conn.recv(&mut |_| {}).await.unwrap() {
-            return r;
+        if let Some(Message::Disconnected { reason }) = conn.recv(Instant::now()).await.unwrap() {
+            return reason;
         }
     }
 }
@@ -74,12 +147,14 @@ fn new_order(seq: u32) -> Vec<u8> {
     buf[start..start + len].to_vec()
 }
 
+// ── tests ────────────────────────────────────────────────────────────────────
+
 #[tokio::test]
 async fn conformance_logon_logout() {
     let dir = tmp_dir("logon_logout");
     let (mut child, port) = spawn_peer("logon_logout");
     let mut conn = connect(port, &dir).await;
-    conn.connect().await.unwrap();
+    conn.connect(Instant::now()).await.unwrap();
     assert_eq!(drive(&mut conn).await, DisconnectReason::Logout);
     assert!(child.wait().unwrap().success());
 }
@@ -89,7 +164,7 @@ async fn conformance_heartbeat() {
     let dir = tmp_dir("heartbeat");
     let (mut child, port) = spawn_peer("heartbeat");
     let mut conn = connect(port, &dir).await;
-    conn.connect().await.unwrap();
+    conn.connect(Instant::now()).await.unwrap();
     assert_eq!(drive(&mut conn).await, DisconnectReason::Logout);
     assert!(child.wait().unwrap().success());
 }
@@ -99,13 +174,14 @@ async fn conformance_resend() {
     let dir = tmp_dir("resend");
     let (mut child, port) = spawn_peer("resend");
     let mut conn = connect(port, &dir).await;
-    conn.connect().await.unwrap();
+    conn.connect(Instant::now()).await.unwrap();
 
     loop {
-        match conn.recv(&mut |_| {}).await.unwrap() {
-            Some(r) => panic!("disconnected before active: {r:?}"),
-            None if conn.state().state() == State::Active => break,
-            None => {}
+        if let Some(Message::Disconnected { reason }) = conn.recv(Instant::now()).await.unwrap() {
+            panic!("disconnected before active: {reason:?}");
+        }
+        if conn.state().state() == State::Active {
+            break;
         }
     }
 
@@ -121,7 +197,7 @@ async fn conformance_gap_fill() {
     let dir = tmp_dir("gap_fill");
     let (mut child, port) = spawn_peer("gap_fill");
     let mut conn = connect(port, &dir).await;
-    conn.connect().await.unwrap();
+    conn.connect(Instant::now()).await.unwrap();
     assert_eq!(drive(&mut conn).await, DisconnectReason::Logout);
     assert!(child.wait().unwrap().success());
 }
@@ -131,7 +207,7 @@ async fn conformance_seq_reset() {
     let dir = tmp_dir("seq_reset");
     let (mut child, port) = spawn_peer("seq_reset");
     let mut conn = connect(port, &dir).await;
-    conn.connect().await.unwrap();
+    conn.connect(Instant::now()).await.unwrap();
     assert_eq!(drive(&mut conn).await, DisconnectReason::Logout);
     assert!(child.wait().unwrap().success());
 }

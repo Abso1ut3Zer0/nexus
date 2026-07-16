@@ -89,7 +89,7 @@ impl<'a> FieldWriter<'a> {
 /// trades that for a caller-chosen prefix size and shifts only if undersized.
 ///
 /// On overflow the writer is poisoned (further writes are dropped) and
-/// [`finish`](Self::finish) returns [`EncodeError::BufferFull`](crate::EncodeError::BufferFull)
+/// [`finish`](Self::finish) returns [`EncodeError::BufferFull`]
 /// — encoding never panics on a too-small buffer.
 ///
 /// # Example
@@ -168,7 +168,7 @@ impl<'buf> FrameFormatter<'buf> {
     }
 
     /// Whether a write has overflowed the buffer (so [`finish`](Self::finish)
-    /// will return [`EncodeError::BufferFull`](crate::EncodeError::BufferFull)).
+    /// will return [`EncodeError::BufferFull`]).
     #[inline]
     pub fn is_full(&self) -> bool {
         self.full
@@ -180,7 +180,7 @@ impl<'buf> FrameFormatter<'buf> {
     /// message within the buffer. The message is at `buf[start..start + len]`.
     ///
     /// # Errors
-    /// [`EncodeError::BufferFull`](crate::EncodeError::BufferFull) if any field,
+    /// [`EncodeError::BufferFull`] if any field,
     /// the prefix, or the checksum did not fit.
     pub fn finish(mut self) -> Result<(usize, usize), EncodeError> {
         if self.full {

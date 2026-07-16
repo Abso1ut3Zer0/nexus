@@ -271,7 +271,7 @@ impl FixJournal {
     /// `msg` is the already-formatted wire message; `seq` must equal its
     /// `MsgSeqNum` (tag 34). The send path satisfies this by construction — `seq`
     /// is passed in only to index the resend ring without re-parsing on the hot
-    /// path; the cold paths ([`resend`](Self::resend), [`recover`](Self::recover))
+    /// path; the cold paths ([`resend`](Self::resend), recovery on open)
     /// read the seqnum back out of the message via tag 34.
     ///
     /// The stored payload is `[ts:8][msg]` (an 8-byte LE UNIX-nanos timestamp
