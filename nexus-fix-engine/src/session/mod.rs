@@ -456,7 +456,7 @@ impl SessionState {
 
     /// Handles a received Logout.
     ///
-    /// Emits (some via [`validate_seq`](Self::validate_seq)): ResendRequest | Logout.
+    /// Emits (some via `validate_seq`): ResendRequest | Logout.
     pub fn on_logout<F, E>(
         &mut self,
         seq: u32,
@@ -498,7 +498,7 @@ impl SessionState {
 
     /// Handles a received Heartbeat. `echo_id` is `TestReqID(112)` parsed as `u64`, if present.
     ///
-    /// Emits (some via [`validate_seq`](Self::validate_seq)): LogonReset | ResendRequest | Logout.
+    /// Emits (some via `validate_seq`): LogonReset | ResendRequest | Logout.
     pub fn on_heartbeat<F, E>(
         &mut self,
         seq: u32,
@@ -553,7 +553,7 @@ impl SessionState {
 
     /// Handles a received TestRequest. Replies with a Heartbeat echoing the TestReqID.
     ///
-    /// Emits (some via [`validate_seq`](Self::validate_seq)): Heartbeat | ResendRequest | Logout.
+    /// Emits (some via `validate_seq`): Heartbeat | ResendRequest | Logout.
     pub fn on_test_request<F, E>(
         &mut self,
         seq: u32,
@@ -603,7 +603,7 @@ impl SessionState {
     /// or out-of-state request returns [`Control::None`]: the driver does not
     /// replay, and there is nothing to surface.
     ///
-    /// Emits (via [`validate_seq`](Self::validate_seq)): ResendRequest | Logout.
+    /// Emits (via `validate_seq`): ResendRequest | Logout.
     pub fn on_resend_request<F, E>(
         &mut self,
         seq: u32,
@@ -638,7 +638,7 @@ impl SessionState {
     /// `next_inbound` to `new_seq`. `gap_fill = true` is GapFill mode:
     /// validates sequence, advances `next_inbound` to `new_seq`.
     ///
-    /// Emits (some via [`validate_seq`](Self::validate_seq)): Reject | ResendRequest | Logout.
+    /// Emits (some via `validate_seq`): Reject | ResendRequest | Logout.
     pub fn on_sequence_reset<F, E>(
         &mut self,
         seq: u32,
@@ -692,7 +692,7 @@ impl SessionState {
 
     /// Handles a received Reject.
     ///
-    /// Emits (via [`validate_seq`](Self::validate_seq)): ResendRequest | Logout.
+    /// Emits (via `validate_seq`): ResendRequest | Logout.
     pub fn on_reject<F, E>(
         &mut self,
         seq: u32,
@@ -724,7 +724,7 @@ impl SessionState {
     /// when it is a gap/duplicate or the session is not active (nothing to
     /// surface), or [`Control::Disconnected`] on a too-low seqnum.
     ///
-    /// Emits (via [`validate_seq`](Self::validate_seq)): ResendRequest | Logout.
+    /// Emits (via `validate_seq`): ResendRequest | Logout.
     pub fn on_app<F, E>(
         &mut self,
         seq: u32,
@@ -760,7 +760,7 @@ impl SessionState {
     /// Validates sequence then sends a Reject for `inbound_seq`. A gap sends ResendRequest instead.
     /// The session remains alive. No-op if the session is not in an active state.
     ///
-    /// Emits (some via [`validate_seq`](Self::validate_seq)): Reject | ResendRequest | Logout.
+    /// Emits (some via `validate_seq`): Reject | ResendRequest | Logout.
     pub fn on_reject_inbound<F, E>(
         &mut self,
         inbound_seq: u32,

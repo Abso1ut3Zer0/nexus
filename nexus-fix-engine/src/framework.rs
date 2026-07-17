@@ -97,7 +97,7 @@ pub enum Message<'buf, D: FixDictionary> {
     /// A Logout (35=5) that did not end the session, which only happens
     /// out-of-state (e.g. mid-reset). The engine answers and closes an
     /// in-sequence logout itself; that surfaces as
-    /// [`Message::Disconnected`] with [`DisconnectReason::Logout`].
+    /// [`Message::Disconnected`] with [`DisconnectReason::Logout`](crate::DisconnectReason::Logout).
     LogoutRequest { msg: D::Logout<'buf> },
     /// Heartbeat (35=0). No reply required unless it carries a TestReqID.
     Heartbeat { msg: D::Heartbeat<'buf> },
@@ -243,11 +243,11 @@ impl<D: FixDictionary, C: SessionCustomizer> MessageWriter<D, C> {
     /// Owns the frame lifecycle so the customizer hook can run at the one point
     /// where it is useful: after the session header (`8`/`35`/`34`/`49`/`56`/`52`)
     /// is stamped — so a venue can sign over it — and before
-    /// [`FrameFormatter::finish`] computes `BodyLength(9)`/`CheckSum(10)` — so
+    /// [`FrameFormatter::finish`](nexus_fix_codec::FrameFormatter::finish) computes `BodyLength(9)`/`CheckSum(10)` — so
     /// whatever the hook appended is covered by both.
     ///
     /// Each arm binds its `MsgType(35)` once as a local `const MT` and passes it
-    /// to both [`FrameFormatter::new`] and `AdminMsgOut::new`, so the value
+    /// to both [`FrameFormatter::new`](nexus_fix_codec::FrameFormatter::new) and `AdminMsgOut::new`, so the value
     /// written into the frame and the one the hook reads back — what a venue
     /// signs over — cannot drift apart. The tripwire's owned-tag list comes from
     /// the dictionary (`D::*_OWNED`), sourced next to the encoder that writes it.
