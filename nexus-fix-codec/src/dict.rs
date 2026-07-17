@@ -1,5 +1,6 @@
 use crate::field::FieldView;
 use crate::types::FixTimestamp;
+use crate::writer::FrameFormatter;
 use nexus_ascii::AsciiTextStr;
 
 /// Zero-copy decoder for a session-level admin message.
@@ -20,7 +21,7 @@ pub struct AdminHeader<'a> {
     pub ts: &'a [u8],
 }
 
-fn write_admin_header(fmt: &mut crate::writer::FrameFormatter<'_>, hdr: &AdminHeader<'_>) {
+fn write_admin_header(fmt: &mut FrameFormatter<'_>, hdr: &AdminHeader<'_>) {
     use crate::types::encode_fix_uint;
     let mut buf = [0u8; 10];
     let n = encode_fix_uint(hdr.seq, &mut buf);
@@ -64,117 +65,130 @@ pub trait FixDictionary {
     /// Whether the given message type is an admin (session-level) message.
     fn is_admin(msg_type: Self::MsgType) -> bool;
 
-    fn encode_logon(
-        buf: &mut [u8],
-        hdr: AdminHeader<'_>,
-        heart_bt_int_s: u32,
-    ) -> Option<(usize, usize)> {
+    /// Body tags [`encode_logon`](Self::encode_logon) writes.
+    ///
+    /// The `SessionCustomizer` tripwire in
+    /// [`AdminMsgOut::field`](crate::AdminMsgOut::field) rejects a venue hook
+    /// that writes one of these — it would duplicate a field the engine already
+    /// wrote. Each `*_OWNED` const lives next to its encoder so a reader adding a
+    /// field to the encoder sees the list to keep in sync; the engine's
+    /// `encode_admin` passes it to `AdminMsgOut::new`.
+    const LOGON_OWNED: &'static [u32] = &[108];
+
+    /// Write Logon's (35=A) standard fields into an already-started frame.
+    ///
+    /// The caller owns the frame lifecycle — [`FrameFormatter::new`] (which
+    /// writes `8`/`35`) and [`FrameFormatter::finish`] (which computes `9`/`10`)
+    /// — so it can run a
+    /// [`SessionCustomizer`](crate::SessionCustomizer) hook between this call
+    /// and `finish`, and have the hook's fields covered by BodyLength and the
+    /// checksum. Same contract for every `encode_*` below.
+    fn encode_logon(fmt: &mut FrameFormatter<'_>, hdr: &AdminHeader<'_>, heart_bt_int_s: u32) {
         use crate::types::encode_fix_uint;
-        use crate::writer::FrameFormatter;
-        let mut fmt = FrameFormatter::new(buf, Self::BEGIN_STRING, b"A");
-        write_admin_header(&mut fmt, &hdr);
+        write_admin_header(fmt, hdr);
         let mut tmp = [0u8; 10];
         let n = encode_fix_uint(heart_bt_int_s, &mut tmp);
         fmt.field(108, &tmp[..n]);
-        fmt.finish().ok()
     }
 
+    /// Body tags [`encode_logon_reset`](Self::encode_logon_reset) writes.
+    /// See [`LOGON_OWNED`](Self::LOGON_OWNED).
+    const LOGON_RESET_OWNED: &'static [u32] = &[108, 141];
+
+    /// Write Logon-with-`ResetSeqNumFlag` (35=A, 141=Y) standard fields.
     fn encode_logon_reset(
-        buf: &mut [u8],
-        hdr: AdminHeader<'_>,
+        fmt: &mut FrameFormatter<'_>,
+        hdr: &AdminHeader<'_>,
         heart_bt_int_s: u32,
-    ) -> Option<(usize, usize)> {
+    ) {
         use crate::types::encode_fix_uint;
-        use crate::writer::FrameFormatter;
-        let mut fmt = FrameFormatter::new(buf, Self::BEGIN_STRING, b"A");
-        write_admin_header(&mut fmt, &hdr);
+        write_admin_header(fmt, hdr);
         let mut tmp = [0u8; 10];
         let n = encode_fix_uint(heart_bt_int_s, &mut tmp);
         fmt.field(108, &tmp[..n]);
         fmt.field(141, b"Y");
-        fmt.finish().ok()
     }
 
-    fn encode_logout(buf: &mut [u8], hdr: AdminHeader<'_>) -> Option<(usize, usize)> {
-        use crate::writer::FrameFormatter;
-        let mut fmt = FrameFormatter::new(buf, Self::BEGIN_STRING, b"5");
-        write_admin_header(&mut fmt, &hdr);
-        fmt.finish().ok()
+    /// Body tags [`encode_logout`](Self::encode_logout) writes (none — header
+    /// only). See [`LOGON_OWNED`](Self::LOGON_OWNED).
+    const LOGOUT_OWNED: &'static [u32] = &[];
+
+    /// Write Logout's (35=5) standard fields.
+    fn encode_logout(fmt: &mut FrameFormatter<'_>, hdr: &AdminHeader<'_>) {
+        write_admin_header(fmt, hdr);
     }
 
-    fn encode_heartbeat(
-        buf: &mut [u8],
-        hdr: AdminHeader<'_>,
-        echo: Option<&[u8]>,
-    ) -> Option<(usize, usize)> {
-        use crate::writer::FrameFormatter;
-        let mut fmt = FrameFormatter::new(buf, Self::BEGIN_STRING, b"0");
-        write_admin_header(&mut fmt, &hdr);
+    /// Body tags [`encode_heartbeat`](Self::encode_heartbeat) writes. `112` is
+    /// written only when echoing a `TestReqID`, but the tripwire is
+    /// unconditional: a hook has no business writing a tag the encoder may own.
+    /// See [`LOGON_OWNED`](Self::LOGON_OWNED).
+    const HEARTBEAT_OWNED: &'static [u32] = &[112];
+
+    /// Write Heartbeat's (35=0) standard fields, echoing `TestReqID` if given.
+    fn encode_heartbeat(fmt: &mut FrameFormatter<'_>, hdr: &AdminHeader<'_>, echo: Option<&[u8]>) {
+        write_admin_header(fmt, hdr);
         if let Some(id) = echo {
             fmt.field(112, id);
         }
-        fmt.finish().ok()
     }
 
-    fn encode_test_request(
-        buf: &mut [u8],
-        hdr: AdminHeader<'_>,
-        id: u64,
-    ) -> Option<(usize, usize)> {
+    /// Body tags [`encode_test_request`](Self::encode_test_request) writes.
+    /// See [`LOGON_OWNED`](Self::LOGON_OWNED).
+    const TEST_REQUEST_OWNED: &'static [u32] = &[112];
+
+    /// Write TestRequest's (35=1) standard fields.
+    fn encode_test_request(fmt: &mut FrameFormatter<'_>, hdr: &AdminHeader<'_>, id: u64) {
         use crate::types::encode_fix_seqnum;
-        use crate::writer::FrameFormatter;
-        let mut fmt = FrameFormatter::new(buf, Self::BEGIN_STRING, b"1");
-        write_admin_header(&mut fmt, &hdr);
+        write_admin_header(fmt, hdr);
         let mut tmp = [0u8; 20];
         let n = encode_fix_seqnum(id, &mut tmp);
         fmt.field(112, &tmp[..n]);
-        fmt.finish().ok()
     }
 
-    fn encode_resend_request(
-        buf: &mut [u8],
-        hdr: AdminHeader<'_>,
-        begin_seq: u32,
-    ) -> Option<(usize, usize)> {
+    /// Body tags [`encode_resend_request`](Self::encode_resend_request) writes.
+    /// See [`LOGON_OWNED`](Self::LOGON_OWNED).
+    const RESEND_REQUEST_OWNED: &'static [u32] = &[7, 16];
+
+    /// Write ResendRequest's (35=2) standard fields.
+    fn encode_resend_request(fmt: &mut FrameFormatter<'_>, hdr: &AdminHeader<'_>, begin_seq: u32) {
         use crate::types::encode_fix_uint;
-        use crate::writer::FrameFormatter;
-        let mut fmt = FrameFormatter::new(buf, Self::BEGIN_STRING, b"2");
-        write_admin_header(&mut fmt, &hdr);
+        write_admin_header(fmt, hdr);
         let mut tmp = [0u8; 10];
         let n = encode_fix_uint(begin_seq, &mut tmp);
         fmt.field(7, &tmp[..n]);
         fmt.field(16, b"0");
-        fmt.finish().ok()
     }
 
-    fn encode_sequence_reset(
-        buf: &mut [u8],
-        hdr: AdminHeader<'_>,
-        new_seq: u32,
-    ) -> Option<(usize, usize)> {
+    /// Body tags [`encode_sequence_reset`](Self::encode_sequence_reset) writes.
+    /// See [`LOGON_OWNED`](Self::LOGON_OWNED).
+    const SEQUENCE_RESET_OWNED: &'static [u32] = &[43, 123, 36];
+
+    /// Write SequenceReset's (35=4) standard fields.
+    fn encode_sequence_reset(fmt: &mut FrameFormatter<'_>, hdr: &AdminHeader<'_>, new_seq: u32) {
         use crate::types::encode_fix_uint;
-        use crate::writer::FrameFormatter;
-        let mut fmt = FrameFormatter::new(buf, Self::BEGIN_STRING, b"4");
-        write_admin_header(&mut fmt, &hdr);
+        write_admin_header(fmt, hdr);
         fmt.field(43, b"Y");
         fmt.field(123, b"Y");
         let mut tmp = [0u8; 10];
         let n = encode_fix_uint(new_seq, &mut tmp);
         fmt.field(36, &tmp[..n]);
-        fmt.finish().ok()
     }
 
+    /// Body tags [`encode_reject`](Self::encode_reject) writes. `371` is written
+    /// only when a `RefTagID` is cited, but the tripwire is unconditional.
+    /// See [`LOGON_OWNED`](Self::LOGON_OWNED).
+    const REJECT_OWNED: &'static [u32] = &[45, 371, 373];
+
+    /// Write Reject's (35=3) standard fields.
     fn encode_reject(
-        buf: &mut [u8],
-        hdr: AdminHeader<'_>,
+        fmt: &mut FrameFormatter<'_>,
+        hdr: &AdminHeader<'_>,
         ref_seq_num: u32,
         ref_tag_id: Option<u32>,
         session_reject_reason: u8,
-    ) -> Option<(usize, usize)> {
+    ) {
         use crate::types::encode_fix_uint;
-        use crate::writer::FrameFormatter;
-        let mut fmt = FrameFormatter::new(buf, Self::BEGIN_STRING, b"3");
-        write_admin_header(&mut fmt, &hdr);
+        write_admin_header(fmt, hdr);
         let mut tmp = [0u8; 10];
         let n = encode_fix_uint(ref_seq_num, &mut tmp);
         fmt.field(45, &tmp[..n]);
@@ -184,7 +198,6 @@ pub trait FixDictionary {
         }
         let n = encode_fix_uint(session_reject_reason as u32, &mut tmp);
         fmt.field(373, &tmp[..n]);
-        fmt.finish().ok()
     }
 }
 

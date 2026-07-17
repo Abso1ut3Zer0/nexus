@@ -154,7 +154,8 @@ mod unix_tests {
                 heart_bt_int_s: 30,
             },
             &config,
-        );
+        )
+        .expect("logon fits");
         assert!(!w.is_empty());
 
         let data = w.data();
@@ -184,7 +185,8 @@ mod unix_tests {
     fn encode_admin_logout_produces_valid_frame() {
         let mut w: MessageWriter<MockDict> = MessageWriter::new();
         let config = config();
-        w.encode_admin(AdminMsg::Logout { seq: 2 }, &config);
+        w.encode_admin(AdminMsg::Logout { seq: 2 }, &config)
+            .expect("logout fits");
         assert!(!w.is_empty());
         let data = w.data();
         assert!(data.starts_with(b"8=FIX.4.4\x01"));
@@ -195,7 +197,8 @@ mod unix_tests {
     fn encode_admin_heartbeat_without_echo() {
         let mut w: MessageWriter<MockDict> = MessageWriter::new();
         let config = config();
-        w.encode_admin(AdminMsg::Heartbeat { seq: 3, echo: None }, &config);
+        w.encode_admin(AdminMsg::Heartbeat { seq: 3, echo: None }, &config)
+            .expect("heartbeat fits");
         assert!(!w.is_empty());
         let data = w.data();
         assert!(data.windows(5).any(|c| c == b"35=0\x01"));
@@ -206,7 +209,8 @@ mod unix_tests {
     fn encode_admin_resend_request() {
         let mut w: MessageWriter<MockDict> = MessageWriter::new();
         let config = config();
-        w.encode_admin(AdminMsg::ResendRequest { seq: 4, begin: 2 }, &config);
+        w.encode_admin(AdminMsg::ResendRequest { seq: 4, begin: 2 }, &config)
+            .expect("resend request fits");
         assert!(!w.is_empty());
         let data = w.data();
         assert!(data.windows(5).any(|c| c == b"35=2\x01"));
@@ -224,7 +228,8 @@ mod unix_tests {
                 new_seq: 10,
             },
             &config,
-        );
+        )
+        .expect("sequence reset fits");
         assert!(!w.is_empty());
         let data = w.data();
         assert!(data.windows(5).any(|c| c == b"35=4\x01"));
@@ -236,7 +241,8 @@ mod unix_tests {
     fn encode_admin_uses_dict_begin_string() {
         let mut w: MessageWriter<MockDict> = MessageWriter::new();
         let config = config();
-        w.encode_admin(AdminMsg::Logout { seq: 1 }, &config);
+        w.encode_admin(AdminMsg::Logout { seq: 1 }, &config)
+            .expect("logout fits");
         let data = w.data();
         assert!(data.starts_with(b"8=FIX.4.4\x01"));
     }

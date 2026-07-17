@@ -10,6 +10,18 @@ contained.
 
 ## [Unreleased]
 
+### Added
+
+- Venue Logon auth, mirroring the sync engine. `FixConnection` and
+  `FixConnectionBuilder` take a per-venue `SessionCustomizer` (from
+  `nexus-fix-codec`) as a trailing type parameter defaulting to `NoCustomizer`,
+  so existing call sites — `FixConnection<TcpStream, Fix44>`,
+  `FixConnection::from_parts(...)`, `FixConnection::builder()` — are unchanged.
+
+  Attach one with `FixConnectionBuilder::customizer(c)` or
+  `FixConnection::from_parts_with_customizer(...)`. All hook behavior lives in
+  the shared `FixSession` core; this crate only threads the type parameter.
+
 ### Internal
 
 - Test scratch directories are now removed on drop. The `tmp_dir` helpers in

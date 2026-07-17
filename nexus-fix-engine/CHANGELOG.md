@@ -10,6 +10,43 @@ contained.
 
 ## [Unreleased]
 
+### Added
+
+- Venue Logon auth. `FixSession`, `FixConnection`, and `MessageWriter` take a
+  per-venue `SessionCustomizer` (from `nexus-fix-codec`) as a trailing type
+  parameter defaulting to `NoCustomizer`, so existing plain-FIX call sites —
+  `FixConnection<TcpStream, Fix44>`, `MessageWriter::new()`,
+  `FixSession::from_buffers(...)` — compile and behave exactly as before, and
+  produce byte-identical frames.
+
+  Attach one with `FixConnectionBuilder::customizer(c)`, or the
+  `*_with_customizer` constructors (`FixSession::new_with_customizer`,
+  `FixConnection::from_parts_with_customizer`,
+  `MessageWriter::with_customizer`, `MessageWriter::with_frame_writer_and_customizer`).
+
+  `MessageWriter::encode_admin` now owns the frame lifecycle so the hook runs
+  where it must: after the session header (`8`/`35`/`34`/`49`/`56`/`52`) is
+  stamped — so a venue can sign over it — and before `finish()` computes
+  `BodyLength(9)`/`CheckSum(10)` — so injected fields are covered by both.
+
+  `MessageWriter::encode_admin` now returns `Result<(), Error>` (previously it
+  returned nothing). A hook that overflows the writer — an oversized
+  `RawData(96)` or a too-small buffer — poisons the frame, and the encode now
+  surfaces `Error::MessageTooLarge` instead of silently committing nothing.
+  Without this, the outbound seqnum had already been bumped and the state moved
+  on, so the session wedged until a logon/heartbeat timeout reported a cause
+  that pointed away from the encode. `store_admin` and the missing-tag-35 reject
+  path both propagate the error; nothing is committed or journaled on failure.
+
+  Note: `store_admin` journals the encoded frame, so hook-injected fields
+  (including a plaintext `Password(554)`) land in the outbound journal. This is
+  deliberate: the journal is local to the box, and an archive that matches the
+  wire byte-for-byte is worth more than redaction. QuickFIX/J has the same
+  property (it persists after `toAdmin`).
+
+  Resend gap-fills are unaffected — they are reframed directly and never run the
+  hook, so PossDup traffic cannot carry credentials.
+
 ### Internal
 
 - Test scratch directories are now removed on drop. The `tmp_dir` helpers in
