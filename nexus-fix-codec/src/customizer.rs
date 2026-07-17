@@ -180,6 +180,12 @@ impl<'f, 'h> AdminMsgOut<'f, 'h> {
 /// as plain fields rather than behind `Cell`/`RefCell`. This is a cold path
 /// (logon), single-threaded, one customizer per session, so the `&mut` costs
 /// nothing.
+///
+/// A hook runs while the frame is being built, before it is known to encode. If
+/// the frame then overflows the writer (a hook that appends more than fits), the
+/// emit fails but any state the hook already mutated stays mutated: the mutation
+/// is not rolled back. For a never-repeat nonce a skipped value is harmless; a
+/// venue that needs "mutate only on a sent message" must handle that itself.
 pub trait SessionCustomizer {
     /// Customize a Logon (35=A). The venue-auth hook.
     fn customize_logon(&mut self, m: &mut AdminMsgOut<'_, '_>) {
