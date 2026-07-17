@@ -37,7 +37,7 @@ pub mod reader;
 pub mod scan;
 pub mod writer;
 
-pub use customizer::{AdminKind, AdminMsgOut, NoCustomizer, SessionCustomizer};
+pub use customizer::{AdminMsgOut, NoCustomizer, SessionCustomizer};
 pub use dict::{AdminHeader, FixAdminMsg, FixDictionary, FixHeader};
 pub use error::{ChecksumError, DecodeError, EncodeError, FixValueError};
 pub use field::{FieldView, FromFixValue};

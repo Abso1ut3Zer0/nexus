@@ -246,10 +246,11 @@ impl<D: FixDictionary, C: SessionCustomizer> MessageWriter<D, C> {
     /// [`FrameFormatter::finish`] computes `BodyLength(9)`/`CheckSum(10)` — so
     /// whatever the hook appended is covered by both.
     ///
-    /// Each arm names its message once, as an
-    /// [`AdminKind`](nexus_fix_codec::AdminKind): it supplies the `MsgType(35)`
-    /// written into the frame *and* the one the hook reads back, so the wire
-    /// value and the value a venue signs over cannot drift apart.
+    /// Each arm binds its `MsgType(35)` once as a local `const MT` and passes it
+    /// to both [`FrameFormatter::new`] and `AdminMsgOut::new`, so the value
+    /// written into the frame and the one the hook reads back — what a venue
+    /// signs over — cannot drift apart. The tripwire's owned-tag list comes from
+    /// the dictionary (`D::*_OWNED`), sourced next to the encoder that writes it.
     ///
     /// # Errors
     ///
@@ -261,7 +262,7 @@ impl<D: FixDictionary, C: SessionCustomizer> MessageWriter<D, C> {
     /// the encode failed instead of silently sending nothing.
     #[cfg(unix)]
     pub fn encode_admin(&mut self, admin: AdminMsg, config: &SessionConfig) -> Result<(), Error> {
-        use nexus_fix_codec::{AdminHeader, AdminKind, AdminMsgOut, FrameFormatter};
+        use nexus_fix_codec::{AdminHeader, AdminMsgOut, FrameFormatter};
 
         let ts = make_ts();
         let sender = config.sender.as_bytes();
@@ -291,63 +292,101 @@ impl<D: FixDictionary, C: SessionCustomizer> MessageWriter<D, C> {
                 seq,
                 heart_bt_int_s,
             } => {
-                let kind = AdminKind::Logon;
+                const MT: &[u8] = b"A";
                 let hdr = mk_hdr(seq);
-                let mut fmt = FrameFormatter::new(spare, D::BEGIN_STRING, kind.msg_type());
+                let mut fmt = FrameFormatter::new(spare, D::BEGIN_STRING, MT);
                 D::encode_logon(&mut fmt, &hdr, heart_bt_int_s);
-                customizer.configure_logon(&mut AdminMsgOut::new(&mut fmt, &hdr, kind));
+                customizer.customize_logon(&mut AdminMsgOut::new(
+                    &mut fmt,
+                    &hdr,
+                    MT,
+                    D::LOGON_OWNED,
+                ));
                 fmt.finish()
             }
             AdminMsg::LogonReset {
                 seq,
                 heart_bt_int_s,
             } => {
-                let kind = AdminKind::LogonReset;
+                const MT: &[u8] = b"A";
                 let hdr = mk_hdr(seq);
-                let mut fmt = FrameFormatter::new(spare, D::BEGIN_STRING, kind.msg_type());
+                let mut fmt = FrameFormatter::new(spare, D::BEGIN_STRING, MT);
                 D::encode_logon_reset(&mut fmt, &hdr, heart_bt_int_s);
-                customizer.configure_logon_reset(&mut AdminMsgOut::new(&mut fmt, &hdr, kind));
+                customizer.customize_logon_reset(&mut AdminMsgOut::new(
+                    &mut fmt,
+                    &hdr,
+                    MT,
+                    D::LOGON_RESET_OWNED,
+                ));
                 fmt.finish()
             }
             AdminMsg::Logout { seq } => {
-                let kind = AdminKind::Logout;
+                const MT: &[u8] = b"5";
                 let hdr = mk_hdr(seq);
-                let mut fmt = FrameFormatter::new(spare, D::BEGIN_STRING, kind.msg_type());
+                let mut fmt = FrameFormatter::new(spare, D::BEGIN_STRING, MT);
                 D::encode_logout(&mut fmt, &hdr);
-                customizer.configure_logout(&mut AdminMsgOut::new(&mut fmt, &hdr, kind));
+                customizer.customize_logout(&mut AdminMsgOut::new(
+                    &mut fmt,
+                    &hdr,
+                    MT,
+                    D::LOGOUT_OWNED,
+                ));
                 fmt.finish()
             }
             AdminMsg::Heartbeat { seq, echo } => {
-                let kind = AdminKind::Heartbeat;
+                const MT: &[u8] = b"0";
                 let hdr = mk_hdr(seq);
                 let echo_bytes = echo.as_ref().map(|(id, len)| &id[..*len as usize]);
-                let mut fmt = FrameFormatter::new(spare, D::BEGIN_STRING, kind.msg_type());
+                let mut fmt = FrameFormatter::new(spare, D::BEGIN_STRING, MT);
                 D::encode_heartbeat(&mut fmt, &hdr, echo_bytes);
-                customizer.configure_heartbeat(&mut AdminMsgOut::new(&mut fmt, &hdr, kind));
+                customizer.customize_heartbeat(&mut AdminMsgOut::new(
+                    &mut fmt,
+                    &hdr,
+                    MT,
+                    D::HEARTBEAT_OWNED,
+                ));
                 fmt.finish()
             }
             AdminMsg::TestRequest { seq, id } => {
-                let kind = AdminKind::TestRequest;
+                const MT: &[u8] = b"1";
                 let hdr = mk_hdr(seq);
-                let mut fmt = FrameFormatter::new(spare, D::BEGIN_STRING, kind.msg_type());
+                let mut fmt = FrameFormatter::new(spare, D::BEGIN_STRING, MT);
                 D::encode_test_request(&mut fmt, &hdr, id);
-                customizer.configure_test_request(&mut AdminMsgOut::new(&mut fmt, &hdr, kind));
+                customizer.customize_test_request(&mut AdminMsgOut::new(
+                    &mut fmt,
+                    &hdr,
+                    MT,
+                    D::TEST_REQUEST_OWNED,
+                ));
                 fmt.finish()
             }
             AdminMsg::ResendRequest { seq, begin } => {
-                let kind = AdminKind::ResendRequest;
+                const MT: &[u8] = b"2";
                 let hdr = mk_hdr(seq);
-                let mut fmt = FrameFormatter::new(spare, D::BEGIN_STRING, kind.msg_type());
+                let mut fmt = FrameFormatter::new(spare, D::BEGIN_STRING, MT);
                 D::encode_resend_request(&mut fmt, &hdr, begin);
-                customizer.configure_resend_request(&mut AdminMsgOut::new(&mut fmt, &hdr, kind));
+                customizer.customize_resend_request(&mut AdminMsgOut::new(
+                    &mut fmt,
+                    &hdr,
+                    MT,
+                    D::RESEND_REQUEST_OWNED,
+                ));
                 fmt.finish()
             }
+            // Never emitted by the session state machine (the resend path builds
+            // gap-fills directly, not via `AdminMsg`), but `encode_admin` is a
+            // public method exercised directly in tests, so the arm stays live.
             AdminMsg::SequenceReset { seq, new_seq } => {
-                let kind = AdminKind::SequenceReset;
+                const MT: &[u8] = b"4";
                 let hdr = mk_hdr(seq);
-                let mut fmt = FrameFormatter::new(spare, D::BEGIN_STRING, kind.msg_type());
+                let mut fmt = FrameFormatter::new(spare, D::BEGIN_STRING, MT);
                 D::encode_sequence_reset(&mut fmt, &hdr, new_seq);
-                customizer.configure_sequence_reset(&mut AdminMsgOut::new(&mut fmt, &hdr, kind));
+                customizer.customize_sequence_reset(&mut AdminMsgOut::new(
+                    &mut fmt,
+                    &hdr,
+                    MT,
+                    D::SEQUENCE_RESET_OWNED,
+                ));
                 fmt.finish()
             }
             AdminMsg::Reject {
@@ -356,9 +395,9 @@ impl<D: FixDictionary, C: SessionCustomizer> MessageWriter<D, C> {
                 ref_tag_id,
                 session_reject_reason,
             } => {
-                let kind = AdminKind::Reject;
+                const MT: &[u8] = b"3";
                 let hdr = mk_hdr(seq);
-                let mut fmt = FrameFormatter::new(spare, D::BEGIN_STRING, kind.msg_type());
+                let mut fmt = FrameFormatter::new(spare, D::BEGIN_STRING, MT);
                 D::encode_reject(
                     &mut fmt,
                     &hdr,
@@ -366,7 +405,12 @@ impl<D: FixDictionary, C: SessionCustomizer> MessageWriter<D, C> {
                     ref_tag_id,
                     session_reject_reason,
                 );
-                customizer.configure_reject(&mut AdminMsgOut::new(&mut fmt, &hdr, kind));
+                customizer.customize_reject(&mut AdminMsgOut::new(
+                    &mut fmt,
+                    &hdr,
+                    MT,
+                    D::REJECT_OWNED,
+                ));
                 fmt.finish()
             }
         };

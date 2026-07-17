@@ -23,20 +23,23 @@ contained.
   (`seq_num`, `sending_time`, `sender`, `target`, `msg_type`) alongside `field`
   for exactly that reason.
 
-  Hooks are per message type (`configure_logon`, `configure_heartbeat`, …) and
+  Hooks are per message type (`customize_logon`, `customize_heartbeat`, …) and
   default to no-ops, so a venue implements only what it customizes and cannot
   leak Logon credentials into every Heartbeat — the miswiring QuickFIX's single
   undifferentiated `toAdmin` forces callers to hand-guard against.
 
   Writing an engine-owned tag from a hook trips a `debug_assert`: it is a
   programming error in expert-authored, once-per-venue code, and the failure is
-  immediate and loud on the wire. The check is **per message** (via the new
-  `AdminKind`, which also single-sources each message's `MsgType(35)`): the
-  session framing and header it stamps on every admin (8, 9, 10, 34, 35, 49, 52,
-  56) plus the params that message's own encoder writes — `108` on a Logon,
+  immediate and loud on the wire. The check is **per message**: the session
+  framing and header the engine stamps on every admin (8, 9, 10, 34, 35, 49, 52,
+  56) plus the body tags that message's own encoder writes — `108` on a Logon,
   `141` on a Logon carrying `ResetSeqNumFlag`, `7`/`16` on a ResendRequest, and
   so on. A tag the engine owns on one message is the venue's to write on another
-  (`108` is engine-owned on a Logon, writable on a Heartbeat).
+  (`108` is engine-owned on a Logon, writable on a Heartbeat). The per-message
+  body-tag lists are `FixDictionary::*_OWNED` associated consts (`LOGON_OWNED`,
+  `HEARTBEAT_OWNED`, …), each defaulted next to the `encode_*` that writes those
+  tags so the two cannot drift; `AdminMsgOut` carries the message's `MsgType(35)`
+  and owned-tag slice as plain data the engine passes in.
 
 - `FieldSpan` and `GroupSpan` zero-copy field reference types
 - SIMD SOH and `=` scanning: AVX-512, AVX2, SSE2, SWAR, scalar
