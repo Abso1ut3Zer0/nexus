@@ -17,41 +17,6 @@ use crate::customizer::{AdminMsgOut, SessionCustomizer};
 use crate::dict::{AdminHeader, FixDictionary};
 use crate::writer::FrameFormatter;
 
-/// Capacity of the `TestReqID(112)` echo a [`Heartbeat`] carries when replying to
-/// a TestRequest. Crate-private: callers construct the echo through
-/// [`TestReqId::new`], which caps the input, so nothing outside the crate needs
-/// to know the size.
-const TEST_REQ_ID_CAP: usize = 64;
-
-/// A `TestReqID(112)` echo, at most `TEST_REQ_ID_CAP` bytes.
-///
-/// The fields are private and the only constructor caps the input, so the stored
-/// length can never exceed the buffer — an over-length echo is unrepresentable,
-/// and [`as_bytes`](Self::as_bytes) never panics.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct TestReqId {
-    buf: [u8; TEST_REQ_ID_CAP],
-    len: u8,
-}
-
-impl TestReqId {
-    /// Copy up to `TEST_REQ_ID_CAP` bytes of `id`; anything beyond is dropped.
-    pub fn new(id: &[u8]) -> Self {
-        let len = id.len().min(TEST_REQ_ID_CAP);
-        let mut buf = [0u8; TEST_REQ_ID_CAP];
-        buf[..len].copy_from_slice(&id[..len]);
-        Self {
-            buf,
-            len: len as u8,
-        }
-    }
-
-    /// The echoed bytes (`len <= TEST_REQ_ID_CAP` by construction, never panics).
-    pub fn as_bytes(&self) -> &[u8] {
-        &self.buf[..self.len as usize]
-    }
-}
-
 /// Ties an outbound admin message to its wiring: the dictionary encoder that
 /// writes its standard body, the per-venue customizer hook, its owned-tag list,
 /// and its `MsgType(35)`.
@@ -151,15 +116,17 @@ impl AdminEncode for Logout {
 
 /// Heartbeat (35=0), optionally echoing a `TestReqID(112)`.
 ///
-/// `echo` is a [`TestReqId`] — build it with [`TestReqId::new`], which caps the
-/// input at `TEST_REQ_ID_CAP` bytes so the echo can never over-run its buffer.
+/// `echo` borrows the `TestReqID` to echo back — normally the exact bytes of the
+/// TestRequest that prompted this reply, so the requester can match it to its
+/// request. It is echoed verbatim (no length cap); an id larger than the outbound
+/// buffer surfaces as `MessageTooLarge` at emit, like any oversized frame.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct Heartbeat {
+pub struct Heartbeat<'a> {
     pub seq: u32,
-    pub echo: Option<TestReqId>,
+    pub echo: Option<&'a [u8]>,
 }
 
-impl AdminEncode for Heartbeat {
+impl AdminEncode for Heartbeat<'_> {
     const MSG_TYPE: &'static [u8] = b"0";
     fn seq(&self) -> u32 {
         self.seq
@@ -168,8 +135,7 @@ impl AdminEncode for Heartbeat {
         D::HEARTBEAT_OWNED
     }
     fn encode<D: FixDictionary>(&self, fmt: &mut FrameFormatter<'_>, hdr: &AdminHeader<'_>) {
-        let echo_bytes = self.echo.as_ref().map(TestReqId::as_bytes);
-        D::encode_heartbeat(fmt, hdr, echo_bytes);
+        D::encode_heartbeat(fmt, hdr, self.echo);
     }
     fn customize<C: SessionCustomizer>(&self, customizer: &mut C, out: &mut AdminMsgOut<'_, '_>) {
         customizer.customize_heartbeat(out);
@@ -275,34 +241,5 @@ impl AdminEncode for Reject {
     }
     fn customize<C: SessionCustomizer>(&self, customizer: &mut C, out: &mut AdminMsgOut<'_, '_>) {
         customizer.customize_reject(out);
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn test_req_id_new_caps_over_length_input() {
-        // The case that used to panic: an over-length id. `new` caps it at the
-        // buffer size instead of storing a `len` that later slices out of bounds.
-        let id = TestReqId::new(&[b'x'; 100]);
-        assert_eq!(
-            id.as_bytes().len(),
-            TEST_REQ_ID_CAP,
-            "an over-length echo must be capped to the buffer, not stored verbatim"
-        );
-        assert!(id.as_bytes().iter().all(|&b| b == b'x'));
-    }
-
-    #[test]
-    fn test_req_id_new_preserves_short_input() {
-        let id = TestReqId::new(b"TR-1");
-        assert_eq!(id.as_bytes(), b"TR-1");
-    }
-
-    #[test]
-    fn test_req_id_new_empty_is_empty() {
-        assert_eq!(TestReqId::new(b"").as_bytes(), b"");
     }
 }

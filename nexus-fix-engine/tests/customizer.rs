@@ -13,7 +13,7 @@
 use nexus_fix_codec::{
     AdminEncode, AdminMsgOut, DecodeError, FieldView, FixAdminMsg, FixDictionary, FixHeader,
     FixTimestamp, Heartbeat, Logon, LogonReset, Logout, NoCustomizer, Reject, ResendRequest,
-    SequenceReset, SessionCustomizer, TestReqId, TestRequest, find_tag, validate_checksum,
+    SequenceReset, SessionCustomizer, TestRequest, find_tag, validate_checksum,
 };
 use nexus_fix_engine::{
     AdminSink, CompId, Emitter, FrameWriter, MessageWriter, SessionConfig, TransportError,
@@ -238,21 +238,20 @@ fn no_customizer_heartbeat_with_echo_is_byte_identical() {
     assert_matches_oracle(
         Heartbeat {
             seq: 3,
-            echo: Some(TestReqId::new(b"TR-1")),
+            echo: Some(b"TR-1"),
         },
         b"0",
         &[(112, b"TR-1".to_vec())],
     );
 }
 
-/// The panic that `TestReqId` designs out: an over-length echo. `TestReqId::new`
-/// caps a 100-byte id at `TEST_REQ_ID_CAP`, so `Heartbeat::encode`'s `as_bytes()`
-/// slice is in-bounds and the emitted `112=` tag is exactly the cap — this
-/// construction used to store `len=100` and panic on `&id[..100]`.
+/// The echo is borrowed and uncapped, so a long `TestReqID` is echoed verbatim.
+/// The requester matches a Heartbeat to its TestRequest by the exact `112` value,
+/// so truncating it (as the old fixed 64-byte buffer would) could break that
+/// match. Fault-injection guard: a reintroduced cap fails the length assert.
 #[test]
-fn heartbeat_over_length_echo_is_capped_not_panicking() {
-    // The cap is crate-private; derive its value from the newtype's own contract.
-    let cap = TestReqId::new(&[b'x'; 100]).as_bytes().len();
+fn heartbeat_long_echo_encodes_verbatim() {
+    let id = [b'x'; 100];
 
     let mut w: MessageWriter<MockDict> = MessageWriter::new();
     emit_admin(
@@ -260,18 +259,17 @@ fn heartbeat_over_length_echo_is_capped_not_panicking() {
         &config(),
         Heartbeat {
             seq: 3,
-            echo: Some(TestReqId::new(&[b'x'; 100])),
+            echo: Some(&id),
         },
     )
-    .expect("capped heartbeat fits");
+    .expect("heartbeat fits");
 
     let tag_112 = tag(w.data(), 112).expect("112 on the wire");
     assert_eq!(
-        tag_112.len(),
-        cap,
-        "an over-length echo must encode a 112 value capped to the buffer, not 100 bytes"
+        tag_112,
+        &id[..],
+        "the echo must be the full TestReqID, not truncated"
     );
-    assert!(tag_112.iter().all(|&b| b == b'x'));
     assert!(validate_checksum(w.data()).is_ok());
 }
 
@@ -391,7 +389,7 @@ fn dictionary_owned_consts_match_the_encoder_bodies() {
     check!(
         Heartbeat {
             seq: 3,
-            echo: Some(TestReqId::new(b"TR-1"))
+            echo: Some(b"TR-1")
         },
         MockDict::HEARTBEAT_OWNED
     );

@@ -4,8 +4,7 @@ use std::time::{Duration, Instant};
 
 pub use event::{Control, DisconnectReason, State};
 use nexus_fix_codec::{
-    AdminEncode, Heartbeat, Logon, LogonReset, Logout, Reject, ResendRequest, TestReqId,
-    TestRequest,
+    AdminEncode, Heartbeat, Logon, LogonReset, Logout, Reject, ResendRequest, TestRequest,
 };
 
 use crate::framework::SessionError;
@@ -557,7 +556,7 @@ impl SessionState {
                 let hb_seq = seq!(self, now);
                 sink.emit(Heartbeat {
                     seq: hb_seq,
-                    echo: Some(TestReqId::new(test_req_id)),
+                    echo: Some(test_req_id),
                 })?;
                 self.check_resend_done();
             }

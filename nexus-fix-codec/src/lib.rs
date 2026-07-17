@@ -40,7 +40,7 @@ pub mod writer;
 
 pub use admin::{
     AdminEncode, Heartbeat, Logon, LogonReset, Logout, Reject, ResendRequest, SequenceReset,
-    TestReqId, TestRequest,
+    TestRequest,
 };
 pub use customizer::{AdminMsgOut, NoCustomizer, SessionCustomizer};
 pub use dict::{AdminHeader, FixAdminMsg, FixDictionary, FixHeader};
