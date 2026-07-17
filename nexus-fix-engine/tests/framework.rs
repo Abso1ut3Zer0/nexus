@@ -133,7 +133,8 @@ fn message_writer_is_empty_after_flush() {
 
 #[cfg(unix)]
 mod unix_tests {
-    use nexus_fix_engine::{AdminMsg, CompId, MessageWriter, SessionConfig};
+    use nexus_fix_codec::{AdminEncode, Heartbeat, Logon, Logout, ResendRequest, SequenceReset};
+    use nexus_fix_engine::{CompId, Emit, Emitter, MessageWriter, SessionConfig, TransportError};
 
     use super::MockDict;
 
@@ -144,16 +145,28 @@ mod unix_tests {
         }
     }
 
+    /// Encode one admin message into `w` via the production [`Emitter`] with a
+    /// no-op `after` (no journaling) — the successor to the deleted
+    /// `MessageWriter::encode_admin`.
+    fn emit_admin<M: AdminEncode>(
+        w: &mut MessageWriter<MockDict>,
+        config: &SessionConfig,
+        msg: M,
+    ) -> Result<(), TransportError> {
+        Emitter::new(w, config, |_seq, _frame| Ok(())).emit(msg)
+    }
+
     #[test]
-    fn encode_admin_logon_produces_valid_frame() {
+    fn emit_admin_logon_produces_valid_frame() {
         let mut w: MessageWriter<MockDict> = MessageWriter::new();
         let config = config();
-        w.encode_admin(
-            AdminMsg::Logon {
+        emit_admin(
+            &mut w,
+            &config,
+            Logon {
                 seq: 1,
                 heart_bt_int_s: 30,
             },
-            &config,
         )
         .expect("logon fits");
         assert!(!w.is_empty());
@@ -182,11 +195,10 @@ mod unix_tests {
     }
 
     #[test]
-    fn encode_admin_logout_produces_valid_frame() {
+    fn emit_admin_logout_produces_valid_frame() {
         let mut w: MessageWriter<MockDict> = MessageWriter::new();
         let config = config();
-        w.encode_admin(AdminMsg::Logout { seq: 2 }, &config)
-            .expect("logout fits");
+        emit_admin(&mut w, &config, Logout { seq: 2 }).expect("logout fits");
         assert!(!w.is_empty());
         let data = w.data();
         assert!(data.starts_with(b"8=FIX.4.4\x01"));
@@ -194,11 +206,10 @@ mod unix_tests {
     }
 
     #[test]
-    fn encode_admin_heartbeat_without_echo() {
+    fn emit_admin_heartbeat_without_echo() {
         let mut w: MessageWriter<MockDict> = MessageWriter::new();
         let config = config();
-        w.encode_admin(AdminMsg::Heartbeat { seq: 3, echo: None }, &config)
-            .expect("heartbeat fits");
+        emit_admin(&mut w, &config, Heartbeat { seq: 3, echo: None }).expect("heartbeat fits");
         assert!(!w.is_empty());
         let data = w.data();
         assert!(data.windows(5).any(|c| c == b"35=0\x01"));
@@ -206,10 +217,10 @@ mod unix_tests {
     }
 
     #[test]
-    fn encode_admin_resend_request() {
+    fn emit_admin_resend_request() {
         let mut w: MessageWriter<MockDict> = MessageWriter::new();
         let config = config();
-        w.encode_admin(AdminMsg::ResendRequest { seq: 4, begin: 2 }, &config)
+        emit_admin(&mut w, &config, ResendRequest { seq: 4, begin: 2 })
             .expect("resend request fits");
         assert!(!w.is_empty());
         let data = w.data();
@@ -219,15 +230,16 @@ mod unix_tests {
     }
 
     #[test]
-    fn encode_admin_sequence_reset() {
+    fn emit_admin_sequence_reset() {
         let mut w: MessageWriter<MockDict> = MessageWriter::new();
         let config = config();
-        w.encode_admin(
-            AdminMsg::SequenceReset {
+        emit_admin(
+            &mut w,
+            &config,
+            SequenceReset {
                 seq: 5,
                 new_seq: 10,
             },
-            &config,
         )
         .expect("sequence reset fits");
         assert!(!w.is_empty());
@@ -238,11 +250,10 @@ mod unix_tests {
     }
 
     #[test]
-    fn encode_admin_uses_dict_begin_string() {
+    fn emit_admin_uses_dict_begin_string() {
         let mut w: MessageWriter<MockDict> = MessageWriter::new();
         let config = config();
-        w.encode_admin(AdminMsg::Logout { seq: 1 }, &config)
-            .expect("logout fits");
+        emit_admin(&mut w, &config, Logout { seq: 1 }).expect("logout fits");
         let data = w.data();
         assert!(data.starts_with(b"8=FIX.4.4\x01"));
     }

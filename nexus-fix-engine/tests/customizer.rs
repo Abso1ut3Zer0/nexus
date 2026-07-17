@@ -4,15 +4,19 @@
 //! The load-bearing property is that the hook writes *inside* the frame: 9 and
 //! 10 must be correct over whatever it injected, and the accessors must return
 //! the values actually stamped on the wire so a venue can sign over them.
+//!
+//! Admin frames are produced through the typed emit path: [`Emitter`] over a
+//! [`MessageWriter`], one struct per admin type implementing `AdminEncode`.
 
 #![cfg(unix)]
 
 use nexus_fix_codec::{
-    AdminMsgOut, DecodeError, FieldView, FixAdminMsg, FixDictionary, FixHeader, FixTimestamp,
-    NoCustomizer, SessionCustomizer, find_tag, validate_checksum,
+    AdminEncode, AdminMsgOut, DecodeError, FieldView, FixAdminMsg, FixDictionary, FixHeader,
+    FixTimestamp, Heartbeat, Logon, LogonReset, Logout, NoCustomizer, Reject, ResendRequest,
+    SequenceReset, SessionCustomizer, TestRequest, find_tag, validate_checksum,
 };
 use nexus_fix_engine::{
-    AdminMsg, CompId, FrameWriter, MessageWriter, SessionConfig, TransportError,
+    CompId, Emit, Emitter, FrameWriter, MessageWriter, SessionConfig, TransportError,
 };
 
 // ── minimal mock dictionary ──────────────────────────────────────────────────
@@ -85,6 +89,16 @@ fn config() -> SessionConfig {
     }
 }
 
+/// Encode one admin message into `w` through the production [`Emitter`] with a
+/// no-op `after` (no journaling), then inspect `w.data()`.
+fn emit_admin<M: AdminEncode, C: SessionCustomizer>(
+    w: &mut MessageWriter<MockDict, C>,
+    config: &SessionConfig,
+    msg: M,
+) -> Result<(), TransportError> {
+    Emitter::new(w, config, |_seq, _frame| Ok(())).emit(msg)
+}
+
 fn tag(frame: &[u8], t: u32) -> Option<&[u8]> {
     find_tag(frame, 0, t).map(|s| s.slice(frame))
 }
@@ -122,7 +136,7 @@ fn soh_join(parts: &[&[u8]]) -> Vec<u8> {
 struct TestAuth;
 
 impl SessionCustomizer for TestAuth {
-    fn customize_logon(&self, m: &mut AdminMsgOut<'_, '_>) {
+    fn customize_logon(&mut self, m: &mut AdminMsgOut<'_, '_>) {
         m.field(553, b"trader-1");
         m.field(554, b"s3cret");
     }
@@ -132,7 +146,7 @@ impl SessionCustomizer for TestAuth {
 struct SigningAuth;
 
 impl SessionCustomizer for SigningAuth {
-    fn customize_logon(&self, m: &mut AdminMsgOut<'_, '_>) {
+    fn customize_logon(&mut self, m: &mut AdminMsgOut<'_, '_>) {
         let seq = m.seq_num().to_string();
         let presign = soh_join(&[
             m.sending_time(),
@@ -154,11 +168,11 @@ impl SessionCustomizer for SigningAuth {
 ///
 /// If the seam split had perturbed field order, framing, or the checksum, this
 /// fails on the full byte string.
-fn assert_matches_oracle(admin: AdminMsg, msg_type: &[u8], body: &[(u32, Vec<u8>)]) {
+fn assert_matches_oracle<M: AdminEncode>(admin: M, msg_type: &[u8], body: &[(u32, Vec<u8>)]) {
     use nexus_fix_codec::FrameFormatter;
 
     let mut w: MessageWriter<MockDict> = MessageWriter::new();
-    w.encode_admin(admin, &config()).expect("oracle frame fits");
+    emit_admin(&mut w, &config(), admin).expect("oracle frame fits");
     let produced = w.data().to_vec();
 
     let ts = tag(&produced, 52).expect("52 stamped").to_vec();
@@ -188,7 +202,7 @@ fn assert_matches_oracle(admin: AdminMsg, msg_type: &[u8], body: &[(u32, Vec<u8>
 #[test]
 fn no_customizer_logon_is_byte_identical() {
     assert_matches_oracle(
-        AdminMsg::Logon {
+        Logon {
             seq: 1,
             heart_bt_int_s: 30,
         },
@@ -200,7 +214,7 @@ fn no_customizer_logon_is_byte_identical() {
 #[test]
 fn no_customizer_logon_reset_is_byte_identical() {
     assert_matches_oracle(
-        AdminMsg::LogonReset {
+        LogonReset {
             seq: 1,
             heart_bt_int_s: 30,
         },
@@ -211,34 +225,58 @@ fn no_customizer_logon_reset_is_byte_identical() {
 
 #[test]
 fn no_customizer_logout_is_byte_identical() {
-    assert_matches_oracle(AdminMsg::Logout { seq: 2 }, b"5", &[]);
+    assert_matches_oracle(Logout { seq: 2 }, b"5", &[]);
 }
 
 #[test]
 fn no_customizer_heartbeat_is_byte_identical() {
-    assert_matches_oracle(AdminMsg::Heartbeat { seq: 3, echo: None }, b"0", &[]);
+    assert_matches_oracle(Heartbeat { seq: 3, echo: None }, b"0", &[]);
 }
 
 #[test]
 fn no_customizer_heartbeat_with_echo_is_byte_identical() {
-    // 64 = the engine's internal TestReqID capacity (private; the public
-    // `AdminMsg::Heartbeat` variant names the array size structurally).
-    let mut id = [0u8; 64];
-    id[..4].copy_from_slice(b"TR-1");
     assert_matches_oracle(
-        AdminMsg::Heartbeat {
+        Heartbeat {
             seq: 3,
-            echo: Some((id, 4)),
+            echo: Some(b"TR-1"),
         },
         b"0",
         &[(112, b"TR-1".to_vec())],
     );
 }
 
+/// The echo is borrowed and uncapped, so a long `TestReqID` is echoed verbatim.
+/// The requester matches a Heartbeat to its TestRequest by the exact `112` value,
+/// so truncating it (as the old fixed 64-byte buffer would) could break that
+/// match. Fault-injection guard: a reintroduced cap fails the length assert.
+#[test]
+fn heartbeat_long_echo_encodes_verbatim() {
+    let id = [b'x'; 100];
+
+    let mut w: MessageWriter<MockDict> = MessageWriter::new();
+    emit_admin(
+        &mut w,
+        &config(),
+        Heartbeat {
+            seq: 3,
+            echo: Some(&id),
+        },
+    )
+    .expect("heartbeat fits");
+
+    let tag_112 = tag(w.data(), 112).expect("112 on the wire");
+    assert_eq!(
+        tag_112,
+        &id[..],
+        "the echo must be the full TestReqID, not truncated"
+    );
+    assert!(validate_checksum(w.data()).is_ok());
+}
+
 #[test]
 fn no_customizer_test_request_is_byte_identical() {
     assert_matches_oracle(
-        AdminMsg::TestRequest { seq: 4, id: 77 },
+        TestRequest { seq: 4, id: 77 },
         b"1",
         &[(112, b"77".to_vec())],
     );
@@ -247,7 +285,7 @@ fn no_customizer_test_request_is_byte_identical() {
 #[test]
 fn no_customizer_resend_request_is_byte_identical() {
     assert_matches_oracle(
-        AdminMsg::ResendRequest { seq: 5, begin: 2 },
+        ResendRequest { seq: 5, begin: 2 },
         b"2",
         &[(7, b"2".to_vec()), (16, b"0".to_vec())],
     );
@@ -256,7 +294,7 @@ fn no_customizer_resend_request_is_byte_identical() {
 #[test]
 fn no_customizer_sequence_reset_is_byte_identical() {
     assert_matches_oracle(
-        AdminMsg::SequenceReset {
+        SequenceReset {
             seq: 6,
             new_seq: 10,
         },
@@ -272,7 +310,7 @@ fn no_customizer_sequence_reset_is_byte_identical() {
 #[test]
 fn no_customizer_reject_is_byte_identical() {
     assert_matches_oracle(
-        AdminMsg::Reject {
+        Reject {
             seq: 7,
             ref_seq_num: 3,
             ref_tag_id: Some(35),
@@ -316,68 +354,66 @@ fn scan_body_tags(frame: &[u8]) -> Vec<u32> {
 /// the tripwire is deliberately unconditional over those conditional fields.
 #[test]
 fn dictionary_owned_consts_match_the_encoder_bodies() {
-    let mut echo = [0u8; 64];
-    echo[..4].copy_from_slice(b"TR-1");
-
-    let cases: Vec<(AdminMsg, &[u32])> = vec![
-        (
-            AdminMsg::Logon {
-                seq: 1,
-                heart_bt_int_s: 30,
-            },
-            MockDict::LOGON_OWNED,
-        ),
-        (
-            AdminMsg::LogonReset {
-                seq: 1,
-                heart_bt_int_s: 30,
-            },
-            MockDict::LOGON_RESET_OWNED,
-        ),
-        (AdminMsg::Logout { seq: 2 }, MockDict::LOGOUT_OWNED),
-        (
-            AdminMsg::Heartbeat {
-                seq: 3,
-                echo: Some((echo, 4)),
-            },
-            MockDict::HEARTBEAT_OWNED,
-        ),
-        (
-            AdminMsg::TestRequest { seq: 4, id: 1 },
-            MockDict::TEST_REQUEST_OWNED,
-        ),
-        (
-            AdminMsg::ResendRequest { seq: 5, begin: 2 },
-            MockDict::RESEND_REQUEST_OWNED,
-        ),
-        (
-            AdminMsg::SequenceReset {
-                seq: 6,
-                new_seq: 10,
-            },
-            MockDict::SEQUENCE_RESET_OWNED,
-        ),
-        (
-            AdminMsg::Reject {
-                seq: 7,
-                ref_seq_num: 3,
-                ref_tag_id: Some(35),
-                session_reject_reason: 1,
-            },
-            MockDict::REJECT_OWNED,
-        ),
-    ];
-
-    for (admin, owned) in cases {
-        let mut w: MessageWriter<MockDict> = MessageWriter::new();
-        w.encode_admin(admin, &config()).expect("admin fits");
-        let scanned = scan_body_tags(w.data());
-        assert_eq!(
-            scanned, owned,
-            "body tags {admin:?} wrote disagree with its *_OWNED const: an encoder \
-             field was added or removed without updating the const (or vice versa)"
-        );
+    // Each admin struct is a distinct type, so drive one assertion per type
+    // rather than a heterogeneous collection.
+    macro_rules! check {
+        ($msg:expr, $owned:expr) => {{
+            let mut w: MessageWriter<MockDict> = MessageWriter::new();
+            emit_admin(&mut w, &config(), $msg).expect("admin fits");
+            let scanned = scan_body_tags(w.data());
+            assert_eq!(
+                scanned,
+                $owned,
+                "body tags {} wrote disagree with its *_OWNED const: an encoder field \
+                 was added or removed without updating the const (or vice versa)",
+                stringify!($msg),
+            );
+        }};
     }
+
+    check!(
+        Logon {
+            seq: 1,
+            heart_bt_int_s: 30
+        },
+        MockDict::LOGON_OWNED
+    );
+    check!(
+        LogonReset {
+            seq: 1,
+            heart_bt_int_s: 30
+        },
+        MockDict::LOGON_RESET_OWNED
+    );
+    check!(Logout { seq: 2 }, MockDict::LOGOUT_OWNED);
+    check!(
+        Heartbeat {
+            seq: 3,
+            echo: Some(b"TR-1")
+        },
+        MockDict::HEARTBEAT_OWNED
+    );
+    check!(TestRequest { seq: 4, id: 1 }, MockDict::TEST_REQUEST_OWNED);
+    check!(
+        ResendRequest { seq: 5, begin: 2 },
+        MockDict::RESEND_REQUEST_OWNED
+    );
+    check!(
+        SequenceReset {
+            seq: 6,
+            new_seq: 10
+        },
+        MockDict::SEQUENCE_RESET_OWNED
+    );
+    check!(
+        Reject {
+            seq: 7,
+            ref_seq_num: 3,
+            ref_tag_id: Some(35),
+            session_reject_reason: 1
+        },
+        MockDict::REJECT_OWNED
+    );
 }
 
 // ── the seam's guarantee: 9 and 10 cover the injected fields ─────────────────
@@ -385,12 +421,13 @@ fn dictionary_owned_consts_match_the_encoder_bodies() {
 #[test]
 fn injected_fields_are_on_the_wire() {
     let mut w: MessageWriter<MockDict, TestAuth> = MessageWriter::with_customizer(TestAuth);
-    w.encode_admin(
-        AdminMsg::Logon {
+    emit_admin(
+        &mut w,
+        &config(),
+        Logon {
             seq: 1,
             heart_bt_int_s: 30,
         },
-        &config(),
     )
     .expect("logon fits");
     let data = w.data();
@@ -416,12 +453,13 @@ fn injected_fields_are_on_the_wire() {
 #[test]
 fn body_length_and_checksum_cover_injected_fields() {
     let mut w: MessageWriter<MockDict, TestAuth> = MessageWriter::with_customizer(TestAuth);
-    w.encode_admin(
-        AdminMsg::Logon {
+    emit_admin(
+        &mut w,
+        &config(),
+        Logon {
             seq: 1,
             heart_bt_int_s: 30,
         },
-        &config(),
     )
     .expect("logon fits");
     let data = w.data();
@@ -461,12 +499,13 @@ fn body_length_and_checksum_cover_injected_fields() {
 #[test]
 fn accessors_return_the_stamped_header_inside_the_hook() {
     let mut w: MessageWriter<MockDict, SigningAuth> = MessageWriter::with_customizer(SigningAuth);
-    w.encode_admin(
-        AdminMsg::Logon {
+    emit_admin(
+        &mut w,
+        &config(),
+        Logon {
             seq: 7,
             heart_bt_int_s: 30,
         },
-        &config(),
     )
     .expect("logon fits");
     let data = w.data();
@@ -493,6 +532,63 @@ fn accessors_return_the_stamped_header_inside_the_hook() {
     assert!(validate_checksum(data).is_ok());
 }
 
+// ── stateful customizer: &mut self carries per-logon state ───────────────────
+
+/// The reason the hook takes `&mut self`: a venue can hold mutable auth state (a
+/// per-logon nonce, a rotating key, an RNG) as a plain field and advance it in
+/// the hook — no `Cell`/`RefCell`. This customizer holds a `u32` counter it bumps
+/// and writes into a custom tag on each Logon; two Logons through the *same*
+/// customizer must carry successive values, proving the mutation persisted.
+#[test]
+fn stateful_customizer_mutates_across_logons() {
+    struct Nonce(u32);
+    impl SessionCustomizer for Nonce {
+        fn customize_logon(&mut self, m: &mut AdminMsgOut<'_, '_>) {
+            self.0 += 1;
+            m.field(20001, self.0.to_string().as_bytes());
+        }
+    }
+
+    let mut w: MessageWriter<MockDict, Nonce> = MessageWriter::with_customizer(Nonce(0));
+
+    // First Logon: counter 0 → 1.
+    emit_admin(
+        &mut w,
+        &config(),
+        Logon {
+            seq: 1,
+            heart_bt_int_s: 30,
+        },
+    )
+    .expect("first logon fits");
+    assert_eq!(
+        tag(w.data(), 20001),
+        Some(b"1".as_ref()),
+        "first logon must carry the advanced nonce (1)"
+    );
+    assert!(validate_checksum(w.data()).is_ok());
+
+    // Drain, then a second Logon on the SAME writer/customizer: counter 1 → 2.
+    let n = w.data().len();
+    w.advance(n);
+    emit_admin(
+        &mut w,
+        &config(),
+        Logon {
+            seq: 2,
+            heart_bt_int_s: 30,
+        },
+    )
+    .expect("second logon fits");
+    assert_eq!(
+        tag(w.data(), 20001),
+        Some(b"2".as_ref()),
+        "second logon must carry the incremented nonce (2) — the &mut self hook \
+         advanced its own state across calls"
+    );
+    assert!(validate_checksum(w.data()).is_ok());
+}
+
 // ── per-message dispatch ─────────────────────────────────────────────────────
 
 /// The QuickFIX miswiring we designed out: a single undifferentiated hook fires
@@ -500,38 +596,38 @@ fn accessors_return_the_stamped_header_inside_the_hook() {
 /// per-message defaulted no-ops, a `customize_logon`-only customizer cannot.
 #[test]
 fn logon_only_customizer_leaves_other_admin_messages_untouched() {
-    let others: Vec<AdminMsg> = vec![
-        AdminMsg::Logout { seq: 2 },
-        AdminMsg::Heartbeat { seq: 3, echo: None },
-        AdminMsg::TestRequest { seq: 4, id: 1 },
-        AdminMsg::ResendRequest { seq: 5, begin: 1 },
-        AdminMsg::SequenceReset {
-            seq: 6,
-            new_seq: 10,
-        },
-        AdminMsg::Reject {
-            seq: 7,
-            ref_seq_num: 1,
-            ref_tag_id: None,
-            session_reject_reason: 1,
-        },
-    ];
-
-    for admin in others {
-        let mut w: MessageWriter<MockDict, TestAuth> = MessageWriter::with_customizer(TestAuth);
-        w.encode_admin(admin, &config()).expect("admin fits");
-        let data = w.data();
-        assert!(
-            !has_field(data, b"553="),
-            "credentials must not leak into non-Logon admin: {}",
-            String::from_utf8_lossy(data)
-        );
-        assert!(
-            !has_field(data, b"554="),
-            "credentials must not leak into non-Logon admin: {}",
-            String::from_utf8_lossy(data)
-        );
+    macro_rules! check_untouched {
+        ($msg:expr) => {{
+            let mut w: MessageWriter<MockDict, TestAuth> = MessageWriter::with_customizer(TestAuth);
+            emit_admin(&mut w, &config(), $msg).expect("admin fits");
+            let data = w.data();
+            assert!(
+                !has_field(data, b"553="),
+                "credentials must not leak into non-Logon admin: {}",
+                String::from_utf8_lossy(data)
+            );
+            assert!(
+                !has_field(data, b"554="),
+                "credentials must not leak into non-Logon admin: {}",
+                String::from_utf8_lossy(data)
+            );
+        }};
     }
+
+    check_untouched!(Logout { seq: 2 });
+    check_untouched!(Heartbeat { seq: 3, echo: None });
+    check_untouched!(TestRequest { seq: 4, id: 1 });
+    check_untouched!(ResendRequest { seq: 5, begin: 1 });
+    check_untouched!(SequenceReset {
+        seq: 6,
+        new_seq: 10
+    });
+    check_untouched!(Reject {
+        seq: 7,
+        ref_seq_num: 1,
+        ref_tag_id: None,
+        session_reject_reason: 1
+    });
 }
 
 /// A `customize_logon`-only customizer must produce byte-identical Heartbeats to
@@ -540,15 +636,11 @@ fn logon_only_customizer_leaves_other_admin_messages_untouched() {
 fn logon_only_customizer_heartbeat_matches_no_customizer() {
     let mut plain: MessageWriter<MockDict, NoCustomizer> =
         MessageWriter::with_customizer(NoCustomizer);
-    plain
-        .encode_admin(AdminMsg::Heartbeat { seq: 3, echo: None }, &config())
-        .expect("heartbeat fits");
+    emit_admin(&mut plain, &config(), Heartbeat { seq: 3, echo: None }).expect("heartbeat fits");
     let plain_body = tag(plain.data(), 9).map(|_| plain.data().len());
 
     let mut authed: MessageWriter<MockDict, TestAuth> = MessageWriter::with_customizer(TestAuth);
-    authed
-        .encode_admin(AdminMsg::Heartbeat { seq: 3, echo: None }, &config())
-        .expect("heartbeat fits");
+    emit_admin(&mut authed, &config(), Heartbeat { seq: 3, echo: None }).expect("heartbeat fits");
 
     // Same length and same BodyLength: the hook contributed nothing. (Full byte
     // equality would compare two different SendingTimes.)
@@ -562,18 +654,19 @@ fn logon_only_customizer_heartbeat_matches_no_customizer() {
 fn logon_reset_has_its_own_hook() {
     struct ResetOnly;
     impl SessionCustomizer for ResetOnly {
-        fn customize_logon_reset(&self, m: &mut AdminMsgOut<'_, '_>) {
+        fn customize_logon_reset(&mut self, m: &mut AdminMsgOut<'_, '_>) {
             m.field(553, b"reset-user");
         }
     }
 
     let mut w: MessageWriter<MockDict, ResetOnly> = MessageWriter::with_customizer(ResetOnly);
-    w.encode_admin(
-        AdminMsg::LogonReset {
+    emit_admin(
+        &mut w,
+        &config(),
+        LogonReset {
             seq: 1,
             heart_bt_int_s: 30,
         },
-        &config(),
     )
     .expect("logon reset fits");
     assert!(has_field(w.data(), b"553=reset-user\x01"));
@@ -581,12 +674,13 @@ fn logon_reset_has_its_own_hook() {
 
     // ...and does not fire for a plain Logon.
     let mut w2: MessageWriter<MockDict, ResetOnly> = MessageWriter::with_customizer(ResetOnly);
-    w2.encode_admin(
-        AdminMsg::Logon {
+    emit_admin(
+        &mut w2,
+        &config(),
+        Logon {
             seq: 1,
             heart_bt_int_s: 30,
         },
-        &config(),
     )
     .expect("logon fits");
     assert!(!has_field(w2.data(), b"553="));
@@ -594,100 +688,98 @@ fn logon_reset_has_its_own_hook() {
 
 // ── every arm is wired to its own hook ───────────────────────────────────────
 
-/// `encode_admin` dispatches eight near-identical arms; the copy-paste risks are
-/// an arm that forgets to call its hook and an arm wired to the *wrong* hook.
-/// This customizer stamps a distinct marker from every hook, so each admin type
-/// must come back carrying exactly its own — pinning the whole dispatch table.
+/// The typed emit path forwards each admin struct to *its* `customize_*` hook;
+/// the copy-paste risks are a struct that forgets to call its hook and one wired
+/// to the *wrong* hook. This customizer stamps a distinct marker from every
+/// hook, so each admin type must come back carrying exactly its own — pinning
+/// the whole dispatch table.
 struct MarkAll;
 
 impl SessionCustomizer for MarkAll {
-    fn customize_logon(&self, m: &mut AdminMsgOut<'_, '_>) {
+    fn customize_logon(&mut self, m: &mut AdminMsgOut<'_, '_>) {
         m.field(9001, b"logon");
     }
-    fn customize_logon_reset(&self, m: &mut AdminMsgOut<'_, '_>) {
+    fn customize_logon_reset(&mut self, m: &mut AdminMsgOut<'_, '_>) {
         m.field(9001, b"logon_reset");
     }
-    fn customize_logout(&self, m: &mut AdminMsgOut<'_, '_>) {
+    fn customize_logout(&mut self, m: &mut AdminMsgOut<'_, '_>) {
         m.field(9001, b"logout");
     }
-    fn customize_heartbeat(&self, m: &mut AdminMsgOut<'_, '_>) {
+    fn customize_heartbeat(&mut self, m: &mut AdminMsgOut<'_, '_>) {
         m.field(9001, b"heartbeat");
     }
-    fn customize_test_request(&self, m: &mut AdminMsgOut<'_, '_>) {
+    fn customize_test_request(&mut self, m: &mut AdminMsgOut<'_, '_>) {
         m.field(9001, b"test_request");
     }
-    fn customize_resend_request(&self, m: &mut AdminMsgOut<'_, '_>) {
+    fn customize_resend_request(&mut self, m: &mut AdminMsgOut<'_, '_>) {
         m.field(9001, b"resend_request");
     }
-    fn customize_sequence_reset(&self, m: &mut AdminMsgOut<'_, '_>) {
+    fn customize_sequence_reset(&mut self, m: &mut AdminMsgOut<'_, '_>) {
         m.field(9001, b"sequence_reset");
     }
-    fn customize_reject(&self, m: &mut AdminMsgOut<'_, '_>) {
+    fn customize_reject(&mut self, m: &mut AdminMsgOut<'_, '_>) {
         m.field(9001, b"reject");
     }
 }
 
 #[test]
 fn every_admin_type_runs_its_own_hook() {
-    let cases: Vec<(AdminMsg, &[u8])> = vec![
-        (
-            AdminMsg::Logon {
-                seq: 1,
-                heart_bt_int_s: 30,
-            },
-            b"logon",
-        ),
-        (
-            AdminMsg::LogonReset {
-                seq: 1,
-                heart_bt_int_s: 30,
-            },
-            b"logon_reset",
-        ),
-        (AdminMsg::Logout { seq: 2 }, b"logout"),
-        (AdminMsg::Heartbeat { seq: 3, echo: None }, b"heartbeat"),
-        (AdminMsg::TestRequest { seq: 4, id: 1 }, b"test_request"),
-        (
-            AdminMsg::ResendRequest { seq: 5, begin: 1 },
-            b"resend_request",
-        ),
-        (
-            AdminMsg::SequenceReset {
-                seq: 6,
-                new_seq: 10,
-            },
-            b"sequence_reset",
-        ),
-        (
-            AdminMsg::Reject {
-                seq: 7,
-                ref_seq_num: 1,
-                ref_tag_id: None,
-                session_reject_reason: 1,
-            },
-            b"reject",
-        ),
-    ];
-
-    for (admin, expected) in cases {
-        let mut w: MessageWriter<MockDict, MarkAll> = MessageWriter::with_customizer(MarkAll);
-        w.encode_admin(admin, &config()).expect("admin fits");
-        let data = w.data();
-        let marker = tag(data, 9001).unwrap_or_else(|| {
-            panic!(
-                "no hook ran for this admin type: {}",
-                String::from_utf8_lossy(data)
-            )
-        });
-        assert_eq!(
-            marker,
-            expected,
-            "admin arm ran the wrong hook: got {}, want {}",
-            String::from_utf8_lossy(marker),
-            String::from_utf8_lossy(expected),
-        );
-        assert!(validate_checksum(data).is_ok());
+    macro_rules! check_hook {
+        ($msg:expr, $expected:expr) => {{
+            let mut w: MessageWriter<MockDict, MarkAll> = MessageWriter::with_customizer(MarkAll);
+            emit_admin(&mut w, &config(), $msg).expect("admin fits");
+            let data = w.data();
+            let marker = tag(data, 9001).unwrap_or_else(|| {
+                panic!(
+                    "no hook ran for this admin type: {}",
+                    String::from_utf8_lossy(data)
+                )
+            });
+            assert_eq!(
+                marker,
+                $expected,
+                "admin arm ran the wrong hook: got {}, want {}",
+                String::from_utf8_lossy(marker),
+                String::from_utf8_lossy($expected),
+            );
+            assert!(validate_checksum(data).is_ok());
+        }};
     }
+
+    check_hook!(
+        Logon {
+            seq: 1,
+            heart_bt_int_s: 30
+        },
+        b"logon"
+    );
+    check_hook!(
+        LogonReset {
+            seq: 1,
+            heart_bt_int_s: 30
+        },
+        b"logon_reset"
+    );
+    check_hook!(Logout { seq: 2 }, b"logout");
+    check_hook!(Heartbeat { seq: 3, echo: None }, b"heartbeat");
+    check_hook!(TestRequest { seq: 4, id: 1 }, b"test_request");
+    check_hook!(ResendRequest { seq: 5, begin: 1 }, b"resend_request");
+    check_hook!(
+        SequenceReset {
+            seq: 6,
+            new_seq: 10
+        },
+        b"sequence_reset"
+    );
+    check_hook!(
+        Reject {
+            seq: 7,
+            ref_seq_num: 1,
+            ref_tag_id: None,
+            session_reject_reason: 1
+        },
+        b"reject"
+    );
 }
 
 // ── the accessor's MsgType is the wire's MsgType ─────────────────────────────
@@ -697,35 +789,35 @@ fn every_admin_type_runs_its_own_hook() {
 struct EchoMsgType;
 
 impl SessionCustomizer for EchoMsgType {
-    fn customize_logon(&self, m: &mut AdminMsgOut<'_, '_>) {
+    fn customize_logon(&mut self, m: &mut AdminMsgOut<'_, '_>) {
         let mt = m.msg_type().to_vec();
         m.field(9002, &mt);
     }
-    fn customize_logon_reset(&self, m: &mut AdminMsgOut<'_, '_>) {
+    fn customize_logon_reset(&mut self, m: &mut AdminMsgOut<'_, '_>) {
         let mt = m.msg_type().to_vec();
         m.field(9002, &mt);
     }
-    fn customize_logout(&self, m: &mut AdminMsgOut<'_, '_>) {
+    fn customize_logout(&mut self, m: &mut AdminMsgOut<'_, '_>) {
         let mt = m.msg_type().to_vec();
         m.field(9002, &mt);
     }
-    fn customize_heartbeat(&self, m: &mut AdminMsgOut<'_, '_>) {
+    fn customize_heartbeat(&mut self, m: &mut AdminMsgOut<'_, '_>) {
         let mt = m.msg_type().to_vec();
         m.field(9002, &mt);
     }
-    fn customize_test_request(&self, m: &mut AdminMsgOut<'_, '_>) {
+    fn customize_test_request(&mut self, m: &mut AdminMsgOut<'_, '_>) {
         let mt = m.msg_type().to_vec();
         m.field(9002, &mt);
     }
-    fn customize_resend_request(&self, m: &mut AdminMsgOut<'_, '_>) {
+    fn customize_resend_request(&mut self, m: &mut AdminMsgOut<'_, '_>) {
         let mt = m.msg_type().to_vec();
         m.field(9002, &mt);
     }
-    fn customize_sequence_reset(&self, m: &mut AdminMsgOut<'_, '_>) {
+    fn customize_sequence_reset(&mut self, m: &mut AdminMsgOut<'_, '_>) {
         let mt = m.msg_type().to_vec();
         m.field(9002, &mt);
     }
-    fn customize_reject(&self, m: &mut AdminMsgOut<'_, '_>) {
+    fn customize_reject(&mut self, m: &mut AdminMsgOut<'_, '_>) {
         let mt = m.msg_type().to_vec();
         m.field(9002, &mt);
     }
@@ -736,63 +828,63 @@ impl SessionCustomizer for EchoMsgType {
 /// with an opaque auth error — so pin the correspondence on every arm.
 #[test]
 fn accessor_msg_type_matches_the_frames_own_tag_35() {
-    let cases: Vec<(AdminMsg, &[u8])> = vec![
-        (
-            AdminMsg::Logon {
-                seq: 1,
-                heart_bt_int_s: 30,
-            },
-            b"A",
-        ),
-        (
-            AdminMsg::LogonReset {
-                seq: 1,
-                heart_bt_int_s: 30,
-            },
-            b"A",
-        ),
-        (AdminMsg::Logout { seq: 2 }, b"5"),
-        (AdminMsg::Heartbeat { seq: 3, echo: None }, b"0"),
-        (AdminMsg::TestRequest { seq: 4, id: 1 }, b"1"),
-        (AdminMsg::ResendRequest { seq: 5, begin: 1 }, b"2"),
-        (
-            AdminMsg::SequenceReset {
-                seq: 6,
-                new_seq: 10,
-            },
-            b"4",
-        ),
-        (
-            AdminMsg::Reject {
-                seq: 7,
-                ref_seq_num: 1,
-                ref_tag_id: None,
-                session_reject_reason: 1,
-            },
-            b"3",
-        ),
-    ];
+    macro_rules! check_mt {
+        ($msg:expr, $expected:expr) => {{
+            let mut w: MessageWriter<MockDict, EchoMsgType> =
+                MessageWriter::with_customizer(EchoMsgType);
+            emit_admin(&mut w, &config(), $msg).expect("admin fits");
+            let data = w.data();
 
-    for (admin, expected) in cases {
-        let mut w: MessageWriter<MockDict, EchoMsgType> =
-            MessageWriter::with_customizer(EchoMsgType);
-        w.encode_admin(admin, &config()).expect("admin fits");
-        let data = w.data();
+            let wire = tag(data, 35).expect("35 on the wire");
+            let seen = tag(data, 9002).expect("hook echoed msg_type()");
 
-        let wire = tag(data, 35).expect("35 on the wire");
-        let seen = tag(data, 9002).expect("hook echoed msg_type()");
-
-        // Pinned against a literal too: if both drifted together the wire tag
-        // would still be wrong, and this catches that.
-        assert_eq!(wire, expected, "wrong MsgType on the wire for {admin:?}");
-        assert_eq!(
-            seen,
-            wire,
-            "msg_type() ({}) disagrees with the frame's 35 ({}) for {admin:?} — a venue would sign the wrong MsgType",
-            String::from_utf8_lossy(seen),
-            String::from_utf8_lossy(wire),
-        );
+            // Pinned against a literal too: if both drifted together the wire tag
+            // would still be wrong, and this catches that.
+            assert_eq!(wire, $expected, "wrong MsgType on the wire");
+            assert_eq!(
+                seen,
+                wire,
+                "msg_type() ({}) disagrees with the frame's 35 ({}) — a venue would sign the wrong MsgType",
+                String::from_utf8_lossy(seen),
+                String::from_utf8_lossy(wire),
+            );
+        }};
     }
+
+    check_mt!(
+        Logon {
+            seq: 1,
+            heart_bt_int_s: 30
+        },
+        b"A"
+    );
+    check_mt!(
+        LogonReset {
+            seq: 1,
+            heart_bt_int_s: 30
+        },
+        b"A"
+    );
+    check_mt!(Logout { seq: 2 }, b"5");
+    check_mt!(Heartbeat { seq: 3, echo: None }, b"0");
+    check_mt!(TestRequest { seq: 4, id: 1 }, b"1");
+    check_mt!(ResendRequest { seq: 5, begin: 1 }, b"2");
+    check_mt!(
+        SequenceReset {
+            seq: 6,
+            new_seq: 10
+        },
+        b"4"
+    );
+    check_mt!(
+        Reject {
+            seq: 7,
+            ref_seq_num: 1,
+            ref_tag_id: None,
+            session_reject_reason: 1
+        },
+        b"3"
+    );
 }
 
 // ── engine-owned tags are a programming error ────────────────────────────────
@@ -802,46 +894,49 @@ fn accessor_msg_type_matches_the_frames_own_tag_35() {
 /// fires there and the test would fail for a reason unrelated to the code.
 #[cfg(debug_assertions)]
 mod engine_owned_tripwire {
+    use std::panic::UnwindSafe;
+
     use super::*;
 
     /// Writes `tag` from every hook, so any admin type drives the same probe.
     struct WritesTag(u32);
     impl SessionCustomizer for WritesTag {
-        fn customize_logon(&self, m: &mut AdminMsgOut<'_, '_>) {
+        fn customize_logon(&mut self, m: &mut AdminMsgOut<'_, '_>) {
             m.field(self.0, b"x");
         }
-        fn customize_logon_reset(&self, m: &mut AdminMsgOut<'_, '_>) {
+        fn customize_logon_reset(&mut self, m: &mut AdminMsgOut<'_, '_>) {
             m.field(self.0, b"x");
         }
-        fn customize_logout(&self, m: &mut AdminMsgOut<'_, '_>) {
+        fn customize_logout(&mut self, m: &mut AdminMsgOut<'_, '_>) {
             m.field(self.0, b"x");
         }
-        fn customize_heartbeat(&self, m: &mut AdminMsgOut<'_, '_>) {
+        fn customize_heartbeat(&mut self, m: &mut AdminMsgOut<'_, '_>) {
             m.field(self.0, b"x");
         }
-        fn customize_test_request(&self, m: &mut AdminMsgOut<'_, '_>) {
+        fn customize_test_request(&mut self, m: &mut AdminMsgOut<'_, '_>) {
             m.field(self.0, b"x");
         }
-        fn customize_resend_request(&self, m: &mut AdminMsgOut<'_, '_>) {
+        fn customize_resend_request(&mut self, m: &mut AdminMsgOut<'_, '_>) {
             m.field(self.0, b"x");
         }
-        fn customize_sequence_reset(&self, m: &mut AdminMsgOut<'_, '_>) {
+        fn customize_sequence_reset(&mut self, m: &mut AdminMsgOut<'_, '_>) {
             m.field(self.0, b"x");
         }
-        fn customize_reject(&self, m: &mut AdminMsgOut<'_, '_>) {
+        fn customize_reject(&mut self, m: &mut AdminMsgOut<'_, '_>) {
             m.field(self.0, b"x");
         }
     }
 
-    fn encode_writing(admin: AdminMsg, tag: u32) {
+    fn encode_writing<M: AdminEncode>(admin: M, tag: u32) {
+        let inner = FrameWriter::builder().build();
         let mut w: MessageWriter<MockDict, WritesTag> =
-            MessageWriter::with_customizer(WritesTag(tag));
-        w.encode_admin(admin, &config()).expect("admin fits");
+            MessageWriter::with_frame_writer_and_customizer(inner, WritesTag(tag));
+        emit_admin(&mut w, &config(), admin).expect("admin fits");
     }
 
     fn encode_logon_writing(tag: u32) {
         encode_writing(
-            AdminMsg::Logon {
+            Logon {
                 seq: 1,
                 heart_bt_int_s: 30,
             },
@@ -852,7 +947,7 @@ mod engine_owned_tripwire {
     /// Runs the hook for `admin` writing `tag`, returning the panic message if
     /// the tripwire fired. The panic hook is muted for the duration so an
     /// expected trip does not spray a backtrace across passing test output.
-    fn catch_hook_panic(admin: AdminMsg, tag: u32) -> Option<String> {
+    fn catch_hook_panic<M: AdminEncode + UnwindSafe>(admin: M, tag: u32) -> Option<String> {
         let prev = std::panic::take_hook();
         std::panic::set_hook(Box::new(|_| {}));
         let result = std::panic::catch_unwind(move || encode_writing(admin, tag));
@@ -878,99 +973,105 @@ mod engine_owned_tripwire {
         encode_logon_writing(108); // encode_logon already wrote 108
     }
 
-    /// Each admin type's own engine params trip the tripwire *through the engine*,
-    /// exactly as a real customizer would hit them. One test per case would be
-    /// eight near-identical `#[should_panic]` fns; instead each case runs in a
-    /// child thread and we assert the panic message.
+    /// Each admin type's own engine params trip the tripwire *through the emit
+    /// path*, exactly as a real customizer would hit them. One test per case
+    /// would be many near-identical `#[should_panic]` fns; instead each case runs
+    /// in a child thread and we assert the panic message.
     #[test]
     fn every_admin_types_own_engine_params_are_rejected() {
-        // (customizer hook to drive, tag the engine wrote for that message)
-        let cases: Vec<(AdminMsg, u32)> = vec![
-            (
-                AdminMsg::Logon {
-                    seq: 1,
-                    heart_bt_int_s: 30,
-                },
-                108,
-            ),
-            (
-                AdminMsg::LogonReset {
-                    seq: 1,
-                    heart_bt_int_s: 30,
-                },
-                108,
-            ),
-            (
-                AdminMsg::LogonReset {
-                    seq: 1,
-                    heart_bt_int_s: 30,
-                },
-                141,
-            ),
-            (AdminMsg::Heartbeat { seq: 3, echo: None }, 112),
-            (AdminMsg::TestRequest { seq: 4, id: 1 }, 112),
-            (AdminMsg::ResendRequest { seq: 5, begin: 1 }, 7),
-            (AdminMsg::ResendRequest { seq: 5, begin: 1 }, 16),
-            (
-                AdminMsg::SequenceReset {
-                    seq: 6,
-                    new_seq: 10,
-                },
-                43,
-            ),
-            (
-                AdminMsg::SequenceReset {
-                    seq: 6,
-                    new_seq: 10,
-                },
-                123,
-            ),
-            (
-                AdminMsg::SequenceReset {
-                    seq: 6,
-                    new_seq: 10,
-                },
-                36,
-            ),
-            (
-                AdminMsg::Reject {
-                    seq: 7,
-                    ref_seq_num: 1,
-                    ref_tag_id: Some(35),
-                    session_reject_reason: 1,
-                },
-                45,
-            ),
-            (
-                AdminMsg::Reject {
-                    seq: 7,
-                    ref_seq_num: 1,
-                    ref_tag_id: Some(35),
-                    session_reject_reason: 1,
-                },
-                371,
-            ),
-            (
-                AdminMsg::Reject {
-                    seq: 7,
-                    ref_seq_num: 1,
-                    ref_tag_id: Some(35),
-                    session_reject_reason: 1,
-                },
-                373,
-            ),
-        ];
-
-        for (admin, tag) in cases {
-            let panic = catch_hook_panic(admin, tag);
-            let msg = panic.unwrap_or_else(|| {
-                panic!("writing engine-owned tag {tag} on {admin:?} did not trip the tripwire")
-            });
-            assert!(
-                msg.contains("engine-owned"),
-                "unexpected panic for tag {tag} on {admin:?}: {msg}"
-            );
+        macro_rules! reject {
+            ($msg:expr, $tag:expr) => {{
+                let panic = catch_hook_panic($msg, $tag);
+                let msg = panic.unwrap_or_else(|| {
+                    panic!(
+                        "writing engine-owned tag {} on {} did not trip the tripwire",
+                        $tag,
+                        stringify!($msg)
+                    )
+                });
+                assert!(
+                    msg.contains("engine-owned"),
+                    "unexpected panic for tag {} on {}: {}",
+                    $tag,
+                    stringify!($msg),
+                    msg
+                );
+            }};
         }
+
+        reject!(
+            Logon {
+                seq: 1,
+                heart_bt_int_s: 30
+            },
+            108
+        );
+        reject!(
+            LogonReset {
+                seq: 1,
+                heart_bt_int_s: 30
+            },
+            108
+        );
+        reject!(
+            LogonReset {
+                seq: 1,
+                heart_bt_int_s: 30
+            },
+            141
+        );
+        reject!(Heartbeat { seq: 3, echo: None }, 112);
+        reject!(TestRequest { seq: 4, id: 1 }, 112);
+        reject!(ResendRequest { seq: 5, begin: 1 }, 7);
+        reject!(ResendRequest { seq: 5, begin: 1 }, 16);
+        reject!(
+            SequenceReset {
+                seq: 6,
+                new_seq: 10
+            },
+            43
+        );
+        reject!(
+            SequenceReset {
+                seq: 6,
+                new_seq: 10
+            },
+            123
+        );
+        reject!(
+            SequenceReset {
+                seq: 6,
+                new_seq: 10
+            },
+            36
+        );
+        reject!(
+            Reject {
+                seq: 7,
+                ref_seq_num: 1,
+                ref_tag_id: Some(35),
+                session_reject_reason: 1
+            },
+            45
+        );
+        reject!(
+            Reject {
+                seq: 7,
+                ref_seq_num: 1,
+                ref_tag_id: Some(35),
+                session_reject_reason: 1
+            },
+            371
+        );
+        reject!(
+            Reject {
+                seq: 7,
+                ref_seq_num: 1,
+                ref_tag_id: Some(35),
+                session_reject_reason: 1
+            },
+            373
+        );
     }
 
     /// A tag that is engine-owned on a *different* message is the venue's to
@@ -979,14 +1080,14 @@ mod engine_owned_tripwire {
     fn tags_owned_by_another_message_are_allowed() {
         // 108 is engine-owned on Logon; encode_heartbeat never writes it.
         assert_eq!(
-            catch_hook_panic(AdminMsg::Heartbeat { seq: 3, echo: None }, 108),
+            catch_hook_panic(Heartbeat { seq: 3, echo: None }, 108),
             None,
             "108 must be writable on a Heartbeat"
         );
         // 141 is engine-owned on LogonReset; encode_logon never writes it.
         assert_eq!(
             catch_hook_panic(
-                AdminMsg::Logon {
+                Logon {
                     seq: 1,
                     heart_bt_int_s: 30,
                 },
@@ -997,7 +1098,7 @@ mod engine_owned_tripwire {
         );
         // Logout's encoder writes nothing beyond the header.
         assert_eq!(
-            catch_hook_panic(AdminMsg::Logout { seq: 2 }, 108),
+            catch_hook_panic(Logout { seq: 2 }, 108),
             None,
             "108 must be writable on a Logout"
         );
@@ -1008,12 +1109,9 @@ mod engine_owned_tripwire {
 //
 // The seam hands the outbound buffer to user code. A hook writing an oversized
 // field (an over-long RawData/passphrase, or any caller with a small writer)
-// poisons the frame; `finish` then returns `BufferFull`. Before the fix
-// `encode_admin` swallowed that `None` and `store_admin` returned `Ok` with
-// nothing encoded — the seqnum already bumped and the state moved on, so the
-// session wedged until a logon/heartbeat timeout reported a misleading cause.
-// These pin that the failure is now loud: `Err(MessageTooLarge)`, nothing on the
-// buffer.
+// poisons the frame; `finish` then returns `BufferFull`. The emit path surfaces
+// that as `Err(MessageTooLarge)` with nothing committed — never a silent drop
+// that would leave the outbound seqnum bumped and the session wedged.
 
 /// Writes a `pad`-byte body field (tag 5000, never engine-owned) from *every*
 /// admin hook, so any admin type can be driven up to and past a writer's
@@ -1027,38 +1125,38 @@ impl Padding {
 }
 
 impl SessionCustomizer for Padding {
-    fn customize_logon(&self, m: &mut AdminMsgOut<'_, '_>) {
+    fn customize_logon(&mut self, m: &mut AdminMsgOut<'_, '_>) {
         self.pad(m);
     }
-    fn customize_logon_reset(&self, m: &mut AdminMsgOut<'_, '_>) {
+    fn customize_logon_reset(&mut self, m: &mut AdminMsgOut<'_, '_>) {
         self.pad(m);
     }
-    fn customize_logout(&self, m: &mut AdminMsgOut<'_, '_>) {
+    fn customize_logout(&mut self, m: &mut AdminMsgOut<'_, '_>) {
         self.pad(m);
     }
-    fn customize_heartbeat(&self, m: &mut AdminMsgOut<'_, '_>) {
+    fn customize_heartbeat(&mut self, m: &mut AdminMsgOut<'_, '_>) {
         self.pad(m);
     }
-    fn customize_test_request(&self, m: &mut AdminMsgOut<'_, '_>) {
+    fn customize_test_request(&mut self, m: &mut AdminMsgOut<'_, '_>) {
         self.pad(m);
     }
-    fn customize_resend_request(&self, m: &mut AdminMsgOut<'_, '_>) {
+    fn customize_resend_request(&mut self, m: &mut AdminMsgOut<'_, '_>) {
         self.pad(m);
     }
-    fn customize_sequence_reset(&self, m: &mut AdminMsgOut<'_, '_>) {
+    fn customize_sequence_reset(&mut self, m: &mut AdminMsgOut<'_, '_>) {
         self.pad(m);
     }
-    fn customize_reject(&self, m: &mut AdminMsgOut<'_, '_>) {
+    fn customize_reject(&mut self, m: &mut AdminMsgOut<'_, '_>) {
         self.pad(m);
     }
 }
 
 /// Encode `admin` with a `cap`-byte writer and a hook padding `pad` bytes.
-fn encode_padded(admin: AdminMsg, cap: usize, pad: usize) -> Result<(), TransportError> {
+fn encode_padded<M: AdminEncode>(admin: M, cap: usize, pad: usize) -> Result<(), TransportError> {
     let inner = FrameWriter::builder().buffer_capacity(cap).build();
     let mut w: MessageWriter<MockDict, Padding> =
         MessageWriter::with_frame_writer_and_customizer(inner, Padding(pad));
-    w.encode_admin(admin, &config())
+    emit_admin(&mut w, &config(), admin)
 }
 
 #[test]
@@ -1066,36 +1164,40 @@ fn oversized_hook_field_errors_instead_of_silent_drop() {
     // Both admin types comfortably fit the 512-byte writer *without* the hook;
     // the 1000-byte padding is what overflows, so the failure is unambiguously
     // the hook's, not an undersized base frame.
-    let admins: [(AdminMsg, &str); 2] = [
-        (
-            AdminMsg::Logon {
-                seq: 1,
-                heart_bt_int_s: 30,
-            },
-            "logon",
-        ),
-        (AdminMsg::Logout { seq: 2 }, "logout"),
-    ];
-
-    for (admin, name) in admins {
-        let inner = FrameWriter::builder().buffer_capacity(512).build();
-        let mut w: MessageWriter<MockDict, Padding> =
-            MessageWriter::with_frame_writer_and_customizer(inner, Padding(1000));
-        let r = w.encode_admin(admin, &config());
-        assert!(
-            matches!(r, Err(TransportError::MessageTooLarge(_))),
-            "{name}: an oversized hook must return MessageTooLarge, got {r:?}"
-        );
-        // Nothing was committed — a failed encode leaves no bytes to send.
-        assert!(
-            w.is_empty(),
-            "{name}: a failed encode must leave the outbound buffer empty"
-        );
-        assert!(
-            w.data().is_empty(),
-            "{name}: a failed encode must not expose a partial frame"
-        );
+    macro_rules! overflow_case {
+        ($msg:expr, $name:expr) => {{
+            let inner = FrameWriter::builder().buffer_capacity(512).build();
+            let mut w: MessageWriter<MockDict, Padding> =
+                MessageWriter::with_frame_writer_and_customizer(inner, Padding(1000));
+            let r = emit_admin(&mut w, &config(), $msg);
+            assert!(
+                matches!(r, Err(TransportError::MessageTooLarge(_))),
+                "{}: an oversized hook must return MessageTooLarge, got {:?}",
+                $name,
+                r
+            );
+            // Nothing was committed — a failed encode leaves no bytes to send.
+            assert!(
+                w.is_empty(),
+                "{}: a failed encode must leave the outbound buffer empty",
+                $name
+            );
+            assert!(
+                w.data().is_empty(),
+                "{}: a failed encode must not expose a partial frame",
+                $name
+            );
+        }};
     }
+
+    overflow_case!(
+        Logon {
+            seq: 1,
+            heart_bt_int_s: 30
+        },
+        "logon"
+    );
+    overflow_case!(Logout { seq: 2 }, "logout");
 }
 
 #[test]
@@ -1103,7 +1205,7 @@ fn hook_field_overflow_boundary_is_exact() {
     // At a fixed capacity, find the largest padding that still fits, then prove
     // the transition is a true off-by-one: `fits` succeeds, `fits + 1` errors.
     const CAP: usize = 256;
-    let admin = || AdminMsg::Logon {
+    let admin = || Logon {
         seq: 1,
         heart_bt_int_s: 30,
     };
@@ -1146,7 +1248,7 @@ fn failed_encode_leaves_prior_frame_intact_and_adds_nothing() {
     /// Pads only Logon; every other admin type is a no-op.
     struct PadLogonOnly(usize);
     impl SessionCustomizer for PadLogonOnly {
-        fn customize_logon(&self, m: &mut AdminMsgOut<'_, '_>) {
+        fn customize_logon(&mut self, m: &mut AdminMsgOut<'_, '_>) {
             m.field(5000, &vec![b'x'; self.0]);
         }
     }
@@ -1156,19 +1258,19 @@ fn failed_encode_leaves_prior_frame_intact_and_adds_nothing() {
         MessageWriter::with_frame_writer_and_customizer(inner, PadLogonOnly(1000));
 
     // A Heartbeat (no padding) fits and commits.
-    w.encode_admin(AdminMsg::Heartbeat { seq: 3, echo: None }, &config())
-        .expect("heartbeat fits");
+    emit_admin(&mut w, &config(), Heartbeat { seq: 3, echo: None }).expect("heartbeat fits");
     let after_good = w.data().to_vec();
     assert!(!after_good.is_empty());
     assert!(validate_checksum(&after_good).is_ok());
 
     // An oversized Logon into the same writer must fail...
-    let r = w.encode_admin(
-        AdminMsg::Logon {
+    let r = emit_admin(
+        &mut w,
+        &config(),
+        Logon {
             seq: 4,
             heart_bt_int_s: 30,
         },
-        &config(),
     );
     assert!(
         matches!(r, Err(TransportError::MessageTooLarge(_))),

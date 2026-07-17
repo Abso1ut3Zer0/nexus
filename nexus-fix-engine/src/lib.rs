@@ -42,12 +42,14 @@ pub use fix_session::{FixSession, PollOutcome};
 pub use frame::{
     FrameError, FrameReader, FrameReaderBuilder, FrameWriter, FrameWriterBuilder, ReadError,
 };
+#[cfg(unix)]
+pub use framework::Emitter;
 pub use framework::{CompId, Message, MessageReader, MessageWriter, SessionConfig, SessionError};
 #[cfg(unix)]
 pub use nexus_journal::{Conductor, ConductorBuilder, OpenError, OpenMode, WriteError};
 #[cfg(unix)]
 pub use persist::{FixJournal, ReplayItem};
-pub use session::{AdminMsg, Control, DisconnectReason, SessionState, State};
+pub use session::{Control, DisconnectReason, Emit, SessionState, State};
 #[cfg(unix)]
 pub use transport::{
     Error as TransportError, FixConnection, FixConnectionBuilder, REFRAME_HEADROOM,

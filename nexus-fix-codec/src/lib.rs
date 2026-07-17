@@ -25,6 +25,7 @@
     rustdoc::redundant_explicit_links
 )]
 
+pub mod admin;
 pub mod customizer;
 pub mod dict;
 mod error;
@@ -37,6 +38,10 @@ pub mod reader;
 pub mod scan;
 pub mod writer;
 
+pub use admin::{
+    AdminEncode, Heartbeat, Logon, LogonReset, Logout, Reject, ResendRequest, SequenceReset,
+    TestRequest,
+};
 pub use customizer::{AdminMsgOut, NoCustomizer, SessionCustomizer};
 pub use dict::{AdminHeader, FixAdminMsg, FixDictionary, FixHeader};
 pub use error::{ChecksumError, DecodeError, EncodeError, FixValueError};

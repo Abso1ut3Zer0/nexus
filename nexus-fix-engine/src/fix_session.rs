@@ -36,9 +36,11 @@ use nexus_fix_codec::{
 use nexus_journal::WriteError;
 
 use crate::frame::{FrameError, FrameWriter};
-use crate::framework::{Message, MessageReader, MessageWriter, SessionConfig, SessionError};
+use crate::framework::{
+    Emitter, Message, MessageReader, MessageWriter, SessionConfig, SessionError,
+};
 use crate::persist::{FixJournal, ReplayItem};
-use crate::session::{AdminMsg, Control, DisconnectReason, SessionState, State};
+use crate::session::{Control, DisconnectReason, SessionState, State};
 use crate::timestamp::UTC_TIMESTAMP_LEN;
 
 /// Error surfaced by the sans-IO session core.
@@ -290,29 +292,29 @@ impl<D: FixDictionary, C: SessionCustomizer> FixSession<D, C> {
     /// Enqueues a Logon (initiate the session). Outbound bytes land in the writer
     /// buffer; the wrapper drains them.
     pub fn connect(&mut self, now: Instant) -> Result<(), Error> {
-        let mut emit = |m| store_admin(m, &mut self.writer, &mut self.journal, &self.config);
-        self.state.connect(now, &mut emit)?;
+        let mut emitter = journaling_emitter(&mut self.writer, &mut self.journal, &self.config);
+        self.state.connect(now, &mut emitter)?;
         Ok(())
     }
 
     /// Enqueues a Logon with `ResetSeqNumFlag=Y`.
     pub fn connect_reset(&mut self, now: Instant) -> Result<(), Error> {
-        let mut emit = |m| store_admin(m, &mut self.writer, &mut self.journal, &self.config);
-        self.state.connect_reset(now, &mut emit)?;
+        let mut emitter = journaling_emitter(&mut self.writer, &mut self.journal, &self.config);
+        self.state.connect_reset(now, &mut emitter)?;
         Ok(())
     }
 
     /// Enqueues an in-session sequence reset handshake.
     pub fn reset_sequence(&mut self, now: Instant) -> Result<(), Error> {
-        let mut emit = |m| store_admin(m, &mut self.writer, &mut self.journal, &self.config);
-        self.state.reset_sequence(now, &mut emit)?;
+        let mut emitter = journaling_emitter(&mut self.writer, &mut self.journal, &self.config);
+        self.state.reset_sequence(now, &mut emitter)?;
         Ok(())
     }
 
     /// Enqueues a Logout.
     pub fn logout(&mut self, now: Instant) -> Result<(), Error> {
-        let mut emit = |m| store_admin(m, &mut self.writer, &mut self.journal, &self.config);
-        self.state.logout(now, &mut emit)?;
+        let mut emitter = journaling_emitter(&mut self.writer, &mut self.journal, &self.config);
+        self.state.logout(now, &mut emitter)?;
         Ok(())
     }
 
@@ -334,8 +336,8 @@ impl<D: FixDictionary, C: SessionCustomizer> FixSession<D, C> {
     /// messages. Returns `Some(reason)` if the timeout drove a disconnect.
     pub fn on_timeout(&mut self, now: Instant) -> Result<Option<DisconnectReason>, Error> {
         let ctrl = {
-            let mut emit = |m| store_admin(m, &mut self.writer, &mut self.journal, &self.config);
-            self.state.on_timeout(now, &mut emit)?
+            let mut emitter = journaling_emitter(&mut self.writer, &mut self.journal, &self.config);
+            self.state.on_timeout(now, &mut emitter)?
         };
         Ok(if let Control::Disconnected { reason } = ctrl {
             Some(reason)
@@ -474,9 +476,9 @@ impl<D: FixDictionary, C: SessionCustomizer> FixSession<D, C> {
 
         if !sender_ok || !target_ok {
             {
-                let mut emit =
-                    |m| store_admin(m, &mut self.writer, &mut self.journal, &self.config);
-                self.state.on_comp_id_mismatch(now, &mut emit)?;
+                let mut emitter =
+                    journaling_emitter(&mut self.writer, &mut self.journal, &self.config);
+                self.state.on_comp_id_mismatch(now, &mut emitter)?;
             }
             // Always surface CompIdMismatch here, mirroring the original driver:
             // the handler disconnects the state machine; the reason is fixed.
@@ -495,11 +497,11 @@ impl<D: FixDictionary, C: SessionCustomizer> FixSession<D, C> {
             s.slice(frame)
         } else {
             // The missing-tag-35 reject is NOT journaled (matches the original):
-            // this call site passes an encode-only closure while every other site
-            // passes the journaling `store_admin` closure.
-            let mut emit = |m| -> Result<(), Error> { self.writer.encode_admin(m, &self.config) };
+            // this call site gives the `Emitter` a no-op `after` closure, while
+            // every other site uses the journaling emitter.
+            let mut emitter = Emitter::new(&mut self.writer, &self.config, |_seq, _frame| Ok(()));
             self.state
-                .on_reject_inbound(seq, poss_dup, Some(35), 1, now, &mut emit)?;
+                .on_reject_inbound(seq, poss_dup, Some(35), 1, now, &mut emitter)?;
             return Ok(PollOutcome::Suppressed);
         };
 
@@ -523,10 +525,10 @@ impl<D: FixDictionary, C: SessionCustomizer> FixSession<D, C> {
                     .unwrap_or(false);
                 let was_logon_sent = self.state.state() == State::LogonSent;
                 let ctrl = {
-                    let mut emit =
-                        |m| store_admin(m, &mut self.writer, &mut self.journal, &self.config);
+                    let mut emitter =
+                        journaling_emitter(&mut self.writer, &mut self.journal, &self.config);
                     self.state
-                        .on_logon(seq, hbi, reset, !was_logon_sent, now, &mut emit)?
+                        .on_logon(seq, hbi, reset, !was_logon_sent, now, &mut emitter)?
                 };
                 Ok(self.dispose(ctrl))
             }
@@ -535,9 +537,9 @@ impl<D: FixDictionary, C: SessionCustomizer> FixSession<D, C> {
                 D::Logout::decode(frame)
                     .map_err(|_| Error::Protocol(SessionError::MalformedMessage))?;
                 let ctrl = {
-                    let mut emit =
-                        |m| store_admin(m, &mut self.writer, &mut self.journal, &self.config);
-                    self.state.on_logout(seq, poss_dup, now, &mut emit)?
+                    let mut emitter =
+                        journaling_emitter(&mut self.writer, &mut self.journal, &self.config);
+                    self.state.on_logout(seq, poss_dup, now, &mut emitter)?
                 };
                 Ok(self.dispose(ctrl))
             }
@@ -548,10 +550,10 @@ impl<D: FixDictionary, C: SessionCustomizer> FixSession<D, C> {
                 let echo_id =
                     find_tag(frame, 0, 112).and_then(|s| parse_fix_seqnum(s.slice(frame)).ok());
                 let ctrl = {
-                    let mut emit =
-                        |m| store_admin(m, &mut self.writer, &mut self.journal, &self.config);
+                    let mut emitter =
+                        journaling_emitter(&mut self.writer, &mut self.journal, &self.config);
                     self.state
-                        .on_heartbeat(seq, poss_dup, echo_id, now, &mut emit)?
+                        .on_heartbeat(seq, poss_dup, echo_id, now, &mut emitter)?
                 };
                 Ok(self.dispose(ctrl))
             }
@@ -562,10 +564,10 @@ impl<D: FixDictionary, C: SessionCustomizer> FixSession<D, C> {
                 let test_req_id =
                     find_tag(frame, 0, 112).map_or_else(|| b"".as_ref(), |s| s.slice(frame));
                 let ctrl = {
-                    let mut emit =
-                        |m| store_admin(m, &mut self.writer, &mut self.journal, &self.config);
+                    let mut emitter =
+                        journaling_emitter(&mut self.writer, &mut self.journal, &self.config);
                     self.state
-                        .on_test_request(seq, poss_dup, test_req_id, now, &mut emit)?
+                        .on_test_request(seq, poss_dup, test_req_id, now, &mut emitter)?
                 };
                 Ok(self.dispose(ctrl))
             }
@@ -580,10 +582,10 @@ impl<D: FixDictionary, C: SessionCustomizer> FixSession<D, C> {
                     .and_then(|s| parse_fix_seqnum(s.slice(frame)).ok())
                     .map_or(0, |v| v as u32);
                 let ctrl = {
-                    let mut emit =
-                        |m| store_admin(m, &mut self.writer, &mut self.journal, &self.config);
+                    let mut emitter =
+                        journaling_emitter(&mut self.writer, &mut self.journal, &self.config);
                     self.state
-                        .on_resend_request(seq, poss_dup, now, &mut emit)?
+                        .on_resend_request(seq, poss_dup, now, &mut emitter)?
                 };
                 // ResendRequest is the one kind the driver acts on beyond
                 // surfacing the message: it drives the replay from the locally
@@ -617,10 +619,10 @@ impl<D: FixDictionary, C: SessionCustomizer> FixSession<D, C> {
                     .and_then(|s| parse_fix_bool(s.slice(frame)).ok())
                     .unwrap_or(false);
                 let ctrl = {
-                    let mut emit =
-                        |m| store_admin(m, &mut self.writer, &mut self.journal, &self.config);
+                    let mut emitter =
+                        journaling_emitter(&mut self.writer, &mut self.journal, &self.config);
                     self.state
-                        .on_sequence_reset(seq, new_seq, gap_fill, now, &mut emit)?
+                        .on_sequence_reset(seq, new_seq, gap_fill, now, &mut emitter)?
                 };
                 Ok(self.dispose(ctrl))
             }
@@ -629,17 +631,17 @@ impl<D: FixDictionary, C: SessionCustomizer> FixSession<D, C> {
                 D::Reject::decode(frame)
                     .map_err(|_| Error::Protocol(SessionError::MalformedMessage))?;
                 let ctrl = {
-                    let mut emit =
-                        |m| store_admin(m, &mut self.writer, &mut self.journal, &self.config);
-                    self.state.on_reject(seq, poss_dup, now, &mut emit)?
+                    let mut emitter =
+                        journaling_emitter(&mut self.writer, &mut self.journal, &self.config);
+                    self.state.on_reject(seq, poss_dup, now, &mut emitter)?
                 };
                 Ok(self.dispose(ctrl))
             }
             _ => {
                 let ctrl = {
-                    let mut emit =
-                        |m| store_admin(m, &mut self.writer, &mut self.journal, &self.config);
-                    self.state.on_app(seq, poss_dup, now, &mut emit)?
+                    let mut emitter =
+                        journaling_emitter(&mut self.writer, &mut self.journal, &self.config);
+                    self.state.on_app(seq, poss_dup, now, &mut emitter)?
                 };
                 Ok(self.dispose(ctrl))
             }
@@ -755,7 +757,8 @@ fn journal_write(
     }
 }
 
-/// Encodes an admin message into the writer and journals it under its seqnum.
+/// The journaling emit emitter: encodes each admin into `writer` and journals the
+/// committed frame under its seqnum.
 ///
 /// The journaled bytes are the encoded frame — including anything the venue
 /// [`SessionCustomizer`] injected. That is deliberate: the outbound archive
@@ -764,35 +767,22 @@ fn journal_write(
 ///
 /// # Errors
 ///
-/// [`Error::MessageTooLarge`] if the encode did not fit the writer — the state
-/// machine has already bumped the outbound seqnum by this point, so a silently
-/// dropped message would leave the session wedged until a logon or heartbeat
-/// timeout reported a cause pointing away from the encode. The error surfaces
-/// instead. Nothing is committed or journaled in that case.
-fn store_admin<D: FixDictionary, C: SessionCustomizer>(
-    admin: AdminMsg,
-    writer: &mut MessageWriter<D, C>,
-    journal: &mut FixJournal,
-    config: &SessionConfig,
-) -> Result<(), Error> {
-    let seq = match admin {
-        AdminMsg::Logon { seq, .. }
-        | AdminMsg::LogonReset { seq, .. }
-        | AdminMsg::Logout { seq }
-        | AdminMsg::Heartbeat { seq, .. }
-        | AdminMsg::TestRequest { seq, .. }
-        | AdminMsg::ResendRequest { seq, .. }
-        | AdminMsg::SequenceReset { seq, .. }
-        | AdminMsg::Reject { seq, .. } => seq,
-    };
-    let before = writer.inner.data().len();
-    writer.encode_admin(admin, config)?;
-    let frame = &writer.inner.data()[before..];
-    // `encode_admin` committed a whole framed message or returned above — an
-    // empty frame here is not a legitimate state, it would mean a silent drop.
-    debug_assert!(!frame.is_empty(), "encode_admin returned Ok with no frame");
-    journal_write(frame.len(), || journal.store(seq, frame))?;
-    Ok(())
+/// On a per-emit basis, [`Error::MessageTooLarge`] if an encode did not fit the
+/// writer — the state machine has already bumped the outbound seqnum by that
+/// point, so a silently dropped message would leave the session wedged until a
+/// logon or heartbeat timeout reported a cause pointing away from the encode.
+/// The error surfaces instead; nothing is committed or journaled in that case.
+// The return type is exactly an `Emitter` over an unnameable journaling closure;
+// there is nothing to factor into a `type` alias (the closure has no name).
+#[allow(clippy::type_complexity)]
+fn journaling_emitter<'a, D: FixDictionary, C: SessionCustomizer>(
+    writer: &'a mut MessageWriter<D, C>,
+    journal: &'a mut FixJournal,
+    config: &'a SessionConfig,
+) -> Emitter<'a, D, C, impl FnMut(u32, &[u8]) -> Result<(), Error> + 'a> {
+    Emitter::new(writer, config, move |seq, frame| {
+        journal_write(frame.len(), || journal.store(seq, frame))
+    })
 }
 
 /// Copies a pre-built frame into the writer buffer for the wrapper to drain.
@@ -910,32 +900,35 @@ mod tests {
     use std::time::{Duration, Instant};
 
     use nexus_fix_codec::{
-        AsciiTextStr, DecodeError, FieldReader, FieldView, FixAdminMsg, FixDictionary, FixHeader,
-        FixTimestamp, FrameFormatter, checksum, find_tag, format_checksum,
+        AdminEncode, AsciiTextStr, DecodeError, FieldReader, FieldView, FixAdminMsg, FixDictionary,
+        FixHeader, FixTimestamp, FrameFormatter, checksum, find_tag, format_checksum,
     };
 
     use super::{FixSession, PollOutcome};
     use crate::frame::{FrameReader, FrameWriter};
     use crate::framework::{CompId, Message, MessageReader, MessageWriter, SessionConfig};
     use crate::persist::FixJournal;
-    use crate::session::SessionState;
+    use crate::session::{Emit, SessionState};
 
-    /// Emit closure that discards admin messages. These rig helpers drive the raw
-    /// `SessionState` only to advance sequence numbers before wrapping it in a
-    /// `FixSession`; the emitted admin is not routed to the session's writer (as
-    /// the pre-refactor setup discarded the returned `Out`). The `Result` return
-    /// is required by the `FnMut(AdminMsg) -> Result<(), E>` handler bound.
-    #[allow(clippy::unnecessary_wraps)]
-    fn drop_emit(_m: crate::session::AdminMsg) -> Result<(), std::convert::Infallible> {
-        Ok(())
+    /// A discarding [`Emit`]: drops every emitted admin. These rig helpers
+    /// drive the raw `SessionState` only to advance sequence numbers before
+    /// wrapping it in a `FixSession`; the emitted admin is not routed to the
+    /// session's writer.
+    struct NullEmitter;
+
+    impl Emit for NullEmitter {
+        type Error = std::convert::Infallible;
+        fn emit<M: AdminEncode>(&mut self, _msg: M) -> Result<(), Self::Error> {
+            Ok(())
+        }
     }
 
     /// Drives the initiator Logon exchange on a raw `SessionState`: sends Logon
     /// (outbound seq 1) and accepts the peer's Logon at seq 1, reaching `Active`.
     fn establish_state(state: &mut SessionState, now: Instant) {
-        state.connect(now, &mut drop_emit).unwrap();
+        state.connect(now, &mut NullEmitter).unwrap();
         state
-            .on_logon(1, 30, false, false, now, &mut drop_emit)
+            .on_logon(1, 30, false, false, now, &mut NullEmitter)
             .unwrap();
     }
 
@@ -1457,7 +1450,7 @@ mod tests {
         let mut state = SessionState::new(Duration::from_secs(30));
         // Initiate: engine sends Logon (outbound seq 1), moves to LogonSent, and
         // expects the peer's Logon at inbound seq 1.
-        state.connect(now, &mut drop_emit).unwrap();
+        state.connect(now, &mut NullEmitter).unwrap();
 
         let journal = FixJournal::open(dir.path(), 0, 256).unwrap();
         let mut session: FixSession<StrictDict> = FixSession::from_buffers(
@@ -1483,7 +1476,7 @@ mod tests {
                 FrameWriter::builder().buffer_capacity(4096).build(),
             );
             let mut state = SessionState::new(Duration::from_secs(30));
-            state.connect(now, &mut drop_emit).unwrap();
+            state.connect(now, &mut NullEmitter).unwrap();
             let journal = FixJournal::open(dir_ok.path(), 0, 256).unwrap();
             let mut ok_session: FixSession<StrictDict> = FixSession::from_buffers(
                 reader,
@@ -1567,10 +1560,10 @@ mod tests {
         msg.len()
     }
 
-    /// The non-journaling `encode_admin` caller: `process_frame`'s missing-tag-35
-    /// path emits a Reject through an encode-only closure (no `store_admin`). If
-    /// that Reject does not fit the writer, the failure must surface — not be
-    /// swallowed into `Ok`, which would leave the peer's malformed frame silently
+    /// The non-journaling emit site: `process_frame`'s missing-tag-35 path emits a
+    /// Reject through an `Emitter` with a no-op `after` (no journaling). If that
+    /// Reject does not fit the writer, the failure must surface — not be swallowed
+    /// into `Ok`, which would leave the peer's malformed frame silently
     /// unanswered. A deliberately tiny writer forces the Reject encode to fail.
     #[test]
     fn missing_msg_type_reject_encode_overflow_surfaces_error() {
