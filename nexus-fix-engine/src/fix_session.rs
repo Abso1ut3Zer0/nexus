@@ -30,8 +30,8 @@
 use std::time::Instant;
 
 use nexus_fix_codec::{
-    FieldReader, FixAdminMsg, FixDictionary, FixHeader, FrameFormatter, encode_fix_uint, find_tag,
-    parse_fix_bool, parse_fix_seqnum, parse_fix_uint,
+    FieldReader, FixAdminMsg, FixDictionary, FixHeader, FrameFormatter, NoCustomizer,
+    SessionCustomizer, encode_fix_uint, find_tag, parse_fix_bool, parse_fix_seqnum, parse_fix_uint,
 };
 use nexus_journal::WriteError;
 
@@ -131,9 +131,13 @@ struct ResendState {
 ///
 /// See the [module docs](self) for the byte-buffer seam and the poll/message
 /// split.
-pub struct FixSession<D: FixDictionary> {
+///
+/// `C` is the per-venue [`SessionCustomizer`] applied to outbound admin
+/// messages; it defaults to [`NoCustomizer`], so plain-FIX callers write
+/// `FixSession<Fix44>` and pay nothing.
+pub struct FixSession<D: FixDictionary, C = NoCustomizer> {
     reader: MessageReader<D>,
-    writer: MessageWriter<D>,
+    writer: MessageWriter<D, C>,
     state: SessionState,
     journal: FixJournal,
     config: SessionConfig,
@@ -146,13 +150,26 @@ pub struct FixSession<D: FixDictionary> {
     pending: Control,
 }
 
-impl<D: FixDictionary> FixSession<D> {
+impl<D: FixDictionary> FixSession<D, NoCustomizer> {
     /// Builds a session with default (empty) frame buffers. Prefer
     /// [`from_buffers`](Self::from_buffers) to size the reader/writer up front.
     pub fn new(state: SessionState, config: SessionConfig, journal: FixJournal) -> Self {
+        Self::new_with_customizer(state, config, journal, NoCustomizer)
+    }
+}
+
+impl<D: FixDictionary, C: SessionCustomizer> FixSession<D, C> {
+    /// Builds a session with default (empty) frame buffers and a per-venue
+    /// [`SessionCustomizer`].
+    pub fn new_with_customizer(
+        state: SessionState,
+        config: SessionConfig,
+        journal: FixJournal,
+        customizer: C,
+    ) -> Self {
         Self {
             reader: MessageReader::new(),
-            writer: MessageWriter::new(),
+            writer: MessageWriter::with_customizer(customizer),
             state,
             journal,
             config,
@@ -163,9 +180,12 @@ impl<D: FixDictionary> FixSession<D> {
     }
 
     /// Builds a session from pre-sized reader and writer buffers.
+    ///
+    /// The writer carries the customizer; pass a
+    /// [`MessageWriter::with_frame_writer_and_customizer`] to use one.
     pub fn from_buffers(
         reader: MessageReader<D>,
-        writer: MessageWriter<D>,
+        writer: MessageWriter<D, C>,
         state: SessionState,
         config: SessionConfig,
         journal: FixJournal,
@@ -739,9 +759,14 @@ fn journal_write(
 }
 
 /// Encodes an admin message into the writer and journals it under its seqnum.
-fn store_admin<D: FixDictionary>(
+///
+/// The journaled bytes are the encoded frame — including anything the venue
+/// [`SessionCustomizer`] injected. That is deliberate: the outbound archive
+/// matches the wire byte-for-byte, which is worth more than redacting
+/// credentials from a journal that is already local to the box.
+fn store_admin<D: FixDictionary, C: SessionCustomizer>(
     admin: AdminMsg,
-    writer: &mut MessageWriter<D>,
+    writer: &mut MessageWriter<D, C>,
     journal: &mut FixJournal,
     config: &SessionConfig,
 ) -> Result<(), Error> {

@@ -12,6 +12,26 @@ contained.
 
 ### Added
 
+- `SessionCustomizer`, `AdminMsgOut`, and `NoCustomizer` — the per-venue hook for
+  Logon authentication. Venues (Coinbase, Binance, Deribit) compute their auth
+  over engine-assigned `MsgSeqNum(34)`/`SendingTime(52)`, so it can be neither
+  static configuration nor generated from a FIX XML dictionary. The engine runs
+  the hook after stamping the session header and before framing computes
+  `BodyLength(9)`/`CheckSum(10)`, so injected fields — `Username(553)`,
+  `Password(554)`, `RawData(96)` — are covered by both, and signatures can be
+  taken over the header as stamped. `AdminMsgOut` exposes read accessors
+  (`seq_num`, `sending_time`, `sender`, `target`, `msg_type`) alongside `field`
+  for exactly that reason.
+
+  Hooks are per message type (`configure_logon`, `configure_heartbeat`, …) and
+  default to no-ops, so a venue implements only what it customizes and cannot
+  leak Logon credentials into every Heartbeat — the miswiring QuickFIX's single
+  undifferentiated `toAdmin` forces callers to hand-guard against.
+
+  Writing an engine-owned tag (8, 9, 10, 34, 35, 49, 52, 56) from a hook trips a
+  `debug_assert`: it is a programming error in expert-authored, once-per-venue
+  code, and the failure is immediate and loud on the wire.
+
 - `FieldSpan` and `GroupSpan` zero-copy field reference types
 - SIMD SOH and `=` scanning: AVX-512, AVX2, SSE2, SWAR, scalar
 - `DelimiterScanner` iterator with SIMD mask caching
@@ -51,6 +71,15 @@ contained.
 
 ### Changed
 
+- **Breaking:** `FixDictionary::encode_*` now write their standard fields into a
+  caller-owned `&mut FrameFormatter` and return `()`, instead of owning
+  `FrameFormatter::new`/`finish` over a `&mut [u8]` and returning
+  `Option<(usize, usize)>`. The caller owns the frame lifecycle so it can run a
+  `SessionCustomizer` between the standard fields and `finish()`. This keeps the
+  dictionary customizer-agnostic — no `Config` associated type, no customizer
+  threaded through the trait. Generated dictionaries are unaffected: codegen
+  emits only associated types, `BEGIN_STRING`, and `is_admin`, and inherits every
+  `encode_*` default body.
 - Value parsers now return `Result<T, FixValueError>` instead of `Option<T>`,
   surfacing the granular failure reason. Field *absence* is unchanged — it
   remains an `Option` at the lookup layer (`find_tag`), never a parse error.

@@ -21,7 +21,7 @@ use std::io;
 use std::marker::PhantomData;
 use std::time::{Duration, Instant};
 
-use nexus_fix_codec::FixDictionary;
+use nexus_fix_codec::{FixDictionary, NoCustomizer, SessionCustomizer};
 use nexus_fix_engine::{
     DisconnectReason, FixJournal, FixSession, FrameReader, FrameWriter, Message, MessageReader,
     MessageWriter, PollOutcome, SessionConfig, SessionError, SessionState, State,
@@ -43,21 +43,27 @@ pub use nexus_fix_engine::TransportError as Error;
 /// else — framing, the [`SessionState`] machine, journaling, resend — is in the
 /// shared core. This is the async twin of
 /// [`nexus_fix_engine::FixConnection`].
-pub struct FixConnection<S, D: FixDictionary> {
+///
+/// `C` is the per-venue [`SessionCustomizer`] applied to outbound admin
+/// messages, defaulting to [`NoCustomizer`] — plain-FIX callers write
+/// `FixConnection<TcpStream, Fix44>` and never name it. Attach one with
+/// [`FixConnectionBuilder::customizer`].
+pub struct FixConnection<S, D: FixDictionary, C = NoCustomizer> {
     stream: S,
-    session: FixSession<D>,
+    session: FixSession<D, C>,
 }
 
 /// Builder for [`FixConnection`], mirroring the sync
 /// [`FixConnectionBuilder`](nexus_fix_engine::FixConnectionBuilder).
-pub struct FixConnectionBuilder<D: FixDictionary> {
+pub struct FixConnectionBuilder<D: FixDictionary, C = NoCustomizer> {
     reader_cap: usize,
     writer_cap: usize,
     nodelay: bool,
+    customizer: C,
     _dict: PhantomData<fn() -> D>,
 }
 
-impl<D: FixDictionary> FixConnectionBuilder<D> {
+impl<D: FixDictionary, C> FixConnectionBuilder<D, C> {
     pub fn reader_capacity(mut self, n: usize) -> Self {
         self.reader_cap = n;
         self
@@ -73,22 +79,40 @@ impl<D: FixDictionary> FixConnectionBuilder<D> {
         self
     }
 
+    /// Attach a per-venue [`SessionCustomizer`] — the hook that injects Logon
+    /// auth (e.g. `Username(553)`/`Password(554)`/`RawData(96)`).
+    ///
+    /// Changes the builder's customizer type, so the resulting
+    /// [`FixConnection`] carries `C2`.
+    pub fn customizer<C2: SessionCustomizer>(self, customizer: C2) -> FixConnectionBuilder<D, C2> {
+        FixConnectionBuilder {
+            reader_cap: self.reader_cap,
+            writer_cap: self.writer_cap,
+            nodelay: self.nodelay,
+            customizer,
+            _dict: PhantomData,
+        }
+    }
+}
+
+impl<D: FixDictionary, C: SessionCustomizer> FixConnectionBuilder<D, C> {
     fn build_session(
-        &self,
+        self,
         state: SessionState,
         config: SessionConfig,
         journal: FixJournal,
-    ) -> FixSession<D> {
+    ) -> FixSession<D, C> {
         FixSession::from_buffers(
             MessageReader::with_frame_reader(
                 FrameReader::builder()
                     .buffer_capacity(self.reader_cap)
                     .build(),
             ),
-            MessageWriter::with_frame_writer(
+            MessageWriter::with_frame_writer_and_customizer(
                 FrameWriter::builder()
                     .buffer_capacity(self.writer_cap)
                     .build(),
+                self.customizer,
             ),
             state,
             config,
@@ -103,7 +127,7 @@ impl<D: FixDictionary> FixConnectionBuilder<D> {
         state: SessionState,
         config: SessionConfig,
         journal: FixJournal,
-    ) -> io::Result<FixConnection<tokio::net::TcpStream, D>> {
+    ) -> io::Result<FixConnection<tokio::net::TcpStream, D, C>> {
         let stream = tokio::net::TcpStream::connect(addr).await?;
         stream.set_nodelay(self.nodelay)?;
         let session = self.build_session(state, config, journal);
@@ -117,18 +141,19 @@ impl<D: FixDictionary> FixConnectionBuilder<D> {
         state: SessionState,
         config: SessionConfig,
         journal: FixJournal,
-    ) -> FixConnection<S, D> {
+    ) -> FixConnection<S, D, C> {
         let session = self.build_session(state, config, journal);
         FixConnection { stream, session }
     }
 }
 
-impl<D: FixDictionary> FixConnection<tokio::net::TcpStream, D> {
-    pub fn builder() -> FixConnectionBuilder<D> {
+impl<D: FixDictionary> FixConnection<tokio::net::TcpStream, D, NoCustomizer> {
+    pub fn builder() -> FixConnectionBuilder<D, NoCustomizer> {
         FixConnectionBuilder {
             reader_cap: 64 * 1024,
             writer_cap: 64 * 1024,
             nodelay: true,
+            customizer: NoCustomizer,
             _dict: PhantomData,
         }
     }
@@ -145,16 +170,32 @@ impl<D: FixDictionary> FixConnection<tokio::net::TcpStream, D> {
     }
 }
 
-impl<S: AsyncRead + AsyncWrite + Unpin, D: FixDictionary> FixConnection<S, D> {
+impl<S: AsyncRead + AsyncWrite + Unpin, D: FixDictionary> FixConnection<S, D, NoCustomizer> {
     pub fn from_parts(
         stream: S,
         state: SessionState,
         config: SessionConfig,
         journal: FixJournal,
     ) -> Self {
+        Self::from_parts_with_customizer(stream, state, config, journal, NoCustomizer)
+    }
+}
+
+impl<S: AsyncRead + AsyncWrite + Unpin, D: FixDictionary, C: SessionCustomizer>
+    FixConnection<S, D, C>
+{
+    /// As [`from_parts`](Self::from_parts), with a per-venue
+    /// [`SessionCustomizer`] and default (unsized) buffers.
+    pub fn from_parts_with_customizer(
+        stream: S,
+        state: SessionState,
+        config: SessionConfig,
+        journal: FixJournal,
+        customizer: C,
+    ) -> Self {
         Self {
             stream,
-            session: FixSession::new(state, config, journal),
+            session: FixSession::new_with_customizer(state, config, journal, customizer),
         }
     }
 

@@ -1,7 +1,7 @@
 use core::marker::PhantomData;
 use std::io::Write;
 
-use nexus_fix_codec::FixDictionary;
+use nexus_fix_codec::{FixDictionary, NoCustomizer, SessionCustomizer};
 use nexus_net::wire::ParserSink;
 
 use crate::frame::{FrameReader, FrameWriter};
@@ -155,26 +155,53 @@ impl<D: FixDictionary> ParserSink for MessageReader<D> {
 }
 
 /// Outbound FIX message writer, dictionary-aware via `D::BEGIN_STRING`.
-pub struct MessageWriter<D: FixDictionary> {
+///
+/// `C` is the per-venue [`SessionCustomizer`](nexus_fix_codec::SessionCustomizer)
+/// run over each outbound admin message; it defaults to
+/// [`NoCustomizer`], so plain-FIX callers write `MessageWriter<Fix44>`.
+pub struct MessageWriter<D: FixDictionary, C = NoCustomizer> {
     pub(crate) inner: FrameWriter,
+    /// Only read by `encode_admin`, which is `#[cfg(unix)]` — so on other
+    /// platforms this field is genuinely dead rather than accidentally unused.
+    #[cfg_attr(not(unix), allow(dead_code))]
+    customizer: C,
     _dict: PhantomData<fn() -> D>,
 }
 
-impl<D: FixDictionary> MessageWriter<D> {
+impl<D: FixDictionary> MessageWriter<D, NoCustomizer> {
     pub fn new() -> Self {
-        Self {
-            inner: FrameWriter::builder().build(),
-            _dict: PhantomData,
-        }
+        Self::with_customizer(NoCustomizer)
     }
 
     pub fn with_frame_writer(inner: FrameWriter) -> Self {
+        Self::with_frame_writer_and_customizer(inner, NoCustomizer)
+    }
+}
+
+// The customizer bound sits on the constructors, not the struct, so a type that
+// is not a `SessionCustomizer` is rejected where it is supplied rather than
+// later at `encode_admin`.
+impl<D: FixDictionary, C: SessionCustomizer> MessageWriter<D, C> {
+    /// Builds a writer with default buffers and a per-venue customizer.
+    pub fn with_customizer(customizer: C) -> Self {
         Self {
-            inner,
+            inner: FrameWriter::builder().build(),
+            customizer,
             _dict: PhantomData,
         }
     }
 
+    /// Builds a writer from a pre-sized frame writer and a per-venue customizer.
+    pub fn with_frame_writer_and_customizer(inner: FrameWriter, customizer: C) -> Self {
+        Self {
+            inner,
+            customizer,
+            _dict: PhantomData,
+        }
+    }
+}
+
+impl<D: FixDictionary, C> MessageWriter<D, C> {
     pub fn is_empty(&self) -> bool {
         self.inner.is_empty()
     }
@@ -206,10 +233,19 @@ impl<D: FixDictionary> MessageWriter<D> {
         }
         stream.flush()
     }
+}
 
+impl<D: FixDictionary, C: SessionCustomizer> MessageWriter<D, C> {
+    /// Encodes one admin message into the outbound buffer.
+    ///
+    /// Owns the frame lifecycle so the customizer hook can run at the one point
+    /// where it is useful: after the session header (`8`/`35`/`34`/`49`/`56`/`52`)
+    /// is stamped — so a venue can sign over it — and before
+    /// [`FrameFormatter::finish`] computes `BodyLength(9)`/`CheckSum(10)` — so
+    /// whatever the hook appended is covered by both.
     #[cfg(unix)]
     pub fn encode_admin(&mut self, admin: AdminMsg, config: &SessionConfig) {
-        use nexus_fix_codec::AdminHeader;
+        use nexus_fix_codec::{AdminHeader, AdminMsgOut, FrameFormatter};
 
         let ts = make_ts();
         let sender = config.sender.as_bytes();
@@ -221,40 +257,87 @@ impl<D: FixDictionary> MessageWriter<D> {
             ts: &ts,
         };
 
+        let customizer = &self.customizer;
         let spare = self.inner.spare();
+
+        // Each arm: start the frame, write the dictionary's standard fields,
+        // run the venue hook, then finish. `hdr` outlives the borrow in
+        // `AdminMsgOut`, so it is bound before the formatter.
         let result = match admin {
             AdminMsg::Logon {
                 seq,
                 heart_bt_int_s,
-            } => D::encode_logon(spare, mk_hdr(seq), heart_bt_int_s),
+            } => {
+                let hdr = mk_hdr(seq);
+                let mut fmt = FrameFormatter::new(spare, D::BEGIN_STRING, b"A");
+                D::encode_logon(&mut fmt, &hdr, heart_bt_int_s);
+                customizer.configure_logon(&mut AdminMsgOut::new(&mut fmt, &hdr, b"A"));
+                fmt.finish().ok()
+            }
             AdminMsg::LogonReset {
                 seq,
                 heart_bt_int_s,
-            } => D::encode_logon_reset(spare, mk_hdr(seq), heart_bt_int_s),
-            AdminMsg::Logout { seq } => D::encode_logout(spare, mk_hdr(seq)),
-            AdminMsg::Heartbeat { seq, echo } => {
-                let echo_bytes = echo.as_ref().map(|(id, len)| &id[..*len as usize]);
-                D::encode_heartbeat(spare, mk_hdr(seq), echo_bytes)
+            } => {
+                let hdr = mk_hdr(seq);
+                let mut fmt = FrameFormatter::new(spare, D::BEGIN_STRING, b"A");
+                D::encode_logon_reset(&mut fmt, &hdr, heart_bt_int_s);
+                customizer.configure_logon_reset(&mut AdminMsgOut::new(&mut fmt, &hdr, b"A"));
+                fmt.finish().ok()
             }
-            AdminMsg::TestRequest { seq, id } => D::encode_test_request(spare, mk_hdr(seq), id),
+            AdminMsg::Logout { seq } => {
+                let hdr = mk_hdr(seq);
+                let mut fmt = FrameFormatter::new(spare, D::BEGIN_STRING, b"5");
+                D::encode_logout(&mut fmt, &hdr);
+                customizer.configure_logout(&mut AdminMsgOut::new(&mut fmt, &hdr, b"5"));
+                fmt.finish().ok()
+            }
+            AdminMsg::Heartbeat { seq, echo } => {
+                let hdr = mk_hdr(seq);
+                let echo_bytes = echo.as_ref().map(|(id, len)| &id[..*len as usize]);
+                let mut fmt = FrameFormatter::new(spare, D::BEGIN_STRING, b"0");
+                D::encode_heartbeat(&mut fmt, &hdr, echo_bytes);
+                customizer.configure_heartbeat(&mut AdminMsgOut::new(&mut fmt, &hdr, b"0"));
+                fmt.finish().ok()
+            }
+            AdminMsg::TestRequest { seq, id } => {
+                let hdr = mk_hdr(seq);
+                let mut fmt = FrameFormatter::new(spare, D::BEGIN_STRING, b"1");
+                D::encode_test_request(&mut fmt, &hdr, id);
+                customizer.configure_test_request(&mut AdminMsgOut::new(&mut fmt, &hdr, b"1"));
+                fmt.finish().ok()
+            }
             AdminMsg::ResendRequest { seq, begin } => {
-                D::encode_resend_request(spare, mk_hdr(seq), begin)
+                let hdr = mk_hdr(seq);
+                let mut fmt = FrameFormatter::new(spare, D::BEGIN_STRING, b"2");
+                D::encode_resend_request(&mut fmt, &hdr, begin);
+                customizer.configure_resend_request(&mut AdminMsgOut::new(&mut fmt, &hdr, b"2"));
+                fmt.finish().ok()
             }
             AdminMsg::SequenceReset { seq, new_seq } => {
-                D::encode_sequence_reset(spare, mk_hdr(seq), new_seq)
+                let hdr = mk_hdr(seq);
+                let mut fmt = FrameFormatter::new(spare, D::BEGIN_STRING, b"4");
+                D::encode_sequence_reset(&mut fmt, &hdr, new_seq);
+                customizer.configure_sequence_reset(&mut AdminMsgOut::new(&mut fmt, &hdr, b"4"));
+                fmt.finish().ok()
             }
             AdminMsg::Reject {
                 seq,
                 ref_seq_num,
                 ref_tag_id,
                 session_reject_reason,
-            } => D::encode_reject(
-                spare,
-                mk_hdr(seq),
-                ref_seq_num,
-                ref_tag_id,
-                session_reject_reason,
-            ),
+            } => {
+                let hdr = mk_hdr(seq);
+                let mut fmt = FrameFormatter::new(spare, D::BEGIN_STRING, b"3");
+                D::encode_reject(
+                    &mut fmt,
+                    &hdr,
+                    ref_seq_num,
+                    ref_tag_id,
+                    session_reject_reason,
+                );
+                customizer.configure_reject(&mut AdminMsgOut::new(&mut fmt, &hdr, b"3"));
+                fmt.finish().ok()
+            }
         };
 
         if let Some((start, len)) = result {
@@ -263,7 +346,7 @@ impl<D: FixDictionary> MessageWriter<D> {
     }
 }
 
-impl<D: FixDictionary> Default for MessageWriter<D> {
+impl<D: FixDictionary> Default for MessageWriter<D, NoCustomizer> {
     fn default() -> Self {
         Self::new()
     }

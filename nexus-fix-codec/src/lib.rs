@@ -8,6 +8,9 @@
 //! - [`FieldWriter`] for writing `tag=value` fields into a buffer
 //! - [`FieldSpan`] / [`GroupSpan`] for zero-copy field access
 //! - [`validate_checksum`] for FIX checksum verification
+//! - [`SessionCustomizer`] for per-venue Logon auth — the engine runs it after
+//!   stamping the session header and before framing `9`/`10`, so venue fields
+//!   (and signatures over the stamped header) are covered by both
 //! - Value-type parsers/encoders covering the FIX 5.0 SP2 field data types —
 //!   numerics and decimals ([`FixDecimal`]), temporals ([`FixDate`],
 //!   [`FixTime`], [`FixTimestamp`], [`FixTzTime`], [`FixTzTimestamp`]),
@@ -22,6 +25,7 @@
     rustdoc::redundant_explicit_links
 )]
 
+pub mod customizer;
 pub mod dict;
 mod error;
 mod field;
@@ -33,6 +37,7 @@ pub mod reader;
 pub mod scan;
 pub mod writer;
 
+pub use customizer::{AdminMsgOut, NoCustomizer, SessionCustomizer};
 pub use dict::{AdminHeader, FixAdminMsg, FixDictionary, FixHeader};
 pub use error::{ChecksumError, DecodeError, EncodeError, FixValueError};
 pub use field::{FieldView, FromFixValue};

@@ -10,6 +10,34 @@ contained.
 
 ## [Unreleased]
 
+### Added
+
+- Venue Logon auth. `FixSession`, `FixConnection`, and `MessageWriter` take a
+  per-venue `SessionCustomizer` (from `nexus-fix-codec`) as a trailing type
+  parameter defaulting to `NoCustomizer`, so existing plain-FIX call sites —
+  `FixConnection<TcpStream, Fix44>`, `MessageWriter::new()`,
+  `FixSession::from_buffers(...)` — compile and behave exactly as before, and
+  produce byte-identical frames.
+
+  Attach one with `FixConnectionBuilder::customizer(c)`, or the
+  `*_with_customizer` constructors (`FixSession::new_with_customizer`,
+  `FixConnection::from_parts_with_customizer`,
+  `MessageWriter::with_customizer`, `MessageWriter::with_frame_writer_and_customizer`).
+
+  `MessageWriter::encode_admin` now owns the frame lifecycle so the hook runs
+  where it must: after the session header (`8`/`35`/`34`/`49`/`56`/`52`) is
+  stamped — so a venue can sign over it — and before `finish()` computes
+  `BodyLength(9)`/`CheckSum(10)` — so injected fields are covered by both.
+
+  Note: `store_admin` journals the encoded frame, so hook-injected fields
+  (including a plaintext `Password(554)`) land in the outbound journal. This is
+  deliberate: the journal is local to the box, and an archive that matches the
+  wire byte-for-byte is worth more than redaction. QuickFIX/J has the same
+  property (it persists after `toAdmin`).
+
+  Resend gap-fills are unaffected — they are reframed directly and never run the
+  hook, so PossDup traffic cannot carry credentials.
+
 ### Internal
 
 - Test scratch directories are now removed on drop. The `tmp_dir` helpers in
