@@ -55,15 +55,19 @@ pub struct Logon {
 
 impl AdminEncode for Logon {
     const MSG_TYPE: &'static [u8] = b"A";
+
     fn seq(&self) -> u32 {
         self.seq
     }
+
     fn owned<D: FixDictionary>() -> &'static [u32] {
         D::LOGON_OWNED
     }
+
     fn encode<D: FixDictionary>(&self, fmt: &mut FrameFormatter<'_>, hdr: &AdminHeader<'_>) {
         D::encode_logon(fmt, hdr, self.heart_bt_int_s);
     }
+
     fn customize<C: SessionCustomizer>(&self, customizer: &mut C, out: &mut AdminMsgOut<'_, '_>) {
         customizer.customize_logon(out);
     }
@@ -78,15 +82,19 @@ pub struct LogonReset {
 
 impl AdminEncode for LogonReset {
     const MSG_TYPE: &'static [u8] = b"A";
+
     fn seq(&self) -> u32 {
         self.seq
     }
+
     fn owned<D: FixDictionary>() -> &'static [u32] {
         D::LOGON_RESET_OWNED
     }
+
     fn encode<D: FixDictionary>(&self, fmt: &mut FrameFormatter<'_>, hdr: &AdminHeader<'_>) {
         D::encode_logon_reset(fmt, hdr, self.heart_bt_int_s);
     }
+
     fn customize<C: SessionCustomizer>(&self, customizer: &mut C, out: &mut AdminMsgOut<'_, '_>) {
         customizer.customize_logon_reset(out);
     }
@@ -100,15 +108,19 @@ pub struct Logout {
 
 impl AdminEncode for Logout {
     const MSG_TYPE: &'static [u8] = b"5";
+
     fn seq(&self) -> u32 {
         self.seq
     }
+
     fn owned<D: FixDictionary>() -> &'static [u32] {
         D::LOGOUT_OWNED
     }
+
     fn encode<D: FixDictionary>(&self, fmt: &mut FrameFormatter<'_>, hdr: &AdminHeader<'_>) {
         D::encode_logout(fmt, hdr);
     }
+
     fn customize<C: SessionCustomizer>(&self, customizer: &mut C, out: &mut AdminMsgOut<'_, '_>) {
         customizer.customize_logout(out);
     }
@@ -128,15 +140,19 @@ pub struct Heartbeat<'a> {
 
 impl AdminEncode for Heartbeat<'_> {
     const MSG_TYPE: &'static [u8] = b"0";
+
     fn seq(&self) -> u32 {
         self.seq
     }
+
     fn owned<D: FixDictionary>() -> &'static [u32] {
         D::HEARTBEAT_OWNED
     }
+
     fn encode<D: FixDictionary>(&self, fmt: &mut FrameFormatter<'_>, hdr: &AdminHeader<'_>) {
         D::encode_heartbeat(fmt, hdr, self.echo);
     }
+
     fn customize<C: SessionCustomizer>(&self, customizer: &mut C, out: &mut AdminMsgOut<'_, '_>) {
         customizer.customize_heartbeat(out);
     }
@@ -151,15 +167,19 @@ pub struct TestRequest {
 
 impl AdminEncode for TestRequest {
     const MSG_TYPE: &'static [u8] = b"1";
+
     fn seq(&self) -> u32 {
         self.seq
     }
+
     fn owned<D: FixDictionary>() -> &'static [u32] {
         D::TEST_REQUEST_OWNED
     }
+
     fn encode<D: FixDictionary>(&self, fmt: &mut FrameFormatter<'_>, hdr: &AdminHeader<'_>) {
         D::encode_test_request(fmt, hdr, self.id);
     }
+
     fn customize<C: SessionCustomizer>(&self, customizer: &mut C, out: &mut AdminMsgOut<'_, '_>) {
         customizer.customize_test_request(out);
     }
@@ -174,15 +194,19 @@ pub struct ResendRequest {
 
 impl AdminEncode for ResendRequest {
     const MSG_TYPE: &'static [u8] = b"2";
+
     fn seq(&self) -> u32 {
         self.seq
     }
+
     fn owned<D: FixDictionary>() -> &'static [u32] {
         D::RESEND_REQUEST_OWNED
     }
+
     fn encode<D: FixDictionary>(&self, fmt: &mut FrameFormatter<'_>, hdr: &AdminHeader<'_>) {
         D::encode_resend_request(fmt, hdr, self.begin);
     }
+
     fn customize<C: SessionCustomizer>(&self, customizer: &mut C, out: &mut AdminMsgOut<'_, '_>) {
         customizer.customize_resend_request(out);
     }
@@ -198,15 +222,19 @@ pub struct SequenceReset {
 
 impl AdminEncode for SequenceReset {
     const MSG_TYPE: &'static [u8] = b"4";
+
     fn seq(&self) -> u32 {
         self.seq
     }
+
     fn owned<D: FixDictionary>() -> &'static [u32] {
         D::SEQUENCE_RESET_OWNED
     }
+
     fn encode<D: FixDictionary>(&self, fmt: &mut FrameFormatter<'_>, hdr: &AdminHeader<'_>) {
         D::encode_sequence_reset(fmt, hdr, self.new_seq);
     }
+
     fn customize<C: SessionCustomizer>(&self, customizer: &mut C, out: &mut AdminMsgOut<'_, '_>) {
         customizer.customize_sequence_reset(out);
     }
@@ -224,12 +252,15 @@ pub struct Reject {
 
 impl AdminEncode for Reject {
     const MSG_TYPE: &'static [u8] = b"3";
+
     fn seq(&self) -> u32 {
         self.seq
     }
+
     fn owned<D: FixDictionary>() -> &'static [u32] {
         D::REJECT_OWNED
     }
+
     fn encode<D: FixDictionary>(&self, fmt: &mut FrameFormatter<'_>, hdr: &AdminHeader<'_>) {
         D::encode_reject(
             fmt,
@@ -239,6 +270,7 @@ impl AdminEncode for Reject {
             self.session_reject_reason,
         );
     }
+
     fn customize<C: SessionCustomizer>(&self, customizer: &mut C, out: &mut AdminMsgOut<'_, '_>) {
         customizer.customize_reject(out);
     }
