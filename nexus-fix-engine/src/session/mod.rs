@@ -4,7 +4,7 @@ use std::time::{Duration, Instant};
 
 pub use event::{Control, DisconnectReason, State};
 use nexus_fix_codec::{
-    AdminEncode, Heartbeat, Logon, LogonReset, Logout, Reject, ResendRequest, TEST_REQ_ID_CAP,
+    AdminEncode, Heartbeat, Logon, LogonReset, Logout, Reject, ResendRequest, TestReqId,
     TestRequest,
 };
 
@@ -554,13 +554,10 @@ impl SessionState {
             // In-sequence only: reply with the echoing Heartbeat. A gap/dup must
             // not trigger a Heartbeat reply — it is a recovery event.
             Control::Proceed => {
-                let mut echo = [0u8; TEST_REQ_ID_CAP];
-                let id_len = test_req_id.len().min(TEST_REQ_ID_CAP);
-                echo[..id_len].copy_from_slice(&test_req_id[..id_len]);
                 let hb_seq = seq!(self, now);
                 sink.emit(Heartbeat {
                     seq: hb_seq,
-                    echo: Some((echo, id_len as u8)),
+                    echo: Some(TestReqId::new(test_req_id)),
                 })?;
                 self.check_resend_done();
             }
@@ -962,7 +959,7 @@ mod tests {
             let mut fmt = FrameFormatter::new(&mut buf, MockDict::BEGIN_STRING, M::MSG_TYPE);
             msg.encode::<MockDict>(&mut fmt, &hdr);
             msg.customize(
-                &NoCustomizer,
+                &mut NoCustomizer,
                 &mut AdminMsgOut::new(&mut fmt, &hdr, M::MSG_TYPE, M::owned::<MockDict>()),
             );
             let (start, len) = fmt.finish().expect("admin frame fits the scratch buffer");

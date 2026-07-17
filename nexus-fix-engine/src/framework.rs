@@ -329,10 +329,12 @@ where
         // `fix_session`.
         let needed = self.writer.inner.remaining().saturating_add(1);
 
-        // Disjoint field borrows: `&self.writer.customizer` (shared) and
-        // `self.writer.inner.spare()` (mut) are different fields, so both stay
-        // live while the formatter holds the spare.
-        let customizer = &self.writer.customizer;
+        // Disjoint field borrows: `&mut self.writer.customizer` and
+        // `self.writer.inner.spare()` (also `&mut`) are different fields of
+        // `*self.writer`, so both `&mut` borrows stay live while the formatter
+        // holds the spare. The `&mut` on the customizer lets a venue hook carry
+        // mutable auth state (a per-logon nonce, a rotating key).
+        let customizer = &mut self.writer.customizer;
         let spare = self.writer.inner.spare();
         let mut fmt = FrameFormatter::new(spare, D::BEGIN_STRING, M::MSG_TYPE);
         msg.encode::<D>(&mut fmt, &hdr);

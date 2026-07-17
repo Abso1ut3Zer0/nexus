@@ -13,7 +13,7 @@
 use nexus_fix_codec::{
     AdminEncode, AdminMsgOut, DecodeError, FieldView, FixAdminMsg, FixDictionary, FixHeader,
     FixTimestamp, Heartbeat, Logon, LogonReset, Logout, NoCustomizer, Reject, ResendRequest,
-    SequenceReset, SessionCustomizer, TEST_REQ_ID_CAP, TestRequest, find_tag, validate_checksum,
+    SequenceReset, SessionCustomizer, TestReqId, TestRequest, find_tag, validate_checksum,
 };
 use nexus_fix_engine::{
     AdminSink, CompId, Emitter, FrameWriter, MessageWriter, SessionConfig, TransportError,
@@ -136,7 +136,7 @@ fn soh_join(parts: &[&[u8]]) -> Vec<u8> {
 struct TestAuth;
 
 impl SessionCustomizer for TestAuth {
-    fn customize_logon(&self, m: &mut AdminMsgOut<'_, '_>) {
+    fn customize_logon(&mut self, m: &mut AdminMsgOut<'_, '_>) {
         m.field(553, b"trader-1");
         m.field(554, b"s3cret");
     }
@@ -146,7 +146,7 @@ impl SessionCustomizer for TestAuth {
 struct SigningAuth;
 
 impl SessionCustomizer for SigningAuth {
-    fn customize_logon(&self, m: &mut AdminMsgOut<'_, '_>) {
+    fn customize_logon(&mut self, m: &mut AdminMsgOut<'_, '_>) {
         let seq = m.seq_num().to_string();
         let presign = soh_join(&[
             m.sending_time(),
@@ -235,18 +235,44 @@ fn no_customizer_heartbeat_is_byte_identical() {
 
 #[test]
 fn no_customizer_heartbeat_with_echo_is_byte_identical() {
-    // `TEST_REQ_ID_CAP` is the engine's TestReqID echo capacity; the public
-    // `Heartbeat` struct names the array size structurally.
-    let mut id = [0u8; TEST_REQ_ID_CAP];
-    id[..4].copy_from_slice(b"TR-1");
     assert_matches_oracle(
         Heartbeat {
             seq: 3,
-            echo: Some((id, 4)),
+            echo: Some(TestReqId::new(b"TR-1")),
         },
         b"0",
         &[(112, b"TR-1".to_vec())],
     );
+}
+
+/// The panic that `TestReqId` designs out: an over-length echo. `TestReqId::new`
+/// caps a 100-byte id at `TEST_REQ_ID_CAP`, so `Heartbeat::encode`'s `as_bytes()`
+/// slice is in-bounds and the emitted `112=` tag is exactly the cap — this
+/// construction used to store `len=100` and panic on `&id[..100]`.
+#[test]
+fn heartbeat_over_length_echo_is_capped_not_panicking() {
+    // The cap is crate-private; derive its value from the newtype's own contract.
+    let cap = TestReqId::new(&[b'x'; 100]).as_bytes().len();
+
+    let mut w: MessageWriter<MockDict> = MessageWriter::new();
+    emit_admin(
+        &mut w,
+        &config(),
+        Heartbeat {
+            seq: 3,
+            echo: Some(TestReqId::new(&[b'x'; 100])),
+        },
+    )
+    .expect("capped heartbeat fits");
+
+    let tag_112 = tag(w.data(), 112).expect("112 on the wire");
+    assert_eq!(
+        tag_112.len(),
+        cap,
+        "an over-length echo must encode a 112 value capped to the buffer, not 100 bytes"
+    );
+    assert!(tag_112.iter().all(|&b| b == b'x'));
+    assert!(validate_checksum(w.data()).is_ok());
 }
 
 #[test]
@@ -330,9 +356,6 @@ fn scan_body_tags(frame: &[u8]) -> Vec<u32> {
 /// the tripwire is deliberately unconditional over those conditional fields.
 #[test]
 fn dictionary_owned_consts_match_the_encoder_bodies() {
-    let mut echo = [0u8; TEST_REQ_ID_CAP];
-    echo[..4].copy_from_slice(b"TR-1");
-
     // Each admin struct is a distinct type, so drive one assertion per type
     // rather than a heterogeneous collection.
     macro_rules! check {
@@ -368,7 +391,7 @@ fn dictionary_owned_consts_match_the_encoder_bodies() {
     check!(
         Heartbeat {
             seq: 3,
-            echo: Some((echo, 4))
+            echo: Some(TestReqId::new(b"TR-1"))
         },
         MockDict::HEARTBEAT_OWNED
     );
@@ -511,6 +534,63 @@ fn accessors_return_the_stamped_header_inside_the_hook() {
     assert!(validate_checksum(data).is_ok());
 }
 
+// ── stateful customizer: &mut self carries per-logon state ───────────────────
+
+/// The reason the hook takes `&mut self`: a venue can hold mutable auth state (a
+/// per-logon nonce, a rotating key, an RNG) as a plain field and advance it in
+/// the hook — no `Cell`/`RefCell`. This customizer holds a `u32` counter it bumps
+/// and writes into a custom tag on each Logon; two Logons through the *same*
+/// customizer must carry successive values, proving the mutation persisted.
+#[test]
+fn stateful_customizer_mutates_across_logons() {
+    struct Nonce(u32);
+    impl SessionCustomizer for Nonce {
+        fn customize_logon(&mut self, m: &mut AdminMsgOut<'_, '_>) {
+            self.0 += 1;
+            m.field(20001, self.0.to_string().as_bytes());
+        }
+    }
+
+    let mut w: MessageWriter<MockDict, Nonce> = MessageWriter::with_customizer(Nonce(0));
+
+    // First Logon: counter 0 → 1.
+    emit_admin(
+        &mut w,
+        &config(),
+        Logon {
+            seq: 1,
+            heart_bt_int_s: 30,
+        },
+    )
+    .expect("first logon fits");
+    assert_eq!(
+        tag(w.data(), 20001),
+        Some(b"1".as_ref()),
+        "first logon must carry the advanced nonce (1)"
+    );
+    assert!(validate_checksum(w.data()).is_ok());
+
+    // Drain, then a second Logon on the SAME writer/customizer: counter 1 → 2.
+    let n = w.data().len();
+    w.advance(n);
+    emit_admin(
+        &mut w,
+        &config(),
+        Logon {
+            seq: 2,
+            heart_bt_int_s: 30,
+        },
+    )
+    .expect("second logon fits");
+    assert_eq!(
+        tag(w.data(), 20001),
+        Some(b"2".as_ref()),
+        "second logon must carry the incremented nonce (2) — the &mut self hook \
+         advanced its own state across calls"
+    );
+    assert!(validate_checksum(w.data()).is_ok());
+}
+
 // ── per-message dispatch ─────────────────────────────────────────────────────
 
 /// The QuickFIX miswiring we designed out: a single undifferentiated hook fires
@@ -576,7 +656,7 @@ fn logon_only_customizer_heartbeat_matches_no_customizer() {
 fn logon_reset_has_its_own_hook() {
     struct ResetOnly;
     impl SessionCustomizer for ResetOnly {
-        fn customize_logon_reset(&self, m: &mut AdminMsgOut<'_, '_>) {
+        fn customize_logon_reset(&mut self, m: &mut AdminMsgOut<'_, '_>) {
             m.field(553, b"reset-user");
         }
     }
@@ -618,28 +698,28 @@ fn logon_reset_has_its_own_hook() {
 struct MarkAll;
 
 impl SessionCustomizer for MarkAll {
-    fn customize_logon(&self, m: &mut AdminMsgOut<'_, '_>) {
+    fn customize_logon(&mut self, m: &mut AdminMsgOut<'_, '_>) {
         m.field(9001, b"logon");
     }
-    fn customize_logon_reset(&self, m: &mut AdminMsgOut<'_, '_>) {
+    fn customize_logon_reset(&mut self, m: &mut AdminMsgOut<'_, '_>) {
         m.field(9001, b"logon_reset");
     }
-    fn customize_logout(&self, m: &mut AdminMsgOut<'_, '_>) {
+    fn customize_logout(&mut self, m: &mut AdminMsgOut<'_, '_>) {
         m.field(9001, b"logout");
     }
-    fn customize_heartbeat(&self, m: &mut AdminMsgOut<'_, '_>) {
+    fn customize_heartbeat(&mut self, m: &mut AdminMsgOut<'_, '_>) {
         m.field(9001, b"heartbeat");
     }
-    fn customize_test_request(&self, m: &mut AdminMsgOut<'_, '_>) {
+    fn customize_test_request(&mut self, m: &mut AdminMsgOut<'_, '_>) {
         m.field(9001, b"test_request");
     }
-    fn customize_resend_request(&self, m: &mut AdminMsgOut<'_, '_>) {
+    fn customize_resend_request(&mut self, m: &mut AdminMsgOut<'_, '_>) {
         m.field(9001, b"resend_request");
     }
-    fn customize_sequence_reset(&self, m: &mut AdminMsgOut<'_, '_>) {
+    fn customize_sequence_reset(&mut self, m: &mut AdminMsgOut<'_, '_>) {
         m.field(9001, b"sequence_reset");
     }
-    fn customize_reject(&self, m: &mut AdminMsgOut<'_, '_>) {
+    fn customize_reject(&mut self, m: &mut AdminMsgOut<'_, '_>) {
         m.field(9001, b"reject");
     }
 }
@@ -711,35 +791,35 @@ fn every_admin_type_runs_its_own_hook() {
 struct EchoMsgType;
 
 impl SessionCustomizer for EchoMsgType {
-    fn customize_logon(&self, m: &mut AdminMsgOut<'_, '_>) {
+    fn customize_logon(&mut self, m: &mut AdminMsgOut<'_, '_>) {
         let mt = m.msg_type().to_vec();
         m.field(9002, &mt);
     }
-    fn customize_logon_reset(&self, m: &mut AdminMsgOut<'_, '_>) {
+    fn customize_logon_reset(&mut self, m: &mut AdminMsgOut<'_, '_>) {
         let mt = m.msg_type().to_vec();
         m.field(9002, &mt);
     }
-    fn customize_logout(&self, m: &mut AdminMsgOut<'_, '_>) {
+    fn customize_logout(&mut self, m: &mut AdminMsgOut<'_, '_>) {
         let mt = m.msg_type().to_vec();
         m.field(9002, &mt);
     }
-    fn customize_heartbeat(&self, m: &mut AdminMsgOut<'_, '_>) {
+    fn customize_heartbeat(&mut self, m: &mut AdminMsgOut<'_, '_>) {
         let mt = m.msg_type().to_vec();
         m.field(9002, &mt);
     }
-    fn customize_test_request(&self, m: &mut AdminMsgOut<'_, '_>) {
+    fn customize_test_request(&mut self, m: &mut AdminMsgOut<'_, '_>) {
         let mt = m.msg_type().to_vec();
         m.field(9002, &mt);
     }
-    fn customize_resend_request(&self, m: &mut AdminMsgOut<'_, '_>) {
+    fn customize_resend_request(&mut self, m: &mut AdminMsgOut<'_, '_>) {
         let mt = m.msg_type().to_vec();
         m.field(9002, &mt);
     }
-    fn customize_sequence_reset(&self, m: &mut AdminMsgOut<'_, '_>) {
+    fn customize_sequence_reset(&mut self, m: &mut AdminMsgOut<'_, '_>) {
         let mt = m.msg_type().to_vec();
         m.field(9002, &mt);
     }
-    fn customize_reject(&self, m: &mut AdminMsgOut<'_, '_>) {
+    fn customize_reject(&mut self, m: &mut AdminMsgOut<'_, '_>) {
         let mt = m.msg_type().to_vec();
         m.field(9002, &mt);
     }
@@ -823,28 +903,28 @@ mod engine_owned_tripwire {
     /// Writes `tag` from every hook, so any admin type drives the same probe.
     struct WritesTag(u32);
     impl SessionCustomizer for WritesTag {
-        fn customize_logon(&self, m: &mut AdminMsgOut<'_, '_>) {
+        fn customize_logon(&mut self, m: &mut AdminMsgOut<'_, '_>) {
             m.field(self.0, b"x");
         }
-        fn customize_logon_reset(&self, m: &mut AdminMsgOut<'_, '_>) {
+        fn customize_logon_reset(&mut self, m: &mut AdminMsgOut<'_, '_>) {
             m.field(self.0, b"x");
         }
-        fn customize_logout(&self, m: &mut AdminMsgOut<'_, '_>) {
+        fn customize_logout(&mut self, m: &mut AdminMsgOut<'_, '_>) {
             m.field(self.0, b"x");
         }
-        fn customize_heartbeat(&self, m: &mut AdminMsgOut<'_, '_>) {
+        fn customize_heartbeat(&mut self, m: &mut AdminMsgOut<'_, '_>) {
             m.field(self.0, b"x");
         }
-        fn customize_test_request(&self, m: &mut AdminMsgOut<'_, '_>) {
+        fn customize_test_request(&mut self, m: &mut AdminMsgOut<'_, '_>) {
             m.field(self.0, b"x");
         }
-        fn customize_resend_request(&self, m: &mut AdminMsgOut<'_, '_>) {
+        fn customize_resend_request(&mut self, m: &mut AdminMsgOut<'_, '_>) {
             m.field(self.0, b"x");
         }
-        fn customize_sequence_reset(&self, m: &mut AdminMsgOut<'_, '_>) {
+        fn customize_sequence_reset(&mut self, m: &mut AdminMsgOut<'_, '_>) {
             m.field(self.0, b"x");
         }
-        fn customize_reject(&self, m: &mut AdminMsgOut<'_, '_>) {
+        fn customize_reject(&mut self, m: &mut AdminMsgOut<'_, '_>) {
             m.field(self.0, b"x");
         }
     }
@@ -1047,28 +1127,28 @@ impl Padding {
 }
 
 impl SessionCustomizer for Padding {
-    fn customize_logon(&self, m: &mut AdminMsgOut<'_, '_>) {
+    fn customize_logon(&mut self, m: &mut AdminMsgOut<'_, '_>) {
         self.pad(m);
     }
-    fn customize_logon_reset(&self, m: &mut AdminMsgOut<'_, '_>) {
+    fn customize_logon_reset(&mut self, m: &mut AdminMsgOut<'_, '_>) {
         self.pad(m);
     }
-    fn customize_logout(&self, m: &mut AdminMsgOut<'_, '_>) {
+    fn customize_logout(&mut self, m: &mut AdminMsgOut<'_, '_>) {
         self.pad(m);
     }
-    fn customize_heartbeat(&self, m: &mut AdminMsgOut<'_, '_>) {
+    fn customize_heartbeat(&mut self, m: &mut AdminMsgOut<'_, '_>) {
         self.pad(m);
     }
-    fn customize_test_request(&self, m: &mut AdminMsgOut<'_, '_>) {
+    fn customize_test_request(&mut self, m: &mut AdminMsgOut<'_, '_>) {
         self.pad(m);
     }
-    fn customize_resend_request(&self, m: &mut AdminMsgOut<'_, '_>) {
+    fn customize_resend_request(&mut self, m: &mut AdminMsgOut<'_, '_>) {
         self.pad(m);
     }
-    fn customize_sequence_reset(&self, m: &mut AdminMsgOut<'_, '_>) {
+    fn customize_sequence_reset(&mut self, m: &mut AdminMsgOut<'_, '_>) {
         self.pad(m);
     }
-    fn customize_reject(&self, m: &mut AdminMsgOut<'_, '_>) {
+    fn customize_reject(&mut self, m: &mut AdminMsgOut<'_, '_>) {
         self.pad(m);
     }
 }
@@ -1170,7 +1250,7 @@ fn failed_encode_leaves_prior_frame_intact_and_adds_nothing() {
     /// Pads only Logon; every other admin type is a no-op.
     struct PadLogonOnly(usize);
     impl SessionCustomizer for PadLogonOnly {
-        fn customize_logon(&self, m: &mut AdminMsgOut<'_, '_>) {
+        fn customize_logon(&mut self, m: &mut AdminMsgOut<'_, '_>) {
             m.field(5000, &vec![b'x'; self.0]);
         }
     }

@@ -10,6 +10,26 @@ contained.
 
 ## [Unreleased]
 
+### Changed
+
+- `Heartbeat.echo` is now `Option<TestReqId>` instead of
+  `Option<([u8; TEST_REQ_ID_CAP], u8)>`. `TestReqId` is a newtype with private
+  fields whose only constructor, `TestReqId::new(&[u8])`, caps the input at the
+  buffer size — so an over-length echo (a stored `len` past the buffer) is
+  unconstructible, and the public-API panic it enabled (`&id[..len]` with
+  `len > 64` in `Heartbeat::encode`) is designed out rather than clamped at the
+  edge. `TEST_REQ_ID_CAP` is now crate-private: callers build the echo through
+  `TestReqId::new` rather than sizing a buffer themselves.
+- `SessionCustomizer` hook methods (`customize_logon`, `customize_heartbeat`, …)
+  now take `&mut self` instead of `&self`. This lets a venue hook carry mutable
+  auth state — a fresh-per-logon nonce, a rotating session key, an RNG it owns
+  and advances — as plain fields rather than behind `Cell`/`RefCell`. It is a
+  cold path (logon), single-threaded, one customizer per session, so the `&mut`
+  costs nothing. `AdminEncode::customize` correspondingly takes `&mut C`, and the
+  engine's `Emitter` borrows its customizer `&mut`. `NoCustomizer` and existing
+  `&self` hooks that carry no state are unaffected beyond the receiver; wire
+  output is byte-identical.
+
 ### Added
 
 - Typed outbound admin messages and the `AdminEncode` trait. One struct per
@@ -19,8 +39,8 @@ contained.
   writer, its `SessionCustomizer::customize_*` hook, its `FixDictionary::*_OWNED`
   tag list, and its `MsgType(35)`. This is the emit vocabulary the engine's
   `AdminSink` seam dispatches over generically, so the concrete admin type is
-  never erased. `TEST_REQ_ID_CAP` is exported so the public `Heartbeat` struct's
-  echo field (`[u8; TEST_REQ_ID_CAP]`) is constructible.
+  never erased. `Heartbeat`'s `TestReqID(112)` echo field is an
+  `Option<TestReqId>`, a capped newtype (see Changed).
 
 - `SessionCustomizer`, `AdminMsgOut`, and `NoCustomizer` — the per-venue hook for
   Logon authentication. Venues (Coinbase, Binance, Deribit) compute their auth

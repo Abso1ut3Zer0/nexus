@@ -132,7 +132,7 @@ impl AdminSink for Rec {
         let mut fmt = FrameFormatter::new(&mut buf, MockDict::BEGIN_STRING, M::MSG_TYPE);
         msg.encode::<MockDict>(&mut fmt, &hdr);
         msg.customize(
-            &NoCustomizer,
+            &mut NoCustomizer,
             &mut AdminMsgOut::new(&mut fmt, &hdr, M::MSG_TYPE, M::owned::<MockDict>()),
         );
         let (start, len) = fmt.finish().expect("admin frame fits the scratch buffer");

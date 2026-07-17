@@ -21,7 +21,7 @@
 //! }
 //!
 //! impl SessionCustomizer for StaticAuth {
-//!     fn customize_logon(&self, m: &mut AdminMsgOut<'_, '_>) {
+//!     fn customize_logon(&mut self, m: &mut AdminMsgOut<'_, '_>) {
 //!         m.field(553, self.username);
 //!         m.field(554, self.password);
 //!     }
@@ -174,44 +174,50 @@ impl<'f, 'h> AdminMsgOut<'f, 'h> {
 /// Methods are per message type and default to no-ops: a venue implements only
 /// what it customizes, and cannot accidentally inject Logon credentials into
 /// every Heartbeat.
+///
+/// Hooks take `&mut self`, so a venue can carry mutable auth state — a
+/// fresh-per-logon nonce, a rotating session key, an RNG it owns and advances —
+/// as plain fields rather than behind `Cell`/`RefCell`. This is a cold path
+/// (logon), single-threaded, one customizer per session, so the `&mut` costs
+/// nothing.
 pub trait SessionCustomizer {
     /// Customize a Logon (35=A). The venue-auth hook.
-    fn customize_logon(&self, m: &mut AdminMsgOut<'_, '_>) {
+    fn customize_logon(&mut self, m: &mut AdminMsgOut<'_, '_>) {
         let _ = m;
     }
 
     /// Customize a Logon (35=A) carrying `ResetSeqNumFlag(141)=Y`.
-    fn customize_logon_reset(&self, m: &mut AdminMsgOut<'_, '_>) {
+    fn customize_logon_reset(&mut self, m: &mut AdminMsgOut<'_, '_>) {
         let _ = m;
     }
 
     /// Customize a Logout (35=5).
-    fn customize_logout(&self, m: &mut AdminMsgOut<'_, '_>) {
+    fn customize_logout(&mut self, m: &mut AdminMsgOut<'_, '_>) {
         let _ = m;
     }
 
     /// Customize a Heartbeat (35=0).
-    fn customize_heartbeat(&self, m: &mut AdminMsgOut<'_, '_>) {
+    fn customize_heartbeat(&mut self, m: &mut AdminMsgOut<'_, '_>) {
         let _ = m;
     }
 
     /// Customize a TestRequest (35=1).
-    fn customize_test_request(&self, m: &mut AdminMsgOut<'_, '_>) {
+    fn customize_test_request(&mut self, m: &mut AdminMsgOut<'_, '_>) {
         let _ = m;
     }
 
     /// Customize a ResendRequest (35=2).
-    fn customize_resend_request(&self, m: &mut AdminMsgOut<'_, '_>) {
+    fn customize_resend_request(&mut self, m: &mut AdminMsgOut<'_, '_>) {
         let _ = m;
     }
 
     /// Customize a SequenceReset (35=4).
-    fn customize_sequence_reset(&self, m: &mut AdminMsgOut<'_, '_>) {
+    fn customize_sequence_reset(&mut self, m: &mut AdminMsgOut<'_, '_>) {
         let _ = m;
     }
 
     /// Customize a Reject (35=3).
-    fn customize_reject(&self, m: &mut AdminMsgOut<'_, '_>) {
+    fn customize_reject(&mut self, m: &mut AdminMsgOut<'_, '_>) {
         let _ = m;
     }
 }
