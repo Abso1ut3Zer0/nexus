@@ -62,6 +62,27 @@ contained.
 
 ### Changed
 
+- Outbound admin dispatch is now typed structs through a trait, replacing the
+  `AdminMsg` enum and its `MessageWriter::encode_admin` match (both introduced
+  earlier this cycle). Each admin message — `Logon`, `LogonReset`, `Logout`,
+  `Heartbeat`, `TestRequest`, `ResendRequest`, `SequenceReset`, `Reject` — is now
+  a struct in `nexus-fix-codec` implementing the new `AdminEncode` trait (a pure
+  naming bridge to `FixDictionary::encode_*` / `SessionCustomizer::customize_*` /
+  `FixDictionary::*_OWNED`). `SessionState` handlers take a `sink: &mut S`
+  (`S: AdminSink`) — one generic `emit<M: AdminEncode>(msg)` method — instead of
+  an `emit: &mut F` closure, and return `Result<Control, S::Error>` (reset
+  initiators require `S::Error: From<SessionError>`). The concrete admin type is
+  never erased into a sum and matched back apart, so cross-message mis-wiring is
+  unrepresentable. The driver's production `AdminSink` is the new
+  `Emitter<'a, D, C, J>`, which owns the encode-and-commit path (session-header
+  stamp → dictionary encode → `SessionCustomizer` hook → `finish`) and runs an
+  injected `after(seq, frame)` closure — the journaling policy the driver picks
+  per emit context (journal for most admin, a no-op for the encode-only
+  missing-tag-35 reject). `MessageWriter::encode_admin` and the driver's
+  `store_admin` are gone, folded into `Emitter`. Wire output is byte-identical;
+  the byte-identity oracles and the FIX/async conformance suites pass unchanged.
+  `TEST_REQ_ID_CAP` is now exported from `nexus-fix-codec` so the public
+  `Heartbeat` struct's echo field is constructible.
 - `SessionState` handler API reworked: the `Out` and `Event` types are
   removed. Each handler (`on_logon`, `on_app`, `on_timeout`, …) now takes an
   `emit: &mut F` closure (`F: FnMut(AdminMsg) -> Result<(), E>`) for outbound

@@ -12,6 +12,16 @@ contained.
 
 ### Added
 
+- Typed outbound admin messages and the `AdminEncode` trait. One struct per
+  session-level message — `Logon`, `LogonReset`, `Logout`, `Heartbeat`,
+  `TestRequest`, `ResendRequest`, `SequenceReset`, `Reject` — each implementing
+  `AdminEncode`, which ties the message to its `FixDictionary::encode_*` body
+  writer, its `SessionCustomizer::customize_*` hook, its `FixDictionary::*_OWNED`
+  tag list, and its `MsgType(35)`. This is the emit vocabulary the engine's
+  `AdminSink` seam dispatches over generically, so the concrete admin type is
+  never erased. `TEST_REQ_ID_CAP` is exported so the public `Heartbeat` struct's
+  echo field (`[u8; TEST_REQ_ID_CAP]`) is constructible.
+
 - `SessionCustomizer`, `AdminMsgOut`, and `NoCustomizer` — the per-venue hook for
   Logon authentication. Venues (Coinbase, Binance, Deribit) compute their auth
   over engine-assigned `MsgSeqNum(34)`/`SendingTime(52)`, so it can be neither
