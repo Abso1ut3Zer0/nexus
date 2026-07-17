@@ -134,9 +134,7 @@ fn message_writer_is_empty_after_flush() {
 #[cfg(unix)]
 mod unix_tests {
     use nexus_fix_codec::{AdminEncode, Heartbeat, Logon, Logout, ResendRequest, SequenceReset};
-    use nexus_fix_engine::{
-        AdminSink, CompId, Emitter, MessageWriter, SessionConfig, TransportError,
-    };
+    use nexus_fix_engine::{CompId, Emit, Emitter, MessageWriter, SessionConfig, TransportError};
 
     use super::MockDict;
 

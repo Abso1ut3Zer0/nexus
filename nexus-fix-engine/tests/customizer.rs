@@ -16,7 +16,7 @@ use nexus_fix_codec::{
     SequenceReset, SessionCustomizer, TestRequest, find_tag, validate_checksum,
 };
 use nexus_fix_engine::{
-    AdminSink, CompId, Emitter, FrameWriter, MessageWriter, SessionConfig, TransportError,
+    CompId, Emit, Emitter, FrameWriter, MessageWriter, SessionConfig, TransportError,
 };
 
 // ── minimal mock dictionary ──────────────────────────────────────────────────

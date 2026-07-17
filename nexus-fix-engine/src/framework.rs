@@ -11,7 +11,7 @@ use nexus_fix_codec::AdminEncode;
 use crate::fix_session::Error;
 use crate::frame::{FrameReader, FrameWriter};
 #[cfg(unix)]
-use crate::session::AdminSink;
+use crate::session::Emit;
 
 const COMP_ID_CAP: usize = 20;
 
@@ -241,16 +241,16 @@ impl<D: FixDictionary, C> MessageWriter<D, C> {
 }
 
 /// Encodes admin messages into a [`MessageWriter`] and runs an injected `after`
-/// hook on each committed frame — the emit seam's production [`AdminSink`].
+/// hook on each committed frame — the emit seam's production [`Emit`] impl.
 ///
-/// The concrete admin type is never erased: [`emit`](AdminSink::emit) is generic
+/// The concrete admin type is never erased: [`emit`](Emit::emit) is generic
 /// over [`AdminEncode`], so a `ResendRequest` stays a `ResendRequest` through
 /// encode, customize, and journal.
 ///
 /// The `after` closure is the journaling policy, chosen per emit context by the
 /// driver: [`FixSession`](crate::FixSession) passes a closure that journals the
 /// frame under its seqnum for most admin, and a no-op closure for the encode-only
-/// missing-tag-35 reject. Keeping it a closure (rather than a second sink type)
+/// missing-tag-35 reject. Keeping it a closure (rather than a second [`Emit`] impl)
 /// leaves the policy the driver's to pick while the encode path stays
 /// single-sourced here.
 #[cfg(unix)]
@@ -277,7 +277,7 @@ where
 }
 
 #[cfg(unix)]
-impl<D: FixDictionary, C: SessionCustomizer, J> AdminSink for Emitter<'_, D, C, J>
+impl<D: FixDictionary, C: SessionCustomizer, J> Emit for Emitter<'_, D, C, J>
 where
     J: FnMut(u32, &[u8]) -> Result<(), Error>,
 {

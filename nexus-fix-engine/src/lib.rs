@@ -49,7 +49,7 @@ pub use framework::{CompId, Message, MessageReader, MessageWriter, SessionConfig
 pub use nexus_journal::{Conductor, ConductorBuilder, OpenError, OpenMode, WriteError};
 #[cfg(unix)]
 pub use persist::{FixJournal, ReplayItem};
-pub use session::{AdminSink, Control, DisconnectReason, SessionState, State};
+pub use session::{Control, DisconnectReason, Emit, SessionState, State};
 #[cfg(unix)]
 pub use transport::{
     Error as TransportError, FixConnection, FixConnectionBuilder, REFRAME_HEADROOM,
