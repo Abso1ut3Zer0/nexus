@@ -4,6 +4,8 @@ use std::io::Write;
 use nexus_fix_codec::{FixDictionary, NoCustomizer, SessionCustomizer};
 use nexus_net::wire::ParserSink;
 
+#[cfg(unix)]
+use crate::fix_session::Error;
 use crate::frame::{FrameReader, FrameWriter};
 #[cfg(unix)]
 use crate::session::AdminMsg;
@@ -243,9 +245,23 @@ impl<D: FixDictionary, C: SessionCustomizer> MessageWriter<D, C> {
     /// is stamped — so a venue can sign over it — and before
     /// [`FrameFormatter::finish`] computes `BodyLength(9)`/`CheckSum(10)` — so
     /// whatever the hook appended is covered by both.
+    ///
+    /// Each arm names its message once, as an
+    /// [`AdminKind`](nexus_fix_codec::AdminKind): it supplies the `MsgType(35)`
+    /// written into the frame *and* the one the hook reads back, so the wire
+    /// value and the value a venue signs over cannot drift apart.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::MessageTooLarge`] if the message did not fit the writer's spare
+    /// capacity — most plausibly because a [`SessionCustomizer`] hook appended
+    /// more than fits (an oversized `RawData(96)`, say), which is the one
+    /// unbounded input on this path. Nothing is committed on failure, so a
+    /// too-large message never reaches the wire half-written; the caller learns
+    /// the encode failed instead of silently sending nothing.
     #[cfg(unix)]
-    pub fn encode_admin(&mut self, admin: AdminMsg, config: &SessionConfig) {
-        use nexus_fix_codec::{AdminHeader, AdminMsgOut, FrameFormatter};
+    pub fn encode_admin(&mut self, admin: AdminMsg, config: &SessionConfig) -> Result<(), Error> {
+        use nexus_fix_codec::{AdminHeader, AdminKind, AdminMsgOut, FrameFormatter};
 
         let ts = make_ts();
         let sender = config.sender.as_bytes();
@@ -256,6 +272,13 @@ impl<D: FixDictionary, C: SessionCustomizer> MessageWriter<D, C> {
             target,
             ts: &ts,
         };
+
+        // Captured before the encode borrows the buffer. A poisoned frame cannot
+        // report how many bytes the message actually needed — the writes that
+        // overflowed were dropped, not counted — so report the smallest size
+        // that certainly did not fit: the spare it was offered, plus one. Same
+        // convention as the resend guard in `fix_session`.
+        let needed = self.inner.remaining().saturating_add(1);
 
         let customizer = &self.customizer;
         let spare = self.inner.spare();
@@ -268,57 +291,64 @@ impl<D: FixDictionary, C: SessionCustomizer> MessageWriter<D, C> {
                 seq,
                 heart_bt_int_s,
             } => {
+                let kind = AdminKind::Logon;
                 let hdr = mk_hdr(seq);
-                let mut fmt = FrameFormatter::new(spare, D::BEGIN_STRING, b"A");
+                let mut fmt = FrameFormatter::new(spare, D::BEGIN_STRING, kind.msg_type());
                 D::encode_logon(&mut fmt, &hdr, heart_bt_int_s);
-                customizer.configure_logon(&mut AdminMsgOut::new(&mut fmt, &hdr, b"A"));
-                fmt.finish().ok()
+                customizer.configure_logon(&mut AdminMsgOut::new(&mut fmt, &hdr, kind));
+                fmt.finish()
             }
             AdminMsg::LogonReset {
                 seq,
                 heart_bt_int_s,
             } => {
+                let kind = AdminKind::LogonReset;
                 let hdr = mk_hdr(seq);
-                let mut fmt = FrameFormatter::new(spare, D::BEGIN_STRING, b"A");
+                let mut fmt = FrameFormatter::new(spare, D::BEGIN_STRING, kind.msg_type());
                 D::encode_logon_reset(&mut fmt, &hdr, heart_bt_int_s);
-                customizer.configure_logon_reset(&mut AdminMsgOut::new(&mut fmt, &hdr, b"A"));
-                fmt.finish().ok()
+                customizer.configure_logon_reset(&mut AdminMsgOut::new(&mut fmt, &hdr, kind));
+                fmt.finish()
             }
             AdminMsg::Logout { seq } => {
+                let kind = AdminKind::Logout;
                 let hdr = mk_hdr(seq);
-                let mut fmt = FrameFormatter::new(spare, D::BEGIN_STRING, b"5");
+                let mut fmt = FrameFormatter::new(spare, D::BEGIN_STRING, kind.msg_type());
                 D::encode_logout(&mut fmt, &hdr);
-                customizer.configure_logout(&mut AdminMsgOut::new(&mut fmt, &hdr, b"5"));
-                fmt.finish().ok()
+                customizer.configure_logout(&mut AdminMsgOut::new(&mut fmt, &hdr, kind));
+                fmt.finish()
             }
             AdminMsg::Heartbeat { seq, echo } => {
+                let kind = AdminKind::Heartbeat;
                 let hdr = mk_hdr(seq);
                 let echo_bytes = echo.as_ref().map(|(id, len)| &id[..*len as usize]);
-                let mut fmt = FrameFormatter::new(spare, D::BEGIN_STRING, b"0");
+                let mut fmt = FrameFormatter::new(spare, D::BEGIN_STRING, kind.msg_type());
                 D::encode_heartbeat(&mut fmt, &hdr, echo_bytes);
-                customizer.configure_heartbeat(&mut AdminMsgOut::new(&mut fmt, &hdr, b"0"));
-                fmt.finish().ok()
+                customizer.configure_heartbeat(&mut AdminMsgOut::new(&mut fmt, &hdr, kind));
+                fmt.finish()
             }
             AdminMsg::TestRequest { seq, id } => {
+                let kind = AdminKind::TestRequest;
                 let hdr = mk_hdr(seq);
-                let mut fmt = FrameFormatter::new(spare, D::BEGIN_STRING, b"1");
+                let mut fmt = FrameFormatter::new(spare, D::BEGIN_STRING, kind.msg_type());
                 D::encode_test_request(&mut fmt, &hdr, id);
-                customizer.configure_test_request(&mut AdminMsgOut::new(&mut fmt, &hdr, b"1"));
-                fmt.finish().ok()
+                customizer.configure_test_request(&mut AdminMsgOut::new(&mut fmt, &hdr, kind));
+                fmt.finish()
             }
             AdminMsg::ResendRequest { seq, begin } => {
+                let kind = AdminKind::ResendRequest;
                 let hdr = mk_hdr(seq);
-                let mut fmt = FrameFormatter::new(spare, D::BEGIN_STRING, b"2");
+                let mut fmt = FrameFormatter::new(spare, D::BEGIN_STRING, kind.msg_type());
                 D::encode_resend_request(&mut fmt, &hdr, begin);
-                customizer.configure_resend_request(&mut AdminMsgOut::new(&mut fmt, &hdr, b"2"));
-                fmt.finish().ok()
+                customizer.configure_resend_request(&mut AdminMsgOut::new(&mut fmt, &hdr, kind));
+                fmt.finish()
             }
             AdminMsg::SequenceReset { seq, new_seq } => {
+                let kind = AdminKind::SequenceReset;
                 let hdr = mk_hdr(seq);
-                let mut fmt = FrameFormatter::new(spare, D::BEGIN_STRING, b"4");
+                let mut fmt = FrameFormatter::new(spare, D::BEGIN_STRING, kind.msg_type());
                 D::encode_sequence_reset(&mut fmt, &hdr, new_seq);
-                customizer.configure_sequence_reset(&mut AdminMsgOut::new(&mut fmt, &hdr, b"4"));
-                fmt.finish().ok()
+                customizer.configure_sequence_reset(&mut AdminMsgOut::new(&mut fmt, &hdr, kind));
+                fmt.finish()
             }
             AdminMsg::Reject {
                 seq,
@@ -326,8 +356,9 @@ impl<D: FixDictionary, C: SessionCustomizer> MessageWriter<D, C> {
                 ref_tag_id,
                 session_reject_reason,
             } => {
+                let kind = AdminKind::Reject;
                 let hdr = mk_hdr(seq);
-                let mut fmt = FrameFormatter::new(spare, D::BEGIN_STRING, b"3");
+                let mut fmt = FrameFormatter::new(spare, D::BEGIN_STRING, kind.msg_type());
                 D::encode_reject(
                     &mut fmt,
                     &hdr,
@@ -335,13 +366,20 @@ impl<D: FixDictionary, C: SessionCustomizer> MessageWriter<D, C> {
                     ref_tag_id,
                     session_reject_reason,
                 );
-                customizer.configure_reject(&mut AdminMsgOut::new(&mut fmt, &hdr, b"3"));
-                fmt.finish().ok()
+                customizer.configure_reject(&mut AdminMsgOut::new(&mut fmt, &hdr, kind));
+                fmt.finish()
             }
         };
 
-        if let Some((start, len)) = result {
-            self.inner.commit(start, len);
+        match result {
+            Ok((start, len)) => {
+                self.inner.commit(start, len);
+                Ok(())
+            }
+            // `FrameFormatter::finish` fails only with `BufferFull`; the frame
+            // was built into `spare` and never committed, so the buffer still
+            // holds exactly what it held before this call.
+            Err(_) => Err(Error::MessageTooLarge(needed)),
         }
     }
 }

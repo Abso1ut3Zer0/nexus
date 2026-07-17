@@ -497,10 +497,7 @@ impl<D: FixDictionary, C: SessionCustomizer> FixSession<D, C> {
             // The missing-tag-35 reject is NOT journaled (matches the original):
             // this call site passes an encode-only closure while every other site
             // passes the journaling `store_admin` closure.
-            let mut emit = |m| -> Result<(), Error> {
-                self.writer.encode_admin(m, &self.config);
-                Ok(())
-            };
+            let mut emit = |m| -> Result<(), Error> { self.writer.encode_admin(m, &self.config) };
             self.state
                 .on_reject_inbound(seq, poss_dup, Some(35), 1, now, &mut emit)?;
             return Ok(PollOutcome::Suppressed);
@@ -764,6 +761,14 @@ fn journal_write(
 /// [`SessionCustomizer`] injected. That is deliberate: the outbound archive
 /// matches the wire byte-for-byte, which is worth more than redacting
 /// credentials from a journal that is already local to the box.
+///
+/// # Errors
+///
+/// [`Error::MessageTooLarge`] if the encode did not fit the writer — the state
+/// machine has already bumped the outbound seqnum by this point, so a silently
+/// dropped message would leave the session wedged until a logon or heartbeat
+/// timeout reported a cause pointing away from the encode. The error surfaces
+/// instead. Nothing is committed or journaled in that case.
 fn store_admin<D: FixDictionary, C: SessionCustomizer>(
     admin: AdminMsg,
     writer: &mut MessageWriter<D, C>,
@@ -781,11 +786,12 @@ fn store_admin<D: FixDictionary, C: SessionCustomizer>(
         | AdminMsg::Reject { seq, .. } => seq,
     };
     let before = writer.inner.data().len();
-    writer.encode_admin(admin, config);
+    writer.encode_admin(admin, config)?;
     let frame = &writer.inner.data()[before..];
-    if !frame.is_empty() {
-        journal_write(frame.len(), || journal.store(seq, frame))?;
-    }
+    // `encode_admin` committed a whole framed message or returned above — an
+    // empty frame here is not a legitimate state, it would mean a silent drop.
+    debug_assert!(!frame.is_empty(), "encode_admin returned Ok with no frame");
+    journal_write(frame.len(), || journal.store(seq, frame))?;
     Ok(())
 }
 
@@ -1525,6 +1531,91 @@ mod tests {
             other => {
                 panic!("malformed admin must return Protocol(MalformedMessage), got {other:?}")
             }
+        }
+    }
+
+    /// Build a well-framed, comp-id-valid frame that is MISSING `MsgType(35)` at
+    /// `seq`. `FrameFormatter` always writes 35, so the frame is assembled by
+    /// hand and framed with the codec's own checksum helper. It frames cleanly
+    /// (8/9/10 valid) but trips `process_frame`'s missing-tag-35 reject path.
+    fn peer_frame_without_msg_type(seq: u32, out: &mut [u8]) -> usize {
+        let push = |b: &mut Vec<u8>, tag: &[u8], val: &[u8]| {
+            b.extend_from_slice(tag);
+            b.push(b'=');
+            b.extend_from_slice(val);
+            b.push(0x01);
+        };
+
+        // Body: everything the BodyLength counts — no 35.
+        let mut body = Vec::new();
+        let seq_s = seq.to_string();
+        push(&mut body, b"34", seq_s.as_bytes());
+        push(&mut body, b"49", peer_id().as_bytes()); // peer is the SENDER
+        push(&mut body, b"56", our_id().as_bytes());
+        push(&mut body, b"52", b"20260615-12:00:00.000");
+
+        let mut msg = Vec::new();
+        push(&mut msg, b"8", b"FIX.4.4");
+        let bl = body.len().to_string();
+        push(&mut msg, b"9", bl.as_bytes());
+        msg.extend_from_slice(&body);
+        // Checksum covers 8=… through the end of the body (before 10=).
+        let sum = checksum(&msg);
+        push(&mut msg, b"10", &format_checksum(sum));
+
+        out[..msg.len()].copy_from_slice(&msg);
+        msg.len()
+    }
+
+    /// The non-journaling `encode_admin` caller: `process_frame`'s missing-tag-35
+    /// path emits a Reject through an encode-only closure (no `store_admin`). If
+    /// that Reject does not fit the writer, the failure must surface — not be
+    /// swallowed into `Ok`, which would leave the peer's malformed frame silently
+    /// unanswered. A deliberately tiny writer forces the Reject encode to fail.
+    #[test]
+    fn missing_msg_type_reject_encode_overflow_surfaces_error() {
+        let dir = tmp_dir("missing35_overflow");
+        let now = Instant::now();
+
+        let reader = MessageReader::with_frame_reader(FrameReader::builder().build());
+        // 40 bytes cannot hold a Reject frame (~70+ bytes), so the encode-only
+        // reject closure fails and must propagate the error out of `poll`.
+        let writer =
+            MessageWriter::with_frame_writer(FrameWriter::builder().buffer_capacity(40).build());
+        let mut state = SessionState::new(Duration::from_secs(30));
+        // Establish on the raw state (drop_emit) so the opening Logon never
+        // touches the tiny writer; the session starts Active with a pristine,
+        // empty buffer and `next_inbound == 2`. The reject is only emitted from
+        // Active/Resending/LogoutPending, so the session must be past the
+        // handshake for the missing-35 path to actually encode a Reject.
+        establish_state(&mut state, now);
+
+        let journal = FixJournal::open(dir.path(), 0, 256).unwrap();
+        let mut session: FixSession<MockDict> = FixSession::from_buffers(
+            reader,
+            writer,
+            state,
+            SessionConfig {
+                sender: our_id(),
+                target: peer_id(),
+            },
+            journal,
+        );
+
+        // Inbound seq 2 matches `next_inbound`, so `validate_seq` proceeds to the
+        // reject emit rather than gap-filling or disconnecting.
+        let mut buf = vec![0u8; 256];
+        let len = peer_frame_without_msg_type(2, &mut buf);
+        let spare = session.read_spare();
+        spare[..len].copy_from_slice(&buf[..len]);
+        session.read_filled(len);
+
+        match session.poll(now) {
+            Err(super::Error::MessageTooLarge(_)) => {}
+            other => panic!(
+                "missing-tag-35 reject that overflows the writer must surface \
+                 MessageTooLarge, got {other:?}"
+            ),
         }
     }
 

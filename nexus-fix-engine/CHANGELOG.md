@@ -29,6 +29,15 @@ contained.
   stamped — so a venue can sign over it — and before `finish()` computes
   `BodyLength(9)`/`CheckSum(10)` — so injected fields are covered by both.
 
+  `MessageWriter::encode_admin` now returns `Result<(), Error>` (previously it
+  returned nothing). A hook that overflows the writer — an oversized
+  `RawData(96)` or a too-small buffer — poisons the frame, and the encode now
+  surfaces `Error::MessageTooLarge` instead of silently committing nothing.
+  Without this, the outbound seqnum had already been bumped and the state moved
+  on, so the session wedged until a logon/heartbeat timeout reported a cause
+  that pointed away from the encode. `store_admin` and the missing-tag-35 reject
+  path both propagate the error; nothing is committed or journaled on failure.
+
   Note: `store_admin` journals the encoded frame, so hook-injected fields
   (including a plaintext `Password(554)`) land in the outbound journal. This is
   deliberate: the journal is local to the box, and an archive that matches the

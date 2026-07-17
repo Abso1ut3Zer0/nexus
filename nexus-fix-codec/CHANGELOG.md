@@ -28,9 +28,15 @@ contained.
   leak Logon credentials into every Heartbeat — the miswiring QuickFIX's single
   undifferentiated `toAdmin` forces callers to hand-guard against.
 
-  Writing an engine-owned tag (8, 9, 10, 34, 35, 49, 52, 56) from a hook trips a
-  `debug_assert`: it is a programming error in expert-authored, once-per-venue
-  code, and the failure is immediate and loud on the wire.
+  Writing an engine-owned tag from a hook trips a `debug_assert`: it is a
+  programming error in expert-authored, once-per-venue code, and the failure is
+  immediate and loud on the wire. The check is **per message** (via the new
+  `AdminKind`, which also single-sources each message's `MsgType(35)`): the
+  session framing and header it stamps on every admin (8, 9, 10, 34, 35, 49, 52,
+  56) plus the params that message's own encoder writes — `108` on a Logon,
+  `141` on a Logon carrying `ResetSeqNumFlag`, `7`/`16` on a ResendRequest, and
+  so on. A tag the engine owns on one message is the venue's to write on another
+  (`108` is engine-owned on a Logon, writable on a Heartbeat).
 
 - `FieldSpan` and `GroupSpan` zero-copy field reference types
 - SIMD SOH and `=` scanning: AVX-512, AVX2, SSE2, SWAR, scalar
