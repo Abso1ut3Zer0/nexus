@@ -102,6 +102,7 @@ Each crate is small, focused, and honest about its constraints. No kitchen sinks
 | Crate | Description |
 |-------|-------------|
 | [**nexus-net**](./nexus-net) | Low-latency networking primitives: buffers (`ReadBuf`, `WriteBuf`), TLS codec (rustls), wire abstractions (`WireStream`, `ParserSink`), `MaybeTls` transport. Foundation for nexus-web and nexus-async-web. |
+| [**nexus-net-tokio**](./nexus-net-tokio) | Tokio async wire transport for nexus-net: `AsyncReadAdapter<S>` (wraps `tokio::io::AsyncRead + AsyncWrite` as a `WireStream`) and async `MaybeTls` (transparent plaintext/TLS). Keeps nexus-net runtime-free; shared by nexus-async-web and nexus-async-fix-engine. |
 | [**nexus-web**](./nexus-web) | Sans-IO WebSocket (RFC 6455), HTTP/1.1, and REST primitives. Zero-copy, SIMD-accelerated. 3x faster than tungstenite, 3x faster than reqwest. Typestate request builder, chunked transfer encoding, connection poisoning. 517/517 Autobahn + 16/16 httpbin conformance. |
 | [**nexus-async-web**](./nexus-async-web) | Async adapters for nexus-web. Tokio-compatible. WebSocket `WsReader`/`WsWriter`, HTTP `HttpConnection<S>`, and `ClientPool`/`AtomicClientPool` with self-healing reconnect. `try_acquire` (fast path) and `acquire` (patient path with backoff). 3.5x faster than tokio-tungstenite ([benchmarks](./nexus-async-web/BENCHMARKS.md)). |
 

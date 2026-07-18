@@ -2,6 +2,7 @@
 name = "nexus-net-tokio"
 version = "0.1.0"
 description = "Tokio async wire transport for nexus-net: AsyncReadAdapter and async MaybeTls."
+readme = "README.md"
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true

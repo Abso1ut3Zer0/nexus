@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Internal
+
+- `AsyncReadAdapter` and the async `MaybeTls` moved to the new `nexus-net-tokio`
+  crate and are re-exported here; public paths
+  (`nexus_async_web::AsyncReadAdapter`, `nexus_async_web::maybe_tls::MaybeTls`)
+  are unchanged. The `wire` module is now gated behind the experimental `nexus`
+  feature (it holds only the nexus-async-rt adapter).
+
 ## [0.10.0] — 2026-06-02
 
 Renamed from `nexus-async-net` to `nexus-async-web`. Protocol types
