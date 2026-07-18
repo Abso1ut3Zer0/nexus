@@ -13,7 +13,7 @@ use std::pin::Pin;
 use std::task::{Context, Poll};
 use std::time::{Duration, Instant};
 
-use nexus_async_fix_engine::{Error as TransportError, FixConnection};
+use nexus_async_fix_engine::{AsyncReadAdapter, Error as TransportError, FixConnection};
 use nexus_fix_codec::{
     FieldView, FixAdminMsg, FixDictionary, FixHeader, FixTimestamp, FrameFormatter,
     encode_fix_uint, find_tag,
@@ -208,9 +208,9 @@ async fn frame_exceeding_reader_buffer_is_message_too_large_not_disconnect() {
     );
 
     let stream = ChunkStream::new(&frame);
-    let mut conn: FixConnection<ChunkStream, MockDict> =
+    let mut conn: FixConnection<AsyncReadAdapter<ChunkStream>, MockDict> =
         FixConnection::builder().reader_capacity(READER_CAP).accept(
-            stream,
+            AsyncReadAdapter::new(stream),
             SessionState::new(Duration::from_secs(30)),
             SessionConfig {
                 sender: target(),

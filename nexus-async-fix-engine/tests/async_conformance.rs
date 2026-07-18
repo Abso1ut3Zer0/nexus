@@ -5,7 +5,7 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
 
-use nexus_async_fix_engine::FixConnection;
+use nexus_async_fix_engine::{AsyncReadAdapter, FixConnection};
 use nexus_fix_codec::{
     FieldView, FixAdminMsg, FixDictionary, FixHeader, FixTimestamp, FrameFormatter,
     encode_fix_uint, find_tag,
@@ -140,10 +140,10 @@ fn spawn_peer(scenario: &str) -> (std::process::Child, u16) {
     (child, port)
 }
 
-async fn connect(port: u16, dir: &Path) -> FixConnection<TcpStream, MockDict> {
+async fn connect(port: u16, dir: &Path) -> FixConnection<AsyncReadAdapter<TcpStream>, MockDict> {
     let stream = TcpStream::connect(("127.0.0.1", port)).await.unwrap();
     FixConnection::from_parts(
-        stream,
+        AsyncReadAdapter::new(stream),
         SessionState::new(Duration::from_secs(30)),
         SessionConfig {
             sender: CompId::new(b"ENGINE").unwrap(),
@@ -153,7 +153,9 @@ async fn connect(port: u16, dir: &Path) -> FixConnection<TcpStream, MockDict> {
     )
 }
 
-async fn drive(conn: &mut FixConnection<TcpStream, MockDict>) -> DisconnectReason {
+async fn drive(
+    conn: &mut FixConnection<AsyncReadAdapter<TcpStream>, MockDict>,
+) -> DisconnectReason {
     loop {
         if let Some(Message::Disconnected { reason }) = conn.recv(Instant::now()).await.unwrap() {
             return reason;

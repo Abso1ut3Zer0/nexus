@@ -152,6 +152,22 @@ pub struct FixSession<D: FixDictionary, C = NoCustomizer> {
     pending: Control,
 }
 
+/// Lets a [`nexus_net::WireStream`] transport fill the session's inbound buffer
+/// directly (`poll_fill_into(&mut session, …)`), skipping the intermediate
+/// `&mut [u8]` copy. Forwards to the existing byte seam:
+/// [`read_spare`](FixSession::read_spare) / [`read_filled`](FixSession::read_filled).
+impl<D: FixDictionary, C: SessionCustomizer> nexus_net::ParserSink for FixSession<D, C> {
+    #[inline]
+    fn spare(&mut self) -> &mut [u8] {
+        self.read_spare()
+    }
+
+    #[inline]
+    fn filled(&mut self, n: usize) {
+        self.read_filled(n);
+    }
+}
+
 impl<D: FixDictionary> FixSession<D, NoCustomizer> {
     /// Builds a session with default (empty) frame buffers. Prefer
     /// [`from_buffers`](Self::from_buffers) to size the reader/writer up front.

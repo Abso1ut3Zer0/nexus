@@ -12,10 +12,18 @@ categories = ["network-programming", "finance", "asynchronous"]
 [lints]
 workspace = true
 
+[features]
+default = []
+# Transparent TLS via the async `MaybeTls` transport (`connect_tls`).
+tls = ["dep:tokio-rustls", "nexus-net/tls", "nexus-net-tokio/tls"]
+
 [dependencies]
 nexus-fix-engine = { path = "../nexus-fix-engine" }
 nexus-fix-codec = { path = "../nexus-fix-codec" }
-tokio = { version = "1", features = ["io-util", "net", "rt", "time"] }
+nexus-net = { path = "../nexus-net" }
+nexus-net-tokio = { path = "../nexus-net-tokio" }
+tokio = { version = "1", features = ["net", "rt", "time"] }
+tokio-rustls = { version = "0.26", optional = true }
 
 [dev-dependencies]
 tokio = { version = "1", features = ["rt-multi-thread", "macros"] }

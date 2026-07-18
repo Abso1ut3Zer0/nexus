@@ -29,6 +29,7 @@ members = [
 	"nexus-notify",
 	"nexus-decimal",
 	"nexus-net",
+	"nexus-net-tokio",
 	"nexus-web",
 	"nexus-async-web",
 	"nexus-collections",

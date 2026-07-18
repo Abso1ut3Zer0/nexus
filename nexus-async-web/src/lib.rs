@@ -52,11 +52,14 @@ compile_error!("features `tokio-rt` and `nexus` are mutually exclusive — pick 
 #[doc(hidden)]
 pub mod maybe_tls;
 pub mod rest;
+#[cfg(feature = "nexus")]
 mod wire;
 pub mod ws;
 
+// The tokio adapter now lives in the `nexus-net-tokio` crate; re-export
+// it so the `nexus_async_web::AsyncReadAdapter` path is unchanged.
 #[cfg(feature = "tokio-rt")]
-pub use wire::AsyncReadAdapter;
+pub use nexus_net_tokio::AsyncReadAdapter;
 #[cfg(feature = "nexus")]
 pub use wire::NexusAsyncReadAdapter;
 
