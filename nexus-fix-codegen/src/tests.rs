@@ -74,7 +74,9 @@ fn emits_generated_header_decoder() {
     let h = file(&files, "header.rs");
     assert!(h.contains("pub struct HeaderDecoder<'buf>"));
     assert!(h.contains("pub fn decode(buf: &'buf [u8]) -> Self"));
-    assert!(h.contains("pub fn msg_type(&self) -> Option<super::MsgType>"));
+    assert!(h.contains(
+        "pub fn msg_type(&self) -> Result<super::MsgType, nexus_fix_codec::UnknownMsgType<'buf>>"
+    ));
     assert!(h.contains("impl<'buf> nexus_fix_codec::FixHeader<'buf> for HeaderDecoder<'buf>"));
     assert!(h.contains("fn raw_msg_type(&self)"));
     assert!(h.contains("fn msg_seq_num(&self)"));

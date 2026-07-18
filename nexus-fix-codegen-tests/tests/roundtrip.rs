@@ -271,7 +271,7 @@ fn alpha_header_fields_absent() {
     let msg = b"11=ORD1\x0155=X\x01";
     let m = venue_alpha::messages::NewOrderSingle::decode(msg).unwrap();
     assert!(m.header().begin_string().is_none());
-    assert!(m.header().msg_type().is_none());
+    assert!(m.header().msg_type().is_err());
     assert_eq!(m.cl_ord_id().unwrap().as_bytes(), &b"ORD1"[..]);
 }
 

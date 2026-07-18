@@ -44,7 +44,7 @@ pub use admin::{
 };
 pub use customizer::{AdminMsgOut, NoCustomizer, SessionCustomizer};
 pub use dict::{AdminHeader, FixAdminMsg, FixDictionary, FixHeader};
-pub use error::{ChecksumError, DecodeError, EncodeError, FixValueError};
+pub use error::{ChecksumError, DecodeError, EncodeError, FixValueError, UnknownMsgType};
 pub use field::{FieldView, FromFixValue};
 pub use nexus_ascii::{AsciiChar, AsciiText, AsciiTextStr};
 pub use reader::{FieldReader, RawField, checksum, find_tag, parse_tag, validate_checksum};
