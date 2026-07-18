@@ -1,8 +1,10 @@
 mod event;
+mod input;
 
 use std::time::{Duration, Instant};
 
 pub use event::{Control, DisconnectReason, State};
+pub use input::*;
 use nexus_fix_codec::{
     AdminEncode, Heartbeat, Logon, LogonReset, Logout, Reject, ResendRequest, TestRequest,
 };
@@ -331,13 +333,16 @@ impl SessionState {
     /// Emits: Logon | LogonReset | Logout | ResendRequest.
     pub fn on_logon<E: Emit>(
         &mut self,
-        seq: u32,
-        heart_bt_int_s: u32,
-        reset_seq_num: bool,
-        send_reply: bool,
+        msg: LogonIn,
         now: Instant,
         emitter: &mut E,
     ) -> Result<Control, E::Error> {
+        let LogonIn {
+            seq,
+            heart_bt_int_s,
+            is_reset_seq_num,
+            send_reply,
+        } = msg;
         // Acceptor sends its own Logon reply; the initiator receives an ack.
         // `acknowledged` is the mirror of `send_reply`.
         let acknowledged = !send_reply;
@@ -346,7 +351,7 @@ impl SessionState {
 
         // Reset ack: we initiated the reset and peer is confirming.
         if self.state == State::AwaitingResetAck {
-            if !reset_seq_num || seq != 1 {
+            if !is_reset_seq_num || seq != 1 {
                 return Ok(self.disconnect(DisconnectReason::ProtocolViolation));
             }
             self.hb = Duration::from_secs(u64::from(heart_bt_int_s));
@@ -357,7 +362,7 @@ impl SessionState {
         }
 
         // Peer-initiated reset while we are active.
-        if matches!(self.state, State::Active | State::Resending) && reset_seq_num {
+        if matches!(self.state, State::Active | State::Resending) && is_reset_seq_num {
             if seq != 1 {
                 return Ok(self.disconnect(DisconnectReason::ProtocolViolation));
             }
@@ -383,7 +388,7 @@ impl SessionState {
             return Ok(Control::Logon { acknowledged });
         }
 
-        if reset_seq_num {
+        if is_reset_seq_num {
             self.next_inbound = 1;
             if send_reply {
                 self.next_outbound = 1;
@@ -393,7 +398,7 @@ impl SessionState {
 
         if send_reply {
             let reply_seq = seq!(self, now);
-            if reset_seq_num {
+            if is_reset_seq_num {
                 emitter.emit(LogonReset {
                     seq: reply_seq,
                     heart_bt_int_s,
@@ -432,11 +437,11 @@ impl SessionState {
     /// Emits (some via `validate_seq`): ResendRequest | Logout.
     pub fn on_logout<E: Emit>(
         &mut self,
-        seq: u32,
-        poss_dup: bool,
+        msg: LogoutIn,
         now: Instant,
         emitter: &mut E,
     ) -> Result<Control, E::Error> {
+        let LogoutIn { seq, is_poss_dup } = msg;
         self.last_received = Some(now);
         self.test_request_sent = None;
         if self.state == State::LogonSent {
@@ -446,7 +451,7 @@ impl SessionState {
             self.state,
             State::Active | State::Resending | State::LogoutPending
         ) {
-            match self.validate_seq(seq, poss_dup, now, emitter)? {
+            match self.validate_seq(seq, is_poss_dup, now, emitter)? {
                 // In-sequence Logout: complete the exchange and disconnect.
                 Control::Proceed => {
                     if self.state != State::LogoutPending {
@@ -471,12 +476,15 @@ impl SessionState {
     /// Emits (some via `validate_seq`): LogonReset | ResendRequest | Logout.
     pub fn on_heartbeat<E: Emit>(
         &mut self,
-        seq: u32,
-        poss_dup: bool,
-        echo_id: Option<u64>,
+        msg: HeartbeatIn,
         now: Instant,
         emitter: &mut E,
     ) -> Result<Control, E::Error> {
+        let HeartbeatIn {
+            echo_id,
+            seq,
+            is_poss_dup,
+        } = msg;
         self.last_received = Some(now);
         self.test_request_sent = None;
 
@@ -496,7 +504,7 @@ impl SessionState {
                 return Ok(Control::Heartbeat);
             }
             // Not the drain confirm: validate sequence normally.
-            match self.validate_seq(seq, poss_dup, now, emitter)? {
+            match self.validate_seq(seq, is_poss_dup, now, emitter)? {
                 Control::Proceed => self.check_resend_done(),
                 // Gap/duplicate: suppressed, not surfaced.
                 ctrl => return Ok(ctrl),
@@ -510,7 +518,7 @@ impl SessionState {
         ) {
             return Ok(Control::Heartbeat);
         }
-        match self.validate_seq(seq, poss_dup, now, emitter)? {
+        match self.validate_seq(seq, is_poss_dup, now, emitter)? {
             Control::Proceed => self.check_resend_done(),
             // Gap/duplicate: suppressed, not surfaced.
             ctrl => return Ok(ctrl),
@@ -523,12 +531,15 @@ impl SessionState {
     /// Emits (some via `validate_seq`): Heartbeat | ResendRequest | Logout.
     pub fn on_test_request<E: Emit>(
         &mut self,
-        seq: u32,
-        poss_dup: bool,
-        test_req_id: &[u8],
+        msg: TestRequestIn<'_>,
         now: Instant,
         emitter: &mut E,
     ) -> Result<Control, E::Error> {
+        let TestRequestIn {
+            test_req_id,
+            seq,
+            is_poss_dup,
+        } = msg;
         if !matches!(
             self.state,
             State::Active
@@ -541,7 +552,7 @@ impl SessionState {
         }
         self.last_received = Some(now);
         self.test_request_sent = None;
-        match self.validate_seq(seq, poss_dup, now, emitter)? {
+        match self.validate_seq(seq, is_poss_dup, now, emitter)? {
             // In-sequence only: reply with the echoing Heartbeat. A gap/dup must
             // not trigger a Heartbeat reply — it is a recovery event.
             Control::Proceed => {
@@ -567,11 +578,11 @@ impl SessionState {
     /// Emits (via `validate_seq`): ResendRequest | Logout.
     pub fn on_resend_request<E: Emit>(
         &mut self,
-        seq: u32,
-        poss_dup: bool,
+        msg: ResendRequestIn,
         now: Instant,
         emitter: &mut E,
     ) -> Result<Control, E::Error> {
+        let ResendRequestIn { seq, is_poss_dup } = msg;
         if !matches!(
             self.state,
             State::Active | State::Resending | State::LogoutPending
@@ -580,7 +591,7 @@ impl SessionState {
         }
         self.last_received = Some(now);
         self.test_request_sent = None;
-        match self.validate_seq(seq, poss_dup, now, emitter)? {
+        match self.validate_seq(seq, is_poss_dup, now, emitter)? {
             Control::Proceed => {
                 self.check_resend_done();
                 Ok(Control::ResendRequest)
@@ -592,20 +603,23 @@ impl SessionState {
 
     /// Handles a received SequenceReset or GapFill.
     ///
-    /// `gap_fill = false` is Reset mode: ignores `MsgSeqNum`, sets
-    /// `next_inbound` to `new_seq`. `gap_fill = true` is GapFill mode:
+    /// `is_gap_fill = false` is Reset mode: ignores `MsgSeqNum`, sets
+    /// `next_inbound` to `new_seq`. `is_gap_fill = true` is GapFill mode:
     /// validates sequence, advances `next_inbound` to `new_seq`.
     ///
     /// Emits (some via `validate_seq`): Reject | ResendRequest | Logout.
     pub fn on_sequence_reset<E: Emit>(
         &mut self,
-        seq: u32,
-        poss_dup: bool,
-        new_seq: u32,
-        gap_fill: bool,
+        msg: SequenceResetIn,
         now: Instant,
         emitter: &mut E,
     ) -> Result<Control, E::Error> {
+        let SequenceResetIn {
+            seq,
+            new_seq,
+            is_poss_dup,
+            is_gap_fill,
+        } = msg;
         if !matches!(
             self.state,
             State::Active | State::Resending | State::LogoutPending
@@ -614,12 +628,12 @@ impl SessionState {
         }
         self.last_received = Some(now);
         self.test_request_sent = None;
-        if gap_fill {
+        if is_gap_fill {
             // Honor the frame's PossDupFlag: a below-expected GapFill carrying
             // PossDup=Y is a benign duplicate (the overlapping-ResendRequest
             // race) — discarded, not a disconnect (FIX 4.4 / QuickFIX). Without
             // PossDup it is a genuine too-low error.
-            match self.validate_seq(seq, poss_dup, now, emitter)? {
+            match self.validate_seq(seq, is_poss_dup, now, emitter)? {
                 // In-sequence GapFill only: advance next_inbound to NewSeqNo. A
                 // gap/dup must not advance — it is a recovery event.
                 Control::Proceed => {
@@ -655,11 +669,11 @@ impl SessionState {
     /// Emits (via `validate_seq`): ResendRequest | Logout.
     pub fn on_reject<E: Emit>(
         &mut self,
-        seq: u32,
-        poss_dup: bool,
+        msg: RejectIn,
         now: Instant,
         emitter: &mut E,
     ) -> Result<Control, E::Error> {
+        let RejectIn { seq, is_poss_dup } = msg;
         if !matches!(
             self.state,
             State::Active | State::Resending | State::LogoutPending
@@ -668,7 +682,7 @@ impl SessionState {
         }
         self.last_received = Some(now);
         self.test_request_sent = None;
-        match self.validate_seq(seq, poss_dup, now, emitter)? {
+        match self.validate_seq(seq, is_poss_dup, now, emitter)? {
             Control::Proceed => self.check_resend_done(),
             // Gap/duplicate: suppressed, not surfaced.
             ctrl => return Ok(ctrl),
@@ -684,11 +698,11 @@ impl SessionState {
     /// Emits (via `validate_seq`): ResendRequest | Logout.
     pub fn on_app<E: Emit>(
         &mut self,
-        seq: u32,
-        poss_dup: bool,
+        msg: AppIn,
         now: Instant,
         emitter: &mut E,
     ) -> Result<Control, E::Error> {
+        let AppIn { seq, is_poss_dup } = msg;
         if !matches!(
             self.state,
             State::Active
@@ -701,7 +715,7 @@ impl SessionState {
         }
         self.last_received = Some(now);
         self.test_request_sent = None;
-        match self.validate_seq(seq, poss_dup, now, emitter)? {
+        match self.validate_seq(seq, is_poss_dup, now, emitter)? {
             Control::Proceed => {}
             ctrl => return Ok(ctrl),
         }
@@ -711,19 +725,23 @@ impl SessionState {
 
     /// Sends a session-level Reject (35=3) for a received message that cannot be processed.
     ///
-    /// Validates sequence then sends a Reject for `inbound_seq`. A gap sends ResendRequest instead.
+    /// Validates sequence then sends a Reject for the rejected message's `seq`. A
+    /// gap sends ResendRequest instead.
     /// The session remains alive. No-op if the session is not in an active state.
     ///
     /// Emits (some via `validate_seq`): Reject | ResendRequest | Logout.
     pub fn on_reject_inbound<E: Emit>(
         &mut self,
-        inbound_seq: u32,
-        poss_dup: bool,
-        ref_tag_id: Option<u32>,
-        session_reject_reason: u8,
+        msg: RejectInboundIn,
         now: Instant,
         emitter: &mut E,
     ) -> Result<Control, E::Error> {
+        let RejectInboundIn {
+            seq,
+            ref_tag_id,
+            session_reject_reason,
+            is_poss_dup,
+        } = msg;
         if !matches!(
             self.state,
             State::Active | State::Resending | State::LogoutPending
@@ -732,14 +750,16 @@ impl SessionState {
         }
         self.last_received = Some(now);
         self.test_request_sent = None;
-        match self.validate_seq(inbound_seq, poss_dup, now, emitter)? {
+        match self.validate_seq(seq, is_poss_dup, now, emitter)? {
             Control::Proceed => {}
             ctrl => return Ok(ctrl),
         }
-        let seq = seq!(self, now);
+        // `seq` is the rejected inbound message's seqnum (`RefSeqNum`); the Reject
+        // we send carries its own freshly allocated outbound seqnum.
+        let reject_seq = seq!(self, now);
         emitter.emit(Reject {
-            seq,
-            ref_seq_num: inbound_seq,
+            seq: reject_seq,
+            ref_seq_num: seq,
             ref_tag_id,
             session_reject_reason,
         })?;
@@ -967,7 +987,17 @@ mod tests {
     fn establish(s: &mut SessionState, now: Instant) {
         let mut recorder = RecordingEmitter::new();
         s.connect(now, &mut recorder).unwrap();
-        s.on_logon(1, 30, false, false, now, &mut recorder).unwrap();
+        s.on_logon(
+            LogonIn {
+                seq: 1,
+                heart_bt_int_s: 30,
+                is_reset_seq_num: false,
+                send_reply: false,
+            },
+            now,
+            &mut recorder,
+        )
+        .unwrap();
     }
 
     #[test]
@@ -1000,8 +1030,15 @@ mod tests {
         let now = Instant::now();
         establish(&mut s, now);
         s.allocate_seq(now).unwrap();
-        s.on_logout(2, false, now, &mut RecordingEmitter::new())
-            .unwrap();
+        s.on_logout(
+            LogoutIn {
+                seq: 2,
+                is_poss_dup: false,
+            },
+            now,
+            &mut RecordingEmitter::new(),
+        )
+        .unwrap();
         assert_eq!(s.state(), State::Disconnected);
         let mut recorder = RecordingEmitter::new();
         s.connect_reset(now, &mut recorder).unwrap();
@@ -1064,14 +1101,31 @@ mod tests {
 
         // Non-drain heartbeat: wrong echo — drain NOT triggered.
         recorder.clear();
-        s.on_heartbeat(2, false, None, now, &mut recorder).unwrap();
+        s.on_heartbeat(
+            HeartbeatIn {
+                echo_id: None,
+                seq: 2,
+                is_poss_dup: false,
+            },
+            now,
+            &mut recorder,
+        )
+        .unwrap();
         assert_eq!(s.state(), State::AwaitingResetDrain);
         assert_eq!(recorder.len(), 0);
 
         // Drain heartbeat: correct echo + seq in order → sends LogonReset(seq=1), → AwaitingResetAck.
         recorder.clear();
-        s.on_heartbeat(3, false, Some(1), now, &mut recorder)
-            .unwrap();
+        s.on_heartbeat(
+            HeartbeatIn {
+                echo_id: Some(1),
+                seq: 3,
+                is_poss_dup: false,
+            },
+            now,
+            &mut recorder,
+        )
+        .unwrap();
         assert_eq!(s.state(), State::AwaitingResetAck);
         assert_eq!(s.next_outbound_seq(), 2); // LogonReset consumed seq 1
         assert_eq!(recorder.len(), 1);
@@ -1081,7 +1135,18 @@ mod tests {
 
         // Peer acks with Logon(141=Y, seq=1): reset complete, → Active.
         recorder.clear();
-        let ctrl = s.on_logon(1, 30, true, false, now, &mut recorder).unwrap();
+        let ctrl = s
+            .on_logon(
+                LogonIn {
+                    seq: 1,
+                    heart_bt_int_s: 30,
+                    is_reset_seq_num: true,
+                    send_reply: false,
+                },
+                now,
+                &mut recorder,
+            )
+            .unwrap();
         assert_eq!(s.state(), State::Active);
         assert_eq!(s.next_inbound_seq(), 2);
         assert_eq!(ctrl, Control::Logon { acknowledged: true });
@@ -1100,7 +1165,16 @@ mod tests {
 
         // App message arrives with old inbound seq while draining.
         recorder.clear();
-        let ctrl = s.on_app(2, false, now, &mut recorder).unwrap();
+        let ctrl = s
+            .on_app(
+                AppIn {
+                    seq: 2,
+                    is_poss_dup: false,
+                },
+                now,
+                &mut recorder,
+            )
+            .unwrap();
         assert_eq!(ctrl, Control::Application);
         assert_eq!(s.next_inbound_seq(), 3);
         assert_eq!(s.state(), State::AwaitingResetDrain);
@@ -1116,7 +1190,18 @@ mod tests {
 
         // Peer sends Logon(141=Y, seq=1) while we are Active.
         let mut recorder = RecordingEmitter::new();
-        let ctrl = s.on_logon(1, 30, true, true, now, &mut recorder).unwrap();
+        let ctrl = s
+            .on_logon(
+                LogonIn {
+                    seq: 1,
+                    heart_bt_int_s: 30,
+                    is_reset_seq_num: true,
+                    send_reply: true,
+                },
+                now,
+                &mut recorder,
+            )
+            .unwrap();
         assert_eq!(s.state(), State::Active);
         assert_eq!(s.next_outbound_seq(), 2); // reply Logon consumed seq 1
         assert_eq!(s.next_inbound_seq(), 2);
@@ -1141,11 +1226,30 @@ mod tests {
         establish(&mut s, now);
         let mut recorder = RecordingEmitter::new();
         s.reset_sequence(now, &mut recorder).unwrap();
-        s.on_heartbeat(2, false, Some(1), now, &mut recorder)
-            .unwrap(); // → AwaitingResetAck
+        s.on_heartbeat(
+            HeartbeatIn {
+                echo_id: Some(1),
+                seq: 2,
+                is_poss_dup: false,
+            },
+            now,
+            &mut recorder,
+        )
+        .unwrap(); // → AwaitingResetAck
 
         // Peer replies without 141=Y.
-        let ctrl = s.on_logon(1, 30, false, false, now, &mut recorder).unwrap();
+        let ctrl = s
+            .on_logon(
+                LogonIn {
+                    seq: 1,
+                    heart_bt_int_s: 30,
+                    is_reset_seq_num: false,
+                    send_reply: false,
+                },
+                now,
+                &mut recorder,
+            )
+            .unwrap();
         assert_eq!(
             ctrl,
             Control::Disconnected {
@@ -1161,8 +1265,16 @@ mod tests {
         establish(&mut s, now);
         let mut recorder = RecordingEmitter::new();
         s.reset_sequence(now, &mut recorder).unwrap();
-        s.on_heartbeat(2, false, Some(1), now, &mut recorder)
-            .unwrap(); // → AwaitingResetAck
+        s.on_heartbeat(
+            HeartbeatIn {
+                echo_id: Some(1),
+                seq: 2,
+                is_poss_dup: false,
+            },
+            now,
+            &mut recorder,
+        )
+        .unwrap(); // → AwaitingResetAck
         let ctrl = s
             .on_timeout(now + Duration::from_secs(31), &mut recorder)
             .unwrap();
@@ -1181,7 +1293,16 @@ mod tests {
         establish(&mut s, now);
         let mut recorder = RecordingEmitter::new();
         let ctrl = s
-            .on_sequence_reset(100, false, 1, false, now, &mut recorder)
+            .on_sequence_reset(
+                SequenceResetIn {
+                    seq: 100,
+                    new_seq: 1,
+                    is_poss_dup: false,
+                    is_gap_fill: false,
+                },
+                now,
+                &mut recorder,
+            )
             .unwrap();
         assert_eq!(ctrl, Control::SequenceReset);
         assert_eq!(recorder.len(), 1);
@@ -1199,8 +1320,17 @@ mod tests {
         let now = Instant::now();
         establish(&mut s, now);
         let mut recorder = RecordingEmitter::new();
-        s.on_reject_inbound(2, false, Some(35), 1, now, &mut recorder)
-            .unwrap();
+        s.on_reject_inbound(
+            RejectInboundIn {
+                seq: 2,
+                ref_tag_id: Some(35),
+                session_reject_reason: 1,
+                is_poss_dup: false,
+            },
+            now,
+            &mut recorder,
+        )
+        .unwrap();
         assert_eq!(recorder.len(), 1);
         // Reject: RefSeqNum(45)=2, RefTagID(371)=35, SessionRejectReason(373)=1.
         assert_eq!(recorder.mt(0), b"3");
@@ -1216,8 +1346,17 @@ mod tests {
         let now = Instant::now();
         establish(&mut s, now);
         let mut recorder = RecordingEmitter::new();
-        s.on_reject_inbound(5, false, Some(35), 1, now, &mut recorder)
-            .unwrap();
+        s.on_reject_inbound(
+            RejectInboundIn {
+                seq: 5,
+                ref_tag_id: Some(35),
+                session_reject_reason: 1,
+                is_poss_dup: false,
+            },
+            now,
+            &mut recorder,
+        )
+        .unwrap();
         assert_eq!(recorder.len(), 1);
         // ResendRequest (35=2) with BeginSeqNo(7)=2.
         assert_eq!(recorder.mt(0), b"2", "expected ResendRequest");
@@ -1241,8 +1380,15 @@ mod tests {
     /// seq 2, so a later `seq 2` PossDup frame is a genuine duplicate (< 3).
     fn consume_seq_2(s: &mut SessionState, now: Instant) {
         assert_eq!(
-            s.on_app(2, false, now, &mut RecordingEmitter::new())
-                .unwrap(),
+            s.on_app(
+                AppIn {
+                    seq: 2,
+                    is_poss_dup: false,
+                },
+                now,
+                &mut RecordingEmitter::new()
+            )
+            .unwrap(),
             Control::Application
         );
         assert_eq!(s.next_inbound_seq(), 3);
@@ -1255,7 +1401,17 @@ mod tests {
         establish(&mut s, now); // next_inbound = 2
         let mut recorder = RecordingEmitter::new();
         // seq 5 > 2: gap.
-        let ctrl = s.on_heartbeat(5, false, None, now, &mut recorder).unwrap();
+        let ctrl = s
+            .on_heartbeat(
+                HeartbeatIn {
+                    echo_id: None,
+                    seq: 5,
+                    is_poss_dup: false,
+                },
+                now,
+                &mut recorder,
+            )
+            .unwrap();
         assert_eq!(ctrl, Control::None, "gap Heartbeat must be suppressed");
         assert_eq!(recorder.len(), 1);
         assert_eq!(recorder.mt(0), b"2", "gap must emit a ResendRequest");
@@ -1271,7 +1427,17 @@ mod tests {
         consume_seq_2(&mut s, now); // next_inbound = 3
         let mut recorder = RecordingEmitter::new();
         // seq 2 < 3 with PossDup: duplicate.
-        let ctrl = s.on_heartbeat(2, true, None, now, &mut recorder).unwrap();
+        let ctrl = s
+            .on_heartbeat(
+                HeartbeatIn {
+                    echo_id: None,
+                    seq: 2,
+                    is_poss_dup: true,
+                },
+                now,
+                &mut recorder,
+            )
+            .unwrap();
         assert_eq!(
             ctrl,
             Control::None,
@@ -1287,7 +1453,17 @@ mod tests {
         let now = Instant::now();
         establish(&mut s, now);
         let mut recorder = RecordingEmitter::new();
-        let ctrl = s.on_heartbeat(2, false, None, now, &mut recorder).unwrap();
+        let ctrl = s
+            .on_heartbeat(
+                HeartbeatIn {
+                    echo_id: None,
+                    seq: 2,
+                    is_poss_dup: false,
+                },
+                now,
+                &mut recorder,
+            )
+            .unwrap();
         assert_eq!(ctrl, Control::Heartbeat);
         assert_eq!(recorder.len(), 0);
     }
@@ -1299,7 +1475,15 @@ mod tests {
         establish(&mut s, now);
         let mut recorder = RecordingEmitter::new();
         let ctrl = s
-            .on_test_request(5, false, b"PROBE", now, &mut recorder)
+            .on_test_request(
+                TestRequestIn {
+                    test_req_id: b"PROBE",
+                    seq: 5,
+                    is_poss_dup: false,
+                },
+                now,
+                &mut recorder,
+            )
             .unwrap();
         assert_eq!(ctrl, Control::None, "gap TestRequest must be suppressed");
         // A gap emits a ResendRequest and NOT the Heartbeat echo (which is
@@ -1321,7 +1505,15 @@ mod tests {
         consume_seq_2(&mut s, now); // next_inbound = 3
         let mut recorder = RecordingEmitter::new();
         let ctrl = s
-            .on_test_request(2, true, b"PROBE", now, &mut recorder)
+            .on_test_request(
+                TestRequestIn {
+                    test_req_id: b"PROBE",
+                    seq: 2,
+                    is_poss_dup: true,
+                },
+                now,
+                &mut recorder,
+            )
             .unwrap();
         assert_eq!(
             ctrl,
@@ -1342,7 +1534,16 @@ mod tests {
         let now = Instant::now();
         establish(&mut s, now);
         let mut recorder = RecordingEmitter::new();
-        let ctrl = s.on_reject(5, false, now, &mut recorder).unwrap();
+        let ctrl = s
+            .on_reject(
+                RejectIn {
+                    seq: 5,
+                    is_poss_dup: false,
+                },
+                now,
+                &mut recorder,
+            )
+            .unwrap();
         assert_eq!(ctrl, Control::None, "gap Reject must be suppressed");
         assert_eq!(recorder.len(), 1);
         assert_eq!(recorder.mt(0), b"2", "gap must emit ResendRequest");
@@ -1357,7 +1558,16 @@ mod tests {
         establish(&mut s, now);
         consume_seq_2(&mut s, now); // next_inbound = 3
         let mut recorder = RecordingEmitter::new();
-        let ctrl = s.on_reject(2, true, now, &mut recorder).unwrap();
+        let ctrl = s
+            .on_reject(
+                RejectIn {
+                    seq: 2,
+                    is_poss_dup: true,
+                },
+                now,
+                &mut recorder,
+            )
+            .unwrap();
         assert_eq!(ctrl, Control::None, "duplicate Reject must be suppressed");
         assert_eq!(recorder.len(), 0);
         assert_eq!(s.state(), State::Active);
@@ -1369,9 +1579,18 @@ mod tests {
         let now = Instant::now();
         establish(&mut s, now); // next_inbound = 2
         let mut recorder = RecordingEmitter::new();
-        // GapFill (gap_fill = true) at seq 5 > 2: out of sequence.
+        // GapFill (is_gap_fill = true) at seq 5 > 2: out of sequence.
         let ctrl = s
-            .on_sequence_reset(5, false, 9, true, now, &mut recorder)
+            .on_sequence_reset(
+                SequenceResetIn {
+                    seq: 5,
+                    new_seq: 9,
+                    is_poss_dup: false,
+                    is_gap_fill: true,
+                },
+                now,
+                &mut recorder,
+            )
             .unwrap();
         assert_eq!(
             ctrl,
@@ -1401,7 +1620,16 @@ mod tests {
         let mut recorder = RecordingEmitter::new();
         // seq 2 < 3, PossDup = true.
         let ctrl = s
-            .on_sequence_reset(2, true, 9, true, now, &mut recorder)
+            .on_sequence_reset(
+                SequenceResetIn {
+                    seq: 2,
+                    new_seq: 9,
+                    is_poss_dup: true,
+                    is_gap_fill: true,
+                },
+                now,
+                &mut recorder,
+            )
             .unwrap();
         assert_eq!(
             ctrl,
@@ -1425,7 +1653,16 @@ mod tests {
         let mut recorder = RecordingEmitter::new();
         // seq 2 < 3, PossDup = false.
         let ctrl = s
-            .on_sequence_reset(2, false, 9, true, now, &mut recorder)
+            .on_sequence_reset(
+                SequenceResetIn {
+                    seq: 2,
+                    new_seq: 9,
+                    is_poss_dup: false,
+                    is_gap_fill: true,
+                },
+                now,
+                &mut recorder,
+            )
             .unwrap();
         assert_eq!(
             ctrl,
@@ -1449,7 +1686,16 @@ mod tests {
         let mut recorder = RecordingEmitter::new();
         // In-sequence GapFill at seq 2 advancing to new_seq 7.
         let ctrl = s
-            .on_sequence_reset(2, false, 7, true, now, &mut recorder)
+            .on_sequence_reset(
+                SequenceResetIn {
+                    seq: 2,
+                    new_seq: 7,
+                    is_poss_dup: false,
+                    is_gap_fill: true,
+                },
+                now,
+                &mut recorder,
+            )
             .unwrap();
         assert_eq!(ctrl, Control::SequenceReset);
         assert_eq!(s.next_inbound_seq(), 7, "in-sequence GapFill advances");
@@ -1464,7 +1710,16 @@ mod tests {
         let mut recorder = RecordingEmitter::new();
         // seq 5 > 2: gap. A gap Logout must be suppressed (ResendRequest), NOT
         // treated as a logout exchange.
-        let ctrl = s.on_logout(5, false, now, &mut recorder).unwrap();
+        let ctrl = s
+            .on_logout(
+                LogoutIn {
+                    seq: 5,
+                    is_poss_dup: false,
+                },
+                now,
+                &mut recorder,
+            )
+            .unwrap();
         assert_eq!(ctrl, Control::None, "gap Logout must be suppressed");
         assert_eq!(recorder.len(), 1);
         assert_eq!(
@@ -1488,7 +1743,16 @@ mod tests {
         consume_seq_2(&mut s, now); // next_inbound = 3
         let mut recorder = RecordingEmitter::new();
         // seq 2 < 3 with PossDup: duplicate Logout — ignored, session survives.
-        let ctrl = s.on_logout(2, true, now, &mut recorder).unwrap();
+        let ctrl = s
+            .on_logout(
+                LogoutIn {
+                    seq: 2,
+                    is_poss_dup: true,
+                },
+                now,
+                &mut recorder,
+            )
+            .unwrap();
         assert_eq!(ctrl, Control::None, "duplicate Logout must be suppressed");
         assert_eq!(recorder.len(), 0);
         assert_eq!(

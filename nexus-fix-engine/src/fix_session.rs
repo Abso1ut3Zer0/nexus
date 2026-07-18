@@ -40,7 +40,10 @@ use crate::framework::{
     Emitter, Message, MessageReader, MessageWriter, SessionConfig, SessionError,
 };
 use crate::persist::{FixJournal, ReplayItem};
-use crate::session::{Control, DisconnectReason, SessionState, State};
+use crate::session::{
+    AppIn, Control, DisconnectReason, HeartbeatIn, LogonIn, LogoutIn, RejectIn, RejectInboundIn,
+    ResendRequestIn, SequenceResetIn, SessionState, State, TestRequestIn,
+};
 use crate::timestamp::UTC_TIMESTAMP_LEN;
 
 /// Error surfaced by the sans-IO session core.
@@ -516,8 +519,16 @@ impl<D: FixDictionary, C: SessionCustomizer> FixSession<D, C> {
             // this call site gives the `Emitter` a no-op `after` closure, while
             // every other site uses the journaling emitter.
             let mut emitter = Emitter::new(&mut self.writer, &self.config, |_seq, _frame| Ok(()));
-            self.state
-                .on_reject_inbound(seq, poss_dup, Some(35), 1, now, &mut emitter)?;
+            self.state.on_reject_inbound(
+                RejectInboundIn {
+                    seq,
+                    ref_tag_id: Some(35),
+                    session_reject_reason: 1,
+                    is_poss_dup: poss_dup,
+                },
+                now,
+                &mut emitter,
+            )?;
             return Ok(PollOutcome::Suppressed);
         };
 
@@ -543,8 +554,16 @@ impl<D: FixDictionary, C: SessionCustomizer> FixSession<D, C> {
                 let ctrl = {
                     let mut emitter =
                         journaling_emitter(&mut self.writer, &mut self.journal, &self.config);
-                    self.state
-                        .on_logon(seq, hbi, reset, !was_logon_sent, now, &mut emitter)?
+                    self.state.on_logon(
+                        LogonIn {
+                            seq,
+                            heart_bt_int_s: hbi,
+                            is_reset_seq_num: reset,
+                            send_reply: !was_logon_sent,
+                        },
+                        now,
+                        &mut emitter,
+                    )?
                 };
                 Ok(self.dispose(ctrl))
             }
@@ -555,7 +574,14 @@ impl<D: FixDictionary, C: SessionCustomizer> FixSession<D, C> {
                 let ctrl = {
                     let mut emitter =
                         journaling_emitter(&mut self.writer, &mut self.journal, &self.config);
-                    self.state.on_logout(seq, poss_dup, now, &mut emitter)?
+                    self.state.on_logout(
+                        LogoutIn {
+                            seq,
+                            is_poss_dup: poss_dup,
+                        },
+                        now,
+                        &mut emitter,
+                    )?
                 };
                 Ok(self.dispose(ctrl))
             }
@@ -568,8 +594,15 @@ impl<D: FixDictionary, C: SessionCustomizer> FixSession<D, C> {
                 let ctrl = {
                     let mut emitter =
                         journaling_emitter(&mut self.writer, &mut self.journal, &self.config);
-                    self.state
-                        .on_heartbeat(seq, poss_dup, echo_id, now, &mut emitter)?
+                    self.state.on_heartbeat(
+                        HeartbeatIn {
+                            echo_id,
+                            seq,
+                            is_poss_dup: poss_dup,
+                        },
+                        now,
+                        &mut emitter,
+                    )?
                 };
                 Ok(self.dispose(ctrl))
             }
@@ -582,8 +615,15 @@ impl<D: FixDictionary, C: SessionCustomizer> FixSession<D, C> {
                 let ctrl = {
                     let mut emitter =
                         journaling_emitter(&mut self.writer, &mut self.journal, &self.config);
-                    self.state
-                        .on_test_request(seq, poss_dup, test_req_id, now, &mut emitter)?
+                    self.state.on_test_request(
+                        TestRequestIn {
+                            test_req_id,
+                            seq,
+                            is_poss_dup: poss_dup,
+                        },
+                        now,
+                        &mut emitter,
+                    )?
                 };
                 Ok(self.dispose(ctrl))
             }
@@ -600,8 +640,14 @@ impl<D: FixDictionary, C: SessionCustomizer> FixSession<D, C> {
                 let ctrl = {
                     let mut emitter =
                         journaling_emitter(&mut self.writer, &mut self.journal, &self.config);
-                    self.state
-                        .on_resend_request(seq, poss_dup, now, &mut emitter)?
+                    self.state.on_resend_request(
+                        ResendRequestIn {
+                            seq,
+                            is_poss_dup: poss_dup,
+                        },
+                        now,
+                        &mut emitter,
+                    )?
                 };
                 // ResendRequest is the one kind the driver acts on beyond
                 // surfacing the message: it drives the replay from the locally
@@ -638,10 +684,12 @@ impl<D: FixDictionary, C: SessionCustomizer> FixSession<D, C> {
                     let mut emitter =
                         journaling_emitter(&mut self.writer, &mut self.journal, &self.config);
                     self.state.on_sequence_reset(
-                        seq,
-                        poss_dup,
-                        new_seq,
-                        gap_fill,
+                        SequenceResetIn {
+                            seq,
+                            new_seq,
+                            is_poss_dup: poss_dup,
+                            is_gap_fill: gap_fill,
+                        },
                         now,
                         &mut emitter,
                     )?
@@ -655,7 +703,14 @@ impl<D: FixDictionary, C: SessionCustomizer> FixSession<D, C> {
                 let ctrl = {
                     let mut emitter =
                         journaling_emitter(&mut self.writer, &mut self.journal, &self.config);
-                    self.state.on_reject(seq, poss_dup, now, &mut emitter)?
+                    self.state.on_reject(
+                        RejectIn {
+                            seq,
+                            is_poss_dup: poss_dup,
+                        },
+                        now,
+                        &mut emitter,
+                    )?
                 };
                 Ok(self.dispose(ctrl))
             }
@@ -663,7 +718,14 @@ impl<D: FixDictionary, C: SessionCustomizer> FixSession<D, C> {
                 let ctrl = {
                     let mut emitter =
                         journaling_emitter(&mut self.writer, &mut self.journal, &self.config);
-                    self.state.on_app(seq, poss_dup, now, &mut emitter)?
+                    self.state.on_app(
+                        AppIn {
+                            seq,
+                            is_poss_dup: poss_dup,
+                        },
+                        now,
+                        &mut emitter,
+                    )?
                 };
                 Ok(self.dispose(ctrl))
             }
@@ -930,7 +992,7 @@ mod tests {
     use crate::frame::{FrameReader, FrameWriter};
     use crate::framework::{CompId, Message, MessageReader, MessageWriter, SessionConfig};
     use crate::persist::FixJournal;
-    use crate::session::{Emit, SessionState};
+    use crate::session::{Emit, LogonIn, SessionState};
 
     /// A discarding [`Emit`]: drops every emitted admin. These rig helpers
     /// drive the raw `SessionState` only to advance sequence numbers before
@@ -950,7 +1012,16 @@ mod tests {
     fn establish_state(state: &mut SessionState, now: Instant) {
         state.connect(now, &mut NullEmitter).unwrap();
         state
-            .on_logon(1, 30, false, false, now, &mut NullEmitter)
+            .on_logon(
+                LogonIn {
+                    seq: 1,
+                    heart_bt_int_s: 30,
+                    is_reset_seq_num: false,
+                    send_reply: false,
+                },
+                now,
+                &mut NullEmitter,
+            )
             .unwrap();
     }
 
