@@ -1,6 +1,6 @@
 //! MaybeTls — plain TCP or TLS, unified async I/O.
 //!
-//! The tokio `MaybeTls` now lives in the [`nexus_net_tokio`] crate and is
+//! The tokio `MaybeTls` now lives in the `nexus-net-tokio` crate and is
 //! re-exported here so `crate::maybe_tls::MaybeTls` resolves unchanged.
 //! The experimental nexus-async-rt backend keeps its own `MaybeTls`
 //! (and `TlsInner`) in the `nexus` submodule.

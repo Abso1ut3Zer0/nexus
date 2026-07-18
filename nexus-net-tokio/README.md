@@ -16,9 +16,10 @@ their own.
   `tokio::net::TcpStream`, a mock stream, or any custom tokio transport.
 - **`MaybeTls`** — the async counterpart of `nexus_net::MaybeTls<S>`:
   transparent plaintext (`Plain`) or TLS (`Tls`, via `tokio-rustls`), both
-  implementing `WireStream`. The `Tls` variant fills the parser buffer directly
-  from rustls's plaintext queue, skipping the `AsyncRead` `&mut [u8]`
-  intermediate.
+  implementing `WireStream`. `poll_fill_into` reads directly into the parser's
+  `spare()` with no separate intermediate buffer; the `Tls` variant reads
+  through `tokio_rustls`, which decrypts plaintext into that buffer (one copy,
+  inherent to its `AsyncRead`-only interface).
 
 ## Features
 

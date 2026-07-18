@@ -1,8 +1,8 @@
 //! nexus-async-rt [`WireStream`](nexus_net::WireStream) adapter.
 //!
 //! `WireStream`/`ParserSink` are defined in `nexus-net`. The tokio
-//! adapter (`AsyncReadAdapter`) now lives in [`nexus_net::tokio`] and is
-//! re-exported at this crate's root. What remains here is the
+//! adapter (`AsyncReadAdapter`) now lives in the `nexus-net-tokio` crate
+//! and is re-exported at this crate's root. What remains here is the
 //! experimental nexus-async-rt adapter, which wraps that runtime's own
 //! `AsyncRead+AsyncWrite` trait shape.
 //!

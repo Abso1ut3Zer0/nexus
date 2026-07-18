@@ -18,8 +18,9 @@ contained.
   - `AsyncReadAdapter<S>` — wraps `tokio::io::AsyncRead + AsyncWrite` as a
     `nexus_net::WireStream`.
   - `MaybeTls` — async transparent plaintext/TLS transport implementing
-    `WireStream`; the `Tls` variant (feature `tls`, via `tokio-rustls`) fills
-    the parser buffer directly from rustls's plaintext queue.
+    `WireStream`; `poll_fill_into` reads directly into the parser's `spare()`.
+    The `Tls` variant (feature `tls`, via `tokio-rustls`) decrypts through
+    `tokio_rustls`'s `AsyncRead`, so plaintext is copied into that buffer.
 
   Keeping this out of `nexus-net` preserves that crate as a runtime-agnostic
   base — its only optional deps stay `rustls`/`bytes`, with no tokio in its

@@ -1,11 +1,11 @@
 //! Tokio async wire transport for [`nexus-net`](nexus_net).
 //!
 //! This crate is the tokio binding for nexus-net's runtime-agnostic
-//! [`WireStream`](nexus_net::WireStream) seam, kept separate so
+//! [`WireStream`] seam, kept separate so
 //! `nexus-net` itself stays 100% runtime-free.
 //!
 //! - [`AsyncReadAdapter`] wraps any `tokio::io::AsyncRead + AsyncWrite`
-//!   source as a [`WireStream`](nexus_net::WireStream) — use it to drive
+//!   source as a [`WireStream`] — use it to drive
 //!   a `WireStream` consumer over a raw `TcpStream`, a mock, or any other
 //!   tokio transport.
 //! - [`MaybeTls`] is the plain-or-TLS async transport used by tokio-based
@@ -67,9 +67,9 @@ impl<S> AsyncReadAdapter<S> {
     }
 }
 
-// SAFETY note: structural pinning of `inner`. We project
-// `Pin<&mut Self> -> Pin<&mut S>` and never move out; `Self` has no
-// `Drop` impl that could observe pinned state.
+// `S: Unpin` makes `AsyncReadAdapter<S>: Unpin`, so `get_mut()` and
+// `Pin::new(&mut inner)` below are safe pin operations — no unsafe
+// projection is involved.
 impl<S: AsyncRead + AsyncWrite + Unpin> WireStream for AsyncReadAdapter<S> {
     fn poll_fill_into<P: ParserSink>(
         self: Pin<&mut Self>,
@@ -77,28 +77,11 @@ impl<S: AsyncRead + AsyncWrite + Unpin> WireStream for AsyncReadAdapter<S> {
         sink: &mut P,
         max: usize,
     ) -> Poll<io::Result<usize>> {
+        if max == 0 || sink.spare().is_empty() {
+            return Poll::Ready(Err(no_space_err()));
+        }
         let this = self.get_mut();
-        let spare = sink.spare();
-        if max == 0 || spare.is_empty() {
-            return Poll::Ready(Err(io::Error::new(
-                io::ErrorKind::InvalidInput,
-                "poll_fill_into called with no buffer space \
-                 (max == 0 or sink.spare() is empty)",
-            )));
-        }
-        let cap = spare.len().min(max);
-        let mut tmp_buf = ReadBuf::new(&mut spare[..cap]);
-        match Pin::new(&mut this.inner).poll_read(cx, &mut tmp_buf) {
-            Poll::Ready(Ok(())) => {
-                let n = tmp_buf.filled().len();
-                if n > 0 {
-                    sink.filled(n);
-                }
-                Poll::Ready(Ok(n))
-            }
-            Poll::Ready(Err(e)) => Poll::Ready(Err(e)),
-            Poll::Pending => Poll::Pending,
-        }
+        fill_via_async_read(Pin::new(&mut this.inner), cx, sink, max)
     }
 
     fn poll_write(
@@ -203,11 +186,7 @@ impl WireStream for MaybeTls {
         max: usize,
     ) -> Poll<io::Result<usize>> {
         if max == 0 || sink.spare().is_empty() {
-            return Poll::Ready(Err(io::Error::new(
-                io::ErrorKind::InvalidInput,
-                "poll_fill_into called with no buffer space \
-                 (max == 0 or sink.spare() is empty)",
-            )));
+            return Poll::Ready(Err(no_space_err()));
         }
         match self.get_mut() {
             Self::Plain(s) => fill_via_async_read(Pin::new(s), cx, sink, max),
@@ -231,6 +210,17 @@ impl WireStream for MaybeTls {
     fn poll_shutdown(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
         <Self as AsyncWrite>::poll_shutdown(self, cx)
     }
+}
+
+/// The `InvalidInput` error both `poll_fill_into` impls return when the caller
+/// violates the `WireStream` precondition (`max > 0` and a non-empty
+/// `sink.spare()`).
+fn no_space_err() -> io::Error {
+    io::Error::new(
+        io::ErrorKind::InvalidInput,
+        "poll_fill_into called with no buffer space \
+         (max == 0 or sink.spare() is empty)",
+    )
 }
 
 /// Slow-path helper: poll_read from a tokio AsyncRead source
