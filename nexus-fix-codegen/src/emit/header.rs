@@ -168,13 +168,18 @@ fn emit_fix_header_impl(s: &mut String, fields: &[&RField]) -> Result<(), EmitEr
 }
 
 fn emit_msg_type_accessor(s: &mut String) {
-    s.push_str("impl HeaderDecoder<'_> {\n");
-    s.push_str("    pub fn msg_type(&self) -> Option<super::MsgType> {\n");
-    s.push_str("        if self.msg_type.is_present() {\n");
-    s.push_str("            super::MsgType::from_bytes(self.msg_type.slice(self.reader.buf()))\n");
+    s.push_str("impl<'buf> HeaderDecoder<'buf> {\n");
+    s.push_str(
+        "    pub fn msg_type(&self) -> Result<super::MsgType, nexus_fix_codec::UnknownMsgType<'buf>> {\n",
+    );
+    s.push_str("        let bytes = if self.msg_type.is_present() {\n");
+    s.push_str("            self.msg_type.slice(self.reader.buf())\n");
     s.push_str("        } else {\n");
-    s.push_str("            None\n");
-    s.push_str("        }\n");
+    s.push_str("            &[]\n");
+    s.push_str("        };\n");
+    s.push_str(
+        "        super::MsgType::from_bytes(bytes).ok_or_else(|| nexus_fix_codec::UnknownMsgType::new(bytes))\n",
+    );
     s.push_str("    }\n");
     s.push_str("}\n\n");
 }

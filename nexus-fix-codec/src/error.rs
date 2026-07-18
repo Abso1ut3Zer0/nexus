@@ -43,6 +43,58 @@ impl std::error::Error for DecodeError {
     }
 }
 
+/// The `MsgType(35)` value of a received message whose type is not in the
+/// dictionary — the error returned by the generated `HeaderDecoder::msg_type`.
+///
+/// Carries the raw tag-35 bytes (empty if tag 35 was absent). `Display` and
+/// `Debug` render them readably — printable ASCII verbatim, other bytes escaped
+/// as `\xNN` — so a log shows the actual type, e.g. `unknown MsgType(35)=ZZ`,
+/// never a byte array, and stays safe on hostile input.
+#[derive(Copy, Clone, PartialEq, Eq)]
+pub struct UnknownMsgType<'buf>(&'buf [u8]);
+
+impl<'buf> UnknownMsgType<'buf> {
+    /// Wrap the raw `MsgType(35)` bytes.
+    pub fn new(bytes: &'buf [u8]) -> Self {
+        Self(bytes)
+    }
+
+    /// The raw `MsgType(35)` bytes (empty if tag 35 was absent).
+    pub fn bytes(&self) -> &'buf [u8] {
+        self.0
+    }
+}
+
+impl fmt::Display for UnknownMsgType<'_> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str("unknown MsgType(35)=")?;
+        write_ascii_escaped(f, self.0)
+    }
+}
+
+impl fmt::Debug for UnknownMsgType<'_> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str("UnknownMsgType(\"")?;
+        write_ascii_escaped(f, self.0)?;
+        f.write_str("\")")
+    }
+}
+
+impl std::error::Error for UnknownMsgType<'_> {}
+
+/// Writes `bytes` as text — printable ASCII (and space) verbatim, every other
+/// byte as `\xNN`. No allocation; safe on non-ASCII / hostile input.
+fn write_ascii_escaped(f: &mut fmt::Formatter<'_>, bytes: &[u8]) -> fmt::Result {
+    for &b in bytes {
+        if b.is_ascii_graphic() || b == b' ' {
+            write!(f, "{}", b as char)?;
+        } else {
+            write!(f, "\\x{b:02x}")?;
+        }
+    }
+    Ok(())
+}
+
 impl From<ChecksumError> for DecodeError {
     fn from(e: ChecksumError) -> Self {
         Self::Checksum(e)
@@ -161,6 +213,21 @@ mod tests {
             computed: 42,
         };
         assert_eq!(e.to_string(), "expected 178, computed 042");
+    }
+
+    #[test]
+    fn unknown_msg_type_is_printable() {
+        let e = UnknownMsgType::new(b"ZZ");
+        assert_eq!(e.to_string(), "unknown MsgType(35)=ZZ");
+        assert_eq!(format!("{e:?}"), r#"UnknownMsgType("ZZ")"#);
+        assert_eq!(e.bytes(), b"ZZ");
+    }
+
+    #[test]
+    fn unknown_msg_type_escapes_non_printable() {
+        // A hostile 35 value with a control byte renders safely, never as raw bytes.
+        let e = UnknownMsgType::new(b"\x01Z");
+        assert_eq!(e.to_string(), "unknown MsgType(35)=\\x01Z");
     }
 
     #[test]
