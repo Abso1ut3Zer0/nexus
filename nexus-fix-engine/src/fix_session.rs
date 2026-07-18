@@ -637,8 +637,14 @@ impl<D: FixDictionary, C: SessionCustomizer> FixSession<D, C> {
                 let ctrl = {
                     let mut emitter =
                         journaling_emitter(&mut self.writer, &mut self.journal, &self.config);
-                    self.state
-                        .on_sequence_reset(seq, new_seq, gap_fill, now, &mut emitter)?
+                    self.state.on_sequence_reset(
+                        seq,
+                        poss_dup,
+                        new_seq,
+                        gap_fill,
+                        now,
+                        &mut emitter,
+                    )?
                 };
                 Ok(self.dispose(ctrl))
             }

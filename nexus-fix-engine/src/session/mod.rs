@@ -600,6 +600,7 @@ impl SessionState {
     pub fn on_sequence_reset<E: Emit>(
         &mut self,
         seq: u32,
+        poss_dup: bool,
         new_seq: u32,
         gap_fill: bool,
         now: Instant,
@@ -614,7 +615,11 @@ impl SessionState {
         self.last_received = Some(now);
         self.test_request_sent = None;
         if gap_fill {
-            match self.validate_seq(seq, false, now, emitter)? {
+            // Honor the frame's PossDupFlag: a below-expected GapFill carrying
+            // PossDup=Y is a benign duplicate (the overlapping-ResendRequest
+            // race) — discarded, not a disconnect (FIX 4.4 / QuickFIX). Without
+            // PossDup it is a genuine too-low error.
+            match self.validate_seq(seq, poss_dup, now, emitter)? {
                 // In-sequence GapFill only: advance next_inbound to NewSeqNo. A
                 // gap/dup must not advance — it is a recovery event.
                 Control::Proceed => {
@@ -1176,7 +1181,7 @@ mod tests {
         establish(&mut s, now);
         let mut recorder = RecordingEmitter::new();
         let ctrl = s
-            .on_sequence_reset(100, 1, false, now, &mut recorder)
+            .on_sequence_reset(100, false, 1, false, now, &mut recorder)
             .unwrap();
         assert_eq!(ctrl, Control::SequenceReset);
         assert_eq!(recorder.len(), 1);
@@ -1365,7 +1370,9 @@ mod tests {
         establish(&mut s, now); // next_inbound = 2
         let mut recorder = RecordingEmitter::new();
         // GapFill (gap_fill = true) at seq 5 > 2: out of sequence.
-        let ctrl = s.on_sequence_reset(5, 9, true, now, &mut recorder).unwrap();
+        let ctrl = s
+            .on_sequence_reset(5, false, 9, true, now, &mut recorder)
+            .unwrap();
         assert_eq!(
             ctrl,
             Control::None,
@@ -1383,23 +1390,49 @@ mod tests {
     }
 
     #[test]
-    fn sequence_reset_gap_fill_duplicate_suppressed_no_advance() {
+    fn sequence_reset_gap_fill_below_expected_possdup_discarded() {
+        // A below-expected GapFill carrying PossDup=Y is a benign duplicate (the
+        // classic overlapping-ResendRequest race) — discarded, session survives,
+        // next_inbound unchanged. Matches FIX 4.4 / QuickFIX.
         let mut s = SessionState::new(Duration::from_secs(30));
         let now = Instant::now();
         establish(&mut s, now);
         consume_seq_2(&mut s, now); // next_inbound = 3
         let mut recorder = RecordingEmitter::new();
-        // Note: on_sequence_reset validates GapFill with poss_dup = false
-        // internally, so a below-expected GapFill is a too-low-without-PossDup
-        // case → Disconnected, NOT a silent duplicate. Assert that path here so
-        // the GapFill duplicate semantics are pinned. seq 2 < 3.
-        let ctrl = s.on_sequence_reset(2, 9, true, now, &mut recorder).unwrap();
+        // seq 2 < 3, PossDup = true.
+        let ctrl = s
+            .on_sequence_reset(2, true, 9, true, now, &mut recorder)
+            .unwrap();
+        assert_eq!(
+            ctrl,
+            Control::None,
+            "a below-expected GapFill with PossDup is discarded, not a disconnect"
+        );
+        assert_eq!(
+            s.next_inbound_seq(),
+            3,
+            "next_inbound must not advance on the discarded GapFill"
+        );
+    }
+
+    #[test]
+    fn sequence_reset_gap_fill_below_expected_no_possdup_disconnects() {
+        // Without PossDup, a below-expected GapFill is a genuine too-low error.
+        let mut s = SessionState::new(Duration::from_secs(30));
+        let now = Instant::now();
+        establish(&mut s, now);
+        consume_seq_2(&mut s, now); // next_inbound = 3
+        let mut recorder = RecordingEmitter::new();
+        // seq 2 < 3, PossDup = false.
+        let ctrl = s
+            .on_sequence_reset(2, false, 9, true, now, &mut recorder)
+            .unwrap();
         assert_eq!(
             ctrl,
             Control::Disconnected {
                 reason: DisconnectReason::SeqNumTooLow
             },
-            "a below-expected GapFill (validated with PossDup=false) disconnects"
+            "a below-expected GapFill without PossDup disconnects"
         );
         assert_eq!(
             s.next_inbound_seq(),
@@ -1415,7 +1448,9 @@ mod tests {
         establish(&mut s, now); // next_inbound = 2
         let mut recorder = RecordingEmitter::new();
         // In-sequence GapFill at seq 2 advancing to new_seq 7.
-        let ctrl = s.on_sequence_reset(2, 7, true, now, &mut recorder).unwrap();
+        let ctrl = s
+            .on_sequence_reset(2, false, 7, true, now, &mut recorder)
+            .unwrap();
         assert_eq!(ctrl, Control::SequenceReset);
         assert_eq!(s.next_inbound_seq(), 7, "in-sequence GapFill advances");
         assert_eq!(recorder.len(), 0);
