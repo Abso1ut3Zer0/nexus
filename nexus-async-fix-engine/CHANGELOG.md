@@ -12,6 +12,15 @@ contained.
 
 ### Added
 
+- `FixConnection` now runs on the `nexus_net::WireStream` seam (via
+  `nexus-net-tokio`) instead of a raw tokio `AsyncRead + AsyncWrite`, so it
+  composes with the same transport layer as the web stack and gains transparent
+  TLS. `connect`/`tcp_connect` now yield `FixConnection<MaybeTls, _>` (plaintext);
+  `connect_tls` (feature `tls`) performs the TLS handshake. Raw-stream callers
+  wrap in `nexus_net_tokio::AsyncReadAdapter`. The reactor and heartbeat/
+  TestRequest timer logic are unchanged — only the byte primitive moved to
+  `poll_fill_into`/`poll_write` — and the async conformance suite stays green.
+
 - Venue Logon auth, mirroring the sync engine. `FixConnection` and
   `FixConnectionBuilder` take a per-venue `SessionCustomizer` (from
   `nexus-fix-codec`) as a trailing type parameter defaulting to `NoCustomizer`,

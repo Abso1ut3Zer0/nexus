@@ -1,14 +1,24 @@
 //! Tokio adapter for the sans-IO FIX session core.
 //!
 //! [`FixConnection`] is a thin wrapper over the sans-IO [`FixSession`] core: it
-//! owns a tokio `AsyncRead + AsyncWrite` stream and does *only* the I/O —
-//! `stream.read` into the session's inbound buffer, `stream.write` from its
-//! outbound buffer, both `.await`ed. All protocol logic (framing, the state
-//! machine, journaling, resend) lives in [`FixSession`]; this crate is the exact
-//! async analog of the blocking
-//! [`nexus_fix_engine::FixConnection`], differing
-//! only in that socket I/O is `.await`ed and heartbeat/TestRequest deadlines use
-//! `tokio::time`.
+//! owns a [`WireStream`](nexus_net::WireStream) transport and does *only* the
+//! I/O — `poll_fill_into` fills the session's inbound buffer copy-free,
+//! `poll_write`/`poll_flush` drain its outbound buffer, all `.await`ed. All
+//! protocol logic (framing, the state machine, journaling, resend) lives in
+//! [`FixSession`]; this crate is the exact async analog of the blocking
+//! [`nexus_fix_engine::FixConnection`], differing only in that socket I/O is
+//! `.await`ed and heartbeat/TestRequest deadlines use `tokio::time`.
+//!
+//! # Transports
+//!
+//! Any [`WireStream`](nexus_net::WireStream) works. Two are provided out of the
+//! box:
+//!
+//! - [`MaybeTls`] — plaintext or transparent TLS, built by
+//!   [`FixConnectionBuilder::connect`] / [`connect_tls`](FixConnectionBuilder::connect_tls).
+//! - [`AsyncReadAdapter`] — wraps a raw tokio `AsyncRead + AsyncWrite` stream
+//!   (a `TcpStream`, a mock) as a `WireStream`; pass it to
+//!   [`from_parts`](FixConnection::from_parts) / [`accept`](FixConnectionBuilder::accept).
 
 #![cfg(unix)]
 #![deny(
@@ -17,8 +27,10 @@
     rustdoc::redundant_explicit_links
 )]
 
+use std::future::poll_fn;
 use std::io;
 use std::marker::PhantomData;
+use std::pin::Pin;
 use std::time::{Duration, Instant};
 
 use nexus_fix_codec::{FixDictionary, NoCustomizer, SessionCustomizer};
@@ -26,7 +38,6 @@ use nexus_fix_engine::{
     DisconnectReason, FixJournal, FixSession, FrameReader, FrameWriter, Message, MessageReader,
     MessageWriter, PollOutcome, SessionConfig, SessionError, SessionState, State,
 };
-use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use tokio::time::timeout_at;
 
 /// Per-message resend reserve; see [`nexus_fix_engine::REFRAME_HEADROOM`].
@@ -36,8 +47,16 @@ pub use nexus_fix_engine::REFRAME_HEADROOM;
 /// This is the same `Error` [`FixSession`] returns; the async wrapper adds only
 /// socket I/O errors via the existing `From<io::Error>` impl.
 pub use nexus_fix_engine::TransportError as Error;
+/// The transport trait every stream implements — re-exported so callers can name
+/// the `S: WireStream` bound without depending on `nexus-net` directly. Also
+/// used internally as the bound on [`FixConnection`]'s I/O methods.
+pub use nexus_net::WireStream;
+/// Tokio wire transports: wrap a raw stream in [`AsyncReadAdapter`], or use the
+/// plaintext-or-TLS [`MaybeTls`]. Re-exported so callers need not depend on
+/// `nexus-net-tokio` directly.
+pub use nexus_net_tokio::{AsyncReadAdapter, MaybeTls};
 
-/// Async FIX session transport over any tokio `AsyncRead + AsyncWrite` stream.
+/// Async FIX session transport over any [`WireStream`](nexus_net::WireStream).
 ///
 /// Thin wrapper over [`FixSession`]: the socket calls are `.await`ed; everything
 /// else — framing, the [`SessionState`] machine, journaling, resend — is in the
@@ -46,7 +65,7 @@ pub use nexus_fix_engine::TransportError as Error;
 ///
 /// `C` is the per-venue [`SessionCustomizer`] applied to outbound admin
 /// messages, defaulting to [`NoCustomizer`] — plain-FIX callers write
-/// `FixConnection<TcpStream, Fix44>` and never name it. Attach one with
+/// `FixConnection<MaybeTls, Fix44>` and never name it. Attach one with
 /// [`FixConnectionBuilder::customizer`].
 pub struct FixConnection<S, D: FixDictionary, C = NoCustomizer> {
     stream: S,
@@ -120,22 +139,59 @@ impl<D: FixDictionary, C: SessionCustomizer> FixConnectionBuilder<D, C> {
         )
     }
 
-    /// Connects a TCP stream, applies `TCP_NODELAY`, and wraps it.
+    /// Connects a plaintext TCP stream, applies `TCP_NODELAY`, and wraps it in a
+    /// [`MaybeTls::Plain`] transport.
     pub async fn connect(
         self,
         addr: std::net::SocketAddr,
         state: SessionState,
         config: SessionConfig,
         journal: FixJournal,
-    ) -> io::Result<FixConnection<tokio::net::TcpStream, D, C>> {
-        let stream = tokio::net::TcpStream::connect(addr).await?;
-        stream.set_nodelay(self.nodelay)?;
+    ) -> io::Result<FixConnection<MaybeTls, D, C>> {
+        let tcp = tokio::net::TcpStream::connect(addr).await?;
+        tcp.set_nodelay(self.nodelay)?;
         let session = self.build_session(state, config, journal);
-        Ok(FixConnection { stream, session })
+        Ok(FixConnection {
+            stream: MaybeTls::Plain(tcp),
+            session,
+        })
     }
 
-    /// Wraps an already-connected stream (acceptor role or a pre-built stream).
-    pub fn accept<S: AsyncRead + AsyncWrite + Unpin>(
+    /// Connects a TCP stream, performs a TLS handshake with `server_name`, and
+    /// wraps it in a [`MaybeTls::Tls`] transport — the transparent-TLS path for
+    /// crypto venues. `TCP_NODELAY` is applied before the handshake.
+    #[cfg(feature = "tls")]
+    pub async fn connect_tls(
+        self,
+        addr: std::net::SocketAddr,
+        server_name: &str,
+        tls_config: &nexus_net::tls::TlsConfig,
+        state: SessionState,
+        config: SessionConfig,
+        journal: FixJournal,
+    ) -> io::Result<FixConnection<MaybeTls, D, C>> {
+        let tcp = tokio::net::TcpStream::connect(addr).await?;
+        tcp.set_nodelay(self.nodelay)?;
+        let connector = tokio_rustls::TlsConnector::from(tls_config.client_config().clone());
+        let dns = tokio_rustls::rustls::pki_types::ServerName::try_from(server_name.to_owned())
+            .map_err(|_| {
+                io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    format!("invalid TLS hostname: {server_name}"),
+                )
+            })?;
+        let tls_stream = connector.connect(dns, tcp).await?;
+        let session = self.build_session(state, config, journal);
+        Ok(FixConnection {
+            stream: MaybeTls::Tls(Box::new(tls_stream)),
+            session,
+        })
+    }
+
+    /// Wraps an already-connected [`WireStream`](nexus_net::WireStream) (acceptor
+    /// role or a pre-built stream). Wrap a raw tokio stream in
+    /// [`AsyncReadAdapter`] first.
+    pub fn accept<S: WireStream + Unpin>(
         self,
         stream: S,
         state: SessionState,
@@ -147,7 +203,7 @@ impl<D: FixDictionary, C: SessionCustomizer> FixConnectionBuilder<D, C> {
     }
 }
 
-impl<D: FixDictionary> FixConnection<tokio::net::TcpStream, D, NoCustomizer> {
+impl<D: FixDictionary> FixConnection<MaybeTls, D, NoCustomizer> {
     pub fn builder() -> FixConnectionBuilder<D, NoCustomizer> {
         FixConnectionBuilder {
             reader_cap: 64 * 1024,
@@ -158,8 +214,8 @@ impl<D: FixDictionary> FixConnection<tokio::net::TcpStream, D, NoCustomizer> {
         }
     }
 
-    /// Connects a TCP stream, enables `TCP_NODELAY`, and wraps it with default
-    /// buffer sizes.
+    /// Connects a plaintext TCP stream, enables `TCP_NODELAY`, and wraps it in a
+    /// [`MaybeTls::Plain`] transport with default buffer sizes.
     pub async fn tcp_connect(
         addr: std::net::SocketAddr,
         state: SessionState,
@@ -170,7 +226,7 @@ impl<D: FixDictionary> FixConnection<tokio::net::TcpStream, D, NoCustomizer> {
     }
 }
 
-impl<S: AsyncRead + AsyncWrite + Unpin, D: FixDictionary> FixConnection<S, D, NoCustomizer> {
+impl<S: WireStream + Unpin, D: FixDictionary> FixConnection<S, D, NoCustomizer> {
     pub fn from_parts(
         stream: S,
         state: SessionState,
@@ -181,9 +237,7 @@ impl<S: AsyncRead + AsyncWrite + Unpin, D: FixDictionary> FixConnection<S, D, No
     }
 }
 
-impl<S: AsyncRead + AsyncWrite + Unpin, D: FixDictionary, C: SessionCustomizer>
-    FixConnection<S, D, C>
-{
+impl<S: WireStream + Unpin, D: FixDictionary, C: SessionCustomizer> FixConnection<S, D, C> {
     /// As [`from_parts`](Self::from_parts), with a per-venue
     /// [`SessionCustomizer`] and default (unsized) buffers.
     pub fn from_parts_with_customizer(
@@ -282,10 +336,10 @@ impl<S: AsyncRead + AsyncWrite + Unpin, D: FixDictionary, C: SessionCustomizer>
                 PollOutcome::NeedMoreBytes => {
                     // An empty spare means the reader buffer is full with a single
                     // incomplete frame that cannot grow (compaction reclaimed
-                    // nothing). Reading into a zero-length slice yields `Ok(0)`,
-                    // which the `Ok(Ok(0))` arm below would misread as EOF. Surface
-                    // it as the real cause: a frame larger than the reader buffer.
-                    // Identical to the sync wrapper's guard.
+                    // nothing). `poll_fill_into` would reject a zero-length spare
+                    // with `InvalidInput`; surface the real cause instead — a frame
+                    // larger than the reader buffer. Identical to the sync wrapper's
+                    // guard.
                     if self.session.read_spare().is_empty() {
                         return Err(Error::MessageTooLarge(
                             self.session.reader_capacity().saturating_add(1),
@@ -298,14 +352,27 @@ impl<S: AsyncRead + AsyncWrite + Unpin, D: FixDictionary, C: SessionCustomizer>
                         || tokio::time::Instant::now() + Duration::from_secs(60),
                         tokio::time::Instant::from_std,
                     );
-                    let spare = self.session.read_spare();
-                    match timeout_at(deadline, self.stream.read(spare)).await {
+                    // Fill the session's inbound buffer copy-free: `poll_fill_into`
+                    // reads into `read_spare()` and commits via `read_filled` itself,
+                    // returning the delivered count (`Ok(0)` = EOF). Cap the pull at
+                    // the current spare length.
+                    let max = self.session.read_spare().len();
+                    match timeout_at(
+                        deadline,
+                        poll_fn(|cx| {
+                            Pin::new(&mut self.stream).poll_fill_into(cx, &mut self.session, max)
+                        }),
+                    )
+                    .await
+                    {
                         Ok(Ok(0)) => {
                             return Ok(Some(Message::Disconnected {
                                 reason: DisconnectReason::Logout,
                             }));
                         }
-                        Ok(Ok(n)) => self.session.read_filled(n),
+                        // Bytes already committed to the session by `poll_fill_into`;
+                        // loop to parse them.
+                        Ok(Ok(_n)) => {}
                         Ok(Err(e)) => return Err(Error::Io(e)),
                         Err(_elapsed) => {
                             if let Some(reason) = self.session.on_timeout(now)? {
@@ -321,16 +388,20 @@ impl<S: AsyncRead + AsyncWrite + Unpin, D: FixDictionary, C: SessionCustomizer>
         }
     }
 
-    /// Writes all buffered outbound bytes to the socket and flushes.
+    /// Writes all buffered outbound bytes to the transport and flushes. A
+    /// `Pending` `poll_write` is write backpressure — the `.await` yields until
+    /// the transport is writable again.
     async fn drain_outbound(&mut self) -> Result<(), Error> {
         while self.session.has_outbound() {
-            let n = self.stream.write(self.session.outbound()).await?;
+            let n =
+                poll_fn(|cx| Pin::new(&mut self.stream).poll_write(cx, self.session.outbound()))
+                    .await?;
             if n == 0 {
                 return Err(Error::Io(io::Error::other("write returned 0")));
             }
             self.session.advance_outbound(n);
         }
-        self.stream.flush().await?;
+        poll_fn(|cx| Pin::new(&mut self.stream).poll_flush(cx)).await?;
         Ok(())
     }
 }

@@ -1,0 +1,29 @@
+[package]
+name = "nexus-net-tokio"
+version = "0.1.0"
+description = "Tokio async wire transport for nexus-net: AsyncReadAdapter and async MaybeTls."
+readme = "README.md"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+keywords.workspace = true
+categories.workspace = true
+
+[features]
+default = []
+# Enables the async `MaybeTls::Tls` variant (via `tokio-rustls`) and the
+# nexus-net TLS codec. Tokio itself is always on — this crate *is* the
+# tokio binding.
+tls = ["dep:tokio-rustls", "nexus-net/tls"]
+
+[package.metadata.docs.rs]
+all-features = true
+
+[dependencies]
+nexus-net = { path = "../nexus-net" }
+tokio = { version = "1", features = ["net"] }
+tokio-rustls = { version = "0.26", optional = true }
+
+[lints]
+workspace = true

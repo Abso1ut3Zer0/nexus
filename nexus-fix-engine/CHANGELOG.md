@@ -12,6 +12,11 @@ contained.
 
 ### Added
 
+- `FixSession` now implements `nexus_net::ParserSink` (forwarding to
+  `read_spare`/`read_filled`), so a `WireStream` can fill the session's inbound
+  buffer copy-free via `poll_fill_into` — the seam the async client's transport
+  now uses (see nexus-async-fix-engine).
+
 - Venue Logon auth. `FixSession`, `FixConnection`, and `MessageWriter` take a
   per-venue `SessionCustomizer` (from `nexus-fix-codec`) as a trailing type
   parameter defaulting to `NoCustomizer`, so existing plain-FIX call sites —

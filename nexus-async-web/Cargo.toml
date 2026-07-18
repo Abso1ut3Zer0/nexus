@@ -14,7 +14,9 @@ categories.workspace = true
 default = ["tokio-tls"]
 
 # Runtime backends — pick one. Tokio is the supported path for production use.
-tokio-rt = ["dep:tokio", "dep:futures-core", "dep:futures-sink"]
+# `tokio-rt` pulls in `nexus-net-tokio`, which owns the tokio `AsyncReadAdapter`
+# and async `MaybeTls`; the `tokio-tls` composite adds the async TLS variant.
+tokio-rt = ["dep:tokio", "dep:futures-core", "dep:futures-sink", "dep:nexus-net-tokio"]
 nexus = ["dep:nexus-async-rt"]                          # experimental, see README
 
 # Generic protocol features (work with either backend).
@@ -23,7 +25,7 @@ socket-opts = ["dep:socket2"]
 bytes = ["nexus-web/bytes", "nexus-net/bytes"]
 
 # Per-backend composites.
-tokio-tls = ["tokio-rt", "tls", "dep:tokio-rustls"]
+tokio-tls = ["tokio-rt", "tls", "dep:tokio-rustls", "nexus-net-tokio/tls"]
 tokio-full = ["tokio-tls", "socket-opts", "bytes"]
 nexus-tls = ["nexus", "tls"]
 nexus-full = ["nexus-tls", "socket-opts", "bytes"]
@@ -38,6 +40,7 @@ features = ["tokio-tls", "socket-opts", "bytes"]
 [dependencies]
 nexus-web = { version = "0.8.0", path = "../nexus-web" }
 nexus-net = { version = "1.0.0", path = "../nexus-net" }
+nexus-net-tokio = { version = "0.1.0", path = "../nexus-net-tokio", optional = true }
 nexus-pool = { version = "1.1.0", path = "../nexus-pool" }
 tokio = { version = "1", features = ["io-util", "net", "rt", "time"], optional = true }
 tokio-rustls = { version = "0.26", optional = true }

@@ -10,7 +10,7 @@ use std::pin::Pin;
 use std::task::{Context, Poll};
 use std::time::{Duration, Instant};
 
-use nexus_async_fix_engine::FixConnection;
+use nexus_async_fix_engine::{AsyncReadAdapter, FixConnection};
 use nexus_fix_codec::{FieldView, FixAdminMsg, FixDictionary, FixHeader, FixTimestamp, find_tag};
 use nexus_fix_engine::{CompId, FixJournal, SessionConfig, SessionState};
 use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
@@ -168,15 +168,16 @@ async fn outbound_admin_is_journaled() {
     let dir = tmp_dir("logon");
 
     {
-        let mut conn: FixConnection<SinkStream, MockDict> = FixConnection::from_parts(
-            SinkStream::default(),
-            SessionState::new(Duration::from_secs(30)),
-            SessionConfig {
-                sender: CompId::new(b"ENGINE").unwrap(),
-                target: CompId::new(b"PEER").unwrap(),
-            },
-            FixJournal::open(dir.path(), 0, 256).unwrap(),
-        );
+        let mut conn: FixConnection<AsyncReadAdapter<SinkStream>, MockDict> =
+            FixConnection::from_parts(
+                AsyncReadAdapter::new(SinkStream::default()),
+                SessionState::new(Duration::from_secs(30)),
+                SessionConfig {
+                    sender: CompId::new(b"ENGINE").unwrap(),
+                    target: CompId::new(b"PEER").unwrap(),
+                },
+                FixJournal::open(dir.path(), 0, 256).unwrap(),
+            );
         // Sends the opening Logon at seq 1; the write is accepted by the sink.
         conn.connect(Instant::now()).await.unwrap();
     }
