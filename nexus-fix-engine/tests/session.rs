@@ -4,7 +4,10 @@ use nexus_fix_codec::{
     AdminEncode, AdminHeader, AdminMsgOut, AsciiTextStr, DecodeError, FieldView, FixAdminMsg,
     FixDictionary, FixHeader, FixTimestamp, FrameFormatter, NoCustomizer, find_tag, parse_fix_uint,
 };
-use nexus_fix_engine::{Control, DisconnectReason, Emit, SessionState, State};
+use nexus_fix_engine::{
+    AppIn, Control, DisconnectReason, Emit, HeartbeatIn, LogonIn, LogoutIn, RejectIn,
+    RejectInboundIn, ResendRequestIn, SequenceResetIn, SessionState, State, TestRequestIn,
+};
 
 const HB: Duration = Duration::from_secs(30);
 
@@ -144,7 +147,17 @@ impl Emit for RecordingEmitter {
 fn establish(s: &mut SessionState, now: Instant) {
     let mut recorder = RecordingEmitter::new();
     s.connect(now, &mut recorder).unwrap();
-    s.on_logon(1, 30, false, false, now, &mut recorder).unwrap();
+    s.on_logon(
+        LogonIn {
+            seq: 1,
+            heart_bt_int_s: 30,
+            is_reset_seq_num: false,
+            send_reply: false,
+        },
+        now,
+        &mut recorder,
+    )
+    .unwrap();
     assert_eq!(s.state(), State::Active);
 }
 
@@ -165,7 +178,18 @@ fn initiator_handshake() {
 
     recorder.clear();
     // Initiator receiving the peer's Logon ack: send_reply = false → acknowledged.
-    let ctrl = s.on_logon(1, 30, false, false, now, &mut recorder).unwrap();
+    let ctrl = s
+        .on_logon(
+            LogonIn {
+                seq: 1,
+                heart_bt_int_s: 30,
+                is_reset_seq_num: false,
+                send_reply: false,
+            },
+            now,
+            &mut recorder,
+        )
+        .unwrap();
     assert_eq!(s.state(), State::Active);
     assert_eq!(ctrl, Control::Logon { acknowledged: true });
     assert_eq!(recorder.len(), 0);
@@ -180,7 +204,18 @@ fn acceptor_handshake() {
 
     let mut recorder = RecordingEmitter::new();
     // Acceptor: send_reply = true → this Logon is answered, not an ack.
-    let ctrl = s.on_logon(1, 15, false, true, now, &mut recorder).unwrap();
+    let ctrl = s
+        .on_logon(
+            LogonIn {
+                seq: 1,
+                heart_bt_int_s: 15,
+                is_reset_seq_num: false,
+                send_reply: true,
+            },
+            now,
+            &mut recorder,
+        )
+        .unwrap();
     assert_eq!(s.state(), State::Active);
     assert_eq!(
         ctrl,
@@ -202,7 +237,17 @@ fn logon_reset_seq_num_flag() {
     let now = Instant::now();
 
     let mut recorder = RecordingEmitter::new();
-    s.on_logon(1, 30, true, true, now, &mut recorder).unwrap();
+    s.on_logon(
+        LogonIn {
+            seq: 1,
+            heart_bt_int_s: 30,
+            is_reset_seq_num: true,
+            send_reply: true,
+        },
+        now,
+        &mut recorder,
+    )
+    .unwrap();
     assert_eq!(s.state(), State::Active);
     assert_eq!(recorder.len(), 1);
     // LogonReset (35=A carrying 141=Y) at seqnum 1.
@@ -218,7 +263,14 @@ fn app_message_emits_control() {
     establish(&mut s, now);
 
     let ctrl = s
-        .on_app(2, false, now, &mut RecordingEmitter::new())
+        .on_app(
+            AppIn {
+                seq: 2,
+                is_poss_dup: false,
+            },
+            now,
+            &mut RecordingEmitter::new(),
+        )
         .unwrap();
     assert_eq!(ctrl, Control::Application);
     assert_eq!(s.next_inbound_seq(), 3);
@@ -231,8 +283,16 @@ fn test_request_is_echoed() {
     establish(&mut s, now);
 
     let mut recorder = RecordingEmitter::new();
-    s.on_test_request(2, false, b"PROBE7", now, &mut recorder)
-        .unwrap();
+    s.on_test_request(
+        TestRequestIn {
+            test_req_id: b"PROBE7",
+            seq: 2,
+            is_poss_dup: false,
+        },
+        now,
+        &mut recorder,
+    )
+    .unwrap();
     assert_eq!(recorder.len(), 1);
     // Heartbeat (35=0) echoing TestReqID(112)=PROBE7.
     assert_eq!(recorder.mt(0), b"0");
@@ -312,9 +372,11 @@ fn probe_answered_keeps_session_alive() {
     let mut recorder = RecordingEmitter::new();
     s.on_timeout(probe_at, &mut recorder).unwrap();
     s.on_heartbeat(
-        2,
-        false,
-        None,
+        HeartbeatIn {
+            echo_id: None,
+            seq: 2,
+            is_poss_dup: false,
+        },
         probe_at + Duration::from_secs(1),
         &mut recorder,
     )
@@ -340,10 +402,12 @@ fn probe_answered_by_unprocessable_message_keeps_session_alive() {
 
     recorder.clear();
     s.on_reject_inbound(
-        2,
-        false,
-        Some(35),
-        1,
+        RejectInboundIn {
+            seq: 2,
+            ref_tag_id: Some(35),
+            session_reject_reason: 1,
+            is_poss_dup: false,
+        },
         probe_at + Duration::from_secs(1),
         &mut recorder,
     )
@@ -367,7 +431,16 @@ fn gap_triggers_resend_request() {
 
     let mut recorder = RecordingEmitter::new();
     // A gap suppresses the app message but fires a ResendRequest.
-    let ctrl = s.on_app(5, false, now, &mut recorder).unwrap();
+    let ctrl = s
+        .on_app(
+            AppIn {
+                seq: 5,
+                is_poss_dup: false,
+            },
+            now,
+            &mut recorder,
+        )
+        .unwrap();
     assert_eq!(s.state(), State::Resending);
     assert_eq!(ctrl, Control::None);
     assert_eq!(recorder.len(), 1);
@@ -376,8 +449,15 @@ fn gap_triggers_resend_request() {
     assert_eq!(recorder.num(0, 7), Some(2));
 
     for seq in 2u32..=5 {
-        s.on_app(seq, true, now, &mut RecordingEmitter::new())
-            .unwrap();
+        s.on_app(
+            AppIn {
+                seq,
+                is_poss_dup: true,
+            },
+            now,
+            &mut RecordingEmitter::new(),
+        )
+        .unwrap();
     }
     assert_eq!(s.state(), State::Active);
     assert_eq!(s.next_inbound_seq(), 6);
@@ -390,12 +470,29 @@ fn gap_fill_advances_past_admin_messages() {
     establish(&mut s, now);
 
     let mut recorder = RecordingEmitter::new();
-    s.on_app(6, false, now, &mut recorder).unwrap();
+    s.on_app(
+        AppIn {
+            seq: 6,
+            is_poss_dup: false,
+        },
+        now,
+        &mut recorder,
+    )
+    .unwrap();
     assert_eq!(s.state(), State::Resending);
 
     recorder.clear();
     let ctrl = s
-        .on_sequence_reset(2, false, 7, true, now, &mut recorder)
+        .on_sequence_reset(
+            SequenceResetIn {
+                seq: 2,
+                new_seq: 7,
+                is_poss_dup: false,
+                is_gap_fill: true,
+            },
+            now,
+            &mut recorder,
+        )
         .unwrap();
     assert_eq!(s.next_inbound_seq(), 7);
     assert_eq!(s.state(), State::Active);
@@ -410,7 +507,16 @@ fn sequence_reset_reset_mode_ignores_seq() {
     establish(&mut s, now);
 
     let ctrl = s
-        .on_sequence_reset(999, false, 50, false, now, &mut RecordingEmitter::new())
+        .on_sequence_reset(
+            SequenceResetIn {
+                seq: 999,
+                new_seq: 50,
+                is_poss_dup: false,
+                is_gap_fill: false,
+            },
+            now,
+            &mut RecordingEmitter::new(),
+        )
         .unwrap();
     assert_eq!(s.next_inbound_seq(), 50);
     assert_eq!(ctrl, Control::SequenceReset);
@@ -425,7 +531,16 @@ fn resend_request_surfaces_control() {
     s.allocate_seq(now).unwrap(); // seq 3
 
     let mut recorder = RecordingEmitter::new();
-    let ctrl = s.on_resend_request(2, false, now, &mut recorder).unwrap();
+    let ctrl = s
+        .on_resend_request(
+            ResendRequestIn {
+                seq: 2,
+                is_poss_dup: false,
+            },
+            now,
+            &mut recorder,
+        )
+        .unwrap();
     assert_eq!(ctrl, Control::ResendRequest);
     // The replay walk (gap-fills + PossDup re-frames) is driven by the driver
     // from its locally parsed begin/end — no admin emitted by the handler here.
@@ -437,11 +552,25 @@ fn seq_too_low_disconnects() {
     let mut s = new_session();
     let now = Instant::now();
     establish(&mut s, now);
-    s.on_app(2, false, now, &mut RecordingEmitter::new())
-        .unwrap(); // seq 2 consumed
+    s.on_app(
+        AppIn {
+            seq: 2,
+            is_poss_dup: false,
+        },
+        now,
+        &mut RecordingEmitter::new(),
+    )
+    .unwrap(); // seq 2 consumed
 
     let ctrl = s
-        .on_app(2, false, now, &mut RecordingEmitter::new())
+        .on_app(
+            AppIn {
+                seq: 2,
+                is_poss_dup: false,
+            },
+            now,
+            &mut RecordingEmitter::new(),
+        )
         .unwrap(); // seq 2 again, no poss_dup
     assert_eq!(s.state(), State::Disconnected);
     assert_eq!(
@@ -457,11 +586,27 @@ fn poss_dup_below_expected_is_ignored() {
     let mut s = new_session();
     let now = Instant::now();
     establish(&mut s, now);
-    s.on_app(2, false, now, &mut RecordingEmitter::new())
-        .unwrap();
+    s.on_app(
+        AppIn {
+            seq: 2,
+            is_poss_dup: false,
+        },
+        now,
+        &mut RecordingEmitter::new(),
+    )
+    .unwrap();
 
     let mut recorder = RecordingEmitter::new();
-    let ctrl = s.on_app(2, true, now, &mut recorder).unwrap(); // poss_dup — silent ignore
+    let ctrl = s
+        .on_app(
+            AppIn {
+                seq: 2,
+                is_poss_dup: true,
+            },
+            now,
+            &mut recorder,
+        )
+        .unwrap(); // poss_dup — silent ignore
     assert_eq!(s.state(), State::Active);
     assert_eq!(ctrl, Control::None);
     assert_eq!(recorder.len(), 0);
@@ -497,7 +642,16 @@ fn initiated_logout_round_trip() {
     assert!(recorder.any_mt(b"5"), "logout must send a Logout");
 
     recorder.clear();
-    let ctrl = s.on_logout(2, false, now, &mut recorder).unwrap();
+    let ctrl = s
+        .on_logout(
+            LogoutIn {
+                seq: 2,
+                is_poss_dup: false,
+            },
+            now,
+            &mut recorder,
+        )
+        .unwrap();
     assert_eq!(s.state(), State::Disconnected);
     assert_eq!(
         ctrl,
@@ -514,7 +668,16 @@ fn counterparty_logout_is_confirmed() {
     establish(&mut s, now);
 
     let mut recorder = RecordingEmitter::new();
-    let ctrl = s.on_logout(2, false, now, &mut recorder).unwrap();
+    let ctrl = s
+        .on_logout(
+            LogoutIn {
+                seq: 2,
+                is_poss_dup: false,
+            },
+            now,
+            &mut recorder,
+        )
+        .unwrap();
     assert_eq!(s.state(), State::Disconnected);
     assert_eq!(
         ctrl,
@@ -570,7 +733,14 @@ fn reject_received_surfaces_control() {
     establish(&mut s, now);
 
     let ctrl = s
-        .on_reject(2, false, now, &mut RecordingEmitter::new())
+        .on_reject(
+            RejectIn {
+                seq: 2,
+                is_poss_dup: false,
+            },
+            now,
+            &mut RecordingEmitter::new(),
+        )
         .unwrap();
     assert_eq!(ctrl, Control::Reject);
 }
@@ -583,7 +753,16 @@ fn seq_nums_survive_reconnect() {
     s.allocate_seq(now).unwrap(); // outbound seq 2
 
     let mut recorder = RecordingEmitter::new();
-    s.on_logout(2, false, now, &mut recorder).unwrap(); // counterparty logout at inbound seq 2; session replies (seq 3), disconnects
+    // counterparty logout at inbound seq 2; session replies (seq 3), disconnects
+    s.on_logout(
+        LogoutIn {
+            seq: 2,
+            is_poss_dup: false,
+        },
+        now,
+        &mut recorder,
+    )
+    .unwrap();
 
     assert_eq!(s.state(), State::Disconnected);
 
@@ -594,7 +773,17 @@ fn seq_nums_survive_reconnect() {
     assert!(!recorder.has(0, 141));
     assert_eq!(recorder.num(0, 34), Some(4));
 
-    s.on_logon(3, 30, false, false, now, &mut recorder).unwrap();
+    s.on_logon(
+        LogonIn {
+            seq: 3,
+            heart_bt_int_s: 30,
+            is_reset_seq_num: false,
+            send_reply: false,
+        },
+        now,
+        &mut recorder,
+    )
+    .unwrap();
     assert_eq!(s.state(), State::Active);
 }
 
@@ -608,7 +797,17 @@ fn next_timeout_tracks_deadlines() {
     s.connect(now, &mut recorder).unwrap();
     assert_eq!(s.next_timeout(), Some(now + HB));
 
-    s.on_logon(1, 30, false, false, now, &mut recorder).unwrap();
+    s.on_logon(
+        LogonIn {
+            seq: 1,
+            heart_bt_int_s: 30,
+            is_reset_seq_num: false,
+            send_reply: false,
+        },
+        now,
+        &mut recorder,
+    )
+    .unwrap();
     assert_eq!(s.next_timeout(), Some(now + HB));
 }
 
@@ -618,7 +817,16 @@ fn messages_ignored_while_disconnected() {
     let now = Instant::now();
 
     let mut recorder = RecordingEmitter::new();
-    let ctrl = s.on_app(1, false, now, &mut recorder).unwrap();
+    let ctrl = s
+        .on_app(
+            AppIn {
+                seq: 1,
+                is_poss_dup: false,
+            },
+            now,
+            &mut recorder,
+        )
+        .unwrap();
     assert_eq!(s.state(), State::Disconnected);
     assert_eq!(ctrl, Control::None);
     assert_eq!(recorder.len(), 0);
