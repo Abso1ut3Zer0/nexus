@@ -241,3 +241,219 @@ async fn conformance_seq_reset() {
     assert_eq!(drive(&mut conn).await, DisconnectReason::Logout);
     assert!(child.wait().unwrap().success());
 }
+
+// ── battle-test scenarios (Tier 1 sequence-number + Tier 3 liveness) ─────────
+//
+// Mirror of the sync `fix_conformance.rs` cases over the tokio transport, so the
+// two drivers stay in lockstep. See `.claude/fix-battletest-findings.md` for the
+// pass/finding disposition and the FIX 4.4 rationale behind each assertion. The
+// async `recv` derives its read deadline from `next_timeout()`, so the timer
+// scenario needs no special socket timeout here.
+
+type Conn = FixConnection<AsyncReadAdapter<TcpStream>, MockDict>;
+
+/// Drive `recv` to a disconnect, recording whether `Resending` was entered and
+/// whether an `Application` surfaced. A `recv` error mid-scenario is a
+/// survivability failure, so it panics (surfacing a finding as a test failure).
+async fn drive_observe(conn: &mut Conn) -> (DisconnectReason, bool, bool) {
+    let mut saw_resending = false;
+    let mut saw_app = false;
+    loop {
+        match conn.recv(Instant::now()).await {
+            Ok(Some(Message::Disconnected { reason })) => return (reason, saw_resending, saw_app),
+            Ok(Some(Message::Application { .. })) => saw_app = true,
+            Ok(Some(_) | None) => {}
+            Err(e) => panic!("recv errored mid-scenario: {e:?}"),
+        }
+        if conn.state().state() == State::Resending {
+            saw_resending = true;
+        }
+    }
+}
+
+/// Drive until the session reaches `Active`, panicking on an early disconnect.
+async fn drive_to_active(conn: &mut Conn) {
+    loop {
+        match conn.recv(Instant::now()).await {
+            Ok(Some(Message::Disconnected { reason })) => {
+                panic!("disconnected before active: {reason:?}")
+            }
+            Err(e) => panic!("recv errored before active: {e:?}"),
+            _ => {}
+        }
+        if conn.state().state() == State::Active {
+            break;
+        }
+    }
+}
+
+// Tier 1 — sequence-number correctness.
+
+#[tokio::test]
+async fn conformance_app_seq_too_high() {
+    let dir = tmp_dir("app_seq_too_high");
+    let (mut child, port) = spawn_peer("app_seq_too_high");
+    let mut conn = connect(port, dir.path()).await;
+    conn.connect(Instant::now()).await.unwrap();
+    let (_reason, saw_resending, saw_app) = drive_observe(&mut conn).await;
+    assert!(
+        saw_resending,
+        "an inbound gap must send a ResendRequest and enter Resending"
+    );
+    assert!(
+        !saw_app,
+        "an out-of-sequence app must not surface to the application"
+    );
+    assert!(child.wait().unwrap().success());
+}
+
+#[tokio::test]
+async fn conformance_app_seq_too_low() {
+    let dir = tmp_dir("app_seq_too_low");
+    let (mut child, port) = spawn_peer("app_seq_too_low");
+    let mut conn = connect(port, dir.path()).await;
+    conn.connect(Instant::now()).await.unwrap();
+    let (reason, _, _) = drive_observe(&mut conn).await;
+    assert_eq!(reason, DisconnectReason::SeqNumTooLow);
+    assert!(child.wait().unwrap().success());
+}
+
+#[tokio::test]
+async fn conformance_seq_too_low_poss_dup() {
+    let dir = tmp_dir("seq_too_low_poss_dup");
+    let (mut child, port) = spawn_peer("seq_too_low_poss_dup");
+    let mut conn = connect(port, dir.path()).await;
+    conn.connect(Instant::now()).await.unwrap();
+    let (reason, _, _) = drive_observe(&mut conn).await;
+    assert_eq!(reason, DisconnectReason::Logout);
+    assert!(child.wait().unwrap().success());
+}
+
+#[tokio::test]
+async fn conformance_app_in_order() {
+    let dir = tmp_dir("app_in_order");
+    let (mut child, port) = spawn_peer("app_in_order");
+    let mut conn = connect(port, dir.path()).await;
+    conn.connect(Instant::now()).await.unwrap();
+    let (reason, _, saw_app) = drive_observe(&mut conn).await;
+    assert!(
+        saw_app,
+        "an in-order app must surface as Message::Application"
+    );
+    assert_eq!(reason, DisconnectReason::Logout);
+    assert!(child.wait().unwrap().success());
+}
+
+#[tokio::test]
+async fn conformance_resend_open_ended() {
+    let dir = tmp_dir("resend_open_ended");
+    let (mut child, port) = spawn_peer("resend_open_ended");
+    let mut conn = connect(port, dir.path()).await;
+    conn.connect(Instant::now()).await.unwrap();
+    drive_to_active(&mut conn).await;
+    let seq = conn.allocate_seq().unwrap();
+    conn.send_app(seq, &new_order(seq)).await.unwrap();
+    let (reason, _, _) = drive_observe(&mut conn).await;
+    assert_eq!(reason, DisconnectReason::Logout);
+    assert!(child.wait().unwrap().success());
+}
+
+#[tokio::test]
+async fn conformance_resend_admin_and_app() {
+    let dir = tmp_dir("resend_admin_and_app");
+    let (mut child, port) = spawn_peer("resend_admin_and_app");
+    let mut conn = connect(port, dir.path()).await;
+    conn.connect(Instant::now()).await.unwrap();
+    drive_to_active(&mut conn).await;
+    for _ in 0..2 {
+        let seq = conn.allocate_seq().unwrap();
+        conn.send_app(seq, &new_order(seq)).await.unwrap();
+    }
+    let (reason, _, _) = drive_observe(&mut conn).await;
+    assert_eq!(reason, DisconnectReason::Logout);
+    assert!(child.wait().unwrap().success());
+}
+
+#[tokio::test]
+async fn conformance_resend_during_resend() {
+    let dir = tmp_dir("resend_during_resend");
+    let (mut child, port) = spawn_peer("resend_during_resend");
+    let mut conn = connect(port, dir.path()).await;
+    conn.connect(Instant::now()).await.unwrap();
+    let (_reason, saw_resending, _) = drive_observe(&mut conn).await;
+    assert!(
+        saw_resending,
+        "engine must enter Resending on its own inbound gap"
+    );
+    assert!(child.wait().unwrap().success());
+}
+
+#[tokio::test]
+async fn conformance_seq_reset_backward() {
+    let dir = tmp_dir("seq_reset_backward");
+    let (mut child, port) = spawn_peer("seq_reset_backward");
+    let mut conn = connect(port, dir.path()).await;
+    conn.connect(Instant::now()).await.unwrap();
+    let (reason, _, _) = drive_observe(&mut conn).await;
+    assert_eq!(reason, DisconnectReason::Logout);
+    assert!(child.wait().unwrap().success());
+}
+
+#[tokio::test]
+async fn conformance_seq_reset_gap_fill_oos() {
+    let dir = tmp_dir("seq_reset_gap_fill_oos");
+    let (mut child, port) = spawn_peer("seq_reset_gap_fill_oos");
+    let mut conn = connect(port, dir.path()).await;
+    conn.connect(Instant::now()).await.unwrap();
+    let (_reason, saw_resending, _) = drive_observe(&mut conn).await;
+    assert!(
+        saw_resending,
+        "an out-of-sequence GapFill must be treated as a gap (ResendRequest → Resending)"
+    );
+    assert_eq!(
+        conn.state().next_inbound_seq(),
+        2,
+        "an out-of-sequence GapFill must not advance next_inbound to NewSeqNo"
+    );
+    assert!(child.wait().unwrap().success());
+}
+
+// Tier 3 — liveness.
+
+#[tokio::test]
+async fn conformance_test_request_long_id() {
+    let dir = tmp_dir("test_request_long_id");
+    let (mut child, port) = spawn_peer("test_request_long_id");
+    let mut conn = connect(port, dir.path()).await;
+    conn.connect(Instant::now()).await.unwrap();
+    let (reason, _, _) = drive_observe(&mut conn).await;
+    assert_eq!(reason, DisconnectReason::Logout);
+    assert!(child.wait().unwrap().success());
+}
+
+#[tokio::test]
+async fn conformance_test_request_timeout() {
+    let dir = tmp_dir("test_request_timeout");
+    let (mut child, port) = spawn_peer("test_request_timeout");
+    let mut conn = connect(port, dir.path()).await;
+    conn.connect(Instant::now()).await.unwrap();
+    let (reason, _, _) = drive_observe(&mut conn).await;
+    assert_eq!(reason, DisconnectReason::TestRequestTimeout);
+    assert!(child.wait().unwrap().success());
+}
+
+// Regression for confirmed engine bug Q1 (see .claude/fix-battletest-findings.md):
+// a below-expected SequenceReset-GapFill carrying PossDupFlag=Y must be discarded
+// (the session survives), NOT treated as SeqNumTooLow. Asserts the CORRECT
+// behavior and fails today — kept `#[ignore]`'d until the engine fix lands.
+#[tokio::test]
+#[ignore = "battletest finding Q1: below-expected GapFill w/ PossDup must be discarded, not disconnect; see .claude/fix-battletest-findings.md"]
+async fn conformance_seq_reset_gap_fill_below_possdup() {
+    let dir = tmp_dir("seq_reset_gap_fill_below_possdup");
+    let (mut child, port) = spawn_peer("seq_reset_gap_fill_below_possdup");
+    let mut conn = connect(port, dir.path()).await;
+    conn.connect(Instant::now()).await.unwrap();
+    let (reason, _, _) = drive_observe(&mut conn).await;
+    assert_eq!(reason, DisconnectReason::Logout);
+    assert!(child.wait().unwrap().success());
+}

@@ -1,0 +1,24 @@
+[package]
+name = "nexus-fix-engine-fuzz"
+version = "0.0.0"
+publish = false
+edition = "2024"
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+arbitrary = { version = "1", features = ["derive"] }
+nexus-fix-engine = { path = ".." }
+nexus-fix-codec = { path = "../../nexus-fix-codec" }
+
+# Detach from the workspace so cargo-fuzz builds it standalone.
+[workspace]
+
+[[bin]]
+name = "fuzz_session"
+path = "fuzz_targets/fuzz_session.rs"
+test = false
+doc = false
+bench = false

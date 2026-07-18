@@ -86,8 +86,8 @@ contained.
   missing-tag-35 reject). `MessageWriter::encode_admin` and the driver's
   `store_admin` are gone, folded into `Emitter`. Wire output is byte-identical;
   the byte-identity oracles and the FIX/async conformance suites pass unchanged.
-  `TEST_REQ_ID_CAP` is now exported from `nexus-fix-codec` so the public
-  `Heartbeat` struct's echo field is constructible.
+  `Heartbeat`'s `echo` field borrows the `TestReqID` (`Option<&[u8]>`), so it is
+  echoed verbatim with no length cap.
 - `SessionState` handler API reworked: the `Out` and `Event` types are
   removed. Each handler (`on_logon`, `on_app`, `on_timeout`, …) now takes an
   `emit: &mut F` closure (`F: FnMut(AdminMsg) -> Result<(), E>`) for outbound
