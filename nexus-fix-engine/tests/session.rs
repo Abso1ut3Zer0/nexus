@@ -394,7 +394,9 @@ fn gap_fill_advances_past_admin_messages() {
     assert_eq!(s.state(), State::Resending);
 
     recorder.clear();
-    let ctrl = s.on_sequence_reset(2, 7, true, now, &mut recorder).unwrap();
+    let ctrl = s
+        .on_sequence_reset(2, false, 7, true, now, &mut recorder)
+        .unwrap();
     assert_eq!(s.next_inbound_seq(), 7);
     assert_eq!(s.state(), State::Active);
     assert_eq!(recorder.len(), 0);
@@ -408,7 +410,7 @@ fn sequence_reset_reset_mode_ignores_seq() {
     establish(&mut s, now);
 
     let ctrl = s
-        .on_sequence_reset(999, 50, false, now, &mut RecordingEmitter::new())
+        .on_sequence_reset(999, false, 50, false, now, &mut RecordingEmitter::new())
         .unwrap();
     assert_eq!(s.next_inbound_seq(), 50);
     assert_eq!(ctrl, Control::SequenceReset);

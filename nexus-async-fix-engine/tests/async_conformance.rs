@@ -447,7 +447,6 @@ async fn conformance_test_request_timeout() {
 // (the session survives), NOT treated as SeqNumTooLow. Asserts the CORRECT
 // behavior and fails today — kept `#[ignore]`'d until the engine fix lands.
 #[tokio::test]
-#[ignore = "battletest finding Q1: below-expected GapFill w/ PossDup must be discarded, not disconnect; see .claude/fix-battletest-findings.md"]
 async fn conformance_seq_reset_gap_fill_below_possdup() {
     let dir = tmp_dir("seq_reset_gap_fill_below_possdup");
     let (mut child, port) = spawn_peer("seq_reset_gap_fill_below_possdup");
