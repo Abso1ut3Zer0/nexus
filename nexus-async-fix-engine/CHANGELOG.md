@@ -31,6 +31,11 @@ contained.
   `FixConnection::from_parts_with_customizer(...)`. All hook behavior lives in
   the shared `FixSession` core; this crate only threads the type parameter.
 
+- `recv()` now surfaces a garbled/bad-`BodyLength`/bad-`CheckSum` inbound frame as
+  the shared recoverable `Err(TransportError::Malformed { skipped, count, reason })`,
+  matching the sync engine (`is_fatal()` is `false`; the session resyncs and
+  continues). (#583)
+
 ### Internal
 
 - Test scratch directories are now removed on drop. The `tmp_dir` helpers in

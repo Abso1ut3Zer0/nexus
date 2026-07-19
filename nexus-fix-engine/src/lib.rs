@@ -40,7 +40,8 @@ pub mod transport;
 #[cfg(unix)]
 pub use fix_session::{FixSession, PollOutcome};
 pub use frame::{
-    FrameError, FrameReader, FrameReaderBuilder, FrameWriter, FrameWriterBuilder, ReadError,
+    FrameError, FrameReader, FrameReaderBuilder, FrameWriter, FrameWriterBuilder, MalformedReason,
+    ReadError,
 };
 #[cfg(unix)]
 pub use framework::Emitter;

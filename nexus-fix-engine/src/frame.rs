@@ -42,12 +42,16 @@ impl std::error::Error for ReadError {}
 /// Error from [`FrameReader::next`].
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum FrameError {
-    /// Invalid data was detected and discarded. `skipped` bytes were
-    /// advanced past to reach the next `8=` boundary (or end of buffer).
+    /// A frame failed to parse and was discarded. `skipped` bytes were
+    /// advanced past to reach the next `8=` boundary (or end of buffer);
+    /// `reason` records how the frame was malformed.
     ///
     /// The reader is ready for the next [`next`](FrameReader::next) call —
     /// no manual recovery needed.
-    Garbage { skipped: usize },
+    Malformed {
+        skipped: usize,
+        reason: MalformedReason,
+    },
     /// Message exceeds the configured maximum size. The message was
     /// skipped entirely.
     MessageTooLarge { size: usize },
@@ -56,8 +60,8 @@ pub enum FrameError {
 impl std::fmt::Display for FrameError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Self::Garbage { skipped } => {
-                write!(f, "discarded {skipped} bytes of invalid data")
+            Self::Malformed { skipped, reason } => {
+                write!(f, "discarded {skipped} bytes of invalid data ({reason})")
             }
             Self::MessageTooLarge { size } => {
                 write!(f, "message size {size} exceeds configured maximum")
@@ -68,6 +72,35 @@ impl std::fmt::Display for FrameError {
 
 impl std::error::Error for FrameError {}
 
+/// Why a frame failed to parse — carried on [`FrameError::Malformed`] and
+/// surfaced up the stack as the recoverable [`TransportError::Malformed`](crate::TransportError).
+///
+/// The variants escalate by how much of the frame was recovered before it
+/// broke: no header at all, a header whose declared length is wrong, or a
+/// fully-located frame whose bytes are corrupt.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MalformedReason {
+    /// No recognizable `8=BeginString` / `9=BodyLength` header where one was
+    /// expected — random bytes, a torn frame, or a resync landing mid-stream.
+    Framing,
+    /// `BodyLength(9)` is unparseable, or points somewhere other than the
+    /// `CheckSum(10)` field: the declared length disagrees with the frame.
+    BodyLength,
+    /// The frame is fully located but its `CheckSum(10)` does not match the
+    /// computed checksum — corruption in transit.
+    Checksum,
+}
+
+impl std::fmt::Display for MalformedReason {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
+            Self::Framing => "no valid frame header",
+            Self::BodyLength => "invalid or inconsistent BodyLength(9)",
+            Self::Checksum => "checksum mismatch",
+        })
+    }
+}
+
 /// FIX message boundary detector.
 ///
 /// Buffers inbound TCP bytes and yields complete FIX messages. Each call
@@ -76,7 +109,7 @@ impl std::error::Error for FrameError {}
 /// are needed.
 ///
 /// Invalid data is handled automatically: `next()` scans forward to
-/// the next `8=` boundary and returns [`FrameError::Garbage`] with the
+/// the next `8=` boundary and returns [`FrameError::Malformed`] with the
 /// number of bytes discarded. The reader is always in a parseable state
 /// after returning — no manual recovery needed.
 ///
@@ -114,8 +147,19 @@ pub struct FrameReaderBuilder {
 enum ParseResult {
     Complete(usize),
     Incomplete,
-    Garbage,
-    TooLarge { size: usize, end: usize },
+    /// A malformed frame. `frame_len` is `Some(end)` only for a `Checksum`
+    /// failure — a full frame boundary was located, so it is skipped exactly
+    /// rather than scanned past (a spurious `8=` in the corrupt payload would
+    /// otherwise mis-resync). `None` (framing / bad `BodyLength`) means there is
+    /// no trustworthy boundary, so scan forward for the next `8=`.
+    Malformed {
+        reason: MalformedReason,
+        frame_len: Option<usize>,
+    },
+    TooLarge {
+        size: usize,
+        end: usize,
+    },
 }
 
 impl FrameReader {
@@ -208,7 +252,7 @@ impl FrameReader {
     /// [`read`](Self::read) to drain all complete messages from the buffer.
     ///
     /// On invalid data, scans forward to the next `8=` boundary and
-    /// returns [`FrameError::Garbage`]. The reader always makes progress
+    /// returns [`FrameError::Malformed`]. The reader always makes progress
     /// on error — the next call starts from the new position.
     #[allow(clippy::should_implement_trait)]
     pub fn next(&mut self) -> Result<Option<&[u8]>, FrameError> {
@@ -223,9 +267,17 @@ impl FrameReader {
                 Ok(Some(&self.buf.data()[..end]))
             }
             ParseResult::Incomplete => Ok(None),
-            ParseResult::Garbage => {
-                let skipped = self.skip_to_next_header();
-                Err(FrameError::Garbage { skipped })
+            ParseResult::Malformed { reason, frame_len } => {
+                // A located frame (checksum failure) is skipped exactly; an
+                // untrustworthy one is scanned past to the next `8=`.
+                let skipped = match frame_len {
+                    Some(end) => {
+                        self.buf.advance(end);
+                        end
+                    }
+                    None => self.skip_to_next_header(),
+                };
+                Err(FrameError::Malformed { skipped, reason })
             }
             ParseResult::TooLarge { size, end } => {
                 if self.buf.data().len() >= end {
@@ -247,7 +299,10 @@ impl FrameReader {
         }
 
         if data[0] != b'8' || data[1] != b'=' {
-            return ParseResult::Garbage;
+            return ParseResult::Malformed {
+                reason: MalformedReason::Framing,
+                frame_len: None,
+            };
         }
 
         let Some(soh1) = find_soh(data, 2) else {
@@ -259,7 +314,10 @@ impl FrameReader {
             return ParseResult::Incomplete;
         }
         if data[tag9] != b'9' || data[tag9 + 1] != b'=' {
-            return ParseResult::Garbage;
+            return ParseResult::Malformed {
+                reason: MalformedReason::Framing,
+                frame_len: None,
+            };
         }
 
         let digits_start = tag9 + 2;
@@ -267,7 +325,10 @@ impl FrameReader {
             return ParseResult::Incomplete;
         };
         let Ok(body_len) = parse_body_length(&data[digits_start..soh2]) else {
-            return ParseResult::Garbage;
+            return ParseResult::Malformed {
+                reason: MalformedReason::BodyLength,
+                frame_len: None,
+            };
         };
 
         let body_start = soh2 + 1;
@@ -275,7 +336,10 @@ impl FrameReader {
             .checked_add(body_len)
             .and_then(|n| n.checked_add(CHECKSUM_LEN))
         else {
-            return ParseResult::Garbage;
+            return ParseResult::Malformed {
+                reason: MalformedReason::BodyLength,
+                frame_len: None,
+            };
         };
 
         if message_end > self.max_message_size {
@@ -290,11 +354,17 @@ impl FrameReader {
         }
 
         if !data[message_end - CHECKSUM_LEN..message_end].starts_with(b"10=") {
-            return ParseResult::Garbage;
+            return ParseResult::Malformed {
+                reason: MalformedReason::BodyLength,
+                frame_len: None,
+            };
         }
 
         if validate_checksum(&data[..message_end]).is_err() {
-            return ParseResult::Garbage;
+            return ParseResult::Malformed {
+                reason: MalformedReason::Checksum,
+                frame_len: Some(message_end),
+            };
         }
 
         ParseResult::Complete(message_end)
@@ -684,7 +754,13 @@ mod tests {
 
         // next() detects garbage, skips to 8=, returns error.
         let err = reader.next().unwrap_err();
-        assert_eq!(err, FrameError::Garbage { skipped: 7 });
+        assert_eq!(
+            err,
+            FrameError::Malformed {
+                skipped: 7,
+                reason: MalformedReason::Framing
+            }
+        );
 
         // Next call picks up the valid message.
         let frame = reader.next().unwrap().unwrap();
@@ -705,8 +781,9 @@ mod tests {
         let err = reader.next().unwrap_err();
         assert_eq!(
             err,
-            FrameError::Garbage {
-                skipped: garbage.len()
+            FrameError::Malformed {
+                skipped: garbage.len(),
+                reason: MalformedReason::Framing
             }
         );
 
@@ -725,7 +802,13 @@ mod tests {
         reader.read(&data).unwrap();
 
         let err = reader.next().unwrap_err();
-        assert!(matches!(err, FrameError::Garbage { .. }));
+        assert!(matches!(
+            err,
+            FrameError::Malformed {
+                reason: MalformedReason::BodyLength,
+                ..
+            }
+        ));
 
         let frame = reader.next().unwrap().unwrap();
         assert_eq!(frame, msg.as_slice());
@@ -742,7 +825,7 @@ mod tests {
         reader.read(&data).unwrap();
 
         let err = reader.next().unwrap_err();
-        assert!(matches!(err, FrameError::Garbage { .. }));
+        assert!(matches!(err, FrameError::Malformed { .. }));
 
         let frame = reader.next().unwrap().unwrap();
         assert_eq!(frame, msg.as_slice());
@@ -761,7 +844,7 @@ mod tests {
         reader.read(&garbage).unwrap();
 
         let err = reader.next().unwrap_err();
-        assert!(matches!(err, FrameError::Garbage { .. }));
+        assert!(matches!(err, FrameError::Malformed { .. }));
 
         let frame = reader.next().unwrap().unwrap();
         assert_eq!(frame, msg.as_slice());
@@ -779,7 +862,13 @@ mod tests {
         reader.read(b"no valid message here at all").unwrap();
 
         let err = reader.next().unwrap_err();
-        assert_eq!(err, FrameError::Garbage { skipped: 28 });
+        assert_eq!(
+            err,
+            FrameError::Malformed {
+                skipped: 28,
+                reason: MalformedReason::Framing
+            }
+        );
 
         assert!(reader.next().unwrap().is_none());
     }
@@ -797,11 +886,17 @@ mod tests {
 
         // First next(): skips XX, lands on false 8=.
         let err = reader.next().unwrap_err();
-        assert_eq!(err, FrameError::Garbage { skipped: 2 });
+        assert_eq!(
+            err,
+            FrameError::Malformed {
+                skipped: 2,
+                reason: MalformedReason::Framing
+            }
+        );
 
         // Second next(): false 8= has no valid 9=, skips to real 8=.
         let err = reader.next().unwrap_err();
-        assert!(matches!(err, FrameError::Garbage { .. }));
+        assert!(matches!(err, FrameError::Malformed { .. }));
 
         // Third next(): real message.
         let frame = reader.next().unwrap().unwrap();
@@ -819,7 +914,7 @@ mod tests {
         reader.read(&data).unwrap();
 
         let err = reader.next().unwrap_err();
-        assert!(matches!(err, FrameError::Garbage { .. }));
+        assert!(matches!(err, FrameError::Malformed { .. }));
 
         let frame = reader.next().unwrap().unwrap();
         assert_eq!(frame, msg.as_slice());
@@ -837,7 +932,13 @@ mod tests {
         reader.read(&data).unwrap();
 
         let err = reader.next().unwrap_err();
-        assert!(matches!(err, FrameError::Garbage { .. }));
+        assert!(matches!(
+            err,
+            FrameError::Malformed {
+                reason: MalformedReason::BodyLength,
+                ..
+            }
+        ));
 
         let frame = reader.next().unwrap().unwrap();
         assert_eq!(frame, valid.as_slice());
@@ -1031,10 +1132,51 @@ mod tests {
         let mut reader = FrameReader::builder().build();
         reader.read(&msg).unwrap();
         let err = reader.next().unwrap_err();
-        assert!(
-            matches!(err, FrameError::Garbage { .. }),
-            "corrupt checksum must be treated as garbage"
+        // A checksum failure locates the full frame, so it is skipped exactly —
+        // `skipped` is the whole frame, not a scan to some later `8=`.
+        assert_eq!(
+            err,
+            FrameError::Malformed {
+                skipped: msg.len(),
+                reason: MalformedReason::Checksum,
+            },
         );
+    }
+
+    #[test]
+    fn checksum_failure_skips_exact_frame_over_spurious_header() {
+        // A checksum-corrupt frame whose payload contains a stray `8=` (here in a
+        // Text(58) value) must be skipped by its located length, NOT scanned to
+        // the inner `8=` — otherwise one bad frame splits into several malformed
+        // events and the following good frame is mis-parsed.
+        let mut corrupt = {
+            let mut buf = [0u8; 128];
+            let mut fmt = nexus_fix_codec::FrameFormatter::new(&mut buf, b"FIX.4.4", b"0");
+            fmt.field(58, b"x8=y"); // stray "8=" inside the body
+            let (start, len) = fmt.finish().unwrap();
+            buf[start..start + len].to_vec()
+        };
+        let n = corrupt.len();
+        corrupt[n - 2] ^= 1; // break the checksum, keeping BodyLength valid
+        let good = heartbeat();
+
+        let mut reader = FrameReader::builder().build();
+        reader.read(&corrupt).unwrap();
+        reader.read(&good).unwrap();
+
+        // One malformed event, skipping exactly the corrupt frame...
+        let err = reader.next().unwrap_err();
+        assert_eq!(
+            err,
+            FrameError::Malformed {
+                skipped: corrupt.len(),
+                reason: MalformedReason::Checksum,
+            },
+            "the stray 8= must not resync mid-frame",
+        );
+        // ...then the following good frame parses intact.
+        let frame = reader.next().unwrap().unwrap();
+        assert_eq!(frame, good.as_slice());
     }
 
     #[test]

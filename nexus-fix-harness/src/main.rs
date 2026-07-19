@@ -140,6 +140,11 @@ fn main() {
                     app_msgs += 1;
                 }
                 Ok(Some(_) | None) => {}
+                // A recoverable error (a malformed frame: bad checksum, lying
+                // BodyLength, or garbage framing) leaves the session intact — the
+                // reader has resynced. Tolerate it and keep receiving, so an
+                // adversarial peer's garbage cannot end the session.
+                Err(e) if !e.is_fatal() => eprintln!("recoverable: {e}"),
                 Err(e) => {
                     eprintln!("error: {e}");
                     break;
