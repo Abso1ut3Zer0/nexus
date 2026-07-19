@@ -260,6 +260,14 @@ impl<S: Read + Write, D: FixDictionary, C: SessionCustomizer> FixConnection<S, D
     /// [`tick`](Self::tick) on your own schedule (a bounded `try_recv` loop, or a
     /// separate thread).
     ///
+    /// `now` is your duty-cycle clock reading. The core never reads the wall clock
+    /// itself — that is what keeps the session deterministically replayable — so read
+    /// `now` once per iteration, keep it monotonic, and pass the same value to
+    /// `recv`/[`try_recv`](Self::try_recv) and [`tick`](Self::tick). It stamps
+    /// `last_received` (the liveness clock); a `now` you let go stale backdates that
+    /// conservatively — at worst an early, peer-answered TestRequest, never a false
+    /// disconnect.
+    ///
     /// Requires a **blocking** socket. On one this parks in the read syscall until
     /// bytes arrive; a read timeout (`SO_RCVTIMEO`) is transparent — a no-data wake
     /// is retried, so `recv` returns only with a message or an error and one
@@ -319,6 +327,9 @@ impl<S: Read + Write, D: FixDictionary, C: SessionCustomizer> FixConnection<S, D
     /// the logon/logout/test-request/reset deadlines. No `recv*` method does this —
     /// the caller drives `tick` on its own schedule (`select!` in async, a timeout
     /// loop in sync). Returns `Err(UnexpectedDisconnect)` if a deadline blew.
+    ///
+    /// Pass the same duty-cycle `now` you give [`recv`](Self::recv) — one monotonic
+    /// reading per iteration, shared by both. See `recv` for the clock contract.
     pub fn tick(&mut self, now: Instant) -> Result<(), Error> {
         if self.terminated {
             return Err(Error::Closed);

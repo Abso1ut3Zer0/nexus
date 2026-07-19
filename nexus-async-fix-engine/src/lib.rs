@@ -345,6 +345,14 @@ impl<S: WireStream + Unpin, D: FixDictionary, C: SessionCustomizer> FixConnectio
     /// After any terminal outcome further calls return `Err(Closed)`. A malformed
     /// frame is a recoverable `Err(Malformed)` — the session stays live.
     ///
+    /// `now` is your duty-cycle clock reading. The core never reads the wall clock
+    /// itself — that is what keeps the session deterministically replayable — so read
+    /// `now` once per iteration, keep it monotonic, and pass the same value to
+    /// `recv`/[`try_recv`](Self::try_recv) and [`tick`](Self::tick). It stamps
+    /// `last_received` (the liveness clock); a `now` you let go stale backdates that
+    /// conservatively — at worst an early, peer-answered TestRequest, never a false
+    /// disconnect.
+    ///
     /// **Cancellation:** dropping this future (e.g. losing a `select!` race) is safe
     /// at the socket read — the usual cancellation point — and for any message that
     /// carries no reply (application messages, plain heartbeats). A message that
@@ -371,10 +379,11 @@ impl<S: WireStream + Unpin, D: FixDictionary, C: SessionCustomizer> FixConnectio
         Ok(self.finish(step))
     }
 
-    /// Returns the next ready message without awaiting, or `None` when nothing is
-    /// ready (a single `Pending` transport poll). A pure receive — never touches the
-    /// clock (see [`tick`](Self::tick)). After any terminal outcome further calls
-    /// return `Err(Closed)`.
+    /// Returns the next ready message, or `None` when nothing is ready — a single
+    /// non-blocking transport poll (`Pending` → `None`). Never awaits *inbound* bytes;
+    /// it is `async` only to flush an outbound reply the poll may enqueue. A pure
+    /// receive — never touches the clock (see [`tick`](Self::tick)). After any terminal
+    /// outcome further calls return `Err(Closed)`.
     pub async fn try_recv(&mut self, now: Instant) -> Result<Option<Message<'_, D>>, Error> {
         if self.terminated {
             return Err(Error::Closed);
@@ -397,6 +406,9 @@ impl<S: WireStream + Unpin, D: FixDictionary, C: SessionCustomizer> FixConnectio
     /// the logon/logout/test-request/reset deadlines. No `recv*` method does this —
     /// drive `tick` from a `select!` timer branch. Returns `Err(UnexpectedDisconnect)`
     /// if a deadline blew.
+    ///
+    /// Pass the same duty-cycle `now` you give [`recv`](Self::recv) — one monotonic
+    /// reading per iteration, shared by both. See `recv` for the clock contract.
     pub async fn tick(&mut self, now: Instant) -> Result<(), Error> {
         if self.terminated {
             return Err(Error::Closed);
