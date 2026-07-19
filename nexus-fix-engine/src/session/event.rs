@@ -17,11 +17,14 @@ pub enum State {
     AwaitingResetAck,
 }
 
-/// Why the session disconnected.
+/// Why the session was dropped **abnormally**.
+///
+/// A clean, negotiated logout is not here — it surfaces as
+/// [`Message::LoggedOut`](crate::Message::LoggedOut) on the `Ok` side. Every
+/// reason in this enum is a fault, carried by
+/// [`TransportError::UnexpectedDisconnect`](crate::TransportError).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DisconnectReason {
-    /// Clean logout exchange completed.
-    Logout,
     /// No Logon reply within the logon timeout.
     LogonTimeout,
     /// No Logout confirm within the logout timeout.
@@ -38,6 +41,10 @@ pub enum DisconnectReason {
     SeqNumExhausted,
     /// Counterparty did not complete the reset handshake within the timeout.
     ResetTimeout,
+    /// The peer closed the transport (socket EOF) without a FIX Logout. Distinct
+    /// from a connection reset, which surfaces as
+    /// [`TransportError::Io`](crate::TransportError).
+    PeerClosed,
 }
 
 /// The owned verdict a [`SessionState`](super::SessionState) handler returns.
@@ -73,7 +80,7 @@ pub enum Control {
     },
     /// A Logout (35=5) was processed without ending the session. This only
     /// happens out-of-state (e.g. mid-reset); an in-sequence Logout completes
-    /// the exchange and surfaces as [`Control::Disconnected`] instead.
+    /// the exchange and surfaces as [`Control::LoggedOut`] instead.
     Logout,
     /// A Heartbeat (35=0) was processed.
     Heartbeat,
@@ -88,7 +95,12 @@ pub enum Control {
     Reject,
     /// An in-sequence application message was processed.
     Application,
-    /// The session left the connected states.
+    /// A clean, negotiated logout completed and the session ended. Surfaces as
+    /// [`Message::LoggedOut`](crate::Message::LoggedOut) — the graceful terminal
+    /// event on the `Ok` side, distinct from an abnormal [`Disconnected`](Self::Disconnected).
+    LoggedOut,
+    /// The session was dropped abnormally. Surfaces as
+    /// [`TransportError::UnexpectedDisconnect`](crate::TransportError), never a `Message`.
     Disconnected {
         /// Why the session ended.
         reason: DisconnectReason,

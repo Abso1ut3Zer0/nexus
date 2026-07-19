@@ -39,10 +39,12 @@ pub trait Emit {
 /// disconnect if it is exhausted.
 ///
 /// [`SessionState::bump_outbound`] returns `Option<u32>` (`None` on exhaustion),
-/// but the exhaustion path returns a *success* value (`Ok(Control::Disconnected)`,
-/// surfaced as `Message::Disconnected`) rather than an `Err`, so it cannot ride
-/// `?`. This macro packages the `match` + early `return` so the ~8 handler sites
-/// that consume an outbound seqnum share one definition of disconnect-on-exhaustion.
+/// but the exhaustion path returns a *success* value at the handler level
+/// (`Ok(Control::Disconnected { reason: SeqNumExhausted })`, which the driver then
+/// surfaces as `Err(TransportError::UnexpectedDisconnect)`) rather than the handler
+/// itself producing an `Err`, so it cannot ride `?`. This macro packages the
+/// `match` + early `return` so the ~8 handler sites that consume an outbound
+/// seqnum share one definition of disconnect-on-exhaustion.
 macro_rules! seq {
     ($self:ident, $now:ident) => {
         match $self.bump_outbound($now) {
@@ -445,7 +447,7 @@ impl SessionState {
         self.last_received = Some(now);
         self.test_request_sent = None;
         if self.state == State::LogonSent {
-            return Ok(self.disconnect(DisconnectReason::Logout));
+            return Ok(self.logged_out());
         }
         if matches!(
             self.state,
@@ -458,7 +460,7 @@ impl SessionState {
                         let logout_seq = seq!(self, now);
                         emitter.emit(Logout { seq: logout_seq })?;
                     }
-                    return Ok(self.disconnect(DisconnectReason::Logout));
+                    return Ok(self.logged_out());
                 }
                 // Gap/duplicate: suppressed (ResendRequest already emitted, or a
                 // PossDup-too-low frame ignored). Too-low without PossDup:
@@ -834,6 +836,16 @@ impl SessionState {
         self.test_request_sent = None;
         self.state_entered = None;
         Control::Disconnected { reason }
+    }
+
+    /// Clean, negotiated logout: the same terminal state transition as
+    /// [`disconnect`](Self::disconnect), but the graceful `Control::LoggedOut`
+    /// verdict — surfaced as `Message::LoggedOut`, not an error.
+    fn logged_out(&mut self) -> Control {
+        self.state = State::Disconnected;
+        self.test_request_sent = None;
+        self.state_entered = None;
+        Control::LoggedOut
     }
 
     fn check_resend_done(&mut self) {

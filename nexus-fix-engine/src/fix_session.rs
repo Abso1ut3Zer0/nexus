@@ -67,6 +67,14 @@ pub enum Error {
         count: u64,
         reason: MalformedReason,
     },
+    /// The session was dropped abnormally (see `reason`) — a fault, distinct from
+    /// a clean logout (which surfaces as [`Message::LoggedOut`] on the `Ok` side).
+    /// Terminal.
+    UnexpectedDisconnect { reason: DisconnectReason },
+    /// `recv` was called after the session already ended — a prior call already
+    /// returned `Message::LoggedOut` or a terminal error. A caller bug: the
+    /// session is gone. Terminal.
+    Closed,
     /// A socket-level I/O failure. Terminal.
     Io(std::io::Error),
     /// An inbound frame exceeded the reader buffer or the configured maximum — a
@@ -91,6 +99,10 @@ impl std::fmt::Display for Error {
             Self::Malformed {
                 skipped, reason, ..
             } => write!(f, "malformed frame: discarded {skipped} bytes ({reason})"),
+            Self::UnexpectedDisconnect { reason } => {
+                write!(f, "unexpected disconnect: {reason:?}")
+            }
+            Self::Closed => f.write_str("recv on a closed session"),
             Self::Io(e) => write!(f, "I/O: {e}"),
             Self::MessageTooLarge(n) => write!(f, "message too large: {n} bytes"),
             Self::Protocol(e) => write!(f, "protocol: {e}"),
@@ -144,8 +156,11 @@ pub enum PollOutcome {
     /// (an out-of-sequence app suppressed pending resend, or a session-level
     /// reject was emitted). The wrapper should surface this as `Ok(None)`.
     Suppressed,
-    /// The session disconnected. The wrapper surfaces
-    /// `Message::Disconnected { reason }`.
+    /// A clean, negotiated logout ended the session. The wrapper surfaces
+    /// `Message::LoggedOut`.
+    LoggedOut,
+    /// The session was dropped abnormally. The wrapper surfaces
+    /// `Err(TransportError::UnexpectedDisconnect { reason })`.
     Disconnected(DisconnectReason),
 }
 
@@ -451,8 +466,9 @@ impl<D: FixDictionary, C: SessionCustomizer> FixSession<D, C> {
 
     /// Reconstructs the typed [`Message`] for the frame just processed by
     /// [`poll`](Self::poll). Only valid immediately after a [`PollOutcome::Message`]
-    /// (or a [`PollOutcome::Disconnected`], which also maps to
-    /// `Message::Disconnected`); the borrow is over the stable frame buffer.
+    /// or a [`PollOutcome::LoggedOut`] (which maps to `Message::LoggedOut`); an
+    /// abnormal [`PollOutcome::Disconnected`] is surfaced as an `Err`, never here.
+    /// The borrow is over the stable frame buffer.
     pub fn message(&self) -> Message<'_, D> {
         let frame = &self.reader.frame[..];
         match self.pending {
@@ -491,7 +507,13 @@ impl<D: FixDictionary, C: SessionCustomizer> FixSession<D, C> {
             Control::Application => Message::Application {
                 header: D::Header::decode(frame),
             },
-            Control::Disconnected { reason } => Message::Disconnected { reason },
+            Control::LoggedOut => {
+                let msg = D::Logout::decode(frame).expect("frame decoded in poll");
+                Message::LoggedOut { msg }
+            }
+            Control::Disconnected { .. } => {
+                unreachable!("abnormal disconnect is surfaced as an Err, never message()")
+            }
             Control::None | Control::Proceed => {
                 unreachable!("message() called without a pending message")
             }
@@ -774,6 +796,7 @@ impl<D: FixDictionary, C: SessionCustomizer> FixSession<D, C> {
         self.pending = ctrl;
         match ctrl {
             Control::None => PollOutcome::Suppressed,
+            Control::LoggedOut => PollOutcome::LoggedOut,
             Control::Disconnected { reason } => PollOutcome::Disconnected(reason),
             Control::Proceed => unreachable!("Proceed is transient; handlers never return it"),
             _ => PollOutcome::Message,

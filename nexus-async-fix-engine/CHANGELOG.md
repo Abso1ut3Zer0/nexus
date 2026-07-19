@@ -36,6 +36,13 @@ contained.
   matching the sync engine (`is_fatal()` is `false`; the session resyncs and
   continues). (#583)
 
+- `recv()` splits session end by outcome, matching the sync engine: a clean logout
+  is `Ok(Some(Message::LoggedOut { msg }))`; an abnormal disconnect (including a
+  socket EOF, now `DisconnectReason::PeerClosed`) is
+  `Err(TransportError::UnexpectedDisconnect { reason })`; and a `recv()` after a
+  terminal outcome is `Err(TransportError::Closed)`. `Message::Disconnected` is
+  removed. (#612)
+
 ### Internal
 
 - Test scratch directories are now removed on drop. The `tmp_dir` helpers in

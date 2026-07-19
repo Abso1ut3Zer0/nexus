@@ -80,6 +80,21 @@ contained.
 
 ### Changed
 
+- Session end is split by outcome. A clean, negotiated logout surfaces as
+  `Message::LoggedOut { msg }` (`Ok`, carrying the peer's Logout 35=5 so the caller
+  can read `Text(58)`); an abnormal disconnect surfaces as
+  `Err(TransportError::UnexpectedDisconnect { reason })`, never a message. The old
+  `Message::Disconnected { reason }` is removed. So `recv()?` now propagates a fault
+  disconnect toward reconnect/alert logic, while a graceful shutdown is a distinct
+  terminal event on the `Ok` side.
+  - `DisconnectReason` drops `Logout` (now represented by `Message::LoggedOut`) and
+    adds `PeerClosed` — a socket EOF with no FIX Logout, previously misreported as a
+    clean `Logout`. It is now purely the fault set.
+  - `TransportError` gains `UnexpectedDisconnect { reason }` and `Closed`. Calling
+    `recv()` after any terminal outcome returns `Closed` (mirrors tungstenite's
+    `AlreadyClosed`), tracked per connection. Both are fatal (`is_fatal()` is `true`;
+    only `Malformed` is recoverable). (#612)
+
 - `FrameError::Garbage { skipped }` is renamed to
   `FrameError::Malformed { skipped, reason }`, carrying a `MalformedReason`. The
   old name implied random bytes, but the reader also reports a bad
