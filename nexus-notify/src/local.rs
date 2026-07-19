@@ -74,6 +74,10 @@ pub struct LocalNotify {
     /// Token indices queued for dispatch this cycle (deduped via `bits`).
     dispatch_list: Vec<usize>,
 
+    /// Index of the next token to dispatch. Advances on partial drain
+    /// instead of shifting the Vec; reset to 0 on full drain.
+    dispatch_head: usize,
+
     /// High-water mark for token allocation.
     num_tokens: usize,
 }
@@ -84,6 +88,7 @@ impl LocalNotify {
         Self {
             bits: vec![0u64; capacity.div_ceil(64)],
             dispatch_list: Vec::with_capacity(capacity),
+            dispatch_head: 0,
             num_tokens: 0,
         }
     }
@@ -167,37 +172,36 @@ impl LocalNotify {
     #[inline]
     pub fn poll_limit(&mut self, events: &mut Events, limit: usize) {
         events.clear();
-        let drain_count = self.dispatch_list.len().min(limit);
-        for &idx in &self.dispatch_list[..drain_count] {
+        let remaining = self.dispatch_list.len() - self.dispatch_head;
+        let drain_count = remaining.min(limit);
+        let head = self.dispatch_head;
+        for &idx in &self.dispatch_list[head..head + drain_count] {
             events.push(Token::new(idx));
         }
-        if drain_count == self.dispatch_list.len() {
-            // Full drain — bulk clear
+        if drain_count == remaining {
+            // Full drain — bulk clear and reset cursor.
             self.bits.fill(0);
             self.dispatch_list.clear();
+            self.dispatch_head = 0;
         } else {
-            // Partial drain — clear bits for drained tokens, shift remainder.
-            // Vec::drain memmoves remaining elements. Cost is O(remaining),
-            // acceptable for typical token counts (<100). A cursor-based
-            // approach would avoid the memmove but adds complexity for a
-            // cold-path operation.
-            for &idx in &self.dispatch_list[..drain_count] {
-                self.bits[idx / 64] &= !(1 << (idx % 64));
+            // Partial drain — clear bits for drained tokens, advance cursor.
+            for &idx in &self.dispatch_list[head..head + drain_count] {
+                self.bits[idx / 64] &= !(1u64 << (idx % 64));
             }
-            self.dispatch_list.drain(..drain_count);
+            self.dispatch_head += drain_count;
         }
     }
 
     /// Returns `true` if any token is marked.
     #[inline]
     pub fn has_notified(&self) -> bool {
-        !self.dispatch_list.is_empty()
+        self.dispatch_head < self.dispatch_list.len()
     }
 
     /// Number of tokens currently marked.
     #[inline]
     pub fn notified_count(&self) -> usize {
-        self.dispatch_list.len()
+        self.dispatch_list.len() - self.dispatch_head
     }
 
     /// Number of registered tokens.
