@@ -56,6 +56,19 @@ pub use nexus_net::WireStream;
 /// `nexus-net-tokio` directly.
 pub use nexus_net_tokio::{AsyncReadAdapter, MaybeTls};
 
+/// Owned outcome of one [`FixConnection::recv`] step. Returned by the internal
+/// `recv_step` so `recv` can arm the terminated guard — on any fatal error or a
+/// clean logout — before borrowing `self` to reconstruct the borrowed message.
+enum RecvStep {
+    /// A typed message is ready; call `message()`.
+    Message,
+    /// A clean, negotiated logout ended the session.
+    LoggedOut,
+    /// Nothing to surface this step (a suppressed frame, or a read deadline with no
+    /// timer elapsed); the wrapper returns `Ok(None)`.
+    Nothing,
+}
+
 /// Async FIX session transport over any [`WireStream`].
 ///
 /// Thin wrapper over [`FixSession`]: the socket calls are `.await`ed; everything
@@ -333,6 +346,29 @@ impl<S: WireStream + Unpin, D: FixDictionary, C: SessionCustomizer> FixConnectio
         if self.terminated {
             return Err(Error::Closed);
         }
+        match self.recv_step(now).await {
+            Ok(RecvStep::Message) => Ok(Some(self.session.message())),
+            // Clean, negotiated logout: the graceful terminal event.
+            Ok(RecvStep::LoggedOut) => {
+                self.terminated = true;
+                Ok(Some(self.session.message()))
+            }
+            Ok(RecvStep::Nothing) => Ok(None),
+            // Any fatal error ends the session, so the next `recv` is `Closed`; a
+            // recoverable error (`Malformed`) leaves the session live.
+            Err(e) => {
+                if e.is_fatal() {
+                    self.terminated = true;
+                }
+                Err(e)
+            }
+        }
+    }
+
+    /// Advances the session one step, returning an *owned* outcome. Splitting this
+    /// from [`recv`](Self::recv) lets `recv` arm the terminated guard (on any fatal
+    /// error or a clean logout) before borrowing `self` to build the message.
+    async fn recv_step(&mut self, now: Instant) -> Result<RecvStep, Error> {
         loop {
             let outcome = self.session.poll(now)?;
             // Drain any admin/resend the core enqueued for this step (matches the
@@ -340,18 +376,13 @@ impl<S: WireStream + Unpin, D: FixDictionary, C: SessionCustomizer> FixConnectio
             self.drain_outbound().await?;
 
             match outcome {
-                PollOutcome::Message => return Ok(Some(self.session.message())),
-                // Clean, negotiated logout: the graceful terminal event.
-                PollOutcome::LoggedOut => {
-                    self.terminated = true;
-                    return Ok(Some(self.session.message()));
-                }
+                PollOutcome::Message => return Ok(RecvStep::Message),
+                PollOutcome::LoggedOut => return Ok(RecvStep::LoggedOut),
                 // Abnormal drop: a fault, surfaced as an error, not a message.
                 PollOutcome::Disconnected(reason) => {
-                    self.terminated = true;
                     return Err(Error::UnexpectedDisconnect { reason });
                 }
-                PollOutcome::Suppressed => return Ok(None),
+                PollOutcome::Suppressed => return Ok(RecvStep::Nothing),
                 // Buffer already drained above; loop to continue the resend.
                 PollOutcome::ResendPending => {}
                 PollOutcome::NeedMoreBytes => {
@@ -386,9 +417,8 @@ impl<S: WireStream + Unpin, D: FixDictionary, C: SessionCustomizer> FixConnectio
                     )
                     .await
                     {
+                        // Peer closed the transport (FIN) without a FIX Logout.
                         Ok(Ok(0)) => {
-                            // Peer closed the transport (FIN) without a FIX Logout.
-                            self.terminated = true;
                             return Err(Error::UnexpectedDisconnect {
                                 reason: DisconnectReason::PeerClosed,
                             });
@@ -400,11 +430,10 @@ impl<S: WireStream + Unpin, D: FixDictionary, C: SessionCustomizer> FixConnectio
                         Err(_elapsed) => {
                             if let Some(reason) = self.session.on_timeout(now)? {
                                 self.drain_outbound().await?;
-                                self.terminated = true;
                                 return Err(Error::UnexpectedDisconnect { reason });
                             }
                             self.drain_outbound().await?;
-                            return Ok(None);
+                            return Ok(RecvStep::Nothing);
                         }
                     }
                 }

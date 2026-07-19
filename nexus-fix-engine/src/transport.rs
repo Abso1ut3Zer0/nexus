@@ -20,6 +20,19 @@ use crate::session::{DisconnectReason, SessionState, State};
 
 pub use crate::fix_session::{Error, REFRAME_HEADROOM};
 
+/// Owned outcome of one [`FixConnection::recv`] step. Returned by the internal
+/// `recv_step` so `recv` can arm the terminated guard — on any fatal error or a
+/// clean logout — before borrowing `self` to reconstruct the borrowed message.
+enum RecvStep {
+    /// A typed message is ready; call `message()`.
+    Message,
+    /// A clean, negotiated logout ended the session.
+    LoggedOut,
+    /// Nothing to surface this step (a suppressed frame, or a read timeout with no
+    /// deadline elapsed); the wrapper returns `Ok(None)`.
+    Nothing,
+}
+
 /// Blocking FIX session transport.
 ///
 /// `C` is the per-venue [`SessionCustomizer`] applied to outbound admin
@@ -246,6 +259,29 @@ impl<S: Read + Write, D: FixDictionary, C: SessionCustomizer> FixConnection<S, D
         if self.terminated {
             return Err(Error::Closed);
         }
+        match self.recv_step(now) {
+            Ok(RecvStep::Message) => Ok(Some(self.session.message())),
+            // Clean, negotiated logout: the graceful terminal event.
+            Ok(RecvStep::LoggedOut) => {
+                self.terminated = true;
+                Ok(Some(self.session.message()))
+            }
+            Ok(RecvStep::Nothing) => Ok(None),
+            // Any fatal error ends the session, so the next `recv` is `Closed`; a
+            // recoverable error (`Malformed`) leaves the session live.
+            Err(e) => {
+                if e.is_fatal() {
+                    self.terminated = true;
+                }
+                Err(e)
+            }
+        }
+    }
+
+    /// Advances the session one step, returning an *owned* outcome. Splitting this
+    /// from [`recv`](Self::recv) lets `recv` arm the terminated guard (on any fatal
+    /// error or a clean logout) before borrowing `self` to build the message.
+    fn recv_step(&mut self, now: Instant) -> Result<RecvStep, Error> {
         loop {
             let outcome = self.session.poll(now)?;
             // Drain any admin/resend the core enqueued for this step (matches the
@@ -253,18 +289,13 @@ impl<S: Read + Write, D: FixDictionary, C: SessionCustomizer> FixConnection<S, D
             self.drain_outbound()?;
 
             match outcome {
-                PollOutcome::Message => return Ok(Some(self.session.message())),
-                // Clean, negotiated logout: the graceful terminal event.
-                PollOutcome::LoggedOut => {
-                    self.terminated = true;
-                    return Ok(Some(self.session.message()));
-                }
+                PollOutcome::Message => return Ok(RecvStep::Message),
+                PollOutcome::LoggedOut => return Ok(RecvStep::LoggedOut),
                 // Abnormal drop: a fault, surfaced as an error, not a message.
                 PollOutcome::Disconnected(reason) => {
-                    self.terminated = true;
                     return Err(Error::UnexpectedDisconnect { reason });
                 }
-                PollOutcome::Suppressed => return Ok(None),
+                PollOutcome::Suppressed => return Ok(RecvStep::Nothing),
                 // Buffer already drained above; loop to continue the resend.
                 PollOutcome::ResendPending => {}
                 PollOutcome::NeedMoreBytes => {
@@ -280,9 +311,8 @@ impl<S: Read + Write, D: FixDictionary, C: SessionCustomizer> FixConnection<S, D
                     }
                     let spare = self.session.read_spare();
                     match self.stream.read(spare) {
+                        // Peer closed the transport (FIN) without a FIX Logout.
                         Ok(0) => {
-                            // Peer closed the transport (FIN) without a FIX Logout.
-                            self.terminated = true;
                             return Err(Error::UnexpectedDisconnect {
                                 reason: DisconnectReason::PeerClosed,
                             });
@@ -291,11 +321,10 @@ impl<S: Read + Write, D: FixDictionary, C: SessionCustomizer> FixConnection<S, D
                         Err(e) if is_timeout(&e) => {
                             if let Some(reason) = self.session.on_timeout(now)? {
                                 self.drain_outbound()?;
-                                self.terminated = true;
                                 return Err(Error::UnexpectedDisconnect { reason });
                             }
                             self.drain_outbound()?;
-                            return Ok(None);
+                            return Ok(RecvStep::Nothing);
                         }
                         Err(e) => return Err(Error::Io(e)),
                     }

@@ -1230,4 +1230,13 @@ fn frame_exceeding_reader_buffer_is_message_too_large_not_disconnect() {
         ),
         Ok(_) => panic!("frame exceeding reader buffer must not surface a message"),
     }
+
+    // MessageTooLarge is a *fatal* error (not a disconnect), so it terminates the
+    // session — the next recv must be Closed, not a re-read of the oversized frame.
+    // Regression guard: the terminated flag must arm on any fatal error, not just
+    // LoggedOut / UnexpectedDisconnect.
+    assert!(matches!(
+        conn.recv(Instant::now()),
+        Err(TransportError::Closed)
+    ));
 }
