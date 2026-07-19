@@ -116,6 +116,18 @@ pub enum Message<'buf, D: FixDictionary> {
     Application { header: D::Header<'buf> },
     /// Session disconnected (CompID mismatch, timeout, or protocol violation).
     Disconnected { reason: crate::DisconnectReason },
+    /// A malformed frame was discarded to resync to the next `8=` boundary:
+    /// garbled bytes, a bad `BodyLength(9)`, or a failed `CheckSum(10)` (see
+    /// [`reason`](crate::MalformedReason)). This is **not** a disconnect — per
+    /// FIX's optimistic recovery the session continues and the inbound seqnum
+    /// is left unchanged. `skipped` is the bytes discarded to resync; `count`
+    /// is the running total of malformed frames this session. The caller owns
+    /// the policy: log it, alert on it, or disconnect on a sustained flood.
+    Malformed {
+        skipped: usize,
+        count: u64,
+        reason: crate::MalformedReason,
+    },
 }
 
 /// Zero-copy FIX frame reader, dictionary-aware via `D::Header`.

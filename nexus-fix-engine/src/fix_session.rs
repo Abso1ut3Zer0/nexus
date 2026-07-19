@@ -35,7 +35,7 @@ use nexus_fix_codec::{
 };
 use nexus_journal::WriteError;
 
-use crate::frame::{FrameError, FrameWriter};
+use crate::frame::{FrameError, FrameWriter, MalformedReason};
 use crate::framework::{
     Emitter, Message, MessageReader, MessageWriter, SessionConfig, SessionError,
 };
@@ -117,6 +117,13 @@ pub enum PollOutcome {
     /// The session disconnected. The wrapper surfaces
     /// `Message::Disconnected { reason }`.
     Disconnected(DisconnectReason),
+    /// A malformed frame was discarded to resync to the next `8=` boundary.
+    /// The wrapper surfaces `Message::Malformed`; the session continues and the
+    /// inbound seqnum is left unchanged (FIX's optimistic recovery).
+    Malformed {
+        skipped: usize,
+        reason: MalformedReason,
+    },
 }
 
 /// Resumable resend state. A resend can enqueue more bytes than the outbound
@@ -390,24 +397,25 @@ impl<D: FixDictionary, C: SessionCustomizer> FixSession<D, C> {
             self.journal.set_next_inbound(n);
         }
 
-        // Pull the next complete frame into the stable buffer.
-        loop {
-            if self.reader.inner.should_compact() {
-                self.reader.inner.compact();
+        // Pull the next complete frame into the stable buffer. A malformed frame
+        // is surfaced as `PollOutcome::Malformed` (one per poll) rather than
+        // silently skipped, so the caller can observe link deterioration; the
+        // reader has already advanced past it, so the next poll resumes cleanly.
+        if self.reader.inner.should_compact() {
+            self.reader.inner.compact();
+        }
+        match self.reader.inner.next() {
+            Err(FrameError::MessageTooLarge { size }) => {
+                return Err(Error::MessageTooLarge(size));
             }
-            match self.reader.inner.next() {
-                Err(FrameError::MessageTooLarge { size }) => {
-                    return Err(Error::MessageTooLarge(size));
-                }
-                Err(FrameError::Garbage { .. }) => {
-                    self.garbage_frames += 1;
-                }
-                Ok(None) => return Ok(PollOutcome::NeedMoreBytes),
-                Ok(Some(raw)) => {
-                    self.reader.frame.clear();
-                    self.reader.frame.extend_from_slice(raw);
-                    break;
-                }
+            Err(FrameError::Malformed { skipped, reason }) => {
+                self.garbage_frames += 1;
+                return Ok(PollOutcome::Malformed { skipped, reason });
+            }
+            Ok(None) => return Ok(PollOutcome::NeedMoreBytes),
+            Ok(Some(raw)) => {
+                self.reader.frame.clear();
+                self.reader.frame.extend_from_slice(raw);
             }
         }
 
@@ -507,7 +515,7 @@ impl<D: FixDictionary, C: SessionCustomizer> FixSession<D, C> {
         }
 
         // Well-framed and comp-id-valid: archive the inbound message for
-        // visibility/audit. Garbage and foreign (comp-id-mismatched) frames are
+        // visibility/audit. Malformed and foreign (comp-id-mismatched) frames are
         // not journaled — they never reach here.
         journal_write(frame.len(), || self.journal.store_inbound(frame))?;
 

@@ -52,6 +52,16 @@ contained.
   Resend gap-fills are unaffected — they are reframed directly and never run the
   hook, so PossDup traffic cannot carry credentials.
 
+- Malformed inbound frames now surface as a recoverable `Message::Malformed`
+  event instead of being silently counted and dropped. `recv()` (sync and async)
+  returns `Message::Malformed { skipped, count, reason }` — `skipped` bytes
+  discarded to resync to the next `8=`, `count` the running total this session,
+  and `reason` a new `MalformedReason` (`Framing` / `BodyLength` / `Checksum`)
+  saying how the frame broke. This is **not** a disconnect: per FIX's optimistic
+  recovery the session continues and the inbound seqnum is unchanged. The caller
+  owns the policy — log, alert, or disconnect on a sustained flood.
+  `garbage_frame_count()` remains as the cumulative accessor. (#583)
+
 ### Internal
 
 - Test scratch directories are now removed on drop. The `tmp_dir` helpers in
@@ -66,6 +76,11 @@ contained.
   `nexus-journal/src/rotating/tests.rs`.
 
 ### Changed
+
+- `FrameError::Garbage { skipped }` is renamed to
+  `FrameError::Malformed { skipped, reason }`, carrying a `MalformedReason`. The
+  old name implied random bytes, but the reader also reports a bad
+  `BodyLength(9)` or a failed `CheckSum(10)` — neither is garbage. (#583)
 
 - Outbound admin dispatch is now typed structs through a trait, replacing the
   `AdminMsg` enum and its `MessageWriter::encode_admin` match (both introduced

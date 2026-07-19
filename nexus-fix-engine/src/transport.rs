@@ -242,6 +242,13 @@ impl<S: Read + Write, D: FixDictionary, C: SessionCustomizer> FixConnection<S, D
                     return Ok(Some(self.session.message()));
                 }
                 PollOutcome::Suppressed => return Ok(None),
+                PollOutcome::Malformed { skipped, reason } => {
+                    return Ok(Some(Message::Malformed {
+                        skipped,
+                        count: self.session.garbage_frame_count(),
+                        reason,
+                    }));
+                }
                 // Buffer already drained above; loop to continue the resend.
                 PollOutcome::ResendPending => {}
                 PollOutcome::NeedMoreBytes => {

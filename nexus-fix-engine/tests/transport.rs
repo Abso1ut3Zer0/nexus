@@ -10,8 +10,8 @@ use nexus_fix_codec::{
     encode_fix_uint, find_tag,
 };
 use nexus_fix_engine::{
-    CompId, DisconnectReason, FixConnection, FixJournal, Message, SessionConfig, SessionError,
-    SessionState, State, TransportError,
+    CompId, DisconnectReason, FixConnection, FixJournal, MalformedReason, Message, SessionConfig,
+    SessionError, SessionState, State, TransportError,
 };
 
 // ── mock dictionary ──────────────────────────────────────────────────────────
@@ -786,6 +786,73 @@ fn garbage_bytes_increment_counter() {
         "raw garbage bytes must increment garbage_frame_count"
     );
     handle.join().unwrap();
+}
+
+#[test]
+fn malformed_framing_surfaces_via_recv() {
+    // Raw non-FIX bytes (no `8=` header) surface as a recoverable
+    // `Message::Malformed` with reason `Framing` — not a disconnect. The event
+    // carries the running count and the bytes skipped to resync.
+    let dir = tmp_dir("malformed_framing");
+    let garbage = b"GARBAGE_NOT_FIX";
+
+    let mut conn: FixConnection<ChunkStream, MockDict> = FixConnection::from_parts(
+        ChunkStream::new(garbage),
+        SessionState::new(Duration::from_secs(30)),
+        session_cfg(target(), sender()),
+        journal(dir.path()),
+    );
+
+    let Some(Message::Malformed {
+        skipped,
+        count,
+        reason,
+    }) = conn.recv(Instant::now()).unwrap()
+    else {
+        panic!("expected Message::Malformed for raw garbage");
+    };
+    assert_eq!(reason, MalformedReason::Framing);
+    assert_eq!(count, 1, "first malformed frame is count 1");
+    assert_eq!(skipped, garbage.len(), "all garbage bytes are skipped");
+    assert_eq!(conn.garbage_frame_count(), 1);
+}
+
+#[test]
+fn malformed_checksum_surfaces_via_recv() {
+    // A fully-framed message whose CheckSum(10) does not match surfaces as
+    // `Message::Malformed` with reason `Checksum` — the "bytes corrupt in
+    // transit" signal, distinct from raw framing garbage.
+    let dir = tmp_dir("malformed_checksum");
+
+    let mut conn: FixConnection<ChunkStream, MockDict> = FixConnection::from_parts(
+        ChunkStream::new(&corrupt_checksum_frame()),
+        SessionState::new(Duration::from_secs(30)),
+        session_cfg(target(), sender()),
+        journal(dir.path()),
+    );
+
+    let Some(Message::Malformed { count, reason, .. }) = conn.recv(Instant::now()).unwrap() else {
+        panic!("expected Message::Malformed for a corrupt checksum");
+    };
+    assert_eq!(reason, MalformedReason::Checksum);
+    assert_eq!(count, 1);
+    assert_eq!(conn.garbage_frame_count(), 1);
+}
+
+/// A well-formed Heartbeat frame with one checksum digit flipped — the frame
+/// reader locates the full frame, then rejects it on checksum mismatch.
+fn corrupt_checksum_frame() -> Vec<u8> {
+    let mut buf = [0u8; 256];
+    let mut fmt = FrameFormatter::new(&mut buf, b"FIX.4.4", b"0");
+    fmt.field(34, b"2");
+    fmt.field(49, sender().as_bytes());
+    fmt.field(56, target().as_bytes());
+    fmt.field(52, b"20260615-12:00:00.000");
+    let (start, len) = fmt.finish().unwrap();
+    let mut frame = buf[start..start + len].to_vec();
+    let n = frame.len();
+    frame[n - 2] ^= 1; // flip a CheckSum(10) digit
+    frame
 }
 
 #[test]
