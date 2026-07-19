@@ -31,9 +31,10 @@ contained.
   `FixConnection::from_parts_with_customizer(...)`. All hook behavior lives in
   the shared `FixSession` core; this crate only threads the type parameter.
 
-- `recv()` now surfaces the shared `Message::Malformed { skipped, count, reason }`
-  event for a garbled/bad-`BodyLength`/bad-`CheckSum` inbound frame, matching the
-  sync engine. Not a disconnect — the session resyncs and continues. (#583)
+- `recv()` now surfaces a garbled/bad-`BodyLength`/bad-`CheckSum` inbound frame as
+  the shared recoverable `Err(TransportError::Malformed { skipped, count, reason })`,
+  matching the sync engine (`is_fatal()` is `false`; the session resyncs and
+  continues). (#583)
 
 ### Internal
 

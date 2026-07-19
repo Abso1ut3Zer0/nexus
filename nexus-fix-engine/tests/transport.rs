@@ -790,9 +790,9 @@ fn garbage_bytes_increment_counter() {
 
 #[test]
 fn malformed_framing_surfaces_via_recv() {
-    // Raw non-FIX bytes (no `8=` header) surface as a recoverable
-    // `Message::Malformed` with reason `Framing` — not a disconnect. The event
-    // carries the running count and the bytes skipped to resync.
+    // Raw non-FIX bytes (no `8=` header) surface as the recoverable
+    // `TransportError::Malformed` with reason `Framing` — not a disconnect
+    // (`is_fatal()` is false). It carries the running count and bytes skipped.
     let dir = tmp_dir("malformed_framing");
     let garbage = b"GARBAGE_NOT_FIX";
 
@@ -803,13 +803,20 @@ fn malformed_framing_surfaces_via_recv() {
         journal(dir.path()),
     );
 
-    let Some(Message::Malformed {
+    let Err(err) = conn.recv(Instant::now()) else {
+        panic!("expected TransportError::Malformed for raw garbage");
+    };
+    assert!(
+        !err.is_fatal(),
+        "a malformed frame is recoverable, not fatal"
+    );
+    let TransportError::Malformed {
         skipped,
         count,
         reason,
-    }) = conn.recv(Instant::now()).unwrap()
+    } = err
     else {
-        panic!("expected Message::Malformed for raw garbage");
+        panic!("expected TransportError::Malformed for raw garbage");
     };
     assert_eq!(reason, MalformedReason::Framing);
     assert_eq!(count, 1, "first malformed frame is count 1");
@@ -820,7 +827,7 @@ fn malformed_framing_surfaces_via_recv() {
 #[test]
 fn malformed_checksum_surfaces_via_recv() {
     // A fully-framed message whose CheckSum(10) does not match surfaces as
-    // `Message::Malformed` with reason `Checksum` — the "bytes corrupt in
+    // `TransportError::Malformed` with reason `Checksum` — the "bytes corrupt in
     // transit" signal, distinct from raw framing garbage.
     let dir = tmp_dir("malformed_checksum");
 
@@ -831,8 +838,11 @@ fn malformed_checksum_surfaces_via_recv() {
         journal(dir.path()),
     );
 
-    let Some(Message::Malformed { count, reason, .. }) = conn.recv(Instant::now()).unwrap() else {
-        panic!("expected Message::Malformed for a corrupt checksum");
+    let Err(err) = conn.recv(Instant::now()) else {
+        panic!("expected TransportError::Malformed for a corrupt checksum");
+    };
+    let TransportError::Malformed { count, reason, .. } = err else {
+        panic!("expected TransportError::Malformed for a corrupt checksum");
     };
     assert_eq!(reason, MalformedReason::Checksum);
     assert_eq!(count, 1);

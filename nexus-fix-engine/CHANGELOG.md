@@ -52,15 +52,18 @@ contained.
   Resend gap-fills are unaffected — they are reframed directly and never run the
   hook, so PossDup traffic cannot carry credentials.
 
-- Malformed inbound frames now surface as a recoverable `Message::Malformed`
-  event instead of being silently counted and dropped. `recv()` (sync and async)
-  returns `Message::Malformed { skipped, count, reason }` — `skipped` bytes
-  discarded to resync to the next `8=`, `count` the running total this session,
-  and `reason` a new `MalformedReason` (`Framing` / `BodyLength` / `Checksum`)
-  saying how the frame broke. This is **not** a disconnect: per FIX's optimistic
-  recovery the session continues and the inbound seqnum is unchanged. The caller
-  owns the policy — log, alert, or disconnect on a sustained flood.
-  `garbage_frame_count()` remains as the cumulative accessor. (#583)
+- Malformed inbound frames now surface as a recoverable `TransportError::Malformed`
+  instead of being silently counted and dropped. `recv()` (sync and async) returns
+  `Err(Malformed { skipped, count, reason })` — `skipped` bytes discarded to resync
+  to the next `8=`, `count` the running total this session, and `reason` a new
+  `MalformedReason` (`Framing` / `BodyLength` / `Checksum`) saying how the frame
+  broke. It sits in the error channel because receiving the frame *failed*, but it
+  is the one **recoverable** error: the reader has resynced, the inbound seqnum is
+  unchanged (FIX's optimistic recovery), and the session is intact —
+  `TransportError::is_fatal()` returns `false` for it (and `true` for every other
+  variant). The caller owns the policy: `recv()?` to tear down on the first bad
+  byte, or match `Malformed` and keep receiving, disconnecting only on a sustained
+  flood. `garbage_frame_count()` remains as the cumulative accessor. (#583)
 
 ### Internal
 

@@ -73,7 +73,7 @@ impl std::fmt::Display for FrameError {
 impl std::error::Error for FrameError {}
 
 /// Why a frame failed to parse — carried on [`FrameError::Malformed`] and
-/// surfaced up the stack to [`Message::Malformed`](crate::Message::Malformed).
+/// surfaced up the stack as the recoverable [`TransportError::Malformed`](crate::TransportError).
 ///
 /// The variants escalate by how much of the frame was recovered before it
 /// broke: no header at all, a header whose declared length is wrong, or a
