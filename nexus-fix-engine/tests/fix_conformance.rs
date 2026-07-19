@@ -152,8 +152,10 @@ fn spawn_peer(scenario: &str) -> (ChildGuard, u16) {
 
 fn connect(port: u16, dir: &Path) -> FixConnection<TcpStream, MockDict> {
     let stream = TcpStream::connect(("127.0.0.1", port)).unwrap();
+    // Short read timeout so `try_recv` returns `None` promptly when the peer is
+    // idle — that is the driver's cue to `tick` the clock at fine granularity.
     stream
-        .set_read_timeout(Some(Duration::from_secs(10)))
+        .set_read_timeout(Some(Duration::from_millis(50)))
         .unwrap();
     FixConnection::from_parts(
         stream,
@@ -171,10 +173,46 @@ fn connect(port: u16, dir: &Path) -> FixConnection<TcpStream, MockDict> {
 /// error is a failure and panics.
 fn drive(conn: &mut FixConnection<TcpStream, MockDict>) {
     loop {
-        match conn.recv(Instant::now()) {
-            Ok(Some(Message::LoggedOut { .. })) => return,
-            Ok(_) => {}
-            Err(e) => panic!("recv errored before clean logout: {e:?}"),
+        match step(conn) {
+            Step::Logout => return,
+            Step::Disconnect(reason) => panic!("disconnected before clean logout: {reason:?}"),
+            _ => {}
+        }
+    }
+}
+
+/// One owned outcome of a reactor step — a received message summarized, or a
+/// disconnect. `recv` is pure, so the driver services the clock itself.
+enum Step {
+    Logout,
+    Application,
+    Other,
+    Disconnect(DisconnectReason),
+}
+
+/// One reactor step: receive the next message, or — when no inbound arrives within
+/// the socket read timeout — service the clock via `tick` and retry. `try_recv`
+/// on a read-timeout socket returns `None` when the timeout elapses, which is the
+/// signal to `tick`. Returns the message summarized, or a disconnect (from `recv`
+/// or a blown `tick` deadline).
+fn step(conn: &mut FixConnection<TcpStream, MockDict>) -> Step {
+    loop {
+        let now = Instant::now();
+        match conn.try_recv(now) {
+            Ok(Some(Message::LoggedOut { .. })) => return Step::Logout,
+            Ok(Some(Message::Application { .. })) => return Step::Application,
+            Ok(Some(_)) => return Step::Other,
+            Ok(None) => match conn.tick(now) {
+                Ok(()) => {} // serviced the clock — retry
+                Err(TransportError::UnexpectedDisconnect { reason }) => {
+                    return Step::Disconnect(reason);
+                }
+                Err(e) => panic!("tick errored mid-scenario: {e:?}"),
+            },
+            Err(TransportError::UnexpectedDisconnect { reason }) => {
+                return Step::Disconnect(reason);
+            }
+            Err(e) => panic!("recv errored mid-scenario: {e:?}"),
         }
     }
 }
@@ -286,17 +324,18 @@ fn drive_observe(
     let mut saw_resending = false;
     let mut saw_app = false;
     loop {
-        match conn.recv(Instant::now()) {
-            Ok(Some(Message::LoggedOut { .. })) => return (None, saw_resending, saw_app),
-            Ok(Some(Message::Application { .. })) => saw_app = true,
-            Ok(Some(_) | None) => {}
-            Err(TransportError::UnexpectedDisconnect { reason }) => {
-                return (Some(reason), saw_resending, saw_app);
-            }
-            Err(e) => panic!("recv errored mid-scenario: {e:?}"),
-        }
+        let outcome = step(conn);
+        // The Resending transition can happen during a suppressed gap frame that
+        // `step` consumes internally; it persists until the session ends, so observe
+        // it after every step — including the terminal one.
         if conn.state().state() == State::Resending {
             saw_resending = true;
+        }
+        match outcome {
+            Step::Logout => return (None, saw_resending, saw_app),
+            Step::Application => saw_app = true,
+            Step::Disconnect(reason) => return (Some(reason), saw_resending, saw_app),
+            Step::Other => {}
         }
     }
 }
@@ -305,9 +344,9 @@ fn drive_observe(
 /// error. Used by the resend scenarios that inject app messages once live.
 fn drive_to_active(conn: &mut FixConnection<TcpStream, MockDict>) {
     loop {
-        match conn.recv(Instant::now()) {
-            Ok(Some(Message::LoggedOut { .. })) => panic!("logged out before active"),
-            Err(e) => panic!("disconnected before active: {e:?}"),
+        match step(conn) {
+            Step::Logout => panic!("logged out before active"),
+            Step::Disconnect(reason) => panic!("disconnected before active: {reason:?}"),
             _ => {}
         }
         if conn.state().state() == State::Active {

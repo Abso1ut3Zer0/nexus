@@ -132,14 +132,14 @@ fn main() {
         let mut app_msgs = 0usize;
         loop {
             match conn.recv(Instant::now()) {
-                Ok(Some(Message::LoggedOut { .. })) => {
+                Ok(Message::LoggedOut { .. }) => {
                     println!("logged out cleanly, {app_msgs} app message(s)");
                     break;
                 }
-                Ok(Some(Message::Application { .. })) => {
+                Ok(Message::Application { .. }) => {
                     app_msgs += 1;
                 }
-                Ok(Some(_) | None) => {}
+                Ok(_) => {}
                 // A recoverable error (a malformed frame: bad checksum, lying
                 // BodyLength, or garbage framing) leaves the session intact — the
                 // reader has resynced. Tolerate it and keep receiving, so an

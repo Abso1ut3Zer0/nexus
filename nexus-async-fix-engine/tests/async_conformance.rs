@@ -159,10 +159,54 @@ async fn connect(port: u16, dir: &Path) -> FixConnection<AsyncReadAdapter<TcpStr
 /// error is a failure and panics.
 async fn drive(conn: &mut FixConnection<AsyncReadAdapter<TcpStream>, MockDict>) {
     loop {
-        match conn.recv(Instant::now()).await {
-            Ok(Some(Message::LoggedOut { .. })) => return,
-            Ok(_) => {}
-            Err(e) => panic!("recv errored before clean logout: {e:?}"),
+        match step(conn).await {
+            Step::Logout => return,
+            Step::Disconnect(reason) => panic!("disconnected before clean logout: {reason:?}"),
+            _ => {}
+        }
+    }
+}
+
+/// One owned outcome of a reactor step — a received message summarized, or a
+/// disconnect. `recv` is pure, so the driver services the clock itself.
+enum Step {
+    Logout,
+    Application,
+    Other,
+    Disconnect(DisconnectReason),
+}
+
+/// Sleep until `deadline`, or forever if `None` (no clock work pending).
+async fn sleep_until_opt(deadline: Option<Instant>) {
+    match deadline {
+        Some(d) => tokio::time::sleep_until(tokio::time::Instant::from_std(d)).await,
+        None => std::future::pending::<()>().await,
+    }
+}
+
+/// Race `recv` against the session's next heartbeat/timeout deadline; if the
+/// deadline wins, `recv` is cancelled — safe here, since the loopback link has
+/// write headroom so `recv` is only ever dropped at the read (see its cancellation
+/// note) — and the clock is serviced via `tick`, then we retry. Returns the next
+/// message summarized, or a disconnect (from `recv` or a blown `tick` deadline).
+async fn step(conn: &mut FixConnection<AsyncReadAdapter<TcpStream>, MockDict>) -> Step {
+    loop {
+        let deadline = conn.next_timeout();
+        tokio::select! {
+            r = conn.recv(Instant::now()) => return match r {
+                Ok(Message::LoggedOut { .. }) => Step::Logout,
+                Ok(Message::Application { .. }) => Step::Application,
+                Ok(_) => Step::Other,
+                Err(TransportError::UnexpectedDisconnect { reason }) => Step::Disconnect(reason),
+                Err(e) => panic!("recv errored mid-scenario: {e:?}"),
+            },
+            () = sleep_until_opt(deadline) => match conn.tick(Instant::now()).await {
+                Ok(()) => {} // serviced the clock — loop and receive again
+                Err(TransportError::UnexpectedDisconnect { reason }) => {
+                    return Step::Disconnect(reason);
+                }
+                Err(e) => panic!("tick errored mid-scenario: {e:?}"),
+            },
         }
     }
 }
@@ -243,9 +287,9 @@ async fn conformance_seq_reset() {
 //
 // Mirror of the sync `fix_conformance.rs` cases over the tokio transport, so the
 // two drivers stay in lockstep. See `.claude/fix-battletest-findings.md` for the
-// pass/finding disposition and the FIX 4.4 rationale behind each assertion. The
-// async `recv` derives its read deadline from `next_timeout()`, so the timer
-// scenario needs no special socket timeout here.
+// pass/finding disposition and the FIX 4.4 rationale behind each assertion. `recv`
+// is pure, so the `step` reactor above services the clock via `tick` at each
+// `next_timeout()` deadline — that is what drives the timer scenarios.
 
 type Conn = FixConnection<AsyncReadAdapter<TcpStream>, MockDict>;
 
@@ -259,17 +303,18 @@ async fn drive_observe(conn: &mut Conn) -> (Option<DisconnectReason>, bool, bool
     let mut saw_resending = false;
     let mut saw_app = false;
     loop {
-        match conn.recv(Instant::now()).await {
-            Ok(Some(Message::LoggedOut { .. })) => return (None, saw_resending, saw_app),
-            Ok(Some(Message::Application { .. })) => saw_app = true,
-            Ok(Some(_) | None) => {}
-            Err(TransportError::UnexpectedDisconnect { reason }) => {
-                return (Some(reason), saw_resending, saw_app);
-            }
-            Err(e) => panic!("recv errored mid-scenario: {e:?}"),
-        }
+        let outcome = step(conn).await;
+        // The Resending transition can happen during a suppressed gap frame that
+        // `step` consumes internally; it persists until the session ends, so observe
+        // it after every step — including the terminal one.
         if conn.state().state() == State::Resending {
             saw_resending = true;
+        }
+        match outcome {
+            Step::Logout => return (None, saw_resending, saw_app),
+            Step::Application => saw_app = true,
+            Step::Disconnect(reason) => return (Some(reason), saw_resending, saw_app),
+            Step::Other => {}
         }
     }
 }
@@ -277,9 +322,9 @@ async fn drive_observe(conn: &mut Conn) -> (Option<DisconnectReason>, bool, bool
 /// Drive until the session reaches `Active`, panicking on an early disconnect.
 async fn drive_to_active(conn: &mut Conn) {
     loop {
-        match conn.recv(Instant::now()).await {
-            Ok(Some(Message::LoggedOut { .. })) => panic!("logged out before active"),
-            Err(e) => panic!("disconnected before active: {e:?}"),
+        match step(conn).await {
+            Step::Logout => panic!("logged out before active"),
+            Step::Disconnect(reason) => panic!("disconnected before active: {reason:?}"),
             _ => {}
         }
         if conn.state().state() == State::Active {

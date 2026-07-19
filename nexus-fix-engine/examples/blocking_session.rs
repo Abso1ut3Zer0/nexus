@@ -117,12 +117,12 @@ fn run_acceptor(listener: &TcpListener, dir: &Path) {
     let mut n = 0usize;
     loop {
         match conn.recv(Instant::now()) {
-            Ok(Some(Message::LoggedOut { .. })) => {
+            Ok(Message::LoggedOut { .. }) => {
                 println!("acceptor: logged out cleanly, {n} app message(s) received");
                 break;
             }
-            Ok(Some(Message::Application { .. })) => n += 1,
-            Ok(Some(_) | None) => {}
+            Ok(Message::Application { .. }) => n += 1,
+            Ok(_) => {}
             Err(e) => {
                 eprintln!("acceptor error: {e}");
                 break;
@@ -148,7 +148,7 @@ fn run_initiator(addr: std::net::SocketAddr, dir: &Path) {
 
     loop {
         match conn.recv(Instant::now()) {
-            Ok(Some(Message::LoggedOut { .. })) => {
+            Ok(Message::LoggedOut { .. }) => {
                 eprintln!("initiator: logged out before active");
                 return;
             }
@@ -156,7 +156,7 @@ fn run_initiator(addr: std::net::SocketAddr, dir: &Path) {
                 eprintln!("initiator error: {e}");
                 return;
             }
-            Ok(Some(_) | None) => {}
+            Ok(_) => {}
         }
         if conn.state().state() == State::Active {
             break;
@@ -180,8 +180,9 @@ fn run_initiator(addr: std::net::SocketAddr, dir: &Path) {
     conn.logout(Instant::now()).unwrap();
     loop {
         match conn.recv(Instant::now()) {
-            Ok(Some(_)) | Err(_) => break,
-            Ok(None) => {}
+            // The logout completed (LoggedOut) or the peer dropped — either ends it.
+            Ok(Message::LoggedOut { .. }) | Err(_) => break,
+            Ok(_) => {}
         }
     }
 }

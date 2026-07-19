@@ -80,6 +80,23 @@ contained.
 
 ### Changed
 
+- The recv contract is split into pure receiving + explicit clock servicing, so no
+  method conflates the two:
+  - `recv(now) -> Result<Message, Error>` (was `Result<Option<Message>, Error>`) —
+    **blocks** until a message and never returns `None`.
+  - `try_recv(now) -> Result<Option<Message>, Error>` — non-blocking; `None` when
+    nothing is ready.
+  - `recv_timeout` is intentionally not provided: a bounded wait is `try_recv` on a
+    socket with a read timeout set (`None` = the timeout elapsed).
+  - `tick(now) -> Result<(), Error>` — sends any due Heartbeat/TestRequest and
+    enforces the logon/logout/test-request/reset deadlines (`Err(UnexpectedDisconnect)`
+    when one blows). No `recv*` method touches the clock; the caller drives `tick` on
+    its own schedule (a bounded `try_recv` loop, or a separate thread).
+  - `next_timeout() -> Option<Instant>` — when `tick` next has work.
+
+  Which blocking behavior `recv`/`try_recv` exhibit is selected by the caller's socket
+  mode (blocking / non-blocking / read-timeout), the same contract as tungstenite. (#613)
+
 - Session end is split by outcome. A clean, negotiated logout surfaces as
   `Message::LoggedOut { msg }` (`Ok`, carrying the peer's Logout 35=5 so the caller
   can read `Text(58)`); an abnormal disconnect surfaces as

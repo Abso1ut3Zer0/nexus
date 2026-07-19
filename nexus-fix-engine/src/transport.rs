@@ -20,17 +20,15 @@ use crate::session::{DisconnectReason, SessionState, State};
 
 pub use crate::fix_session::{Error, REFRAME_HEADROOM};
 
-/// Owned outcome of one [`FixConnection::recv`] step. Returned by the internal
-/// `recv_step` so `recv` can arm the terminated guard — on any fatal error or a
-/// clean logout — before borrowing `self` to reconstruct the borrowed message.
+/// Owned outcome of one buffered receive step ([`FixConnection::poll_buffered`]),
+/// so the public `recv`/`try_recv` can arm the terminated guard — on any fatal
+/// error or a clean logout — before borrowing `self` to reconstruct the message.
+#[derive(Clone, Copy)]
 enum RecvStep {
     /// A typed message is ready; call `message()`.
     Message,
     /// A clean, negotiated logout ended the session.
     LoggedOut,
-    /// Nothing to surface this step (a suppressed frame, or a read timeout with no
-    /// deadline elapsed); the wrapper returns `Ok(None)`.
-    Nothing,
 }
 
 /// Blocking FIX session transport.
@@ -255,81 +253,168 @@ impl<S: Read + Write, D: FixDictionary, C: SessionCustomizer> FixConnection<S, D
         self.drain_outbound()
     }
 
-    pub fn recv(&mut self, now: Instant) -> Result<Option<Message<'_, D>>, Error> {
+    /// Blocks until the next inbound message.
+    ///
+    /// A pure receive: it never touches the session clock. Heartbeats and the
+    /// logon/logout/test-request deadlines are the caller's policy — run
+    /// [`tick`](Self::tick) on your own schedule (a bounded `try_recv` loop, or a
+    /// separate thread).
+    ///
+    /// Requires a **blocking** socket. On one this parks in the read syscall until
+    /// bytes arrive; a read timeout (`SO_RCVTIMEO`) is transparent — a no-data wake
+    /// is retried, so `recv` returns only with a message or an error and one
+    /// read-timeout socket can back both `recv` and [`try_recv`](Self::try_recv). A
+    /// **non-blocking** socket is a misuse: the retry has nothing to wait on and
+    /// becomes a busy-spin. Use [`try_recv`](Self::try_recv) for non-blocking receipt.
+    ///
+    /// A clean logout arrives as [`Message::LoggedOut`]; an abnormal end as
+    /// `Err(UnexpectedDisconnect)`. After any terminal outcome further calls return
+    /// `Err(Closed)`. A malformed frame is a recoverable `Err(Malformed)` — the
+    /// session stays live and the caller may call again.
+    pub fn recv(&mut self, now: Instant) -> Result<Message<'_, D>, Error> {
         if self.terminated {
             return Err(Error::Closed);
         }
-        match self.recv_step(now) {
-            Ok(RecvStep::Message) => Ok(Some(self.session.message())),
-            // Clean, negotiated logout: the graceful terminal event.
-            Ok(RecvStep::LoggedOut) => {
-                self.terminated = true;
-                Ok(Some(self.session.message()))
-            }
-            Ok(RecvStep::Nothing) => Ok(None),
-            // Any fatal error ends the session, so the next `recv` is `Closed`; a
-            // recoverable error (`Malformed`) leaves the session live.
-            Err(e) => {
-                if e.is_fatal() {
-                    self.terminated = true;
+        let step = loop {
+            match self.poll_buffered(now) {
+                Ok(Some(step)) => break step,
+                // No complete frame buffered — block for more bytes and re-poll.
+                Ok(None) => {
+                    if let Err(e) = self.blocking_read() {
+                        return Err(self.note_fatal(e));
+                    }
                 }
-                Err(e)
+                Err(e) => return Err(self.note_fatal(e)),
             }
-        }
+        };
+        Ok(self.finish(step))
     }
 
-    /// Advances the session one step, returning an *owned* outcome. Splitting this
-    /// from [`recv`](Self::recv) lets `recv` arm the terminated guard (on any fatal
-    /// error or a clean logout) before borrowing `self` to build the message.
-    fn recv_step(&mut self, now: Instant) -> Result<RecvStep, Error> {
+    /// Returns the next ready message without blocking, or `None` when nothing is
+    /// ready.
+    ///
+    /// A pure receive: never touches the clock (see [`tick`](Self::tick)). Requires
+    /// a **non-blocking** socket — or one with a read timeout, for a bounded wait,
+    /// where `None` means the timeout elapsed. After any terminal outcome further
+    /// calls return `Err(Closed)`.
+    pub fn try_recv(&mut self, now: Instant) -> Result<Option<Message<'_, D>>, Error> {
+        if self.terminated {
+            return Err(Error::Closed);
+        }
+        let step = loop {
+            match self.poll_buffered(now) {
+                Ok(Some(step)) => break step,
+                Ok(None) => match self.read_available() {
+                    Ok(true) => {}                // got bytes — re-poll
+                    Ok(false) => return Ok(None), // nothing ready
+                    Err(e) => return Err(self.note_fatal(e)),
+                },
+                Err(e) => return Err(self.note_fatal(e)),
+            }
+        };
+        Ok(Some(self.finish(step)))
+    }
+
+    /// Services the session clock: sends any due Heartbeat/TestRequest and enforces
+    /// the logon/logout/test-request/reset deadlines. No `recv*` method does this —
+    /// the caller drives `tick` on its own schedule (`select!` in async, a timeout
+    /// loop in sync). Returns `Err(UnexpectedDisconnect)` if a deadline blew.
+    pub fn tick(&mut self, now: Instant) -> Result<(), Error> {
+        if self.terminated {
+            return Err(Error::Closed);
+        }
+        let reason = match self.session.on_timeout(now) {
+            Ok(r) => r,
+            Err(e) => return Err(self.note_fatal(e)),
+        };
+        if let Err(e) = self.drain_outbound() {
+            return Err(self.note_fatal(e));
+        }
+        reason.map_or(Ok(()), |reason| {
+            Err(self.note_fatal(Error::UnexpectedDisconnect { reason }))
+        })
+    }
+
+    /// The earliest instant at which [`tick`](Self::tick) next has work — the next
+    /// heartbeat, TestRequest, or deadline. `None` when disconnected. Use it to size
+    /// a bounded `try_recv` wait or a `select!` sleep.
+    pub fn next_timeout(&self) -> Option<Instant> {
+        self.session.state().next_timeout()
+    }
+
+    /// Arms the terminated guard on a fatal error (so the next call is `Closed`) and
+    /// hands the error back. A recoverable `Malformed` leaves the session live.
+    fn note_fatal(&mut self, e: Error) -> Error {
+        if e.is_fatal() {
+            self.terminated = true;
+        }
+        e
+    }
+
+    /// Reconstructs the borrowed message for a completed step, arming the guard on a
+    /// clean logout (the graceful terminal event).
+    fn finish(&mut self, step: RecvStep) -> Message<'_, D> {
+        if matches!(step, RecvStep::LoggedOut) {
+            self.terminated = true;
+        }
+        self.session.message()
+    }
+
+    /// Poll + drain buffered inbound frames without reading the socket. `Some(step)`
+    /// when a message/logout is ready, `None` when a socket read is needed. Suppressed
+    /// frames and in-progress resends are consumed internally.
+    fn poll_buffered(&mut self, now: Instant) -> Result<Option<RecvStep>, Error> {
         loop {
             let outcome = self.session.poll(now)?;
-            // Drain any admin/resend the core enqueued for this step (matches the
-            // original, which flushed after every protocol handler).
+            // Flush any admin/resend the core enqueued (matches the original, which
+            // flushed after every protocol handler).
             self.drain_outbound()?;
-
             match outcome {
-                PollOutcome::Message => return Ok(RecvStep::Message),
-                PollOutcome::LoggedOut => return Ok(RecvStep::LoggedOut),
-                // Abnormal drop: a fault, surfaced as an error, not a message.
+                PollOutcome::Message => return Ok(Some(RecvStep::Message)),
+                PollOutcome::LoggedOut => return Ok(Some(RecvStep::LoggedOut)),
                 PollOutcome::Disconnected(reason) => {
                     return Err(Error::UnexpectedDisconnect { reason });
                 }
-                PollOutcome::Suppressed => return Ok(RecvStep::Nothing),
-                // Buffer already drained above; loop to continue the resend.
-                PollOutcome::ResendPending => {}
+                // A buffered frame processed with nothing to surface, or a resend in
+                // progress: keep draining buffered data.
+                PollOutcome::Suppressed | PollOutcome::ResendPending => {}
                 PollOutcome::NeedMoreBytes => {
-                    // An empty spare means the reader buffer is full with a single
-                    // incomplete frame that cannot grow (compaction reclaimed
-                    // nothing). Reading into a zero-length slice yields `Ok(0)`,
-                    // which the `Ok(0)` arm below would misread as EOF. Surface it
-                    // as the real cause: a frame larger than the reader buffer.
+                    // Empty spare = the buffer is full with one incomplete frame that
+                    // cannot grow: a frame larger than the reader buffer.
                     if self.session.read_spare().is_empty() {
                         return Err(Error::MessageTooLarge(
                             self.session.reader_capacity().saturating_add(1),
                         ));
                     }
-                    let spare = self.session.read_spare();
-                    match self.stream.read(spare) {
-                        // Peer closed the transport (FIN) without a FIX Logout.
-                        Ok(0) => {
-                            return Err(Error::UnexpectedDisconnect {
-                                reason: DisconnectReason::PeerClosed,
-                            });
-                        }
-                        Ok(n) => self.session.read_filled(n),
-                        Err(e) if is_timeout(&e) => {
-                            if let Some(reason) = self.session.on_timeout(now)? {
-                                self.drain_outbound()?;
-                                return Err(Error::UnexpectedDisconnect { reason });
-                            }
-                            self.drain_outbound()?;
-                            return Ok(RecvStep::Nothing);
-                        }
-                        Err(e) => return Err(Error::Io(e)),
-                    }
+                    return Ok(None);
                 }
             }
+        }
+    }
+
+    /// Blocks until at least one byte arrives: a read yielding no data is retried.
+    /// Never services the clock.
+    fn blocking_read(&mut self) -> Result<(), Error> {
+        // Each read blocks; retry a spurious no-data wake until bytes arrive.
+        while !self.read_available()? {}
+        Ok(())
+    }
+
+    /// One socket read. `Ok(true)` = bytes delivered, `Ok(false)` = no data ready
+    /// (would-block / read timeout). A read of `Ok(0)` is a peer EOF.
+    fn read_available(&mut self) -> Result<bool, Error> {
+        let spare = self.session.read_spare();
+        match self.stream.read(spare) {
+            // Peer closed the transport (FIN) without a FIX Logout.
+            Ok(0) => Err(Error::UnexpectedDisconnect {
+                reason: DisconnectReason::PeerClosed,
+            }),
+            Ok(n) => {
+                self.session.read_filled(n);
+                Ok(true)
+            }
+            Err(e) if is_timeout(&e) => Ok(false),
+            Err(e) => Err(Error::Io(e)),
         }
     }
 

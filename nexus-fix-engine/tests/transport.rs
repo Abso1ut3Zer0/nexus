@@ -152,7 +152,7 @@ fn tmp_dir(suffix: &str) -> TempDir {
 /// peer-initiated logout, so the clean path is the expected outcome.
 fn drive(conn: &mut FixConnection<TcpStream, MockDict>) -> Result<(), TransportError> {
     loop {
-        if let Some(Message::LoggedOut { .. }) = conn.recv(Instant::now())? {
+        if let Message::LoggedOut { .. } = conn.recv(Instant::now())? {
             return Ok(());
         }
     }
@@ -393,11 +393,11 @@ fn acceptor_receives_app_message() {
 
     loop {
         match conn.recv(Instant::now()).unwrap() {
-            Some(Message::LoggedOut { .. }) => break,
-            Some(Message::Application { header: _ }) => {
+            Message::LoggedOut { .. } => break,
+            Message::Application { header: _ } => {
                 received_app += 1;
             }
-            Some(_) | None => {}
+            _ => {}
         }
     }
 
@@ -526,9 +526,9 @@ fn inbound_gap_sends_resend_request_and_suppresses_app_message() {
     let mut saw_app = false;
     loop {
         match conn.recv(Instant::now()) {
-            Ok(Some(Message::LoggedOut { .. })) | Err(_) => break,
-            Ok(Some(Message::Application { .. })) => saw_app = true,
-            Ok(Some(_) | None) => {}
+            Ok(Message::LoggedOut { .. }) | Err(_) => break,
+            Ok(Message::Application { .. }) => saw_app = true,
+            Ok(_) => {}
         }
     }
 
@@ -590,10 +590,10 @@ fn out_of_sequence_admin_suppressed_and_resends() {
     let mut saw_admin = false;
     loop {
         match conn.recv(Instant::now()) {
-            Ok(Some(Message::LoggedOut { .. })) | Err(_) => break,
+            Ok(Message::LoggedOut { .. }) | Err(_) => break,
             // The out-of-sequence Heartbeat must never surface.
-            Ok(Some(Message::Heartbeat { .. })) => saw_admin = true,
-            Ok(Some(_) | None) => {}
+            Ok(Message::Heartbeat { .. }) => saw_admin = true,
+            Ok(_) => {}
         }
     }
 
@@ -643,10 +643,10 @@ fn duplicate_admin_suppressed_no_resend() {
     let mut saw_app = false;
     loop {
         match conn.recv(Instant::now()) {
-            Ok(Some(Message::LoggedOut { .. })) | Err(_) => break,
-            Ok(Some(Message::Application { .. })) => saw_app = true,
-            Ok(Some(Message::Heartbeat { .. })) => saw_dup_admin = true,
-            Ok(Some(_) | None) => {}
+            Ok(Message::LoggedOut { .. }) | Err(_) => break,
+            Ok(Message::Application { .. }) => saw_app = true,
+            Ok(Message::Heartbeat { .. }) => saw_dup_admin = true,
+            Ok(_) => {}
         }
     }
 
@@ -737,7 +737,7 @@ fn corrupt_checksum_frame_counted_as_garbage() {
 
     loop {
         match conn.recv(Instant::now()) {
-            Ok(Some(Message::LoggedOut { .. })) | Err(_) => break,
+            Ok(Message::LoggedOut { .. }) | Err(_) => break,
             _ => {}
         }
     }
@@ -777,7 +777,7 @@ fn garbage_bytes_increment_counter() {
 
     loop {
         match conn.recv(Instant::now()) {
-            Ok(Some(Message::LoggedOut { .. })) | Err(_) => break,
+            Ok(Message::LoggedOut { .. }) | Err(_) => break,
             _ => {}
         }
     }
@@ -999,6 +999,64 @@ fn only_malformed_is_non_fatal() {
 }
 
 #[test]
+fn try_recv_none_and_tick_services_clock_when_idle() {
+    // The pure-receive + explicit-clock contract: after establishing, `try_recv` is
+    // `None` while idle, `next_timeout` reports the next deadline, and `tick` past it
+    // makes the engine speak (a Heartbeat or TestRequest) — no `recv*` method does that.
+    let dir = tmp_dir("try_recv_tick");
+    let (client_sock, server_sock) = loopback_pair();
+    server_sock
+        .set_read_timeout(Some(Duration::from_millis(50)))
+        .unwrap();
+
+    let handle = std::thread::spawn(move || {
+        let mut peer = Peer::new(client_sock, sender(), target());
+        let mut buf = [0u8; 512];
+        peer.send_logon(1); // HeartBtInt=1 → engine adopts a 1s heartbeat interval
+        // Read until the engine speaks unprompted — a Heartbeat (35=0) or a
+        // TestRequest (35=1), whichever the deadline produces — draining the reply.
+        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        let mut saw_admin = false;
+        while std::time::Instant::now() < deadline && !saw_admin {
+            match peer.stream.read(&mut buf) {
+                Ok(0) => break,
+                Ok(n) => {
+                    saw_admin = buf[..n]
+                        .windows(5)
+                        .any(|w| w == b"35=0\x01" || w == b"35=1\x01");
+                }
+                Err(_) => {}
+            }
+        }
+        assert!(
+            saw_admin,
+            "tick must service the clock (Heartbeat or TestRequest)"
+        );
+    });
+
+    let mut conn: FixConnection<TcpStream, MockDict> = FixConnection::from_parts(
+        server_sock,
+        SessionState::new(Duration::from_secs(30)),
+        session_cfg(target(), sender()),
+        journal(dir.path()),
+    );
+    let t0 = Instant::now();
+
+    // Acceptor: process the peer's Logon (the engine auto-replies), reaching Active.
+    while conn.try_recv(t0).unwrap().is_none() {}
+    assert_eq!(conn.state().state(), State::Active);
+
+    // Idle: try_recv yields nothing, and next_timeout reports the next deadline.
+    assert!(matches!(conn.try_recv(t0), Ok(None)));
+    assert!(conn.next_timeout().is_some());
+
+    // Tick past the deadline → the engine speaks unprompted (Heartbeat/TestRequest).
+    conn.tick(t0 + Duration::from_secs(2)).unwrap();
+
+    handle.join().unwrap();
+}
+
+#[test]
 fn sequence_reset_backward_ignored() {
     // Fix 4: SequenceReset Reset-mode with new_seq < next_inbound must be ignored.
     let dir = tmp_dir("seqreset_bwd");
@@ -1026,7 +1084,7 @@ fn sequence_reset_backward_ignored() {
 
     loop {
         match conn.recv(Instant::now()) {
-            Ok(Some(Message::LoggedOut { .. })) | Err(_) => break,
+            Ok(Message::LoggedOut { .. }) | Err(_) => break,
             _ => {}
         }
     }

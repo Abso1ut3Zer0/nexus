@@ -43,6 +43,13 @@ contained.
   terminal outcome is `Err(TransportError::Closed)`. `Message::Disconnected` is
   removed. (#612)
 
+- `recv`/`try_recv`/`tick`/`next_timeout` mirror the sync engine. `recv(now).await`
+  now yields `Message` directly (was `Option<Message>`) and no longer services
+  heartbeats internally — drive `tick` from a `select!` timer branch. This removes
+  the crate's internal `tokio::time` timer from the receive path, so the core is
+  driven only by the executor + the `WireStream`. There is no async `recv_timeout`;
+  compose `tokio::time::timeout(dur, conn.recv(now))`. (#613)
+
 ### Internal
 
 - Test scratch directories are now removed on drop. The `tmp_dir` helpers in
