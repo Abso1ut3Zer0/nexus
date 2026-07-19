@@ -29,6 +29,9 @@ pub use crate::fix_session::{Error, REFRAME_HEADROOM};
 pub struct FixConnection<S, D: FixDictionary, C = NoCustomizer> {
     stream: S,
     session: FixSession<D, C>,
+    /// Set once a terminal outcome (a `LoggedOut` message or a fatal error) has
+    /// been surfaced; a subsequent `recv` returns `Err(Error::Closed)`.
+    terminated: bool,
 }
 
 pub struct FixConnectionBuilder<D: FixDictionary, C = NoCustomizer> {
@@ -122,7 +125,11 @@ impl<D: FixDictionary, C: SessionCustomizer> FixConnectionBuilder<D, C> {
         };
         stream.set_nodelay(self.nodelay)?;
         let session = self.build_session(state, config, journal);
-        Ok(FixConnection { stream, session })
+        Ok(FixConnection {
+            stream,
+            session,
+            terminated: false,
+        })
     }
 
     pub fn accept<S: Read + Write>(
@@ -133,7 +140,11 @@ impl<D: FixDictionary, C: SessionCustomizer> FixConnectionBuilder<D, C> {
         journal: FixJournal,
     ) -> FixConnection<S, D, C> {
         let session = self.build_session(state, config, journal);
-        FixConnection { stream, session }
+        FixConnection {
+            stream,
+            session,
+            terminated: false,
+        }
     }
 }
 
@@ -174,6 +185,7 @@ impl<S: Read + Write, D: FixDictionary, C: SessionCustomizer> FixConnection<S, D
         Self {
             stream,
             session: FixSession::new_with_customizer(state, config, journal, customizer),
+            terminated: false,
         }
     }
 
@@ -231,6 +243,9 @@ impl<S: Read + Write, D: FixDictionary, C: SessionCustomizer> FixConnection<S, D
     }
 
     pub fn recv(&mut self, now: Instant) -> Result<Option<Message<'_, D>>, Error> {
+        if self.terminated {
+            return Err(Error::Closed);
+        }
         loop {
             let outcome = self.session.poll(now)?;
             // Drain any admin/resend the core enqueued for this step (matches the
@@ -238,8 +253,16 @@ impl<S: Read + Write, D: FixDictionary, C: SessionCustomizer> FixConnection<S, D
             self.drain_outbound()?;
 
             match outcome {
-                PollOutcome::Message | PollOutcome::Disconnected(_) => {
+                PollOutcome::Message => return Ok(Some(self.session.message())),
+                // Clean, negotiated logout: the graceful terminal event.
+                PollOutcome::LoggedOut => {
+                    self.terminated = true;
                     return Ok(Some(self.session.message()));
+                }
+                // Abnormal drop: a fault, surfaced as an error, not a message.
+                PollOutcome::Disconnected(reason) => {
+                    self.terminated = true;
+                    return Err(Error::UnexpectedDisconnect { reason });
                 }
                 PollOutcome::Suppressed => return Ok(None),
                 // Buffer already drained above; loop to continue the resend.
@@ -258,15 +281,18 @@ impl<S: Read + Write, D: FixDictionary, C: SessionCustomizer> FixConnection<S, D
                     let spare = self.session.read_spare();
                     match self.stream.read(spare) {
                         Ok(0) => {
-                            return Ok(Some(Message::Disconnected {
-                                reason: DisconnectReason::Logout,
-                            }));
+                            // Peer closed the transport (FIN) without a FIX Logout.
+                            self.terminated = true;
+                            return Err(Error::UnexpectedDisconnect {
+                                reason: DisconnectReason::PeerClosed,
+                            });
                         }
                         Ok(n) => self.session.read_filled(n),
                         Err(e) if is_timeout(&e) => {
                             if let Some(reason) = self.session.on_timeout(now)? {
                                 self.drain_outbound()?;
-                                return Ok(Some(Message::Disconnected { reason }));
+                                self.terminated = true;
+                                return Err(Error::UnexpectedDisconnect { reason });
                             }
                             self.drain_outbound()?;
                             return Ok(None);

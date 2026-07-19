@@ -1,7 +1,7 @@
 //! Tokio adapter for the sans-IO FIX session core.
 //!
 //! [`FixConnection`] is a thin wrapper over the sans-IO [`FixSession`] core: it
-//! owns a [`WireStream`](nexus_net::WireStream) transport and does *only* the
+//! owns a [`WireStream`] transport and does *only* the
 //! I/O — `poll_fill_into` fills the session's inbound buffer copy-free,
 //! `poll_write`/`poll_flush` drain its outbound buffer, all `.await`ed. All
 //! protocol logic (framing, the state machine, journaling, resend) lives in
@@ -11,7 +11,7 @@
 //!
 //! # Transports
 //!
-//! Any [`WireStream`](nexus_net::WireStream) works. Two are provided out of the
+//! Any [`WireStream`] works. Two are provided out of the
 //! box:
 //!
 //! - [`MaybeTls`] — plaintext or transparent TLS, built by
@@ -56,7 +56,7 @@ pub use nexus_net::WireStream;
 /// `nexus-net-tokio` directly.
 pub use nexus_net_tokio::{AsyncReadAdapter, MaybeTls};
 
-/// Async FIX session transport over any [`WireStream`](nexus_net::WireStream).
+/// Async FIX session transport over any [`WireStream`].
 ///
 /// Thin wrapper over [`FixSession`]: the socket calls are `.await`ed; everything
 /// else — framing, the [`SessionState`] machine, journaling, resend — is in the
@@ -70,6 +70,9 @@ pub use nexus_net_tokio::{AsyncReadAdapter, MaybeTls};
 pub struct FixConnection<S, D: FixDictionary, C = NoCustomizer> {
     stream: S,
     session: FixSession<D, C>,
+    /// Set once a terminal outcome (a `LoggedOut` message or a fatal error) has
+    /// been surfaced; a subsequent `recv` returns `Err(Error::Closed)`.
+    terminated: bool,
 }
 
 /// Builder for [`FixConnection`], mirroring the sync
@@ -154,6 +157,7 @@ impl<D: FixDictionary, C: SessionCustomizer> FixConnectionBuilder<D, C> {
         Ok(FixConnection {
             stream: MaybeTls::Plain(tcp),
             session,
+            terminated: false,
         })
     }
 
@@ -185,10 +189,11 @@ impl<D: FixDictionary, C: SessionCustomizer> FixConnectionBuilder<D, C> {
         Ok(FixConnection {
             stream: MaybeTls::Tls(Box::new(tls_stream)),
             session,
+            terminated: false,
         })
     }
 
-    /// Wraps an already-connected [`WireStream`](nexus_net::WireStream) (acceptor
+    /// Wraps an already-connected [`WireStream`] (acceptor
     /// role or a pre-built stream). Wrap a raw tokio stream in
     /// [`AsyncReadAdapter`] first.
     pub fn accept<S: WireStream + Unpin>(
@@ -199,7 +204,11 @@ impl<D: FixDictionary, C: SessionCustomizer> FixConnectionBuilder<D, C> {
         journal: FixJournal,
     ) -> FixConnection<S, D, C> {
         let session = self.build_session(state, config, journal);
-        FixConnection { stream, session }
+        FixConnection {
+            stream,
+            session,
+            terminated: false,
+        }
     }
 }
 
@@ -250,6 +259,7 @@ impl<S: WireStream + Unpin, D: FixDictionary, C: SessionCustomizer> FixConnectio
         Self {
             stream,
             session: FixSession::new_with_customizer(state, config, journal, customizer),
+            terminated: false,
         }
     }
 
@@ -320,6 +330,9 @@ impl<S: WireStream + Unpin, D: FixDictionary, C: SessionCustomizer> FixConnectio
     /// `.await` on the socket read and a `tokio::time` deadline in place of the
     /// blocking socket read-timeout.
     pub async fn recv(&mut self, now: Instant) -> Result<Option<Message<'_, D>>, Error> {
+        if self.terminated {
+            return Err(Error::Closed);
+        }
         loop {
             let outcome = self.session.poll(now)?;
             // Drain any admin/resend the core enqueued for this step (matches the
@@ -327,8 +340,16 @@ impl<S: WireStream + Unpin, D: FixDictionary, C: SessionCustomizer> FixConnectio
             self.drain_outbound().await?;
 
             match outcome {
-                PollOutcome::Message | PollOutcome::Disconnected(_) => {
+                PollOutcome::Message => return Ok(Some(self.session.message())),
+                // Clean, negotiated logout: the graceful terminal event.
+                PollOutcome::LoggedOut => {
+                    self.terminated = true;
                     return Ok(Some(self.session.message()));
+                }
+                // Abnormal drop: a fault, surfaced as an error, not a message.
+                PollOutcome::Disconnected(reason) => {
+                    self.terminated = true;
+                    return Err(Error::UnexpectedDisconnect { reason });
                 }
                 PollOutcome::Suppressed => return Ok(None),
                 // Buffer already drained above; loop to continue the resend.
@@ -366,9 +387,11 @@ impl<S: WireStream + Unpin, D: FixDictionary, C: SessionCustomizer> FixConnectio
                     .await
                     {
                         Ok(Ok(0)) => {
-                            return Ok(Some(Message::Disconnected {
-                                reason: DisconnectReason::Logout,
-                            }));
+                            // Peer closed the transport (FIN) without a FIX Logout.
+                            self.terminated = true;
+                            return Err(Error::UnexpectedDisconnect {
+                                reason: DisconnectReason::PeerClosed,
+                            });
                         }
                         // Bytes already committed to the session by `poll_fill_into`;
                         // loop to parse them.
@@ -377,7 +400,8 @@ impl<S: WireStream + Unpin, D: FixDictionary, C: SessionCustomizer> FixConnectio
                         Err(_elapsed) => {
                             if let Some(reason) = self.session.on_timeout(now)? {
                                 self.drain_outbound().await?;
-                                return Ok(Some(Message::Disconnected { reason }));
+                                self.terminated = true;
+                                return Err(Error::UnexpectedDisconnect { reason });
                             }
                             self.drain_outbound().await?;
                             return Ok(None);

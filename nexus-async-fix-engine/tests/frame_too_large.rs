@@ -18,7 +18,7 @@ use nexus_fix_codec::{
     FieldView, FixAdminMsg, FixDictionary, FixHeader, FixTimestamp, FrameFormatter,
     encode_fix_uint, find_tag,
 };
-use nexus_fix_engine::{CompId, FixJournal, Message, SessionConfig, SessionState};
+use nexus_fix_engine::{CompId, DisconnectReason, FixJournal, SessionConfig, SessionState};
 use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
 
 // ── mock dictionary (mirrors the sync engine's tests) ────────────────────────
@@ -221,12 +221,47 @@ async fn frame_exceeding_reader_buffer_is_message_too_large_not_disconnect() {
 
     match conn.recv(Instant::now()).await {
         Err(TransportError::MessageTooLarge(_)) => {}
+        Err(TransportError::UnexpectedDisconnect { reason }) => {
+            panic!("frame exceeding reader buffer was misread as a disconnect: {reason:?}")
+        }
         Err(other) => panic!(
             "an inbound frame exceeding the reader buffer must be MessageTooLarge, got {other:?}"
         ),
-        Ok(Some(Message::Disconnected { reason })) => {
-            panic!("frame exceeding reader buffer was misread as a disconnect: {reason:?}")
-        }
         Ok(_) => panic!("frame exceeding reader buffer must not surface a message"),
     }
+}
+
+#[tokio::test]
+async fn peer_eof_is_peer_closed_then_recv_is_closed() {
+    // Async parity with the sync engine: a peer EOF (empty stream, no Logout) is
+    // an abnormal `UnexpectedDisconnect { PeerClosed }`, not a fake clean logout,
+    // and every recv after that terminal is `Closed`.
+    let dir = tmp_dir("async_peer_eof");
+    let mut conn: FixConnection<AsyncReadAdapter<ChunkStream>, MockDict> = FixConnection::builder()
+        .accept(
+            AsyncReadAdapter::new(ChunkStream::new(b"")),
+            SessionState::new(Duration::from_secs(30)),
+            SessionConfig {
+                sender: target(),
+                target: sender(),
+            },
+            FixJournal::open(dir.path(), 0, 256).unwrap(),
+        );
+
+    let Err(err) = conn.recv(Instant::now()).await else {
+        panic!("expected an error on peer EOF");
+    };
+    assert!(err.is_fatal());
+    assert!(matches!(
+        err,
+        TransportError::UnexpectedDisconnect {
+            reason: DisconnectReason::PeerClosed
+        }
+    ));
+
+    // Session terminated → every subsequent recv is Closed.
+    let Err(err2) = conn.recv(Instant::now()).await else {
+        panic!("expected Closed on a terminated session");
+    };
+    assert!(matches!(err2, TransportError::Closed));
 }

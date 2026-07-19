@@ -653,12 +653,7 @@ fn initiated_logout_round_trip() {
         )
         .unwrap();
     assert_eq!(s.state(), State::Disconnected);
-    assert_eq!(
-        ctrl,
-        Control::Disconnected {
-            reason: DisconnectReason::Logout
-        }
-    );
+    assert_eq!(ctrl, Control::LoggedOut);
 }
 
 #[test]
@@ -679,12 +674,7 @@ fn counterparty_logout_is_confirmed() {
         )
         .unwrap();
     assert_eq!(s.state(), State::Disconnected);
-    assert_eq!(
-        ctrl,
-        Control::Disconnected {
-            reason: DisconnectReason::Logout
-        }
-    );
+    assert_eq!(ctrl, Control::LoggedOut);
     assert_eq!(recorder.len(), 1);
     assert_eq!(recorder.mt(0), b"5", "must confirm with a Logout");
 }
