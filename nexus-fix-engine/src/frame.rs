@@ -147,8 +147,19 @@ pub struct FrameReaderBuilder {
 enum ParseResult {
     Complete(usize),
     Incomplete,
-    Malformed(MalformedReason),
-    TooLarge { size: usize, end: usize },
+    /// A malformed frame. `frame_len` is `Some(end)` only for a `Checksum`
+    /// failure — a full frame boundary was located, so it is skipped exactly
+    /// rather than scanned past (a spurious `8=` in the corrupt payload would
+    /// otherwise mis-resync). `None` (framing / bad `BodyLength`) means there is
+    /// no trustworthy boundary, so scan forward for the next `8=`.
+    Malformed {
+        reason: MalformedReason,
+        frame_len: Option<usize>,
+    },
+    TooLarge {
+        size: usize,
+        end: usize,
+    },
 }
 
 impl FrameReader {
@@ -256,8 +267,16 @@ impl FrameReader {
                 Ok(Some(&self.buf.data()[..end]))
             }
             ParseResult::Incomplete => Ok(None),
-            ParseResult::Malformed(reason) => {
-                let skipped = self.skip_to_next_header();
+            ParseResult::Malformed { reason, frame_len } => {
+                // A located frame (checksum failure) is skipped exactly; an
+                // untrustworthy one is scanned past to the next `8=`.
+                let skipped = match frame_len {
+                    Some(end) => {
+                        self.buf.advance(end);
+                        end
+                    }
+                    None => self.skip_to_next_header(),
+                };
                 Err(FrameError::Malformed { skipped, reason })
             }
             ParseResult::TooLarge { size, end } => {
@@ -280,7 +299,10 @@ impl FrameReader {
         }
 
         if data[0] != b'8' || data[1] != b'=' {
-            return ParseResult::Malformed(MalformedReason::Framing);
+            return ParseResult::Malformed {
+                reason: MalformedReason::Framing,
+                frame_len: None,
+            };
         }
 
         let Some(soh1) = find_soh(data, 2) else {
@@ -292,7 +314,10 @@ impl FrameReader {
             return ParseResult::Incomplete;
         }
         if data[tag9] != b'9' || data[tag9 + 1] != b'=' {
-            return ParseResult::Malformed(MalformedReason::Framing);
+            return ParseResult::Malformed {
+                reason: MalformedReason::Framing,
+                frame_len: None,
+            };
         }
 
         let digits_start = tag9 + 2;
@@ -300,7 +325,10 @@ impl FrameReader {
             return ParseResult::Incomplete;
         };
         let Ok(body_len) = parse_body_length(&data[digits_start..soh2]) else {
-            return ParseResult::Malformed(MalformedReason::BodyLength);
+            return ParseResult::Malformed {
+                reason: MalformedReason::BodyLength,
+                frame_len: None,
+            };
         };
 
         let body_start = soh2 + 1;
@@ -308,7 +336,10 @@ impl FrameReader {
             .checked_add(body_len)
             .and_then(|n| n.checked_add(CHECKSUM_LEN))
         else {
-            return ParseResult::Malformed(MalformedReason::BodyLength);
+            return ParseResult::Malformed {
+                reason: MalformedReason::BodyLength,
+                frame_len: None,
+            };
         };
 
         if message_end > self.max_message_size {
@@ -323,11 +354,17 @@ impl FrameReader {
         }
 
         if !data[message_end - CHECKSUM_LEN..message_end].starts_with(b"10=") {
-            return ParseResult::Malformed(MalformedReason::BodyLength);
+            return ParseResult::Malformed {
+                reason: MalformedReason::BodyLength,
+                frame_len: None,
+            };
         }
 
         if validate_checksum(&data[..message_end]).is_err() {
-            return ParseResult::Malformed(MalformedReason::Checksum);
+            return ParseResult::Malformed {
+                reason: MalformedReason::Checksum,
+                frame_len: Some(message_end),
+            };
         }
 
         ParseResult::Complete(message_end)
@@ -1095,16 +1132,51 @@ mod tests {
         let mut reader = FrameReader::builder().build();
         reader.read(&msg).unwrap();
         let err = reader.next().unwrap_err();
-        assert!(
-            matches!(
-                err,
-                FrameError::Malformed {
-                    reason: MalformedReason::Checksum,
-                    ..
-                }
-            ),
-            "corrupt checksum must be reported with a Checksum reason"
+        // A checksum failure locates the full frame, so it is skipped exactly —
+        // `skipped` is the whole frame, not a scan to some later `8=`.
+        assert_eq!(
+            err,
+            FrameError::Malformed {
+                skipped: msg.len(),
+                reason: MalformedReason::Checksum,
+            },
         );
+    }
+
+    #[test]
+    fn checksum_failure_skips_exact_frame_over_spurious_header() {
+        // A checksum-corrupt frame whose payload contains a stray `8=` (here in a
+        // Text(58) value) must be skipped by its located length, NOT scanned to
+        // the inner `8=` — otherwise one bad frame splits into several malformed
+        // events and the following good frame is mis-parsed.
+        let mut corrupt = {
+            let mut buf = [0u8; 128];
+            let mut fmt = nexus_fix_codec::FrameFormatter::new(&mut buf, b"FIX.4.4", b"0");
+            fmt.field(58, b"x8=y"); // stray "8=" inside the body
+            let (start, len) = fmt.finish().unwrap();
+            buf[start..start + len].to_vec()
+        };
+        let n = corrupt.len();
+        corrupt[n - 2] ^= 1; // break the checksum, keeping BodyLength valid
+        let good = heartbeat();
+
+        let mut reader = FrameReader::builder().build();
+        reader.read(&corrupt).unwrap();
+        reader.read(&good).unwrap();
+
+        // One malformed event, skipping exactly the corrupt frame...
+        let err = reader.next().unwrap_err();
+        assert_eq!(
+            err,
+            FrameError::Malformed {
+                skipped: corrupt.len(),
+                reason: MalformedReason::Checksum,
+            },
+            "the stray 8= must not resync mid-frame",
+        );
+        // ...then the following good frame parses intact.
+        let frame = reader.next().unwrap().unwrap();
+        assert_eq!(frame, good.as_slice());
     }
 
     #[test]
