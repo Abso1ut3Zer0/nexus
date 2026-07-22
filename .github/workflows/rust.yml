@@ -160,3 +160,19 @@ jobs:
     - uses: dtolnay/rust-toolchain@1.94.0
     - name: Loom model checks (all loom_* tests)
       run: ./tools/loom.sh
+
+  miri:
+    runs-on: ubuntu-latest
+    env:
+      MIRIFLAGS: -Zmiri-ignore-leaks
+    steps:
+    - uses: actions/checkout@v4
+    - uses: dtolnay/rust-toolchain@nightly
+      with:
+        components: miri
+    - name: miri (nexus-slab)
+      run: cargo miri test -p nexus-slab --test miri_tests
+    - name: miri (nexus-smartptr)
+      run: cargo miri test -p nexus-smartptr --test miri_tests
+    - name: miri (nexus-collections)
+      run: cargo miri test -p nexus-collections --test miri_tests --features slab
