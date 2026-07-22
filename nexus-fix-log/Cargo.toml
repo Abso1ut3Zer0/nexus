@@ -13,3 +13,6 @@ workspace = true
 
 [dependencies]
 nexus-fix-codec = { path = "../nexus-fix-codec" }
+
+[dev-dependencies]
+nexus-journal = { path = "../nexus-journal" }
