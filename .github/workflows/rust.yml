@@ -169,8 +169,9 @@ jobs:
     - uses: actions/checkout@v4
     # Pin to a dated nightly; bump by hand when miri's tree-borrows or stacked-borrows
     # change enough to require an update.
-    - uses: dtolnay/rust-toolchain@nightly-2026-07-19
+    - uses: dtolnay/rust-toolchain@nightly
       with:
+        toolchain: nightly-2026-07-19
         components: miri
     - name: miri (nexus-slab)
       run: cargo miri test -p nexus-slab --test miri_tests
