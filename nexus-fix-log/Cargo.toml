@@ -6,6 +6,7 @@ rust-version.workspace = true
 license.workspace = true
 description = "Read-only FIX journal log viewer"
 repository.workspace = true
+publish = false
 
 [lints]
 workspace = true
