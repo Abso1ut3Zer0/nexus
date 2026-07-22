@@ -15,22 +15,47 @@ const ELEM_SIZE_OFFSET: usize = 136;
 const DATA_OFFSET: usize = 192;
 
 fn ring_tail(segment: &Segment) -> &AtomicU64 {
+    // SAFETY: TAIL_OFFSET (0) is within any valid ShmRing segment
+    // (`data_len >= DATA_OFFSET + capacity * size_of::<T>() > HEAD_OFFSET`).
+    // `data()` is 64-byte aligned (mmap), satisfying AtomicU64's alignment.
+    // The returned reference borrows the segment, so the mapping outlives it.
     unsafe { &*segment.data().add(TAIL_OFFSET).cast::<AtomicU64>() }
 }
 
 fn ring_head(segment: &Segment) -> &AtomicU64 {
+    // SAFETY: HEAD_OFFSET (64) is within any valid ShmRing segment and
+    // 64-byte aligned relative to `data()`. Same reasoning as `ring_tail`.
     unsafe { &*segment.data().add(HEAD_OFFSET).cast::<AtomicU64>() }
 }
 
 fn read_capacity(segment: &Segment) -> u64 {
+    // SAFETY: UNVERIFIED -- CAP_OFFSET (128) and ELEM_SIZE_OFFSET (136) are
+    // written in `ShmRingWriter::create` AFTER the Release store of
+    // status=ALIVE in `Segment::create_file`. The Acquire on status in
+    // `Segment::attach` therefore does not formally order these reads under
+    // the C11 memory model. In practice x86 TSO and Linux page-cache coherency
+    // guarantee visibility, but this has the same issue as `ShmSlotReader::attach`.
+    // See docs/unsafe-audit-open.md.
+    //
+    // The pointer itself is sound: CAP_OFFSET=128 is within any valid ShmRing
+    // payload, and data() is 64-byte aligned so the u64 cast is alignment-correct.
     unsafe { std::ptr::read(segment.data().add(CAP_OFFSET).cast::<u64>()) }
 }
 
 fn read_elem_size(segment: &Segment) -> u64 {
+    // SAFETY: ELEM_SIZE_OFFSET (136) is within any valid ShmRing payload
+    // (data_len >= DATA_OFFSET + capacity * size_of::<T>() > 136). The pointer
+    // is 8-byte aligned (136 mod 8 = 0, data() is 64-byte aligned).
+    // Same cross-process ordering caveat as `read_capacity` above.
     unsafe { std::ptr::read(segment.data().add(ELEM_SIZE_OFFSET).cast::<u64>()) }
 }
 
 fn slot_ptr<T>(segment: &Segment, slot_idx: u64) -> *mut T {
+    // SAFETY: `slot_idx` is masked to `[0, capacity)` by all callers before
+    // this function is called; `DATA_OFFSET + slot_idx * size_of::<T>()` is
+    // therefore within `data_len`. `align_of::<T>() <= DATA_OFFSET` is
+    // asserted in `ShmRingWriter::create`, so the cast to `*mut T` is
+    // alignment-sound. The pointer is not dereferenced here.
     unsafe {
         segment
             .data()
@@ -86,6 +111,11 @@ impl<T: Pod> ShmRingWriter<T> {
             .and_then(|s| s.checked_add(DATA_OFFSET))
             .ok_or(ShmError::SizeOverflow)?;
         let segment = Segment::create_file(path, data_len, hints)?;
+        // SAFETY: `segment.data()` spans exactly `data_len` bytes (enforced by
+        // `Segment::create_file`); zeroing all of them is in bounds. We hold
+        // exclusive ownership via the OFD lock before the segment is shared.
+        // CAP_OFFSET (128) and ELEM_SIZE_OFFSET (136) are both within `data_len`
+        // and u64-aligned relative to the 64-byte-aligned `data()` pointer.
         unsafe {
             std::ptr::write_bytes(segment.data(), 0, data_len);
             std::ptr::write(
@@ -119,6 +149,11 @@ impl<T: Pod> ShmRingWriter<T> {
             }
         }
         let dst = slot_ptr::<T>(&self.segment, tail & self.mask);
+        // SAFETY: `dst` points to an exclusively owned, T-aligned slot in the
+        // payload (caller checked space above; SPSC invariant: only the writer
+        // accesses [tail, tail+capacity)). `value` is a valid `&T` so the source
+        // pointer is valid for one `T`. The ranges do not overlap (different
+        // allocations: stack/heap vs mmap).
         unsafe { std::ptr::copy_nonoverlapping(value as *const T, dst, 1) };
         self.local_tail = tail.wrapping_add(1);
         ring_tail(&self.segment).store(self.local_tail, Ordering::Release);
@@ -142,6 +177,10 @@ impl<T: Pod> ShmRingWriter<T> {
     }
 }
 
+// SAFETY: `ShmRingWriter` owns its `Segment` (mmap) exclusively (one writer
+// per file via OFD lock). `T: Send` ensures the payload type can cross thread
+// boundaries. `&mut self` methods enforce exclusive access; `!Sync` prevents
+// shared `&self` writes that would corrupt the seqlock invariant.
 unsafe impl<T: Pod + Send> Send for ShmRingWriter<T> {}
 
 impl<T: Pod> ShmRingReader<T> {
@@ -184,6 +223,10 @@ impl<T: Pod> ShmRingReader<T> {
             }
         }
         let src = slot_ptr::<T>(&self.segment, head & self.mask).cast_const();
+        // SAFETY: `src` points to a T-aligned, initialized slot. The SPSC
+        // invariant (writer published via Release on tail; we Acquire-loaded
+        // tail above) ensures the slot is fully written before we read it.
+        // `T: Pod` means no Drop, so reading by value is safe.
         let value = unsafe { std::ptr::read(src) };
         self.local_head = head.wrapping_add(1);
         ring_head(&self.segment).store(self.local_head, Ordering::Release);
@@ -204,6 +247,9 @@ impl<T: Pod> ShmRingReader<T> {
     }
 }
 
+// SAFETY: `ShmRingReader` owns its `Segment` (mmap). `T: Send` ensures the
+// payload type can cross thread boundaries. `try_pop` takes `&mut self` so
+// only one reader call runs at a time; `!Sync` is the natural consequence.
 unsafe impl<T: Pod + Send> Send for ShmRingReader<T> {}
 
 #[cfg(test)]
@@ -328,6 +374,9 @@ mod tests {
         side: u8,
         _pad: [u8; 3],
     }
+    // SAFETY: `Order` is `repr(C)`, `Copy`, contains only integer fields and an
+    // explicit pad array, has no heap pointers, no `Drop`, and its layout is
+    // stable. All bit patterns are valid for the field types.
     unsafe impl Pod for Order {}
 
     #[test]
