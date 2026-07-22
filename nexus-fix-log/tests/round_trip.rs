@@ -7,11 +7,7 @@ struct TempDir(PathBuf);
 
 impl TempDir {
     fn new(name: &str) -> Self {
-        let p = std::env::temp_dir().join(format!(
-            "nexus-fix-log-{}-{}",
-            std::process::id(),
-            name
-        ));
+        let p = std::env::temp_dir().join(format!("nexus-fix-log-{}-{}", std::process::id(), name));
         let _ = std::fs::remove_dir_all(&p);
         Self(p)
     }
@@ -96,6 +92,12 @@ fn round_trip_with_rotation() {
         stdout.contains(" 34=50 "),
         "inbound seqnum 50 missing from output:\n{stdout}",
     );
-    assert!(stdout.contains(" out "), "no outbound direction tag in output:\n{stdout}");
-    assert!(stdout.contains(" in  "), "no inbound direction tag in output:\n{stdout}");
+    assert!(
+        stdout.contains(" out "),
+        "no outbound direction tag in output:\n{stdout}"
+    );
+    assert!(
+        stdout.contains(" in  "),
+        "no inbound direction tag in output:\n{stdout}"
+    );
 }
