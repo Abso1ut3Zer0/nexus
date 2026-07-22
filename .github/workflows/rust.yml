@@ -167,7 +167,9 @@ jobs:
       MIRIFLAGS: -Zmiri-ignore-leaks
     steps:
     - uses: actions/checkout@v4
-    - uses: dtolnay/rust-toolchain@nightly
+    # Pin to a dated nightly; bump by hand when miri's tree-borrows or stacked-borrows
+    # change enough to require an update.
+    - uses: dtolnay/rust-toolchain@nightly-2026-07-19
       with:
         components: miri
     - name: miri (nexus-slab)
