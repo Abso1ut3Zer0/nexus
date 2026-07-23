@@ -20,6 +20,7 @@ use std::collections::HashSet;
 /// Test that values are never corrupted
 #[test]
 fn bounded_value_integrity_random() {
+    // SAFETY: test slab; single-threaded, all slots freed before drop.
     let slab = unsafe { BoundedSlab::<u64>::with_capacity(50) };
 
     let mut rng = proptest::test_runner::TestRng::deterministic_rng(
@@ -80,6 +81,7 @@ fn bounded_value_integrity_random() {
 /// Test capacity is never exceeded (separate tests for each capacity)
 #[test]
 fn bounded_capacity_never_exceeded_1() {
+    // SAFETY: test slab; single-threaded, all slots freed before drop.
     let slab = unsafe { BoundedSlab::<u64>::with_capacity(1) };
 
     let mut slots = Vec::new();
@@ -98,6 +100,7 @@ fn bounded_capacity_never_exceeded_1() {
 
 #[test]
 fn bounded_capacity_never_exceeded_10() {
+    // SAFETY: test slab; single-threaded, all slots freed before drop.
     let slab = unsafe { BoundedSlab::<u64>::with_capacity(10) };
 
     let mut slots = Vec::new();
@@ -116,6 +119,7 @@ fn bounded_capacity_never_exceeded_10() {
 
 #[test]
 fn bounded_capacity_never_exceeded_50() {
+    // SAFETY: test slab; single-threaded, all slots freed before drop.
     let slab = unsafe { BoundedSlab::<u64>::with_capacity(50) };
 
     let mut slots = Vec::new();
@@ -135,6 +139,7 @@ fn bounded_capacity_never_exceeded_50() {
 /// Test fill/drain cycles maintain integrity
 #[test]
 fn bounded_fill_drain_integrity() {
+    // SAFETY: test slab; single-threaded, all slots freed before drop.
     let slab = unsafe { BoundedSlab::<u64>::with_capacity(20) };
 
     for cycle in 0..10 {
@@ -162,6 +167,7 @@ fn bounded_fill_drain_integrity() {
 
 #[test]
 fn unbounded_value_integrity_random() {
+    // SAFETY: test slab; single-threaded, all slots freed before drop.
     let slab = unsafe { UnboundedSlab::<u64>::with_chunk_capacity(8) };
 
     let mut rng = proptest::test_runner::TestRng::deterministic_rng(
@@ -216,6 +222,7 @@ fn unbounded_value_integrity_random() {
 
 #[test]
 fn unbounded_growth_maintains_integrity() {
+    // SAFETY: test slab; single-threaded, all slots freed before drop.
     let slab = unsafe { UnboundedSlab::<u64>::with_chunk_capacity(8) };
 
     // Test with increasing counts in a single slab
@@ -242,6 +249,7 @@ fn unbounded_growth_maintains_integrity() {
 
 #[test]
 fn freelist_no_duplicates() {
+    // SAFETY: test slab; single-threaded, all slots freed before drop.
     let slab = unsafe { BoundedSlab::<u64>::with_capacity(20) };
 
     let mut rng = proptest::test_runner::TestRng::deterministic_rng(
@@ -283,6 +291,7 @@ fn freelist_no_duplicates() {
 
 #[test]
 fn freelist_reuses_freed_slots() {
+    // SAFETY: test slab; single-threaded, all slots freed before drop.
     let slab = unsafe { BoundedSlab::<u64>::with_capacity(10) };
 
     let mut slots: Vec<Slot<u64>> = Vec::new();
@@ -344,6 +353,7 @@ fn get_counter() -> usize {
 fn drop_count_matches_inserts() {
     reset_counter();
 
+    // SAFETY: test slab; single-threaded, all slots freed before drop.
     let slab = unsafe { BoundedSlab::<Counted>::with_capacity(100) };
 
     let count = 50;
@@ -363,6 +373,7 @@ fn drop_count_matches_inserts() {
 fn into_inner_prevents_drop() {
     reset_counter();
 
+    // SAFETY: test slab; single-threaded, all slots freed before drop.
     let slab = unsafe { BoundedSlab::<Counted>::with_capacity(100) };
 
     let count = 20;

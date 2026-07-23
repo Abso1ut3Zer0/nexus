@@ -319,6 +319,7 @@ mod tests {
 
     #[test]
     fn basic_alloc_free() {
+        // SAFETY: test slab; single-threaded, all slots freed before drop.
         let slab: Slab<64> = unsafe { Slab::with_chunk_capacity(256) };
         let ptr = slab.alloc(42u64);
         assert_eq!(*ptr, 42);
@@ -327,6 +328,7 @@ mod tests {
 
     #[test]
     fn heterogeneous_types() {
+        // SAFETY: test slab; single-threaded, all slots freed before drop.
         let slab: Slab<128> = unsafe { Slab::with_chunk_capacity(256) };
 
         let p1 = slab.alloc(42u64);
@@ -344,6 +346,7 @@ mod tests {
 
     #[test]
     fn grows_automatically() {
+        // SAFETY: test slab; single-threaded, all slots freed before drop.
         let slab: Slab<16> = unsafe { Slab::with_chunk_capacity(2) };
         let mut ptrs = alloc::vec::Vec::new();
         for i in 0..100u64 {
@@ -359,6 +362,7 @@ mod tests {
 
     #[test]
     fn take_returns_value() {
+        // SAFETY: test slab; single-threaded, all slots freed before drop.
         let slab: Slab<64> = unsafe { Slab::with_chunk_capacity(256) };
         let ptr = slab.alloc(String::from("taken"));
         let val = slab.take(ptr);
@@ -371,6 +375,7 @@ mod tests {
 
     #[test]
     fn claim_write_typed() {
+        // SAFETY: test slab; single-threaded, all slots freed before drop.
         let slab: Slab<64> = unsafe { Slab::with_chunk_capacity(256) };
         let claim = slab.claim();
         let slot = claim.write(42u64);
@@ -380,6 +385,7 @@ mod tests {
 
     #[test]
     fn claim_drop_returns_to_freelist() {
+        // SAFETY: test slab; single-threaded, all slots freed before drop.
         let slab: Slab<64> = unsafe { Slab::with_chunk_capacity(1) };
 
         // Claim, then abandon.
@@ -395,12 +401,16 @@ mod tests {
 
     #[test]
     fn claim_write_raw() {
+        // SAFETY: test slab; single-threaded, all slots freed before drop.
         let slab: Slab<64> = unsafe { Slab::with_chunk_capacity(256) };
         let claim = slab.claim();
         let val: u64 = 77;
+        // SAFETY: val is on the stack; size_of::<u64>() bytes are initialized.
         let ptr =
             unsafe { claim.write_raw(&raw const val as *const u8, core::mem::size_of::<u64>()) };
+        // SAFETY: ptr was written with write_raw above; points to an initialized u64.
         assert_eq!(unsafe { *(ptr as *const u64) }, 77);
+        // SAFETY: ptr was obtained from write_raw above; points to an initialized u64 slot.
         let slot = unsafe { super::Slot::<u64>::from_raw(ptr) };
         slab.free(slot);
     }
@@ -411,6 +421,7 @@ mod tests {
 
     #[test]
     fn builder_defaults() {
+        // SAFETY: test slab; single-threaded, all slots freed before drop.
         let slab = unsafe { Builder::new().build::<64>() };
         let slot = slab.alloc(42u64);
         assert_eq!(*slot, 42);
@@ -419,6 +430,7 @@ mod tests {
 
     #[test]
     fn builder_custom_chunk_capacity() {
+        // SAFETY: test slab; single-threaded, all slots freed before drop.
         let slab = unsafe { Builder::new().chunk_capacity(32).build::<64>() };
         let slot = slab.alloc(1u64);
         slab.free(slot);
@@ -426,6 +438,7 @@ mod tests {
 
     #[test]
     fn builder_initial_chunks() {
+        // SAFETY: test slab; single-threaded, all slots freed before drop.
         let slab = unsafe {
             Builder::new()
                 .chunk_capacity(16)
@@ -445,6 +458,7 @@ mod tests {
     #[test]
     #[should_panic(expected = "chunk_capacity must be non-zero")]
     fn builder_zero_chunk_capacity_panics() {
+        // SAFETY: test slab; single-threaded; panics before any slot can be allocated.
         let _slab = unsafe { Builder::new().chunk_capacity(0).build::<64>() };
     }
 }

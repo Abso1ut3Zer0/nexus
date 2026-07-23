@@ -237,6 +237,7 @@ mod tests {
 
     #[test]
     fn basic_alloc_free() {
+        // SAFETY: test slab; single-threaded, all slots freed before drop.
         let slab: Slab<128> = unsafe { Slab::with_capacity(10) };
         let ptr = slab.alloc(42u64);
         assert_eq!(*ptr, 42);
@@ -245,6 +246,7 @@ mod tests {
 
     #[test]
     fn heterogeneous_types() {
+        // SAFETY: test slab; single-threaded, all slots freed before drop.
         let slab: Slab<128> = unsafe { Slab::with_capacity(10) };
 
         let p1 = slab.alloc(42u64);
@@ -262,6 +264,7 @@ mod tests {
 
     #[test]
     fn take_returns_value() {
+        // SAFETY: test slab; single-threaded, all slots freed before drop.
         let slab: Slab<64> = unsafe { Slab::with_capacity(10) };
         let ptr = slab.alloc(String::from("owned"));
         let val = slab.take(ptr);
@@ -270,6 +273,7 @@ mod tests {
 
     #[test]
     fn full_returns_error() {
+        // SAFETY: test slab; single-threaded, all slots freed before drop.
         let slab: Slab<64> = unsafe { Slab::with_capacity(1) };
         let p1 = slab.alloc(1u64);
         let result = slab.try_alloc(2u64);
@@ -281,12 +285,14 @@ mod tests {
     #[test]
     #[should_panic(expected = "exceeds byte slab slot size")]
     fn rejects_oversized_type() {
+        // SAFETY: test slab; single-threaded; panics before allocation on type mismatch.
         let slab: Slab<8> = unsafe { Slab::with_capacity(1) };
         let _p = slab.alloc([0u64; 2]);
     }
 
     #[test]
     fn deref_mut() {
+        // SAFETY: test slab; single-threaded, all slots freed before drop.
         let slab: Slab<64> = unsafe { Slab::with_capacity(10) };
         let mut ptr = slab.alloc(String::from("hello"));
         ptr.push_str(" world");
@@ -296,6 +302,7 @@ mod tests {
 
     #[test]
     fn reuse_after_free() {
+        // SAFETY: test slab; single-threaded, all slots freed before drop.
         let slab: Slab<64> = unsafe { Slab::with_capacity(1) };
         let ptr = slab.alloc(1u64);
         slab.free(ptr);
@@ -308,6 +315,7 @@ mod tests {
     #[test]
     fn debug_drop_panics() {
         let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            // SAFETY: test slab; slot intentionally not freed (tests debug drop panic).
             let slab: Slab<64> = unsafe { Slab::with_capacity(10) };
             let _ptr = slab.alloc(42u64);
         }));
@@ -320,6 +328,7 @@ mod tests {
 
     #[test]
     fn claim_write_typed() {
+        // SAFETY: test slab; single-threaded, all slots freed before drop.
         let slab: Slab<64> = unsafe { Slab::with_capacity(4) };
         let claim = slab.claim();
         let slot = claim.write(42u64);
@@ -329,18 +338,23 @@ mod tests {
 
     #[test]
     fn claim_write_raw() {
+        // SAFETY: test slab; single-threaded, all slots freed before drop.
         let slab: Slab<64> = unsafe { Slab::with_capacity(4) };
         let claim = slab.claim();
         let val: u64 = 99;
+        // SAFETY: val is on the stack; size_of::<u64>() bytes are initialized.
         let ptr =
             unsafe { claim.write_raw(&raw const val as *const u8, core::mem::size_of::<u64>()) };
+        // SAFETY: ptr was written with write_raw above; points to an initialized u64.
         assert_eq!(unsafe { *(ptr as *const u64) }, 99);
+        // SAFETY: ptr was obtained from write_raw above; points to an initialized u64 slot.
         let slot = unsafe { super::Slot::<u64>::from_raw(ptr) };
         slab.free(slot);
     }
 
     #[test]
     fn claim_drop_returns_to_freelist() {
+        // SAFETY: test slab; single-threaded, all slots freed before drop.
         let slab: Slab<64> = unsafe { Slab::with_capacity(1) };
 
         // Claim the only slot, then drop without writing.
@@ -356,6 +370,7 @@ mod tests {
 
     #[test]
     fn try_claim_returns_none_when_full() {
+        // SAFETY: test slab; single-threaded, all slots freed before drop.
         let slab: Slab<64> = unsafe { Slab::with_capacity(1) };
         let _held = slab.claim();
 
@@ -364,6 +379,7 @@ mod tests {
 
     #[test]
     fn try_claim_succeeds_after_abandon() {
+        // SAFETY: test slab; single-threaded, all slots freed before drop.
         let slab: Slab<64> = unsafe { Slab::with_capacity(1) };
 
         let claim = slab.claim();
