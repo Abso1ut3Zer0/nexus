@@ -296,7 +296,7 @@ mod tests {
     }
     // SAFETY: `Price` is `repr(C)`, `Copy`, contains only `f64` and `u64`
     // fields (all `Pod`), has no heap pointers, no `Drop`, and its layout is
-    // stable with no implicit padding beyond the declared `_pad` field.
+    // stable with no implicit padding.
     unsafe impl Pod for Price {}
 
     #[test]

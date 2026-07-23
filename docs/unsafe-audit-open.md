@@ -32,3 +32,29 @@ of `status=ALIVE`, i.e., initialize the payload header inside `Segment::create`
 Acquire/Release pair formally sufficient.
 
 **Risk level:** Low in practice (x86 Linux), but not formally sound.
+
+**Tracking:** #625
+
+---
+
+### 2. Ring slot alignment in `slot_ptr` (`ShmRingWriter`/`ShmRingReader`)
+
+**File:** `nexus-shm/src/ring.rs` (`slot_ptr`, line ~53)
+
+**Issue:** `slot_ptr` casts a byte pointer offset by `DATA_OFFSET + slot_idx * size_of::<T>()`
+to `*mut T`. The assert in `ShmRingWriter::create` checks `align_of::<T>() <= DATA_OFFSET`
+(192), but `DATA_OFFSET = 192` is not a power of two (192 = 64 * 3). A slot at offset 192
+is only 64-aligned: `192 mod 128 = 64`, so any `Pod` type with `align_of == 128` passes the
+assert but lands on a misaligned address. The `copy_nonoverlapping` and `read` calls at the
+call sites then operate on a misaligned pointer, which is UB.
+
+**In practice:** No in-tree `Pod` type exceeds `align_of == 16` (the maximum for `f64`/`u128`),
+so this is latent. It becomes reachable via a user-defined `#[repr(align(128))]` type that
+implements `Pod`.
+
+**Fix:** Change the assert to require `align_of::<T>().is_power_of_two() && DATA_OFFSET % align_of::<T>() == 0`,
+or adjust `DATA_OFFSET` to the next power-of-two boundary (256).
+
+**Risk level:** Low in practice (no in-tree type triggers it), but unsound by construction.
+
+**Tracking:** #624

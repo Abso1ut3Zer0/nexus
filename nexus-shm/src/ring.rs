@@ -53,9 +53,11 @@ fn read_elem_size(segment: &Segment) -> u64 {
 fn slot_ptr<T>(segment: &Segment, slot_idx: u64) -> *mut T {
     // SAFETY: `slot_idx` is masked to `[0, capacity)` by all callers before
     // this function is called; `DATA_OFFSET + slot_idx * size_of::<T>()` is
-    // therefore within `data_len`. `align_of::<T>() <= DATA_OFFSET` is
-    // asserted in `ShmRingWriter::create`, so the cast to `*mut T` is
-    // alignment-sound. The pointer is not dereferenced here.
+    // therefore within `data_len`. The pointer is not dereferenced here.
+    // UNVERIFIED: the cast to `*mut T` assumes T-alignment, but DATA_OFFSET
+    // (192) is not a power of two, so the assert `align_of::<T>() <= 192`
+    // in create() does not guarantee T-alignment for all Pod alignments.
+    // See docs/unsafe-audit-open.md item 2 and #624.
     unsafe {
         segment
             .data()
@@ -179,8 +181,8 @@ impl<T: Pod> ShmRingWriter<T> {
 
 // SAFETY: `ShmRingWriter` owns its `Segment` (mmap) exclusively (one writer
 // per file via OFD lock). `T: Send` ensures the payload type can cross thread
-// boundaries. `&mut self` methods enforce exclusive access; `!Sync` prevents
-// shared `&self` writes that would corrupt the seqlock invariant.
+// boundaries. `try_push` takes `&mut self` so only one writer call runs at a
+// time; `!Sync` is the natural consequence.
 unsafe impl<T: Pod + Send> Send for ShmRingWriter<T> {}
 
 impl<T: Pod> ShmRingReader<T> {
