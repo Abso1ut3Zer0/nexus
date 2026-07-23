@@ -13,7 +13,7 @@
 #![cfg(unix)]
 
 use std::path::{Path, PathBuf};
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use nexus_fix_codec::{
     FieldView, FixAdminMsg, FixDictionary, FixHeader, FixTimestamp, FrameFormatter,
@@ -167,7 +167,7 @@ fn drain_out(session: &mut FixSession<MockDict>) {
 /// Feed one frame through the inbound byte seam and drive `poll` to quiescence,
 /// draining outbound between steps. Panics on a hard protocol error (the
 /// recovery path is expected to be clean).
-fn feed(session: &mut FixSession<MockDict>, now: Instant, frame: &[u8]) {
+fn feed(session: &mut FixSession<MockDict>, frame: &[u8]) {
     let mut off = 0;
     while off < frame.len() {
         let spare = session.read_spare();
@@ -178,7 +178,7 @@ fn feed(session: &mut FixSession<MockDict>, now: Instant, frame: &[u8]) {
         off += n;
     }
     loop {
-        let outcome = session.poll(now).expect("recovery path must not error");
+        let outcome = session.poll().expect("recovery path must not error");
         drain_out(session);
         match outcome {
             PollOutcome::NeedMoreBytes | PollOutcome::Disconnected(_) => break,
@@ -200,7 +200,6 @@ fn has_field(frame: &[u8], tag_eq_val: &[u8]) -> bool {
 #[test]
 fn journal_stop_and_reopen_resumes_seqnums() {
     let dir = tmp();
-    let now = Instant::now();
 
     // ── phase 1: run a session that advances seqnums and writes the journal ──
     {
@@ -208,9 +207,9 @@ fn journal_stop_and_reopen_resumes_seqnums() {
         let mut s1 =
             FixSession::<MockDict>::new(SessionState::new(Duration::from_secs(30)), cfg(), journal);
 
-        s1.connect(now).unwrap(); // Logon(seq=1) queued + journaled
+        s1.connect().unwrap(); // Logon(seq=1) queued + journaled
         drain_out(&mut s1);
-        feed(&mut s1, now, &peer_frame(b"A", 1, &[(108, b"30")])); // Logon ack → Active
+        feed(&mut s1, &peer_frame(b"A", 1, &[(108, b"30")])); // Logon ack → Active
         assert_eq!(s1.state().state(), State::Active);
         assert_eq!(s1.state().next_outbound_seq(), 2);
         assert_eq!(s1.state().next_inbound_seq(), 2);
@@ -218,7 +217,7 @@ fn journal_stop_and_reopen_resumes_seqnums() {
         let seq = s1.allocate_seq().unwrap(); // 2
         s1.send_app(seq, &engine_app(seq)).unwrap(); // app(seq=2) journaled
         drain_out(&mut s1);
-        feed(&mut s1, now, &peer_frame(b"0", 2, &[])); // inbound Heartbeat seq 2
+        feed(&mut s1, &peer_frame(b"0", 2, &[])); // inbound Heartbeat seq 2
 
         assert_eq!(s1.state().next_outbound_seq(), 3, "outbound advanced to 3");
         assert_eq!(s1.state().next_inbound_seq(), 3, "inbound advanced to 3");
@@ -258,7 +257,7 @@ fn journal_stop_and_reopen_resumes_seqnums() {
 
     // The post-restart Logon must carry the RECOVERED seqnum (34=3), proving
     // persist-before-send survived the restart — not a fresh 34=1.
-    s2.connect(now).unwrap();
+    s2.connect().unwrap();
     let logon = s2.outbound().to_vec();
     assert!(has_field(&logon, b"35=A"), "outbound must be a Logon");
     assert!(
@@ -268,7 +267,7 @@ fn journal_stop_and_reopen_resumes_seqnums() {
     drain_out(&mut s2);
 
     // ── phase 4: reconnect completes, then gap-detect works on recovered in ──
-    feed(&mut s2, now, &peer_frame(b"A", 3, &[(108, b"30")])); // Logon ack at expected seq 3
+    feed(&mut s2, &peer_frame(b"A", 3, &[(108, b"30")])); // Logon ack at expected seq 3
     assert_eq!(s2.state().state(), State::Active);
     assert_eq!(
         s2.state().next_inbound_seq(),
@@ -278,7 +277,7 @@ fn journal_stop_and_reopen_resumes_seqnums() {
 
     // A peer app at seq 6 (expected 4) is a forward gap: the engine must send a
     // ResendRequest and enter Resending — gap detection intact post-recovery.
-    feed(&mut s2, now, &peer_frame(b"D", 6, &[(11, b"ORD-GAP")]));
+    feed(&mut s2, &peer_frame(b"D", 6, &[(11, b"ORD-GAP")]));
     assert_eq!(
         s2.state().state(),
         State::Resending,

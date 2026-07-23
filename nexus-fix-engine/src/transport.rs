@@ -8,7 +8,7 @@
 
 use std::io::{self, Read, Write};
 use std::net::{TcpStream, ToSocketAddrs};
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use nexus_fix_codec::{FixDictionary, NoCustomizer, SessionCustomizer};
 
@@ -28,8 +28,8 @@ enum RecvStep {
     Message,
     /// A clean, negotiated logout ended the session.
     LoggedOut,
-    /// Nothing to surface this step (a suppressed frame, or a read timeout with no
-    /// deadline elapsed); the wrapper returns `Ok(None)`.
+    /// Nothing to surface this step (a suppressed frame, or a caller-set socket
+    /// read timeout elapsing with no complete frame); the wrapper returns `Ok(None)`.
     Nothing,
 }
 
@@ -210,6 +210,12 @@ impl<S: Read + Write, D: FixDictionary, C: SessionCustomizer> FixConnection<S, D
         self.session.state_mut()
     }
 
+    /// The negotiated heartbeat interval (`HeartBtInt(108)`) — build your own
+    /// keepalive/liveness timers from it; the session holds none.
+    pub fn heartbeat_interval(&self) -> Duration {
+        self.session.heartbeat_interval()
+    }
+
     pub fn garbage_frame_count(&self) -> u64 {
         self.session.garbage_frame_count()
     }
@@ -230,18 +236,18 @@ impl<S: Read + Write, D: FixDictionary, C: SessionCustomizer> FixConnection<S, D
         self.drain_outbound()
     }
 
-    pub fn connect(&mut self, now: Instant) -> Result<(), Error> {
-        self.session.connect(now)?;
+    pub fn connect(&mut self) -> Result<(), Error> {
+        self.session.connect()?;
         self.drain_outbound()
     }
 
-    pub fn connect_reset(&mut self, now: Instant) -> Result<(), Error> {
-        self.session.connect_reset(now)?;
+    pub fn connect_reset(&mut self) -> Result<(), Error> {
+        self.session.connect_reset()?;
         self.drain_outbound()
     }
 
-    pub fn reset_sequence(&mut self, now: Instant) -> Result<(), Error> {
-        self.session.reset_sequence(now)?;
+    pub fn reset_sequence(&mut self) -> Result<(), Error> {
+        self.session.reset_sequence()?;
         self.drain_outbound()
     }
 
@@ -250,16 +256,16 @@ impl<S: Read + Write, D: FixDictionary, C: SessionCustomizer> FixConnection<S, D
         self.drain_outbound()
     }
 
-    pub fn logout(&mut self, now: Instant) -> Result<(), Error> {
-        self.session.logout(now)?;
+    pub fn logout(&mut self) -> Result<(), Error> {
+        self.session.logout()?;
         self.drain_outbound()
     }
 
-    pub fn recv(&mut self, now: Instant) -> Result<Option<Message<'_, D>>, Error> {
+    pub fn recv(&mut self) -> Result<Option<Message<'_, D>>, Error> {
         if self.terminated {
             return Err(Error::Closed);
         }
-        match self.recv_step(now) {
+        match self.recv_step() {
             Ok(RecvStep::Message) => Ok(Some(self.session.message())),
             // Clean, negotiated logout: the graceful terminal event.
             Ok(RecvStep::LoggedOut) => {
@@ -281,9 +287,9 @@ impl<S: Read + Write, D: FixDictionary, C: SessionCustomizer> FixConnection<S, D
     /// Advances the session one step, returning an *owned* outcome. Splitting this
     /// from [`recv`](Self::recv) lets `recv` arm the terminated guard (on any fatal
     /// error or a clean logout) before borrowing `self` to build the message.
-    fn recv_step(&mut self, now: Instant) -> Result<RecvStep, Error> {
+    fn recv_step(&mut self) -> Result<RecvStep, Error> {
         loop {
-            let outcome = self.session.poll(now)?;
+            let outcome = self.session.poll()?;
             // Drain any admin/resend the core enqueued for this step (matches the
             // original, which flushed after every protocol handler).
             self.drain_outbound()?;
@@ -318,14 +324,11 @@ impl<S: Read + Write, D: FixDictionary, C: SessionCustomizer> FixConnection<S, D
                             });
                         }
                         Ok(n) => self.session.read_filled(n),
-                        Err(e) if is_timeout(&e) => {
-                            if let Some(reason) = self.session.on_timeout(now)? {
-                                self.drain_outbound()?;
-                                return Err(Error::UnexpectedDisconnect { reason });
-                            }
-                            self.drain_outbound()?;
-                            return Ok(RecvStep::Nothing);
-                        }
+                        // A caller-set socket read timeout elapsed with no complete
+                        // frame. The session holds no timers, so there is nothing to
+                        // service — yield control so the caller can run its own
+                        // heartbeat/liveness timers, then call `recv` again.
+                        Err(e) if is_timeout(&e) => return Ok(RecvStep::Nothing),
                         Err(e) => return Err(Error::Io(e)),
                     }
                 }

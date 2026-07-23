@@ -25,11 +25,14 @@ pub enum State {
 /// [`TransportError::UnexpectedDisconnect`](crate::TransportError).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DisconnectReason {
-    /// No Logon reply within the logon timeout.
+    /// No Logon reply within the logon timeout. No longer produced by the engine
+    /// (it holds no timers); pass it to `logout()` when your own timer fires (phase 3).
     LogonTimeout,
-    /// No Logout confirm within the logout timeout.
+    /// No Logout confirm within the logout timeout. No longer produced by the engine
+    /// (it holds no timers); pass it to `logout()` when your own timer fires (phase 3).
     LogoutTimeout,
-    /// Counterparty did not answer a TestRequest in time.
+    /// Counterparty did not answer a TestRequest in time. No longer produced by the
+    /// engine (it holds no timers); pass it to `logout()` when your own timer fires (phase 3).
     TestRequestTimeout,
     /// Inbound CompIDs do not match the session configuration.
     CompIdMismatch,
@@ -39,7 +42,9 @@ pub enum DisconnectReason {
     ProtocolViolation,
     /// Outbound sequence number reached i32::MAX; caller must force a sequence reset.
     SeqNumExhausted,
-    /// Counterparty did not complete the reset handshake within the timeout.
+    /// Counterparty did not complete the reset handshake within the timeout. No longer
+    /// produced by the engine (it holds no timers); pass it to `logout()` when your own
+    /// timer fires (phase 3).
     ResetTimeout,
     /// The peer closed the transport (socket EOF) without a FIX Logout. Distinct
     /// from a connection reset, which surfaces as

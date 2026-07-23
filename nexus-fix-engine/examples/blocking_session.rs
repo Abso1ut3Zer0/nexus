@@ -7,7 +7,7 @@
 
 use std::net::TcpListener;
 use std::path::{Path, PathBuf};
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use nexus_fix_codec::{
     FieldView, FixAdminMsg, FixDictionary, FixHeader, FixTimestamp, FrameFormatter,
@@ -116,7 +116,7 @@ fn run_acceptor(listener: &TcpListener, dir: &Path) {
 
     let mut n = 0usize;
     loop {
-        match conn.recv(Instant::now()) {
+        match conn.recv() {
             Ok(Some(Message::LoggedOut { .. })) => {
                 println!("acceptor: logged out cleanly, {n} app message(s) received");
                 break;
@@ -144,10 +144,10 @@ fn run_initiator(addr: std::net::SocketAddr, dir: &Path) {
         )
         .unwrap();
 
-    conn.connect(Instant::now()).unwrap();
+    conn.connect().unwrap();
 
     loop {
-        match conn.recv(Instant::now()) {
+        match conn.recv() {
             Ok(Some(Message::LoggedOut { .. })) => {
                 eprintln!("initiator: logged out before active");
                 return;
@@ -177,9 +177,9 @@ fn run_initiator(addr: std::net::SocketAddr, dir: &Path) {
     let msg = new_order(seq);
     conn.send_app(seq, &msg).unwrap();
 
-    conn.logout(Instant::now()).unwrap();
+    conn.logout().unwrap();
     loop {
-        match conn.recv(Instant::now()) {
+        match conn.recv() {
             Ok(Some(_)) | Err(_) => break,
             Ok(None) => {}
         }

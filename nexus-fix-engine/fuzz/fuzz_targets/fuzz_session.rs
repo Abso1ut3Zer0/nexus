@@ -26,7 +26,6 @@
 
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::time::Instant;
 
 use arbitrary::Arbitrary;
 use libfuzzer_sys::fuzz_target;
@@ -281,7 +280,6 @@ fn check_oracle(session: &FixSession<MockDict>, prev_in: &mut u32, prev_out: &mu
 /// draining outbound and asserting the oracle after every step.
 fn feed_and_poll(
     session: &mut FixSession<MockDict>,
-    now: Instant,
     frame: &[u8],
     prev_in: &mut u32,
     prev_out: &mut u32,
@@ -299,7 +297,7 @@ fn feed_and_poll(
     }
 
     loop {
-        match session.poll(now) {
+        match session.poll() {
             Ok(outcome) => {
                 if outcome == PollOutcome::Message {
                     // Reconstructing the borrowed message must not panic.
@@ -339,12 +337,11 @@ fn make_session(dir: &std::path::Path) -> FixSession<MockDict> {
 
 fuzz_target!(|msgs: Vec<FuzzMsg>| {
     let jdir = JournalDir::new();
-    let now = Instant::now();
     let mut session = make_session(jdir.0.as_path());
 
     // Initiator role: send our Logon, then drive inbound. A generated Logon at
     // the expected seq completes the handshake and unlocks the Active paths.
-    if session.connect(now).is_ok() {
+    if session.connect().is_ok() {
         let outn = session.outbound().len();
         if outn > 0 {
             session.advance_outbound(outn);
@@ -356,7 +353,7 @@ fuzz_target!(|msgs: Vec<FuzzMsg>| {
 
     for m in msgs.iter().take(64) {
         if let Some(frame) = build_frame(m) {
-            feed_and_poll(&mut session, now, &frame, &mut prev_in, &mut prev_out);
+            feed_and_poll(&mut session, &frame, &mut prev_in, &mut prev_out);
         }
     }
 

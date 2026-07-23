@@ -3,7 +3,7 @@
 use std::io::{Read, Write};
 use std::net::{TcpListener, TcpStream};
 use std::path::{Path, PathBuf};
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use nexus_fix_codec::{
     FieldView, FixAdminMsg, FixDictionary, FixHeader, FixTimestamp, FrameFormatter,
@@ -152,7 +152,7 @@ fn tmp_dir(suffix: &str) -> TempDir {
 /// peer-initiated logout, so the clean path is the expected outcome.
 fn drive(conn: &mut FixConnection<TcpStream, MockDict>) -> Result<(), TransportError> {
     loop {
-        if let Some(Message::LoggedOut { .. }) = conn.recv(Instant::now())? {
+        if let Some(Message::LoggedOut { .. }) = conn.recv()? {
             return Ok(());
         }
     }
@@ -357,7 +357,7 @@ fn initiator_logon_and_logout() {
         session_cfg(t_sender, t_target),
         journal(dir.path()),
     );
-    conn.connect(Instant::now()).unwrap();
+    conn.connect().unwrap();
 
     drive(&mut conn).unwrap();
 
@@ -392,7 +392,7 @@ fn acceptor_receives_app_message() {
     );
 
     loop {
-        match conn.recv(Instant::now()).unwrap() {
+        match conn.recv().unwrap() {
             Some(Message::LoggedOut { .. }) => break,
             Some(Message::Application { header: _ }) => {
                 received_app += 1;
@@ -436,7 +436,7 @@ fn heartbeat_stale_seqnum_disconnects() {
     );
 
     let reason = loop {
-        match conn.recv(Instant::now()) {
+        match conn.recv() {
             Ok(_) => {}
             Err(TransportError::UnexpectedDisconnect { reason }) => break reason,
             Err(e) => panic!("unexpected transport error: {e:?}"),
@@ -489,7 +489,7 @@ fn resend_request_triggers_gap_fill() {
         session_cfg(sender(), target()),
         journal(dir_cli.path()),
     );
-    conn.connect(Instant::now()).unwrap();
+    conn.connect().unwrap();
 
     drive(&mut conn).unwrap();
 
@@ -525,7 +525,7 @@ fn inbound_gap_sends_resend_request_and_suppresses_app_message() {
 
     let mut saw_app = false;
     loop {
-        match conn.recv(Instant::now()) {
+        match conn.recv() {
             Ok(Some(Message::LoggedOut { .. })) | Err(_) => break,
             Ok(Some(Message::Application { .. })) => saw_app = true,
             Ok(Some(_) | None) => {}
@@ -589,7 +589,7 @@ fn out_of_sequence_admin_suppressed_and_resends() {
 
     let mut saw_admin = false;
     loop {
-        match conn.recv(Instant::now()) {
+        match conn.recv() {
             Ok(Some(Message::LoggedOut { .. })) | Err(_) => break,
             // The out-of-sequence Heartbeat must never surface.
             Ok(Some(Message::Heartbeat { .. })) => saw_admin = true,
@@ -642,7 +642,7 @@ fn duplicate_admin_suppressed_no_resend() {
     let mut saw_dup_admin = false;
     let mut saw_app = false;
     loop {
-        match conn.recv(Instant::now()) {
+        match conn.recv() {
             Ok(Some(Message::LoggedOut { .. })) | Err(_) => break,
             Ok(Some(Message::Application { .. })) => saw_app = true,
             Ok(Some(Message::Heartbeat { .. })) => saw_dup_admin = true,
@@ -704,7 +704,7 @@ fn resend_request_huge_end_seq_clamped() {
         session_cfg(sender(), target()),
         journal(dir.path()),
     );
-    conn.connect(Instant::now()).unwrap();
+    conn.connect().unwrap();
     drive(&mut conn).unwrap();
     handle.join().unwrap();
 }
@@ -736,7 +736,7 @@ fn corrupt_checksum_frame_counted_as_garbage() {
     );
 
     loop {
-        match conn.recv(Instant::now()) {
+        match conn.recv() {
             Ok(Some(Message::LoggedOut { .. })) | Err(_) => break,
             _ => {}
         }
@@ -776,7 +776,7 @@ fn garbage_bytes_increment_counter() {
     );
 
     loop {
-        match conn.recv(Instant::now()) {
+        match conn.recv() {
             Ok(Some(Message::LoggedOut { .. })) | Err(_) => break,
             _ => {}
         }
@@ -804,7 +804,7 @@ fn malformed_framing_surfaces_via_recv() {
         journal(dir.path()),
     );
 
-    let Err(err) = conn.recv(Instant::now()) else {
+    let Err(err) = conn.recv() else {
         panic!("expected TransportError::Malformed for raw garbage");
     };
     assert!(
@@ -839,7 +839,7 @@ fn malformed_checksum_surfaces_via_recv() {
         journal(dir.path()),
     );
 
-    let Err(err) = conn.recv(Instant::now()) else {
+    let Err(err) = conn.recv() else {
         panic!("expected TransportError::Malformed for a corrupt checksum");
     };
     let TransportError::Malformed { count, reason, .. } = err else {
@@ -879,7 +879,7 @@ fn peer_eof_surfaces_peer_closed_not_logout() {
         journal(dir.path()),
     );
 
-    let Err(err) = conn.recv(Instant::now()) else {
+    let Err(err) = conn.recv() else {
         panic!("expected an error on peer EOF");
     };
     assert!(err.is_fatal(), "an abnormal disconnect is fatal");
@@ -907,13 +907,13 @@ fn recv_after_abnormal_disconnect_is_closed() {
 
     // First recv terminates the session (peer EOF).
     assert!(matches!(
-        conn.recv(Instant::now()),
+        conn.recv(),
         Err(TransportError::UnexpectedDisconnect { .. })
     ));
 
     // Every recv after that is Closed.
     for _ in 0..3 {
-        let Err(err) = conn.recv(Instant::now()) else {
+        let Err(err) = conn.recv() else {
             panic!("expected Closed on a terminated session");
         };
         assert!(err.is_fatal());
@@ -948,14 +948,11 @@ fn recv_after_clean_logout_is_closed() {
         session_cfg(sender(), target()),
         journal(dir.path()),
     );
-    conn.connect(Instant::now()).unwrap();
+    conn.connect().unwrap();
 
     // Drive to the clean logout terminal, then any further recv is Closed.
     drive(&mut conn).unwrap();
-    assert!(matches!(
-        conn.recv(Instant::now()),
-        Err(TransportError::Closed)
-    ));
+    assert!(matches!(conn.recv(), Err(TransportError::Closed)));
 
     handle.join().unwrap();
 }
@@ -1025,7 +1022,7 @@ fn sequence_reset_backward_ignored() {
     );
 
     loop {
-        match conn.recv(Instant::now()) {
+        match conn.recv() {
             Ok(Some(Message::LoggedOut { .. })) | Err(_) => break,
             _ => {}
         }
@@ -1076,7 +1073,7 @@ fn overflowed_tag_34_yields_missing_seq_num() {
         journal(dir.path()),
     );
 
-    let result = conn.recv(Instant::now());
+    let result = conn.recv();
     handle.join().unwrap();
 
     assert!(
@@ -1111,7 +1108,7 @@ fn journal_recovers_admin_seqnums() {
         session_cfg(sender(), target()),
         journal(dir.path()),
     );
-    conn.connect(Instant::now()).unwrap();
+    conn.connect().unwrap();
     drive(&mut conn).unwrap();
     handle.join().unwrap();
     drop(conn);
@@ -1220,7 +1217,7 @@ fn frame_exceeding_reader_buffer_is_message_too_large_not_disconnect() {
             journal(dir.path()),
         );
 
-    match conn.recv(Instant::now()) {
+    match conn.recv() {
         Err(TransportError::MessageTooLarge(_)) => {}
         Err(TransportError::UnexpectedDisconnect { reason }) => {
             panic!("frame exceeding reader buffer was misread as a disconnect: {reason:?}")
@@ -1235,8 +1232,5 @@ fn frame_exceeding_reader_buffer_is_message_too_large_not_disconnect() {
     // session — the next recv must be Closed, not a re-read of the oversized frame.
     // Regression guard: the terminated flag must arm on any fatal error, not just
     // LoggedOut / UnexpectedDisconnect.
-    assert!(matches!(
-        conn.recv(Instant::now()),
-        Err(TransportError::Closed)
-    ));
+    assert!(matches!(conn.recv(), Err(TransportError::Closed)));
 }

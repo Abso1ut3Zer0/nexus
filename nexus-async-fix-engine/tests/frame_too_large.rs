@@ -11,7 +11,7 @@ use std::collections::VecDeque;
 use std::io;
 use std::pin::Pin;
 use std::task::{Context, Poll};
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use nexus_async_fix_engine::{AsyncReadAdapter, Error as TransportError, FixConnection};
 use nexus_fix_codec::{
@@ -219,7 +219,7 @@ async fn frame_exceeding_reader_buffer_is_message_too_large_not_disconnect() {
             FixJournal::open(dir.path(), 0, 256).unwrap(),
         );
 
-    match conn.recv(Instant::now()).await {
+    match conn.recv().await {
         Err(TransportError::MessageTooLarge(_)) => {}
         Err(TransportError::UnexpectedDisconnect { reason }) => {
             panic!("frame exceeding reader buffer was misread as a disconnect: {reason:?}")
@@ -233,10 +233,7 @@ async fn frame_exceeding_reader_buffer_is_message_too_large_not_disconnect() {
     // MessageTooLarge is a *fatal* error (not a disconnect), so it terminates the
     // session — the next recv must be Closed. Regression guard: the terminated flag
     // must arm on any fatal error, not just LoggedOut / UnexpectedDisconnect.
-    assert!(matches!(
-        conn.recv(Instant::now()).await,
-        Err(TransportError::Closed)
-    ));
+    assert!(matches!(conn.recv().await, Err(TransportError::Closed)));
 }
 
 #[tokio::test]
@@ -256,7 +253,7 @@ async fn peer_eof_is_peer_closed_then_recv_is_closed() {
             FixJournal::open(dir.path(), 0, 256).unwrap(),
         );
 
-    let Err(err) = conn.recv(Instant::now()).await else {
+    let Err(err) = conn.recv().await else {
         panic!("expected an error on peer EOF");
     };
     assert!(err.is_fatal());
@@ -268,7 +265,7 @@ async fn peer_eof_is_peer_closed_then_recv_is_closed() {
     ));
 
     // Session terminated → every subsequent recv is Closed.
-    let Err(err2) = conn.recv(Instant::now()).await else {
+    let Err(err2) = conn.recv().await else {
         panic!("expected Closed on a terminated session");
     };
     assert!(matches!(err2, TransportError::Closed));

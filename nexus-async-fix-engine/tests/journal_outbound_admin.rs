@@ -8,7 +8,7 @@
 use std::io;
 use std::pin::Pin;
 use std::task::{Context, Poll};
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use nexus_async_fix_engine::{AsyncReadAdapter, FixConnection};
 use nexus_fix_codec::{FieldView, FixAdminMsg, FixDictionary, FixHeader, FixTimestamp, find_tag};
@@ -179,7 +179,7 @@ async fn outbound_admin_is_journaled() {
                 FixJournal::open(dir.path(), 0, 256).unwrap(),
             );
         // Sends the opening Logon at seq 1; the write is accepted by the sink.
-        conn.connect(Instant::now()).await.unwrap();
+        conn.connect().await.unwrap();
     }
 
     // The Logon (seq 1) must be present in the outbound journal: recovering the

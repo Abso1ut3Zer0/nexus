@@ -7,7 +7,7 @@
 //! protocol logic (framing, the state machine, journaling, resend) lives in
 //! [`FixSession`]; this crate is the exact async analog of the blocking
 //! [`nexus_fix_engine::FixConnection`], differing only in that socket I/O is
-//! `.await`ed and heartbeat/TestRequest deadlines use `tokio::time`.
+//! `.await`ed.
 //!
 //! # Transports
 //!
@@ -31,14 +31,12 @@ use std::future::poll_fn;
 use std::io;
 use std::marker::PhantomData;
 use std::pin::Pin;
-use std::time::{Duration, Instant};
 
 use nexus_fix_codec::{FixDictionary, NoCustomizer, SessionCustomizer};
 use nexus_fix_engine::{
     DisconnectReason, FixJournal, FixSession, FrameReader, FrameWriter, Message, MessageReader,
     MessageWriter, PollOutcome, SessionConfig, SessionError, SessionState, State,
 };
-use tokio::time::timeout_at;
 
 /// Per-message resend reserve; see [`nexus_fix_engine::REFRAME_HEADROOM`].
 pub use nexus_fix_engine::REFRAME_HEADROOM;
@@ -64,8 +62,8 @@ enum RecvStep {
     Message,
     /// A clean, negotiated logout ended the session.
     LoggedOut,
-    /// Nothing to surface this step (a suppressed frame, or a read deadline with no
-    /// timer elapsed); the wrapper returns `Ok(None)`.
+    /// Nothing to surface this step (a suppressed frame); the wrapper returns
+    /// `Ok(None)`.
     Nothing,
 }
 
@@ -284,6 +282,12 @@ impl<S: WireStream + Unpin, D: FixDictionary, C: SessionCustomizer> FixConnectio
         self.session.state_mut()
     }
 
+    /// The negotiated heartbeat interval (`HeartBtInt(108)`) — build your own
+    /// keepalive/liveness timers from it; the session holds none.
+    pub fn heartbeat_interval(&self) -> std::time::Duration {
+        self.session.heartbeat_interval()
+    }
+
     pub fn garbage_frame_count(&self) -> u64 {
         self.session.garbage_frame_count()
     }
@@ -305,20 +309,20 @@ impl<S: WireStream + Unpin, D: FixDictionary, C: SessionCustomizer> FixConnectio
     }
 
     /// Initiates a session: enqueues and sends the opening Logon.
-    pub async fn connect(&mut self, now: Instant) -> Result<(), Error> {
-        self.session.connect(now)?;
+    pub async fn connect(&mut self) -> Result<(), Error> {
+        self.session.connect()?;
         self.drain_outbound().await
     }
 
     /// Initiates a session with `ResetSeqNumFlag(141)=Y`.
-    pub async fn connect_reset(&mut self, now: Instant) -> Result<(), Error> {
-        self.session.connect_reset(now)?;
+    pub async fn connect_reset(&mut self) -> Result<(), Error> {
+        self.session.connect_reset()?;
         self.drain_outbound().await
     }
 
     /// Initiates an in-session sequence reset.
-    pub async fn reset_sequence(&mut self, now: Instant) -> Result<(), Error> {
-        self.session.reset_sequence(now)?;
+    pub async fn reset_sequence(&mut self) -> Result<(), Error> {
+        self.session.reset_sequence()?;
         self.drain_outbound().await
     }
 
@@ -329,24 +333,24 @@ impl<S: WireStream + Unpin, D: FixDictionary, C: SessionCustomizer> FixConnectio
     }
 
     /// Initiates a clean logout.
-    pub async fn logout(&mut self, now: Instant) -> Result<(), Error> {
-        self.session.logout(now)?;
+    pub async fn logout(&mut self) -> Result<(), Error> {
+        self.session.logout()?;
         self.drain_outbound().await
     }
 
-    /// Processes buffered inbound frames, reading more bytes when needed and
-    /// firing heartbeat/TestRequest timers on read idle. Returns the next typed
-    /// [`Message`], or `None` when a step produced nothing to surface (an
-    /// out-of-sequence app, a session reject, or a fired timer that did not
-    /// disconnect). Mirrors the sync
+    /// Processes buffered inbound frames, `.await`ing more bytes when needed.
+    /// Returns the next typed [`Message`], or `None` when a step produced nothing
+    /// to surface (an out-of-sequence app, or a session-level reject). The session
+    /// holds no timers, so `recv` simply awaits a full frame; run your own
+    /// heartbeat/liveness timers alongside it (e.g. a `tokio::select!` over `recv`
+    /// and your tickers). Mirrors the sync
     /// [`FixConnection::recv`](nexus_fix_engine::FixConnection::recv) loop with
-    /// `.await` on the socket read and a `tokio::time` deadline in place of the
-    /// blocking socket read-timeout.
-    pub async fn recv(&mut self, now: Instant) -> Result<Option<Message<'_, D>>, Error> {
+    /// `.await` on the socket read.
+    pub async fn recv(&mut self) -> Result<Option<Message<'_, D>>, Error> {
         if self.terminated {
             return Err(Error::Closed);
         }
-        match self.recv_step(now).await {
+        match self.recv_step().await {
             Ok(RecvStep::Message) => Ok(Some(self.session.message())),
             // Clean, negotiated logout: the graceful terminal event.
             Ok(RecvStep::LoggedOut) => {
@@ -368,9 +372,9 @@ impl<S: WireStream + Unpin, D: FixDictionary, C: SessionCustomizer> FixConnectio
     /// Advances the session one step, returning an *owned* outcome. Splitting this
     /// from [`recv`](Self::recv) lets `recv` arm the terminated guard (on any fatal
     /// error or a clean logout) before borrowing `self` to build the message.
-    async fn recv_step(&mut self, now: Instant) -> Result<RecvStep, Error> {
+    async fn recv_step(&mut self) -> Result<RecvStep, Error> {
         loop {
-            let outcome = self.session.poll(now)?;
+            let outcome = self.session.poll()?;
             // Drain any admin/resend the core enqueued for this step (matches the
             // sync wrapper, which flushes after every protocol handler).
             self.drain_outbound().await?;
@@ -397,44 +401,28 @@ impl<S: WireStream + Unpin, D: FixDictionary, C: SessionCustomizer> FixConnectio
                             self.session.reader_capacity().saturating_add(1),
                         ));
                     }
-                    // No socket-level read timeout on an async stream, so bound
-                    // the read with the session's next heartbeat/TestRequest
-                    // deadline (60s fallback when the state machine has no timer).
-                    let deadline = self.session.state().next_timeout().map_or_else(
-                        || tokio::time::Instant::now() + Duration::from_secs(60),
-                        tokio::time::Instant::from_std,
-                    );
                     // Fill the session's inbound buffer copy-free: `poll_fill_into`
                     // reads into `read_spare()` and commits via `read_filled` itself,
-                    // returning the delivered count (`Ok(0)` = EOF). Cap the pull at
-                    // the current spare length.
+                    // returning the delivered count (`Ok(0)` = EOF). The session holds
+                    // no timers, so the read simply `.await`s a full frame; run your
+                    // own heartbeat/liveness timers alongside `recv` (e.g. a
+                    // `tokio::select!`). Cap the pull at the current spare length.
                     let max = self.session.read_spare().len();
-                    match timeout_at(
-                        deadline,
-                        poll_fn(|cx| {
-                            Pin::new(&mut self.stream).poll_fill_into(cx, &mut self.session, max)
-                        }),
-                    )
+                    match poll_fn(|cx| {
+                        Pin::new(&mut self.stream).poll_fill_into(cx, &mut self.session, max)
+                    })
                     .await
                     {
                         // Peer closed the transport (FIN) without a FIX Logout.
-                        Ok(Ok(0)) => {
+                        Ok(0) => {
                             return Err(Error::UnexpectedDisconnect {
                                 reason: DisconnectReason::PeerClosed,
                             });
                         }
                         // Bytes already committed to the session by `poll_fill_into`;
                         // loop to parse them.
-                        Ok(Ok(_n)) => {}
-                        Ok(Err(e)) => return Err(Error::Io(e)),
-                        Err(_elapsed) => {
-                            if let Some(reason) = self.session.on_timeout(now)? {
-                                self.drain_outbound().await?;
-                                return Err(Error::UnexpectedDisconnect { reason });
-                            }
-                            self.drain_outbound().await?;
-                            return Ok(RecvStep::Nothing);
-                        }
+                        Ok(_n) => {}
+                        Err(e) => return Err(Error::Io(e)),
                     }
                 }
             }

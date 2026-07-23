@@ -5,7 +5,7 @@ use std::io::BufReader;
 use std::net::TcpStream;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use nexus_fix_codec::{
     FieldView, FixAdminMsg, FixDictionary, FixHeader, FixTimestamp, FrameFormatter,
@@ -171,7 +171,7 @@ fn connect(port: u16, dir: &Path) -> FixConnection<TcpStream, MockDict> {
 /// error is a failure and panics.
 fn drive(conn: &mut FixConnection<TcpStream, MockDict>) {
     loop {
-        match conn.recv(Instant::now()) {
+        match conn.recv() {
             Ok(Some(Message::LoggedOut { .. })) => return,
             Ok(_) => {}
             Err(e) => panic!("recv errored before clean logout: {e:?}"),
@@ -200,7 +200,7 @@ fn conformance_logon_logout() {
     let dir = tmp_dir("logon_logout");
     let (mut child, port) = spawn_peer("logon_logout");
     let mut conn = connect(port, dir.path());
-    conn.connect(Instant::now()).unwrap();
+    conn.connect().unwrap();
     drive(&mut conn);
     assert!(child.wait().unwrap().success());
 }
@@ -210,7 +210,7 @@ fn conformance_heartbeat() {
     let dir = tmp_dir("heartbeat");
     let (mut child, port) = spawn_peer("heartbeat");
     let mut conn = connect(port, dir.path());
-    conn.connect(Instant::now()).unwrap();
+    conn.connect().unwrap();
     drive(&mut conn);
     assert!(child.wait().unwrap().success());
 }
@@ -220,7 +220,7 @@ fn conformance_resend() {
     let dir = tmp_dir("resend");
     let (mut child, port) = spawn_peer("resend");
     let mut conn = connect(port, dir.path());
-    conn.connect(Instant::now()).unwrap();
+    conn.connect().unwrap();
 
     drive_to_active(&mut conn);
 
@@ -236,7 +236,7 @@ fn conformance_gap_fill() {
     let dir = tmp_dir("gap_fill");
     let (mut child, port) = spawn_peer("gap_fill");
     let mut conn = connect(port, dir.path());
-    conn.connect(Instant::now()).unwrap();
+    conn.connect().unwrap();
     drive(&mut conn);
     assert!(child.wait().unwrap().success());
 }
@@ -246,7 +246,7 @@ fn conformance_seq_reset() {
     let dir = tmp_dir("seq_reset");
     let (mut child, port) = spawn_peer("seq_reset");
     let mut conn = connect(port, dir.path());
-    conn.connect(Instant::now()).unwrap();
+    conn.connect().unwrap();
     drive(&mut conn);
     assert!(child.wait().unwrap().success());
 }
@@ -255,23 +255,6 @@ fn conformance_seq_reset() {
 //
 // See `.claude/fix-battletest-findings.md` for the pass/finding disposition of
 // each case and the FIX 4.4 rationale behind every assertion.
-
-/// Like [`connect`] but with a caller-chosen socket read timeout — needed for
-/// the timer scenario, where the read must unblock faster than the (fixed 10s)
-/// default so `on_timeout` fires promptly.
-fn connect_rt(port: u16, dir: &Path, read_timeout: Duration) -> FixConnection<TcpStream, MockDict> {
-    let stream = TcpStream::connect(("127.0.0.1", port)).unwrap();
-    stream.set_read_timeout(Some(read_timeout)).unwrap();
-    FixConnection::from_parts(
-        stream,
-        SessionState::new(Duration::from_secs(30)),
-        SessionConfig {
-            sender: CompId::new(b"ENGINE").unwrap(),
-            target: CompId::new(b"PEER").unwrap(),
-        },
-        FixJournal::open(dir, 0, 256).unwrap(),
-    )
-}
 
 /// Drive `recv` to a terminal outcome, recording whether `Resending` was ever
 /// entered and whether an `Application` message surfaced. Returns the disconnect
@@ -286,7 +269,7 @@ fn drive_observe(
     let mut saw_resending = false;
     let mut saw_app = false;
     loop {
-        match conn.recv(Instant::now()) {
+        match conn.recv() {
             Ok(Some(Message::LoggedOut { .. })) => return (None, saw_resending, saw_app),
             Ok(Some(Message::Application { .. })) => saw_app = true,
             Ok(Some(_) | None) => {}
@@ -305,7 +288,7 @@ fn drive_observe(
 /// error. Used by the resend scenarios that inject app messages once live.
 fn drive_to_active(conn: &mut FixConnection<TcpStream, MockDict>) {
     loop {
-        match conn.recv(Instant::now()) {
+        match conn.recv() {
             Ok(Some(Message::LoggedOut { .. })) => panic!("logged out before active"),
             Err(e) => panic!("disconnected before active: {e:?}"),
             _ => {}
@@ -323,7 +306,7 @@ fn conformance_app_seq_too_high() {
     let dir = tmp_dir("app_seq_too_high");
     let (mut child, port) = spawn_peer("app_seq_too_high");
     let mut conn = connect(port, dir.path());
-    conn.connect(Instant::now()).unwrap();
+    conn.connect().unwrap();
     let (_reason, saw_resending, saw_app) = drive_observe(&mut conn);
     assert!(
         saw_resending,
@@ -341,7 +324,7 @@ fn conformance_app_seq_too_low() {
     let dir = tmp_dir("app_seq_too_low");
     let (mut child, port) = spawn_peer("app_seq_too_low");
     let mut conn = connect(port, dir.path());
-    conn.connect(Instant::now()).unwrap();
+    conn.connect().unwrap();
     let (reason, _, _) = drive_observe(&mut conn);
     assert_eq!(reason, Some(DisconnectReason::SeqNumTooLow));
     assert!(child.wait().unwrap().success());
@@ -352,7 +335,7 @@ fn conformance_seq_too_low_poss_dup() {
     let dir = tmp_dir("seq_too_low_poss_dup");
     let (mut child, port) = spawn_peer("seq_too_low_poss_dup");
     let mut conn = connect(port, dir.path());
-    conn.connect(Instant::now()).unwrap();
+    conn.connect().unwrap();
     // The PossDup duplicate is ignored; the session survives to a clean logout.
     let (reason, _, _) = drive_observe(&mut conn);
     assert_eq!(reason, None);
@@ -364,7 +347,7 @@ fn conformance_app_in_order() {
     let dir = tmp_dir("app_in_order");
     let (mut child, port) = spawn_peer("app_in_order");
     let mut conn = connect(port, dir.path());
-    conn.connect(Instant::now()).unwrap();
+    conn.connect().unwrap();
     let (reason, _, saw_app) = drive_observe(&mut conn);
     assert!(
         saw_app,
@@ -379,7 +362,7 @@ fn conformance_resend_open_ended() {
     let dir = tmp_dir("resend_open_ended");
     let (mut child, port) = spawn_peer("resend_open_ended");
     let mut conn = connect(port, dir.path());
-    conn.connect(Instant::now()).unwrap();
+    conn.connect().unwrap();
     drive_to_active(&mut conn);
     let seq = conn.allocate_seq().unwrap();
     conn.send_app(seq, &new_order(seq)).unwrap();
@@ -394,7 +377,7 @@ fn conformance_resend_admin_and_app() {
     let dir = tmp_dir("resend_admin_and_app");
     let (mut child, port) = spawn_peer("resend_admin_and_app");
     let mut conn = connect(port, dir.path());
-    conn.connect(Instant::now()).unwrap();
+    conn.connect().unwrap();
     drive_to_active(&mut conn);
     for _ in 0..2 {
         let seq = conn.allocate_seq().unwrap();
@@ -411,7 +394,7 @@ fn conformance_resend_during_resend() {
     let dir = tmp_dir("resend_during_resend");
     let (mut child, port) = spawn_peer("resend_during_resend");
     let mut conn = connect(port, dir.path());
-    conn.connect(Instant::now()).unwrap();
+    conn.connect().unwrap();
     // Engine enters Resending on its own gap, then must honor the peer's
     // in-sequence ResendRequest without erroring (drive_observe panics on error).
     let (_reason, saw_resending, _) = drive_observe(&mut conn);
@@ -427,7 +410,7 @@ fn conformance_seq_reset_backward() {
     let dir = tmp_dir("seq_reset_backward");
     let (mut child, port) = spawn_peer("seq_reset_backward");
     let mut conn = connect(port, dir.path());
-    conn.connect(Instant::now()).unwrap();
+    conn.connect().unwrap();
     // A backward SequenceReset-Reset is Reject'd (peer asserts 35=3); the session
     // is NOT torn down — it continues to a clean logout.
     let (reason, _, _) = drive_observe(&mut conn);
@@ -440,7 +423,7 @@ fn conformance_seq_reset_gap_fill_oos() {
     let dir = tmp_dir("seq_reset_gap_fill_oos");
     let (mut child, port) = spawn_peer("seq_reset_gap_fill_oos");
     let mut conn = connect(port, dir.path());
-    conn.connect(Instant::now()).unwrap();
+    conn.connect().unwrap();
     let (_reason, saw_resending, _) = drive_observe(&mut conn);
     assert!(
         saw_resending,
@@ -461,22 +444,10 @@ fn conformance_test_request_long_id() {
     let dir = tmp_dir("test_request_long_id");
     let (mut child, port) = spawn_peer("test_request_long_id");
     let mut conn = connect(port, dir.path());
-    conn.connect(Instant::now()).unwrap();
+    conn.connect().unwrap();
     // The peer asserts the >64-byte TestReqID is echoed verbatim (no truncation).
     let (reason, _, _) = drive_observe(&mut conn);
     assert_eq!(reason, None);
-    assert!(child.wait().unwrap().success());
-}
-
-#[test]
-fn conformance_test_request_timeout() {
-    let dir = tmp_dir("test_request_timeout");
-    let (mut child, port) = spawn_peer("test_request_timeout");
-    // Short read timeout so `on_timeout` is polled well inside the 1s heartbeat.
-    let mut conn = connect_rt(port, dir.path(), Duration::from_millis(200));
-    conn.connect(Instant::now()).unwrap();
-    let (reason, _, _) = drive_observe(&mut conn);
-    assert_eq!(reason, Some(DisconnectReason::TestRequestTimeout));
     assert!(child.wait().unwrap().success());
 }
 
@@ -490,7 +461,7 @@ fn conformance_seq_reset_gap_fill_below_possdup() {
     let dir = tmp_dir("seq_reset_gap_fill_below_possdup");
     let (mut child, port) = spawn_peer("seq_reset_gap_fill_below_possdup");
     let mut conn = connect(port, dir.path());
-    conn.connect(Instant::now()).unwrap();
+    conn.connect().unwrap();
     let (reason, _, _) = drive_observe(&mut conn);
     assert_eq!(reason, None);
     assert!(child.wait().unwrap().success());

@@ -27,8 +27,6 @@
 //! [`PollOutcome::ResendPending`] (drain outbound), and calls `message()` once
 //! [`PollOutcome::Message`] is returned.
 
-use std::time::Instant;
-
 use nexus_fix_codec::{
     FieldReader, FixAdminMsg, FixDictionary, FixHeader, FrameFormatter, NoCustomizer,
     SessionCustomizer, encode_fix_uint, find_tag, parse_fix_bool, parse_fix_seqnum, parse_fix_uint,
@@ -278,6 +276,14 @@ impl<D: FixDictionary, C: SessionCustomizer> FixSession<D, C> {
         &mut self.state
     }
 
+    /// The negotiated heartbeat interval (`HeartBtInt(108)`). The one value the
+    /// session exposes so the caller can build their own keepalive/liveness
+    /// timers — the session holds none. See
+    /// [`SessionState::heartbeat_interval`].
+    pub fn heartbeat_interval(&self) -> std::time::Duration {
+        self.state.heartbeat_interval()
+    }
+
     pub fn garbage_frame_count(&self) -> u64 {
         self.garbage_frames
     }
@@ -293,7 +299,7 @@ impl<D: FixDictionary, C: SessionCustomizer> FixSession<D, C> {
     }
 
     pub fn allocate_seq(&mut self) -> Result<u32, SessionError> {
-        self.state.allocate_seq(Instant::now())
+        self.state.allocate_seq()
     }
 
     /// Writer capacity in bytes (fixed at construction).
@@ -355,30 +361,30 @@ impl<D: FixDictionary, C: SessionCustomizer> FixSession<D, C> {
 
     /// Enqueues a Logon (initiate the session). Outbound bytes land in the writer
     /// buffer; the wrapper drains them.
-    pub fn connect(&mut self, now: Instant) -> Result<(), Error> {
+    pub fn connect(&mut self) -> Result<(), Error> {
         let mut emitter = journaling_emitter(&mut self.writer, &mut self.journal, &self.config);
-        self.state.connect(now, &mut emitter)?;
+        self.state.connect(&mut emitter)?;
         Ok(())
     }
 
     /// Enqueues a Logon with `ResetSeqNumFlag=Y`.
-    pub fn connect_reset(&mut self, now: Instant) -> Result<(), Error> {
+    pub fn connect_reset(&mut self) -> Result<(), Error> {
         let mut emitter = journaling_emitter(&mut self.writer, &mut self.journal, &self.config);
-        self.state.connect_reset(now, &mut emitter)?;
+        self.state.connect_reset(&mut emitter)?;
         Ok(())
     }
 
     /// Enqueues an in-session sequence reset handshake.
-    pub fn reset_sequence(&mut self, now: Instant) -> Result<(), Error> {
+    pub fn reset_sequence(&mut self) -> Result<(), Error> {
         let mut emitter = journaling_emitter(&mut self.writer, &mut self.journal, &self.config);
-        self.state.reset_sequence(now, &mut emitter)?;
+        self.state.reset_sequence(&mut emitter)?;
         Ok(())
     }
 
     /// Enqueues a Logout.
-    pub fn logout(&mut self, now: Instant) -> Result<(), Error> {
+    pub fn logout(&mut self) -> Result<(), Error> {
         let mut emitter = journaling_emitter(&mut self.writer, &mut self.journal, &self.config);
-        self.state.logout(now, &mut emitter)?;
+        self.state.logout(&mut emitter)?;
         Ok(())
     }
 
@@ -396,20 +402,6 @@ impl<D: FixDictionary, C: SessionCustomizer> FixSession<D, C> {
         buffer_frame(&mut self.writer.inner, frame)
     }
 
-    /// Advances heartbeat/test-request timers; enqueues any resulting admin
-    /// messages. Returns `Some(reason)` if the timeout drove a disconnect.
-    pub fn on_timeout(&mut self, now: Instant) -> Result<Option<DisconnectReason>, Error> {
-        let ctrl = {
-            let mut emitter = journaling_emitter(&mut self.writer, &mut self.journal, &self.config);
-            self.state.on_timeout(now, &mut emitter)?
-        };
-        Ok(if let Control::Disconnected { reason } = ctrl {
-            Some(reason)
-        } else {
-            None
-        })
-    }
-
     // ── inbound processing ───────────────────────────────────────────────────
 
     /// Processes the next buffered inbound frame, driving the state machine,
@@ -418,7 +410,7 @@ impl<D: FixDictionary, C: SessionCustomizer> FixSession<D, C> {
     /// [`PollOutcome::Message`].
     ///
     /// See the [module docs](self) for the wrapper's poll loop.
-    pub fn poll(&mut self, now: Instant) -> Result<PollOutcome, Error> {
+    pub fn poll(&mut self) -> Result<PollOutcome, Error> {
         // Resume an in-progress resend before touching new inbound.
         if self.resend.is_some() {
             if self.drive_resend()? {
@@ -461,7 +453,7 @@ impl<D: FixDictionary, C: SessionCustomizer> FixSession<D, C> {
             }
         }
 
-        self.process_frame(now)
+        self.process_frame()
     }
 
     /// Reconstructs the typed [`Message`] for the frame just processed by
@@ -523,7 +515,7 @@ impl<D: FixDictionary, C: SessionCustomizer> FixSession<D, C> {
     /// Full protocol handling for the frame in `reader.frame`. Mirrors the
     /// original `recv` body: comp-id validation, inbound journaling, per-type
     /// state driving, and outbound admin/resend enqueue.
-    fn process_frame(&mut self, now: Instant) -> Result<PollOutcome, Error> {
+    fn process_frame(&mut self) -> Result<PollOutcome, Error> {
         let frame = &self.reader.frame[..];
 
         let (sender_ok, target_ok, seq, poss_dup) = {
@@ -554,7 +546,7 @@ impl<D: FixDictionary, C: SessionCustomizer> FixSession<D, C> {
             {
                 let mut emitter =
                     journaling_emitter(&mut self.writer, &mut self.journal, &self.config);
-                self.state.on_comp_id_mismatch(now, &mut emitter)?;
+                self.state.on_comp_id_mismatch(&mut emitter)?;
             }
             // Always surface CompIdMismatch here, mirroring the original driver:
             // the handler disconnects the state machine; the reason is fixed.
@@ -583,7 +575,6 @@ impl<D: FixDictionary, C: SessionCustomizer> FixSession<D, C> {
                     session_reject_reason: 1,
                     is_poss_dup: poss_dup,
                 },
-                now,
                 &mut emitter,
             )?;
             return Ok(PollOutcome::Suppressed);
@@ -618,7 +609,6 @@ impl<D: FixDictionary, C: SessionCustomizer> FixSession<D, C> {
                             is_reset_seq_num: reset,
                             send_reply: !was_logon_sent,
                         },
-                        now,
                         &mut emitter,
                     )?
                 };
@@ -636,7 +626,6 @@ impl<D: FixDictionary, C: SessionCustomizer> FixSession<D, C> {
                             seq,
                             is_poss_dup: poss_dup,
                         },
-                        now,
                         &mut emitter,
                     )?
                 };
@@ -657,7 +646,6 @@ impl<D: FixDictionary, C: SessionCustomizer> FixSession<D, C> {
                             seq,
                             is_poss_dup: poss_dup,
                         },
-                        now,
                         &mut emitter,
                     )?
                 };
@@ -678,7 +666,6 @@ impl<D: FixDictionary, C: SessionCustomizer> FixSession<D, C> {
                             seq,
                             is_poss_dup: poss_dup,
                         },
-                        now,
                         &mut emitter,
                     )?
                 };
@@ -702,7 +689,6 @@ impl<D: FixDictionary, C: SessionCustomizer> FixSession<D, C> {
                             seq,
                             is_poss_dup: poss_dup,
                         },
-                        now,
                         &mut emitter,
                     )?
                 };
@@ -747,7 +733,6 @@ impl<D: FixDictionary, C: SessionCustomizer> FixSession<D, C> {
                             is_poss_dup: poss_dup,
                             is_gap_fill: gap_fill,
                         },
-                        now,
                         &mut emitter,
                     )?
                 };
@@ -765,7 +750,6 @@ impl<D: FixDictionary, C: SessionCustomizer> FixSession<D, C> {
                             seq,
                             is_poss_dup: poss_dup,
                         },
-                        now,
                         &mut emitter,
                     )?
                 };
@@ -780,7 +764,6 @@ impl<D: FixDictionary, C: SessionCustomizer> FixSession<D, C> {
                             seq,
                             is_poss_dup: poss_dup,
                         },
-                        now,
                         &mut emitter,
                     )?
                 };
@@ -1039,7 +1022,7 @@ fn reframe_app_into(
 #[cfg(test)]
 mod tests {
     use std::path::{Path, PathBuf};
-    use std::time::{Duration, Instant};
+    use std::time::Duration;
 
     use nexus_fix_codec::{
         AdminEncode, AsciiTextStr, DecodeError, FieldReader, FieldView, FixAdminMsg, FixDictionary,
@@ -1067,8 +1050,8 @@ mod tests {
 
     /// Drives the initiator Logon exchange on a raw `SessionState`: sends Logon
     /// (outbound seq 1) and accepts the peer's Logon at seq 1, reaching `Active`.
-    fn establish_state(state: &mut SessionState, now: Instant) {
-        state.connect(now, &mut NullEmitter).unwrap();
+    fn establish_state(state: &mut SessionState) {
+        state.connect(&mut NullEmitter).unwrap();
         state
             .on_logon(
                 LogonIn {
@@ -1077,7 +1060,6 @@ mod tests {
                     is_reset_seq_num: false,
                     send_reply: false,
                 },
-                now,
                 &mut NullEmitter,
             )
             .unwrap();
@@ -1255,10 +1237,9 @@ mod tests {
             FrameWriter::builder().buffer_capacity(writer_cap).build(),
         );
         let mut state = SessionState::new(Duration::from_secs(30));
-        let now = Instant::now();
         // Establish (initiator): Logon consumes outbound seq 1, peer's Logon at
         // seq 1 advances next_inbound to 2 and moves to Active.
-        establish_state(&mut state, now);
+        establish_state(&mut state);
         // Align outbound with the journal we are about to fill (next = N + 1) so
         // the resend `end` clamp (`re.min(next_outbound - 1)`) does not chop the
         // range. Keep next_inbound at 2 for the incoming ResendRequest.
@@ -1303,7 +1284,6 @@ mod tests {
     /// the "flush the buffer, retry the item into an empty buffer" contract the
     /// resumable path replaced.
     fn drive_resend_stream(session: &mut FixSession<MockDict>) -> (Vec<u8>, usize) {
-        let now = Instant::now();
         let mut req = vec![0u8; 256];
         let len = resend_request_frame(2, 1, N, &mut req);
         let spare = session.read_spare();
@@ -1313,7 +1293,7 @@ mod tests {
         let mut stream = Vec::new();
         let mut pending = 0usize;
         loop {
-            let outcome = session.poll(now).expect("poll");
+            let outcome = session.poll().expect("poll");
             // Drain everything currently staged, then decide.
             while session.has_outbound() {
                 let data = session.outbound();
@@ -1593,7 +1573,6 @@ mod tests {
         use crate::framework::SessionError;
 
         let dir = tmp_dir("malformed_admin");
-        let now = Instant::now();
 
         let reader = MessageReader::with_frame_reader(FrameReader::builder().build());
         let writer =
@@ -1601,7 +1580,7 @@ mod tests {
         let mut state = SessionState::new(Duration::from_secs(30));
         // Initiate: engine sends Logon (outbound seq 1), moves to LogonSent, and
         // expects the peer's Logon at inbound seq 1.
-        state.connect(now, &mut NullEmitter).unwrap();
+        state.connect(&mut NullEmitter).unwrap();
 
         let journal = FixJournal::open(dir.path(), 0, 256).unwrap();
         let mut session: FixSession<StrictDict> = FixSession::from_buffers(
@@ -1627,7 +1606,7 @@ mod tests {
                 FrameWriter::builder().buffer_capacity(4096).build(),
             );
             let mut state = SessionState::new(Duration::from_secs(30));
-            state.connect(now, &mut NullEmitter).unwrap();
+            state.connect(&mut NullEmitter).unwrap();
             let journal = FixJournal::open(dir_ok.path(), 0, 256).unwrap();
             let mut ok_session: FixSession<StrictDict> = FixSession::from_buffers(
                 reader,
@@ -1648,7 +1627,7 @@ mod tests {
             spare[..len].copy_from_slice(&buf[..len]);
             ok_session.read_filled(len);
             assert_eq!(
-                ok_session.poll(now).expect("valid Logon must not error"),
+                ok_session.poll().expect("valid Logon must not error"),
                 PollOutcome::Message,
                 "a well-formed Logon (with tag 108) must surface as a Message"
             );
@@ -1666,7 +1645,7 @@ mod tests {
         // is never reached. WITHOUT the fix, `poll` yields `Message` and the
         // `message()` call below panics on `.expect("frame decoded in poll")` —
         // this call is what makes the regression observable end-to-end.
-        match session.poll(now) {
+        match session.poll() {
             Err(super::Error::Protocol(SessionError::MalformedMessage)) => {}
             Ok(PollOutcome::Message) => {
                 let _ = session.message(); // panics without the fix
@@ -1719,7 +1698,6 @@ mod tests {
     #[test]
     fn missing_msg_type_reject_encode_overflow_surfaces_error() {
         let dir = tmp_dir("missing35_overflow");
-        let now = Instant::now();
 
         let reader = MessageReader::with_frame_reader(FrameReader::builder().build());
         // 40 bytes cannot hold a Reject frame (~70+ bytes), so the encode-only
@@ -1732,7 +1710,7 @@ mod tests {
         // empty buffer and `next_inbound == 2`. The reject is only emitted from
         // Active/Resending/LogoutPending, so the session must be past the
         // handshake for the missing-35 path to actually encode a Reject.
-        establish_state(&mut state, now);
+        establish_state(&mut state);
 
         let journal = FixJournal::open(dir.path(), 0, 256).unwrap();
         let mut session: FixSession<MockDict> = FixSession::from_buffers(
@@ -1754,7 +1732,7 @@ mod tests {
         spare[..len].copy_from_slice(&buf[..len]);
         session.read_filled(len);
 
-        match session.poll(now) {
+        match session.poll() {
             Err(super::Error::MessageTooLarge(_)) => {}
             other => panic!(
                 "missing-tag-35 reject that overflows the writer must surface \
@@ -1792,8 +1770,7 @@ mod tests {
         let writer =
             MessageWriter::with_frame_writer(FrameWriter::builder().buffer_capacity(4096).build());
         let mut state = SessionState::new(Duration::from_secs(30));
-        let now = Instant::now();
-        establish_state(&mut state, now); // peer Logon at seq 1 → Active, next_inbound = 2
+        establish_state(&mut state); // peer Logon at seq 1 → Active, next_inbound = 2
         let journal = FixJournal::open(dir, 0, 256).unwrap();
         let mut session = FixSession::from_buffers(
             reader,
@@ -1818,7 +1795,6 @@ mod tests {
     #[test]
     fn full_buffer_below_threshold_compacts_and_delivers() {
         let dir = tmp_dir("compact_below_threshold");
-        let now = Instant::now();
 
         // Reader cap 512 → compact threshold at 256 bytes consumed.
         const READER_CAP: usize = 512;
@@ -1855,7 +1831,7 @@ mod tests {
         spare[..small_len].copy_from_slice(&small[..small_len]);
         session.read_filled(small_len);
         assert_eq!(
-            session.poll(now).expect("poll small"),
+            session.poll().expect("poll small"),
             PollOutcome::Message,
             "small app must surface"
         );
@@ -1871,7 +1847,7 @@ mod tests {
 
         // The frame is still incomplete → NeedMoreBytes.
         assert_eq!(
-            session.poll(now).expect("poll large head"),
+            session.poll().expect("poll large head"),
             PollOutcome::NeedMoreBytes,
             "partial large frame must ask for more"
         );
@@ -1901,7 +1877,7 @@ mod tests {
             fed += n;
         }
         assert_eq!(
-            session.poll(now).expect("poll large complete"),
+            session.poll().expect("poll large complete"),
             PollOutcome::Message,
             "large app must be delivered after compaction — no false disconnect"
         );
