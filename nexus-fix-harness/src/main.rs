@@ -132,16 +132,23 @@ fn main() {
         let mut app_msgs = 0usize;
         loop {
             match conn.recv(Instant::now()) {
-                Ok(Some(Message::Disconnected { reason })) => {
-                    println!("disconnected: {reason:?}, {app_msgs} app message(s)");
+                Ok(Some(Message::LoggedOut { .. })) => {
+                    println!("logged out cleanly, {app_msgs} app message(s)");
                     break;
                 }
                 Ok(Some(Message::Application { .. })) => {
                     app_msgs += 1;
                 }
                 Ok(Some(_) | None) => {}
+                // A recoverable error (a malformed frame: bad checksum, lying
+                // BodyLength, or garbage framing) leaves the session intact — the
+                // reader has resynced. Tolerate it and keep receiving, so an
+                // adversarial peer's garbage cannot end the session.
+                Err(e) if !e.is_fatal() => eprintln!("recoverable: {e}"),
+                // Fatal: an abnormal disconnect (UnexpectedDisconnect), I/O
+                // failure, or reuse-after-close. The session is over.
                 Err(e) => {
-                    eprintln!("error: {e}");
+                    eprintln!("session ended: {e}");
                     break;
                 }
             }

@@ -12,6 +12,7 @@ use nexus_fix_codec::{
 };
 use nexus_fix_engine::{
     CompId, DisconnectReason, FixJournal, Message, SessionConfig, SessionState, State,
+    TransportError,
 };
 use tokio::net::TcpStream;
 
@@ -153,12 +154,15 @@ async fn connect(port: u16, dir: &Path) -> FixConnection<AsyncReadAdapter<TcpStr
     )
 }
 
-async fn drive(
-    conn: &mut FixConnection<AsyncReadAdapter<TcpStream>, MockDict>,
-) -> DisconnectReason {
+/// Drive `recv` until the session completes a clean, negotiated logout
+/// (`Message::LoggedOut`). Every scenario here ends in a peer-sent Logout, so any
+/// error is a failure and panics.
+async fn drive(conn: &mut FixConnection<AsyncReadAdapter<TcpStream>, MockDict>) {
     loop {
-        if let Some(Message::Disconnected { reason }) = conn.recv(Instant::now()).await.unwrap() {
-            return reason;
+        match conn.recv(Instant::now()).await {
+            Ok(Some(Message::LoggedOut { .. })) => return,
+            Ok(_) => {}
+            Err(e) => panic!("recv errored before clean logout: {e:?}"),
         }
     }
 }
@@ -185,7 +189,7 @@ async fn conformance_logon_logout() {
     let (mut child, port) = spawn_peer("logon_logout");
     let mut conn = connect(port, dir.path()).await;
     conn.connect(Instant::now()).await.unwrap();
-    assert_eq!(drive(&mut conn).await, DisconnectReason::Logout);
+    drive(&mut conn).await;
     assert!(child.wait().unwrap().success());
 }
 
@@ -195,7 +199,7 @@ async fn conformance_heartbeat() {
     let (mut child, port) = spawn_peer("heartbeat");
     let mut conn = connect(port, dir.path()).await;
     conn.connect(Instant::now()).await.unwrap();
-    assert_eq!(drive(&mut conn).await, DisconnectReason::Logout);
+    drive(&mut conn).await;
     assert!(child.wait().unwrap().success());
 }
 
@@ -206,19 +210,12 @@ async fn conformance_resend() {
     let mut conn = connect(port, dir.path()).await;
     conn.connect(Instant::now()).await.unwrap();
 
-    loop {
-        if let Some(Message::Disconnected { reason }) = conn.recv(Instant::now()).await.unwrap() {
-            panic!("disconnected before active: {reason:?}");
-        }
-        if conn.state().state() == State::Active {
-            break;
-        }
-    }
+    drive_to_active(&mut conn).await;
 
     let seq = conn.allocate_seq().unwrap();
     conn.send_app(seq, &new_order(seq)).await.unwrap();
 
-    assert_eq!(drive(&mut conn).await, DisconnectReason::Logout);
+    drive(&mut conn).await;
     assert!(child.wait().unwrap().success());
 }
 
@@ -228,7 +225,7 @@ async fn conformance_gap_fill() {
     let (mut child, port) = spawn_peer("gap_fill");
     let mut conn = connect(port, dir.path()).await;
     conn.connect(Instant::now()).await.unwrap();
-    assert_eq!(drive(&mut conn).await, DisconnectReason::Logout);
+    drive(&mut conn).await;
     assert!(child.wait().unwrap().success());
 }
 
@@ -238,7 +235,7 @@ async fn conformance_seq_reset() {
     let (mut child, port) = spawn_peer("seq_reset");
     let mut conn = connect(port, dir.path()).await;
     conn.connect(Instant::now()).await.unwrap();
-    assert_eq!(drive(&mut conn).await, DisconnectReason::Logout);
+    drive(&mut conn).await;
     assert!(child.wait().unwrap().success());
 }
 
@@ -252,17 +249,23 @@ async fn conformance_seq_reset() {
 
 type Conn = FixConnection<AsyncReadAdapter<TcpStream>, MockDict>;
 
-/// Drive `recv` to a disconnect, recording whether `Resending` was entered and
-/// whether an `Application` surfaced. A `recv` error mid-scenario is a
-/// survivability failure, so it panics (surfacing a finding as a test failure).
-async fn drive_observe(conn: &mut Conn) -> (DisconnectReason, bool, bool) {
+/// Drive `recv` to a terminal outcome, recording whether `Resending` was entered
+/// and whether an `Application` surfaced. Returns the disconnect reason: `None`
+/// for a clean, negotiated logout (`Message::LoggedOut`), or `Some(reason)` for
+/// an abnormal end (`TransportError::UnexpectedDisconnect`). Any other `recv`
+/// error mid-scenario is a survivability failure, so it panics (surfacing a
+/// finding as a test failure).
+async fn drive_observe(conn: &mut Conn) -> (Option<DisconnectReason>, bool, bool) {
     let mut saw_resending = false;
     let mut saw_app = false;
     loop {
         match conn.recv(Instant::now()).await {
-            Ok(Some(Message::Disconnected { reason })) => return (reason, saw_resending, saw_app),
+            Ok(Some(Message::LoggedOut { .. })) => return (None, saw_resending, saw_app),
             Ok(Some(Message::Application { .. })) => saw_app = true,
             Ok(Some(_) | None) => {}
+            Err(TransportError::UnexpectedDisconnect { reason }) => {
+                return (Some(reason), saw_resending, saw_app);
+            }
             Err(e) => panic!("recv errored mid-scenario: {e:?}"),
         }
         if conn.state().state() == State::Resending {
@@ -275,10 +278,8 @@ async fn drive_observe(conn: &mut Conn) -> (DisconnectReason, bool, bool) {
 async fn drive_to_active(conn: &mut Conn) {
     loop {
         match conn.recv(Instant::now()).await {
-            Ok(Some(Message::Disconnected { reason })) => {
-                panic!("disconnected before active: {reason:?}")
-            }
-            Err(e) => panic!("recv errored before active: {e:?}"),
+            Ok(Some(Message::LoggedOut { .. })) => panic!("logged out before active"),
+            Err(e) => panic!("disconnected before active: {e:?}"),
             _ => {}
         }
         if conn.state().state() == State::Active {
@@ -314,7 +315,7 @@ async fn conformance_app_seq_too_low() {
     let mut conn = connect(port, dir.path()).await;
     conn.connect(Instant::now()).await.unwrap();
     let (reason, _, _) = drive_observe(&mut conn).await;
-    assert_eq!(reason, DisconnectReason::SeqNumTooLow);
+    assert_eq!(reason, Some(DisconnectReason::SeqNumTooLow));
     assert!(child.wait().unwrap().success());
 }
 
@@ -325,7 +326,7 @@ async fn conformance_seq_too_low_poss_dup() {
     let mut conn = connect(port, dir.path()).await;
     conn.connect(Instant::now()).await.unwrap();
     let (reason, _, _) = drive_observe(&mut conn).await;
-    assert_eq!(reason, DisconnectReason::Logout);
+    assert_eq!(reason, None);
     assert!(child.wait().unwrap().success());
 }
 
@@ -340,7 +341,7 @@ async fn conformance_app_in_order() {
         saw_app,
         "an in-order app must surface as Message::Application"
     );
-    assert_eq!(reason, DisconnectReason::Logout);
+    assert_eq!(reason, None);
     assert!(child.wait().unwrap().success());
 }
 
@@ -354,7 +355,7 @@ async fn conformance_resend_open_ended() {
     let seq = conn.allocate_seq().unwrap();
     conn.send_app(seq, &new_order(seq)).await.unwrap();
     let (reason, _, _) = drive_observe(&mut conn).await;
-    assert_eq!(reason, DisconnectReason::Logout);
+    assert_eq!(reason, None);
     assert!(child.wait().unwrap().success());
 }
 
@@ -370,7 +371,7 @@ async fn conformance_resend_admin_and_app() {
         conn.send_app(seq, &new_order(seq)).await.unwrap();
     }
     let (reason, _, _) = drive_observe(&mut conn).await;
-    assert_eq!(reason, DisconnectReason::Logout);
+    assert_eq!(reason, None);
     assert!(child.wait().unwrap().success());
 }
 
@@ -395,7 +396,7 @@ async fn conformance_seq_reset_backward() {
     let mut conn = connect(port, dir.path()).await;
     conn.connect(Instant::now()).await.unwrap();
     let (reason, _, _) = drive_observe(&mut conn).await;
-    assert_eq!(reason, DisconnectReason::Logout);
+    assert_eq!(reason, None);
     assert!(child.wait().unwrap().success());
 }
 
@@ -427,7 +428,7 @@ async fn conformance_test_request_long_id() {
     let mut conn = connect(port, dir.path()).await;
     conn.connect(Instant::now()).await.unwrap();
     let (reason, _, _) = drive_observe(&mut conn).await;
-    assert_eq!(reason, DisconnectReason::Logout);
+    assert_eq!(reason, None);
     assert!(child.wait().unwrap().success());
 }
 
@@ -438,7 +439,7 @@ async fn conformance_test_request_timeout() {
     let mut conn = connect(port, dir.path()).await;
     conn.connect(Instant::now()).await.unwrap();
     let (reason, _, _) = drive_observe(&mut conn).await;
-    assert_eq!(reason, DisconnectReason::TestRequestTimeout);
+    assert_eq!(reason, Some(DisconnectReason::TestRequestTimeout));
     assert!(child.wait().unwrap().success());
 }
 
@@ -453,6 +454,6 @@ async fn conformance_seq_reset_gap_fill_below_possdup() {
     let mut conn = connect(port, dir.path()).await;
     conn.connect(Instant::now()).await.unwrap();
     let (reason, _, _) = drive_observe(&mut conn).await;
-    assert_eq!(reason, DisconnectReason::Logout);
+    assert_eq!(reason, None);
     assert!(child.wait().unwrap().success());
 }

@@ -1,7 +1,7 @@
 //! Tokio adapter for the sans-IO FIX session core.
 //!
 //! [`FixConnection`] is a thin wrapper over the sans-IO [`FixSession`] core: it
-//! owns a [`WireStream`](nexus_net::WireStream) transport and does *only* the
+//! owns a [`WireStream`] transport and does *only* the
 //! I/O — `poll_fill_into` fills the session's inbound buffer copy-free,
 //! `poll_write`/`poll_flush` drain its outbound buffer, all `.await`ed. All
 //! protocol logic (framing, the state machine, journaling, resend) lives in
@@ -11,7 +11,7 @@
 //!
 //! # Transports
 //!
-//! Any [`WireStream`](nexus_net::WireStream) works. Two are provided out of the
+//! Any [`WireStream`] works. Two are provided out of the
 //! box:
 //!
 //! - [`MaybeTls`] — plaintext or transparent TLS, built by
@@ -56,7 +56,20 @@ pub use nexus_net::WireStream;
 /// `nexus-net-tokio` directly.
 pub use nexus_net_tokio::{AsyncReadAdapter, MaybeTls};
 
-/// Async FIX session transport over any [`WireStream`](nexus_net::WireStream).
+/// Owned outcome of one [`FixConnection::recv`] step. Returned by the internal
+/// `recv_step` so `recv` can arm the terminated guard — on any fatal error or a
+/// clean logout — before borrowing `self` to reconstruct the borrowed message.
+enum RecvStep {
+    /// A typed message is ready; call `message()`.
+    Message,
+    /// A clean, negotiated logout ended the session.
+    LoggedOut,
+    /// Nothing to surface this step (a suppressed frame, or a read deadline with no
+    /// timer elapsed); the wrapper returns `Ok(None)`.
+    Nothing,
+}
+
+/// Async FIX session transport over any [`WireStream`].
 ///
 /// Thin wrapper over [`FixSession`]: the socket calls are `.await`ed; everything
 /// else — framing, the [`SessionState`] machine, journaling, resend — is in the
@@ -70,6 +83,9 @@ pub use nexus_net_tokio::{AsyncReadAdapter, MaybeTls};
 pub struct FixConnection<S, D: FixDictionary, C = NoCustomizer> {
     stream: S,
     session: FixSession<D, C>,
+    /// Set once a terminal outcome (a `LoggedOut` message or a fatal error) has
+    /// been surfaced; a subsequent `recv` returns `Err(Error::Closed)`.
+    terminated: bool,
 }
 
 /// Builder for [`FixConnection`], mirroring the sync
@@ -154,6 +170,7 @@ impl<D: FixDictionary, C: SessionCustomizer> FixConnectionBuilder<D, C> {
         Ok(FixConnection {
             stream: MaybeTls::Plain(tcp),
             session,
+            terminated: false,
         })
     }
 
@@ -185,10 +202,11 @@ impl<D: FixDictionary, C: SessionCustomizer> FixConnectionBuilder<D, C> {
         Ok(FixConnection {
             stream: MaybeTls::Tls(Box::new(tls_stream)),
             session,
+            terminated: false,
         })
     }
 
-    /// Wraps an already-connected [`WireStream`](nexus_net::WireStream) (acceptor
+    /// Wraps an already-connected [`WireStream`] (acceptor
     /// role or a pre-built stream). Wrap a raw tokio stream in
     /// [`AsyncReadAdapter`] first.
     pub fn accept<S: WireStream + Unpin>(
@@ -199,7 +217,11 @@ impl<D: FixDictionary, C: SessionCustomizer> FixConnectionBuilder<D, C> {
         journal: FixJournal,
     ) -> FixConnection<S, D, C> {
         let session = self.build_session(state, config, journal);
-        FixConnection { stream, session }
+        FixConnection {
+            stream,
+            session,
+            terminated: false,
+        }
     }
 }
 
@@ -250,6 +272,7 @@ impl<S: WireStream + Unpin, D: FixDictionary, C: SessionCustomizer> FixConnectio
         Self {
             stream,
             session: FixSession::new_with_customizer(state, config, journal, customizer),
+            terminated: false,
         }
     }
 
@@ -320,6 +343,32 @@ impl<S: WireStream + Unpin, D: FixDictionary, C: SessionCustomizer> FixConnectio
     /// `.await` on the socket read and a `tokio::time` deadline in place of the
     /// blocking socket read-timeout.
     pub async fn recv(&mut self, now: Instant) -> Result<Option<Message<'_, D>>, Error> {
+        if self.terminated {
+            return Err(Error::Closed);
+        }
+        match self.recv_step(now).await {
+            Ok(RecvStep::Message) => Ok(Some(self.session.message())),
+            // Clean, negotiated logout: the graceful terminal event.
+            Ok(RecvStep::LoggedOut) => {
+                self.terminated = true;
+                Ok(Some(self.session.message()))
+            }
+            Ok(RecvStep::Nothing) => Ok(None),
+            // Any fatal error ends the session, so the next `recv` is `Closed`; a
+            // recoverable error (`Malformed`) leaves the session live.
+            Err(e) => {
+                if e.is_fatal() {
+                    self.terminated = true;
+                }
+                Err(e)
+            }
+        }
+    }
+
+    /// Advances the session one step, returning an *owned* outcome. Splitting this
+    /// from [`recv`](Self::recv) lets `recv` arm the terminated guard (on any fatal
+    /// error or a clean logout) before borrowing `self` to build the message.
+    async fn recv_step(&mut self, now: Instant) -> Result<RecvStep, Error> {
         loop {
             let outcome = self.session.poll(now)?;
             // Drain any admin/resend the core enqueued for this step (matches the
@@ -327,10 +376,13 @@ impl<S: WireStream + Unpin, D: FixDictionary, C: SessionCustomizer> FixConnectio
             self.drain_outbound().await?;
 
             match outcome {
-                PollOutcome::Message | PollOutcome::Disconnected(_) => {
-                    return Ok(Some(self.session.message()));
+                PollOutcome::Message => return Ok(RecvStep::Message),
+                PollOutcome::LoggedOut => return Ok(RecvStep::LoggedOut),
+                // Abnormal drop: a fault, surfaced as an error, not a message.
+                PollOutcome::Disconnected(reason) => {
+                    return Err(Error::UnexpectedDisconnect { reason });
                 }
-                PollOutcome::Suppressed => return Ok(None),
+                PollOutcome::Suppressed => return Ok(RecvStep::Nothing),
                 // Buffer already drained above; loop to continue the resend.
                 PollOutcome::ResendPending => {}
                 PollOutcome::NeedMoreBytes => {
@@ -365,10 +417,11 @@ impl<S: WireStream + Unpin, D: FixDictionary, C: SessionCustomizer> FixConnectio
                     )
                     .await
                     {
+                        // Peer closed the transport (FIN) without a FIX Logout.
                         Ok(Ok(0)) => {
-                            return Ok(Some(Message::Disconnected {
-                                reason: DisconnectReason::Logout,
-                            }));
+                            return Err(Error::UnexpectedDisconnect {
+                                reason: DisconnectReason::PeerClosed,
+                            });
                         }
                         // Bytes already committed to the session by `poll_fill_into`;
                         // loop to parse them.
@@ -377,10 +430,10 @@ impl<S: WireStream + Unpin, D: FixDictionary, C: SessionCustomizer> FixConnectio
                         Err(_elapsed) => {
                             if let Some(reason) = self.session.on_timeout(now)? {
                                 self.drain_outbound().await?;
-                                return Ok(Some(Message::Disconnected { reason }));
+                                return Err(Error::UnexpectedDisconnect { reason });
                             }
                             self.drain_outbound().await?;
-                            return Ok(None);
+                            return Ok(RecvStep::Nothing);
                         }
                     }
                 }

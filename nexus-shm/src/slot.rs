@@ -23,10 +23,18 @@ fn version_ptr(segment: &Segment) -> *mut AtomicU64 {
 }
 
 fn elem_size_ptr(segment: &Segment) -> *mut u64 {
+    // SAFETY: ELEM_SIZE_OFFSET (8) is strictly less than PAYLOAD_OFFSET (64),
+    // which is less than `data_len` for any valid ShmSlot segment (enforced by
+    // `ShmSlotWriter::create`). `data()` is non-null (mmap). The pointer is
+    // returned as a raw pointer and not yet dereferenced here.
     unsafe { segment.data().add(ELEM_SIZE_OFFSET).cast::<u64>() }
 }
 
 fn payload_ptr<T>(segment: &Segment) -> *mut T {
+    // SAFETY: PAYLOAD_OFFSET (64) is always within `data_len` for any valid
+    // ShmSlot segment. `align_of::<T>() <= PAYLOAD_OFFSET` is asserted in
+    // `ShmSlotWriter::create`, so the cast to `*mut T` is alignment-sound.
+    // `data()` is non-null (mmap). The pointer is not yet dereferenced here.
     unsafe { segment.data().add(PAYLOAD_OFFSET).cast::<T>() }
 }
 
@@ -74,6 +82,11 @@ impl<T: Pod> ShmSlotWriter<T> {
         );
         let data_len = data_len::<T>();
         let segment = Segment::create_file(path, data_len, hints)?;
+        // SAFETY: `segment.data()` spans exactly `data_len` bytes (enforced by
+        // `Segment::create_file`); zeroing all of them is in bounds. We hold
+        // exclusive ownership via the OFD lock before the segment is shared.
+        // `elem_size_ptr` returns a u64-aligned pointer within those bytes
+        // (ELEM_SIZE_OFFSET=8, data() is 64-byte aligned).
         unsafe {
             std::ptr::write_bytes(segment.data(), 0, data_len);
             std::ptr::write(elem_size_ptr(&segment), size_of::<T>() as u64);
@@ -96,6 +109,9 @@ impl<T: Pod> ShmSlotWriter<T> {
     /// tells it the memory is modified externally (another process maps the same
     /// region) and must not be elided, fused, or reordered against the fences.
     pub fn write(&self, value: &T) {
+        // SAFETY: `version_ptr` yields the `AtomicU64` at offset 0 of the
+        // payload; `data()` is 64-byte aligned (mmap), satisfying AtomicU64's
+        // alignment. The mapping is live for the duration of `self`.
         let ver = unsafe { &*version_ptr(&self.segment) };
         let dst = payload_ptr::<T>(&self.segment);
         ver.fetch_add(1, Ordering::Relaxed);
@@ -125,6 +141,15 @@ impl<T: Pod> ShmSlotReader<T> {
     /// different element size than `size_of::<T>()`.
     pub fn attach(path: impl AsRef<Path>) -> Result<Self, ShmError> {
         let segment = Segment::attach_file(path)?;
+        // SAFETY: UNVERIFIED -- `elem_size_ptr` returns a u64-aligned pointer within
+        // the payload (ELEM_SIZE_OFFSET=8, data() is 64-byte aligned). However, the
+        // Release store marking status=ALIVE in `Segment::create` precedes the
+        // elem_size write in `ShmSlotWriter::create`, so the Acquire on status in
+        // `Segment::attach` does not formally order this read after that write under
+        // the C11 memory model. In practice, cross-process coherency on Linux x86
+        // (TSO) and ARM (via page-cache flush) ensures the write is visible, but
+        // moving the elem_size write to before the Release store would make this
+        // formally sound. See docs/unsafe-audit-open.md.
         let written = unsafe { std::ptr::read(elem_size_ptr(&segment)) } as usize;
         if written != size_of::<T>() {
             return Err(ShmError::ElemSizeMismatch {
@@ -148,6 +173,8 @@ impl<T: Pod> ShmSlotReader<T> {
     /// detected via the OFD lock (`peer_liveness`) rather than the atomic status
     /// field, which can be stale after an abnormal process exit.
     pub fn read(&mut self) -> SlotRead<'_, T> {
+        // SAFETY: Same argument as `write`: `version_ptr` yields a valid,
+        // 64-byte-aligned `AtomicU64` within the live mapping.
         let ver = unsafe { &*version_ptr(&self.segment) };
         let src = payload_ptr::<T>(&self.segment).cast_const();
         loop {
@@ -163,6 +190,9 @@ impl<T: Pod> ShmSlotReader<T> {
                     }
                     _ => {
                         return if self.shadow_valid {
+                            // SAFETY: `shadow_valid` is set to `true` only
+                            // after a successful `copy_nonoverlapping` into
+                            // `shadow`; so `shadow` is initialized here.
                             SlotRead::Stale(unsafe { self.shadow.assume_init_ref() })
                         } else {
                             SlotRead::Empty
@@ -180,15 +210,25 @@ impl<T: Pod> ShmSlotReader<T> {
                 std::hint::spin_loop();
                 continue;
             }
+            // SAFETY: `buf` was just written by `read_volatile` above (one T
+            // written into an `&mut MaybeUninit<T>`), so it is initialized.
+            // `shadow` is a separate heap allocation; the copy does not overlap.
             unsafe {
                 std::ptr::copy_nonoverlapping(self.buf.as_ptr(), self.shadow.as_mut_ptr(), 1);
             }
             self.shadow_valid = true;
+            // SAFETY: `shadow` was just initialized by the `copy_nonoverlapping`
+            // above; `shadow_valid` is set immediately after to record this.
             return SlotRead::Fresh(unsafe { self.shadow.assume_init_ref() });
         }
     }
 }
 
+// SAFETY: `ShmSlotReader` owns its `Segment` (mmap) and two `Box`-allocated
+// shadow buffers; all fields are self-contained. `T: Send` ensures the
+// payload type can cross thread boundaries. The seqlock read protocol in
+// `read` does not require `&mut self` exclusivity beyond preventing two
+// concurrent `read` calls (which `!Sync` enforces).
 unsafe impl<T: Pod + Send> Send for ShmSlotReader<T> {}
 
 #[cfg(test)]
@@ -254,6 +294,9 @@ mod tests {
         ask: f64,
         seq: u64,
     }
+    // SAFETY: `Price` is `repr(C)`, `Copy`, contains only `f64` and `u64`
+    // fields (all `Pod`), has no heap pointers, no `Drop`, and its layout is
+    // stable with no implicit padding.
     unsafe impl Pod for Price {}
 
     #[test]
@@ -371,6 +414,9 @@ mod tests {
         }
 
         // Bump version to odd — simulates being killed between the two increments.
+        // SAFETY: `version_ptr` yields the AtomicU64 at offset 0 of a live,
+        // 64-byte-aligned mmap payload; the segment is alive and exclusively
+        // accessible in this single-threaded test.
         let ver = unsafe { &*version_ptr(&writer.segment) };
         ver.fetch_add(1, Ordering::Relaxed);
 

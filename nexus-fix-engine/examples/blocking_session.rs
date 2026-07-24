@@ -117,8 +117,8 @@ fn run_acceptor(listener: &TcpListener, dir: &Path) {
     let mut n = 0usize;
     loop {
         match conn.recv(Instant::now()) {
-            Ok(Some(Message::Disconnected { reason })) => {
-                println!("acceptor: {reason:?}, {n} app message(s) received");
+            Ok(Some(Message::LoggedOut { .. })) => {
+                println!("acceptor: logged out cleanly, {n} app message(s) received");
                 break;
             }
             Ok(Some(Message::Application { .. })) => n += 1,
@@ -148,8 +148,8 @@ fn run_initiator(addr: std::net::SocketAddr, dir: &Path) {
 
     loop {
         match conn.recv(Instant::now()) {
-            Ok(Some(Message::Disconnected { reason })) => {
-                eprintln!("initiator: disconnected before active ({reason:?})");
+            Ok(Some(Message::LoggedOut { .. })) => {
+                eprintln!("initiator: logged out before active");
                 return;
             }
             Err(e) => {

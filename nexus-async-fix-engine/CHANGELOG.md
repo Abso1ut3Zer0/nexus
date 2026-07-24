@@ -31,6 +31,18 @@ contained.
   `FixConnection::from_parts_with_customizer(...)`. All hook behavior lives in
   the shared `FixSession` core; this crate only threads the type parameter.
 
+- `recv()` now surfaces a garbled/bad-`BodyLength`/bad-`CheckSum` inbound frame as
+  the shared recoverable `Err(TransportError::Malformed { skipped, count, reason })`,
+  matching the sync engine (`is_fatal()` is `false`; the session resyncs and
+  continues). (#583)
+
+- `recv()` splits session end by outcome, matching the sync engine: a clean logout
+  is `Ok(Some(Message::LoggedOut { msg }))`; an abnormal disconnect (including a
+  socket EOF, now `DisconnectReason::PeerClosed`) is
+  `Err(TransportError::UnexpectedDisconnect { reason })`; and a `recv()` after a
+  terminal outcome is `Err(TransportError::Closed)`. `Message::Disconnected` is
+  removed. (#612)
+
 ### Internal
 
 - Test scratch directories are now removed on drop. The `tmp_dir` helpers in

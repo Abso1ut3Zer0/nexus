@@ -99,8 +99,7 @@ pub enum Message<'buf, D: FixDictionary> {
     LogonAcknowledged { msg: D::Logon<'buf> },
     /// A Logout (35=5) that did not end the session, which only happens
     /// out-of-state (e.g. mid-reset). The engine answers and closes an
-    /// in-sequence logout itself; that surfaces as
-    /// [`Message::Disconnected`] with [`DisconnectReason::Logout`](crate::DisconnectReason::Logout).
+    /// in-sequence logout itself; that surfaces as [`Message::LoggedOut`].
     LogoutRequest { msg: D::Logout<'buf> },
     /// Heartbeat (35=0). No reply required unless it carries a TestReqID.
     Heartbeat { msg: D::Heartbeat<'buf> },
@@ -114,8 +113,11 @@ pub enum Message<'buf, D: FixDictionary> {
     Reject { msg: D::Reject<'buf> },
     /// Business message. Route by `header.raw_msg_type()` and decode the body.
     Application { header: D::Header<'buf> },
-    /// Session disconnected (CompID mismatch, timeout, or protocol violation).
-    Disconnected { reason: crate::DisconnectReason },
+    /// A clean, negotiated logout completed and the session ended — the graceful
+    /// terminal event. Carries the peer's Logout (35=5), so the caller can read
+    /// `Text(58)`. An *abnormal* end never appears here: it surfaces as
+    /// `Err(TransportError::UnexpectedDisconnect { reason })`.
+    LoggedOut { msg: D::Logout<'buf> },
 }
 
 /// Zero-copy FIX frame reader, dictionary-aware via `D::Header`.

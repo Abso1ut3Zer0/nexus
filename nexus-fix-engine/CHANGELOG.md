@@ -52,6 +52,19 @@ contained.
   Resend gap-fills are unaffected — they are reframed directly and never run the
   hook, so PossDup traffic cannot carry credentials.
 
+- Malformed inbound frames now surface as a recoverable `TransportError::Malformed`
+  instead of being silently counted and dropped. `recv()` (sync and async) returns
+  `Err(Malformed { skipped, count, reason })` — `skipped` bytes discarded to resync
+  to the next `8=`, `count` the running total this session, and `reason` a new
+  `MalformedReason` (`Framing` / `BodyLength` / `Checksum`) saying how the frame
+  broke. It sits in the error channel because receiving the frame *failed*, but it
+  is the one **recoverable** error: the reader has resynced, the inbound seqnum is
+  unchanged (FIX's optimistic recovery), and the session is intact —
+  `TransportError::is_fatal()` returns `false` for it (and `true` for every other
+  variant). The caller owns the policy: `recv()?` to tear down on the first bad
+  byte, or match `Malformed` and keep receiving, disconnecting only on a sustained
+  flood. `garbage_frame_count()` remains as the cumulative accessor. (#583)
+
 ### Internal
 
 - Test scratch directories are now removed on drop. The `tmp_dir` helpers in
@@ -66,6 +79,26 @@ contained.
   `nexus-journal/src/rotating/tests.rs`.
 
 ### Changed
+
+- Session end is split by outcome. A clean, negotiated logout surfaces as
+  `Message::LoggedOut { msg }` (`Ok`, carrying the peer's Logout 35=5 so the caller
+  can read `Text(58)`); an abnormal disconnect surfaces as
+  `Err(TransportError::UnexpectedDisconnect { reason })`, never a message. The old
+  `Message::Disconnected { reason }` is removed. So `recv()?` now propagates a fault
+  disconnect toward reconnect/alert logic, while a graceful shutdown is a distinct
+  terminal event on the `Ok` side.
+  - `DisconnectReason` drops `Logout` (now represented by `Message::LoggedOut`) and
+    adds `PeerClosed` — a socket EOF with no FIX Logout, previously misreported as a
+    clean `Logout`. It is now purely the fault set.
+  - `TransportError` gains `UnexpectedDisconnect { reason }` and `Closed`. Calling
+    `recv()` after any terminal outcome returns `Closed` (mirrors tungstenite's
+    `AlreadyClosed`), tracked per connection. Both are fatal (`is_fatal()` is `true`;
+    only `Malformed` is recoverable). (#612)
+
+- `FrameError::Garbage { skipped }` is renamed to
+  `FrameError::Malformed { skipped, reason }`, carrying a `MalformedReason`. The
+  old name implied random bytes, but the reader also reports a bad
+  `BodyLength(9)` or a failed `CheckSum(10)` — neither is garbage. (#583)
 
 - Outbound admin dispatch is now typed structs through a trait, replacing the
   `AdminMsg` enum and its `MessageWriter::encode_admin` match (both introduced

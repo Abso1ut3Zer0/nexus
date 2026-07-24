@@ -10,8 +10,8 @@ use nexus_fix_codec::{
     encode_fix_uint, find_tag,
 };
 use nexus_fix_engine::{
-    CompId, DisconnectReason, FixConnection, FixJournal, Message, SessionConfig, SessionError,
-    SessionState, State, TransportError,
+    CompId, DisconnectReason, FixConnection, FixJournal, MalformedReason, Message, SessionConfig,
+    SessionError, SessionState, State, TransportError,
 };
 
 // ── mock dictionary ──────────────────────────────────────────────────────────
@@ -145,12 +145,15 @@ fn tmp_dir(suffix: &str) -> TempDir {
     TempDir::new(suffix)
 }
 
-fn drive(
-    conn: &mut FixConnection<TcpStream, MockDict>,
-) -> Result<DisconnectReason, TransportError> {
+/// Drive the connection until it completes a clean, negotiated logout
+/// (`Message::LoggedOut`) and return `Ok(())`. Any transport error is
+/// propagated — an abnormal end surfaces as
+/// `Err(TransportError::UnexpectedDisconnect { .. })`. Every caller here drives a
+/// peer-initiated logout, so the clean path is the expected outcome.
+fn drive(conn: &mut FixConnection<TcpStream, MockDict>) -> Result<(), TransportError> {
     loop {
-        if let Some(Message::Disconnected { reason }) = conn.recv(Instant::now())? {
-            return Ok(reason);
+        if let Some(Message::LoggedOut { .. }) = conn.recv(Instant::now())? {
+            return Ok(());
         }
     }
 }
@@ -356,8 +359,7 @@ fn initiator_logon_and_logout() {
     );
     conn.connect(Instant::now()).unwrap();
 
-    let reason = drive(&mut conn).unwrap();
-    assert_eq!(reason, DisconnectReason::Logout);
+    drive(&mut conn).unwrap();
 
     handle.join().unwrap();
 }
@@ -389,17 +391,16 @@ fn acceptor_receives_app_message() {
         journal(dir2.path()),
     );
 
-    let reason = loop {
+    loop {
         match conn.recv(Instant::now()).unwrap() {
-            Some(Message::Disconnected { reason }) => break reason,
+            Some(Message::LoggedOut { .. }) => break,
             Some(Message::Application { header: _ }) => {
                 received_app += 1;
             }
             Some(_) | None => {}
         }
-    };
+    }
 
-    assert_eq!(reason, DisconnectReason::Logout);
     assert_eq!(received_app, 1);
 
     handle.join().unwrap();
@@ -435,8 +436,10 @@ fn heartbeat_stale_seqnum_disconnects() {
     );
 
     let reason = loop {
-        if let Some(Message::Disconnected { reason }) = conn.recv(Instant::now()).unwrap() {
-            break reason;
+        match conn.recv(Instant::now()) {
+            Ok(_) => {}
+            Err(TransportError::UnexpectedDisconnect { reason }) => break reason,
+            Err(e) => panic!("unexpected transport error: {e:?}"),
         }
     };
     assert_eq!(reason, DisconnectReason::SeqNumTooLow);
@@ -488,8 +491,7 @@ fn resend_request_triggers_gap_fill() {
     );
     conn.connect(Instant::now()).unwrap();
 
-    let reason = drive(&mut conn).unwrap();
-    assert_eq!(reason, DisconnectReason::Logout);
+    drive(&mut conn).unwrap();
 
     handle.join().unwrap();
     let _ = dir_srv;
@@ -524,7 +526,7 @@ fn inbound_gap_sends_resend_request_and_suppresses_app_message() {
     let mut saw_app = false;
     loop {
         match conn.recv(Instant::now()) {
-            Ok(Some(Message::Disconnected { .. })) | Err(_) => break,
+            Ok(Some(Message::LoggedOut { .. })) | Err(_) => break,
             Ok(Some(Message::Application { .. })) => saw_app = true,
             Ok(Some(_) | None) => {}
         }
@@ -588,7 +590,7 @@ fn out_of_sequence_admin_suppressed_and_resends() {
     let mut saw_admin = false;
     loop {
         match conn.recv(Instant::now()) {
-            Ok(Some(Message::Disconnected { .. })) | Err(_) => break,
+            Ok(Some(Message::LoggedOut { .. })) | Err(_) => break,
             // The out-of-sequence Heartbeat must never surface.
             Ok(Some(Message::Heartbeat { .. })) => saw_admin = true,
             Ok(Some(_) | None) => {}
@@ -641,7 +643,7 @@ fn duplicate_admin_suppressed_no_resend() {
     let mut saw_app = false;
     loop {
         match conn.recv(Instant::now()) {
-            Ok(Some(Message::Disconnected { .. })) | Err(_) => break,
+            Ok(Some(Message::LoggedOut { .. })) | Err(_) => break,
             Ok(Some(Message::Application { .. })) => saw_app = true,
             Ok(Some(Message::Heartbeat { .. })) => saw_dup_admin = true,
             Ok(Some(_) | None) => {}
@@ -703,8 +705,7 @@ fn resend_request_huge_end_seq_clamped() {
         journal(dir.path()),
     );
     conn.connect(Instant::now()).unwrap();
-    let reason = drive(&mut conn).unwrap();
-    assert_eq!(reason, DisconnectReason::Logout);
+    drive(&mut conn).unwrap();
     handle.join().unwrap();
 }
 
@@ -736,7 +737,7 @@ fn corrupt_checksum_frame_counted_as_garbage() {
 
     loop {
         match conn.recv(Instant::now()) {
-            Ok(Some(Message::Disconnected { .. })) | Err(_) => break,
+            Ok(Some(Message::LoggedOut { .. })) | Err(_) => break,
             _ => {}
         }
     }
@@ -776,7 +777,7 @@ fn garbage_bytes_increment_counter() {
 
     loop {
         match conn.recv(Instant::now()) {
-            Ok(Some(Message::Disconnected { .. })) | Err(_) => break,
+            Ok(Some(Message::LoggedOut { .. })) | Err(_) => break,
             _ => {}
         }
     }
@@ -786,6 +787,215 @@ fn garbage_bytes_increment_counter() {
         "raw garbage bytes must increment garbage_frame_count"
     );
     handle.join().unwrap();
+}
+
+#[test]
+fn malformed_framing_surfaces_via_recv() {
+    // Raw non-FIX bytes (no `8=` header) surface as the recoverable
+    // `TransportError::Malformed` with reason `Framing` — not a disconnect
+    // (`is_fatal()` is false). It carries the running count and bytes skipped.
+    let dir = tmp_dir("malformed_framing");
+    let garbage = b"GARBAGE_NOT_FIX";
+
+    let mut conn: FixConnection<ChunkStream, MockDict> = FixConnection::from_parts(
+        ChunkStream::new(garbage),
+        SessionState::new(Duration::from_secs(30)),
+        session_cfg(target(), sender()),
+        journal(dir.path()),
+    );
+
+    let Err(err) = conn.recv(Instant::now()) else {
+        panic!("expected TransportError::Malformed for raw garbage");
+    };
+    assert!(
+        !err.is_fatal(),
+        "a malformed frame is recoverable, not fatal"
+    );
+    let TransportError::Malformed {
+        skipped,
+        count,
+        reason,
+    } = err
+    else {
+        panic!("expected TransportError::Malformed for raw garbage");
+    };
+    assert_eq!(reason, MalformedReason::Framing);
+    assert_eq!(count, 1, "first malformed frame is count 1");
+    assert_eq!(skipped, garbage.len(), "all garbage bytes are skipped");
+    assert_eq!(conn.garbage_frame_count(), 1);
+}
+
+#[test]
+fn malformed_checksum_surfaces_via_recv() {
+    // A fully-framed message whose CheckSum(10) does not match surfaces as
+    // `TransportError::Malformed` with reason `Checksum` — the "bytes corrupt in
+    // transit" signal, distinct from raw framing garbage.
+    let dir = tmp_dir("malformed_checksum");
+
+    let mut conn: FixConnection<ChunkStream, MockDict> = FixConnection::from_parts(
+        ChunkStream::new(&corrupt_checksum_frame()),
+        SessionState::new(Duration::from_secs(30)),
+        session_cfg(target(), sender()),
+        journal(dir.path()),
+    );
+
+    let Err(err) = conn.recv(Instant::now()) else {
+        panic!("expected TransportError::Malformed for a corrupt checksum");
+    };
+    let TransportError::Malformed { count, reason, .. } = err else {
+        panic!("expected TransportError::Malformed for a corrupt checksum");
+    };
+    assert_eq!(reason, MalformedReason::Checksum);
+    assert_eq!(count, 1);
+    assert_eq!(conn.garbage_frame_count(), 1);
+}
+
+/// A well-formed Heartbeat frame with one checksum digit flipped — the frame
+/// reader locates the full frame, then rejects it on checksum mismatch.
+fn corrupt_checksum_frame() -> Vec<u8> {
+    let mut buf = [0u8; 256];
+    let mut fmt = FrameFormatter::new(&mut buf, b"FIX.4.4", b"0");
+    fmt.field(34, b"2");
+    fmt.field(49, sender().as_bytes());
+    fmt.field(56, target().as_bytes());
+    fmt.field(52, b"20260615-12:00:00.000");
+    let (start, len) = fmt.finish().unwrap();
+    let mut frame = buf[start..start + len].to_vec();
+    let n = frame.len();
+    frame[n - 2] ^= 1; // flip a CheckSum(10) digit
+    frame
+}
+
+#[test]
+fn peer_eof_surfaces_peer_closed_not_logout() {
+    // A peer that drops the socket (EOF) without sending a Logout is an abnormal
+    // drop, reported as UnexpectedDisconnect{PeerClosed} — NOT a fake clean
+    // Logout (the pre-#612 conflation). It is fatal and Displays legibly.
+    let dir = tmp_dir("peer_eof");
+    let mut conn: FixConnection<ChunkStream, MockDict> = FixConnection::from_parts(
+        ChunkStream::new(b""), // peer connected, then immediately closed
+        SessionState::new(Duration::from_secs(30)),
+        session_cfg(target(), sender()),
+        journal(dir.path()),
+    );
+
+    let Err(err) = conn.recv(Instant::now()) else {
+        panic!("expected an error on peer EOF");
+    };
+    assert!(err.is_fatal(), "an abnormal disconnect is fatal");
+    assert!(matches!(
+        err,
+        TransportError::UnexpectedDisconnect {
+            reason: DisconnectReason::PeerClosed
+        }
+    ));
+    assert_eq!(err.to_string(), "unexpected disconnect: PeerClosed");
+}
+
+#[test]
+fn recv_after_abnormal_disconnect_is_closed() {
+    // Once a terminal outcome is surfaced the session is dead: every subsequent
+    // recv returns the fatal `Closed` (tungstenite's AlreadyClosed) — a caller-bug
+    // signal, never a fresh disconnect or a hang. Idempotent.
+    let dir = tmp_dir("recv_after_abnormal");
+    let mut conn: FixConnection<ChunkStream, MockDict> = FixConnection::from_parts(
+        ChunkStream::new(b""),
+        SessionState::new(Duration::from_secs(30)),
+        session_cfg(target(), sender()),
+        journal(dir.path()),
+    );
+
+    // First recv terminates the session (peer EOF).
+    assert!(matches!(
+        conn.recv(Instant::now()),
+        Err(TransportError::UnexpectedDisconnect { .. })
+    ));
+
+    // Every recv after that is Closed.
+    for _ in 0..3 {
+        let Err(err) = conn.recv(Instant::now()) else {
+            panic!("expected Closed on a terminated session");
+        };
+        assert!(err.is_fatal());
+        assert!(matches!(err, TransportError::Closed));
+        assert_eq!(err.to_string(), "recv on a closed session");
+    }
+}
+
+#[test]
+fn recv_after_clean_logout_is_closed() {
+    // The clean-logout terminal (LoggedOut, on the Ok side) arms the same Closed
+    // guard as an abnormal disconnect: a recv after it returns Closed, not a
+    // re-read of a dead socket.
+    let dir = tmp_dir("logout_then_closed");
+    let (client_sock, server_sock) = loopback_pair();
+    client_sock
+        .set_read_timeout(Some(Duration::from_millis(200)))
+        .unwrap();
+
+    let handle = std::thread::spawn(move || {
+        let mut peer = Peer::new(server_sock, target(), sender());
+        let mut buf = [0u8; 512];
+        let _ = peer.recv_msg(&mut buf); // the server's Logon
+        peer.send_logon(30);
+        peer.send_logout();
+        let _ = peer.recv_msg(&mut buf);
+    });
+
+    let mut conn: FixConnection<TcpStream, MockDict> = FixConnection::from_parts(
+        client_sock,
+        SessionState::new(Duration::from_secs(30)),
+        session_cfg(sender(), target()),
+        journal(dir.path()),
+    );
+    conn.connect(Instant::now()).unwrap();
+
+    // Drive to the clean logout terminal, then any further recv is Closed.
+    drive(&mut conn).unwrap();
+    assert!(matches!(
+        conn.recv(Instant::now()),
+        Err(TransportError::Closed)
+    ));
+
+    handle.join().unwrap();
+}
+
+#[test]
+fn only_malformed_is_non_fatal() {
+    // The is_fatal() contract: exactly one variant (Malformed) is recoverable;
+    // every other error ends the session. Guards against a future variant being
+    // misclassified as recoverable and silently swallowed by a tolerant caller.
+    let recoverable = TransportError::Malformed {
+        skipped: 4,
+        count: 1,
+        reason: MalformedReason::Framing,
+    };
+    assert!(!recoverable.is_fatal());
+
+    for fatal in [
+        TransportError::UnexpectedDisconnect {
+            reason: DisconnectReason::CompIdMismatch,
+        },
+        TransportError::Closed,
+        TransportError::MessageTooLarge(9999),
+        TransportError::Io(std::io::Error::other("boom")),
+        TransportError::Protocol(SessionError::InvalidState),
+    ] {
+        assert!(fatal.is_fatal(), "{fatal} must be fatal");
+    }
+
+    // Display sanity for the two #612 variants.
+    assert_eq!(
+        TransportError::UnexpectedDisconnect {
+            reason: DisconnectReason::SeqNumTooLow
+        }
+        .to_string(),
+        "unexpected disconnect: SeqNumTooLow"
+    );
+    assert_eq!(
+        TransportError::Closed.to_string(),
+        "recv on a closed session"
+    );
 }
 
 #[test]
@@ -816,7 +1026,7 @@ fn sequence_reset_backward_ignored() {
 
     loop {
         match conn.recv(Instant::now()) {
-            Ok(Some(Message::Disconnected { .. })) | Err(_) => break,
+            Ok(Some(Message::LoggedOut { .. })) | Err(_) => break,
             _ => {}
         }
     }
@@ -902,8 +1112,7 @@ fn journal_recovers_admin_seqnums() {
         journal(dir.path()),
     );
     conn.connect(Instant::now()).unwrap();
-    let reason = drive(&mut conn).unwrap();
-    assert_eq!(reason, DisconnectReason::Logout);
+    drive(&mut conn).unwrap();
     handle.join().unwrap();
     drop(conn);
 
@@ -1013,12 +1222,21 @@ fn frame_exceeding_reader_buffer_is_message_too_large_not_disconnect() {
 
     match conn.recv(Instant::now()) {
         Err(TransportError::MessageTooLarge(_)) => {}
+        Err(TransportError::UnexpectedDisconnect { reason }) => {
+            panic!("frame exceeding reader buffer was misread as a disconnect: {reason:?}")
+        }
         Err(other) => panic!(
             "an inbound frame exceeding the reader buffer must be MessageTooLarge, got {other:?}"
         ),
-        Ok(Some(Message::Disconnected { reason })) => {
-            panic!("frame exceeding reader buffer was misread as a disconnect: {reason:?}")
-        }
         Ok(_) => panic!("frame exceeding reader buffer must not surface a message"),
     }
+
+    // MessageTooLarge is a *fatal* error (not a disconnect), so it terminates the
+    // session — the next recv must be Closed, not a re-read of the oversized frame.
+    // Regression guard: the terminated flag must arm on any fatal error, not just
+    // LoggedOut / UnexpectedDisconnect.
+    assert!(matches!(
+        conn.recv(Instant::now()),
+        Err(TransportError::Closed)
+    ));
 }
