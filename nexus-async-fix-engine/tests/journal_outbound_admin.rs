@@ -5,15 +5,11 @@
 
 #![cfg(unix)]
 
-use std::io;
-use std::pin::Pin;
-use std::task::{Context, Poll};
 use std::time::Duration;
 
-use nexus_async_fix_engine::{AsyncReadAdapter, FixConnection};
+use nexus_async_fix_engine::{FixParts, FixSession};
 use nexus_fix_codec::{FieldView, FixAdminMsg, FixDictionary, FixHeader, FixTimestamp, find_tag};
 use nexus_fix_engine::{CompId, FixJournal, SessionConfig, SessionState};
-use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
 
 // ── mock dictionary (mirrors the sync engine's tests) ────────────────────────
 
@@ -123,63 +119,28 @@ fn tmp_dir(suffix: &str) -> TempDir {
     TempDir::new(suffix)
 }
 
-/// In-memory stream: writes are accepted (and buffered), reads block forever.
-///
-/// `connect()` only exercises the write path — it encodes the opening Logon and
-/// flushes it — so the read side never needs data. A perpetually-pending read
-/// keeps `recv` from ever being reached in this test.
-#[derive(Default)]
-struct SinkStream {
-    written: Vec<u8>,
-}
-
-impl AsyncRead for SinkStream {
-    fn poll_read(
-        self: Pin<&mut Self>,
-        _cx: &mut Context<'_>,
-        _buf: &mut ReadBuf<'_>,
-    ) -> Poll<io::Result<()>> {
-        // Never completes: connect() does not read.
-        Poll::Pending
-    }
-}
-
-impl AsyncWrite for SinkStream {
-    fn poll_write(
-        mut self: Pin<&mut Self>,
-        _cx: &mut Context<'_>,
-        buf: &[u8],
-    ) -> Poll<io::Result<usize>> {
-        self.written.extend_from_slice(buf);
-        Poll::Ready(Ok(buf.len()))
-    }
-
-    fn poll_flush(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<io::Result<()>> {
-        Poll::Ready(Ok(()))
-    }
-
-    fn poll_shutdown(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<io::Result<()>> {
-        Poll::Ready(Ok(()))
-    }
-}
-
 #[tokio::test]
 async fn outbound_admin_is_journaled() {
     let dir = tmp_dir("logon");
 
     {
-        let mut conn: FixConnection<AsyncReadAdapter<SinkStream>, MockDict> =
-            FixConnection::from_parts(
-                AsyncReadAdapter::new(SinkStream::default()),
-                SessionState::new(Duration::from_secs(30)),
-                SessionConfig {
-                    sender: CompId::new(b"ENGINE").unwrap(),
-                    target: CompId::new(b"PEER").unwrap(),
-                },
-                FixJournal::open(dir.path(), 0, 256).unwrap(),
-            );
-        // Sends the opening Logon at seq 1; the write is accepted by the sink.
-        conn.connect().await.unwrap();
+        // No transport needed: the encode-only `connect` journals the Logon as it
+        // stages it into the writer — the write to a socket is a separate step
+        // (`recv` drains it) and is not what this test pins.
+        let FixParts {
+            mut session,
+            reader: _reader,
+            mut writer,
+        } = FixSession::<MockDict>::builder().build(
+            SessionState::new(Duration::from_secs(30)),
+            SessionConfig {
+                sender: CompId::new(b"ENGINE").unwrap(),
+                target: CompId::new(b"PEER").unwrap(),
+            },
+            FixJournal::open(dir.path(), 0, 256).unwrap(),
+        );
+        // Encodes + journals the opening Logon at seq 1 into the writer.
+        session.connect(&mut writer).unwrap();
     }
 
     // The Logon (seq 1) must be present in the outbound journal: recovering the

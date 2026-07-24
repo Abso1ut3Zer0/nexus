@@ -1,6 +1,5 @@
 use nexus_fix_codec::{FieldView, FixAdminMsg, FixDictionary, FixHeader, FixTimestamp, find_tag};
 use nexus_fix_engine::{FrameReader, MessageReader, MessageWriter};
-use nexus_net::wire::ParserSink;
 
 // ── minimal mock dictionary ──────────────────────────────────────────────────
 

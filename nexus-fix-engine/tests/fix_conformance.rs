@@ -12,8 +12,8 @@ use nexus_fix_codec::{
     encode_fix_uint, find_tag,
 };
 use nexus_fix_engine::{
-    CompId, DisconnectReason, FixConnection, FixJournal, Message, SessionConfig, SessionState,
-    State, TransportError,
+    CompId, DisconnectReason, FixJournal, FixParts, FixSession, Message, MessageReader,
+    MessageWriter, SessionConfig, SessionError, SessionState, State, TransportError,
 };
 
 // ── mock dictionary ──────────────────────────────────────────────────────────
@@ -150,26 +150,66 @@ fn spawn_peer(scenario: &str) -> (ChildGuard, u16) {
     (ChildGuard(child), port)
 }
 
-fn connect(port: u16, dir: &Path) -> FixConnection<TcpStream, MockDict> {
+/// Test-local bundle over the three-object API: the sans-IO [`FixSession`] brain
+/// plus its caller-held `reader`/`writer` and the owned socket. Each method is a
+/// one-liner over `session.recv(&mut reader, &mut writer, &mut stream)` and the
+/// encode-only send helpers — a preview of the phase-6 bundle, kept in the test
+/// so the scenario bodies read the same across the un-nesting.
+struct Rig {
+    session: FixSession<MockDict>,
+    reader: MessageReader<MockDict>,
+    writer: MessageWriter<MockDict>,
+    stream: TcpStream,
+}
+
+impl Rig {
+    fn recv(&mut self) -> Result<Option<Message<'_, MockDict>>, TransportError> {
+        self.session
+            .recv(&mut self.reader, &mut self.writer, &mut self.stream)
+    }
+    fn connect(&mut self) -> Result<(), TransportError> {
+        self.session.connect(&mut self.writer)
+    }
+    fn send_app(&mut self, seq: u32, frame: &[u8]) -> Result<(), TransportError> {
+        self.session.send_app(&mut self.writer, seq, frame)
+    }
+    fn allocate_seq(&mut self) -> Result<u32, SessionError> {
+        self.session.allocate_seq()
+    }
+    fn state(&self) -> &SessionState {
+        self.session.state()
+    }
+}
+
+fn connect(port: u16, dir: &Path) -> Rig {
     let stream = TcpStream::connect(("127.0.0.1", port)).unwrap();
     stream
         .set_read_timeout(Some(Duration::from_secs(10)))
         .unwrap();
-    FixConnection::from_parts(
-        stream,
+    let FixParts {
+        session,
+        reader,
+        writer,
+    } = FixSession::builder().build(
         SessionState::new(Duration::from_secs(30)),
         SessionConfig {
             sender: CompId::new(b"ENGINE").unwrap(),
             target: CompId::new(b"PEER").unwrap(),
         },
         FixJournal::open(dir, 0, 256).unwrap(),
-    )
+    );
+    Rig {
+        session,
+        reader,
+        writer,
+        stream,
+    }
 }
 
 /// Drive `recv` until the session completes a clean, negotiated logout
 /// (`Message::LoggedOut`). Every scenario here ends in a peer-sent Logout, so any
 /// error is a failure and panics.
-fn drive(conn: &mut FixConnection<TcpStream, MockDict>) {
+fn drive(conn: &mut Rig) {
     loop {
         match conn.recv() {
             Ok(Some(Message::LoggedOut { .. })) => return,
@@ -263,9 +303,7 @@ fn conformance_seq_reset() {
 /// Any other `recv` error mid-scenario is a survivability failure — the engine
 /// must resolve every step to a message / suppression / logout / fault, never a
 /// raw transport error — so it panics (surfacing a finding as a test failure).
-fn drive_observe(
-    conn: &mut FixConnection<TcpStream, MockDict>,
-) -> (Option<DisconnectReason>, bool, bool) {
+fn drive_observe(conn: &mut Rig) -> (Option<DisconnectReason>, bool, bool) {
     let mut saw_resending = false;
     let mut saw_app = false;
     loop {
@@ -286,7 +324,7 @@ fn drive_observe(
 
 /// Drive until the session reaches `Active`, panicking on an early disconnect or
 /// error. Used by the resend scenarios that inject app messages once live.
-fn drive_to_active(conn: &mut FixConnection<TcpStream, MockDict>) {
+fn drive_to_active(conn: &mut Rig) {
     loop {
         match conn.recv() {
             Ok(Some(Message::LoggedOut { .. })) => panic!("logged out before active"),

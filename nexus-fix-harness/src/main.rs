@@ -8,14 +8,16 @@ use std::net::TcpListener;
 #[cfg(unix)]
 use std::path::Path;
 #[cfg(unix)]
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 #[cfg(unix)]
 use nexus_fix_codec::{
     AsciiTextStr, FieldView, FixAdminMsg, FixDictionary, FixHeader, FixTimestamp, find_tag,
 };
 #[cfg(unix)]
-use nexus_fix_engine::{CompId, FixConnection, FixJournal, Message, SessionConfig, SessionState};
+use nexus_fix_engine::{
+    CompId, FixJournal, FixParts, FixSession, Message, SessionConfig, SessionState,
+};
 
 #[cfg(unix)]
 struct Fix44;
@@ -113,14 +115,17 @@ fn main() {
 
     loop {
         reset_journal(&dir);
-        let (stream, peer) = listener.accept().expect("accept failed");
+        let (mut stream, peer) = listener.accept().expect("accept failed");
         stream
             .set_read_timeout(Some(Duration::from_secs(5)))
             .expect("set_read_timeout failed");
         println!("accepted {peer}");
 
-        let mut conn: FixConnection<_, Fix44> = FixConnection::builder().accept(
-            stream,
+        let FixParts {
+            mut session,
+            mut reader,
+            mut writer,
+        } = FixSession::<Fix44>::builder().build(
             SessionState::new(Duration::from_secs(30)),
             SessionConfig {
                 sender: CompId::new(b"ACCEPTOR").unwrap(),
@@ -131,7 +136,7 @@ fn main() {
 
         let mut app_msgs = 0usize;
         loop {
-            match conn.recv(Instant::now()) {
+            match session.recv(&mut reader, &mut writer, &mut stream) {
                 Ok(Some(Message::LoggedOut { .. })) => {
                     println!("logged out cleanly, {app_msgs} app message(s)");
                     break;

@@ -20,7 +20,8 @@ use nexus_fix_codec::{
     encode_fix_uint, find_tag,
 };
 use nexus_fix_engine::{
-    CompId, FixJournal, FixSession, PollOutcome, SessionConfig, SessionState, State,
+    CompId, FixJournal, FixSession, MessageReader, MessageWriter, PollOutcome, SessionConfig,
+    SessionState, State,
 };
 
 // ── mock dictionary (mirrors the conformance suites) ─────────────────────────
@@ -157,29 +158,36 @@ fn engine_app(seq: u32) -> Vec<u8> {
 }
 
 /// Discard whatever the engine queued outbound (a peer that reads and drops).
-fn drain_out(session: &mut FixSession<MockDict>) {
-    let n = session.outbound().len();
+fn drain_out(writer: &mut MessageWriter<MockDict>) {
+    let n = writer.data().len();
     if n > 0 {
-        session.advance_outbound(n);
+        writer.advance(n);
     }
 }
 
 /// Feed one frame through the inbound byte seam and drive `poll` to quiescence,
 /// draining outbound between steps. Panics on a hard protocol error (the
 /// recovery path is expected to be clean).
-fn feed(session: &mut FixSession<MockDict>, frame: &[u8]) {
+fn feed(
+    session: &mut FixSession<MockDict>,
+    reader: &mut MessageReader<MockDict>,
+    writer: &mut MessageWriter<MockDict>,
+    frame: &[u8],
+) {
     let mut off = 0;
     while off < frame.len() {
-        let spare = session.read_spare();
+        let spare = reader.spare();
         assert!(!spare.is_empty(), "reader buffer unexpectedly full");
         let n = spare.len().min(frame.len() - off);
         spare[..n].copy_from_slice(&frame[off..off + n]);
-        session.read_filled(n);
+        reader.filled(n);
         off += n;
     }
     loop {
-        let outcome = session.poll().expect("recovery path must not error");
-        drain_out(session);
+        let outcome = session
+            .poll(reader, writer)
+            .expect("recovery path must not error");
+        drain_out(writer);
         match outcome {
             PollOutcome::NeedMoreBytes | PollOutcome::Disconnected(_) => break,
             _ => {}
@@ -206,18 +214,25 @@ fn journal_stop_and_reopen_resumes_seqnums() {
         let journal = FixJournal::open(dir.path(), 0, WINDOW).unwrap();
         let mut s1 =
             FixSession::<MockDict>::new(SessionState::new(Duration::from_secs(30)), cfg(), journal);
+        let mut reader = MessageReader::<MockDict>::new();
+        let mut writer = MessageWriter::<MockDict>::new();
 
-        s1.connect().unwrap(); // Logon(seq=1) queued + journaled
-        drain_out(&mut s1);
-        feed(&mut s1, &peer_frame(b"A", 1, &[(108, b"30")])); // Logon ack → Active
+        s1.connect(&mut writer).unwrap(); // Logon(seq=1) queued + journaled
+        drain_out(&mut writer);
+        feed(
+            &mut s1,
+            &mut reader,
+            &mut writer,
+            &peer_frame(b"A", 1, &[(108, b"30")]),
+        ); // Logon ack → Active
         assert_eq!(s1.state().state(), State::Active);
         assert_eq!(s1.state().next_outbound_seq(), 2);
         assert_eq!(s1.state().next_inbound_seq(), 2);
 
         let seq = s1.allocate_seq().unwrap(); // 2
-        s1.send_app(seq, &engine_app(seq)).unwrap(); // app(seq=2) journaled
-        drain_out(&mut s1);
-        feed(&mut s1, &peer_frame(b"0", 2, &[])); // inbound Heartbeat seq 2
+        s1.send_app(&mut writer, seq, &engine_app(seq)).unwrap(); // app(seq=2) journaled
+        drain_out(&mut writer);
+        feed(&mut s1, &mut reader, &mut writer, &peer_frame(b"0", 2, &[])); // inbound Heartbeat seq 2
 
         assert_eq!(s1.state().next_outbound_seq(), 3, "outbound advanced to 3");
         assert_eq!(s1.state().next_inbound_seq(), 3, "inbound advanced to 3");
@@ -243,6 +258,8 @@ fn journal_stop_and_reopen_resumes_seqnums() {
     let journal = FixJournal::open_existing(dir.path(), 0, WINDOW).unwrap();
     let mut s2 =
         FixSession::<MockDict>::new(SessionState::new(Duration::from_secs(30)), cfg(), journal);
+    let mut reader = MessageReader::<MockDict>::new();
+    let mut writer = MessageWriter::<MockDict>::new();
     s2.state_mut().reset_seq_nums(rec_out, rec_in);
     assert_eq!(
         s2.state().next_outbound_seq(),
@@ -257,17 +274,22 @@ fn journal_stop_and_reopen_resumes_seqnums() {
 
     // The post-restart Logon must carry the RECOVERED seqnum (34=3), proving
     // persist-before-send survived the restart — not a fresh 34=1.
-    s2.connect().unwrap();
-    let logon = s2.outbound().to_vec();
+    s2.connect(&mut writer).unwrap();
+    let logon = writer.data().to_vec();
     assert!(has_field(&logon, b"35=A"), "outbound must be a Logon");
     assert!(
         has_field(&logon, b"34=3"),
         "recovered Logon must resume at seq 3, not restart at 1"
     );
-    drain_out(&mut s2);
+    drain_out(&mut writer);
 
     // ── phase 4: reconnect completes, then gap-detect works on recovered in ──
-    feed(&mut s2, &peer_frame(b"A", 3, &[(108, b"30")])); // Logon ack at expected seq 3
+    feed(
+        &mut s2,
+        &mut reader,
+        &mut writer,
+        &peer_frame(b"A", 3, &[(108, b"30")]),
+    ); // Logon ack at expected seq 3
     assert_eq!(s2.state().state(), State::Active);
     assert_eq!(
         s2.state().next_inbound_seq(),
@@ -277,7 +299,12 @@ fn journal_stop_and_reopen_resumes_seqnums() {
 
     // A peer app at seq 6 (expected 4) is a forward gap: the engine must send a
     // ResendRequest and enter Resending — gap detection intact post-recovery.
-    feed(&mut s2, &peer_frame(b"D", 6, &[(11, b"ORD-GAP")]));
+    feed(
+        &mut s2,
+        &mut reader,
+        &mut writer,
+        &peer_frame(b"D", 6, &[(11, b"ORD-GAP")]),
+    );
     assert_eq!(
         s2.state().state(),
         State::Resending,

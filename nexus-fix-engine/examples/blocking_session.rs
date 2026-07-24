@@ -5,7 +5,7 @@
 //!
 //! Run with: cargo run --example blocking_session
 
-use std::net::TcpListener;
+use std::net::{TcpListener, TcpStream};
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
@@ -14,7 +14,8 @@ use nexus_fix_codec::{
     encode_fix_uint, find_tag,
 };
 use nexus_fix_engine::{
-    CompId, FixConnection, FixJournal, Message, SessionConfig, SessionError, SessionState, State,
+    CompId, FixJournal, FixParts, FixSession, Message, SessionConfig, SessionError, SessionState,
+    State,
 };
 
 // ── minimal FIX 4.4 dictionary ───────────────────────────────────────────────
@@ -99,13 +100,17 @@ fn main() {
 }
 
 fn run_acceptor(listener: &TcpListener, dir: &Path) {
-    let (stream, _) = listener.accept().unwrap();
+    let (mut stream, _) = listener.accept().unwrap();
     stream
         .set_read_timeout(Some(Duration::from_secs(5)))
         .unwrap();
 
-    let mut conn: FixConnection<_, Fix44> = FixConnection::builder().accept(
-        stream,
+    // The caller holds the trio; the socket is separate and passed per call.
+    let FixParts {
+        mut session,
+        mut reader,
+        mut writer,
+    } = FixSession::<Fix44>::builder().build(
         SessionState::new(Duration::from_secs(30)),
         SessionConfig {
             sender: CompId::new(b"ACCEPTOR").unwrap(),
@@ -116,7 +121,7 @@ fn run_acceptor(listener: &TcpListener, dir: &Path) {
 
     let mut n = 0usize;
     loop {
-        match conn.recv() {
+        match session.recv(&mut reader, &mut writer, &mut stream) {
             Ok(Some(Message::LoggedOut { .. })) => {
                 println!("acceptor: logged out cleanly, {n} app message(s) received");
                 break;
@@ -132,22 +137,29 @@ fn run_acceptor(listener: &TcpListener, dir: &Path) {
 }
 
 fn run_initiator(addr: std::net::SocketAddr, dir: &Path) {
-    let mut conn: FixConnection<_, Fix44> = FixConnection::builder()
-        .connect(
-            addr,
-            SessionState::new(Duration::from_secs(30)),
-            SessionConfig {
-                sender: CompId::new(b"INITIATOR").unwrap(),
-                target: CompId::new(b"ACCEPTOR").unwrap(),
-            },
-            FixJournal::open(dir, 0, 256).unwrap(),
-        )
-        .unwrap();
+    // The caller opens the socket; reconnect is "same trio, new socket."
+    let mut stream = TcpStream::connect(addr).unwrap();
+    stream.set_nodelay(true).unwrap();
 
-    conn.connect().unwrap();
+    let FixParts {
+        mut session,
+        mut reader,
+        mut writer,
+    } = FixSession::<Fix44>::builder().build(
+        SessionState::new(Duration::from_secs(30)),
+        SessionConfig {
+            sender: CompId::new(b"INITIATOR").unwrap(),
+            target: CompId::new(b"ACCEPTOR").unwrap(),
+        },
+        FixJournal::open(dir, 0, 256).unwrap(),
+    );
+
+    // Encode-only: the opening Logon is staged into `writer` and flushed by the
+    // first `recv` (which drains outbound before it blocks reading).
+    session.connect(&mut writer).unwrap();
 
     loop {
-        match conn.recv() {
+        match session.recv(&mut reader, &mut writer, &mut stream) {
             Ok(Some(Message::LoggedOut { .. })) => {
                 eprintln!("initiator: logged out before active");
                 return;
@@ -158,12 +170,12 @@ fn run_initiator(addr: std::net::SocketAddr, dir: &Path) {
             }
             Ok(Some(_) | None) => {}
         }
-        if conn.state().state() == State::Active {
+        if session.state().state() == State::Active {
             break;
         }
     }
 
-    let seq = match conn.allocate_seq() {
+    let seq = match session.allocate_seq() {
         Ok(s) => s,
         Err(SessionError::SeqNumExhausted) => {
             eprintln!("initiator: sequence number exhausted; force a sequence reset");
@@ -175,11 +187,11 @@ fn run_initiator(addr: std::net::SocketAddr, dir: &Path) {
         }
     };
     let msg = new_order(seq);
-    conn.send_app(seq, &msg).unwrap();
+    session.send_app(&mut writer, seq, &msg).unwrap();
 
-    conn.logout().unwrap();
+    session.logout(&mut writer).unwrap();
     loop {
-        match conn.recv() {
+        match session.recv(&mut reader, &mut writer, &mut stream) {
             Ok(Some(_)) | Err(_) => break,
             Ok(None) => {}
         }

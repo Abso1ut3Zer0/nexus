@@ -1,19 +1,30 @@
 //! Sans-IO FIX session core.
 //!
-//! [`FixSession`] owns everything a FIX session needs *except the socket*: the
-//! frame reader/writer, the [`SessionState`] machine, the [`FixJournal`], and the
-//! [`SessionConfig`]. It never performs I/O. A wrapper (e.g.
-//! [`crate::transport::FixConnection`]) drives it by filling the inbound buffer
-//! from a socket and draining the outbound buffer to a socket.
+//! [`FixSession`] is the sans-IO *brain*: the [`SessionState`] machine, the
+//! [`FixJournal`], the [`SessionConfig`], and the resumable resend cursor. It owns
+//! no buffers and no socket. The caller holds the [`FixParts`] trio — the session
+//! plus a [`MessageReader`] (inbound bytes) and a [`MessageWriter`] (outbound
+//! bytes) — and passes the reader/writer and its transport per call.
 //!
-//! # Byte-buffer seam
+//! # Sans-IO byte seam (custom transports)
 //!
-//! Inbound: the wrapper reads socket bytes into [`read_spare`](FixSession::read_spare),
-//! commits the count with [`read_filled`](FixSession::read_filled), then calls
-//! [`poll`](FixSession::poll) to process the next buffered frame.
+//! A caller with any transport (blocking sockets, kernel bypass, io_uring) drives
+//! the whole machine without [`recv`](FixSession::recv) or any `Read`/`Write`
+//! bound:
 //!
-//! Outbound: protocol handling enqueues bytes into the writer buffer; the wrapper
-//! drains them via [`outbound`](FixSession::outbound) / [`advance_outbound`](FixSession::advance_outbound).
+//! - inbound: read transport bytes into [`reader.spare()`](MessageReader::spare),
+//!   commit with [`reader.filled(n)`](MessageReader::filled),
+//! - advance: [`session.poll(&mut reader, &mut writer)`](FixSession::poll),
+//! - decode: [`session.message(&reader)`](FixSession::message) after
+//!   [`PollOutcome::Message`],
+//! - send: the encode-only helpers ([`connect`](FixSession::connect),
+//!   [`send_app`](FixSession::send_app), …) stage bytes into `writer`,
+//! - outbound: drain [`writer.data()`](MessageWriter::data) and commit with
+//!   [`writer.advance(n)`](MessageWriter::advance).
+//!
+//! [`recv`](FixSession::recv) is a thin convenience over this seam for `Read +
+//! Write` transports; the async twin (`nexus_async_fix_engine::FixSession::recv`)
+//! is the same convenience for a [`nexus_net::WireStream`].
 //!
 //! # The poll/message split
 //!
@@ -22,10 +33,12 @@
 //! [`poll`](FixSession::poll) returns a *non-borrowing* [`PollOutcome`] after
 //! processing one frame into a stable buffer (`reader.frame`), and
 //! [`message`](FixSession::message) borrows that stable buffer to reconstruct the
-//! typed [`Message`]. The wrapper loops on `poll`, servicing
-//! [`PollOutcome::NeedMoreBytes`] (read the socket) and
-//! [`PollOutcome::ResendPending`] (drain outbound), and calls `message()` once
-//! [`PollOutcome::Message`] is returned.
+//! typed [`Message`]. The `Message` borrows the *reader*, never `&mut self`, so
+//! `&mut session` and `&mut writer` stay free for the reply while the payload is
+//! still borrowed.
+
+use core::marker::PhantomData;
+use std::io::{self, Read, Write};
 
 use nexus_fix_codec::{
     FieldReader, FixAdminMsg, FixDictionary, FixHeader, FrameFormatter, NoCustomizer,
@@ -33,7 +46,7 @@ use nexus_fix_codec::{
 };
 use nexus_journal::WriteError;
 
-use crate::frame::{FrameError, FrameWriter, MalformedReason};
+use crate::frame::{FrameError, FrameReader, FrameWriter, MalformedReason};
 use crate::framework::{
     Emitter, Message, MessageReader, MessageWriter, SessionConfig, SessionError,
 };
@@ -44,11 +57,12 @@ use crate::session::{
 };
 use crate::timestamp::UTC_TIMESTAMP_LEN;
 
-/// Error surfaced by the sans-IO session core.
+/// Error surfaced by the session.
 ///
-/// Note: unlike the wrapper, the core never performs I/O, so it never produces
-/// [`Error::Io`] on its own. The `Io` variant exists so the wrapper's `From<io::Error>`
-/// can live on this shared type (the wrapper adds the socket errors).
+/// The pure sans-IO seam ([`poll`](FixSession::poll) and the encode-only send
+/// helpers) never performs I/O, so it never produces [`Error::Io`]. The `Io`
+/// variant is produced only by the transport conveniences
+/// ([`recv`](FixSession::recv) and the async twin), which read/write the socket.
 #[derive(Debug)]
 pub enum Error {
     /// A malformed inbound frame was discarded to resync to the next `8=`
@@ -143,12 +157,12 @@ pub const REFRAME_HEADROOM: usize = 64;
 pub enum PollOutcome {
     /// A typed message is ready. Call [`FixSession::message`] to borrow it.
     Message,
-    /// No complete frame is buffered. The wrapper must read more bytes into
-    /// [`read_spare`](FixSession::read_spare) and commit with
-    /// [`read_filled`](FixSession::read_filled), then poll again.
+    /// No complete frame is buffered. The caller must read more bytes into
+    /// [`reader.spare()`](MessageReader::spare) and commit with
+    /// [`reader.filled(n)`](MessageReader::filled), then poll again.
     NeedMoreBytes,
-    /// A resend is in progress and the outbound buffer filled. The wrapper must
-    /// drain [`outbound`](FixSession::outbound) and poll again to continue it.
+    /// A resend is in progress and the outbound buffer filled. The caller must
+    /// drain [`writer.data()`](MessageWriter::data) and poll again to continue it.
     ResendPending,
     /// The frame was processed but there is nothing to surface to the application
     /// (an out-of-sequence app suppressed pending resend, or a session-level
@@ -175,17 +189,15 @@ struct ResendState {
     ts: [u8; UTC_TIMESTAMP_LEN],
 }
 
-/// Sans-IO FIX session: state machine + framing + journal, no socket.
+/// Sans-IO FIX session: the state machine + journal *brain*. No buffers, no
+/// socket.
 ///
-/// See the [module docs](self) for the byte-buffer seam and the poll/message
-/// split.
-///
-/// `C` is the per-venue [`SessionCustomizer`] applied to outbound admin
-/// messages; it defaults to [`NoCustomizer`], so plain-FIX callers write
-/// `FixSession<Fix44>` and pay nothing.
-pub struct FixSession<D: FixDictionary, C = NoCustomizer> {
-    reader: MessageReader<D>,
-    writer: MessageWriter<D, C>,
+/// The caller holds the [`FixParts`] trio — this session plus a
+/// [`MessageReader`] and a [`MessageWriter`] — and passes the reader/writer per
+/// call. See the [module docs](self) for the byte seam and the poll/message
+/// split. Build one with [`FixSession::builder`] (returns [`FixParts`]) or
+/// [`FixSession::new`] plus hand-built buffers.
+pub struct FixSession<D: FixDictionary> {
     state: SessionState,
     journal: FixJournal,
     config: SessionConfig,
@@ -196,73 +208,119 @@ pub struct FixSession<D: FixDictionary, C = NoCustomizer> {
     /// reconstructs the borrowed [`Message`] from it after a
     /// [`PollOutcome::Message`]; see [`Control`].
     pending: Control,
+    /// Set once [`recv`](Self::recv) surfaced a terminal outcome (a clean logout
+    /// or a fatal error). A subsequent `recv` returns [`Error::Closed`].
+    terminated: bool,
+    _dict: PhantomData<fn() -> D>,
 }
 
-/// Lets a [`nexus_net::WireStream`] transport fill the session's inbound buffer
-/// directly (`poll_fill_into(&mut session, …)`), skipping the intermediate
-/// `&mut [u8]` copy. Forwards to the existing byte seam:
-/// [`read_spare`](FixSession::read_spare) / [`read_filled`](FixSession::read_filled).
-impl<D: FixDictionary, C: SessionCustomizer> nexus_net::ParserSink for FixSession<D, C> {
-    #[inline]
-    fn spare(&mut self) -> &mut [u8] {
-        self.read_spare()
+/// The persistent trio a caller holds.
+///
+/// The sans-IO [`FixSession`] brain plus its [`MessageReader`] (inbound bytes) and
+/// [`MessageWriter`] (outbound bytes + venue customizer). Produced by
+/// [`FixSessionBuilder::build`]; the transport is separate and passed per call, so
+/// reconnect is "same trio, new socket."
+pub struct FixParts<D: FixDictionary, C = NoCustomizer> {
+    pub session: FixSession<D>,
+    pub reader: MessageReader<D>,
+    pub writer: MessageWriter<D, C>,
+}
+
+/// Builds a [`FixParts`] trio.
+///
+/// Sizes the reader/writer buffers and attaches an optional per-venue
+/// [`SessionCustomizer`]. The socket is the caller's to open (transport policy is
+/// not the session's concern).
+///
+/// `C` is the customizer type, defaulting to [`NoCustomizer`]; attach one with
+/// [`customizer`](Self::customizer), which changes the resulting
+/// [`MessageWriter`]'s `C`.
+pub struct FixSessionBuilder<D: FixDictionary, C = NoCustomizer> {
+    reader_cap: usize,
+    writer_cap: usize,
+    customizer: C,
+    _dict: PhantomData<fn() -> D>,
+}
+
+impl<D: FixDictionary, C> FixSessionBuilder<D, C> {
+    /// Inbound reader buffer capacity in bytes (largest single frame; default 64 KiB).
+    pub fn reader_capacity(mut self, n: usize) -> Self {
+        self.reader_cap = n;
+        self
     }
 
-    #[inline]
-    fn filled(&mut self, n: usize) {
-        self.read_filled(n);
+    /// Outbound writer buffer capacity in bytes (default 64 KiB). The largest app
+    /// frame you can [`send_app`](FixSession::send_app) is `writer_capacity` minus
+    /// [`REFRAME_HEADROOM`].
+    pub fn writer_capacity(mut self, n: usize) -> Self {
+        self.writer_cap = n;
+        self
+    }
+
+    /// Attach a per-venue [`SessionCustomizer`] — the hook that injects Logon auth
+    /// (e.g. `Username(553)`/`Password(554)`/`RawData(96)`). Changes the resulting
+    /// [`MessageWriter`]'s customizer type to `C2`.
+    pub fn customizer<C2: SessionCustomizer>(self, customizer: C2) -> FixSessionBuilder<D, C2> {
+        FixSessionBuilder {
+            reader_cap: self.reader_cap,
+            writer_cap: self.writer_cap,
+            customizer,
+            _dict: PhantomData,
+        }
     }
 }
 
-impl<D: FixDictionary> FixSession<D, NoCustomizer> {
-    /// Builds a session with default (empty) frame buffers. Prefer
-    /// [`from_buffers`](Self::from_buffers) to size the reader/writer up front.
-    pub fn new(state: SessionState, config: SessionConfig, journal: FixJournal) -> Self {
-        Self::new_with_customizer(state, config, journal, NoCustomizer)
-    }
-}
-
-impl<D: FixDictionary, C: SessionCustomizer> FixSession<D, C> {
-    /// Builds a session with default (empty) frame buffers and a per-venue
-    /// [`SessionCustomizer`].
-    pub fn new_with_customizer(
+impl<D: FixDictionary, C: SessionCustomizer> FixSessionBuilder<D, C> {
+    /// Builds the [`FixParts`] trio from the configured capacities/customizer plus
+    /// the session's `state`, `config`, and `journal`. The socket is opened
+    /// separately and passed per call.
+    pub fn build(
+        self,
         state: SessionState,
         config: SessionConfig,
         journal: FixJournal,
-        customizer: C,
-    ) -> Self {
+    ) -> FixParts<D, C> {
+        FixParts {
+            session: FixSession::new(state, config, journal),
+            reader: MessageReader::with_frame_reader(
+                FrameReader::builder()
+                    .buffer_capacity(self.reader_cap)
+                    .build(),
+            ),
+            writer: MessageWriter::with_frame_writer_and_customizer(
+                FrameWriter::builder()
+                    .buffer_capacity(self.writer_cap)
+                    .build(),
+                self.customizer,
+            ),
+        }
+    }
+}
+
+impl<D: FixDictionary> FixSession<D> {
+    /// Builds a session *brain* with no buffers. Pair it with a hand-built
+    /// [`MessageReader`] and [`MessageWriter`], or prefer
+    /// [`builder`](Self::builder) to size them and get a [`FixParts`] trio.
+    pub fn new(state: SessionState, config: SessionConfig, journal: FixJournal) -> Self {
         Self {
-            reader: MessageReader::new(),
-            writer: MessageWriter::with_customizer(customizer),
             state,
             journal,
             config,
             garbage_frames: 0,
             resend: None,
             pending: Control::None,
+            terminated: false,
+            _dict: PhantomData,
         }
     }
 
-    /// Builds a session from pre-sized reader and writer buffers.
-    ///
-    /// The writer carries the customizer; pass a
-    /// [`MessageWriter::with_frame_writer_and_customizer`] to use one.
-    pub fn from_buffers(
-        reader: MessageReader<D>,
-        writer: MessageWriter<D, C>,
-        state: SessionState,
-        config: SessionConfig,
-        journal: FixJournal,
-    ) -> Self {
-        Self {
-            reader,
-            writer,
-            state,
-            journal,
-            config,
-            garbage_frames: 0,
-            resend: None,
-            pending: Control::None,
+    /// Starts a [`FixSessionBuilder`] to configure and build a [`FixParts`] trio.
+    pub fn builder() -> FixSessionBuilder<D, NoCustomizer> {
+        FixSessionBuilder {
+            reader_cap: 64 * 1024,
+            writer_cap: 64 * 1024,
+            customizer: NoCustomizer,
+            _dict: PhantomData,
         }
     }
 
@@ -293,127 +351,114 @@ impl<D: FixDictionary, C: SessionCustomizer> FixSession<D, C> {
         self.state.state() != State::Disconnected
     }
 
-    /// Whether the outbound buffer has bytes waiting to be written.
-    pub fn wants_write(&self) -> bool {
-        !self.writer.is_empty()
+    /// Whether the session has terminated: a clean logout completed, or a fatal
+    /// error was surfaced. Once terminated, [`recv`](Self::recv) refuses further
+    /// calls until a fresh [`connect`](Self::connect)/[`connect_reset`](Self::connect_reset)
+    /// revives it.
+    pub const fn is_terminated(&self) -> bool {
+        self.terminated
+    }
+
+    /// Force the terminated flag so [`recv`](Self::recv) refuses further calls.
+    ///
+    /// **Wrapper-author API — do NOT call in normal use.** [`recv`](Self::recv)
+    /// already sets this on a clean logout or a fatal error, and
+    /// [`connect`](Self::connect)/[`connect_reset`](Self::connect_reset) clear it.
+    /// It exists solely for authors building a custom transport wrapper over the
+    /// sans-IO seam who reimplement `recv`'s terminated guard — exactly what the
+    /// async engine's `FixSession` newtype does. Ordinary session code never
+    /// touches it.
+    pub fn mark_terminated(&mut self) {
+        self.terminated = true;
     }
 
     pub fn allocate_seq(&mut self) -> Result<u32, SessionError> {
         self.state.allocate_seq()
     }
 
-    /// Writer capacity in bytes (fixed at construction).
-    pub fn writer_capacity(&self) -> usize {
-        self.writer.capacity()
-    }
+    // ── protocol actions (encode only, no I/O) ───────────────────────────────
 
-    /// Inbound reader buffer capacity in bytes (fixed at construction).
-    ///
-    /// The largest single frame the reader can buffer. A wrapper reports this as
-    /// the size in [`Error::MessageTooLarge`] when [`read_spare`](Self::read_spare)
-    /// returns an empty slice — the buffer is full with one incomplete frame that
-    /// cannot grow.
-    pub fn reader_capacity(&self) -> usize {
-        self.reader.inner.capacity()
-    }
-
-    // ── inbound byte-buffer seam ─────────────────────────────────────────────
-
-    /// Spare region of the inbound buffer for the wrapper to read socket bytes
-    /// into. Commit the number actually read with [`read_filled`](Self::read_filled).
-    ///
-    /// Compacts on the usual `should_compact()` threshold, but *also* whenever the
-    /// buffer is full (`remaining() == 0`) even below that threshold. Without the
-    /// full-buffer case a buffer that is full but <50% consumed would return an
-    /// empty spare slice; the wrapper's `stream.read(&mut [])` then returns
-    /// `Ok(0)` and is misread as EOF/disconnect. Compacting reclaims all consumed
-    /// space, so the spare is non-empty whenever there is anything to reclaim. If
-    /// nothing is reclaimable (a single incomplete frame already fills the whole
-    /// buffer) the spare stays empty, and the wrapper turns that into
-    /// [`Error::MessageTooLarge`] rather than reading into a zero-length slice.
-    pub fn read_spare(&mut self) -> &mut [u8] {
-        if self.reader.inner.should_compact() || self.reader.inner.remaining() == 0 {
-            self.reader.inner.compact();
-        }
-        self.reader.inner.spare()
-    }
-
-    /// Commit `n` bytes read into [`read_spare`](Self::read_spare).
-    pub fn read_filled(&mut self, n: usize) {
-        self.reader.inner.filled(n);
-    }
-
-    // ── outbound byte-buffer seam ────────────────────────────────────────────
-
-    pub fn has_outbound(&self) -> bool {
-        !self.writer.is_empty()
-    }
-
-    pub fn outbound(&self) -> &[u8] {
-        self.writer.data()
-    }
-
-    pub fn advance_outbound(&mut self, n: usize) {
-        self.writer.advance(n);
-    }
-
-    // ── protocol actions (enqueue only, no I/O) ──────────────────────────────
-
-    /// Enqueues a Logon (initiate the session). Outbound bytes land in the writer
-    /// buffer; the wrapper drains them.
-    pub fn connect(&mut self) -> Result<(), Error> {
-        let mut emitter = journaling_emitter(&mut self.writer, &mut self.journal, &self.config);
+    /// Enqueues a Logon (initiate the session) into `writer`. Encode-only: drain
+    /// the bytes yourself via [`writer.data()`](MessageWriter::data), or let
+    /// [`recv`](Self::recv) flush them.
+    pub fn connect<C: SessionCustomizer>(
+        &mut self,
+        writer: &mut MessageWriter<D, C>,
+    ) -> Result<(), Error> {
+        // A fresh connection revives a session that terminated (clean logout or
+        // fatal error), so the same carry-over session can reconnect.
+        self.terminated = false;
+        let mut emitter = journaling_emitter(writer, &mut self.journal, &self.config);
         self.state.connect(&mut emitter)?;
         Ok(())
     }
 
-    /// Enqueues a Logon with `ResetSeqNumFlag=Y`.
-    pub fn connect_reset(&mut self) -> Result<(), Error> {
-        let mut emitter = journaling_emitter(&mut self.writer, &mut self.journal, &self.config);
+    /// Enqueues a Logon with `ResetSeqNumFlag=Y` into `writer`.
+    pub fn connect_reset<C: SessionCustomizer>(
+        &mut self,
+        writer: &mut MessageWriter<D, C>,
+    ) -> Result<(), Error> {
+        self.terminated = false;
+        let mut emitter = journaling_emitter(writer, &mut self.journal, &self.config);
         self.state.connect_reset(&mut emitter)?;
         Ok(())
     }
 
-    /// Enqueues an in-session sequence reset handshake.
-    pub fn reset_sequence(&mut self) -> Result<(), Error> {
-        let mut emitter = journaling_emitter(&mut self.writer, &mut self.journal, &self.config);
+    /// Enqueues an in-session sequence reset handshake into `writer`.
+    pub fn reset_sequence<C: SessionCustomizer>(
+        &mut self,
+        writer: &mut MessageWriter<D, C>,
+    ) -> Result<(), Error> {
+        let mut emitter = journaling_emitter(writer, &mut self.journal, &self.config);
         self.state.reset_sequence(&mut emitter)?;
         Ok(())
     }
 
-    /// Enqueues a Logout.
-    pub fn logout(&mut self) -> Result<(), Error> {
-        let mut emitter = journaling_emitter(&mut self.writer, &mut self.journal, &self.config);
+    /// Enqueues a Logout into `writer`.
+    pub fn logout<C: SessionCustomizer>(
+        &mut self,
+        writer: &mut MessageWriter<D, C>,
+    ) -> Result<(), Error> {
+        let mut emitter = journaling_emitter(writer, &mut self.journal, &self.config);
         self.state.logout(&mut emitter)?;
         Ok(())
     }
 
-    /// Journals then enqueues an application frame at sequence `seq`.
+    /// Journals then enqueues an application frame at sequence `seq` into `writer`.
     ///
     /// The frame must fit the pre-allocated writer with [`REFRAME_HEADROOM`] to
     /// spare (so a later resend reframe fits). Larger frames return
     /// [`Error::MessageTooLarge`] before any journal or buffer write; size the
     /// writer up front for the workload.
-    pub fn send_app(&mut self, seq: u32, frame: &[u8]) -> Result<(), Error> {
-        if frame.len() > self.writer.capacity().saturating_sub(REFRAME_HEADROOM) {
+    pub fn send_app<C>(
+        &mut self,
+        writer: &mut MessageWriter<D, C>,
+        seq: u32,
+        frame: &[u8],
+    ) -> Result<(), Error> {
+        if frame.len() > writer.capacity().saturating_sub(REFRAME_HEADROOM) {
             return Err(Error::MessageTooLarge(frame.len()));
         }
         journal_write(frame.len(), || self.journal.store(seq, frame))?;
-        buffer_frame(&mut self.writer.inner, frame)
+        buffer_frame(&mut writer.inner, frame)
     }
 
     // ── inbound processing ───────────────────────────────────────────────────
 
-    /// Processes the next buffered inbound frame, driving the state machine,
-    /// journaling, and enqueuing any outbound admin. Returns a non-borrowing
-    /// [`PollOutcome`]; call [`message`](Self::message) after
-    /// [`PollOutcome::Message`].
+    /// Processes the next buffered inbound frame in `reader`, driving the state
+    /// machine, journaling, and enqueuing any outbound admin into `writer`.
+    /// Returns a non-borrowing [`PollOutcome`]; call
+    /// [`message`](Self::message) after [`PollOutcome::Message`].
     ///
-    /// See the [module docs](self) for the wrapper's poll loop.
-    pub fn poll(&mut self) -> Result<PollOutcome, Error> {
+    /// See the [module docs](self) for the poll loop.
+    pub fn poll<C: SessionCustomizer>(
+        &mut self,
+        reader: &mut MessageReader<D>,
+        writer: &mut MessageWriter<D, C>,
+    ) -> Result<PollOutcome, Error> {
         // Resume an in-progress resend before touching new inbound.
         if self.resend.is_some() {
-            if self.drive_resend()? {
+            if self.drive_resend(writer)? {
                 return Ok(PollOutcome::ResendPending);
             }
             // Resend finished: surface the ResendRequest that triggered it.
@@ -431,10 +476,10 @@ impl<D: FixDictionary, C: SessionCustomizer> FixSession<D, C> {
         // is surfaced as the recoverable `Error::Malformed` (one per poll) rather
         // than silently skipped, so the caller can observe link deterioration; the
         // reader has already advanced past it, so the next poll resumes cleanly.
-        if self.reader.inner.should_compact() {
-            self.reader.inner.compact();
+        if reader.inner.should_compact() {
+            reader.inner.compact();
         }
-        match self.reader.inner.next() {
+        match reader.inner.next() {
             Err(FrameError::MessageTooLarge { size }) => {
                 return Err(Error::MessageTooLarge(size));
             }
@@ -448,21 +493,23 @@ impl<D: FixDictionary, C: SessionCustomizer> FixSession<D, C> {
             }
             Ok(None) => return Ok(PollOutcome::NeedMoreBytes),
             Ok(Some(raw)) => {
-                self.reader.frame.clear();
-                self.reader.frame.extend_from_slice(raw);
+                reader.frame.clear();
+                reader.frame.extend_from_slice(raw);
             }
         }
 
-        self.process_frame()
+        self.process_frame(reader, writer)
     }
 
     /// Reconstructs the typed [`Message`] for the frame just processed by
     /// [`poll`](Self::poll). Only valid immediately after a [`PollOutcome::Message`]
     /// or a [`PollOutcome::LoggedOut`] (which maps to `Message::LoggedOut`); an
     /// abnormal [`PollOutcome::Disconnected`] is surfaced as an `Err`, never here.
-    /// The borrow is over the stable frame buffer.
-    pub fn message(&self) -> Message<'_, D> {
-        let frame = &self.reader.frame[..];
+    ///
+    /// The borrow is over the `reader`'s stable frame buffer — *not* `&mut self` —
+    /// so `&mut session` and `&mut writer` stay free for the reply.
+    pub fn message<'r>(&self, reader: &'r MessageReader<D>) -> Message<'r, D> {
+        let frame = &reader.frame[..];
         match self.pending {
             Control::Logon { acknowledged } => {
                 let msg = D::Logon::decode(frame).expect("frame decoded in poll");
@@ -512,11 +559,15 @@ impl<D: FixDictionary, C: SessionCustomizer> FixSession<D, C> {
         }
     }
 
-    /// Full protocol handling for the frame in `reader.frame`. Mirrors the
-    /// original `recv` body: comp-id validation, inbound journaling, per-type
-    /// state driving, and outbound admin/resend enqueue.
-    fn process_frame(&mut self) -> Result<PollOutcome, Error> {
-        let frame = &self.reader.frame[..];
+    /// Full protocol handling for the frame in `reader.frame`. Comp-id
+    /// validation, inbound journaling, per-type state driving, and outbound
+    /// admin/resend enqueue into `writer`.
+    fn process_frame<C: SessionCustomizer>(
+        &mut self,
+        reader: &MessageReader<D>,
+        writer: &mut MessageWriter<D, C>,
+    ) -> Result<PollOutcome, Error> {
+        let frame = &reader.frame[..];
 
         let (sender_ok, target_ok, seq, poss_dup) = {
             let hdr = D::Header::decode(frame);
@@ -544,8 +595,7 @@ impl<D: FixDictionary, C: SessionCustomizer> FixSession<D, C> {
 
         if !sender_ok || !target_ok {
             {
-                let mut emitter =
-                    journaling_emitter(&mut self.writer, &mut self.journal, &self.config);
+                let mut emitter = journaling_emitter(writer, &mut self.journal, &self.config);
                 self.state.on_comp_id_mismatch(&mut emitter)?;
             }
             // Always surface CompIdMismatch here, mirroring the original driver:
@@ -560,14 +610,14 @@ impl<D: FixDictionary, C: SessionCustomizer> FixSession<D, C> {
         // not journaled — they never reach here.
         journal_write(frame.len(), || self.journal.store_inbound(frame))?;
 
-        let frame = &self.reader.frame[..];
+        let frame = &reader.frame[..];
         let raw_type = if let Some(s) = find_tag(frame, 0, 35) {
             s.slice(frame)
         } else {
             // The missing-tag-35 reject is NOT journaled (matches the original):
             // this call site gives the `Emitter` a no-op `after` closure, while
             // every other site uses the journaling emitter.
-            let mut emitter = Emitter::new(&mut self.writer, &self.config, |_seq, _frame| Ok(()));
+            let mut emitter = Emitter::new(writer, &self.config, |_seq, _frame| Ok(()));
             self.state.on_reject_inbound(
                 RejectInboundIn {
                     seq,
@@ -600,8 +650,7 @@ impl<D: FixDictionary, C: SessionCustomizer> FixSession<D, C> {
                     .unwrap_or(false);
                 let was_logon_sent = self.state.state() == State::LogonSent;
                 let ctrl = {
-                    let mut emitter =
-                        journaling_emitter(&mut self.writer, &mut self.journal, &self.config);
+                    let mut emitter = journaling_emitter(writer, &mut self.journal, &self.config);
                     self.state.on_logon(
                         LogonIn {
                             seq,
@@ -619,8 +668,7 @@ impl<D: FixDictionary, C: SessionCustomizer> FixSession<D, C> {
                 D::Logout::decode(frame)
                     .map_err(|_| Error::Protocol(SessionError::MalformedMessage))?;
                 let ctrl = {
-                    let mut emitter =
-                        journaling_emitter(&mut self.writer, &mut self.journal, &self.config);
+                    let mut emitter = journaling_emitter(writer, &mut self.journal, &self.config);
                     self.state.on_logout(
                         LogoutIn {
                             seq,
@@ -638,8 +686,7 @@ impl<D: FixDictionary, C: SessionCustomizer> FixSession<D, C> {
                 let echo_id =
                     find_tag(frame, 0, 112).and_then(|s| parse_fix_seqnum(s.slice(frame)).ok());
                 let ctrl = {
-                    let mut emitter =
-                        journaling_emitter(&mut self.writer, &mut self.journal, &self.config);
+                    let mut emitter = journaling_emitter(writer, &mut self.journal, &self.config);
                     self.state.on_heartbeat(
                         HeartbeatIn {
                             echo_id,
@@ -658,8 +705,7 @@ impl<D: FixDictionary, C: SessionCustomizer> FixSession<D, C> {
                 let test_req_id =
                     find_tag(frame, 0, 112).map_or_else(|| b"".as_ref(), |s| s.slice(frame));
                 let ctrl = {
-                    let mut emitter =
-                        journaling_emitter(&mut self.writer, &mut self.journal, &self.config);
+                    let mut emitter = journaling_emitter(writer, &mut self.journal, &self.config);
                     self.state.on_test_request(
                         TestRequestIn {
                             test_req_id,
@@ -682,8 +728,7 @@ impl<D: FixDictionary, C: SessionCustomizer> FixSession<D, C> {
                     .and_then(|s| parse_fix_seqnum(s.slice(frame)).ok())
                     .map_or(0, |v| v as u32);
                 let ctrl = {
-                    let mut emitter =
-                        journaling_emitter(&mut self.writer, &mut self.journal, &self.config);
+                    let mut emitter = journaling_emitter(writer, &mut self.journal, &self.config);
                     self.state.on_resend_request(
                         ResendRequestIn {
                             seq,
@@ -703,7 +748,7 @@ impl<D: FixDictionary, C: SessionCustomizer> FixSession<D, C> {
                             end.min(self.state.next_outbound_seq().saturating_sub(1))
                         };
                         self.begin_resend(begin, re);
-                        if self.drive_resend()? {
+                        if self.drive_resend(writer)? {
                             // Buffer filled mid-resend: wrapper drains, re-polls.
                             return Ok(PollOutcome::ResendPending);
                         }
@@ -724,8 +769,7 @@ impl<D: FixDictionary, C: SessionCustomizer> FixSession<D, C> {
                     .and_then(|s| parse_fix_bool(s.slice(frame)).ok())
                     .unwrap_or(false);
                 let ctrl = {
-                    let mut emitter =
-                        journaling_emitter(&mut self.writer, &mut self.journal, &self.config);
+                    let mut emitter = journaling_emitter(writer, &mut self.journal, &self.config);
                     self.state.on_sequence_reset(
                         SequenceResetIn {
                             seq,
@@ -743,8 +787,7 @@ impl<D: FixDictionary, C: SessionCustomizer> FixSession<D, C> {
                 D::Reject::decode(frame)
                     .map_err(|_| Error::Protocol(SessionError::MalformedMessage))?;
                 let ctrl = {
-                    let mut emitter =
-                        journaling_emitter(&mut self.writer, &mut self.journal, &self.config);
+                    let mut emitter = journaling_emitter(writer, &mut self.journal, &self.config);
                     self.state.on_reject(
                         RejectIn {
                             seq,
@@ -757,8 +800,7 @@ impl<D: FixDictionary, C: SessionCustomizer> FixSession<D, C> {
             }
             _ => {
                 let ctrl = {
-                    let mut emitter =
-                        journaling_emitter(&mut self.writer, &mut self.journal, &self.config);
+                    let mut emitter = journaling_emitter(writer, &mut self.journal, &self.config);
                     self.state.on_app(
                         AppIn {
                             seq,
@@ -818,14 +860,14 @@ impl<D: FixDictionary, C: SessionCustomizer> FixSession<D, C> {
     /// buffer and retried the *same whole item* into an empty buffer on overflow;
     /// resuming at item granularity reproduces that exact wire output without
     /// splitting an item.
-    fn drive_resend(&mut self) -> Result<bool, Error> {
+    fn drive_resend<C>(&mut self, writer: &mut MessageWriter<D, C>) -> Result<bool, Error> {
         let rs = self
             .resend
             .expect("drive_resend with no resend in progress");
         let mut encoded = rs.drained;
         for item in self.journal.resend(rs.begin, rs.end).skip(rs.drained) {
             let ok = encode_resend_item(
-                &mut self.writer.inner,
+                &mut writer.inner,
                 &item,
                 &self.config,
                 &rs.ts,
@@ -836,10 +878,10 @@ impl<D: FixDictionary, C: SessionCustomizer> FixSession<D, C> {
                 // `send_app`'s headroom guarantees the item fits an *empty*
                 // buffer; if the buffer is already empty and it still fails, the
                 // writer is sized too small — a configuration error.
-                if self.writer.is_empty() {
+                if writer.is_empty() {
                     self.resend = None;
                     return Err(Error::MessageTooLarge(
-                        self.writer.inner.remaining().saturating_add(1),
+                        writer.inner.remaining().saturating_add(1),
                     ));
                 }
                 self.resend = Some(ResendState {
@@ -853,6 +895,135 @@ impl<D: FixDictionary, C: SessionCustomizer> FixSession<D, C> {
         self.resend = None;
         Ok(false)
     }
+
+    // ── transport convenience (blocking `Read + Write`) ──────────────────────
+
+    /// Receives the next typed [`Message`] over a blocking `Read + Write`
+    /// transport — the thin convenience over the sans-IO seam.
+    ///
+    /// Fills `reader` from `conn`, drives [`poll`](Self::poll), drains any
+    /// outbound (auto-emit, resend) from `writer` to `conn`, and returns the
+    /// message. `Ok(None)` means a step produced nothing to surface (an
+    /// out-of-sequence app, a session-level reject, or a caller-set socket read
+    /// timeout elapsing with no complete frame — run your own liveness timers and
+    /// call `recv` again).
+    ///
+    /// The returned `Message<'r>` borrows `reader`, *not* `&mut self`, so `&mut
+    /// session` and `&mut writer` stay free for the reply while the payload is
+    /// still borrowed. A caller that needs no `Read + Write` bound drives the seam
+    /// directly (`poll`/`message` + the byte methods) instead.
+    pub fn recv<'r, C, S>(
+        &mut self,
+        reader: &'r mut MessageReader<D>,
+        writer: &mut MessageWriter<D, C>,
+        conn: &mut S,
+    ) -> Result<Option<Message<'r, D>>, Error>
+    where
+        C: SessionCustomizer,
+        S: Read + Write,
+    {
+        if self.terminated {
+            return Err(Error::Closed);
+        }
+        // `recv_step` returns an *owned* outcome so this dispatch can arm the
+        // terminated guard — on a clean logout or any fatal error — before
+        // borrowing `reader` to reconstruct the message.
+        match self.recv_step(reader, writer, conn) {
+            Ok(RecvStep::Message) => Ok(Some(self.message(reader))),
+            Ok(RecvStep::LoggedOut) => {
+                self.terminated = true;
+                Ok(Some(self.message(reader)))
+            }
+            Ok(RecvStep::Nothing) => Ok(None),
+            Err(e) => {
+                if e.is_fatal() {
+                    self.terminated = true;
+                }
+                Err(e)
+            }
+        }
+    }
+
+    /// Advances one step over a blocking transport, returning an *owned*
+    /// [`RecvStep`]. Fills `reader` from `conn` on `NeedMoreBytes` and drains
+    /// `writer` to `conn` after every `poll`.
+    fn recv_step<C, S>(
+        &mut self,
+        reader: &mut MessageReader<D>,
+        writer: &mut MessageWriter<D, C>,
+        conn: &mut S,
+    ) -> Result<RecvStep, Error>
+    where
+        C: SessionCustomizer,
+        S: Read + Write,
+    {
+        loop {
+            let outcome = self.poll(reader, writer)?;
+            // Drain any admin/resend the core enqueued this step (mirrors the
+            // original driver, which flushed after every protocol handler). Also
+            // flushes a pending opening Logon / `send_app` staged before `recv`.
+            writer.flush_to(conn).map_err(Error::Io)?;
+
+            match outcome {
+                PollOutcome::Message => return Ok(RecvStep::Message),
+                PollOutcome::LoggedOut => return Ok(RecvStep::LoggedOut),
+                // Abnormal drop: a fault, surfaced as an error, not a message.
+                PollOutcome::Disconnected(reason) => {
+                    return Err(Error::UnexpectedDisconnect { reason });
+                }
+                PollOutcome::Suppressed => return Ok(RecvStep::Nothing),
+                // Buffer already drained above; loop to continue the resend.
+                PollOutcome::ResendPending => {}
+                PollOutcome::NeedMoreBytes => {
+                    // An empty spare means the reader buffer is full with a single
+                    // incomplete frame that cannot grow (compaction reclaimed
+                    // nothing). Reading into a zero-length slice yields `Ok(0)`,
+                    // which the `Ok(0)` arm below would misread as EOF. Surface it
+                    // as the real cause: a frame larger than the reader buffer.
+                    if reader.spare().is_empty() {
+                        return Err(Error::MessageTooLarge(reader.capacity().saturating_add(1)));
+                    }
+                    let spare = reader.spare();
+                    match conn.read(spare) {
+                        // Peer closed the transport (FIN) without a FIX Logout.
+                        Ok(0) => {
+                            return Err(Error::UnexpectedDisconnect {
+                                reason: DisconnectReason::PeerClosed,
+                            });
+                        }
+                        Ok(n) => reader.filled(n),
+                        // A caller-set socket read timeout elapsed with no complete
+                        // frame. The session holds no timers, so there is nothing to
+                        // service — yield control so the caller can run its own
+                        // heartbeat/liveness timers, then call `recv` again.
+                        Err(e) if is_timeout(&e) => return Ok(RecvStep::Nothing),
+                        Err(e) => return Err(Error::Io(e)),
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// Owned outcome of one [`FixSession::recv_step`], so [`FixSession::recv`] can arm
+/// the terminated guard before borrowing `reader` to reconstruct the message.
+enum RecvStep {
+    /// A typed message is ready; call [`FixSession::message`].
+    Message,
+    /// A clean, negotiated logout ended the session.
+    LoggedOut,
+    /// Nothing to surface this step (a suppressed frame, or a read timeout with no
+    /// complete frame buffered); `recv` returns `Ok(None)`.
+    Nothing,
+}
+
+/// Whether a socket error is a read timeout (`TimedOut`/`WouldBlock`): a
+/// caller-set read timeout elapsed, not a fault.
+fn is_timeout(e: &io::Error) -> bool {
+    matches!(
+        e.kind(),
+        io::ErrorKind::TimedOut | io::ErrorKind::WouldBlock
+    )
 }
 
 /// Write to the journal, retrying on transient standby backpressure.
@@ -1033,7 +1204,7 @@ mod tests {
     use crate::frame::{FrameReader, FrameWriter};
     use crate::framework::{CompId, Message, MessageReader, MessageWriter, SessionConfig};
     use crate::persist::FixJournal;
-    use crate::session::{Emit, LogonIn, SessionState};
+    use crate::session::{Emit, LogonIn, SessionState, State};
 
     /// A discarding [`Emit`]: drops every emitted admin. These rig helpers
     /// drive the raw `SessionState` only to advance sequence numbers before
@@ -1225,13 +1396,51 @@ mod tests {
     const HOLE_A: u32 = 10;
     const HOLE_B: u32 = 20;
 
-    /// Build an `Active` session whose outbound journal holds app frames for
+    /// Test bundle over the three-object API: the sans-IO `FixSession` brain plus
+    /// its caller-held `reader`/`writer`. The thin methods forward to
+    /// `session.poll(&mut reader, &mut writer)` / `session.message(&reader)` and
+    /// the reader/writer byte seam, so a test body reads like the pre-un-nesting
+    /// one-object form while exercising the split API underneath.
+    struct Rig<D: FixDictionary> {
+        session: FixSession<D>,
+        reader: MessageReader<D>,
+        writer: MessageWriter<D>,
+    }
+
+    impl<D: FixDictionary> Rig<D> {
+        fn read_spare(&mut self) -> &mut [u8] {
+            self.reader.spare()
+        }
+        fn read_filled(&mut self, n: usize) {
+            self.reader.filled(n);
+        }
+        fn outbound(&self) -> &[u8] {
+            self.writer.data()
+        }
+        fn advance_outbound(&mut self, n: usize) {
+            self.writer.advance(n);
+        }
+        fn has_outbound(&self) -> bool {
+            !self.writer.is_empty()
+        }
+        fn poll(&mut self) -> Result<PollOutcome, super::Error> {
+            self.session.poll(&mut self.reader, &mut self.writer)
+        }
+        fn message(&self) -> Message<'_, D> {
+            self.session.message(&self.reader)
+        }
+        fn send_app(&mut self, seq: u32, frame: &[u8]) -> Result<(), super::Error> {
+            self.session.send_app(&mut self.writer, seq, frame)
+        }
+    }
+
+    /// Build an `Active` [`Rig`] whose outbound journal holds app frames for
     /// seqs `1..=N` except `HOLE_A`/`HOLE_B`, ready to receive a ResendRequest.
     ///
     /// `writer_cap` sizes only the outbound writer — the shared journal content
     /// is byte-identical across runs, so the two resends differ only in the
     /// resend `SendingTime` (normalized away by the oracle).
-    fn build_session(dir: &Path, writer_cap: usize) -> FixSession<MockDict> {
+    fn build_session(dir: &Path, writer_cap: usize) -> Rig<MockDict> {
         let reader = MessageReader::with_frame_reader(FrameReader::builder().build());
         let writer = MessageWriter::with_frame_writer(
             FrameWriter::builder().buffer_capacity(writer_cap).build(),
@@ -1246,9 +1455,7 @@ mod tests {
         state.reset_seq_nums(N + 1, 2);
 
         let journal = FixJournal::open(dir, 0, 256).unwrap();
-        let mut session = FixSession::from_buffers(
-            reader,
-            writer,
+        let session = FixSession::new(
             state,
             SessionConfig {
                 sender: our_id(),
@@ -1256,6 +1463,11 @@ mod tests {
             },
             journal,
         );
+        let mut rig = Rig {
+            session,
+            reader,
+            writer,
+        };
 
         // Store the app messages. `send_app` also stages the frame in the writer;
         // drain it so only the later resend output is captured.
@@ -1265,15 +1477,12 @@ mod tests {
                 continue; // interior hole → gap-fill on resend
             }
             let len = app_frame(seq, &mut buf);
-            session.send_app(seq, &buf[..len]).unwrap();
-            let n = session.outbound().len();
-            session.advance_outbound(n);
+            rig.send_app(seq, &buf[..len]).unwrap();
+            let n = rig.outbound().len();
+            rig.advance_outbound(n);
         }
-        assert!(
-            !session.has_outbound(),
-            "writer must be drained before resend"
-        );
-        session
+        assert!(!rig.has_outbound(), "writer must be drained before resend");
+        rig
     }
 
     /// Drive a ResendRequest for `[1, N]` to completion, concatenating every
@@ -1283,23 +1492,23 @@ mod tests {
     /// `drive_resend` sees a freshly auto-reset (full-capacity) buffer — exactly
     /// the "flush the buffer, retry the item into an empty buffer" contract the
     /// resumable path replaced.
-    fn drive_resend_stream(session: &mut FixSession<MockDict>) -> (Vec<u8>, usize) {
+    fn drive_resend_stream(rig: &mut Rig<MockDict>) -> (Vec<u8>, usize) {
         let mut req = vec![0u8; 256];
         let len = resend_request_frame(2, 1, N, &mut req);
-        let spare = session.read_spare();
+        let spare = rig.read_spare();
         spare[..len].copy_from_slice(&req[..len]);
-        session.read_filled(len);
+        rig.read_filled(len);
 
         let mut stream = Vec::new();
         let mut pending = 0usize;
         loop {
-            let outcome = session.poll().expect("poll");
+            let outcome = rig.poll().expect("poll");
             // Drain everything currently staged, then decide.
-            while session.has_outbound() {
-                let data = session.outbound();
+            while rig.has_outbound() {
+                let data = rig.outbound();
                 stream.extend_from_slice(data);
                 let n = data.len();
-                session.advance_outbound(n);
+                rig.advance_outbound(n);
             }
             match outcome {
                 PollOutcome::ResendPending => pending += 1,
@@ -1583,19 +1792,21 @@ mod tests {
         state.connect(&mut NullEmitter).unwrap();
 
         let journal = FixJournal::open(dir.path(), 0, 256).unwrap();
-        let mut session: FixSession<StrictDict> = FixSession::from_buffers(
+        let mut rig: Rig<StrictDict> = Rig {
+            session: FixSession::new(
+                state,
+                SessionConfig {
+                    sender: our_id(),
+                    target: peer_id(),
+                },
+                journal,
+            ),
             reader,
             writer,
-            state,
-            SessionConfig {
-                sender: our_id(),
-                target: peer_id(),
-            },
-            journal,
-        );
+        };
         // Drain the opening Logon the engine staged so only inbound is exercised.
-        let n = session.outbound().len();
-        session.advance_outbound(n);
+        let n = rig.outbound().len();
+        rig.advance_outbound(n);
 
         // Sanity: the *same* frame WITH tag 108 decodes and surfaces as a Message
         // (guards against the frame being rejected for an unrelated reason).
@@ -1608,26 +1819,28 @@ mod tests {
             let mut state = SessionState::new(Duration::from_secs(30));
             state.connect(&mut NullEmitter).unwrap();
             let journal = FixJournal::open(dir_ok.path(), 0, 256).unwrap();
-            let mut ok_session: FixSession<StrictDict> = FixSession::from_buffers(
+            let mut ok_rig: Rig<StrictDict> = Rig {
+                session: FixSession::new(
+                    state,
+                    SessionConfig {
+                        sender: our_id(),
+                        target: peer_id(),
+                    },
+                    journal,
+                ),
                 reader,
                 writer,
-                state,
-                SessionConfig {
-                    sender: our_id(),
-                    target: peer_id(),
-                },
-                journal,
-            );
-            let n = ok_session.outbound().len();
-            ok_session.advance_outbound(n);
+            };
+            let n = ok_rig.outbound().len();
+            ok_rig.advance_outbound(n);
 
             let mut buf = vec![0u8; 256];
             let len = peer_logon_frame(1, true, &mut buf);
-            let spare = ok_session.read_spare();
+            let spare = ok_rig.read_spare();
             spare[..len].copy_from_slice(&buf[..len]);
-            ok_session.read_filled(len);
+            ok_rig.read_filled(len);
             assert_eq!(
-                ok_session.poll().expect("valid Logon must not error"),
+                ok_rig.poll().expect("valid Logon must not error"),
                 PollOutcome::Message,
                 "a well-formed Logon (with tag 108) must surface as a Message"
             );
@@ -1636,19 +1849,19 @@ mod tests {
         // The malformed Logon: missing HeartBtInt(108) → typed decode fails.
         let mut buf = vec![0u8; 256];
         let len = peer_logon_frame(1, false, &mut buf);
-        let spare = session.read_spare();
+        let spare = rig.read_spare();
         spare[..len].copy_from_slice(&buf[..len]);
-        session.read_filled(len);
+        rig.read_filled(len);
 
-        // Drive poll → message exactly as the wrapper's `recv` does. WITH the fix,
-        // `poll` returns the error before ever yielding `Message`, so `message()`
-        // is never reached. WITHOUT the fix, `poll` yields `Message` and the
-        // `message()` call below panics on `.expect("frame decoded in poll")` —
-        // this call is what makes the regression observable end-to-end.
-        match session.poll() {
+        // Drive poll → message exactly as `recv` does. WITH the fix, `poll` returns
+        // the error before ever yielding `Message`, so `message()` is never
+        // reached. WITHOUT the fix, `poll` yields `Message` and the `message()`
+        // call below panics on `.expect("frame decoded in poll")` — this call is
+        // what makes the regression observable end-to-end.
+        match rig.poll() {
             Err(super::Error::Protocol(SessionError::MalformedMessage)) => {}
             Ok(PollOutcome::Message) => {
-                let _ = session.message(); // panics without the fix
+                let _ = rig.message(); // panics without the fix
                 panic!("malformed admin surfaced as a Message instead of an error");
             }
             other => {
@@ -1713,26 +1926,28 @@ mod tests {
         establish_state(&mut state);
 
         let journal = FixJournal::open(dir.path(), 0, 256).unwrap();
-        let mut session: FixSession<MockDict> = FixSession::from_buffers(
+        let mut rig: Rig<MockDict> = Rig {
+            session: FixSession::new(
+                state,
+                SessionConfig {
+                    sender: our_id(),
+                    target: peer_id(),
+                },
+                journal,
+            ),
             reader,
             writer,
-            state,
-            SessionConfig {
-                sender: our_id(),
-                target: peer_id(),
-            },
-            journal,
-        );
+        };
 
         // Inbound seq 2 matches `next_inbound`, so `validate_seq` proceeds to the
         // reject emit rather than gap-filling or disconnecting.
         let mut buf = vec![0u8; 256];
         let len = peer_frame_without_msg_type(2, &mut buf);
-        let spare = session.read_spare();
+        let spare = rig.read_spare();
         spare[..len].copy_from_slice(&buf[..len]);
-        session.read_filled(len);
+        rig.read_filled(len);
 
-        match session.poll() {
+        match rig.poll() {
             Err(super::Error::MessageTooLarge(_)) => {}
             other => panic!(
                 "missing-tag-35 reject that overflows the writer must surface \
@@ -1761,9 +1976,9 @@ mod tests {
         len
     }
 
-    /// Build an Active session (post-logon, `next_inbound == 2`) with the given
+    /// Build an Active [`Rig`] (post-logon, `next_inbound == 2`) with the given
     /// reader capacity, ready to receive inbound app frames.
-    fn active_session(dir: &Path, reader_cap: usize) -> FixSession<MockDict> {
+    fn active_session(dir: &Path, reader_cap: usize) -> Rig<MockDict> {
         let reader = MessageReader::with_frame_reader(
             FrameReader::builder().buffer_capacity(reader_cap).build(),
         );
@@ -1772,19 +1987,21 @@ mod tests {
         let mut state = SessionState::new(Duration::from_secs(30));
         establish_state(&mut state); // peer Logon at seq 1 → Active, next_inbound = 2
         let journal = FixJournal::open(dir, 0, 256).unwrap();
-        let mut session = FixSession::from_buffers(
+        let mut rig = Rig {
+            session: FixSession::new(
+                state,
+                SessionConfig {
+                    sender: our_id(),
+                    target: peer_id(),
+                },
+                journal,
+            ),
             reader,
             writer,
-            state,
-            SessionConfig {
-                sender: our_id(),
-                target: peer_id(),
-            },
-            journal,
-        );
-        let n = session.outbound().len();
-        session.advance_outbound(n); // drain the engine's opening Logon
-        session
+        };
+        let n = rig.outbound().len();
+        rig.advance_outbound(n); // drain the engine's opening Logon
+        rig
     }
 
     /// Fix B: when the reader buffer is full but consumed below the compaction
@@ -1798,7 +2015,7 @@ mod tests {
 
         // Reader cap 512 → compact threshold at 256 bytes consumed.
         const READER_CAP: usize = 512;
-        let mut session = active_session(dir.path(), READER_CAP);
+        let mut rig = active_session(dir.path(), READER_CAP);
 
         // Small app (seq 2): once consumed it leaves < 256 bytes behind, so the
         // buffer will be "full but below the compaction threshold" after we top
@@ -1827,11 +2044,11 @@ mod tests {
         );
 
         // 1) Deliver the small frame.
-        let spare = session.read_spare();
+        let spare = rig.read_spare();
         spare[..small_len].copy_from_slice(&small[..small_len]);
-        session.read_filled(small_len);
+        rig.read_filled(small_len);
         assert_eq!(
-            session.poll().expect("poll small"),
+            rig.poll().expect("poll small"),
             PollOutcome::Message,
             "small app must surface"
         );
@@ -1840,14 +2057,14 @@ mod tests {
         //    small frame's bytes are now consumed (< threshold) and the buffer is
         //    full: should_compact() is false, remaining() is 0.
         let head = READER_CAP - small_len;
-        let spare = session.read_spare();
+        let spare = rig.read_spare();
         let take = head.min(spare.len());
         spare[..take].copy_from_slice(&large[..take]);
-        session.read_filled(take);
+        rig.read_filled(take);
 
         // The frame is still incomplete → NeedMoreBytes.
         assert_eq!(
-            session.poll().expect("poll large head"),
+            rig.poll().expect("poll large head"),
             PollOutcome::NeedMoreBytes,
             "partial large frame must ask for more"
         );
@@ -1855,7 +2072,7 @@ mod tests {
         // 3) The fix: read_spare must be NON-EMPTY here (it compacts because the
         //    buffer is full even though should_compact() is false). Without the
         //    fix this slice is empty and the wrapper false-EOFs.
-        let spare = session.read_spare();
+        let spare = rig.read_spare();
         assert!(
             !spare.is_empty(),
             "read_spare must compact a full-but-below-threshold buffer to a \
@@ -1866,26 +2083,123 @@ mod tests {
         let rest = &large[take..large_len];
         let mut fed = 0;
         while fed < rest.len() {
-            let spare = session.read_spare();
+            let spare = rig.read_spare();
             assert!(
                 !spare.is_empty(),
                 "spare must stay non-empty while draining"
             );
             let n = (rest.len() - fed).min(spare.len());
             spare[..n].copy_from_slice(&rest[fed..fed + n]);
-            session.read_filled(n);
+            rig.read_filled(n);
             fed += n;
         }
         assert_eq!(
-            session.poll().expect("poll large complete"),
+            rig.poll().expect("poll large complete"),
             PollOutcome::Message,
             "large app must be delivered after compaction — no false disconnect"
         );
         // The delivered frame is the seq-3 app we sent (byte-for-byte).
-        let msg = session.message();
+        let msg = rig.message();
         assert!(
             matches!(msg, Message::Application { .. }),
             "delivered message must be the reassembled application frame"
+        );
+    }
+
+    // ── extensibility: the sans-IO seam drives the machine with no transport ──
+
+    /// The public sans-IO seam drives the *entire* state machine with NO
+    /// [`recv`](FixSession::recv) and NO `Read`/`Write`/`WireStream` bound — the
+    /// extension path a custom transport (kernel bypass, io_uring, AF_XDP) builds
+    /// on. Three hand-built objects (no builder, no [`FixParts`]), and only the
+    /// byte seam: encode-only [`connect`](FixSession::connect) fills the writer;
+    /// [`writer.data()`](MessageWriter::data)/[`advance`](MessageWriter::advance)
+    /// drain it; [`reader.spare()`](MessageReader::spare)/[`filled`](MessageReader::filled)
+    /// feed inbound bytes; [`poll`](FixSession::poll) advances; and
+    /// [`message`](FixSession::message) decodes the surfaced frame.
+    #[test]
+    fn sans_io_seam_drives_without_recv() {
+        let dir = tmp_dir("sans_io_seam");
+
+        // Three objects, hand-built — no transport of any kind. A fresh state so
+        // `connect` actually emits the opening Logon into the writer.
+        let mut reader =
+            MessageReader::<MockDict>::with_frame_reader(FrameReader::builder().build());
+        let mut writer =
+            MessageWriter::<MockDict>::with_frame_writer(FrameWriter::builder().build());
+        let state = SessionState::new(Duration::from_secs(30));
+        let journal = FixJournal::open(dir.path(), 0, 256).unwrap();
+        let mut session = FixSession::new(
+            state,
+            SessionConfig {
+                sender: our_id(),
+                target: peer_id(),
+            },
+            journal,
+        );
+
+        // Encode-only send stages the opening Logon (outbound seq 1, state →
+        // LogonSent); drain it via the byte seam.
+        session.connect(&mut writer).unwrap();
+        assert!(
+            !writer.data().is_empty(),
+            "connect must stage an outbound Logon into the writer"
+        );
+        let n = writer.data().len();
+        writer.advance(n);
+        assert!(
+            writer.data().is_empty(),
+            "outbound drains purely via data()/advance()"
+        );
+
+        // Feed the peer's Logon ack through the inbound byte seam.
+        let mut buf = vec![0u8; 256];
+        let len = peer_logon_frame(1, true, &mut buf);
+        let spare = reader.spare();
+        spare[..len].copy_from_slice(&buf[..len]);
+        reader.filled(len);
+
+        // Advance the machine and decode the surfaced frame — all sans-IO.
+        assert_eq!(
+            session.poll(&mut reader, &mut writer).expect("poll"),
+            PollOutcome::Message
+        );
+        assert!(matches!(
+            session.message(&reader),
+            Message::LogonAcknowledged { .. }
+        ));
+        assert_eq!(
+            session.state().state(),
+            State::Active,
+            "the Logon ack drove the machine to Active with no recv/transport"
+        );
+    }
+
+    #[test]
+    fn connect_clears_terminated_for_reconnect() {
+        let dir = tmp_dir("reconnect_terminated");
+        let mut writer =
+            MessageWriter::<MockDict>::with_frame_writer(FrameWriter::builder().build());
+        let mut session = FixSession::new(
+            SessionState::new(Duration::from_secs(30)),
+            SessionConfig {
+                sender: our_id(),
+                target: peer_id(),
+            },
+            FixJournal::open(dir.path(), 0, 256).unwrap(),
+        );
+
+        // A clean logout or fatal error leaves `recv` terminated (set here via the
+        // wrapper-author API, as `recv` itself would).
+        session.mark_terminated();
+        assert!(session.is_terminated());
+
+        // The carry-over session reconnects: a fresh `connect` revives it so `recv`
+        // works again. Without this, `recv` would return `Closed` forever.
+        session.connect(&mut writer).unwrap();
+        assert!(
+            !session.is_terminated(),
+            "connect must clear terminated so the carry-over session can reconnect"
         );
     }
 }

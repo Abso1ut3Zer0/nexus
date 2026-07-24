@@ -34,7 +34,10 @@ use nexus_fix_codec::{
     AsciiTextStr, DecodeError, FieldView, FixAdminMsg, FixDictionary, FixHeader, FixTimestamp,
     FrameFormatter, encode_fix_uint, find_tag,
 };
-use nexus_fix_engine::{CompId, FixJournal, FixSession, PollOutcome, SessionConfig, SessionState};
+use nexus_fix_engine::{
+    CompId, FixJournal, FixSession, MessageReader, MessageWriter, PollOutcome, SessionConfig,
+    SessionState,
+};
 
 // ── generated input ──────────────────────────────────────────────────────────
 
@@ -280,33 +283,35 @@ fn check_oracle(session: &FixSession<MockDict>, prev_in: &mut u32, prev_out: &mu
 /// draining outbound and asserting the oracle after every step.
 fn feed_and_poll(
     session: &mut FixSession<MockDict>,
+    reader: &mut MessageReader<MockDict>,
+    writer: &mut MessageWriter<MockDict>,
     frame: &[u8],
     prev_in: &mut u32,
     prev_out: &mut u32,
 ) {
     let mut off = 0;
     while off < frame.len() {
-        let spare = session.read_spare();
+        let spare = reader.spare();
         if spare.is_empty() {
             break; // reader full with an incomplete oversized frame; stop feeding
         }
         let n = spare.len().min(frame.len() - off);
         spare[..n].copy_from_slice(&frame[off..off + n]);
-        session.read_filled(n);
+        reader.filled(n);
         off += n;
     }
 
     loop {
-        match session.poll() {
+        match session.poll(reader, writer) {
             Ok(outcome) => {
                 if outcome == PollOutcome::Message {
                     // Reconstructing the borrowed message must not panic.
-                    let _ = session.message();
+                    let _ = session.message(reader);
                 }
                 // A peer that reads and discards, so the writer never wedges.
-                let outn = session.outbound().len();
+                let outn = writer.data().len();
                 if outn > 0 {
-                    session.advance_outbound(outn);
+                    writer.advance(outn);
                 }
                 check_oracle(session, prev_in, prev_out);
                 match outcome {
@@ -338,13 +343,15 @@ fn make_session(dir: &std::path::Path) -> FixSession<MockDict> {
 fuzz_target!(|msgs: Vec<FuzzMsg>| {
     let jdir = JournalDir::new();
     let mut session = make_session(jdir.0.as_path());
+    let mut reader = MessageReader::<MockDict>::new();
+    let mut writer = MessageWriter::<MockDict>::new();
 
     // Initiator role: send our Logon, then drive inbound. A generated Logon at
     // the expected seq completes the handshake and unlocks the Active paths.
-    if session.connect().is_ok() {
-        let outn = session.outbound().len();
+    if session.connect(&mut writer).is_ok() {
+        let outn = writer.data().len();
         if outn > 0 {
-            session.advance_outbound(outn);
+            writer.advance(outn);
         }
     }
 
@@ -353,7 +360,14 @@ fuzz_target!(|msgs: Vec<FuzzMsg>| {
 
     for m in msgs.iter().take(64) {
         if let Some(frame) = build_frame(m) {
-            feed_and_poll(&mut session, &frame, &mut prev_in, &mut prev_out);
+            feed_and_poll(
+                &mut session,
+                &mut reader,
+                &mut writer,
+                &frame,
+                &mut prev_in,
+                &mut prev_out,
+            );
         }
     }
 

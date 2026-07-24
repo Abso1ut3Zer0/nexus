@@ -143,6 +143,42 @@ impl<D: FixDictionary> MessageReader<D> {
             _dict: PhantomData,
         }
     }
+
+    /// Spare region of the inbound buffer for the caller to read transport bytes
+    /// into. Commit the number actually read with [`filled`](Self::filled). This
+    /// is the inbound half of the sans-IO byte seam: a custom transport fills
+    /// `spare()`, commits with `filled(n)`, then drives
+    /// [`FixSession::poll`](crate::FixSession::poll).
+    ///
+    /// Compacts on the usual `should_compact()` threshold, but *also* whenever the
+    /// buffer is full (`remaining() == 0`) even below that threshold. Without the
+    /// full-buffer case a buffer that is full but <50% consumed would return an
+    /// empty spare slice; a wrapper's `stream.read(&mut [])` then returns `Ok(0)`
+    /// and is misread as EOF/disconnect. Compacting reclaims all consumed space, so
+    /// the spare is non-empty whenever there is anything to reclaim. If nothing is
+    /// reclaimable (a single incomplete frame already fills the whole buffer) the
+    /// spare stays empty, and the caller turns that into a "message too large"
+    /// condition rather than reading into a zero-length slice.
+    pub fn spare(&mut self) -> &mut [u8] {
+        if self.inner.should_compact() || self.inner.remaining() == 0 {
+            self.inner.compact();
+        }
+        self.inner.spare()
+    }
+
+    /// Commit `n` bytes read into [`spare`](Self::spare).
+    pub fn filled(&mut self, n: usize) {
+        self.inner.filled(n);
+    }
+
+    /// Inbound buffer capacity in bytes (fixed at construction).
+    ///
+    /// The largest single frame the reader can buffer. A wrapper reports this as
+    /// the "message too large" size when [`spare`](Self::spare) returns an empty
+    /// slice — the buffer is full with one incomplete frame that cannot grow.
+    pub fn capacity(&self) -> usize {
+        self.inner.capacity()
+    }
 }
 
 impl<D: FixDictionary> Default for MessageReader<D> {
@@ -151,13 +187,18 @@ impl<D: FixDictionary> Default for MessageReader<D> {
     }
 }
 
+/// Lets a [`nexus_net::WireStream`] transport fill the reader's inbound buffer
+/// directly (`poll_fill_into(&mut reader, …)`), skipping the intermediate
+/// `&mut [u8]` copy. Forwards to the inherent [`spare`](MessageReader::spare) /
+/// [`filled`](MessageReader::filled) so the compaction contract holds on both
+/// paths.
 impl<D: FixDictionary> ParserSink for MessageReader<D> {
     fn spare(&mut self) -> &mut [u8] {
-        self.inner.spare()
+        MessageReader::spare(self)
     }
 
     fn filled(&mut self, n: usize) {
-        self.inner.filled(n);
+        MessageReader::filled(self, n);
     }
 }
 

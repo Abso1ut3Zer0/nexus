@@ -10,9 +10,87 @@ use nexus_fix_codec::{
     encode_fix_uint, find_tag,
 };
 use nexus_fix_engine::{
-    CompId, DisconnectReason, FixConnection, FixJournal, MalformedReason, Message, SessionConfig,
-    SessionError, SessionState, State, TransportError,
+    CompId, DisconnectReason, FixJournal, FixParts, FixSession, MalformedReason, Message,
+    MessageReader, MessageWriter, SessionConfig, SessionError, SessionState, State, TransportError,
 };
+
+// ── test-local bundle over the three-object API ──────────────────────────────
+
+/// The sans-IO [`FixSession`] brain plus its caller-held `reader`/`writer` and the
+/// owned transport, wrapped so the transport-behavior scenarios (terminated
+/// guard, EOF, MessageTooLarge, malformed surfacing) read the same across the
+/// un-nesting. Each method is a one-liner over
+/// `session.recv(&mut reader, &mut writer, &mut stream)` and the encode-only send
+/// helpers — a preview of the phase-6 bundle.
+struct Rig<S> {
+    session: FixSession<MockDict>,
+    reader: MessageReader<MockDict>,
+    writer: MessageWriter<MockDict>,
+    stream: S,
+}
+
+impl<S: Read + Write> Rig<S> {
+    fn recv(&mut self) -> Result<Option<Message<'_, MockDict>>, TransportError> {
+        self.session
+            .recv(&mut self.reader, &mut self.writer, &mut self.stream)
+    }
+    fn connect(&mut self) -> Result<(), TransportError> {
+        self.session.connect(&mut self.writer)
+    }
+    fn send_app(&mut self, seq: u32, frame: &[u8]) -> Result<(), TransportError> {
+        self.session.send_app(&mut self.writer, seq, frame)
+    }
+    fn state(&self) -> &SessionState {
+        self.session.state()
+    }
+    fn garbage_frame_count(&self) -> u64 {
+        self.session.garbage_frame_count()
+    }
+}
+
+/// Assemble a [`Rig`] with default (64 KiB) buffers — the three-object analogue of
+/// the removed `FixConnection::from_parts`.
+fn rig_from_parts<S>(
+    stream: S,
+    state: SessionState,
+    config: SessionConfig,
+    journal: FixJournal,
+) -> Rig<S> {
+    let FixParts {
+        session,
+        reader,
+        writer,
+    } = FixSession::builder().build(state, config, journal);
+    Rig {
+        session,
+        reader,
+        writer,
+        stream,
+    }
+}
+
+/// Assemble a [`Rig`] with a custom reader-buffer capacity.
+fn rig_with_reader_cap<S>(
+    reader_cap: usize,
+    stream: S,
+    state: SessionState,
+    config: SessionConfig,
+    journal: FixJournal,
+) -> Rig<S> {
+    let FixParts {
+        session,
+        reader,
+        writer,
+    } = FixSession::builder()
+        .reader_capacity(reader_cap)
+        .build(state, config, journal);
+    Rig {
+        session,
+        reader,
+        writer,
+        stream,
+    }
+}
 
 // ── mock dictionary ──────────────────────────────────────────────────────────
 
@@ -150,7 +228,7 @@ fn tmp_dir(suffix: &str) -> TempDir {
 /// propagated — an abnormal end surfaces as
 /// `Err(TransportError::UnexpectedDisconnect { .. })`. Every caller here drives a
 /// peer-initiated logout, so the clean path is the expected outcome.
-fn drive(conn: &mut FixConnection<TcpStream, MockDict>) -> Result<(), TransportError> {
+fn drive<S: Read + Write>(conn: &mut Rig<S>) -> Result<(), TransportError> {
     loop {
         if let Some(Message::LoggedOut { .. }) = conn.recv()? {
             return Ok(());
@@ -351,7 +429,7 @@ fn initiator_logon_and_logout() {
         let _ = peer.recv_msg(&mut buf);
     });
 
-    let mut conn: FixConnection<TcpStream, MockDict> = FixConnection::from_parts(
+    let mut conn: Rig<TcpStream> = rig_from_parts(
         client_sock,
         SessionState::new(Duration::from_secs(30)),
         session_cfg(t_sender, t_target),
@@ -384,7 +462,7 @@ fn acceptor_receives_app_message() {
 
     let mut received_app = 0usize;
     let dir2 = tmp_dir("acceptor_app_srv");
-    let mut conn: FixConnection<TcpStream, MockDict> = FixConnection::from_parts(
+    let mut conn: Rig<TcpStream> = rig_from_parts(
         server_sock,
         SessionState::new(Duration::from_secs(30)),
         session_cfg(target(), sender()),
@@ -428,7 +506,7 @@ fn heartbeat_stale_seqnum_disconnects() {
         let _ = peer.recv_msg(&mut buf); // drain the engine's Logout
     });
 
-    let mut conn: FixConnection<TcpStream, MockDict> = FixConnection::from_parts(
+    let mut conn: Rig<TcpStream> = rig_from_parts(
         server_sock,
         SessionState::new(Duration::from_secs(30)),
         session_cfg(target(), sender()),
@@ -483,7 +561,7 @@ fn resend_request_triggers_gap_fill() {
         let _ = peer.recv_msg(&mut buf);
     });
 
-    let mut conn: FixConnection<TcpStream, MockDict> = FixConnection::from_parts(
+    let mut conn: Rig<TcpStream> = rig_from_parts(
         client_sock,
         SessionState::new(Duration::from_secs(30)),
         session_cfg(sender(), target()),
@@ -516,7 +594,7 @@ fn inbound_gap_sends_resend_request_and_suppresses_app_message() {
         // Drop peer — engine sees EOF; no need to read ResendRequest here.
     });
 
-    let mut conn: FixConnection<TcpStream, MockDict> = FixConnection::from_parts(
+    let mut conn: Rig<TcpStream> = rig_from_parts(
         server_sock,
         SessionState::new(Duration::from_secs(30)),
         session_cfg(target(), sender()),
@@ -580,7 +658,7 @@ fn out_of_sequence_admin_suppressed_and_resends() {
         // Drop peer → engine sees EOF and disconnects, ending the recv loop.
     });
 
-    let mut conn: FixConnection<TcpStream, MockDict> = FixConnection::from_parts(
+    let mut conn: Rig<TcpStream> = rig_from_parts(
         server_sock,
         SessionState::new(Duration::from_secs(30)),
         session_cfg(target(), sender()),
@@ -632,7 +710,7 @@ fn duplicate_admin_suppressed_no_resend() {
         // Drop peer → engine sees EOF and disconnects.
     });
 
-    let mut conn: FixConnection<TcpStream, MockDict> = FixConnection::from_parts(
+    let mut conn: Rig<TcpStream> = rig_from_parts(
         server_sock,
         SessionState::new(Duration::from_secs(30)),
         session_cfg(target(), sender()),
@@ -698,7 +776,7 @@ fn resend_request_huge_end_seq_clamped() {
         let _ = peer.recv_msg(&mut buf);
     });
 
-    let mut conn: FixConnection<TcpStream, MockDict> = FixConnection::from_parts(
+    let mut conn: Rig<TcpStream> = rig_from_parts(
         client_sock,
         SessionState::new(Duration::from_secs(30)),
         session_cfg(sender(), target()),
@@ -728,7 +806,7 @@ fn corrupt_checksum_frame_counted_as_garbage() {
         // Drop peer
     });
 
-    let mut conn: FixConnection<TcpStream, MockDict> = FixConnection::from_parts(
+    let mut conn: Rig<TcpStream> = rig_from_parts(
         server_sock,
         SessionState::new(Duration::from_secs(30)),
         session_cfg(target(), sender()),
@@ -768,7 +846,7 @@ fn garbage_bytes_increment_counter() {
         // Drop peer
     });
 
-    let mut conn: FixConnection<TcpStream, MockDict> = FixConnection::from_parts(
+    let mut conn: Rig<TcpStream> = rig_from_parts(
         server_sock,
         SessionState::new(Duration::from_secs(30)),
         session_cfg(target(), sender()),
@@ -797,7 +875,7 @@ fn malformed_framing_surfaces_via_recv() {
     let dir = tmp_dir("malformed_framing");
     let garbage = b"GARBAGE_NOT_FIX";
 
-    let mut conn: FixConnection<ChunkStream, MockDict> = FixConnection::from_parts(
+    let mut conn: Rig<ChunkStream> = rig_from_parts(
         ChunkStream::new(garbage),
         SessionState::new(Duration::from_secs(30)),
         session_cfg(target(), sender()),
@@ -832,7 +910,7 @@ fn malformed_checksum_surfaces_via_recv() {
     // transit" signal, distinct from raw framing garbage.
     let dir = tmp_dir("malformed_checksum");
 
-    let mut conn: FixConnection<ChunkStream, MockDict> = FixConnection::from_parts(
+    let mut conn: Rig<ChunkStream> = rig_from_parts(
         ChunkStream::new(&corrupt_checksum_frame()),
         SessionState::new(Duration::from_secs(30)),
         session_cfg(target(), sender()),
@@ -872,7 +950,7 @@ fn peer_eof_surfaces_peer_closed_not_logout() {
     // drop, reported as UnexpectedDisconnect{PeerClosed} — NOT a fake clean
     // Logout (the pre-#612 conflation). It is fatal and Displays legibly.
     let dir = tmp_dir("peer_eof");
-    let mut conn: FixConnection<ChunkStream, MockDict> = FixConnection::from_parts(
+    let mut conn: Rig<ChunkStream> = rig_from_parts(
         ChunkStream::new(b""), // peer connected, then immediately closed
         SessionState::new(Duration::from_secs(30)),
         session_cfg(target(), sender()),
@@ -898,7 +976,7 @@ fn recv_after_abnormal_disconnect_is_closed() {
     // recv returns the fatal `Closed` (tungstenite's AlreadyClosed) — a caller-bug
     // signal, never a fresh disconnect or a hang. Idempotent.
     let dir = tmp_dir("recv_after_abnormal");
-    let mut conn: FixConnection<ChunkStream, MockDict> = FixConnection::from_parts(
+    let mut conn: Rig<ChunkStream> = rig_from_parts(
         ChunkStream::new(b""),
         SessionState::new(Duration::from_secs(30)),
         session_cfg(target(), sender()),
@@ -942,7 +1020,7 @@ fn recv_after_clean_logout_is_closed() {
         let _ = peer.recv_msg(&mut buf);
     });
 
-    let mut conn: FixConnection<TcpStream, MockDict> = FixConnection::from_parts(
+    let mut conn: Rig<TcpStream> = rig_from_parts(
         client_sock,
         SessionState::new(Duration::from_secs(30)),
         session_cfg(sender(), target()),
@@ -1014,7 +1092,7 @@ fn sequence_reset_backward_ignored() {
         // Drop peer
     });
 
-    let mut conn: FixConnection<TcpStream, MockDict> = FixConnection::from_parts(
+    let mut conn: Rig<TcpStream> = rig_from_parts(
         server_sock,
         SessionState::new(Duration::from_secs(30)),
         session_cfg(target(), sender()),
@@ -1066,7 +1144,7 @@ fn overflowed_tag_34_yields_missing_seq_num() {
         s.flush().unwrap();
     });
 
-    let mut conn: FixConnection<TcpStream, MockDict> = FixConnection::from_parts(
+    let mut conn: Rig<TcpStream> = rig_from_parts(
         server_sock,
         SessionState::new(Duration::from_secs(30)),
         session_cfg(target(), sender()),
@@ -1102,7 +1180,7 @@ fn journal_recovers_admin_seqnums() {
         let _ = peer.recv_msg(&mut buf);
     });
 
-    let mut conn: FixConnection<TcpStream, MockDict> = FixConnection::from_parts(
+    let mut conn: Rig<TcpStream> = rig_from_parts(
         client_sock,
         SessionState::new(Duration::from_secs(30)),
         session_cfg(sender(), target()),
@@ -1129,7 +1207,7 @@ fn send_app_rejects_oversized_frame() {
     // runtime fallback. The cap fires before any journal or socket write.
     let dir = tmp_dir("oversized");
     let (client_sock, _server_sock) = loopback_pair();
-    let mut conn: FixConnection<TcpStream, MockDict> = FixConnection::from_parts(
+    let mut conn: Rig<TcpStream> = rig_from_parts(
         client_sock,
         SessionState::new(Duration::from_secs(30)),
         session_cfg(sender(), target()),
@@ -1209,13 +1287,13 @@ fn frame_exceeding_reader_buffer_is_message_too_large_not_disconnect() {
     );
 
     let stream = ChunkStream::new(&frame);
-    let mut conn: FixConnection<ChunkStream, MockDict> =
-        FixConnection::builder().reader_capacity(READER_CAP).accept(
-            stream,
-            SessionState::new(Duration::from_secs(30)),
-            session_cfg(target(), sender()),
-            journal(dir.path()),
-        );
+    let mut conn: Rig<ChunkStream> = rig_with_reader_cap(
+        READER_CAP,
+        stream,
+        SessionState::new(Duration::from_secs(30)),
+        session_cfg(target(), sender()),
+        journal(dir.path()),
+    );
 
     match conn.recv() {
         Err(TransportError::MessageTooLarge(_)) => {}
