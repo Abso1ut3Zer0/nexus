@@ -74,6 +74,10 @@ pub struct LocalNotify {
     /// Token indices queued for dispatch this cycle (deduped via `bits`).
     dispatch_list: Vec<usize>,
 
+    /// Index of the next token to dispatch. Advances on partial drain
+    /// instead of shifting the Vec; reset to 0 on full drain.
+    dispatch_head: usize,
+
     /// High-water mark for token allocation.
     num_tokens: usize,
 }
@@ -83,7 +87,8 @@ impl LocalNotify {
     pub fn with_capacity(capacity: usize) -> Self {
         Self {
             bits: vec![0u64; capacity.div_ceil(64)],
-            dispatch_list: Vec::with_capacity(capacity),
+            dispatch_list: Vec::with_capacity(capacity * 2),
+            dispatch_head: 0,
             num_tokens: 0,
         }
     }
@@ -142,8 +147,23 @@ impl LocalNotify {
         // token — register() grows it on allocation.
         if self.bits[word] & bit == 0 {
             self.bits[word] |= bit;
+            if self.dispatch_list.len() == self.dispatch_list.capacity() {
+                self.compact();
+            }
             self.dispatch_list.push(idx);
         }
+    }
+
+    /// Reclaim the stale prefix by moving live entries to the front.
+    ///
+    /// Called when the tail is out of room. Amortized: fires once per
+    /// `capacity / limit` ticks under sustained partial drain.
+    #[cold]
+    fn compact(&mut self) {
+        let live = self.dispatch_list.len() - self.dispatch_head;
+        self.dispatch_list.copy_within(self.dispatch_head.., 0);
+        self.dispatch_list.truncate(live);
+        self.dispatch_head = 0;
     }
 
     /// Drain all marked tokens into the events buffer.
@@ -167,37 +187,36 @@ impl LocalNotify {
     #[inline]
     pub fn poll_limit(&mut self, events: &mut Events, limit: usize) {
         events.clear();
-        let drain_count = self.dispatch_list.len().min(limit);
-        for &idx in &self.dispatch_list[..drain_count] {
+        let remaining = self.dispatch_list.len() - self.dispatch_head;
+        let drain_count = remaining.min(limit);
+        let head = self.dispatch_head;
+        for &idx in &self.dispatch_list[head..head + drain_count] {
             events.push(Token::new(idx));
         }
-        if drain_count == self.dispatch_list.len() {
-            // Full drain — bulk clear
+        if drain_count == remaining {
+            // Full drain — bulk clear and reset cursor.
             self.bits.fill(0);
             self.dispatch_list.clear();
+            self.dispatch_head = 0;
         } else {
-            // Partial drain — clear bits for drained tokens, shift remainder.
-            // Vec::drain memmoves remaining elements. Cost is O(remaining),
-            // acceptable for typical token counts (<100). A cursor-based
-            // approach would avoid the memmove but adds complexity for a
-            // cold-path operation.
-            for &idx in &self.dispatch_list[..drain_count] {
-                self.bits[idx / 64] &= !(1 << (idx % 64));
+            // Partial drain — clear bits for drained tokens, advance cursor.
+            for &idx in &self.dispatch_list[head..head + drain_count] {
+                self.bits[idx / 64] &= !(1u64 << (idx % 64));
             }
-            self.dispatch_list.drain(..drain_count);
+            self.dispatch_head += drain_count;
         }
     }
 
     /// Returns `true` if any token is marked.
     #[inline]
     pub fn has_notified(&self) -> bool {
-        !self.dispatch_list.is_empty()
+        self.dispatch_head < self.dispatch_list.len()
     }
 
     /// Number of tokens currently marked.
     #[inline]
     pub fn notified_count(&self) -> usize {
-        self.dispatch_list.len()
+        self.dispatch_list.len() - self.dispatch_head
     }
 
     /// Number of registered tokens.
@@ -439,5 +458,34 @@ mod tests {
         notify.register();
         notify.register();
         assert_eq!(notify.capacity(), 2);
+    }
+
+    #[test]
+    fn poll_limit_partial_sustained_physical_bound() {
+        let n = 128usize;
+        let limit = 32usize;
+        let mut notify = LocalNotify::with_capacity(n);
+        let mut events = Events::with_capacity(n);
+
+        let mut tokens = Vec::new();
+        for _ in 0..n {
+            tokens.push(notify.register());
+        }
+
+        for _ in 0..2000 {
+            for &t in &tokens {
+                notify.mark(t);
+            }
+            notify.poll_limit(&mut events, limit);
+        }
+
+        // Physical length must stay bounded regardless of tick count.
+        // With 2x headroom and compaction on exhaustion, the cap is ~2*n.
+        assert!(
+            notify.dispatch_list.len() <= n * 2,
+            "dispatch_list grew without bound: len={} cap={}",
+            notify.dispatch_list.len(),
+            notify.dispatch_list.capacity(),
+        );
     }
 }
