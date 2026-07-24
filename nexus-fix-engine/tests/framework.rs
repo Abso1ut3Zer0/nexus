@@ -241,6 +241,7 @@ mod unix_tests {
             SequenceReset {
                 seq: 5,
                 new_seq: 10,
+                gap_fill: true,
             },
         )
         .expect("sequence reset fits");

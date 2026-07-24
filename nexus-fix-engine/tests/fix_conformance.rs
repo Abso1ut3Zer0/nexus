@@ -2,6 +2,7 @@
 
 use std::io::BufRead;
 use std::io::BufReader;
+use std::io::Write;
 use std::net::TcpStream;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
@@ -211,9 +212,32 @@ impl Rig {
                 d.accept(session, writer, stream, NOW)?;
                 Ok(Step::Continue)
             }
+            Some(Message::ResendRequest { cursor }) => {
+                // Pump the cursor: reframe each item into `writer`, write it, repeat
+                // until Done (same wire output the engine used to auto-drive).
+                let mut c = cursor;
+                while let Some(bytes) = c.next(session, writer, NOW)? {
+                    stream.write_all(bytes).map_err(TransportError::Io)?;
+                }
+                stream.flush().map_err(TransportError::Io)?;
+                Ok(Step::Continue)
+            }
+            Some(Message::ResendOutOfRange {
+                begin,
+                low_water,
+                high_water,
+                ..
+            }) => {
+                if begin < low_water {
+                    session.gap_fill(writer, stream, NOW, begin, high_water + 1)?;
+                } else {
+                    session.sequence_reset(writer, stream, NOW, high_water + 1)?;
+                }
+                Ok(Step::Continue)
+            }
             Some(Message::Application { .. }) => Ok(Step::App),
-            // Heartbeat / Reject / SequenceReset / LogonAcknowledged / ResendRequest
-            // — no reply required — or nothing surfaced (`None`).
+            // Heartbeat / Reject / SequenceReset / LogonAcknowledged — no reply
+            // required — or nothing surfaced (`None`).
             _ => Ok(Step::Continue),
         }
     }

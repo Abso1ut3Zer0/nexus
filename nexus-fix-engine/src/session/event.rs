@@ -133,9 +133,42 @@ pub enum Control {
     /// `TestReqID(112)`; the user answers with `heartbeat(Some(id))`. The engine no
     /// longer auto-emits the Heartbeat echo.
     TestRequest,
-    /// A ResendRequest (35=2) was processed. The driver drives the replay walk
-    /// from its locally parsed `begin`/`end`, so this carries no fields.
+    /// A ResendRequest (35=2) was validated and is in-sequence — the state
+    /// machine's signal that the driver should act on it. Carries no fields: the
+    /// driver parses `BeginSeqNo`/`EndSeqNo` locally and *refines* this into a
+    /// [`ResendCursor`](Self::ResendCursor) (providable) or a
+    /// [`ResendOutOfRange`](Self::ResendOutOfRange) (not), so this variant is never
+    /// stored as the driver's `pending` and never reaches `message()`.
     ResendRequest,
+    /// A providable ResendRequest: the requested range lies fully within the
+    /// journal's retained replay window. The driver's refinement of
+    /// [`ResendRequest`](Self::ResendRequest); surfaces as
+    /// [`Message::ResendRequest`](crate::Message::ResendRequest) carrying a
+    /// `ResendCursor` the user pumps. `begin` is the requested `BeginSeqNo(7)`;
+    /// `end` is the resolved `EndSeqNo(16)` (an open-ended `0` is clamped to the
+    /// journal high-water).
+    ResendCursor {
+        /// Requested first outbound seqnum to replay (`BeginSeqNo(7)`).
+        begin: u32,
+        /// Resolved last outbound seqnum to replay (`EndSeqNo(16)`, `0` clamped to
+        /// high-water).
+        end: u32,
+    },
+    /// A ResendRequest the journal can no longer fulfill: `begin` has rotated off
+    /// the retained window (`begin < low_water`) and/or the resolved `end` exceeds
+    /// what was ever sent (`end > high_water`). Surfaces as
+    /// [`Message::ResendOutOfRange`](crate::Message::ResendOutOfRange) with no
+    /// cursor — the user decides (a `sequence_reset`, or logout).
+    ResendOutOfRange {
+        /// Requested first outbound seqnum (`BeginSeqNo(7)`).
+        begin: u32,
+        /// Resolved last outbound seqnum (`EndSeqNo(16)`, `0` clamped to high-water).
+        end: u32,
+        /// Oldest outbound seqnum still replayable from the retained window.
+        low_water: u32,
+        /// Highest outbound seqnum ever sent (last stored).
+        high_water: u32,
+    },
     /// A SequenceReset (35=4) was processed.
     SequenceReset,
     /// A Reject (35=3) was processed.

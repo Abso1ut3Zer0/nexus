@@ -301,6 +301,7 @@ fn no_customizer_sequence_reset_is_byte_identical() {
         SequenceReset {
             seq: 6,
             new_seq: 10,
+            gap_fill: true,
         },
         b"4",
         &[
@@ -405,7 +406,8 @@ fn dictionary_owned_consts_match_the_encoder_bodies() {
     check!(
         SequenceReset {
             seq: 6,
-            new_seq: 10
+            new_seq: 10,
+            gap_fill: true,
         },
         MockDict::SEQUENCE_RESET_OWNED
     );
@@ -624,7 +626,8 @@ fn logon_only_customizer_leaves_other_admin_messages_untouched() {
     check_untouched!(ResendRequest { seq: 5, begin: 1 });
     check_untouched!(SequenceReset {
         seq: 6,
-        new_seq: 10
+        new_seq: 10,
+        gap_fill: true,
     });
     check_untouched!(Reject {
         seq: 7,
@@ -771,7 +774,8 @@ fn every_admin_type_runs_its_own_hook() {
     check_hook!(
         SequenceReset {
             seq: 6,
-            new_seq: 10
+            new_seq: 10,
+            gap_fill: true,
         },
         b"sequence_reset"
     );
@@ -876,7 +880,8 @@ fn accessor_msg_type_matches_the_frames_own_tag_35() {
     check_mt!(
         SequenceReset {
             seq: 6,
-            new_seq: 10
+            new_seq: 10,
+            gap_fill: true,
         },
         b"4"
     );
@@ -1031,21 +1036,24 @@ mod engine_owned_tripwire {
         reject!(
             SequenceReset {
                 seq: 6,
-                new_seq: 10
+                new_seq: 10,
+                gap_fill: true,
             },
             43
         );
         reject!(
             SequenceReset {
                 seq: 6,
-                new_seq: 10
+                new_seq: 10,
+                gap_fill: true,
             },
             123
         );
         reject!(
             SequenceReset {
                 seq: 6,
-                new_seq: 10
+                new_seq: 10,
+                gap_fill: true,
             },
             36
         );

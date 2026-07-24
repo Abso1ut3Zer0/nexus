@@ -49,7 +49,8 @@ use nexus_journal::WriteError;
 
 use crate::frame::{FrameError, FrameReader, FrameWriter, MalformedReason};
 use crate::framework::{
-    Emitter, LogonDecision, Message, MessageReader, MessageWriter, SessionConfig, SessionError,
+    Emitter, LogonDecision, Message, MessageReader, MessageWriter, ResendCursor, SessionConfig,
+    SessionError,
 };
 use crate::persist::{FixJournal, ReplayItem};
 use crate::session::{
@@ -162,9 +163,6 @@ pub enum PollOutcome {
     /// [`reader.spare()`](MessageReader::spare) and commit with
     /// [`reader.filled(n)`](MessageReader::filled), then poll again.
     NeedMoreBytes,
-    /// A resend is in progress and the outbound buffer filled. The caller must
-    /// drain [`writer.data()`](MessageWriter::data) and poll again to continue it.
-    ResendPending,
     /// The frame was processed but there is nothing to surface to the application
     /// (an out-of-sequence app suppressed pending resend, or a session-level
     /// reject was emitted). The wrapper should surface this as `Ok(None)`.
@@ -177,19 +175,6 @@ pub enum PollOutcome {
     Disconnected(DisconnectReason),
 }
 
-/// Resumable resend state. A resend can enqueue more bytes than the outbound
-/// buffer holds; on overflow the wrapper drains the buffer and re-polls, which
-/// resumes here. `drained` counts fully-encoded [`ReplayItem`]s so re-deriving
-/// `journal.resend(begin, end).skip(drained)` yields the remaining items with
-/// identical wire output (`resend` is deterministic for a fixed journal state).
-#[derive(Debug, Clone, Copy)]
-struct ResendState {
-    begin: u32,
-    end: u32,
-    drained: usize,
-    ts: [u8; UTC_TIMESTAMP_LEN],
-}
-
 /// Sans-IO FIX session: the state machine + journal *brain*. No buffers, no
 /// socket.
 ///
@@ -198,13 +183,15 @@ struct ResendState {
 /// call. See the [module docs](self) for the byte seam and the poll/message
 /// split. Build one with [`FixSession::builder`] (returns [`FixParts`]) or
 /// [`FixSession::new`] plus hand-built buffers.
+///
+/// A resend is *not* driven here: an inbound ResendRequest surfaces a
+/// [`ResendCursor`] (or a [`Message::ResendOutOfRange`]) the caller pumps, so the
+/// session holds no in-progress resend state.
 pub struct FixSession<D: FixDictionary> {
     state: SessionState,
     journal: FixJournal,
     config: SessionConfig,
     garbage_frames: u64,
-    /// In-progress resend, if any (see [`ResendState`]).
-    resend: Option<ResendState>,
     /// The verdict the state machine last returned. [`message`](Self::message)
     /// reconstructs the borrowed [`Message`] from it after a
     /// [`PollOutcome::Message`]; see [`Control`].
@@ -308,7 +295,6 @@ impl<D: FixDictionary> FixSession<D> {
             journal,
             config,
             garbage_frames: 0,
-            resend: None,
             pending: Control::None,
             terminated: false,
             _dict: PhantomData,
@@ -497,6 +483,59 @@ impl<D: FixDictionary> FixSession<D> {
     ) -> Result<(), Error> {
         let mut emitter = journaling_emitter(writer, &mut self.journal, &self.config, now);
         self.state.resend_request(begin, &mut emitter)?;
+        Ok(())
+    }
+
+    /// Encodes a SequenceReset-Reset (35=4, `GapFillFlag=N`) forcing the peer's
+    /// expected inbound seqnum to `new_seq` into `writer`. Encode-only; see
+    /// [`sequence_reset`](Self::sequence_reset) for the encode + flush form.
+    ///
+    /// The "force the peer forward" answer to a [`Message::ResendOutOfRange`] whose
+    /// `EndSeqNo` exceeds what we sent. Allocates the next outbound seqnum for
+    /// `MsgSeqNum(34)` and journals, like every other outbound admin. For the
+    /// GapFill-mode answer (a `BeginSeqNo` that rotated off) use
+    /// [`encode_gap_fill`](Self::encode_gap_fill) instead.
+    ///
+    /// **Distinct from [`encode_reset_sequence`](Self::encode_reset_sequence)**,
+    /// which starts the *in-session reset handshake* (a TestRequest/Logon exchange),
+    /// not a SequenceReset message. `now` stamps `SendingTime(52)` (UTC unix-nanos).
+    pub fn encode_sequence_reset<C: SessionCustomizer>(
+        &mut self,
+        writer: &mut MessageWriter<D, C>,
+        now: i128,
+        new_seq: u32,
+    ) -> Result<(), Error> {
+        let mut emitter = journaling_emitter(writer, &mut self.journal, &self.config, now);
+        self.state.sequence_reset(new_seq, &mut emitter)?;
+        Ok(())
+    }
+
+    /// Encodes a SequenceReset-GapFill (35=4, `GapFillFlag=Y` + `PossDupFlag=Y`)
+    /// standing in for the skipped outbound range `[from_seq, new_seq)` into
+    /// `writer`. Encode-only; see [`gap_fill`](Self::gap_fill) for the encode + flush
+    /// form.
+    ///
+    /// The answer to a [`Message::ResendOutOfRange`] whose `BeginSeqNo` rotated off
+    /// the replay window. **`MsgSeqNum(34)` is `from_seq`** (the seqnum the peer is
+    /// waiting on), *not* an allocated one — a gap-fill closes the peer's gap rather
+    /// than opening a new one, so this **does not allocate or advance the outbound
+    /// seqnum**. It is also **not journaled**: `from_seq` has already rotated off the
+    /// replay window, so journaling it would rewind the outbound counter. `new_seq`
+    /// is the `NewSeqNo(36)`. `now` stamps `SendingTime(52)` (UTC unix-nanos).
+    pub fn encode_gap_fill<C: SessionCustomizer>(
+        &mut self,
+        writer: &mut MessageWriter<D, C>,
+        now: i128,
+        from_seq: u32,
+        new_seq: u32,
+    ) -> Result<(), Error> {
+        // A no-op `after`: unlike other admin emits, a gap-fill is not journaled —
+        // `from_seq` sits below the replay low-water (that is why the resend was
+        // out of range), so `journal.store(from_seq, ..)` would rewind next_outbound.
+        // The customizer still runs (it is part of `Emitter::emit`), matching every
+        // other outbound admin.
+        let mut emitter = Emitter::new(writer, &self.config, now, |_seq, _frame| Ok(()));
+        self.state.gap_fill(from_seq, new_seq, &mut emitter)?;
         Ok(())
     }
 
@@ -702,6 +741,49 @@ impl<D: FixDictionary> FixSession<D> {
         writer.flush_to(conn).map_err(Error::Io)
     }
 
+    /// Encodes a SequenceReset-Reset forcing the peer's expected seqnum to `new_seq`
+    /// and flushes it to `conn`. Answers a [`Message::ResendOutOfRange`] whose
+    /// `EndSeqNo` exceeds what we sent; see
+    /// [`encode_sequence_reset`](Self::encode_sequence_reset). For the rotated-off
+    /// `BeginSeqNo` case use [`gap_fill`](Self::gap_fill). Distinct from
+    /// [`reset_sequence`](Self::reset_sequence) (the in-session reset handshake).
+    /// `now` stamps `SendingTime(52)` (UTC unix-nanos).
+    pub fn sequence_reset<C, S>(
+        &mut self,
+        writer: &mut MessageWriter<D, C>,
+        conn: &mut S,
+        now: i128,
+        new_seq: u32,
+    ) -> Result<(), Error>
+    where
+        C: SessionCustomizer,
+        S: Read + Write,
+    {
+        self.encode_sequence_reset(writer, now, new_seq)?;
+        writer.flush_to(conn).map_err(Error::Io)
+    }
+
+    /// Encodes a SequenceReset-GapFill standing in for `[from_seq, new_seq)` and
+    /// flushes it to `conn`. Answers a [`Message::ResendOutOfRange`] whose
+    /// `BeginSeqNo` rotated off the replay window: `MsgSeqNum(34)` is `from_seq` (no
+    /// seqnum is consumed), and the frame is not journaled — see
+    /// [`encode_gap_fill`](Self::encode_gap_fill). `now` stamps `SendingTime(52)`.
+    pub fn gap_fill<C, S>(
+        &mut self,
+        writer: &mut MessageWriter<D, C>,
+        conn: &mut S,
+        now: i128,
+        from_seq: u32,
+        new_seq: u32,
+    ) -> Result<(), Error>
+    where
+        C: SessionCustomizer,
+        S: Read + Write,
+    {
+        self.encode_gap_fill(writer, now, from_seq, new_seq)?;
+        writer.flush_to(conn).map_err(Error::Io)
+    }
+
     /// Journals, encodes an application frame at sequence `seq`, and flushes it to
     /// `conn`. See [`encode_send_app`](Self::encode_send_app) for the frame-size
     /// constraint. The app frame carries its own `SendingTime(52)`, so this takes
@@ -729,25 +811,15 @@ impl<D: FixDictionary> FixSession<D> {
     /// drives). Returns a non-borrowing [`PollOutcome`]; call
     /// [`message`](Self::message) after [`PollOutcome::Message`].
     ///
-    /// `now` stamps `SendingTime(52)` on any mechanism emit and on the resend
-    /// batch (UTC unix-nanos); most calls will not emit and ignore it. See the
-    /// [module docs](self) for the poll loop.
+    /// `now` stamps `SendingTime(52)` on any mechanism emit (UTC unix-nanos); most
+    /// calls will not emit and ignore it. See the [module docs](self) for the poll
+    /// loop.
     pub fn poll<C: SessionCustomizer>(
         &mut self,
         reader: &mut MessageReader<D>,
         writer: &mut MessageWriter<D, C>,
         now: i128,
     ) -> Result<PollOutcome, Error> {
-        // Resume an in-progress resend before touching new inbound.
-        if self.resend.is_some() {
-            if self.drive_resend(writer)? {
-                return Ok(PollOutcome::ResendPending);
-            }
-            // Resend finished: surface the ResendRequest that triggered it.
-            self.pending = Control::ResendRequest;
-            return Ok(PollOutcome::Message);
-        }
-
         // Keep the journal's inbound cursor aligned with the state machine.
         let n = self.state.next_inbound_seq();
         if n != self.journal.next_inbound() {
@@ -839,9 +911,22 @@ impl<D: FixDictionary> FixSession<D> {
                     });
                 Message::TestRequest { id }
             }
+            Control::ResendCursor { begin, end } => Message::ResendRequest {
+                cursor: ResendCursor::new(begin, end),
+            },
+            Control::ResendOutOfRange {
+                begin,
+                end,
+                low_water,
+                high_water,
+            } => Message::ResendOutOfRange {
+                begin,
+                end,
+                low_water,
+                high_water,
+            },
             Control::ResendRequest => {
-                let msg = D::ResendRequest::decode(frame).expect("frame decoded in poll");
-                Message::ResendRequest { msg }
+                unreachable!("driver refines ResendRequest into ResendCursor/ResendOutOfRange")
             }
             Control::SequenceReset => {
                 let msg = D::SequenceReset::decode(frame).expect("frame decoded in poll");
@@ -1059,22 +1144,32 @@ impl<D: FixDictionary> FixSession<D> {
                         &mut emitter,
                     )?
                 };
-                // ResendRequest is the one kind the driver acts on beyond
-                // surfacing the message: it drives the replay from the locally
-                // parsed `begin`/`end`.
+                // ResendRequest is the one kind the driver refines beyond
+                // surfacing the message: it checks the requested range against the
+                // journal's retained replay window up front, so the surfaced cursor
+                // is *guaranteed* to fulfill (it never hits out-of-range mid-pump),
+                // and a range outside the window becomes an explicit out-of-range
+                // signal the user answers with `sequence_reset` — never a silent
+                // gap-fill.
                 match ctrl {
                     Control::ResendRequest => {
-                        let re = if end == 0 {
-                            self.state.next_outbound_seq().saturating_sub(1)
+                        let low_water = self.journal.resend_low_water();
+                        let high_water = self.journal.resend_high_water();
+                        // Open-ended (`EndSeqNo=0`) resolves to everything we have.
+                        let resolved_end = if end == 0 { high_water } else { end };
+                        self.pending = if low_water <= begin && resolved_end <= high_water {
+                            Control::ResendCursor {
+                                begin,
+                                end: resolved_end,
+                            }
                         } else {
-                            end.min(self.state.next_outbound_seq().saturating_sub(1))
+                            Control::ResendOutOfRange {
+                                begin,
+                                end: resolved_end,
+                                low_water,
+                                high_water,
+                            }
                         };
-                        self.begin_resend(begin, re, now);
-                        if self.drive_resend(writer)? {
-                            // Buffer filled mid-resend: wrapper drains, re-polls.
-                            return Ok(PollOutcome::ResendPending);
-                        }
-                        self.pending = Control::ResendRequest;
                         Ok(PollOutcome::Message)
                     }
                     other => Ok(self.dispose(other)),
@@ -1153,80 +1248,18 @@ impl<D: FixDictionary> FixSession<D> {
         }
     }
 
-    // ── resend ───────────────────────────────────────────────────────────────
-
-    /// Starts a resend of `[begin, end]`, formatting the batch `SendingTime(52)`
-    /// once from the caller-supplied `now` (UTC unix-nanos). No internal clock
-    /// read: the resend wire output is a pure function of `(journal, now)`.
-    fn begin_resend(&mut self, begin: u32, end: u32, now: i128) {
-        let mut ts = [0u8; UTC_TIMESTAMP_LEN];
-        crate::timestamp::format_utc_timestamp(now, &mut ts);
-        self.resend = Some(ResendState {
-            begin,
-            end,
-            drained: 0,
-            ts,
-        });
-    }
-
-    /// Encodes as many pending resend items as fit the outbound buffer.
-    ///
-    /// Returns `Ok(true)` if the buffer filled and the resend is not yet complete
-    /// (wrapper must drain and re-poll); `Ok(false)` when the resend finished (the
-    /// state is cleared).
-    ///
-    /// Item-granular resume: `drained` counts fully-encoded items, and
-    /// `resend(begin, end)` is re-derived each call. The original flushed the
-    /// buffer and retried the *same whole item* into an empty buffer on overflow;
-    /// resuming at item granularity reproduces that exact wire output without
-    /// splitting an item.
-    fn drive_resend<C>(&mut self, writer: &mut MessageWriter<D, C>) -> Result<bool, Error> {
-        let rs = self
-            .resend
-            .expect("drive_resend with no resend in progress");
-        let mut encoded = rs.drained;
-        for item in self.journal.resend(rs.begin, rs.end).skip(rs.drained) {
-            let ok = encode_resend_item(
-                &mut writer.inner,
-                &item,
-                &self.config,
-                &rs.ts,
-                D::BEGIN_STRING,
-            );
-            if ok.is_err() {
-                // Buffer full: leave the item for the next poll (after a drain).
-                // `send_app`'s headroom guarantees the item fits an *empty*
-                // buffer; if the buffer is already empty and it still fails, the
-                // writer is sized too small — a configuration error.
-                if writer.is_empty() {
-                    self.resend = None;
-                    return Err(Error::MessageTooLarge(
-                        writer.inner.remaining().saturating_add(1),
-                    ));
-                }
-                self.resend = Some(ResendState {
-                    drained: encoded,
-                    ..rs
-                });
-                return Ok(true);
-            }
-            encoded += 1;
-        }
-        self.resend = None;
-        Ok(false)
-    }
-
     // ── transport convenience (blocking `Read + Write`) ──────────────────────
 
     /// Receives the next typed [`Message`] over a blocking `Read + Write`
     /// transport — the thin convenience over the sans-IO seam.
     ///
     /// Fills `reader` from `conn`, drives [`poll`](Self::poll), drains any
-    /// *mechanism* outbound (reset handshake, protocol-error Logout, resend) from
-    /// `writer` to `conn`, and returns the message. `Ok(None)` means a step
-    /// produced nothing to surface (an out-of-sequence app, a session-level reject,
-    /// or a caller-set socket read timeout elapsing with no complete frame — run
-    /// your own liveness timers and call `recv` again).
+    /// *mechanism* outbound (reset handshake, protocol-error Logout) from `writer`
+    /// to `conn`, and returns the message. A resend is *not* driven here — an
+    /// inbound ResendRequest surfaces a [`ResendCursor`] the caller pumps. `Ok(None)`
+    /// means a step produced nothing to surface (an out-of-sequence app, a
+    /// session-level reject, or a caller-set socket read timeout elapsing with no
+    /// complete frame — run your own liveness timers and call `recv` again).
     ///
     /// `now` (UTC unix-nanos) stamps `SendingTime(52)` on any mechanism emit the
     /// engine still drives inside `recv`, so the core stays a pure function of
@@ -1287,9 +1320,9 @@ impl<D: FixDictionary> FixSession<D> {
     {
         loop {
             let outcome = self.poll(reader, writer, now)?;
-            // Drain any admin/resend the core enqueued this step (mirrors the
-            // original driver, which flushed after every protocol handler). Also
-            // flushes a pending opening Logon / `send_app` staged before `recv`.
+            // Drain any admin the core enqueued this step (mirrors the original
+            // driver, which flushed after every protocol handler). Also flushes a
+            // pending opening Logon / `send_app` staged before `recv`.
             writer.flush_to(conn).map_err(Error::Io)?;
 
             match outcome {
@@ -1300,8 +1333,6 @@ impl<D: FixDictionary> FixSession<D> {
                     return Err(Error::UnexpectedDisconnect { reason });
                 }
                 PollOutcome::Suppressed => return Ok(RecvStep::Nothing),
-                // Buffer already drained above; loop to continue the resend.
-                PollOutcome::ResendPending => {}
                 PollOutcome::NeedMoreBytes => {
                     // An empty spare means the reader buffer is full with a single
                     // incomplete frame that cannot grow (compaction reclaimed
@@ -1400,6 +1431,112 @@ impl<D: FixDictionary> LogonDecision<'_, D> {
     {
         self.encode_reject(session, writer, now, reason)?;
         writer.flush_to(conn).map_err(Error::Io)
+    }
+}
+
+/// Pumping methods for [`ResendCursor`]. The `Copy` state struct and its
+/// `begin`/`end` getters are defined alongside [`Message`] (so both compile on
+/// non-unix); the replay pump lives here because it drives the unix-only
+/// [`FixJournal`] through [`FixSession`].
+impl ResendCursor {
+    /// Reframe the next item into `writer` and return its bytes, or `Ok(None)` when
+    /// the whole range has drained (Done).
+    ///
+    /// The returned slice borrows `writer`; **write it before calling `next` again**
+    /// — the next call reuses the writer buffer. `now` (UTC unix-nanos) stamps the
+    /// item's `SendingTime(52)`. Equivalent to [`next_batch`](Self::next_batch) with
+    /// `max = 1`.
+    pub fn next<'w, D, C>(
+        &mut self,
+        session: &mut FixSession<D>,
+        writer: &'w mut MessageWriter<D, C>,
+        now: i128,
+    ) -> Result<Option<&'w [u8]>, Error>
+    where
+        D: FixDictionary,
+    {
+        self.next_batch(session, writer, now, 1)
+    }
+
+    /// Reframe up to `max` items into `writer` (also bounded by writer capacity),
+    /// concatenated, so one write drains several messages. Returns the concatenated
+    /// bytes, or `Ok(None)` when the whole range has drained (Done).
+    ///
+    /// The returned slice borrows `writer`; **write it before calling again** — the
+    /// next call reuses the writer buffer. One `now` stamps every item's
+    /// `SendingTime(52)` in the batch (the standard for a batch retransmit).
+    ///
+    /// Stops early when the next item would not fit the writer's remaining capacity,
+    /// returning what has been staged so far; the following call resumes at the
+    /// unfit item. If a *single* item does not fit an empty writer the writer is
+    /// undersized for the workload and [`Error::MessageTooLarge`] is returned.
+    pub fn next_batch<'w, D, C>(
+        &mut self,
+        session: &mut FixSession<D>,
+        writer: &'w mut MessageWriter<D, C>,
+        now: i128,
+        max: usize,
+    ) -> Result<Option<&'w [u8]>, Error>
+    where
+        D: FixDictionary,
+    {
+        // Discard the previously-yielded frame — the caller has written it. The
+        // writer auto-resets to full capacity once fully drained, so each batch
+        // reframes into a fresh buffer and the returned slice is exactly this batch.
+        let staged = writer.inner.data().len();
+        if staged > 0 {
+            writer.inner.advance(staged);
+        }
+
+        if max == 0 || self.pos > self.end {
+            return Ok(None);
+        }
+
+        let mut ts = [0u8; UTC_TIMESTAMP_LEN];
+        crate::timestamp::format_utc_timestamp(now, &mut ts);
+
+        let mut produced = 0usize;
+        while produced < max && self.pos <= self.end {
+            // O(1) per item: `resend(pos, end)` locates `pos` via the offset table.
+            // An `App` first item is always at `pos` (a gap starting at `pos` yields
+            // a `GapFill` instead), so advance one past it; a `GapFill` covers
+            // `[pos, new_seq)`, so resume at its `NewSeqNo`. Chunking this way yields
+            // the exact same item sequence a single `resend(begin, end)` walk would.
+            let Some(item) = session.journal.resend(self.pos, self.end).next() else {
+                break;
+            };
+            let next_pos = match &item {
+                ReplayItem::App(_) => self.pos.saturating_add(1),
+                ReplayItem::GapFill { new_seq, .. } => *new_seq,
+            };
+            let ok = encode_resend_item(
+                &mut writer.inner,
+                &item,
+                &session.config,
+                &ts,
+                D::BEGIN_STRING,
+            );
+            if ok.is_err() {
+                // Buffer full. `send_app`'s headroom guarantees any single item fits
+                // an *empty* writer; if it still does not, the writer is undersized —
+                // a configuration error. Otherwise leave the item for the next call
+                // and return what is staged.
+                if writer.inner.is_empty() {
+                    return Err(Error::MessageTooLarge(
+                        writer.inner.remaining().saturating_add(1),
+                    ));
+                }
+                break;
+            }
+            self.pos = next_pos;
+            produced += 1;
+        }
+
+        if writer.inner.is_empty() {
+            Ok(None)
+        } else {
+            Ok(Some(writer.inner.data()))
+        }
     }
 }
 
@@ -1508,13 +1645,16 @@ fn encode_resend_item(
 ) -> Result<(), ()> {
     match item {
         ReplayItem::GapFill { seq, new_seq } => {
-            encode_gap_fill(writer, begin_string, config, ts, *seq, *new_seq)
+            encode_gap_fill_frame(writer, begin_string, config, ts, *seq, *new_seq)
         }
         ReplayItem::App(orig) => reframe_app(writer, orig, ts, begin_string),
     }
 }
 
-fn encode_gap_fill(
+/// Writes a resend-replay `SequenceReset-GapFill` frame directly into `writer` (no
+/// journaling, no customizer) — the internal replay primitive the [`ResendCursor`]
+/// drives, distinct from the user-facing [`FixSession::encode_gap_fill`] send verb.
+fn encode_gap_fill_frame(
     writer: &mut FrameWriter,
     begin_string: &'static [u8],
     config: &SessionConfig,
@@ -1853,9 +1993,10 @@ mod tests {
         // Establish (initiator): Logon consumes outbound seq 1, peer's Logon at
         // seq 1 advances next_inbound to 2 and moves to Active.
         establish_state(&mut state);
-        // Align outbound with the journal we are about to fill (next = N + 1) so
-        // the resend `end` clamp (`re.min(next_outbound - 1)`) does not chop the
-        // range. Keep next_inbound at 2 for the incoming ResendRequest.
+        // Align outbound with the journal we are about to fill (next = N + 1). The
+        // window (256) comfortably exceeds N, so `low_water` saturates to 0 and the
+        // whole `[1, N]` range stays providable. Keep next_inbound at 2 for the
+        // incoming ResendRequest.
         state.reset_seq_nums(N + 1, 2);
 
         let journal = FixJournal::open(dir, 0, 256).unwrap();
@@ -1889,38 +2030,41 @@ mod tests {
         rig
     }
 
-    /// Drive a ResendRequest for `[1, N]` to completion, concatenating every
-    /// outbound byte. Returns `(stream, resend_pending_count)`.
-    ///
-    /// The loop fully drains the writer after each `poll`, so every resumed
-    /// `drive_resend` sees a freshly auto-reset (full-capacity) buffer — exactly
-    /// the "flush the buffer, retry the item into an empty buffer" contract the
-    /// resumable path replaced.
-    fn drive_resend_stream(rig: &mut Rig<MockDict>) -> (Vec<u8>, usize) {
+    /// Drive a ResendRequest for `[1, N]` to completion by pumping the surfaced
+    /// [`ResendCursor`], concatenating every yielded byte. `max_per_batch` is the
+    /// item cap per [`next_batch`](super::ResendCursor::next_batch) call (the
+    /// writer capacity also bounds it). Returns `(stream, batch_count)` — the number
+    /// of non-empty batches yielded before Done.
+    fn drive_resend_stream(rig: &mut Rig<MockDict>, max_per_batch: usize) -> (Vec<u8>, usize) {
         let mut req = vec![0u8; 256];
         let len = resend_request_frame(2, 1, N, &mut req);
         let spare = rig.read_spare();
         spare[..len].copy_from_slice(&req[..len]);
         rig.read_filled(len);
 
+        let outcome = rig.poll().expect("poll");
+        assert_eq!(
+            outcome,
+            PollOutcome::Message,
+            "an in-window ResendRequest must surface a Message"
+        );
+        // The cursor is `Copy`, so binding it out of the reader-borrowing `Message`
+        // carries no borrow — `session`/`writer` are free to pump it.
+        let mut cursor = match rig.message() {
+            Message::ResendRequest { cursor } => cursor,
+            other => panic!("expected ResendRequest, got {}", variant(&Some(other))),
+        };
+
         let mut stream = Vec::new();
-        let mut pending = 0usize;
-        loop {
-            let outcome = rig.poll().expect("poll");
-            // Drain everything currently staged, then decide.
-            while rig.has_outbound() {
-                let data = rig.outbound();
-                stream.extend_from_slice(data);
-                let n = data.len();
-                rig.advance_outbound(n);
-            }
-            match outcome {
-                PollOutcome::ResendPending => pending += 1,
-                PollOutcome::Message => break, // ResendRequest surfaced: resend done
-                other => panic!("unexpected outcome during resend: {other:?}"),
-            }
+        let mut batches = 0usize;
+        while let Some(bytes) = cursor
+            .next_batch(&mut rig.session, &mut rig.writer, NOW, max_per_batch)
+            .expect("next_batch")
+        {
+            stream.extend_from_slice(bytes);
+            batches += 1;
         }
-        (stream, pending)
+        (stream, batches)
     }
 
     /// Split a concatenated stream into frames using the production frame reader
@@ -1953,22 +2097,27 @@ mod tests {
         let dir_big = tmp_dir("resume_big");
         let dir_small = tmp_dir("resume_small");
 
-        // Large writer: whole resend fits in one pass.
+        // Large writer, unbounded batch: the whole resend drains in one batch.
         let mut big = build_session(dir_big.path(), 64 * 1024);
-        let (big_stream, big_pending) = drive_resend_stream(&mut big);
-        assert_eq!(big_pending, 0, "large-writer resend must be a single pass");
+        let (big_stream, big_batches) = drive_resend_stream(&mut big, usize::MAX);
+        assert_eq!(
+            big_batches, 1,
+            "large-writer unbounded batch must drain the whole resend in one call"
+        );
 
-        // Tiny writer: ~1 reframed item per cycle → many drain/resume boundaries.
-        // 200 bytes holds one reframed item (< ~180) but never two (>= ~250),
-        // and comfortably exceeds the largest single frame so the empty-buffer
-        // MessageTooLarge guard never fires.
+        // Tiny writer, unbounded batch: capacity stops each batch at ~1 reframed
+        // item → many capacity-bounded resume boundaries. 200 bytes holds one
+        // reframed item (< ~180) but never two (>= ~250), and comfortably exceeds
+        // the largest single frame so the empty-buffer MessageTooLarge guard never
+        // fires.
         let mut small = build_session(dir_small.path(), 200);
-        let (small_stream, small_pending) = drive_resend_stream(&mut small);
+        let (small_stream, small_batches) = drive_resend_stream(&mut small, usize::MAX);
 
-        // The path was actually exercised, not trivially skipped.
+        // The capacity-bounded resume path was actually exercised, not trivially
+        // skipped.
         assert!(
-            small_pending >= 5,
-            "tiny-writer resend must hit ResendPending repeatedly (got {small_pending})"
+            small_batches >= 5,
+            "tiny-writer resend must resume across many batches (got {small_batches})"
         );
 
         // Strong oracle: byte-identical directly (same fixed `now` → same 52).
@@ -2055,6 +2204,299 @@ mod tests {
             let tags: Vec<u32> = FieldReader::new(f, 0).map(|fld| fld.tag).collect();
             assert!(tags.contains(&8) && tags.contains(&34) && tags.contains(&52));
         }
+    }
+
+    // ── providability check (phase 4) ────────────────────────────────────────
+
+    /// Build an `Active` [`Rig`] whose outbound journal has `window` retained slots
+    /// and holds app frames for seqs `1..=stored_max` except `hole`. With a small
+    /// `window` and `stored_max > window`, the oldest seqnums have rotated off, so
+    /// the retained window is `[stored_max + 1 - window, stored_max]`. next_inbound
+    /// is 2, ready for a ResendRequest at seq 2.
+    fn windowed_session(dir: &Path, window: usize, stored_max: u32, hole: u32) -> Rig<MockDict> {
+        let reader = MessageReader::with_frame_reader(FrameReader::builder().build());
+        let writer = MessageWriter::with_frame_writer(
+            FrameWriter::builder().buffer_capacity(64 * 1024).build(),
+        );
+        let mut state = SessionState::new(Duration::from_secs(30));
+        establish_state(&mut state);
+        state.reset_seq_nums(stored_max + 1, 2);
+
+        let journal = FixJournal::open(dir, 0, window).unwrap();
+        let session = FixSession::new(
+            state,
+            SessionConfig {
+                sender: our_id(),
+                target: peer_id(),
+            },
+            journal,
+        );
+        let mut rig = Rig {
+            session,
+            reader,
+            writer,
+        };
+
+        let mut buf = vec![0u8; 512];
+        for seq in 1..=stored_max {
+            if seq == hole {
+                continue;
+            }
+            let len = app_frame(seq, &mut buf);
+            rig.send_app(seq, &buf[..len]).unwrap();
+            let n = rig.outbound().len();
+            rig.advance_outbound(n);
+        }
+        assert!(!rig.has_outbound(), "writer must be drained before resend");
+        rig
+    }
+
+    /// Feed an inbound ResendRequest `[begin, end]` at MsgSeqNum `seq` and poll it.
+    fn feed_resend(rig: &mut Rig<MockDict>, seq: u32, begin: u32, end: u32) -> PollOutcome {
+        let mut req = vec![0u8; 256];
+        let len = resend_request_frame(seq, begin, end, &mut req);
+        let spare = rig.read_spare();
+        spare[..len].copy_from_slice(&req[..len]);
+        rig.read_filled(len);
+        rig.poll().expect("poll")
+    }
+
+    /// A ResendRequest fully inside the retained window surfaces a cursor that pumps
+    /// to Done, replaying stored apps as PossDup and the interior hole as a
+    /// coalesced gap-fill.
+    #[test]
+    fn providable_resend_surfaces_cursor_and_pumps_to_done() {
+        // window 8, stored 1..=20 except 17 → retained [13, 20], hole at 17.
+        let dir = tmp_dir("providable_cursor");
+        let mut rig = windowed_session(dir.path(), 8, 20, 17);
+
+        assert_eq!(feed_resend(&mut rig, 2, 15, 20), PollOutcome::Message);
+        let mut cursor = match rig.message() {
+            Message::ResendRequest { cursor } => cursor,
+            other => panic!(
+                "expected ResendRequest cursor, got {}",
+                variant(&Some(other))
+            ),
+        };
+        assert_eq!((cursor.begin(), cursor.end()), (15, 20), "cursor range");
+
+        // Pump one item per `next` to Done.
+        let mut stream = Vec::new();
+        while let Some(bytes) = cursor
+            .next(&mut rig.session, &mut rig.writer, NOW)
+            .expect("next")
+        {
+            stream.extend_from_slice(bytes);
+        }
+        let frames = split_frames(&stream);
+
+        let mut apps = Vec::new();
+        let mut gapfills = Vec::new();
+        for f in &frames {
+            // Every replayed frame carries PossDupFlag=Y.
+            assert_eq!(
+                find_tag(f, 0, 43).map(|s| s.slice(f)),
+                Some(b"Y".as_ref()),
+                "resend frame must set 43=Y"
+            );
+            let seq: u32 = find_tag(f, 0, 34)
+                .and_then(|s| FieldView::new(s, f.as_slice()))
+                .unwrap()
+                .get();
+            match find_tag(f, 0, 35).map(|s| s.slice(f)).unwrap() {
+                b"4" => {
+                    assert_eq!(
+                        find_tag(f, 0, 123).map(|s| s.slice(f)),
+                        Some(b"Y".as_ref()),
+                        "gap-fill must set 123=Y"
+                    );
+                    let new_seq: u32 = find_tag(f, 0, 36)
+                        .and_then(|s| FieldView::new(s, f.as_slice()))
+                        .unwrap()
+                        .get();
+                    gapfills.push((seq, new_seq));
+                }
+                b"D" => apps.push(seq),
+                other => panic!("unexpected resend msg type {other:?}"),
+            }
+        }
+        assert_eq!(apps, vec![15, 16, 18, 19, 20], "app replay seqnums/order");
+        assert_eq!(
+            gapfills,
+            vec![(17, 18)],
+            "hole 17 must coalesce to a gap-fill"
+        );
+    }
+
+    /// `EndSeqNo=0` (open-ended) is clamped to the journal high-water and, when the
+    /// clamped range is retained, surfaces a cursor over `[begin, high_water]`.
+    #[test]
+    fn open_ended_resend_clamps_to_high_water() {
+        // window 8, stored 1..=20 (no hole) → retained [13, 20], high_water 20.
+        let dir = tmp_dir("open_ended_clamp");
+        let mut rig = windowed_session(dir.path(), 8, 20, 0);
+
+        assert_eq!(feed_resend(&mut rig, 2, 15, 0), PollOutcome::Message);
+        match rig.message() {
+            Message::ResendRequest { cursor } => {
+                assert_eq!(
+                    (cursor.begin(), cursor.end()),
+                    (15, 20),
+                    "EndSeqNo=0 must clamp end to high_water"
+                );
+            }
+            other => panic!(
+                "expected ResendRequest cursor, got {}",
+                variant(&Some(other))
+            ),
+        }
+    }
+
+    /// A `BeginSeqNo` below the retained low-water (rotated off) surfaces
+    /// `ResendOutOfRange` — no cursor — carrying both water marks.
+    #[test]
+    fn resend_begin_below_low_water_is_out_of_range() {
+        // window 8, stored 1..=20 → retained [13, 20]; begin 1 < low_water 13.
+        let dir = tmp_dir("begin_below_low");
+        let mut rig = windowed_session(dir.path(), 8, 20, 0);
+
+        assert_eq!(feed_resend(&mut rig, 2, 1, 20), PollOutcome::Message);
+        match rig.message() {
+            Message::ResendOutOfRange {
+                begin,
+                end,
+                low_water,
+                high_water,
+            } => assert_eq!((begin, end, low_water, high_water), (1, 20, 13, 20)),
+            other => panic!("expected ResendOutOfRange, got {}", variant(&Some(other))),
+        }
+    }
+
+    /// A resolved `EndSeqNo` above the high-water (peer ahead of us) surfaces
+    /// `ResendOutOfRange` — no cursor — even when `begin` is retained.
+    #[test]
+    fn resend_end_above_high_water_is_out_of_range() {
+        // window 8, stored 1..=20 → retained [13, 20]; end 25 > high_water 20.
+        let dir = tmp_dir("end_above_high");
+        let mut rig = windowed_session(dir.path(), 8, 20, 0);
+
+        assert_eq!(feed_resend(&mut rig, 2, 15, 25), PollOutcome::Message);
+        match rig.message() {
+            Message::ResendOutOfRange {
+                begin,
+                end,
+                low_water,
+                high_water,
+            } => assert_eq!((begin, end, low_water, high_water), (15, 25, 13, 20)),
+            other => panic!("expected ResendOutOfRange, got {}", variant(&Some(other))),
+        }
+    }
+
+    // ── SequenceReset send helpers: exact-frame byte assertions ──────────────
+
+    /// Build the exact admin frame the engine's emit path produces for MsgType
+    /// `msg_type` at `seq`, with the session header (34/49/56/52) followed by
+    /// `body` fields in order. Mirrors `write_admin_header` + the body encoder so a
+    /// byte-for-byte `assert_eq!` pins the emitted frame (incl. field presence,
+    /// order, `BodyLength`, and `CheckSum`).
+    fn expected_admin_frame(
+        msg_type: &[u8],
+        seq: u32,
+        ts: &[u8],
+        body: &[(u32, &[u8])],
+    ) -> Vec<u8> {
+        let mut seq_buf = [0u8; 10];
+        let seq_n = nexus_fix_codec::encode_fix_uint(seq, &mut seq_buf);
+        let mut buf = [0u8; 256];
+        let mut fmt = FrameFormatter::new(&mut buf, b"FIX.4.4", msg_type);
+        fmt.field(34, &seq_buf[..seq_n]);
+        fmt.field(49, our_id().as_bytes()); // engine is the SENDER
+        fmt.field(56, peer_id().as_bytes());
+        fmt.field(52, ts);
+        for (tag, val) in body {
+            fmt.field(*tag, val);
+        }
+        let (start, len) = fmt.finish().unwrap();
+        buf[start..start + len].to_vec()
+    }
+
+    /// `sequence_reset` (Reset mode) emits a `SequenceReset` with `GapFillFlag=N`,
+    /// **no** `PossDupFlag`, `MsgSeqNum` = the allocated next outbound seqnum, and
+    /// `NewSeqNo` = `new_seq` — and it consumes/advances the outbound seqnum and
+    /// journals (a fresh outbound admin).
+    #[test]
+    fn sequence_reset_reset_mode_byte_exact() {
+        let dir = tmp_dir("seqreset_reset_bytes");
+        let mut rig = active_session(dir.path(), 4096);
+        // After establish: state next_outbound = 2 (Logon consumed seq 1).
+        assert_eq!(rig.session.state().next_outbound_seq(), 2);
+        let journal_before = rig.session.journal.next_outbound();
+
+        rig.session
+            .encode_sequence_reset(&mut rig.writer, NOW, 100)
+            .unwrap();
+
+        let mut ts = [0u8; crate::timestamp::UTC_TIMESTAMP_LEN];
+        crate::timestamp::format_utc_timestamp(NOW, &mut ts);
+        // Reset mode: MsgSeqNum = 2 (allocated), 123=N, 36=100, and NO 43.
+        let expected = expected_admin_frame(b"4", 2, &ts, &[(123, b"N"), (36, b"100")]);
+        assert_eq!(
+            rig.outbound(),
+            expected.as_slice(),
+            "reset-mode SequenceReset frame bytes"
+        );
+        assert!(
+            find_tag(rig.outbound(), 0, 43).is_none(),
+            "reset mode must not set PossDupFlag(43)"
+        );
+
+        // Reset mode allocates + advances the outbound seqnum, and journals it.
+        assert_eq!(
+            rig.session.state().next_outbound_seq(),
+            3,
+            "reset mode must advance next_outbound"
+        );
+        assert!(
+            rig.session.journal.next_outbound() > journal_before,
+            "reset mode must journal (advancing the journal's next_outbound)"
+        );
+    }
+
+    /// `gap_fill` (GapFill mode) emits a `SequenceReset` with `PossDupFlag=Y` +
+    /// `GapFillFlag=Y`, `MsgSeqNum` = `from_seq` (**not** allocated), and `NewSeqNo`
+    /// = `new_seq` — and it neither advances the outbound seqnum nor journals.
+    #[test]
+    fn gap_fill_mode_byte_exact() {
+        let dir = tmp_dir("gapfill_bytes");
+        let mut rig = active_session(dir.path(), 4096);
+        assert_eq!(rig.session.state().next_outbound_seq(), 2);
+        let journal_before = rig.session.journal.next_outbound();
+
+        rig.session
+            .encode_gap_fill(&mut rig.writer, NOW, 5, 10)
+            .unwrap();
+
+        let mut ts = [0u8; crate::timestamp::UTC_TIMESTAMP_LEN];
+        crate::timestamp::format_utc_timestamp(NOW, &mut ts);
+        // GapFill mode: MsgSeqNum = 5 (from_seq), 43=Y, 123=Y, 36=10.
+        let expected = expected_admin_frame(b"4", 5, &ts, &[(43, b"Y"), (123, b"Y"), (36, b"10")]);
+        assert_eq!(
+            rig.outbound(),
+            expected.as_slice(),
+            "gap-fill SequenceReset frame bytes"
+        );
+
+        // GapFill neither allocates/advances the outbound seqnum nor journals.
+        assert_eq!(
+            rig.session.state().next_outbound_seq(),
+            2,
+            "gap_fill must not advance next_outbound"
+        );
+        assert_eq!(
+            rig.session.journal.next_outbound(),
+            journal_before,
+            "gap_fill must not journal (would rewind next_outbound)"
+        );
     }
 
     #[test]
@@ -2952,6 +3394,7 @@ mod tests {
             Some(Message::LogoutRequest { .. }) => "LogoutRequest",
             Some(Message::Heartbeat { .. }) => "Heartbeat",
             Some(Message::ResendRequest { .. }) => "ResendRequest",
+            Some(Message::ResendOutOfRange { .. }) => "ResendOutOfRange",
             Some(Message::SequenceReset { .. }) => "SequenceReset",
             Some(Message::Reject { .. }) => "Reject",
             Some(Message::LogonAcknowledged { .. }) => "LogonAcknowledged",

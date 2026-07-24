@@ -75,10 +75,37 @@ impl<S: Read + Write> Rig<S> {
                 d.accept(session, writer, stream, NOW)?;
                 Ok(Step::Continue)
             }
+            Some(Message::ResendRequest { cursor }) => {
+                // Pump the cursor: reframe each item into `writer`, write the yielded
+                // bytes, repeat until Done. The cursor is `Copy`, so it carries no
+                // reader borrow.
+                let mut c = cursor;
+                while let Some(bytes) = c.next(session, writer, NOW)? {
+                    stream.write_all(bytes).map_err(TransportError::Io)?;
+                }
+                stream.flush().map_err(TransportError::Io)?;
+                Ok(Step::Continue)
+            }
+            Some(Message::ResendOutOfRange {
+                begin,
+                low_water,
+                high_water,
+                ..
+            }) => {
+                // The requested range fell outside the retained window. If the start
+                // rotated off, gap-fill from `begin` (SequenceReset-GapFill); if the
+                // peer is simply ahead of us, force it forward (SequenceReset-Reset).
+                if begin < low_water {
+                    session.gap_fill(writer, stream, NOW, begin, high_water + 1)?;
+                } else {
+                    session.sequence_reset(writer, stream, NOW, high_water + 1)?;
+                }
+                Ok(Step::Continue)
+            }
             Some(Message::Application { .. }) => Ok(Step::App),
             Some(Message::Heartbeat { .. }) => Ok(Step::Heartbeat),
-            // No reply required (Reject / SequenceReset / LogonAcknowledged /
-            // ResendRequest), or nothing surfaced (`None`).
+            // No reply required (Reject / SequenceReset / LogonAcknowledged), or
+            // nothing surfaced (`None`).
             _ => Ok(Step::Continue),
         }
     }
@@ -801,9 +828,11 @@ fn duplicate_admin_suppressed_no_resend() {
 }
 
 #[test]
-fn resend_request_huge_end_seq_clamped() {
-    // Fix 1: peer sends EndSeqNo=4_000_000_000; engine must clamp to next_outbound-1
-    // and respond immediately (not iterate 4B times).
+fn resend_request_huge_end_seq_out_of_range() {
+    // Peer sends EndSeqNo=4_000_000_000, far above our high-water. The engine must
+    // classify this as out-of-range up front (never iterate 4B times) and surface
+    // `ResendOutOfRange`; the user answers with a SequenceReset-Reset forcing the
+    // peer's expected seqnum to our next outbound (high_water + 1 = 2).
     let dir = tmp_dir("resend_huge");
     let (client_sock, server_sock) = loopback_pair();
     client_sock
@@ -816,13 +845,16 @@ fn resend_request_huge_end_seq_clamped() {
         let _ = peer.recv_msg(&mut buf); // initiator logon
         peer.send_logon(30);
         peer.send_resend_request(1, 4_000_000_000); // seq=2, begin=1, end=4B
-        let n = peer.recv_msg(&mut buf); // must receive GapFill quickly
-        assert!(n > 0, "engine must respond to clamped ResendRequest");
+        let n = peer.recv_msg(&mut buf); // must receive the reset quickly
+        assert!(
+            n > 0,
+            "engine must respond to an out-of-range ResendRequest"
+        );
         let new_seq: u32 = find_tag(&buf[..n], 0, 36)
             .and_then(|s| FieldView::new(s, &buf[..n]))
-            .expect("GapFill must contain NewSeqNo(36)")
+            .expect("SequenceReset must contain NewSeqNo(36)")
             .get();
-        assert_eq!(new_seq, 2u32, "GapFill new_seq must equal next_outbound");
+        assert_eq!(new_seq, 2u32, "reset new_seq must equal next_outbound");
         peer.send_logout();
         let _ = peer.recv_msg(&mut buf);
     });

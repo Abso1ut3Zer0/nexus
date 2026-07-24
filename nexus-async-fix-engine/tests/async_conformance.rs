@@ -1,11 +1,13 @@
 #![cfg(unix)]
 
+use std::future::poll_fn;
 use std::io::{BufRead, BufReader};
 use std::path::{Path, PathBuf};
+use std::pin::Pin;
 use std::process::{Command, Stdio};
 use std::time::Duration;
 
-use nexus_async_fix_engine::{AsyncReadAdapter, FixParts, FixSession};
+use nexus_async_fix_engine::{AsyncReadAdapter, FixParts, FixSession, WireStream};
 use nexus_fix_codec::{
     FieldView, FixAdminMsg, FixDictionary, FixHeader, FixTimestamp, FrameFormatter,
     encode_fix_uint, find_tag,
@@ -141,6 +143,30 @@ fn spawn_peer(scenario: &str) -> (std::process::Child, u16) {
     (child, port)
 }
 
+/// Write every byte of `data` to a [`WireStream`], `.await`ing backpressure, then
+/// flush — the async counterpart of the blocking `write_all` used to drain a pumped
+/// [`nexus_fix_engine::ResendCursor`]'s yielded bytes.
+async fn write_all_ws<S: WireStream + Unpin>(
+    stream: &mut S,
+    mut data: &[u8],
+) -> Result<(), TransportError> {
+    while !data.is_empty() {
+        let n = poll_fn(|cx| Pin::new(&mut *stream).poll_write(cx, data))
+            .await
+            .map_err(TransportError::Io)?;
+        if n == 0 {
+            return Err(TransportError::Io(std::io::Error::other(
+                "write returned 0",
+            )));
+        }
+        data = &data[n..];
+    }
+    poll_fn(|cx| Pin::new(&mut *stream).poll_flush(cx))
+        .await
+        .map_err(TransportError::Io)?;
+    Ok(())
+}
+
 /// Test-local bundle over the async three-object API: the [`FixSession`] newtype
 /// plus its caller-held `reader`/`writer` and the owned transport. `recv` is the
 /// only async method (it `.await`s socket I/O); the encode-only sends are sync and
@@ -195,6 +221,32 @@ impl Rig {
             }
             Some(Message::LogonRequest(d) | Message::LogonResetRequest(d)) => {
                 session.accept_logon(d, writer, stream, NOW).await?;
+                Ok(Step::Continue)
+            }
+            Some(Message::ResendRequest { cursor }) => {
+                // Pump the sans-IO cursor and `.await` each yielded write (the async
+                // user's counterpart of the blocking `write_all`).
+                let mut c = cursor;
+                while let Some(bytes) = c.next(session, writer, NOW)? {
+                    write_all_ws(stream, bytes).await?;
+                }
+                Ok(Step::Continue)
+            }
+            Some(Message::ResendOutOfRange {
+                begin,
+                low_water,
+                high_water,
+                ..
+            }) => {
+                if begin < low_water {
+                    session
+                        .gap_fill(writer, stream, NOW, begin, high_water + 1)
+                        .await?;
+                } else {
+                    session
+                        .sequence_reset(writer, stream, NOW, high_water + 1)
+                        .await?;
+                }
                 Ok(Step::Continue)
             }
             Some(Message::Application { .. }) => Ok(Step::App),

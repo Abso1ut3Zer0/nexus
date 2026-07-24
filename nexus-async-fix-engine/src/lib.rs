@@ -91,12 +91,13 @@ impl<D: FixDictionary> FixSession<D> {
     ///
     /// Fills `reader` from `conn` copy-free (`poll_fill_into`), drives
     /// [`poll`](nexus_fix_engine::FixSession::poll), drains any *mechanism*
-    /// outbound (reset handshake, protocol-error Logout, resend) from `writer` to
-    /// `conn`, and returns the message. `Ok(None)` means a step produced nothing to
-    /// surface (an out-of-sequence app, or a session-level reject). The session
-    /// holds no timers, so `recv` simply awaits a full frame; run your own
-    /// heartbeat/liveness timers alongside it (e.g. a `tokio::select!` over `recv`
-    /// and your tickers).
+    /// outbound (reset handshake, protocol-error Logout) from `writer` to `conn`,
+    /// and returns the message. A resend is *not* driven here — an inbound
+    /// ResendRequest surfaces a `ResendCursor` the caller pumps. `Ok(None)` means a
+    /// step produced nothing to surface (an out-of-sequence app, or a session-level
+    /// reject). The session holds no timers, so `recv` simply awaits a full frame;
+    /// run your own heartbeat/liveness timers alongside it (e.g. a `tokio::select!`
+    /// over `recv` and your tickers).
     ///
     /// `now` (UTC unix-nanos) stamps `SendingTime(52)` on any mechanism emit the
     /// engine drives inside `recv`; the reply to the returned message is still
@@ -155,8 +156,8 @@ impl<D: FixDictionary> FixSession<D> {
     {
         loop {
             let outcome = self.core.poll(reader, writer, now)?;
-            // Drain any admin/resend the core enqueued this step. Also flushes a
-            // pending opening Logon / `send_app` staged before `recv`.
+            // Drain any admin the core enqueued this step. Also flushes a pending
+            // opening Logon / `send_app` staged before `recv`.
             drain_outbound(writer, conn).await?;
 
             match outcome {
@@ -167,8 +168,6 @@ impl<D: FixDictionary> FixSession<D> {
                     return Err(Error::UnexpectedDisconnect { reason });
                 }
                 PollOutcome::Suppressed => return Ok(RecvStep::Nothing),
-                // Buffer already drained above; loop to continue the resend.
-                PollOutcome::ResendPending => {}
                 PollOutcome::NeedMoreBytes => {
                     // An empty spare means the reader buffer is full with a single
                     // incomplete frame that cannot grow (compaction reclaimed
@@ -321,6 +320,50 @@ impl<D: FixDictionary> FixSession<D> {
         S: WireStream + Unpin,
     {
         self.core.encode_resend_request(writer, now, begin)?;
+        drain_outbound(writer, conn).await
+    }
+
+    /// Encodes a SequenceReset-Reset forcing the peer's expected seqnum to `new_seq`
+    /// and flushes it to `conn`. Answers a [`Message::ResendOutOfRange`] whose
+    /// `EndSeqNo` exceeds what we sent; see
+    /// [`nexus_fix_engine::FixSession::encode_sequence_reset`]. For the rotated-off
+    /// `BeginSeqNo` case use [`gap_fill`](Self::gap_fill). Distinct from
+    /// [`reset_sequence`](Self::reset_sequence) (the in-session reset handshake).
+    /// `now` stamps `SendingTime(52)` (UTC unix-nanos).
+    pub async fn sequence_reset<C, S>(
+        &mut self,
+        writer: &mut MessageWriter<D, C>,
+        conn: &mut S,
+        now: i128,
+        new_seq: u32,
+    ) -> Result<(), Error>
+    where
+        C: SessionCustomizer,
+        S: WireStream + Unpin,
+    {
+        self.core.encode_sequence_reset(writer, now, new_seq)?;
+        drain_outbound(writer, conn).await
+    }
+
+    /// Encodes a SequenceReset-GapFill standing in for `[from_seq, new_seq)` and
+    /// flushes it to `conn`. Answers a [`Message::ResendOutOfRange`] whose
+    /// `BeginSeqNo` rotated off the replay window: `MsgSeqNum(34)` is `from_seq` (no
+    /// seqnum is consumed) and the frame is not journaled; see
+    /// [`nexus_fix_engine::FixSession::encode_gap_fill`]. `now` stamps
+    /// `SendingTime(52)` (UTC unix-nanos).
+    pub async fn gap_fill<C, S>(
+        &mut self,
+        writer: &mut MessageWriter<D, C>,
+        conn: &mut S,
+        now: i128,
+        from_seq: u32,
+        new_seq: u32,
+    ) -> Result<(), Error>
+    where
+        C: SessionCustomizer,
+        S: WireStream + Unpin,
+    {
+        self.core.encode_gap_fill(writer, now, from_seq, new_seq)?;
         drain_outbound(writer, conn).await
     }
 

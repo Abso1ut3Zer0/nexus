@@ -6,7 +6,8 @@ use std::time::Duration;
 pub use event::{Control, DisconnectReason, State};
 pub use input::*;
 use nexus_fix_codec::{
-    AdminEncode, Heartbeat, Logon, LogonReset, Logout, Reject, ResendRequest, TestRequest,
+    AdminEncode, Heartbeat, Logon, LogonReset, Logout, Reject, ResendRequest, SequenceReset,
+    TestRequest,
 };
 
 use crate::framework::SessionError;
@@ -291,6 +292,61 @@ impl SessionState {
     ) -> Result<Control, E::Error> {
         let seq = seq!(self);
         emitter.emit(ResendRequest { seq, begin })?;
+        Ok(Control::None)
+    }
+
+    /// Sends a SequenceReset-Reset (35=4, `GapFillFlag=N`) forcing the peer's
+    /// expected inbound seqnum to `new_seq` unconditionally — the "force the peer
+    /// forward" answer to a [`Control::ResendOutOfRange`] whose `EndSeqNo` exceeds
+    /// what we sent (the peer is ahead of us).
+    ///
+    /// Allocates the next outbound seqnum for `MsgSeqNum(34)` and advances it, like
+    /// every other outbound verb (a Reset-mode SequenceReset is a fresh outbound
+    /// admin; the receiver ignores its `MsgSeqNum`). No state transition. Distinct
+    /// from [`reset_sequence`](Self::reset_sequence), the in-session reset
+    /// *handshake* (a TestRequest/Logon exchange), and from
+    /// [`gap_fill`](Self::gap_fill), the GapFill-mode SequenceReset.
+    ///
+    /// Emits: SequenceReset.
+    pub fn sequence_reset<E: Emit>(
+        &mut self,
+        new_seq: u32,
+        emitter: &mut E,
+    ) -> Result<Control, E::Error> {
+        let seq = seq!(self);
+        emitter.emit(SequenceReset {
+            seq,
+            new_seq,
+            gap_fill: false,
+        })?;
+        Ok(Control::None)
+    }
+
+    /// Sends a SequenceReset-GapFill (35=4, `GapFillFlag=Y` + `PossDupFlag=Y`)
+    /// standing in for the skipped outbound range `[from_seq, new_seq)` — the answer
+    /// to a [`Control::ResendOutOfRange`] whose `BeginSeqNo` rotated off the replay
+    /// window.
+    ///
+    /// **Unlike every other outbound verb it does NOT allocate or advance the
+    /// outbound seqnum.** A gap-fill carries the seqnum of the first message it
+    /// replaces (`from_seq` → `MsgSeqNum(34)`) — the seqnum the peer is waiting on —
+    /// so consuming a fresh one would open a new gap on the peer instead of closing
+    /// theirs. `new_seq` is the `NewSeqNo(36)` the peer should expect next. The user
+    /// answers `ResendOutOfRange { begin, .. }` with `gap_fill(begin, <resume
+    /// seqnum>)`; `from_seq`/`new_seq` are their recovery policy.
+    ///
+    /// Emits: SequenceReset (at `from_seq`, no seqnum consumed).
+    pub fn gap_fill<E: Emit>(
+        &mut self,
+        from_seq: u32,
+        new_seq: u32,
+        emitter: &mut E,
+    ) -> Result<Control, E::Error> {
+        emitter.emit(SequenceReset {
+            seq: from_seq,
+            new_seq,
+            gap_fill: true,
+        })?;
         Ok(Control::None)
     }
 

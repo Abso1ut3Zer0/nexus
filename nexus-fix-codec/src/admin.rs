@@ -212,12 +212,17 @@ impl AdminEncode for ResendRequest {
     }
 }
 
-/// GapFill-mode SequenceReset (35=4). Encoded with `GapFillFlag(123)=Y` and
-/// `PossDupFlag(43)=Y`; `new_seq` is `NewSeqNo(36)`.
+/// SequenceReset (35=4); `new_seq` is `NewSeqNo(36)`.
+///
+/// `gap_fill` selects the mode: `true` → GapFill mode (`PossDupFlag(43)=Y` +
+/// `GapFillFlag(123)=Y`), the form that replaces admin holes during a resend;
+/// `false` → Reset mode (`GapFillFlag(123)=N`), the administrative reset that forces
+/// the receiver's expected inbound seqnum to `new_seq` unconditionally.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct SequenceReset {
     pub seq: u32,
     pub new_seq: u32,
+    pub gap_fill: bool,
 }
 
 impl AdminEncode for SequenceReset {
@@ -232,7 +237,7 @@ impl AdminEncode for SequenceReset {
     }
 
     fn encode<D: FixDictionary>(&self, fmt: &mut FrameFormatter<'_>, hdr: &AdminHeader<'_>) {
-        D::encode_sequence_reset(fmt, hdr, self.new_seq);
+        D::encode_sequence_reset(fmt, hdr, self.new_seq, self.gap_fill);
     }
 
     fn customize<C: SessionCustomizer>(&self, customizer: &mut C, out: &mut AdminMsgOut<'_, '_>) {

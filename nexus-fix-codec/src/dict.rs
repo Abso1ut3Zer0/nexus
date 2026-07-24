@@ -164,11 +164,27 @@ pub trait FixDictionary {
     const SEQUENCE_RESET_OWNED: &'static [u32] = &[43, 123, 36];
 
     /// Write SequenceReset's (35=4) standard fields.
-    fn encode_sequence_reset(fmt: &mut FrameFormatter<'_>, hdr: &AdminHeader<'_>, new_seq: u32) {
+    ///
+    /// `gap_fill = true` is GapFill mode: `PossDupFlag(43)=Y` +
+    /// `GapFillFlag(123)=Y`, used to replace admin holes during a resend, so the
+    /// receiver validates the sequence and advances to `NewSeqNo`. `gap_fill =
+    /// false` is Reset mode: `GapFillFlag(123)=N`, no `PossDupFlag` — an
+    /// administrative reset the receiver honors unconditionally, forcing its
+    /// expected inbound seqnum to `NewSeqNo` regardless of `MsgSeqNum`.
+    fn encode_sequence_reset(
+        fmt: &mut FrameFormatter<'_>,
+        hdr: &AdminHeader<'_>,
+        new_seq: u32,
+        gap_fill: bool,
+    ) {
         use crate::types::encode_fix_uint;
         write_admin_header(fmt, hdr);
-        fmt.field(43, b"Y");
-        fmt.field(123, b"Y");
+        if gap_fill {
+            fmt.field(43, b"Y");
+            fmt.field(123, b"Y");
+        } else {
+            fmt.field(123, b"N");
+        }
         let mut tmp = [0u8; 10];
         let n = encode_fix_uint(new_seq, &mut tmp);
         fmt.field(36, &tmp[..n]);

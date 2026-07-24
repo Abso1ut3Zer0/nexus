@@ -134,8 +134,32 @@ pub enum Message<'r, D: FixDictionary> {
     LogoutRequest { msg: D::Logout<'r> },
     /// Heartbeat (35=0). No reply required.
     Heartbeat { msg: D::Heartbeat<'r> },
-    /// ResendRequest (35=2). Re-send or gap-fill the requested range.
-    ResendRequest { msg: D::ResendRequest<'r> },
+    /// ResendRequest (35=2) whose requested range is fully within the journal's
+    /// retained replay window. Pump the [`ResendCursor`] to replay it — each
+    /// [`next`](ResendCursor::next) yields bytes to write; dropping it refuses the
+    /// resend. The up-front providability check guarantees the cursor fulfills, so
+    /// it never hits out-of-range mid-pump.
+    ResendRequest {
+        /// The retransmission cursor. `Copy`, so binding it carries no reader
+        /// borrow: copy it out and pump `next(&mut session, &mut writer, now)`.
+        cursor: ResendCursor,
+    },
+    /// ResendRequest (35=2) the journal can no longer fulfill — the requested range
+    /// falls outside the retained replay window `[low_water, high_water]`. **No
+    /// cursor**: the user decides. `begin < low_water` means the start rotated off;
+    /// `end > high_water` means the peer asked for messages we never sent (desync).
+    /// Answer with `sequence_reset(&mut writer, &mut conn, now, new_seq, gap_fill)`
+    /// (GapFill or Reset mode), or log out.
+    ResendOutOfRange {
+        /// Requested `BeginSeqNo(7)`.
+        begin: u32,
+        /// Resolved `EndSeqNo(16)` (open-ended `0` clamped to `high_water`).
+        end: u32,
+        /// Oldest outbound seqnum still replayable (`next_outbound - window`).
+        low_water: u32,
+        /// Highest outbound seqnum ever sent (`next_outbound - 1`).
+        high_water: u32,
+    },
     /// SequenceReset (35=4). State updated internally; inspect if needed. No reply.
     SequenceReset { msg: D::SequenceReset<'r> },
     /// Reject (35=3). State updated internally; inspect if needed. No reply.
@@ -147,6 +171,85 @@ pub enum Message<'r, D: FixDictionary> {
     /// (35=5). An *abnormal* end never appears here: it surfaces as
     /// `Err(TransportError::UnexpectedDisconnect { reason })`.
     LoggedOut { msg: D::Logout<'r> },
+}
+
+/// A user-pumped cursor over a retransmission, surfaced inside
+/// [`Message::ResendRequest`].
+///
+/// The engine hands one back only after an **up-front providability check**: the
+/// requested `[begin, end]` lies fully within the journal's retained replay window
+/// (`[low_water, high_water]`), so the cursor is *guaranteed* to fulfill — it never
+/// hits an out-of-range mid-pump. A request outside the window surfaces as
+/// [`Message::ResendOutOfRange`] instead, with no cursor.
+///
+/// # Pumping
+///
+/// The caller drives the replay one write at a time. `next` reframes the next
+/// journalled item into the caller's `writer` — an app message as a PossDup replay
+/// (`PossDupFlag(43)=Y`, `OrigSendingTime(122)` from the stored frame, a fresh
+/// `SendingTime(52)` from `now`), or a run of admin holes / never-sent seqnums as
+/// one `SequenceReset-GapFill` — and returns the reframed bytes. `Ok(None)` means
+/// the whole range has drained (Done). The bytes borrow the writer, so **write each
+/// yielded slice before the next call** — the next call reuses (overwrites) the
+/// writer buffer.
+///
+/// ```ignore
+/// Message::ResendRequest { cursor } => {
+///     let mut c = cursor;                       // Copy — carries no reader borrow
+///     while let Some(bytes) = c.next(&mut session, &mut writer, now)? {
+///         conn.write_all(bytes)?;               // pace / bound / abort is yours
+///     }
+/// }
+/// ```
+///
+/// # Sans-IO and `Copy`
+///
+/// The cursor performs no I/O — it yields bytes and the caller writes them, so the
+/// same cursor drives sync (`write_all`) and async (`.await` the write). It holds
+/// only three seqnums (`Copy`, no borrowed iterator): re-deriving
+/// `journal.resend(pos, end)` each call is O(1) to locate a seqnum via the offset
+/// table. Being `Copy`, it rides in the non-borrowing verdict from `poll` straight
+/// into `message()` with no frame borrow, and — because `Copy` and `Drop` are
+/// mutually exclusive — it has no destructor: **dropping it without pumping simply
+/// refuses the resend** (nothing is sent). Pace, bound, or abort the replay in your
+/// own loop; that is how you refuse an abusive multi-million-message demand instead
+/// of parking your session thread.
+///
+/// The replay pump (`next` / `next_batch`) is defined on the unix-only
+/// [`FixSession`](crate::FixSession) side, since it drives the journal; the state
+/// here is platform-independent.
+#[derive(Clone, Copy, Debug)]
+pub struct ResendCursor {
+    /// Requested `BeginSeqNo(7)` — retained for [`begin`](Self::begin)/logging.
+    pub(crate) begin: u32,
+    /// Resolved `EndSeqNo(16)` (open-ended `0` clamped to high-water) — the last
+    /// seqnum to replay, inclusive.
+    pub(crate) end: u32,
+    /// Next outbound seqnum to replay; starts at `begin`, advances past each item
+    /// (one past an app, to a gap-fill's `NewSeqNo`). `> end` means Done.
+    pub(crate) pos: u32,
+}
+
+impl ResendCursor {
+    /// Construct a cursor over the (already validated, providable) resolved range.
+    pub(crate) fn new(begin: u32, end: u32) -> Self {
+        Self {
+            begin,
+            end,
+            pos: begin,
+        }
+    }
+
+    /// The requested `BeginSeqNo(7)`.
+    pub fn begin(&self) -> u32 {
+        self.begin
+    }
+
+    /// The resolved `EndSeqNo(16)` (open-ended `0` clamped to the journal
+    /// high-water at the time the request was classified).
+    pub fn end(&self) -> u32 {
+        self.end
+    }
 }
 
 /// The binary-choice response object for a counterparty-initiated Logon.
