@@ -35,10 +35,10 @@ impl<S: Read + Write> Rig<S> {
             .recv(&mut self.reader, &mut self.writer, &mut self.stream)
     }
     fn connect(&mut self) -> Result<(), TransportError> {
-        self.session.connect(&mut self.writer)
+        self.session.encode_connect(&mut self.writer)
     }
     fn send_app(&mut self, seq: u32, frame: &[u8]) -> Result<(), TransportError> {
-        self.session.send_app(&mut self.writer, seq, frame)
+        self.session.encode_send_app(&mut self.writer, seq, frame)
     }
     fn state(&self) -> &SessionState {
         self.session.state()

@@ -192,6 +192,131 @@ impl<D: FixDictionary> FixSession<D> {
             }
         }
     }
+
+    // ── protocol actions — async combined (encode + flush over a WireStream) ──
+    //
+    // The async twin of the core's combined sends: encode via the core's
+    // `encode_<action>` primitive (reached through `Deref`), then `.await` the
+    // flush to `conn`. The encode-only primitives themselves are available
+    // unchanged via `Deref` for the custom-transport / byte-seam path.
+
+    /// Encodes a Logon and flushes it to `conn` (initiate the session).
+    pub async fn connect<C, S>(
+        &mut self,
+        writer: &mut MessageWriter<D, C>,
+        conn: &mut S,
+    ) -> Result<(), Error>
+    where
+        C: SessionCustomizer,
+        S: WireStream + Unpin,
+    {
+        self.core.encode_connect(writer)?;
+        drain_outbound(writer, conn).await
+    }
+
+    /// Encodes a Logon with `ResetSeqNumFlag=Y` and flushes it to `conn`.
+    pub async fn connect_reset<C, S>(
+        &mut self,
+        writer: &mut MessageWriter<D, C>,
+        conn: &mut S,
+    ) -> Result<(), Error>
+    where
+        C: SessionCustomizer,
+        S: WireStream + Unpin,
+    {
+        self.core.encode_connect_reset(writer)?;
+        drain_outbound(writer, conn).await
+    }
+
+    /// Encodes an in-session sequence reset handshake and flushes it to `conn`.
+    pub async fn reset_sequence<C, S>(
+        &mut self,
+        writer: &mut MessageWriter<D, C>,
+        conn: &mut S,
+    ) -> Result<(), Error>
+    where
+        C: SessionCustomizer,
+        S: WireStream + Unpin,
+    {
+        self.core.encode_reset_sequence(writer)?;
+        drain_outbound(writer, conn).await
+    }
+
+    /// Encodes a Logout and flushes it to `conn`.
+    pub async fn logout<C, S>(
+        &mut self,
+        writer: &mut MessageWriter<D, C>,
+        conn: &mut S,
+    ) -> Result<(), Error>
+    where
+        C: SessionCustomizer,
+        S: WireStream + Unpin,
+    {
+        self.core.encode_logout(writer)?;
+        drain_outbound(writer, conn).await
+    }
+
+    /// Encodes a Heartbeat (echoing `echo` if `Some`) and flushes it to `conn`.
+    pub async fn heartbeat<C, S>(
+        &mut self,
+        writer: &mut MessageWriter<D, C>,
+        conn: &mut S,
+        echo: Option<&str>,
+    ) -> Result<(), Error>
+    where
+        C: SessionCustomizer,
+        S: WireStream + Unpin,
+    {
+        self.core.encode_heartbeat(writer, echo)?;
+        drain_outbound(writer, conn).await
+    }
+
+    /// Encodes a TestRequest and flushes it to `conn`.
+    pub async fn test_request<C, S>(
+        &mut self,
+        writer: &mut MessageWriter<D, C>,
+        conn: &mut S,
+    ) -> Result<(), Error>
+    where
+        C: SessionCustomizer,
+        S: WireStream + Unpin,
+    {
+        self.core.encode_test_request(writer)?;
+        drain_outbound(writer, conn).await
+    }
+
+    /// Encodes a ResendRequest covering `[begin, ∞)` and flushes it to `conn`.
+    pub async fn resend_request<C, S>(
+        &mut self,
+        writer: &mut MessageWriter<D, C>,
+        conn: &mut S,
+        begin: u32,
+    ) -> Result<(), Error>
+    where
+        C: SessionCustomizer,
+        S: WireStream + Unpin,
+    {
+        self.core.encode_resend_request(writer, begin)?;
+        drain_outbound(writer, conn).await
+    }
+
+    /// Journals, encodes an application frame at sequence `seq`, and flushes it to
+    /// `conn`. See [`nexus_fix_engine::FixSession::encode_send_app`] for the
+    /// frame-size constraint.
+    pub async fn send_app<C, S>(
+        &mut self,
+        writer: &mut MessageWriter<D, C>,
+        conn: &mut S,
+        seq: u32,
+        frame: &[u8],
+    ) -> Result<(), Error>
+    where
+        C: SessionCustomizer,
+        S: WireStream + Unpin,
+    {
+        self.core.encode_send_app(writer, seq, frame)?;
+        drain_outbound(writer, conn).await
+    }
 }
 
 impl<D: FixDictionary> Deref for FixSession<D> {

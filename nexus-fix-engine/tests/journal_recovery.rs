@@ -217,7 +217,7 @@ fn journal_stop_and_reopen_resumes_seqnums() {
         let mut reader = MessageReader::<MockDict>::new();
         let mut writer = MessageWriter::<MockDict>::new();
 
-        s1.connect(&mut writer).unwrap(); // Logon(seq=1) queued + journaled
+        s1.encode_connect(&mut writer).unwrap(); // Logon(seq=1) queued + journaled
         drain_out(&mut writer);
         feed(
             &mut s1,
@@ -230,7 +230,8 @@ fn journal_stop_and_reopen_resumes_seqnums() {
         assert_eq!(s1.state().next_inbound_seq(), 2);
 
         let seq = s1.allocate_seq().unwrap(); // 2
-        s1.send_app(&mut writer, seq, &engine_app(seq)).unwrap(); // app(seq=2) journaled
+        s1.encode_send_app(&mut writer, seq, &engine_app(seq))
+            .unwrap(); // app(seq=2) journaled
         drain_out(&mut writer);
         feed(&mut s1, &mut reader, &mut writer, &peer_frame(b"0", 2, &[])); // inbound Heartbeat seq 2
 
@@ -274,7 +275,7 @@ fn journal_stop_and_reopen_resumes_seqnums() {
 
     // The post-restart Logon must carry the RECOVERED seqnum (34=3), proving
     // persist-before-send survived the restart — not a fresh 34=1.
-    s2.connect(&mut writer).unwrap();
+    s2.encode_connect(&mut writer).unwrap();
     let logon = writer.data().to_vec();
     assert!(has_field(&logon, b"35=A"), "outbound must be a Logon");
     assert!(

@@ -226,6 +226,64 @@ impl SessionState {
         Ok(Control::None)
     }
 
+    /// Sends a Heartbeat (35=0), optionally echoing a peer's `TestReqID(112)`.
+    ///
+    /// The user-driven counterpart of the Heartbeat the state machine auto-emits
+    /// when answering a TestRequest: it allocates the next outbound seqnum and
+    /// emits, but performs no state transition and no sequence validation — the
+    /// caller decides when to send (a keepalive tick, or a manual reply). `echo`
+    /// is the raw `TestReqID` bytes to mirror back, or `None` for an unsolicited
+    /// keepalive.
+    ///
+    /// Emits: Heartbeat.
+    pub fn heartbeat<E: Emit>(
+        &mut self,
+        echo: Option<&[u8]>,
+        emitter: &mut E,
+    ) -> Result<Control, E::Error> {
+        let seq = seq!(self);
+        emitter.emit(Heartbeat { seq, echo })?;
+        Ok(Control::None)
+    }
+
+    /// Sends a TestRequest (35=1) carrying a fresh `TestReqID(112)`.
+    ///
+    /// The user-driven liveness probe (contract timer 2): it allocates the next
+    /// outbound seqnum, bumps the monotonic TestReqID counter, and emits. No state
+    /// transition — unlike [`reset_sequence`](Self::reset_sequence), which also
+    /// sends a TestRequest but as the first leg of a reset handshake. Peer liveness
+    /// is proven by *any* inbound message, so the caller never needs to match the
+    /// returned id.
+    ///
+    /// Emits: TestRequest.
+    pub fn test_request<E: Emit>(&mut self, emitter: &mut E) -> Result<Control, E::Error> {
+        self.test_req_counter += 1;
+        let seq = seq!(self);
+        emitter.emit(TestRequest {
+            seq,
+            id: self.test_req_counter,
+        })?;
+        Ok(Control::None)
+    }
+
+    /// Sends a ResendRequest (35=2) covering `[begin, ∞)` (encoded `EndSeqNo(16)=0`).
+    ///
+    /// The user-driven counterpart of the ResendRequest the state machine
+    /// auto-emits on a detected gap: it allocates the next outbound seqnum and
+    /// emits. No state transition — the caller drives recovery. `begin` is the
+    /// first missing inbound seqnum.
+    ///
+    /// Emits: ResendRequest.
+    pub fn resend_request<E: Emit>(
+        &mut self,
+        begin: u32,
+        emitter: &mut E,
+    ) -> Result<Control, E::Error> {
+        let seq = seq!(self);
+        emitter.emit(ResendRequest { seq, begin })?;
+        Ok(Control::None)
+    }
+
     /// Handles a received Logon.
     ///
     /// Set `send_reply = true` when acting as acceptor; the session emits a Logon

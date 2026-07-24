@@ -154,9 +154,10 @@ fn run_initiator(addr: std::net::SocketAddr, dir: &Path) {
         FixJournal::open(dir, 0, 256).unwrap(),
     );
 
-    // Encode-only: the opening Logon is staged into `writer` and flushed by the
-    // first `recv` (which drains outbound before it blocks reading).
-    session.connect(&mut writer).unwrap();
+    // Combined verb: encode the opening Logon and flush it to the socket in one
+    // call. (The encode-only `encode_connect` + a manual drain of `writer` is the
+    // sans-IO alternative for custom transports.)
+    session.connect(&mut writer, &mut stream).unwrap();
 
     loop {
         match session.recv(&mut reader, &mut writer, &mut stream) {
@@ -187,9 +188,11 @@ fn run_initiator(addr: std::net::SocketAddr, dir: &Path) {
         }
     };
     let msg = new_order(seq);
-    session.send_app(&mut writer, seq, &msg).unwrap();
+    session
+        .send_app(&mut writer, &mut stream, seq, &msg)
+        .unwrap();
 
-    session.logout(&mut writer).unwrap();
+    session.logout(&mut writer, &mut stream).unwrap();
     loop {
         match session.recv(&mut reader, &mut writer, &mut stream) {
             Ok(Some(_)) | Err(_) => break,

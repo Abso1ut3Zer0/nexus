@@ -124,8 +124,8 @@ async fn outbound_admin_is_journaled() {
     let dir = tmp_dir("logon");
 
     {
-        // No transport needed: the encode-only `connect` journals the Logon as it
-        // stages it into the writer — the write to a socket is a separate step
+        // No transport needed: the encode-only `encode_connect` journals the Logon
+        // as it stages it into the writer — the write to a socket is a separate step
         // (`recv` drains it) and is not what this test pins.
         let FixParts {
             mut session,
@@ -140,7 +140,7 @@ async fn outbound_admin_is_journaled() {
             FixJournal::open(dir.path(), 0, 256).unwrap(),
         );
         // Encodes + journals the opening Logon at seq 1 into the writer.
-        session.connect(&mut writer).unwrap();
+        session.encode_connect(&mut writer).unwrap();
     }
 
     // The Logon (seq 1) must be present in the outbound journal: recovering the

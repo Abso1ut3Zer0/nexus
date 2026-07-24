@@ -17,8 +17,8 @@
 //! - advance: [`session.poll(&mut reader, &mut writer)`](FixSession::poll),
 //! - decode: [`session.message(&reader)`](FixSession::message) after
 //!   [`PollOutcome::Message`],
-//! - send: the encode-only helpers ([`connect`](FixSession::connect),
-//!   [`send_app`](FixSession::send_app), …) stage bytes into `writer`,
+//! - send: the encode-only helpers ([`encode_connect`](FixSession::encode_connect),
+//!   [`encode_send_app`](FixSession::encode_send_app), …) stage bytes into `writer`,
 //! - outbound: drain [`writer.data()`](MessageWriter::data) and commit with
 //!   [`writer.advance(n)`](MessageWriter::advance).
 //!
@@ -139,7 +139,7 @@ impl From<SessionError> for Error {
 /// Bytes reserved per app message for a later resend reframe.
 ///
 /// A reframe adds `PossDupFlag` (`43=Y`), `OrigSendingTime` (`122=<UTC
-/// timestamp>`), and a little `BodyLength` digit growth. [`FixSession::send_app`]
+/// timestamp>`), and a little `BodyLength` digit growth. [`FixSession::encode_send_app`]
 /// keeps app frames this far below the writer capacity so a stored message always
 /// reframes back into the pre-allocated buffer — no runtime allocation on the
 /// resend path.
@@ -250,7 +250,7 @@ impl<D: FixDictionary, C> FixSessionBuilder<D, C> {
     }
 
     /// Outbound writer buffer capacity in bytes (default 64 KiB). The largest app
-    /// frame you can [`send_app`](FixSession::send_app) is `writer_capacity` minus
+    /// frame you can [`send_app`](FixSession::encode_send_app) is `writer_capacity` minus
     /// [`REFRAME_HEADROOM`].
     pub fn writer_capacity(mut self, n: usize) -> Self {
         self.writer_cap = n;
@@ -376,12 +376,19 @@ impl<D: FixDictionary> FixSession<D> {
         self.state.allocate_seq()
     }
 
-    // ── protocol actions (encode only, no I/O) ───────────────────────────────
+    // ── protocol actions — encode-only primitives (sans-IO, no transport) ─────
+    //
+    // Each `encode_<action>` stamps the seqnum + SendingTime, journals where the
+    // protocol requires it, and stages the frame into `writer` — no I/O. Drain
+    // the bytes yourself via [`writer.data()`](MessageWriter::data) /
+    // [`advance`](MessageWriter::advance) (the kernel-bypass / custom-transport
+    // path), or use the combined verb form below, which encodes then flushes.
 
-    /// Enqueues a Logon (initiate the session) into `writer`. Encode-only: drain
-    /// the bytes yourself via [`writer.data()`](MessageWriter::data), or let
+    /// Encodes a Logon (initiate the session) into `writer`. Encode-only: drain
+    /// the bytes yourself via [`writer.data()`](MessageWriter::data), use
+    /// [`connect`](Self::connect) to encode + flush in one call, or let
     /// [`recv`](Self::recv) flush them.
-    pub fn connect<C: SessionCustomizer>(
+    pub fn encode_connect<C: SessionCustomizer>(
         &mut self,
         writer: &mut MessageWriter<D, C>,
     ) -> Result<(), Error> {
@@ -393,8 +400,9 @@ impl<D: FixDictionary> FixSession<D> {
         Ok(())
     }
 
-    /// Enqueues a Logon with `ResetSeqNumFlag=Y` into `writer`.
-    pub fn connect_reset<C: SessionCustomizer>(
+    /// Encodes a Logon with `ResetSeqNumFlag=Y` into `writer`. Encode-only; see
+    /// [`connect_reset`](Self::connect_reset) for the encode + flush form.
+    pub fn encode_connect_reset<C: SessionCustomizer>(
         &mut self,
         writer: &mut MessageWriter<D, C>,
     ) -> Result<(), Error> {
@@ -404,8 +412,9 @@ impl<D: FixDictionary> FixSession<D> {
         Ok(())
     }
 
-    /// Enqueues an in-session sequence reset handshake into `writer`.
-    pub fn reset_sequence<C: SessionCustomizer>(
+    /// Encodes an in-session sequence reset handshake into `writer`. Encode-only;
+    /// see [`reset_sequence`](Self::reset_sequence) for the encode + flush form.
+    pub fn encode_reset_sequence<C: SessionCustomizer>(
         &mut self,
         writer: &mut MessageWriter<D, C>,
     ) -> Result<(), Error> {
@@ -414,8 +423,9 @@ impl<D: FixDictionary> FixSession<D> {
         Ok(())
     }
 
-    /// Enqueues a Logout into `writer`.
-    pub fn logout<C: SessionCustomizer>(
+    /// Encodes a Logout into `writer`. Encode-only; see [`logout`](Self::logout)
+    /// for the encode + flush form.
+    pub fn encode_logout<C: SessionCustomizer>(
         &mut self,
         writer: &mut MessageWriter<D, C>,
     ) -> Result<(), Error> {
@@ -424,13 +434,56 @@ impl<D: FixDictionary> FixSession<D> {
         Ok(())
     }
 
-    /// Journals then enqueues an application frame at sequence `seq` into `writer`.
+    /// Encodes a Heartbeat (35=0) into `writer`, optionally echoing a peer's
+    /// `TestReqID(112)`. Encode-only; see [`heartbeat`](Self::heartbeat) for the
+    /// encode + flush form.
+    ///
+    /// Pass `Some(id)` to answer a [`Message::TestRequest`], or `None` for an
+    /// unsolicited keepalive.
+    pub fn encode_heartbeat<C: SessionCustomizer>(
+        &mut self,
+        writer: &mut MessageWriter<D, C>,
+        echo: Option<&str>,
+    ) -> Result<(), Error> {
+        let mut emitter = journaling_emitter(writer, &mut self.journal, &self.config);
+        self.state
+            .heartbeat(echo.map(str::as_bytes), &mut emitter)?;
+        Ok(())
+    }
+
+    /// Encodes a TestRequest (35=1) into `writer` with a fresh `TestReqID(112)`.
+    /// Encode-only; see [`test_request`](Self::test_request) for the encode + flush
+    /// form.
+    pub fn encode_test_request<C: SessionCustomizer>(
+        &mut self,
+        writer: &mut MessageWriter<D, C>,
+    ) -> Result<(), Error> {
+        let mut emitter = journaling_emitter(writer, &mut self.journal, &self.config);
+        self.state.test_request(&mut emitter)?;
+        Ok(())
+    }
+
+    /// Encodes a ResendRequest (35=2) covering `[begin, ∞)` into `writer`.
+    /// Encode-only; see [`resend_request`](Self::resend_request) for the encode +
+    /// flush form. `begin` is the first missing inbound seqnum.
+    pub fn encode_resend_request<C: SessionCustomizer>(
+        &mut self,
+        writer: &mut MessageWriter<D, C>,
+        begin: u32,
+    ) -> Result<(), Error> {
+        let mut emitter = journaling_emitter(writer, &mut self.journal, &self.config);
+        self.state.resend_request(begin, &mut emitter)?;
+        Ok(())
+    }
+
+    /// Journals then encodes an application frame at sequence `seq` into `writer`.
+    /// Encode-only; see [`send_app`](Self::send_app) for the encode + flush form.
     ///
     /// The frame must fit the pre-allocated writer with [`REFRAME_HEADROOM`] to
     /// spare (so a later resend reframe fits). Larger frames return
     /// [`Error::MessageTooLarge`] before any journal or buffer write; size the
     /// writer up front for the workload.
-    pub fn send_app<C>(
+    pub fn encode_send_app<C>(
         &mut self,
         writer: &mut MessageWriter<D, C>,
         seq: u32,
@@ -441,6 +494,133 @@ impl<D: FixDictionary> FixSession<D> {
         }
         journal_write(frame.len(), || self.journal.store(seq, frame))?;
         buffer_frame(&mut writer.inner, frame)
+    }
+
+    // ── protocol actions — combined (encode + flush over `Read + Write`) ──────
+    //
+    // The one-call convenience: encode via the `encode_<action>` primitive above,
+    // then flush the whole writer to `conn` with
+    // [`writer.flush_to`](MessageWriter::flush_to). The async twin
+    // (`nexus_async_fix_engine::FixSession`) offers the same verbs over a
+    // [`nexus_net::WireStream`]. For a custom transport, call the encode-only form
+    // and drain the byte seam yourself.
+
+    /// Encodes a Logon and flushes it to `conn` (initiate the session).
+    pub fn connect<C, S>(
+        &mut self,
+        writer: &mut MessageWriter<D, C>,
+        conn: &mut S,
+    ) -> Result<(), Error>
+    where
+        C: SessionCustomizer,
+        S: Read + Write,
+    {
+        self.encode_connect(writer)?;
+        writer.flush_to(conn).map_err(Error::Io)
+    }
+
+    /// Encodes a Logon with `ResetSeqNumFlag=Y` and flushes it to `conn`.
+    pub fn connect_reset<C, S>(
+        &mut self,
+        writer: &mut MessageWriter<D, C>,
+        conn: &mut S,
+    ) -> Result<(), Error>
+    where
+        C: SessionCustomizer,
+        S: Read + Write,
+    {
+        self.encode_connect_reset(writer)?;
+        writer.flush_to(conn).map_err(Error::Io)
+    }
+
+    /// Encodes an in-session sequence reset handshake and flushes it to `conn`.
+    pub fn reset_sequence<C, S>(
+        &mut self,
+        writer: &mut MessageWriter<D, C>,
+        conn: &mut S,
+    ) -> Result<(), Error>
+    where
+        C: SessionCustomizer,
+        S: Read + Write,
+    {
+        self.encode_reset_sequence(writer)?;
+        writer.flush_to(conn).map_err(Error::Io)
+    }
+
+    /// Encodes a Logout and flushes it to `conn`.
+    pub fn logout<C, S>(
+        &mut self,
+        writer: &mut MessageWriter<D, C>,
+        conn: &mut S,
+    ) -> Result<(), Error>
+    where
+        C: SessionCustomizer,
+        S: Read + Write,
+    {
+        self.encode_logout(writer)?;
+        writer.flush_to(conn).map_err(Error::Io)
+    }
+
+    /// Encodes a Heartbeat (echoing `echo` if `Some`) and flushes it to `conn`.
+    pub fn heartbeat<C, S>(
+        &mut self,
+        writer: &mut MessageWriter<D, C>,
+        conn: &mut S,
+        echo: Option<&str>,
+    ) -> Result<(), Error>
+    where
+        C: SessionCustomizer,
+        S: Read + Write,
+    {
+        self.encode_heartbeat(writer, echo)?;
+        writer.flush_to(conn).map_err(Error::Io)
+    }
+
+    /// Encodes a TestRequest and flushes it to `conn`.
+    pub fn test_request<C, S>(
+        &mut self,
+        writer: &mut MessageWriter<D, C>,
+        conn: &mut S,
+    ) -> Result<(), Error>
+    where
+        C: SessionCustomizer,
+        S: Read + Write,
+    {
+        self.encode_test_request(writer)?;
+        writer.flush_to(conn).map_err(Error::Io)
+    }
+
+    /// Encodes a ResendRequest covering `[begin, ∞)` and flushes it to `conn`.
+    pub fn resend_request<C, S>(
+        &mut self,
+        writer: &mut MessageWriter<D, C>,
+        conn: &mut S,
+        begin: u32,
+    ) -> Result<(), Error>
+    where
+        C: SessionCustomizer,
+        S: Read + Write,
+    {
+        self.encode_resend_request(writer, begin)?;
+        writer.flush_to(conn).map_err(Error::Io)
+    }
+
+    /// Journals, encodes an application frame at sequence `seq`, and flushes it to
+    /// `conn`. See [`encode_send_app`](Self::encode_send_app) for the frame-size
+    /// constraint.
+    pub fn send_app<C, S>(
+        &mut self,
+        writer: &mut MessageWriter<D, C>,
+        conn: &mut S,
+        seq: u32,
+        frame: &[u8],
+    ) -> Result<(), Error>
+    where
+        C: SessionCustomizer,
+        S: Read + Write,
+    {
+        self.encode_send_app(writer, seq, frame)?;
+        writer.flush_to(conn).map_err(Error::Io)
     }
 
     // ── inbound processing ───────────────────────────────────────────────────
@@ -1084,7 +1264,7 @@ fn journaling_emitter<'a, D: FixDictionary, C: SessionCustomizer>(
 /// Copies a pre-built frame into the writer buffer for the wrapper to drain.
 ///
 /// Unlike the original `write_through` this performs no I/O: it only stages bytes.
-/// The frame must fit the *empty* buffer capacity — [`FixSession::send_app`] caps
+/// The frame must fit the *empty* buffer capacity — [`FixSession::encode_send_app`] caps
 /// app frames below it, so an overflow here is an undersized writer, not a
 /// fallback. Because the sans-IO core cannot flush to make room, the buffer must
 /// hold the frame as-is.
@@ -1430,7 +1610,7 @@ mod tests {
             self.session.message(&self.reader)
         }
         fn send_app(&mut self, seq: u32, frame: &[u8]) -> Result<(), super::Error> {
-            self.session.send_app(&mut self.writer, seq, frame)
+            self.session.encode_send_app(&mut self.writer, seq, frame)
         }
     }
 
@@ -2112,7 +2292,7 @@ mod tests {
     /// [`recv`](FixSession::recv) and NO `Read`/`Write`/`WireStream` bound — the
     /// extension path a custom transport (kernel bypass, io_uring, AF_XDP) builds
     /// on. Three hand-built objects (no builder, no [`FixParts`]), and only the
-    /// byte seam: encode-only [`connect`](FixSession::connect) fills the writer;
+    /// byte seam: encode-only [`encode_connect`](FixSession::encode_connect) fills the writer;
     /// [`writer.data()`](MessageWriter::data)/[`advance`](MessageWriter::advance)
     /// drain it; [`reader.spare()`](MessageReader::spare)/[`filled`](MessageReader::filled)
     /// feed inbound bytes; [`poll`](FixSession::poll) advances; and
@@ -2140,10 +2320,10 @@ mod tests {
 
         // Encode-only send stages the opening Logon (outbound seq 1, state →
         // LogonSent); drain it via the byte seam.
-        session.connect(&mut writer).unwrap();
+        session.encode_connect(&mut writer).unwrap();
         assert!(
             !writer.data().is_empty(),
-            "connect must stage an outbound Logon into the writer"
+            "encode_connect must stage an outbound Logon into the writer"
         );
         let n = writer.data().len();
         writer.advance(n);
@@ -2196,10 +2376,152 @@ mod tests {
 
         // The carry-over session reconnects: a fresh `connect` revives it so `recv`
         // works again. Without this, `recv` would return `Closed` forever.
-        session.connect(&mut writer).unwrap();
+        session.encode_connect(&mut writer).unwrap();
         assert!(
             !session.is_terminated(),
-            "connect must clear terminated so the carry-over session can reconnect"
+            "encode_connect must clear terminated so the carry-over session can reconnect"
         );
+    }
+
+    // ── user-driven admin sends: encode-only vs combined ─────────────────────
+
+    /// A minimal `Read + Write` transport: reads always report `WouldBlock` (no
+    /// inbound in these tests), writes append to a buffer so the combined-form
+    /// tests can assert the exact bytes that reached the wire.
+    #[derive(Default)]
+    struct MockConn {
+        written: Vec<u8>,
+    }
+
+    impl std::io::Read for MockConn {
+        fn read(&mut self, _buf: &mut [u8]) -> std::io::Result<usize> {
+            Err(std::io::Error::new(
+                std::io::ErrorKind::WouldBlock,
+                "no data",
+            ))
+        }
+    }
+
+    impl std::io::Write for MockConn {
+        fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+            self.written.extend_from_slice(buf);
+            Ok(buf.len())
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
+    /// `MsgType(35)` of a frame, or `None`.
+    fn msg_type(frame: &[u8]) -> Option<&[u8]> {
+        find_tag(frame, 0, 35).map(|s| s.slice(frame))
+    }
+
+    /// The encode-only admin sends stage a well-formed frame into the writer with
+    /// no transport: Heartbeat (echoing a TestReqID), TestRequest (fresh
+    /// TestReqID), and ResendRequest (BeginSeqNo). This is the sans-IO seam a
+    /// custom transport drains via `data()`/`advance()`.
+    #[test]
+    fn encode_admin_sends_fill_writer() {
+        let dir = tmp_dir("encode_admin_sends");
+        // Active initiator; the opening Logon consumed outbound seq 1 and was
+        // drained, so these admin sends start at seq 2.
+        let mut rig = active_session(dir.path(), 4096);
+
+        // Heartbeat echoing a TestReqID(112).
+        rig.session
+            .encode_heartbeat(&mut rig.writer, Some("PROBE"))
+            .unwrap();
+        {
+            let out = rig.writer.data();
+            assert!(!out.is_empty(), "encode_heartbeat must stage a frame");
+            assert_eq!(msg_type(out), Some(b"0".as_ref()), "must be a Heartbeat");
+            assert_eq!(
+                find_tag(out, 0, 112).map(|s| s.slice(out)),
+                Some(b"PROBE".as_ref()),
+                "Heartbeat must echo the TestReqID"
+            );
+        }
+        let n = rig.writer.data().len();
+        rig.writer.advance(n);
+
+        // TestRequest carrying a fresh TestReqID(112).
+        rig.session.encode_test_request(&mut rig.writer).unwrap();
+        {
+            let out = rig.writer.data();
+            assert_eq!(msg_type(out), Some(b"1".as_ref()), "must be a TestRequest");
+            assert!(
+                find_tag(out, 0, 112).is_some(),
+                "TestRequest must carry a TestReqID(112)"
+            );
+        }
+        let n = rig.writer.data().len();
+        rig.writer.advance(n);
+
+        // ResendRequest covering [begin, ∞): BeginSeqNo(7)=begin, EndSeqNo(16)=0.
+        rig.session
+            .encode_resend_request(&mut rig.writer, 2)
+            .unwrap();
+        let out = rig.writer.data();
+        assert_eq!(
+            msg_type(out),
+            Some(b"2".as_ref()),
+            "must be a ResendRequest"
+        );
+        assert_eq!(
+            find_tag(out, 0, 7).map(|s| s.slice(out)),
+            Some(b"2".as_ref()),
+            "BeginSeqNo(7) must be the requested begin"
+        );
+        assert_eq!(
+            find_tag(out, 0, 16).map(|s| s.slice(out)),
+            Some(b"0".as_ref()),
+            "open-ended ResendRequest encodes EndSeqNo(16)=0"
+        );
+    }
+
+    /// The combined admin sends encode + flush in one call: the writer is drained
+    /// and the exact frame reaches the transport. Covers each new admin send in
+    /// the combined form over a `Read + Write` mock.
+    #[test]
+    fn combined_admin_sends_flush_to_transport() {
+        let dir = tmp_dir("combined_admin_sends");
+        let mut rig = active_session(dir.path(), 4096);
+        let mut conn = MockConn::default();
+
+        // Heartbeat (unsolicited keepalive).
+        rig.session
+            .heartbeat(&mut rig.writer, &mut conn, None)
+            .unwrap();
+        assert!(
+            rig.writer.is_empty(),
+            "combined heartbeat must drain the writer"
+        );
+        assert_eq!(
+            msg_type(&conn.written),
+            Some(b"0".as_ref()),
+            "the transport must have received a Heartbeat"
+        );
+
+        // TestRequest.
+        conn.written.clear();
+        rig.session
+            .test_request(&mut rig.writer, &mut conn)
+            .unwrap();
+        assert!(rig.writer.is_empty());
+        assert_eq!(msg_type(&conn.written), Some(b"1".as_ref()));
+
+        // ResendRequest.
+        conn.written.clear();
+        rig.session
+            .resend_request(&mut rig.writer, &mut conn, 2)
+            .unwrap();
+        assert!(rig.writer.is_empty());
+        assert_eq!(msg_type(&conn.written), Some(b"2".as_ref()));
+        // The framed bytes on the wire are self-delimiting and checksum-valid:
+        // the production frame reader accepts exactly one frame.
+        let frames = split_frames(&conn.written);
+        assert_eq!(frames.len(), 1, "combined send must flush one whole frame");
+        assert_eq!(msg_type(&frames[0]), Some(b"2".as_ref()));
     }
 }

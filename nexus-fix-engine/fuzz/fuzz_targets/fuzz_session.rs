@@ -348,7 +348,7 @@ fuzz_target!(|msgs: Vec<FuzzMsg>| {
 
     // Initiator role: send our Logon, then drive inbound. A generated Logon at
     // the expected seq completes the handshake and unlocks the Active paths.
-    if session.connect(&mut writer).is_ok() {
+    if session.encode_connect(&mut writer).is_ok() {
         let outn = writer.data().len();
         if outn > 0 {
             writer.advance(outn);
