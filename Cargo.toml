@@ -37,6 +37,7 @@ members = [
 	"nexus-inference",
 	"nexus-fix-codec",
 	"nexus-fix-codegen",
+	"nexus-fix-log",
 	"nexus-fix-codegen-tests",
 	"nexus-fix-engine",
 	"nexus-async-fix-engine",
