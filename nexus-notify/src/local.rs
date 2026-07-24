@@ -87,7 +87,7 @@ impl LocalNotify {
     pub fn with_capacity(capacity: usize) -> Self {
         Self {
             bits: vec![0u64; capacity.div_ceil(64)],
-            dispatch_list: Vec::with_capacity(capacity),
+            dispatch_list: Vec::with_capacity(capacity * 2),
             dispatch_head: 0,
             num_tokens: 0,
         }
@@ -147,8 +147,23 @@ impl LocalNotify {
         // token — register() grows it on allocation.
         if self.bits[word] & bit == 0 {
             self.bits[word] |= bit;
+            if self.dispatch_list.len() == self.dispatch_list.capacity() {
+                self.compact();
+            }
             self.dispatch_list.push(idx);
         }
+    }
+
+    /// Reclaim the stale prefix by moving live entries to the front.
+    ///
+    /// Called when the tail is out of room. Amortized: fires once per
+    /// `capacity / limit` ticks under sustained partial drain.
+    #[cold]
+    fn compact(&mut self) {
+        let live = self.dispatch_list.len() - self.dispatch_head;
+        self.dispatch_list.copy_within(self.dispatch_head.., 0);
+        self.dispatch_list.truncate(live);
+        self.dispatch_head = 0;
     }
 
     /// Drain all marked tokens into the events buffer.
@@ -443,5 +458,34 @@ mod tests {
         notify.register();
         notify.register();
         assert_eq!(notify.capacity(), 2);
+    }
+
+    #[test]
+    fn poll_limit_partial_sustained_physical_bound() {
+        let n = 128usize;
+        let limit = 32usize;
+        let mut notify = LocalNotify::with_capacity(n);
+        let mut events = Events::with_capacity(n);
+
+        let mut tokens = Vec::new();
+        for _ in 0..n {
+            tokens.push(notify.register());
+        }
+
+        for _ in 0..2000 {
+            for &t in &tokens {
+                notify.mark(t);
+            }
+            notify.poll_limit(&mut events, limit);
+        }
+
+        // Physical length must stay bounded regardless of tick count.
+        // With 2x headroom and compaction on exhaustion, the cap is ~2*n.
+        assert!(
+            notify.dispatch_list.len() <= n * 2,
+            "dispatch_list grew without bound: len={} cap={}",
+            notify.dispatch_list.len(),
+            notify.dispatch_list.capacity(),
+        );
     }
 }
