@@ -52,6 +52,7 @@ const BATCH: usize = 100;
 
 #[inline(never)]
 fn rdtsc_start() -> u64 {
+    // SAFETY: x86_64 intrinsics; benchmark is x86_64-only.
     unsafe {
         core::arch::x86_64::_mm_lfence();
         core::arch::x86_64::_rdtsc()
@@ -61,6 +62,7 @@ fn rdtsc_start() -> u64 {
 #[inline(never)]
 fn rdtsc_end() -> u64 {
     let mut aux: u32 = 0;
+    // SAFETY: x86_64 intrinsics; benchmark is x86_64-only.
     unsafe {
         let t = core::arch::x86_64::__rdtscp(&raw mut aux);
         core::arch::x86_64::_mm_lfence();
@@ -169,15 +171,19 @@ fn main() {
     println!("ISOLATED CONTENTION TEST");
     println!("========================");
 
+    // SAFETY: single-threaded benchmark; slab outlives all allocated slots.
     let slab64 = unsafe { BoundedSlab::<Pod64>::with_capacity(SAMPLES * 2) };
     contention_test("64B", &slab64);
 
+    // SAFETY: single-threaded benchmark; slab outlives all allocated slots.
     let slab256 = unsafe { BoundedSlab::<Pod256>::with_capacity(SAMPLES * 2) };
     contention_test("256B", &slab256);
 
+    // SAFETY: single-threaded benchmark; slab outlives all allocated slots.
     let slab1024 = unsafe { BoundedSlab::<Pod1024>::with_capacity(SAMPLES * 2) };
     contention_test("1024B", &slab1024);
 
+    // SAFETY: single-threaded benchmark; slab outlives all allocated slots.
     let slab4096 = unsafe { BoundedSlab::<Pod4096>::with_capacity(SAMPLES * 2) };
     contention_test("4096B", &slab4096);
 }
