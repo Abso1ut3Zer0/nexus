@@ -70,7 +70,16 @@ pub struct SessionState {
     next_outbound: u32,
     next_inbound: u32,
     gap_high: u32,
-    test_req_counter: u64,
+    /// Monotonic `TestReqID(112)` source for user-driven liveness probes
+    /// ([`test_request`](Self::test_request)). Kept separate from
+    /// [`reset_counter`](Self::reset_counter) so a liveness probe issued while a
+    /// sequence-reset handshake is mid-flight cannot perturb the reset's
+    /// drain-echo match.
+    liveness_counter: u64,
+    /// Monotonic `TestReqID(112)` source for the in-session reset handshake
+    /// ([`reset_sequence`](Self::reset_sequence)); the drain confirm in
+    /// [`on_heartbeat`](Self::on_heartbeat) matches against exactly this value.
+    reset_counter: u64,
 }
 
 impl SessionState {
@@ -82,7 +91,8 @@ impl SessionState {
             next_outbound: 1,
             next_inbound: 1,
             gap_high: 0,
-            test_req_counter: 0,
+            liveness_counter: 0,
+            reset_counter: 0,
         }
     }
 
@@ -203,11 +213,11 @@ impl SessionState {
         if self.state != State::Active {
             return Err(SessionError::InvalidState.into());
         }
-        self.test_req_counter += 1;
+        self.reset_counter += 1;
         let seq = seq!(self);
         emitter.emit(TestRequest {
             seq,
-            id: self.test_req_counter,
+            id: self.reset_counter,
         })?;
         self.state = State::AwaitingResetDrain;
         Ok(Control::None)
@@ -249,19 +259,19 @@ impl SessionState {
     /// Sends a TestRequest (35=1) carrying a fresh `TestReqID(112)`.
     ///
     /// The user-driven liveness probe (contract timer 2): it allocates the next
-    /// outbound seqnum, bumps the monotonic TestReqID counter, and emits. No state
-    /// transition — unlike [`reset_sequence`](Self::reset_sequence), which also
-    /// sends a TestRequest but as the first leg of a reset handshake. Peer liveness
-    /// is proven by *any* inbound message, so the caller never needs to match the
-    /// returned id.
+    /// outbound seqnum, bumps the monotonic liveness `TestReqID` counter, and
+    /// emits. No state transition — unlike [`reset_sequence`](Self::reset_sequence),
+    /// which also sends a TestRequest but as the first leg of a reset handshake and
+    /// off a *separate* counter. Peer liveness is proven by *any* inbound message,
+    /// so the caller never needs to match the returned id.
     ///
     /// Emits: TestRequest.
     pub fn test_request<E: Emit>(&mut self, emitter: &mut E) -> Result<Control, E::Error> {
-        self.test_req_counter += 1;
+        self.liveness_counter += 1;
         let seq = seq!(self);
         emitter.emit(TestRequest {
             seq,
-            id: self.test_req_counter,
+            id: self.liveness_counter,
         })?;
         Ok(Control::None)
     }
@@ -286,11 +296,15 @@ impl SessionState {
 
     /// Handles a received Logon.
     ///
-    /// Set `send_reply = true` when acting as acceptor; the session emits a Logon
-    /// reply via `emitter`. Pass `false` for the initiator's incoming reply. Returns
-    /// [`Control::Logon`] with `acknowledged = !send_reply`.
+    /// Set `send_reply = true` when acting as acceptor. In the user-driven model
+    /// the acceptor reply is *not* emitted here: a counterparty-initiated Logon
+    /// surfaces as [`Control::LogonRequest`] / [`Control::LogonResetRequest`] and
+    /// the user answers via [`accept_logon`](Self::accept_logon) /
+    /// [`reject_logon`](Self::reject_logon). The initiator's incoming reply
+    /// (`send_reply = false`) is an acknowledgement handled inline and returns
+    /// [`Control::Logon`] with `acknowledged = true`.
     ///
-    /// Emits: Logon | LogonReset | Logout | ResendRequest.
+    /// Emits (initiator-establishment mechanism only): Logout | ResendRequest.
     pub fn on_logon<E: Emit>(
         &mut self,
         msg: LogonIn,
@@ -302,11 +316,8 @@ impl SessionState {
             is_reset_seq_num,
             send_reply,
         } = msg;
-        // Acceptor sends its own Logon reply; the initiator receives an ack.
-        // `acknowledged` is the mirror of `send_reply`.
-        let acknowledged = !send_reply;
 
-        // Reset ack: we initiated the reset and peer is confirming.
+        // Reset ack: we initiated the reset and peer is confirming. No emit.
         if self.state == State::AwaitingResetAck {
             if !is_reset_seq_num || seq != 1 {
                 return Ok(self.disconnect(DisconnectReason::ProtocolViolation));
@@ -314,14 +325,99 @@ impl SessionState {
             self.hb = Duration::from_secs(u64::from(heart_bt_int_s));
             self.next_inbound = 2;
             self.state = State::Active;
-            return Ok(Control::Logon { acknowledged });
+            return Ok(Control::Logon { acknowledged: true });
         }
 
-        // Peer-initiated reset while we are active.
+        // Peer-initiated reset while we are active: surface a reset decision.
+        // No emit, no transition — the user answers via `accept_logon`.
         if matches!(self.state, State::Active | State::Resending) && is_reset_seq_num {
             if seq != 1 {
                 return Ok(self.disconnect(DisconnectReason::ProtocolViolation));
             }
+            return Ok(Control::LogonResetRequest {
+                seq,
+                heart_bt_int_s,
+            });
+        }
+
+        if send_reply {
+            // Acceptor: surface a Logon decision. No emit, no transition — the
+            // reply and state advance happen in `accept_logon` on the user's
+            // decision. An out-of-state acceptor Logon has nothing to answer.
+            if self.state != State::Disconnected {
+                return Ok(Control::None);
+            }
+            if is_reset_seq_num {
+                Ok(Control::LogonResetRequest {
+                    seq,
+                    heart_bt_int_s,
+                })
+            } else {
+                Ok(Control::LogonRequest {
+                    seq,
+                    heart_bt_int_s,
+                })
+            }
+        } else {
+            // Initiator's incoming Logon ack. No reply emit. A gap or a too-low
+            // seqnum on the *establishment* Logon stays engine-driven (it is part
+            // of bringing the session up, not steady-state flow); only steady-state
+            // gaps surface as `GapDetected`.
+            if self.state != State::LogonSent {
+                return Ok(Control::Logon { acknowledged: true });
+            }
+            if is_reset_seq_num {
+                self.next_inbound = 1;
+            }
+            self.hb = Duration::from_secs(u64::from(heart_bt_int_s));
+
+            if seq < self.next_inbound {
+                let logout_seq = seq!(self);
+                emitter.emit(Logout { seq: logout_seq })?;
+                return Ok(self.disconnect(DisconnectReason::SeqNumTooLow));
+            }
+            if seq > self.next_inbound {
+                self.gap_high = seq;
+                let rr_seq = seq!(self);
+                emitter.emit(ResendRequest {
+                    seq: rr_seq,
+                    begin: self.next_inbound,
+                })?;
+                self.state = State::Resending;
+            } else {
+                self.next_inbound += 1;
+                self.state = State::Active;
+            }
+            Ok(Control::Logon { acknowledged: true })
+        }
+    }
+
+    /// Accepts a counterparty-initiated Logon surfaced as
+    /// [`Control::LogonRequest`] / [`Control::LogonResetRequest`]: emits the reply
+    /// (a Logon, or a LogonReset when `is_reset`), applies the negotiated
+    /// `HeartBtInt`, and advances the session — the reply + state work `on_logon`
+    /// used to do inline, now gated on the user's decision.
+    ///
+    /// Dispatches on the current state: from `Disconnected` this is an acceptor
+    /// opening a session (with the establishment seq-check preserved: a gap emits a
+    /// ResendRequest and enters `Resending`, a too-low seqnum emits a Logout and
+    /// disconnects); from `Active`/`Resending` it is the reply leg of a
+    /// peer-initiated in-session reset.
+    ///
+    /// `seq`/`heart_bt_int_s`/`is_reset` are the fields captured from the peer
+    /// Logon when the decision was surfaced.
+    ///
+    /// Emits: Logon | LogonReset | Logout | ResendRequest.
+    pub fn accept_logon<E: Emit>(
+        &mut self,
+        seq: u32,
+        heart_bt_int_s: u32,
+        is_reset: bool,
+        emitter: &mut E,
+    ) -> Result<Control, E::Error> {
+        // Peer-initiated reset while active: the decision was surfaced from
+        // Active/Resending, and `seq == 1` was already validated by `on_logon`.
+        if matches!(self.state, State::Active | State::Resending) {
             self.hb = Duration::from_secs(u64::from(heart_bt_int_s));
             self.next_outbound = 1;
             let reply_seq = seq!(self);
@@ -331,40 +427,28 @@ impl SessionState {
             })?;
             self.next_inbound = 2;
             self.state = State::Active;
-            return Ok(Control::Logon { acknowledged });
+            return Ok(Control::Logon {
+                acknowledged: false,
+            });
         }
 
-        // Normal logon: acceptor or initiator's ack.
-        let valid = if send_reply {
-            self.state == State::Disconnected
-        } else {
-            self.state == State::LogonSent
-        };
-        if !valid {
-            return Ok(Control::Logon { acknowledged });
-        }
-
-        if is_reset_seq_num {
+        // Disconnected acceptor: reply + establishment seq-check.
+        if is_reset {
             self.next_inbound = 1;
-            if send_reply {
-                self.next_outbound = 1;
-            }
+            self.next_outbound = 1;
         }
         self.hb = Duration::from_secs(u64::from(heart_bt_int_s));
-
-        if send_reply {
-            let reply_seq = seq!(self);
-            if is_reset_seq_num {
-                emitter.emit(LogonReset {
-                    seq: reply_seq,
-                    heart_bt_int_s,
-                })?;
-            } else {
-                emitter.emit(Logon {
-                    seq: reply_seq,
-                    heart_bt_int_s,
-                })?;
-            }
+        let reply_seq = seq!(self);
+        if is_reset {
+            emitter.emit(LogonReset {
+                seq: reply_seq,
+                heart_bt_int_s,
+            })?;
+        } else {
+            emitter.emit(Logon {
+                seq: reply_seq,
+                heart_bt_int_s,
+            })?;
         }
 
         if seq < self.next_inbound {
@@ -372,7 +456,6 @@ impl SessionState {
             emitter.emit(Logout { seq: logout_seq })?;
             return Ok(self.disconnect(DisconnectReason::SeqNumTooLow));
         }
-
         if seq > self.next_inbound {
             self.gap_high = seq;
             let rr_seq = seq!(self);
@@ -385,12 +468,34 @@ impl SessionState {
             self.next_inbound += 1;
             self.state = State::Active;
         }
-        Ok(Control::Logon { acknowledged })
+        Ok(Control::Logon {
+            acknowledged: false,
+        })
+    }
+
+    /// Rejects a counterparty-initiated Logon: emits a Logout and disconnects.
+    ///
+    /// The user's policy hook for refusing a session (e.g. failed authentication).
+    /// Answers a [`Control::LogonRequest`] / [`Control::LogonResetRequest`] the
+    /// user declined.
+    ///
+    /// Emits: Logout.
+    pub fn reject_logon<E: Emit>(&mut self, emitter: &mut E) -> Result<Control, E::Error> {
+        let seq = seq!(self);
+        emitter.emit(Logout { seq })?;
+        self.state = State::Disconnected;
+        Ok(Control::None)
     }
 
     /// Handles a received Logout.
     ///
-    /// Emits (some via `validate_seq`): ResendRequest | Logout.
+    /// A Logout confirming *our* initiated logout (state `LogoutPending`, in
+    /// sequence) completes the exchange and surfaces as [`Control::LoggedOut`]. A
+    /// peer-*initiated* Logout while `Active`/`Resending` surfaces as
+    /// [`Control::Logout`] ([`Message::LogoutRequest`](crate::Message::LogoutRequest));
+    /// the reply is now user-driven (`logout(..)`), no longer engine-emitted.
+    ///
+    /// Emits (only the too-low Logout via `validate_seq`): Logout.
     pub fn on_logout<E: Emit>(
         &mut self,
         msg: LogoutIn,
@@ -405,22 +510,21 @@ impl SessionState {
             State::Active | State::Resending | State::LogoutPending
         ) {
             match self.validate_seq(seq, is_poss_dup, emitter)? {
-                // In-sequence Logout: complete the exchange and disconnect.
                 Control::Proceed => {
-                    if self.state != State::LogoutPending {
-                        let logout_seq = seq!(self);
-                        emitter.emit(Logout { seq: logout_seq })?;
+                    if self.state == State::LogoutPending {
+                        // Confirm of our own initiated logout: terminal.
+                        return Ok(self.logged_out());
                     }
-                    return Ok(self.logged_out());
+                    // Peer-initiated logout: surface it; the user replies with
+                    // `logout(..)`. No auto-reply, no state change.
+                    return Ok(Control::Logout);
                 }
-                // Gap/duplicate: suppressed (ResendRequest already emitted, or a
-                // PossDup-too-low frame ignored). Too-low without PossDup:
-                // disconnect. Neither surfaces the Logout.
+                // Gap (GapDetected) / duplicate (None) / too-low (Disconnected):
+                // propagated; none surfaces the Logout.
                 ctrl => return Ok(ctrl),
             }
         }
-        // Out-of-state (e.g. mid-reset) Logout. The in-sequence path above always
-        // disconnects, so this is the only path that surfaces a Logout message.
+        // Out-of-state (e.g. mid-reset) Logout — surfaced for the user to answer.
         Ok(Control::Logout)
     }
 
@@ -439,7 +543,7 @@ impl SessionState {
         } = msg;
 
         if self.state == State::AwaitingResetDrain {
-            let echo_matches = echo_id == Some(self.test_req_counter);
+            let echo_matches = echo_id == Some(self.reset_counter);
             if echo_matches && seq == self.next_inbound {
                 // Drain confirmed: all in-flight messages received, send LogonReset.
                 self.next_inbound += 1;
@@ -475,19 +579,21 @@ impl SessionState {
         Ok(Control::Heartbeat)
     }
 
-    /// Handles a received TestRequest. Replies with a Heartbeat echoing the TestReqID.
+    /// Handles a received TestRequest.
     ///
-    /// Emits (some via `validate_seq`): Heartbeat | ResendRequest | Logout.
+    /// The engine no longer auto-emits the Heartbeat echo: an in-sequence
+    /// TestRequest surfaces as [`Control::TestRequest`]
+    /// ([`Message::TestRequest`](crate::Message::TestRequest) carrying the
+    /// `TestReqID`), and the user answers with `heartbeat(Some(id))`. A gap/dup is
+    /// a recovery event, propagated (never surfaced).
+    ///
+    /// Emits (only the too-low Logout via `validate_seq`): Logout.
     pub fn on_test_request<E: Emit>(
         &mut self,
-        msg: TestRequestIn<'_>,
+        msg: TestRequestIn,
         emitter: &mut E,
     ) -> Result<Control, E::Error> {
-        let TestRequestIn {
-            test_req_id,
-            seq,
-            is_poss_dup,
-        } = msg;
+        let TestRequestIn { seq, is_poss_dup } = msg;
         if !matches!(
             self.state,
             State::Active
@@ -499,17 +605,8 @@ impl SessionState {
             return Ok(Control::TestRequest);
         }
         match self.validate_seq(seq, is_poss_dup, emitter)? {
-            // In-sequence only: reply with the echoing Heartbeat. A gap/dup must
-            // not trigger a Heartbeat reply — it is a recovery event.
-            Control::Proceed => {
-                let hb_seq = seq!(self);
-                emitter.emit(Heartbeat {
-                    seq: hb_seq,
-                    echo: Some(test_req_id),
-                })?;
-                self.check_resend_done();
-            }
-            // Gap/duplicate: suppressed, not surfaced.
+            Control::Proceed => self.check_resend_done(),
+            // Gap (GapDetected) / duplicate (None): propagated, not surfaced.
             ctrl => return Ok(ctrl),
         }
         Ok(Control::TestRequest)
@@ -705,17 +802,19 @@ impl SessionState {
         Ok(self.disconnect(DisconnectReason::CompIdMismatch))
     }
 
-    /// Validates an inbound sequence number, emitting a ResendRequest on a gap or
-    /// a Logout on a too-low seqnum. Returns:
+    /// Validates an inbound sequence number. Returns:
     /// - [`Control::Proceed`] — seq matched and advanced; caller keeps processing.
-    /// - [`Control::None`] — a gap (ResendRequest emitted) or a `poss_dup`-too-low
-    ///   frame (ignored). The caller propagates this as its own verdict, so the
-    ///   message is suppressed: an out-of-sequence or duplicate frame is a recovery
-    ///   event, never surfaced to the application.
+    /// - [`Control::GapDetected`] — a gap (seq above expected) that opens recovery:
+    ///   the engine records `gap_high` and enters `Resending`, but the
+    ///   ResendRequest is now *user-driven* (surfaced as
+    ///   [`Message::GapDetected`](crate::Message::GapDetected)). A further gap while
+    ///   already `Resending` is suppressed as [`Control::None`], not re-surfaced.
+    /// - [`Control::None`] — a `poss_dup`-too-low frame (a benign duplicate,
+    ///   ignored). Propagated as the caller's verdict: the message is suppressed.
     /// - [`Control::Disconnected`] — a too-low seqnum without `poss_dup`, or
-    ///   outbound exhaustion while emitting.
+    ///   outbound exhaustion while emitting the Logout.
     ///
-    /// Emits: ResendRequest | Logout.
+    /// Emits (only the too-low Logout): Logout.
     fn validate_seq<E: Emit>(
         &mut self,
         seq: u32,
@@ -726,17 +825,17 @@ impl SessionState {
             if self.gap_high < seq {
                 self.gap_high = seq;
             }
-            if self.state != State::Resending {
-                let rr_seq = seq!(self);
-                emitter.emit(ResendRequest {
-                    seq: rr_seq,
-                    begin: self.next_inbound,
-                })?;
-                if self.state == State::Active {
-                    self.state = State::Resending;
-                }
+            // Already recovering: a further gap is suppressed (the user has one
+            // outstanding ResendRequest to drive). Otherwise open recovery and
+            // surface the gap so the user sends the ResendRequest.
+            if self.state == State::Resending {
+                return Ok(Control::None);
             }
-            return Ok(Control::None);
+            let begin = self.next_inbound;
+            if self.state == State::Active {
+                self.state = State::Resending;
+            }
+            return Ok(Control::GapDetected { begin });
         }
         if seq < self.next_inbound {
             if poss_dup {
@@ -950,6 +1049,9 @@ mod tests {
         let mut s = SessionState::new(Duration::from_secs(30));
         establish(&mut s);
         s.allocate_seq().unwrap();
+        // Reach Disconnected via a clean logout: we initiate (→ LogoutPending),
+        // the peer's in-sequence Logout confirms it (→ Disconnected).
+        s.logout(&mut RecordingEmitter::new()).unwrap();
         s.on_logout(
             LogoutIn {
                 seq: 2,
@@ -1098,7 +1200,8 @@ mod tests {
         s.allocate_seq().unwrap(); // seq 2
         s.allocate_seq().unwrap(); // seq 3
 
-        // Peer sends Logon(141=Y, seq=1) while we are Active.
+        // Peer sends Logon(141=Y, seq=1) while we are Active: surfaces a reset
+        // decision (no auto-reply), which the user then accepts.
         let mut recorder = RecordingEmitter::new();
         let ctrl = s
             .on_logon(
@@ -1111,6 +1214,22 @@ mod tests {
                 &mut recorder,
             )
             .unwrap();
+        assert_eq!(
+            ctrl,
+            Control::LogonResetRequest {
+                seq: 1,
+                heart_bt_int_s: 30
+            }
+        );
+        assert_eq!(
+            recorder.len(),
+            0,
+            "no reply emitted before the user accepts"
+        );
+        assert_eq!(s.state(), State::Active, "state unchanged until accept");
+
+        // The user accepts: the LogonReset reply is emitted and the reset completes.
+        let ctrl = s.accept_logon(1, 30, true, &mut recorder).unwrap();
         assert_eq!(s.state(), State::Active);
         assert_eq!(s.next_outbound_seq(), 2); // reply Logon consumed seq 1
         assert_eq!(s.next_inbound_seq(), 2);
@@ -1119,7 +1238,6 @@ mod tests {
         assert_eq!(recorder.mt(0), b"A");
         assert!(recorder.has(0, 141), "reply must carry 141=Y");
         assert_eq!(recorder.num(0, 34), Some(1));
-        // send_reply = true → this Logon is one we answer, not an ack.
         assert_eq!(
             ctrl,
             Control::Logon {
@@ -1215,24 +1333,26 @@ mod tests {
     }
 
     #[test]
-    fn reject_inbound_gap_sends_resend_request() {
+    fn reject_inbound_gap_surfaces_gap_detected() {
         let mut s = SessionState::new(Duration::from_secs(30));
         establish(&mut s);
         let mut recorder = RecordingEmitter::new();
-        s.on_reject_inbound(
-            RejectInboundIn {
-                seq: 5,
-                ref_tag_id: Some(35),
-                session_reject_reason: 1,
-                is_poss_dup: false,
-            },
-            &mut recorder,
-        )
-        .unwrap();
-        assert_eq!(recorder.len(), 1);
-        // ResendRequest (35=2) with BeginSeqNo(7)=2.
-        assert_eq!(recorder.mt(0), b"2", "expected ResendRequest");
-        assert_eq!(recorder.num(0, 7), Some(2));
+        // A gap on the to-be-rejected message opens recovery: the engine surfaces
+        // GapDetected (the user drives the ResendRequest) and emits nothing.
+        let ctrl = s
+            .on_reject_inbound(
+                RejectInboundIn {
+                    seq: 5,
+                    ref_tag_id: Some(35),
+                    session_reject_reason: 1,
+                    is_poss_dup: false,
+                },
+                &mut recorder,
+            )
+            .unwrap();
+        assert_eq!(ctrl, Control::GapDetected { begin: 2 });
+        assert_eq!(recorder.len(), 0, "gap emits nothing; the user resends");
+        assert_eq!(s.state(), State::Resending);
         assert_eq!(
             s.next_inbound_seq(),
             2,
@@ -1266,11 +1386,11 @@ mod tests {
     }
 
     #[test]
-    fn heartbeat_out_of_sequence_suppressed_and_resends() {
+    fn heartbeat_out_of_sequence_surfaces_gap_detected() {
         let mut s = SessionState::new(Duration::from_secs(30));
         establish(&mut s); // next_inbound = 2
         let mut recorder = RecordingEmitter::new();
-        // seq 5 > 2: gap.
+        // seq 5 > 2: gap. The Heartbeat itself is not surfaced; the gap is.
         let ctrl = s
             .on_heartbeat(
                 HeartbeatIn {
@@ -1281,10 +1401,8 @@ mod tests {
                 &mut recorder,
             )
             .unwrap();
-        assert_eq!(ctrl, Control::None, "gap Heartbeat must be suppressed");
-        assert_eq!(recorder.len(), 1);
-        assert_eq!(recorder.mt(0), b"2", "gap must emit a ResendRequest");
-        assert_eq!(recorder.num(0, 7), Some(2));
+        assert_eq!(ctrl, Control::GapDetected { begin: 2 });
+        assert_eq!(recorder.len(), 0, "gap emits nothing; the user resends");
         assert_eq!(s.state(), State::Resending);
     }
 
@@ -1334,30 +1452,24 @@ mod tests {
     }
 
     #[test]
-    fn test_request_out_of_sequence_suppressed_no_echo() {
+    fn test_request_out_of_sequence_surfaces_gap_detected() {
         let mut s = SessionState::new(Duration::from_secs(30));
         establish(&mut s);
         let mut recorder = RecordingEmitter::new();
         let ctrl = s
             .on_test_request(
                 TestRequestIn {
-                    test_req_id: b"PROBE",
                     seq: 5,
                     is_poss_dup: false,
                 },
                 &mut recorder,
             )
             .unwrap();
-        assert_eq!(ctrl, Control::None, "gap TestRequest must be suppressed");
-        // A gap emits a ResendRequest and NOT the Heartbeat echo (which is
-        // Proceed-only work).
-        assert_eq!(recorder.len(), 1);
-        assert_eq!(
-            recorder.mt(0),
-            b"2",
-            "gap must emit ResendRequest, not a Heartbeat echo"
-        );
-        assert_eq!(recorder.num(0, 7), Some(2));
+        // A gap surfaces GapDetected and emits nothing — no Heartbeat echo (which
+        // is Proceed-only) and no engine ResendRequest (the user drives it).
+        assert_eq!(ctrl, Control::GapDetected { begin: 2 });
+        assert_eq!(recorder.len(), 0);
+        assert_eq!(s.state(), State::Resending);
     }
 
     #[test]
@@ -1369,7 +1481,6 @@ mod tests {
         let ctrl = s
             .on_test_request(
                 TestRequestIn {
-                    test_req_id: b"PROBE",
                     seq: 2,
                     is_poss_dup: true,
                 },
@@ -1390,7 +1501,7 @@ mod tests {
     }
 
     #[test]
-    fn reject_out_of_sequence_suppressed_and_resends() {
+    fn reject_out_of_sequence_surfaces_gap_detected() {
         let mut s = SessionState::new(Duration::from_secs(30));
         establish(&mut s);
         let mut recorder = RecordingEmitter::new();
@@ -1403,10 +1514,8 @@ mod tests {
                 &mut recorder,
             )
             .unwrap();
-        assert_eq!(ctrl, Control::None, "gap Reject must be suppressed");
-        assert_eq!(recorder.len(), 1);
-        assert_eq!(recorder.mt(0), b"2", "gap must emit ResendRequest");
-        assert_eq!(recorder.num(0, 7), Some(2));
+        assert_eq!(ctrl, Control::GapDetected { begin: 2 });
+        assert_eq!(recorder.len(), 0, "gap emits nothing; the user resends");
         assert_eq!(s.state(), State::Resending);
     }
 
@@ -1449,12 +1558,11 @@ mod tests {
             .unwrap();
         assert_eq!(
             ctrl,
-            Control::None,
-            "out-of-sequence GapFill must be suppressed"
+            Control::GapDetected { begin: 2 },
+            "out-of-sequence GapFill must surface a gap"
         );
-        assert_eq!(recorder.len(), 1);
-        assert_eq!(recorder.mt(0), b"2", "gap must emit ResendRequest");
-        assert_eq!(recorder.num(0, 7), Some(2));
+        assert_eq!(recorder.len(), 0, "gap emits nothing; the user resends");
+        assert_eq!(s.state(), State::Resending);
         // Proceed-only work (advance to new_seq) must NOT run on a gap.
         assert_eq!(
             s.next_inbound_seq(),
@@ -1567,14 +1675,12 @@ mod tests {
                 &mut recorder,
             )
             .unwrap();
-        assert_eq!(ctrl, Control::None, "gap Logout must be suppressed");
-        assert_eq!(recorder.len(), 1);
         assert_eq!(
-            recorder.mt(0),
-            b"2",
-            "gap must emit ResendRequest, not a Logout"
+            ctrl,
+            Control::GapDetected { begin: 2 },
+            "a gap Logout surfaces the gap, not the Logout"
         );
-        assert_eq!(recorder.num(0, 7), Some(2));
+        assert_eq!(recorder.len(), 0, "gap emits nothing; the user resends");
         assert_eq!(
             s.state(),
             State::Resending,

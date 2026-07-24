@@ -152,14 +152,58 @@ struct Rig {
     stream: AsyncReadAdapter<TcpStream>,
 }
 
+/// Fixed UTC-unix-nanos clock (2026-06-03 16:55:33.000). The engine stamps every
+/// `SendingTime(52)` from this; the peer asserts it exactly (see `ENGINE_ST` in
+/// `fix_peer.py`).
+const NOW: i128 = 1_780_505_733_000_000_000;
+
+/// The classification of one recv+reply [`Rig::step`] the drive loops branch on.
+enum Step {
+    /// Nothing test-visible surfaced (or a no-reply message was handled).
+    Continue,
+    /// An in-order application message surfaced.
+    App,
+    /// A clean logout terminal (LoggedOut, or a peer LogoutRequest we answered).
+    Ended,
+}
+
 impl Rig {
-    async fn recv(&mut self) -> Result<Option<Message<'_, MockDict>>, TransportError> {
-        self.session
-            .recv(&mut self.reader, &mut self.writer, &mut self.stream)
-            .await
+    /// Receive the next message and drive its required reply — the async
+    /// user-driven model (the test `.await`s the reply the engine used to
+    /// auto-send). Destructures `self` so the `Message` borrows `reader` only,
+    /// freeing `session`/`writer`/`stream` for the reply (contract §5).
+    async fn step(&mut self) -> Result<Step, TransportError> {
+        let Rig {
+            session,
+            reader,
+            writer,
+            stream,
+        } = self;
+        match session.recv(reader, writer, stream, NOW).await? {
+            Some(Message::LoggedOut { .. }) => Ok(Step::Ended),
+            Some(Message::LogoutRequest { .. }) => {
+                session.logout(writer, stream, NOW).await?;
+                Ok(Step::Ended)
+            }
+            Some(Message::TestRequest { id }) => {
+                session.heartbeat(writer, stream, NOW, Some(id)).await?;
+                Ok(Step::Continue)
+            }
+            Some(Message::GapDetected { begin }) => {
+                session.resend_request(writer, stream, NOW, begin).await?;
+                Ok(Step::Continue)
+            }
+            Some(Message::LogonRequest(d) | Message::LogonResetRequest(d)) => {
+                session.accept_logon(d, writer, stream, NOW).await?;
+                Ok(Step::Continue)
+            }
+            Some(Message::Application { .. }) => Ok(Step::App),
+            // No reply required, or nothing surfaced (`None`).
+            _ => Ok(Step::Continue),
+        }
     }
     fn connect(&mut self) -> Result<(), TransportError> {
-        self.session.encode_connect(&mut self.writer)
+        self.session.encode_connect(&mut self.writer, NOW)
     }
     fn send_app(&mut self, seq: u32, frame: &[u8]) -> Result<(), TransportError> {
         self.session.encode_send_app(&mut self.writer, seq, frame)
@@ -199,10 +243,10 @@ async fn connect(port: u16, dir: &Path) -> Rig {
 /// error is a failure and panics.
 async fn drive(conn: &mut Rig) {
     loop {
-        match conn.recv().await {
-            Ok(Some(Message::LoggedOut { .. })) => return,
+        match conn.step().await {
+            Ok(Step::Ended) => return,
             Ok(_) => {}
-            Err(e) => panic!("recv errored before clean logout: {e:?}"),
+            Err(e) => panic!("step errored before clean logout: {e:?}"),
         }
     }
 }
@@ -297,14 +341,14 @@ async fn drive_observe(conn: &mut Rig) -> (Option<DisconnectReason>, bool, bool)
     let mut saw_resending = false;
     let mut saw_app = false;
     loop {
-        match conn.recv().await {
-            Ok(Some(Message::LoggedOut { .. })) => return (None, saw_resending, saw_app),
-            Ok(Some(Message::Application { .. })) => saw_app = true,
-            Ok(Some(_) | None) => {}
+        match conn.step().await {
+            Ok(Step::Ended) => return (None, saw_resending, saw_app),
+            Ok(Step::App) => saw_app = true,
+            Ok(Step::Continue) => {}
             Err(TransportError::UnexpectedDisconnect { reason }) => {
                 return (Some(reason), saw_resending, saw_app);
             }
-            Err(e) => panic!("recv errored mid-scenario: {e:?}"),
+            Err(e) => panic!("step errored mid-scenario: {e:?}"),
         }
         if conn.state().state() == State::Resending {
             saw_resending = true;
@@ -312,13 +356,13 @@ async fn drive_observe(conn: &mut Rig) -> (Option<DisconnectReason>, bool, bool)
     }
 }
 
-/// Drive until the session reaches `Active`, panicking on an early disconnect.
+/// Drive until the session reaches `Active`, panicking on an early logout.
 async fn drive_to_active(conn: &mut Rig) {
     loop {
-        match conn.recv().await {
-            Ok(Some(Message::LoggedOut { .. })) => panic!("logged out before active"),
+        match conn.step().await {
+            Ok(Step::Ended) => panic!("logged out before active"),
             Err(e) => panic!("disconnected before active: {e:?}"),
-            _ => {}
+            Ok(_) => {}
         }
         if conn.state().state() == State::Active {
             break;

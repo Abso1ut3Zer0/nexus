@@ -14,7 +14,7 @@
 //!
 //! - inbound: read transport bytes into [`reader.spare()`](MessageReader::spare),
 //!   commit with [`reader.filled(n)`](MessageReader::filled),
-//! - advance: [`session.poll(&mut reader, &mut writer)`](FixSession::poll),
+//! - advance: [`session.poll(&mut reader, &mut writer, now)`](FixSession::poll),
 //! - decode: [`session.message(&reader)`](FixSession::message) after
 //!   [`PollOutcome::Message`],
 //! - send: the encode-only helpers ([`encode_connect`](FixSession::encode_connect),
@@ -41,14 +41,15 @@ use core::marker::PhantomData;
 use std::io::{self, Read, Write};
 
 use nexus_fix_codec::{
-    FieldReader, FixAdminMsg, FixDictionary, FixHeader, FrameFormatter, NoCustomizer,
-    SessionCustomizer, encode_fix_uint, find_tag, parse_fix_bool, parse_fix_seqnum, parse_fix_uint,
+    AsciiTextStr, FieldReader, FieldView, FixAdminMsg, FixDictionary, FixHeader, FrameFormatter,
+    NoCustomizer, SessionCustomizer, encode_fix_uint, find_tag, parse_fix_bool, parse_fix_seqnum,
+    parse_fix_uint,
 };
 use nexus_journal::WriteError;
 
 use crate::frame::{FrameError, FrameReader, FrameWriter, MalformedReason};
 use crate::framework::{
-    Emitter, Message, MessageReader, MessageWriter, SessionConfig, SessionError,
+    Emitter, LogonDecision, Message, MessageReader, MessageWriter, SessionConfig, SessionError,
 };
 use crate::persist::{FixJournal, ReplayItem};
 use crate::session::{
@@ -383,53 +384,70 @@ impl<D: FixDictionary> FixSession<D> {
     // the bytes yourself via [`writer.data()`](MessageWriter::data) /
     // [`advance`](MessageWriter::advance) (the kernel-bypass / custom-transport
     // path), or use the combined verb form below, which encodes then flushes.
+    //
+    // ## The `now` clock contract
+    //
+    // Every send takes `now: i128` — a UTC wall-clock timestamp in **nanoseconds
+    // since the Unix epoch** — and stamps it into `SendingTime(52)`. The session
+    // reads no clock of its own: the core is a pure function of `(bytes, now)`,
+    // fully replayable for testing and historical replay. `now` exists *only* for
+    // the wire timestamp; it is never an `Instant` and never drives session state.
 
     /// Encodes a Logon (initiate the session) into `writer`. Encode-only: drain
     /// the bytes yourself via [`writer.data()`](MessageWriter::data), use
     /// [`connect`](Self::connect) to encode + flush in one call, or let
     /// [`recv`](Self::recv) flush them.
+    ///
+    /// `now` stamps `SendingTime(52)` (UTC unix-nanos); see the [clock
+    /// contract](#the-now-clock-contract).
     pub fn encode_connect<C: SessionCustomizer>(
         &mut self,
         writer: &mut MessageWriter<D, C>,
+        now: i128,
     ) -> Result<(), Error> {
         // A fresh connection revives a session that terminated (clean logout or
         // fatal error), so the same carry-over session can reconnect.
         self.terminated = false;
-        let mut emitter = journaling_emitter(writer, &mut self.journal, &self.config);
+        let mut emitter = journaling_emitter(writer, &mut self.journal, &self.config, now);
         self.state.connect(&mut emitter)?;
         Ok(())
     }
 
     /// Encodes a Logon with `ResetSeqNumFlag=Y` into `writer`. Encode-only; see
-    /// [`connect_reset`](Self::connect_reset) for the encode + flush form.
+    /// [`connect_reset`](Self::connect_reset) for the encode + flush form. `now`
+    /// stamps `SendingTime(52)` (UTC unix-nanos).
     pub fn encode_connect_reset<C: SessionCustomizer>(
         &mut self,
         writer: &mut MessageWriter<D, C>,
+        now: i128,
     ) -> Result<(), Error> {
         self.terminated = false;
-        let mut emitter = journaling_emitter(writer, &mut self.journal, &self.config);
+        let mut emitter = journaling_emitter(writer, &mut self.journal, &self.config, now);
         self.state.connect_reset(&mut emitter)?;
         Ok(())
     }
 
     /// Encodes an in-session sequence reset handshake into `writer`. Encode-only;
     /// see [`reset_sequence`](Self::reset_sequence) for the encode + flush form.
+    /// `now` stamps `SendingTime(52)` (UTC unix-nanos).
     pub fn encode_reset_sequence<C: SessionCustomizer>(
         &mut self,
         writer: &mut MessageWriter<D, C>,
+        now: i128,
     ) -> Result<(), Error> {
-        let mut emitter = journaling_emitter(writer, &mut self.journal, &self.config);
+        let mut emitter = journaling_emitter(writer, &mut self.journal, &self.config, now);
         self.state.reset_sequence(&mut emitter)?;
         Ok(())
     }
 
     /// Encodes a Logout into `writer`. Encode-only; see [`logout`](Self::logout)
-    /// for the encode + flush form.
+    /// for the encode + flush form. `now` stamps `SendingTime(52)` (UTC unix-nanos).
     pub fn encode_logout<C: SessionCustomizer>(
         &mut self,
         writer: &mut MessageWriter<D, C>,
+        now: i128,
     ) -> Result<(), Error> {
-        let mut emitter = journaling_emitter(writer, &mut self.journal, &self.config);
+        let mut emitter = journaling_emitter(writer, &mut self.journal, &self.config, now);
         self.state.logout(&mut emitter)?;
         Ok(())
     }
@@ -438,41 +456,102 @@ impl<D: FixDictionary> FixSession<D> {
     /// `TestReqID(112)`. Encode-only; see [`heartbeat`](Self::heartbeat) for the
     /// encode + flush form.
     ///
-    /// Pass `Some(id)` to answer a [`Message::TestRequest`], or `None` for an
-    /// unsolicited keepalive.
+    /// Pass `Some(id)` — the validated `TestReqID` from a
+    /// [`Message::TestRequest`], echoed verbatim via its bytes — to answer it, or
+    /// `None` for an unsolicited keepalive. `now` stamps `SendingTime(52)` (UTC
+    /// unix-nanos).
     pub fn encode_heartbeat<C: SessionCustomizer>(
         &mut self,
         writer: &mut MessageWriter<D, C>,
-        echo: Option<&str>,
+        now: i128,
+        echo: Option<&AsciiTextStr>,
     ) -> Result<(), Error> {
-        let mut emitter = journaling_emitter(writer, &mut self.journal, &self.config);
+        let mut emitter = journaling_emitter(writer, &mut self.journal, &self.config, now);
         self.state
-            .heartbeat(echo.map(str::as_bytes), &mut emitter)?;
+            .heartbeat(echo.map(AsciiTextStr::as_bytes), &mut emitter)?;
         Ok(())
     }
 
     /// Encodes a TestRequest (35=1) into `writer` with a fresh `TestReqID(112)`.
     /// Encode-only; see [`test_request`](Self::test_request) for the encode + flush
-    /// form.
+    /// form. `now` stamps `SendingTime(52)` (UTC unix-nanos).
     pub fn encode_test_request<C: SessionCustomizer>(
         &mut self,
         writer: &mut MessageWriter<D, C>,
+        now: i128,
     ) -> Result<(), Error> {
-        let mut emitter = journaling_emitter(writer, &mut self.journal, &self.config);
+        let mut emitter = journaling_emitter(writer, &mut self.journal, &self.config, now);
         self.state.test_request(&mut emitter)?;
         Ok(())
     }
 
     /// Encodes a ResendRequest (35=2) covering `[begin, ∞)` into `writer`.
     /// Encode-only; see [`resend_request`](Self::resend_request) for the encode +
-    /// flush form. `begin` is the first missing inbound seqnum.
+    /// flush form. `begin` is the first missing inbound seqnum; `now` stamps
+    /// `SendingTime(52)` (UTC unix-nanos).
     pub fn encode_resend_request<C: SessionCustomizer>(
         &mut self,
         writer: &mut MessageWriter<D, C>,
+        now: i128,
         begin: u32,
     ) -> Result<(), Error> {
-        let mut emitter = journaling_emitter(writer, &mut self.journal, &self.config);
+        let mut emitter = journaling_emitter(writer, &mut self.journal, &self.config, now);
         self.state.resend_request(begin, &mut emitter)?;
+        Ok(())
+    }
+
+    /// Encodes the reply to a counterparty-initiated Logon surfaced as
+    /// [`Message::LogonRequest`] / [`Message::LogonResetRequest`], and advances the
+    /// session — the encode-only half of [`LogonDecision::accept`]. `now` stamps
+    /// `SendingTime(52)` (UTC unix-nanos).
+    ///
+    /// The `seq`/`heart_bt_int_s`/`is_reset` are the fields captured from the peer
+    /// Logon by the decision. Returns [`Error::UnexpectedDisconnect`] if the peer's
+    /// Logon seqnum was below expected (an establishment protocol error); the
+    /// session is marked terminated in that case.
+    pub fn encode_accept_logon<C: SessionCustomizer>(
+        &mut self,
+        writer: &mut MessageWriter<D, C>,
+        now: i128,
+        seq: u32,
+        heart_bt_int_s: u32,
+        is_reset: bool,
+    ) -> Result<(), Error> {
+        let ctrl = {
+            let mut emitter = journaling_emitter(writer, &mut self.journal, &self.config, now);
+            self.state
+                .accept_logon(seq, heart_bt_int_s, is_reset, &mut emitter)?
+        };
+        if let Control::Disconnected { reason } = ctrl {
+            self.terminated = true;
+            return Err(Error::UnexpectedDisconnect { reason });
+        }
+        Ok(())
+    }
+
+    /// Encodes a Logout rejecting a counterparty-initiated Logon and disconnects —
+    /// the encode-only half of [`LogonDecision::reject`]. `now` stamps
+    /// `SendingTime(52)` (UTC unix-nanos).
+    ///
+    /// **`reason` is NOT yet put on the wire.** It is the caller's rejection
+    /// rationale (e.g. failed authentication), captured for logging and
+    /// forward-compatibility, but the emitted Logout is a bare Logout: the codec's
+    /// `Logout` carries no `Text(58)` field today. **Wiring `reason` into
+    /// `Text(58)` lands in phase 5** with the codec `Logout`/`Reject` change; until
+    /// then a rejected peer sees a Logout with no reason string. The session is
+    /// marked terminated.
+    pub fn encode_reject_logon<C: SessionCustomizer>(
+        &mut self,
+        writer: &mut MessageWriter<D, C>,
+        now: i128,
+        // Captured for phase-5 `Text(58)` wiring; deliberately not on the wire yet.
+        _reason: &str,
+    ) -> Result<(), Error> {
+        {
+            let mut emitter = journaling_emitter(writer, &mut self.journal, &self.config, now);
+            self.state.reject_logon(&mut emitter)?;
+        }
+        self.terminated = true;
         Ok(())
     }
 
@@ -505,109 +584,128 @@ impl<D: FixDictionary> FixSession<D> {
     // [`nexus_net::WireStream`]. For a custom transport, call the encode-only form
     // and drain the byte seam yourself.
 
-    /// Encodes a Logon and flushes it to `conn` (initiate the session).
+    /// Encodes a Logon and flushes it to `conn` (initiate the session). `now`
+    /// stamps `SendingTime(52)` (UTC unix-nanos).
     pub fn connect<C, S>(
         &mut self,
         writer: &mut MessageWriter<D, C>,
         conn: &mut S,
+        now: i128,
     ) -> Result<(), Error>
     where
         C: SessionCustomizer,
         S: Read + Write,
     {
-        self.encode_connect(writer)?;
+        self.encode_connect(writer, now)?;
         writer.flush_to(conn).map_err(Error::Io)
     }
 
-    /// Encodes a Logon with `ResetSeqNumFlag=Y` and flushes it to `conn`.
+    /// Encodes a Logon with `ResetSeqNumFlag=Y` and flushes it to `conn`. `now`
+    /// stamps `SendingTime(52)` (UTC unix-nanos).
     pub fn connect_reset<C, S>(
         &mut self,
         writer: &mut MessageWriter<D, C>,
         conn: &mut S,
+        now: i128,
     ) -> Result<(), Error>
     where
         C: SessionCustomizer,
         S: Read + Write,
     {
-        self.encode_connect_reset(writer)?;
+        self.encode_connect_reset(writer, now)?;
         writer.flush_to(conn).map_err(Error::Io)
     }
 
     /// Encodes an in-session sequence reset handshake and flushes it to `conn`.
+    /// `now` stamps `SendingTime(52)` (UTC unix-nanos).
     pub fn reset_sequence<C, S>(
         &mut self,
         writer: &mut MessageWriter<D, C>,
         conn: &mut S,
+        now: i128,
     ) -> Result<(), Error>
     where
         C: SessionCustomizer,
         S: Read + Write,
     {
-        self.encode_reset_sequence(writer)?;
+        self.encode_reset_sequence(writer, now)?;
         writer.flush_to(conn).map_err(Error::Io)
     }
 
-    /// Encodes a Logout and flushes it to `conn`.
+    /// Encodes a Logout and flushes it to `conn`. Use this to answer a
+    /// [`Message::LogoutRequest`] or to initiate a logout. `now` stamps
+    /// `SendingTime(52)` (UTC unix-nanos).
     pub fn logout<C, S>(
         &mut self,
         writer: &mut MessageWriter<D, C>,
         conn: &mut S,
+        now: i128,
     ) -> Result<(), Error>
     where
         C: SessionCustomizer,
         S: Read + Write,
     {
-        self.encode_logout(writer)?;
+        self.encode_logout(writer, now)?;
         writer.flush_to(conn).map_err(Error::Io)
     }
 
     /// Encodes a Heartbeat (echoing `echo` if `Some`) and flushes it to `conn`.
+    /// Answers a [`Message::TestRequest`] with `Some(id)` (the validated
+    /// `TestReqID`), or sends an unsolicited keepalive with `None`. `now` stamps
+    /// `SendingTime(52)` (UTC unix-nanos).
     pub fn heartbeat<C, S>(
         &mut self,
         writer: &mut MessageWriter<D, C>,
         conn: &mut S,
-        echo: Option<&str>,
+        now: i128,
+        echo: Option<&AsciiTextStr>,
     ) -> Result<(), Error>
     where
         C: SessionCustomizer,
         S: Read + Write,
     {
-        self.encode_heartbeat(writer, echo)?;
+        self.encode_heartbeat(writer, now, echo)?;
         writer.flush_to(conn).map_err(Error::Io)
     }
 
-    /// Encodes a TestRequest and flushes it to `conn`.
+    /// Encodes a TestRequest and flushes it to `conn`. `now` stamps
+    /// `SendingTime(52)` (UTC unix-nanos).
     pub fn test_request<C, S>(
         &mut self,
         writer: &mut MessageWriter<D, C>,
         conn: &mut S,
+        now: i128,
     ) -> Result<(), Error>
     where
         C: SessionCustomizer,
         S: Read + Write,
     {
-        self.encode_test_request(writer)?;
+        self.encode_test_request(writer, now)?;
         writer.flush_to(conn).map_err(Error::Io)
     }
 
     /// Encodes a ResendRequest covering `[begin, ∞)` and flushes it to `conn`.
+    /// Answers a [`Message::GapDetected`]. `now` stamps `SendingTime(52)` (UTC
+    /// unix-nanos).
     pub fn resend_request<C, S>(
         &mut self,
         writer: &mut MessageWriter<D, C>,
         conn: &mut S,
+        now: i128,
         begin: u32,
     ) -> Result<(), Error>
     where
         C: SessionCustomizer,
         S: Read + Write,
     {
-        self.encode_resend_request(writer, begin)?;
+        self.encode_resend_request(writer, now, begin)?;
         writer.flush_to(conn).map_err(Error::Io)
     }
 
     /// Journals, encodes an application frame at sequence `seq`, and flushes it to
     /// `conn`. See [`encode_send_app`](Self::encode_send_app) for the frame-size
-    /// constraint.
+    /// constraint. The app frame carries its own `SendingTime(52)`, so this takes
+    /// no `now`.
     pub fn send_app<C, S>(
         &mut self,
         writer: &mut MessageWriter<D, C>,
@@ -626,15 +724,19 @@ impl<D: FixDictionary> FixSession<D> {
     // ── inbound processing ───────────────────────────────────────────────────
 
     /// Processes the next buffered inbound frame in `reader`, driving the state
-    /// machine, journaling, and enqueuing any outbound admin into `writer`.
-    /// Returns a non-borrowing [`PollOutcome`]; call
+    /// machine, journaling, and enqueuing any *mechanism* outbound admin into
+    /// `writer` (the reset-handshake and protocol-error emits the engine still
+    /// drives). Returns a non-borrowing [`PollOutcome`]; call
     /// [`message`](Self::message) after [`PollOutcome::Message`].
     ///
-    /// See the [module docs](self) for the poll loop.
+    /// `now` stamps `SendingTime(52)` on any mechanism emit and on the resend
+    /// batch (UTC unix-nanos); most calls will not emit and ignore it. See the
+    /// [module docs](self) for the poll loop.
     pub fn poll<C: SessionCustomizer>(
         &mut self,
         reader: &mut MessageReader<D>,
         writer: &mut MessageWriter<D, C>,
+        now: i128,
     ) -> Result<PollOutcome, Error> {
         // Resume an in-progress resend before touching new inbound.
         if self.resend.is_some() {
@@ -678,7 +780,7 @@ impl<D: FixDictionary> FixSession<D> {
             }
         }
 
-        self.process_frame(reader, writer)
+        self.process_frame(reader, writer, now)
     }
 
     /// Reconstructs the typed [`Message`] for the frame just processed by
@@ -691,14 +793,31 @@ impl<D: FixDictionary> FixSession<D> {
     pub fn message<'r>(&self, reader: &'r MessageReader<D>) -> Message<'r, D> {
         let frame = &reader.frame[..];
         match self.pending {
-            Control::Logon { acknowledged } => {
+            // Only the initiator ack (`acknowledged == true`) is ever surfaced as a
+            // `Control::Logon`; the acceptor returns `Control::LogonRequest`.
+            Control::Logon { .. } => {
                 let msg = D::Logon::decode(frame).expect("frame decoded in poll");
-                if acknowledged {
-                    Message::LogonAcknowledged { msg }
-                } else {
-                    Message::LogonRequest { msg }
-                }
+                Message::LogonAcknowledged { msg }
             }
+            Control::LogonRequest {
+                seq,
+                heart_bt_int_s,
+            } => Message::LogonRequest(LogonDecision {
+                msg: D::Logon::decode(frame).expect("frame decoded in poll"),
+                seq,
+                heart_bt_int_s,
+                is_reset: false,
+            }),
+            Control::LogonResetRequest {
+                seq,
+                heart_bt_int_s,
+            } => Message::LogonResetRequest(LogonDecision {
+                msg: D::Logon::decode(frame).expect("frame decoded in poll"),
+                seq,
+                heart_bt_int_s,
+                is_reset: true,
+            }),
+            Control::GapDetected { begin } => Message::GapDetected { begin },
             Control::Logout => {
                 let msg = D::Logout::decode(frame).expect("frame decoded in poll");
                 Message::LogoutRequest { msg }
@@ -708,8 +827,17 @@ impl<D: FixDictionary> FixSession<D> {
                 Message::Heartbeat { msg }
             }
             Control::TestRequest => {
-                let msg = D::TestRequest::decode(frame).expect("frame decoded in poll");
-                Message::TestRequest { msg }
+                let id = find_tag(frame, 0, 112)
+                    .and_then(|span| FieldView::<&AsciiTextStr>::new(span, frame))
+                    .map_or(AsciiTextStr::empty(), |fv| {
+                        // SAFETY: the b"1" classify path in `process_frame` already
+                        // validated tag 112 is present and printable-ASCII before
+                        // producing `Control::TestRequest`, and `message()` runs
+                        // only after that successful `poll` — so the unchecked
+                        // borrow upholds the `AsciiTextStr` invariant.
+                        unsafe { fv.get_unchecked() }
+                    });
+                Message::TestRequest { id }
             }
             Control::ResendRequest => {
                 let msg = D::ResendRequest::decode(frame).expect("frame decoded in poll");
@@ -746,6 +874,7 @@ impl<D: FixDictionary> FixSession<D> {
         &mut self,
         reader: &MessageReader<D>,
         writer: &mut MessageWriter<D, C>,
+        now: i128,
     ) -> Result<PollOutcome, Error> {
         let frame = &reader.frame[..];
 
@@ -775,7 +904,7 @@ impl<D: FixDictionary> FixSession<D> {
 
         if !sender_ok || !target_ok {
             {
-                let mut emitter = journaling_emitter(writer, &mut self.journal, &self.config);
+                let mut emitter = journaling_emitter(writer, &mut self.journal, &self.config, now);
                 self.state.on_comp_id_mismatch(&mut emitter)?;
             }
             // Always surface CompIdMismatch here, mirroring the original driver:
@@ -797,7 +926,7 @@ impl<D: FixDictionary> FixSession<D> {
             // The missing-tag-35 reject is NOT journaled (matches the original):
             // this call site gives the `Emitter` a no-op `after` closure, while
             // every other site uses the journaling emitter.
-            let mut emitter = Emitter::new(writer, &self.config, |_seq, _frame| Ok(()));
+            let mut emitter = Emitter::new(writer, &self.config, now, |_seq, _frame| Ok(()));
             self.state.on_reject_inbound(
                 RejectInboundIn {
                     seq,
@@ -830,7 +959,8 @@ impl<D: FixDictionary> FixSession<D> {
                     .unwrap_or(false);
                 let was_logon_sent = self.state.state() == State::LogonSent;
                 let ctrl = {
-                    let mut emitter = journaling_emitter(writer, &mut self.journal, &self.config);
+                    let mut emitter =
+                        journaling_emitter(writer, &mut self.journal, &self.config, now);
                     self.state.on_logon(
                         LogonIn {
                             seq,
@@ -848,7 +978,8 @@ impl<D: FixDictionary> FixSession<D> {
                 D::Logout::decode(frame)
                     .map_err(|_| Error::Protocol(SessionError::MalformedMessage))?;
                 let ctrl = {
-                    let mut emitter = journaling_emitter(writer, &mut self.journal, &self.config);
+                    let mut emitter =
+                        journaling_emitter(writer, &mut self.journal, &self.config, now);
                     self.state.on_logout(
                         LogoutIn {
                             seq,
@@ -866,7 +997,8 @@ impl<D: FixDictionary> FixSession<D> {
                 let echo_id =
                     find_tag(frame, 0, 112).and_then(|s| parse_fix_seqnum(s.slice(frame)).ok());
                 let ctrl = {
-                    let mut emitter = journaling_emitter(writer, &mut self.journal, &self.config);
+                    let mut emitter =
+                        journaling_emitter(writer, &mut self.journal, &self.config, now);
                     self.state.on_heartbeat(
                         HeartbeatIn {
                             echo_id,
@@ -882,13 +1014,22 @@ impl<D: FixDictionary> FixSession<D> {
                 // Validate the typed decode before any side effect (see `b"A"`).
                 D::TestRequest::decode(frame)
                     .map_err(|_| Error::Protocol(SessionError::MalformedMessage))?;
-                let test_req_id =
-                    find_tag(frame, 0, 112).map_or_else(|| b"".as_ref(), |s| s.slice(frame));
+                // Validate `TestReqID(112)` here, in the fallible path: absent →
+                // MissingField, present-but-non-ASCII → MalformedField. This is
+                // what makes the later unchecked borrow in `message()` sound — the
+                // id is proven present + printable-ASCII before the message is
+                // surfaced (a malformed 112 is an error, never a silent empty echo).
+                let span = find_tag(frame, 0, 112)
+                    .ok_or(Error::Protocol(SessionError::MissingField { tag: 112 }))?;
+                FieldView::<&AsciiTextStr>::new(span, frame)
+                    .ok_or(Error::Protocol(SessionError::MissingField { tag: 112 }))?
+                    .checked()
+                    .map_err(|_| Error::Protocol(SessionError::MalformedField { tag: 112 }))?;
                 let ctrl = {
-                    let mut emitter = journaling_emitter(writer, &mut self.journal, &self.config);
+                    let mut emitter =
+                        journaling_emitter(writer, &mut self.journal, &self.config, now);
                     self.state.on_test_request(
                         TestRequestIn {
-                            test_req_id,
                             seq,
                             is_poss_dup: poss_dup,
                         },
@@ -908,7 +1049,8 @@ impl<D: FixDictionary> FixSession<D> {
                     .and_then(|s| parse_fix_seqnum(s.slice(frame)).ok())
                     .map_or(0, |v| v as u32);
                 let ctrl = {
-                    let mut emitter = journaling_emitter(writer, &mut self.journal, &self.config);
+                    let mut emitter =
+                        journaling_emitter(writer, &mut self.journal, &self.config, now);
                     self.state.on_resend_request(
                         ResendRequestIn {
                             seq,
@@ -927,7 +1069,7 @@ impl<D: FixDictionary> FixSession<D> {
                         } else {
                             end.min(self.state.next_outbound_seq().saturating_sub(1))
                         };
-                        self.begin_resend(begin, re);
+                        self.begin_resend(begin, re, now);
                         if self.drive_resend(writer)? {
                             // Buffer filled mid-resend: wrapper drains, re-polls.
                             return Ok(PollOutcome::ResendPending);
@@ -949,7 +1091,8 @@ impl<D: FixDictionary> FixSession<D> {
                     .and_then(|s| parse_fix_bool(s.slice(frame)).ok())
                     .unwrap_or(false);
                 let ctrl = {
-                    let mut emitter = journaling_emitter(writer, &mut self.journal, &self.config);
+                    let mut emitter =
+                        journaling_emitter(writer, &mut self.journal, &self.config, now);
                     self.state.on_sequence_reset(
                         SequenceResetIn {
                             seq,
@@ -967,7 +1110,8 @@ impl<D: FixDictionary> FixSession<D> {
                 D::Reject::decode(frame)
                     .map_err(|_| Error::Protocol(SessionError::MalformedMessage))?;
                 let ctrl = {
-                    let mut emitter = journaling_emitter(writer, &mut self.journal, &self.config);
+                    let mut emitter =
+                        journaling_emitter(writer, &mut self.journal, &self.config, now);
                     self.state.on_reject(
                         RejectIn {
                             seq,
@@ -980,7 +1124,8 @@ impl<D: FixDictionary> FixSession<D> {
             }
             _ => {
                 let ctrl = {
-                    let mut emitter = journaling_emitter(writer, &mut self.journal, &self.config);
+                    let mut emitter =
+                        journaling_emitter(writer, &mut self.journal, &self.config, now);
                     self.state.on_app(
                         AppIn {
                             seq,
@@ -1010,17 +1155,12 @@ impl<D: FixDictionary> FixSession<D> {
 
     // ── resend ───────────────────────────────────────────────────────────────
 
-    /// Starts a resend of `[begin, end]`, capturing the timestamp once (matching
-    /// the original `do_resend`, which formats one `SendingTime` for the batch).
-    fn begin_resend(&mut self, begin: u32, end: u32) {
-        use std::time::{SystemTime, UNIX_EPOCH};
-
-        let unix_nanos = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_nanos() as i128;
+    /// Starts a resend of `[begin, end]`, formatting the batch `SendingTime(52)`
+    /// once from the caller-supplied `now` (UTC unix-nanos). No internal clock
+    /// read: the resend wire output is a pure function of `(journal, now)`.
+    fn begin_resend(&mut self, begin: u32, end: u32, now: i128) {
         let mut ts = [0u8; UTC_TIMESTAMP_LEN];
-        crate::timestamp::format_utc_timestamp(unix_nanos, &mut ts);
+        crate::timestamp::format_utc_timestamp(now, &mut ts);
         self.resend = Some(ResendState {
             begin,
             end,
@@ -1082,11 +1222,17 @@ impl<D: FixDictionary> FixSession<D> {
     /// transport — the thin convenience over the sans-IO seam.
     ///
     /// Fills `reader` from `conn`, drives [`poll`](Self::poll), drains any
-    /// outbound (auto-emit, resend) from `writer` to `conn`, and returns the
-    /// message. `Ok(None)` means a step produced nothing to surface (an
-    /// out-of-sequence app, a session-level reject, or a caller-set socket read
-    /// timeout elapsing with no complete frame — run your own liveness timers and
-    /// call `recv` again).
+    /// *mechanism* outbound (reset handshake, protocol-error Logout, resend) from
+    /// `writer` to `conn`, and returns the message. `Ok(None)` means a step
+    /// produced nothing to surface (an out-of-sequence app, a session-level reject,
+    /// or a caller-set socket read timeout elapsing with no complete frame — run
+    /// your own liveness timers and call `recv` again).
+    ///
+    /// `now` (UTC unix-nanos) stamps `SendingTime(52)` on any mechanism emit the
+    /// engine still drives inside `recv`, so the core stays a pure function of
+    /// `(bytes, now)`. It keeps its `writer` for exactly those emits; the reply to
+    /// the returned message is still yours to send. `now` is `Copy`, so the borrow
+    /// guarantee below is unaffected.
     ///
     /// The returned `Message<'r>` borrows `reader`, *not* `&mut self`, so `&mut
     /// session` and `&mut writer` stay free for the reply while the payload is
@@ -1097,6 +1243,7 @@ impl<D: FixDictionary> FixSession<D> {
         reader: &'r mut MessageReader<D>,
         writer: &mut MessageWriter<D, C>,
         conn: &mut S,
+        now: i128,
     ) -> Result<Option<Message<'r, D>>, Error>
     where
         C: SessionCustomizer,
@@ -1108,7 +1255,7 @@ impl<D: FixDictionary> FixSession<D> {
         // `recv_step` returns an *owned* outcome so this dispatch can arm the
         // terminated guard — on a clean logout or any fatal error — before
         // borrowing `reader` to reconstruct the message.
-        match self.recv_step(reader, writer, conn) {
+        match self.recv_step(reader, writer, conn, now) {
             Ok(RecvStep::Message) => Ok(Some(self.message(reader))),
             Ok(RecvStep::LoggedOut) => {
                 self.terminated = true;
@@ -1132,13 +1279,14 @@ impl<D: FixDictionary> FixSession<D> {
         reader: &mut MessageReader<D>,
         writer: &mut MessageWriter<D, C>,
         conn: &mut S,
+        now: i128,
     ) -> Result<RecvStep, Error>
     where
         C: SessionCustomizer,
         S: Read + Write,
     {
         loop {
-            let outcome = self.poll(reader, writer)?;
+            let outcome = self.poll(reader, writer, now)?;
             // Drain any admin/resend the core enqueued this step (mirrors the
             // original driver, which flushed after every protocol handler). Also
             // flushes a pending opening Logon / `send_app` staged before `recv`.
@@ -1182,6 +1330,76 @@ impl<D: FixDictionary> FixSession<D> {
                 }
             }
         }
+    }
+}
+
+impl<D: FixDictionary> LogonDecision<'_, D> {
+    /// Encodes the accept reply into `writer` and advances the session — the
+    /// encode-only half of [`accept`](Self::accept), for the custom-transport /
+    /// async path. Consumes the decision (its obligation is satisfied). `now`
+    /// stamps `SendingTime(52)` (UTC unix-nanos).
+    pub fn encode_accept<C: SessionCustomizer>(
+        self,
+        session: &mut FixSession<D>,
+        writer: &mut MessageWriter<D, C>,
+        now: i128,
+    ) -> Result<(), Error> {
+        session.encode_accept_logon(writer, now, self.seq, self.heart_bt_int_s, self.is_reset)
+    }
+
+    /// Encodes the reject Logout into `writer` and disconnects — the encode-only
+    /// half of [`reject`](Self::reject). `now` stamps `SendingTime(52)`.
+    ///
+    /// **`reason` is captured but NOT yet on the wire** (`Text(58)` wiring lands in
+    /// phase 5); see [`FixSession::encode_reject_logon`].
+    pub fn encode_reject<C: SessionCustomizer>(
+        self,
+        session: &mut FixSession<D>,
+        writer: &mut MessageWriter<D, C>,
+        now: i128,
+        reason: &str,
+    ) -> Result<(), Error> {
+        session.encode_reject_logon(writer, now, reason)
+    }
+
+    /// Accepts the Logon: sends the reply (a Logon, or a LogonReset for a reset
+    /// request), applies the negotiated `HeartBtInt`, and brings the session up.
+    /// Encode + flush over a blocking transport. `now` stamps `SendingTime(52)`.
+    pub fn accept<C, S>(
+        self,
+        session: &mut FixSession<D>,
+        writer: &mut MessageWriter<D, C>,
+        conn: &mut S,
+        now: i128,
+    ) -> Result<(), Error>
+    where
+        C: SessionCustomizer,
+        S: Read + Write,
+    {
+        self.encode_accept(session, writer, now)?;
+        writer.flush_to(conn).map_err(Error::Io)
+    }
+
+    /// Rejects the Logon: sends a Logout and disconnects. Encode + flush over a
+    /// blocking transport. `now` stamps `SendingTime(52)`.
+    ///
+    /// **`reason` is captured for logging but NOT yet encoded on the wire** — the
+    /// codec `Logout` has no `Text(58)` field today; the rejected peer sees a bare
+    /// Logout. Wiring `reason` into `Text(58)` lands in phase 5.
+    pub fn reject<C, S>(
+        self,
+        session: &mut FixSession<D>,
+        writer: &mut MessageWriter<D, C>,
+        conn: &mut S,
+        now: i128,
+        reason: &str,
+    ) -> Result<(), Error>
+    where
+        C: SessionCustomizer,
+        S: Read + Write,
+    {
+        self.encode_reject(session, writer, now, reason)?;
+        writer.flush_to(conn).map_err(Error::Io)
     }
 }
 
@@ -1255,8 +1473,9 @@ fn journaling_emitter<'a, D: FixDictionary, C: SessionCustomizer>(
     writer: &'a mut MessageWriter<D, C>,
     journal: &'a mut FixJournal,
     config: &'a SessionConfig,
+    now: i128,
 ) -> Emitter<'a, D, C, impl FnMut(u32, &[u8]) -> Result<(), Error> + 'a> {
-    Emitter::new(writer, config, move |seq, frame| {
+    Emitter::new(writer, config, now, move |seq, frame| {
         journal_write(frame.len(), || journal.store(seq, frame))
     })
 }
@@ -1385,6 +1604,11 @@ mod tests {
     use crate::framework::{CompId, Message, MessageReader, MessageWriter, SessionConfig};
     use crate::persist::FixJournal;
     use crate::session::{Emit, LogonIn, SessionState, State};
+
+    /// Fixed UTC-unix-nanos clock. The deterministic core stamps every
+    /// `SendingTime(52)` from this, so two runs of the same inputs produce
+    /// byte-identical frames — no post-hoc normalization needed.
+    const NOW: i128 = 1_780_505_733_000_000_000;
 
     /// A discarding [`Emit`]: drops every emitted admin. These rig helpers
     /// drive the raw `SessionState` only to advance sequence numbers before
@@ -1604,7 +1828,7 @@ mod tests {
             !self.writer.is_empty()
         }
         fn poll(&mut self) -> Result<PollOutcome, super::Error> {
-            self.session.poll(&mut self.reader, &mut self.writer)
+            self.session.poll(&mut self.reader, &mut self.writer, NOW)
         }
         fn message(&self) -> Message<'_, D> {
             self.session.message(&self.reader)
@@ -1618,8 +1842,8 @@ mod tests {
     /// seqs `1..=N` except `HOLE_A`/`HOLE_B`, ready to receive a ResendRequest.
     ///
     /// `writer_cap` sizes only the outbound writer — the shared journal content
-    /// is byte-identical across runs, so the two resends differ only in the
-    /// resend `SendingTime` (normalized away by the oracle).
+    /// is byte-identical across runs, and both stamp the resend `SendingTime` from
+    /// the same fixed [`NOW`], so the two resends are byte-identical.
     fn build_session(dir: &Path, writer_cap: usize) -> Rig<MockDict> {
         let reader = MessageReader::with_frame_reader(FrameReader::builder().build());
         let writer = MessageWriter::with_frame_writer(
@@ -1715,41 +1939,15 @@ mod tests {
         frames
     }
 
-    /// Canonicalize the resend `SendingTime` (52) to a fixed value and recompute
-    /// the checksum (10), reusing the codec's own `checksum`/`format_checksum` so
-    /// the normalization can never drift from the encoder. Every resend `52` is
-    /// exactly `UTC_TIMESTAMP_LEN` bytes, so the overwrite is length-preserving —
-    /// BodyLength (9) is untouched. `OrigSendingTime` (122) is left intact, so a
-    /// bug that mangled it would still surface.
-    fn normalize_sending_time(mut frame: Vec<u8>) -> Vec<u8> {
-        const CANON: &[u8; 21] = b"11111111-11:11:11.111";
-        if let Some(span) = find_tag(&frame, 0, 52) {
-            let (o, l) = (span.offset as usize, span.len as usize);
-            assert_eq!(l, CANON.len(), "resend SendingTime must be fixed width");
-            frame[o..o + l].copy_from_slice(CANON);
-            // Recompute checksum: sum bytes from `8=` up to (not including) the
-            // trailing `10=DDD\x01` (last 7 bytes), matching the codec.
-            let body_end = frame.len() - 7;
-            let sum = checksum(&frame[..body_end]);
-            let digits = format_checksum(sum);
-            let dstart = frame.len() - 4; // three digits then SOH
-            frame[dstart..dstart + 3].copy_from_slice(&digits);
-        }
-        frame
-    }
-
-    fn normalize_stream(stream: &[u8]) -> Vec<Vec<u8>> {
-        split_frames(stream)
-            .into_iter()
-            .map(normalize_sending_time)
-            .collect()
-    }
-
     /// Oracle: a resend that overflows a tiny writer many times (drain → resume)
     /// must produce byte-for-byte the same output as the same resend into a
     /// writer large enough to complete in a single pass. Divergence would mean
     /// the resumable path skipped, duplicated, split, reordered, or mis-reframed
     /// an item across a resume boundary.
+    ///
+    /// Both runs stamp the resend `SendingTime(52)` from the same fixed [`NOW`]
+    /// (the core is a pure function of `(journal, now)`), so the streams are
+    /// byte-identical directly — no SendingTime normalization needed.
     #[test]
     fn resumable_resend_matches_single_pass() {
         let dir_big = tmp_dir("resume_big");
@@ -1773,9 +1971,9 @@ mod tests {
             "tiny-writer resend must hit ResendPending repeatedly (got {small_pending})"
         );
 
-        // Strong oracle: identical after normalizing the resend SendingTime.
-        let big_frames = normalize_stream(&big_stream);
-        let small_frames = normalize_stream(&small_stream);
+        // Strong oracle: byte-identical directly (same fixed `now` → same 52).
+        let big_frames = split_frames(&big_stream);
+        let small_frames = split_frames(&small_stream);
         assert_eq!(
             big_frames.len(),
             small_frames.len(),
@@ -1794,7 +1992,7 @@ mod tests {
             );
         }
 
-        // Structural spot-checks on the (canonical) single-pass stream.
+        // Structural spot-checks on the single-pass stream.
         // Range [1,30] with holes at 10 and 20:
         //   App(1..9), GapFill(10→11), App(11..19), GapFill(20→21), App(21..30).
         // 28 app reframes + 2 coalesced gap-fills = 30 frames.
@@ -2320,7 +2518,7 @@ mod tests {
 
         // Encode-only send stages the opening Logon (outbound seq 1, state →
         // LogonSent); drain it via the byte seam.
-        session.encode_connect(&mut writer).unwrap();
+        session.encode_connect(&mut writer, NOW).unwrap();
         assert!(
             !writer.data().is_empty(),
             "encode_connect must stage an outbound Logon into the writer"
@@ -2341,7 +2539,7 @@ mod tests {
 
         // Advance the machine and decode the surfaced frame — all sans-IO.
         assert_eq!(
-            session.poll(&mut reader, &mut writer).expect("poll"),
+            session.poll(&mut reader, &mut writer, NOW).expect("poll"),
             PollOutcome::Message
         );
         assert!(matches!(
@@ -2376,7 +2574,7 @@ mod tests {
 
         // The carry-over session reconnects: a fresh `connect` revives it so `recv`
         // works again. Without this, `recv` would return `Closed` forever.
-        session.encode_connect(&mut writer).unwrap();
+        session.encode_connect(&mut writer, NOW).unwrap();
         assert!(
             !session.is_terminated(),
             "encode_connect must clear terminated so the carry-over session can reconnect"
@@ -2430,7 +2628,11 @@ mod tests {
 
         // Heartbeat echoing a TestReqID(112).
         rig.session
-            .encode_heartbeat(&mut rig.writer, Some("PROBE"))
+            .encode_heartbeat(
+                &mut rig.writer,
+                NOW,
+                Some(AsciiTextStr::try_from_bytes(b"PROBE").unwrap()),
+            )
             .unwrap();
         {
             let out = rig.writer.data();
@@ -2446,7 +2648,9 @@ mod tests {
         rig.writer.advance(n);
 
         // TestRequest carrying a fresh TestReqID(112).
-        rig.session.encode_test_request(&mut rig.writer).unwrap();
+        rig.session
+            .encode_test_request(&mut rig.writer, NOW)
+            .unwrap();
         {
             let out = rig.writer.data();
             assert_eq!(msg_type(out), Some(b"1".as_ref()), "must be a TestRequest");
@@ -2460,7 +2664,7 @@ mod tests {
 
         // ResendRequest covering [begin, ∞): BeginSeqNo(7)=begin, EndSeqNo(16)=0.
         rig.session
-            .encode_resend_request(&mut rig.writer, 2)
+            .encode_resend_request(&mut rig.writer, NOW, 2)
             .unwrap();
         let out = rig.writer.data();
         assert_eq!(
@@ -2491,7 +2695,7 @@ mod tests {
 
         // Heartbeat (unsolicited keepalive).
         rig.session
-            .heartbeat(&mut rig.writer, &mut conn, None)
+            .heartbeat(&mut rig.writer, &mut conn, NOW, None)
             .unwrap();
         assert!(
             rig.writer.is_empty(),
@@ -2506,7 +2710,7 @@ mod tests {
         // TestRequest.
         conn.written.clear();
         rig.session
-            .test_request(&mut rig.writer, &mut conn)
+            .test_request(&mut rig.writer, &mut conn, NOW)
             .unwrap();
         assert!(rig.writer.is_empty());
         assert_eq!(msg_type(&conn.written), Some(b"1".as_ref()));
@@ -2514,7 +2718,7 @@ mod tests {
         // ResendRequest.
         conn.written.clear();
         rig.session
-            .resend_request(&mut rig.writer, &mut conn, 2)
+            .resend_request(&mut rig.writer, &mut conn, NOW, 2)
             .unwrap();
         assert!(rig.writer.is_empty());
         assert_eq!(msg_type(&conn.written), Some(b"2".as_ref()));
@@ -2523,5 +2727,235 @@ mod tests {
         let frames = split_frames(&conn.written);
         assert_eq!(frames.len(), 1, "combined send must flush one whole frame");
         assert_eq!(msg_type(&frames[0]), Some(b"2".as_ref()));
+    }
+
+    // ── the recv borrow guarantee (contract §5) ──────────────────────────────
+
+    /// A blocking `Read + Write` that replays queued inbound bytes and captures
+    /// writes — feeds the borrow-guarantee test one frame, then `WouldBlock`.
+    struct ReplayConn {
+        inbound: std::collections::VecDeque<u8>,
+        written: Vec<u8>,
+    }
+
+    impl ReplayConn {
+        fn new(frame: &[u8]) -> Self {
+            Self {
+                inbound: frame.iter().copied().collect(),
+                written: Vec::new(),
+            }
+        }
+    }
+
+    impl std::io::Read for ReplayConn {
+        fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+            if self.inbound.is_empty() {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::WouldBlock,
+                    "drained",
+                ));
+            }
+            let n = buf.len().min(self.inbound.len());
+            for slot in buf.iter_mut().take(n) {
+                *slot = self.inbound.pop_front().unwrap();
+            }
+            Ok(n)
+        }
+    }
+
+    impl std::io::Write for ReplayConn {
+        fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+            self.written.extend_from_slice(buf);
+            Ok(buf.len())
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
+    /// An inbound TestRequest (35=1) from the peer at `seq`. `id` writes
+    /// `TestReqID(112)` when `Some` (raw bytes, so a test can inject non-ASCII);
+    /// `None` omits tag 112 entirely.
+    fn peer_test_request(seq: u32, id: Option<&[u8]>, buf: &mut [u8]) -> usize {
+        let mut seq_buf = [0u8; 10];
+        let seq_n = nexus_fix_codec::encode_fix_uint(seq, &mut seq_buf);
+        let mut fmt = FrameFormatter::new(buf, b"FIX.4.4", b"1");
+        fmt.field(34, &seq_buf[..seq_n]);
+        fmt.field(49, peer_id().as_bytes());
+        fmt.field(56, our_id().as_bytes());
+        fmt.field(52, b"20260615-12:00:00.000");
+        if let Some(id) = id {
+            fmt.field(112, id);
+        }
+        let (start, len) = fmt.finish().unwrap();
+        buf.copy_within(start..start + len, 0);
+        len
+    }
+
+    /// The borrow guarantee (contract §5): `recv`'s returned `Message<'r>` ties to
+    /// `reader` **only**, so the reply can mutate `&mut session` / `&mut writer` /
+    /// `&mut conn` while a borrowed payload (a `TestReqID`, a `LogonDecision`) is
+    /// still alive. This is a *compile*-guarantee first (if the borrow leaked to
+    /// `&mut self` neither arm would type-check) and a run-check second (the reply
+    /// reaches the wire carrying the borrowed data).
+    #[test]
+    fn recv_borrow_guarantee_reply_while_payload_borrowed() {
+        // Part 1 — recv → TestRequest { id } → heartbeat(&mut writer, .., Some(id)).
+        {
+            let dir = tmp_dir("borrow_test_request");
+            let mut reader =
+                MessageReader::<MockDict>::with_frame_reader(FrameReader::builder().build());
+            let mut writer =
+                MessageWriter::<MockDict>::with_frame_writer(FrameWriter::builder().build());
+            let mut state = SessionState::new(Duration::from_secs(30));
+            establish_state(&mut state); // Active initiator, next_inbound = 2
+            let journal = FixJournal::open(dir.path(), 0, 256).unwrap();
+            let mut session = FixSession::new(
+                state,
+                SessionConfig {
+                    sender: our_id(),
+                    target: peer_id(),
+                },
+                journal,
+            );
+
+            let mut buf = vec![0u8; 256];
+            let len = peer_test_request(2, Some(b"PING"), &mut buf);
+            let mut conn = ReplayConn::new(&buf[..len]);
+
+            match session
+                .recv(&mut reader, &mut writer, &mut conn, NOW)
+                .unwrap()
+            {
+                Some(Message::TestRequest { id }) => {
+                    // `id` borrows `reader`; the reply mutates session/writer/conn —
+                    // four disjoint borrows, no copy-out.
+                    session
+                        .heartbeat(&mut writer, &mut conn, NOW, Some(id))
+                        .unwrap();
+                }
+                other => panic!("expected TestRequest, got {}", variant(&other)),
+            }
+            assert_eq!(
+                find_tag(&conn.written, 0, 112).map(|s| s.slice(&conn.written)),
+                Some(b"PING".as_ref()),
+                "the echoed Heartbeat carries the borrowed TestReqID"
+            );
+        }
+
+        // Part 2 — recv → LogonRequest(decision) → decision.accept(&mut session, ..).
+        {
+            let dir = tmp_dir("borrow_logon_decision");
+            let mut reader =
+                MessageReader::<MockDict>::with_frame_reader(FrameReader::builder().build());
+            let mut writer =
+                MessageWriter::<MockDict>::with_frame_writer(FrameWriter::builder().build());
+            // Disconnected acceptor: the peer's Logon surfaces a decision.
+            let state = SessionState::new(Duration::from_secs(30));
+            let journal = FixJournal::open(dir.path(), 0, 256).unwrap();
+            let mut session = FixSession::new(
+                state,
+                SessionConfig {
+                    sender: our_id(),
+                    target: peer_id(),
+                },
+                journal,
+            );
+
+            let mut buf = vec![0u8; 256];
+            let len = peer_logon_frame(1, true, &mut buf);
+            let mut conn = ReplayConn::new(&buf[..len]);
+
+            match session
+                .recv(&mut reader, &mut writer, &mut conn, NOW)
+                .unwrap()
+            {
+                Some(Message::LogonRequest(decision)) => {
+                    // `decision` borrows `reader`; accept mutates session/writer/conn.
+                    decision
+                        .accept(&mut session, &mut writer, &mut conn, NOW)
+                        .unwrap();
+                }
+                other => panic!("expected LogonRequest, got {}", variant(&other)),
+            }
+            assert_eq!(
+                session.state().state(),
+                State::Active,
+                "accepting the Logon brings the session up"
+            );
+            assert_eq!(
+                msg_type(&conn.written),
+                Some(b"A".as_ref()),
+                "the Logon reply reached the wire"
+            );
+        }
+    }
+
+    /// A TestRequest whose `TestReqID(112)` is absent must surface as an `Err`
+    /// (`MissingField { tag: 112 }`) in the fallible receive path — never a
+    /// silently-empty `Message::TestRequest`. This is the precondition the
+    /// unchecked `AsciiTextStr` borrow in `message()` relies on.
+    #[test]
+    fn test_request_missing_112_surfaces_malformed() {
+        use crate::framework::SessionError;
+
+        let dir = tmp_dir("tr_missing_112");
+        let mut rig = active_session(dir.path(), 4096); // Active, next_inbound = 2
+        let mut buf = vec![0u8; 256];
+        let len = peer_test_request(2, None, &mut buf); // no tag 112
+        let spare = rig.read_spare();
+        spare[..len].copy_from_slice(&buf[..len]);
+        rig.read_filled(len);
+        match rig.poll() {
+            Err(super::Error::Protocol(SessionError::MissingField { tag: 112 })) => {}
+            other => panic!("a TestRequest missing 112 must be MissingField(112), got {other:?}"),
+        }
+    }
+
+    /// A TestRequest whose `TestReqID(112)` is present but non-ASCII must surface as
+    /// an `Err` (`MalformedField { tag: 112 }`) — the codec's validating
+    /// `&AsciiTextStr` parse catches it, so no non-ASCII bytes ever reach the
+    /// unchecked borrow in `message()`.
+    #[test]
+    fn test_request_non_ascii_112_surfaces_malformed() {
+        use crate::framework::SessionError;
+
+        let dir = tmp_dir("tr_non_ascii_112");
+        let mut rig = active_session(dir.path(), 4096);
+        let mut buf = vec![0u8; 256];
+        // 0xFF / 0xFE are non-printable-ASCII (and not SOH), so they frame cleanly
+        // but fail `AsciiTextStr` validation.
+        let len = peer_test_request(2, Some(&[0xFF, 0xFE]), &mut buf);
+        let spare = rig.read_spare();
+        spare[..len].copy_from_slice(&buf[..len]);
+        rig.read_filled(len);
+        match rig.poll() {
+            Err(super::Error::Protocol(SessionError::MalformedField { tag: 112 })) => {}
+            other => {
+                panic!(
+                    "a TestRequest with non-ASCII 112 must be MalformedField(112), got {other:?}"
+                )
+            }
+        }
+    }
+
+    /// Name a surfaced message for panic messages (avoids requiring `Debug` on the
+    /// `Message`'s decoder payloads).
+    fn variant<D: FixDictionary>(m: &Option<Message<'_, D>>) -> &'static str {
+        match m {
+            None => "None",
+            Some(Message::Application { .. }) => "Application",
+            Some(Message::TestRequest { .. }) => "TestRequest",
+            Some(Message::GapDetected { .. }) => "GapDetected",
+            Some(Message::LogonRequest(_)) => "LogonRequest",
+            Some(Message::LogonResetRequest(_)) => "LogonResetRequest",
+            Some(Message::LogoutRequest { .. }) => "LogoutRequest",
+            Some(Message::Heartbeat { .. }) => "Heartbeat",
+            Some(Message::ResendRequest { .. }) => "ResendRequest",
+            Some(Message::SequenceReset { .. }) => "SequenceReset",
+            Some(Message::Reject { .. }) => "Reject",
+            Some(Message::LogonAcknowledged { .. }) => "LogonAcknowledged",
+            Some(Message::LoggedOut { .. }) => "LoggedOut",
+        }
     }
 }

@@ -44,7 +44,9 @@ pub use frame::{
 };
 #[cfg(unix)]
 pub use framework::Emitter;
-pub use framework::{CompId, Message, MessageReader, MessageWriter, SessionConfig, SessionError};
+pub use framework::{
+    CompId, LogonDecision, Message, MessageReader, MessageWriter, SessionConfig, SessionError,
+};
 #[cfg(unix)]
 pub use nexus_journal::{Conductor, ConductorBuilder, OpenError, OpenMode, WriteError};
 #[cfg(unix)]

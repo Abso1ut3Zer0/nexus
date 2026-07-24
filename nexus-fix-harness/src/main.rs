@@ -134,9 +134,38 @@ fn main() {
             FixJournal::open(&dir, 0, 256).unwrap(),
         );
 
+        // The engine is user-driven: it surfaces each situation and the caller
+        // sends the one required reply. `now` (UTC unix-nanos) stamps
+        // `SendingTime(52)`; a production harness reads a real wall clock.
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos() as i128)
+            .unwrap_or(0);
+
         let mut app_msgs = 0usize;
         loop {
-            match session.recv(&mut reader, &mut writer, &mut stream) {
+            match session.recv(&mut reader, &mut writer, &mut stream, now) {
+                // The initiator's Logon: accept it (this harness authenticates none).
+                Ok(Some(Message::LogonRequest(d) | Message::LogonResetRequest(d))) => {
+                    if let Err(e) = d.accept(&mut session, &mut writer, &mut stream, now) {
+                        eprintln!("logon accept failed: {e}");
+                        break;
+                    }
+                }
+                // Liveness probe: echo the TestReqID.
+                Ok(Some(Message::TestRequest { id })) => {
+                    let _ = session.heartbeat(&mut writer, &mut stream, now, Some(id));
+                }
+                // Inbound gap: request the missing range.
+                Ok(Some(Message::GapDetected { begin })) => {
+                    let _ = session.resend_request(&mut writer, &mut stream, now, begin);
+                }
+                // Peer initiated a logout: reply and finish.
+                Ok(Some(Message::LogoutRequest { .. })) => {
+                    let _ = session.logout(&mut writer, &mut stream, now);
+                    println!("peer logged out, {app_msgs} app message(s)");
+                    break;
+                }
                 Ok(Some(Message::LoggedOut { .. })) => {
                     println!("logged out cleanly, {app_msgs} app message(s)");
                     break;

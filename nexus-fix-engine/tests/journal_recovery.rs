@@ -117,6 +117,8 @@ impl Drop for TempDir {
 const WINDOW: usize = 256;
 const ENGINE: &[u8] = b"ENGINE";
 const PEER: &[u8] = b"PEER";
+/// Fixed UTC-unix-nanos clock for the deterministic core.
+const NOW: i128 = 1_780_505_733_000_000_000;
 
 fn cfg() -> SessionConfig {
     SessionConfig {
@@ -185,7 +187,7 @@ fn feed(
     }
     loop {
         let outcome = session
-            .poll(reader, writer)
+            .poll(reader, writer, NOW)
             .expect("recovery path must not error");
         drain_out(writer);
         match outcome {
@@ -217,7 +219,7 @@ fn journal_stop_and_reopen_resumes_seqnums() {
         let mut reader = MessageReader::<MockDict>::new();
         let mut writer = MessageWriter::<MockDict>::new();
 
-        s1.encode_connect(&mut writer).unwrap(); // Logon(seq=1) queued + journaled
+        s1.encode_connect(&mut writer, NOW).unwrap(); // Logon(seq=1) queued + journaled
         drain_out(&mut writer);
         feed(
             &mut s1,
@@ -275,7 +277,7 @@ fn journal_stop_and_reopen_resumes_seqnums() {
 
     // The post-restart Logon must carry the RECOVERED seqnum (34=3), proving
     // persist-before-send survived the restart — not a fresh 34=1.
-    s2.encode_connect(&mut writer).unwrap();
+    s2.encode_connect(&mut writer, NOW).unwrap();
     let logon = writer.data().to_vec();
     assert!(has_field(&logon, b"35=A"), "outbound must be a Logon");
     assert!(
@@ -298,8 +300,9 @@ fn journal_stop_and_reopen_resumes_seqnums() {
         "inbound continuity after ack"
     );
 
-    // A peer app at seq 6 (expected 4) is a forward gap: the engine must send a
-    // ResendRequest and enter Resending — gap detection intact post-recovery.
+    // A peer app at seq 6 (expected 4) is a forward gap: the engine detects it and
+    // enters Resending (the ResendRequest is now user-driven, and `feed` discards
+    // the surfaced GapDetected) — gap detection intact post-recovery.
     feed(
         &mut s2,
         &mut reader,

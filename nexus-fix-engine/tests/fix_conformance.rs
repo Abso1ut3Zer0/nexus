@@ -155,6 +155,22 @@ fn spawn_peer(scenario: &str) -> (ChildGuard, u16) {
 /// one-liner over `session.recv(&mut reader, &mut writer, &mut stream)` and the
 /// encode-only send helpers — a preview of the phase-6 bundle, kept in the test
 /// so the scenario bodies read the same across the un-nesting.
+/// Fixed UTC-unix-nanos clock (2026-06-03 16:55:33.000). The engine stamps every
+/// `SendingTime(52)` from this, so the peer asserts it exactly (see `ENGINE_ST` in
+/// `fix_peer.py`).
+const NOW: i128 = 1_780_505_733_000_000_000;
+
+/// The classification of one recv+reply [`Rig::step`] the drive loops branch on.
+enum Step {
+    /// Nothing test-visible surfaced (or a no-reply message was handled).
+    Continue,
+    /// An in-order application message surfaced.
+    App,
+    /// The session reached a clean logout terminal — either `LoggedOut` (our
+    /// initiated logout confirmed) or a peer `LogoutRequest` we just answered.
+    Ended,
+}
+
 struct Rig {
     session: FixSession<MockDict>,
     reader: MessageReader<MockDict>,
@@ -163,12 +179,46 @@ struct Rig {
 }
 
 impl Rig {
-    fn recv(&mut self) -> Result<Option<Message<'_, MockDict>>, TransportError> {
-        self.session
-            .recv(&mut self.reader, &mut self.writer, &mut self.stream)
+    /// Receive the next message and drive its required reply — the user-driven
+    /// model: where the engine used to auto-reply, the test now sends the reply
+    /// with the send helpers. Same messages on the wire, in the same order; only
+    /// who emits them moves from engine to test.
+    ///
+    /// Destructures `self` so `recv`'s returned `Message` borrows `reader` only,
+    /// leaving `session`/`writer`/`stream` free for the reply (contract §5).
+    fn step(&mut self) -> Result<Step, TransportError> {
+        let Rig {
+            session,
+            reader,
+            writer,
+            stream,
+        } = self;
+        match session.recv(reader, writer, stream, NOW)? {
+            Some(Message::LoggedOut { .. }) => Ok(Step::Ended),
+            Some(Message::LogoutRequest { .. }) => {
+                session.logout(writer, stream, NOW)?;
+                Ok(Step::Ended)
+            }
+            Some(Message::TestRequest { id }) => {
+                session.heartbeat(writer, stream, NOW, Some(id))?;
+                Ok(Step::Continue)
+            }
+            Some(Message::GapDetected { begin }) => {
+                session.resend_request(writer, stream, NOW, begin)?;
+                Ok(Step::Continue)
+            }
+            Some(Message::LogonRequest(d) | Message::LogonResetRequest(d)) => {
+                d.accept(session, writer, stream, NOW)?;
+                Ok(Step::Continue)
+            }
+            Some(Message::Application { .. }) => Ok(Step::App),
+            // Heartbeat / Reject / SequenceReset / LogonAcknowledged / ResendRequest
+            // — no reply required — or nothing surfaced (`None`).
+            _ => Ok(Step::Continue),
+        }
     }
     fn connect(&mut self) -> Result<(), TransportError> {
-        self.session.encode_connect(&mut self.writer)
+        self.session.encode_connect(&mut self.writer, NOW)
     }
     fn send_app(&mut self, seq: u32, frame: &[u8]) -> Result<(), TransportError> {
         self.session.encode_send_app(&mut self.writer, seq, frame)
@@ -206,15 +256,16 @@ fn connect(port: u16, dir: &Path) -> Rig {
     }
 }
 
-/// Drive `recv` until the session completes a clean, negotiated logout
-/// (`Message::LoggedOut`). Every scenario here ends in a peer-sent Logout, so any
-/// error is a failure and panics.
+/// Drive until the session completes a clean, negotiated logout — either the peer
+/// confirms our logout (`LoggedOut`) or the peer initiates one we answer
+/// (`LogoutRequest`). Every scenario here ends in a peer-sent Logout, so any error
+/// is a failure and panics.
 fn drive(conn: &mut Rig) {
     loop {
-        match conn.recv() {
-            Ok(Some(Message::LoggedOut { .. })) => return,
+        match conn.step() {
+            Ok(Step::Ended) => return,
             Ok(_) => {}
-            Err(e) => panic!("recv errored before clean logout: {e:?}"),
+            Err(e) => panic!("step errored before clean logout: {e:?}"),
         }
     }
 }
@@ -307,14 +358,14 @@ fn drive_observe(conn: &mut Rig) -> (Option<DisconnectReason>, bool, bool) {
     let mut saw_resending = false;
     let mut saw_app = false;
     loop {
-        match conn.recv() {
-            Ok(Some(Message::LoggedOut { .. })) => return (None, saw_resending, saw_app),
-            Ok(Some(Message::Application { .. })) => saw_app = true,
-            Ok(Some(_) | None) => {}
+        match conn.step() {
+            Ok(Step::Ended) => return (None, saw_resending, saw_app),
+            Ok(Step::App) => saw_app = true,
+            Ok(Step::Continue) => {}
             Err(TransportError::UnexpectedDisconnect { reason }) => {
                 return (Some(reason), saw_resending, saw_app);
             }
-            Err(e) => panic!("recv errored mid-scenario: {e:?}"),
+            Err(e) => panic!("step errored mid-scenario: {e:?}"),
         }
         if conn.state().state() == State::Resending {
             saw_resending = true;
@@ -322,14 +373,14 @@ fn drive_observe(conn: &mut Rig) -> (Option<DisconnectReason>, bool, bool) {
     }
 }
 
-/// Drive until the session reaches `Active`, panicking on an early disconnect or
+/// Drive until the session reaches `Active`, panicking on an early logout or
 /// error. Used by the resend scenarios that inject app messages once live.
 fn drive_to_active(conn: &mut Rig) {
     loop {
-        match conn.recv() {
-            Ok(Some(Message::LoggedOut { .. })) => panic!("logged out before active"),
+        match conn.step() {
+            Ok(Step::Ended) => panic!("logged out before active"),
             Err(e) => panic!("disconnected before active: {e:?}"),
-            _ => {}
+            Ok(_) => {}
         }
         if conn.state().state() == State::Active {
             break;

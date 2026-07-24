@@ -76,20 +76,62 @@ pub enum Control {
     /// Never a final verdict — a handler consumes it and returns its own
     /// `Control`; it is `unreachable!` in the driver's `message()`/`dispose()`.
     Proceed,
-    /// A Logon (35=A) was processed. `acknowledged` is `true` when it acked our
-    /// outbound Logon (initiator role), `false` when it initiates one we must
-    /// answer (acceptor role).
+    /// A Logon (35=A) acknowledging our own outbound Logon (initiator role). The
+    /// session is live; nothing to answer. Surfaces as
+    /// [`Message::LogonAcknowledged`](crate::Message::LogonAcknowledged).
+    ///
+    /// `acknowledged` is retained for the internal reply-completion return of
+    /// [`accept_logon`](super::SessionState::accept_logon); only the `true`
+    /// (initiator-ack) case is ever surfaced through [`Control`].
     Logon {
-        /// Whether this Logon acknowledged our own (vs. requesting one).
+        /// Whether this Logon acknowledged our own (vs. a reply we just sent).
         acknowledged: bool,
     },
-    /// A Logout (35=5) was processed without ending the session. This only
-    /// happens out-of-state (e.g. mid-reset); an in-sequence Logout completes
-    /// the exchange and surfaces as [`Control::LoggedOut`] instead.
+    /// A counterparty-initiated Logon (35=A, acceptor role) that the user must
+    /// answer. Surfaces as [`Message::LogonRequest`](crate::Message::LogonRequest)
+    /// carrying a `LogonDecision`; the reply is user-driven
+    /// (`decision.accept`/`decision.reject`), not engine-emitted. `seq` is the
+    /// peer's `MsgSeqNum(34)`, `heart_bt_int_s` its `HeartBtInt(108)`.
+    LogonRequest {
+        /// The peer Logon's `MsgSeqNum(34)`.
+        seq: u32,
+        /// The peer Logon's `HeartBtInt(108)`, in seconds.
+        heart_bt_int_s: u32,
+    },
+    /// A counterparty-initiated reset Logon (35=A, `ResetSeqNumFlag(141)=Y`) that
+    /// the user must answer — either the acceptor's opening reset Logon or a
+    /// peer-initiated in-session reset while active. Surfaces as
+    /// [`Message::LogonResetRequest`](crate::Message::LogonResetRequest); the reply
+    /// (a `LogonReset`) is user-driven via the `LogonDecision`.
+    LogonResetRequest {
+        /// The peer Logon's `MsgSeqNum(34)`.
+        seq: u32,
+        /// The peer Logon's `HeartBtInt(108)`, in seconds.
+        heart_bt_int_s: u32,
+    },
+    /// An inbound gap was detected: a message arrived above the expected
+    /// `MsgSeqNum`. Surfaces as [`Message::GapDetected`](crate::Message::GapDetected)
+    /// with `begin` = the first missing inbound seqnum; the user answers with
+    /// `resend_request(begin)`. The engine has already entered `Resending` so a
+    /// further gap in the same recovery window is suppressed
+    /// ([`Control::None`]), not re-surfaced.
+    GapDetected {
+        /// First missing inbound seqnum — the `BeginSeqNo(7)` for the reply.
+        begin: u32,
+    },
+    /// A peer-initiated Logout (35=5) the user must answer. Surfaces as
+    /// [`Message::LogoutRequest`](crate::Message::LogoutRequest); the user replies
+    /// with `logout(..)`. This is an in-sequence Logout while `Active`/`Resending`
+    /// (the reply is user-driven, not engine-emitted) or an out-of-state Logout
+    /// (e.g. mid-reset). An in-sequence Logout while `LogoutPending` confirms our
+    /// own initiated logout and surfaces as [`Control::LoggedOut`] instead.
     Logout,
     /// A Heartbeat (35=0) was processed.
     Heartbeat,
-    /// A TestRequest (35=1) was processed.
+    /// A TestRequest (35=1) was processed. Surfaces as
+    /// [`Message::TestRequest`](crate::Message::TestRequest) carrying the
+    /// `TestReqID(112)`; the user answers with `heartbeat(Some(id))`. The engine no
+    /// longer auto-emits the Heartbeat echo.
     TestRequest,
     /// A ResendRequest (35=2) was processed. The driver drives the replay walk
     /// from its locally parsed `begin`/`end`, so this carries no fields.

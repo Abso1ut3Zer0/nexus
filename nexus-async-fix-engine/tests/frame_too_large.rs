@@ -224,7 +224,15 @@ async fn frame_exceeding_reader_buffer_is_message_too_large_not_disconnect() {
         );
     let mut stream = AsyncReadAdapter::new(stream);
 
-    match session.recv(&mut reader, &mut writer, &mut stream).await {
+    match session
+        .recv(
+            &mut reader,
+            &mut writer,
+            &mut stream,
+            1_780_505_733_000_000_000,
+        )
+        .await
+    {
         Err(TransportError::MessageTooLarge(_)) => {}
         Err(TransportError::UnexpectedDisconnect { reason }) => {
             panic!("frame exceeding reader buffer was misread as a disconnect: {reason:?}")
@@ -239,7 +247,14 @@ async fn frame_exceeding_reader_buffer_is_message_too_large_not_disconnect() {
     // session — the next recv must be Closed. Regression guard: the terminated flag
     // must arm on any fatal error, not just LoggedOut / UnexpectedDisconnect.
     assert!(matches!(
-        session.recv(&mut reader, &mut writer, &mut stream).await,
+        session
+            .recv(
+                &mut reader,
+                &mut writer,
+                &mut stream,
+                1_780_505_733_000_000_000
+            )
+            .await,
         Err(TransportError::Closed)
     ));
 }
@@ -264,7 +279,15 @@ async fn peer_eof_is_peer_closed_then_recv_is_closed() {
     );
     let mut stream = AsyncReadAdapter::new(ChunkStream::new(b""));
 
-    let Err(err) = session.recv(&mut reader, &mut writer, &mut stream).await else {
+    let Err(err) = session
+        .recv(
+            &mut reader,
+            &mut writer,
+            &mut stream,
+            1_780_505_733_000_000_000,
+        )
+        .await
+    else {
         panic!("expected an error on peer EOF");
     };
     assert!(err.is_fatal());
@@ -276,7 +299,15 @@ async fn peer_eof_is_peer_closed_then_recv_is_closed() {
     ));
 
     // Session terminated → every subsequent recv is Closed.
-    let Err(err2) = session.recv(&mut reader, &mut writer, &mut stream).await else {
+    let Err(err2) = session
+        .recv(
+            &mut reader,
+            &mut writer,
+            &mut stream,
+            1_780_505_733_000_000_000,
+        )
+        .await
+    else {
         panic!("expected Closed on a terminated session");
     };
     assert!(matches!(err2, TransportError::Closed));

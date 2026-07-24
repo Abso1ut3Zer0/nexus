@@ -91,12 +91,16 @@ fn config() -> SessionConfig {
 
 /// Encode one admin message into `w` through the production [`Emitter`] with a
 /// no-op `after` (no journaling), then inspect `w.data()`.
+/// Fixed UTC-unix-nanos clock for the deterministic core. The oracle lifts
+/// `SendingTime(52)` out of the produced frame, so any fixed value is consistent.
+const NOW: i128 = 1_780_505_733_000_000_000;
+
 fn emit_admin<M: AdminEncode, C: SessionCustomizer>(
     w: &mut MessageWriter<MockDict, C>,
     config: &SessionConfig,
     msg: M,
 ) -> Result<(), TransportError> {
-    Emitter::new(w, config, |_seq, _frame| Ok(())).emit(msg)
+    Emitter::new(w, config, NOW, |_seq, _frame| Ok(())).emit(msg)
 }
 
 fn tag(frame: &[u8], t: u32) -> Option<&[u8]> {

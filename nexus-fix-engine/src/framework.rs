@@ -1,7 +1,7 @@
 use core::marker::PhantomData;
 use std::io::Write;
 
-use nexus_fix_codec::{FixDictionary, NoCustomizer, SessionCustomizer};
+use nexus_fix_codec::{AsciiTextStr, FixDictionary, NoCustomizer, SessionCustomizer};
 use nexus_net::wire::ParserSink;
 
 #[cfg(unix)]
@@ -86,38 +86,94 @@ impl core::fmt::Display for SessionError {
 
 impl core::error::Error for SessionError {}
 
-/// Typed inbound message returned by the transport layer.
+/// Typed inbound message returned by the receive surface.
 ///
-/// Admin messages carry the dictionary's zero-copy decoder for the message type
-/// so callers can read any field — protocol-required or venue-specific — without
-/// re-parsing. App messages surface the decoded header so the caller can route
-/// by `MsgType` and decode the body independently.
-pub enum Message<'buf, D: FixDictionary> {
-    /// Counterparty initiated a Logon (acceptor role). Send your own Logon back.
-    LogonRequest { msg: D::Logon<'buf> },
-    /// Counterparty acknowledged our Logon (initiator role). Session is live.
-    LogonAcknowledged { msg: D::Logon<'buf> },
-    /// A Logout (35=5) that did not end the session, which only happens
-    /// out-of-state (e.g. mid-reset). The engine answers and closes an
-    /// in-sequence logout itself; that surfaces as [`Message::LoggedOut`].
-    LogoutRequest { msg: D::Logout<'buf> },
-    /// Heartbeat (35=0). No reply required unless it carries a TestReqID.
-    Heartbeat { msg: D::Heartbeat<'buf> },
-    /// TestRequest (35=1). Echo the `TestReqID` in a Heartbeat reply.
-    TestRequest { msg: D::TestRequest<'buf> },
-    /// ResendRequest (35=2). Re-send or gap-fill the requested range.
-    ResendRequest { msg: D::ResendRequest<'buf> },
-    /// SequenceReset (35=4). State updated internally; inspect if needed.
-    SequenceReset { msg: D::SequenceReset<'buf> },
-    /// Reject (35=3). State updated internally; inspect if needed.
-    Reject { msg: D::Reject<'buf> },
+/// The session is a **framework**: it surfaces what happened and the *one*
+/// response each situation needs; the caller drives every reply with the send
+/// helpers. Nothing is auto-answered on your behalf (the engine drives only its
+/// own mechanism — the reset handshake and protocol-error disconnects).
+///
+/// Admin messages that carry data (`Heartbeat`, `Reject`, …) surface the
+/// dictionary's zero-copy decoder so callers can read any field without
+/// re-parsing; app messages surface the decoded header so the caller can route by
+/// `MsgType` and decode the body independently. Every borrowed payload ties to the
+/// `MessageReader` frame, never to `&mut session`, so the reply's `&mut session` /
+/// `&mut writer` stay free while the payload is still borrowed.
+pub enum Message<'r, D: FixDictionary> {
     /// Business message. Route by `header.raw_msg_type()` and decode the body.
-    Application { header: D::Header<'buf> },
+    Application { header: D::Header<'r> },
+    /// TestRequest (35=1). Answer with `heartbeat(&mut writer, &mut conn, now,
+    /// Some(id))` — `id` is the borrowed `TestReqID(112)`, echoed verbatim.
+    ///
+    /// The `TestReqID` is a validated [`AsciiTextStr`]: the receive path checks tag
+    /// 112 is **present and printable-ASCII** before this variant is produced (an
+    /// absent or non-ASCII 112 surfaces as an `Err`, not a silently-empty echo), so
+    /// the borrowed value is sound to read as text and re-encode.
+    TestRequest {
+        /// The validated `TestReqID(112)` to echo back, borrowed from the frame.
+        id: &'r AsciiTextStr,
+    },
+    /// An inbound gap was detected. Answer with `resend_request(&mut writer, &mut
+    /// conn, now, begin)`. The engine has entered `Resending`; a further gap in the
+    /// same window is suppressed until recovery completes.
+    GapDetected {
+        /// First missing inbound seqnum — the `BeginSeqNo(7)` for the reply.
+        begin: u32,
+    },
+    /// Counterparty initiated a Logon (acceptor role). Answer with
+    /// `decision.accept(..)` or `decision.reject(..)` — the reply is yours to send,
+    /// gated on your auth policy.
+    LogonRequest(LogonDecision<'r, D>),
+    /// Counterparty initiated a reset Logon (`ResetSeqNumFlag(141)=Y`). Answer with
+    /// `decision.accept(..)` (sends a `LogonReset` reply) or `decision.reject(..)`.
+    LogonResetRequest(LogonDecision<'r, D>),
+    /// Counterparty initiated a Logout (35=5). Answer with `logout(&mut writer,
+    /// &mut conn, now)` to send your Logout reply, then close the transport. (A
+    /// Logout confirming *your* initiated logout surfaces as [`LoggedOut`](Self::LoggedOut)
+    /// instead.)
+    LogoutRequest { msg: D::Logout<'r> },
+    /// Heartbeat (35=0). No reply required.
+    Heartbeat { msg: D::Heartbeat<'r> },
+    /// ResendRequest (35=2). Re-send or gap-fill the requested range.
+    ResendRequest { msg: D::ResendRequest<'r> },
+    /// SequenceReset (35=4). State updated internally; inspect if needed. No reply.
+    SequenceReset { msg: D::SequenceReset<'r> },
+    /// Reject (35=3). State updated internally; inspect if needed. No reply.
+    Reject { msg: D::Reject<'r> },
+    /// Counterparty acknowledged our Logon (initiator role). Session is live. No reply.
+    LogonAcknowledged { msg: D::Logon<'r> },
     /// A clean, negotiated logout completed and the session ended — the graceful
-    /// terminal event. Carries the peer's Logout (35=5), so the caller can read
-    /// `Text(58)`. An *abnormal* end never appears here: it surfaces as
+    /// terminal event confirming *our* initiated logout. Carries the peer's Logout
+    /// (35=5). An *abnormal* end never appears here: it surfaces as
     /// `Err(TransportError::UnexpectedDisconnect { reason })`.
-    LoggedOut { msg: D::Logout<'buf> },
+    LoggedOut { msg: D::Logout<'r> },
+}
+
+/// The binary-choice response object for a counterparty-initiated Logon.
+///
+/// Surfaced inside [`Message::LogonRequest`] / [`Message::LogonResetRequest`]. A
+/// Logon has exactly one required response — accept it (send the reply, bring the
+/// session up) or reject it (send a Logout, disconnect) — so it is a decision
+/// object rather than a plain payload: the type makes "answer it" unavoidable.
+///
+/// It borrows only the reader frame (`'r`); [`accept`](Self::accept) /
+/// [`reject`](Self::reject) take `&mut session` / `&mut writer` / `&mut conn`
+/// separately, so the reply's mutable borrows stay disjoint from the borrowed
+/// Logon fields ([`logon`](Self::logon)).
+#[must_use = "a Logon must be accepted or rejected"]
+pub struct LogonDecision<'r, D: FixDictionary> {
+    pub(crate) msg: D::Logon<'r>,
+    pub(crate) seq: u32,
+    pub(crate) heart_bt_int_s: u32,
+    pub(crate) is_reset: bool,
+}
+
+impl<'r, D: FixDictionary> LogonDecision<'r, D> {
+    /// Reads the peer's Logon for the auth decision (`HeartBtInt`, `Username`,
+    /// venue fields, …) — the zero-copy decoder, borrowing the frame.
+    pub fn logon(&self) -> &D::Logon<'r> {
+        &self.msg
+    }
 }
 
 /// Zero-copy FIX frame reader, dictionary-aware via `D::Header`.
@@ -300,6 +356,10 @@ impl<D: FixDictionary, C> MessageWriter<D, C> {
 pub struct Emitter<'a, D: FixDictionary, C, J> {
     writer: &'a mut MessageWriter<D, C>,
     config: &'a SessionConfig,
+    /// `SendingTime(52)` stamped into every frame this emitter produces, formatted
+    /// once from the caller-supplied `now`. There is no internal clock read: the
+    /// core is a pure function of `(bytes, now)`.
+    ts: [u8; crate::timestamp::UTC_TIMESTAMP_LEN],
     after: J,
 }
 
@@ -310,10 +370,22 @@ where
 {
     /// Build an emitter over `writer`, stamping headers from `config` and running
     /// `after(seq, frame)` on every committed frame.
-    pub fn new(writer: &'a mut MessageWriter<D, C>, config: &'a SessionConfig, after: J) -> Self {
+    ///
+    /// `now` is a UTC wall-clock timestamp in nanoseconds since the Unix epoch; it
+    /// is formatted once into the `SendingTime(52)` every emitted frame carries.
+    /// The emitter reads no clock of its own — every stamp comes from this `now`.
+    pub fn new(
+        writer: &'a mut MessageWriter<D, C>,
+        config: &'a SessionConfig,
+        now: i128,
+        after: J,
+    ) -> Self {
+        let mut ts = [0u8; crate::timestamp::UTC_TIMESTAMP_LEN];
+        crate::timestamp::format_utc_timestamp(now, &mut ts);
         Self {
             writer,
             config,
+            ts,
             after,
         }
     }
@@ -354,12 +426,11 @@ where
     fn emit<M: AdminEncode>(&mut self, msg: M) -> Result<(), Error> {
         use nexus_fix_codec::{AdminHeader, AdminMsgOut, FrameFormatter};
 
-        let ts = make_ts();
         let hdr = AdminHeader {
             seq: msg.seq(),
             sender: self.config.sender.as_bytes(),
             target: self.config.target.as_bytes(),
-            ts: &ts,
+            ts: &self.ts,
         };
 
         // Offset of this frame within the (possibly non-empty) outbound buffer,
@@ -401,17 +472,4 @@ impl<D: FixDictionary> Default for MessageWriter<D, NoCustomizer> {
     fn default() -> Self {
         Self::new()
     }
-}
-
-#[cfg(unix)]
-fn make_ts() -> [u8; crate::timestamp::UTC_TIMESTAMP_LEN] {
-    use std::time::{SystemTime, UNIX_EPOCH};
-
-    let unix_nanos = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_nanos() as i128;
-    let mut ts = [0u8; crate::timestamp::UTC_TIMESTAMP_LEN];
-    crate::timestamp::format_utc_timestamp(unix_nanos, &mut ts);
-    ts
 }

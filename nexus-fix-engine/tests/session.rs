@@ -107,10 +107,6 @@ impl RecordingEmitter {
         find_tag(&self.frames[i], 0, tag)
             .and_then(|s| parse_fix_uint(s.slice(&self.frames[i])).ok())
     }
-    /// A body tag's raw bytes.
-    fn val(&self, i: usize, tag: u32) -> Option<&[u8]> {
-        find_tag(&self.frames[i], 0, tag).map(|s| s.slice(&self.frames[i]))
-    }
     /// Whether a body tag is present on the `i`-th frame.
     fn has(&self, i: usize, tag: u32) -> bool {
         find_tag(&self.frames[i], 0, tag).is_some()
@@ -199,7 +195,8 @@ fn acceptor_handshake() {
     let mut s = new_session();
 
     let mut recorder = RecordingEmitter::new();
-    // Acceptor: send_reply = true → this Logon is answered, not an ack.
+    // Acceptor: send_reply = true. The Logon surfaces a decision (no auto-reply);
+    // the user then accepts, which emits the reply and brings the session up.
     let ctrl = s
         .on_logon(
             LogonIn {
@@ -211,6 +208,21 @@ fn acceptor_handshake() {
             &mut recorder,
         )
         .unwrap();
+    assert_eq!(
+        ctrl,
+        Control::LogonRequest {
+            seq: 1,
+            heart_bt_int_s: 15
+        }
+    );
+    assert_eq!(recorder.len(), 0, "no reply before the user accepts");
+    assert_eq!(
+        s.state(),
+        State::Disconnected,
+        "state unchanged until accept"
+    );
+
+    let ctrl = s.accept_logon(1, 15, false, &mut recorder).unwrap();
     assert_eq!(s.state(), State::Active);
     assert_eq!(
         ctrl,
@@ -231,16 +243,29 @@ fn logon_reset_seq_num_flag() {
     let mut s = new_session();
 
     let mut recorder = RecordingEmitter::new();
-    s.on_logon(
-        LogonIn {
+    // A reset Logon (141=Y) surfaces a reset decision; accepting emits the
+    // LogonReset reply.
+    let ctrl = s
+        .on_logon(
+            LogonIn {
+                seq: 1,
+                heart_bt_int_s: 30,
+                is_reset_seq_num: true,
+                send_reply: true,
+            },
+            &mut recorder,
+        )
+        .unwrap();
+    assert_eq!(
+        ctrl,
+        Control::LogonResetRequest {
             seq: 1,
-            heart_bt_int_s: 30,
-            is_reset_seq_num: true,
-            send_reply: true,
-        },
-        &mut recorder,
-    )
-    .unwrap();
+            heart_bt_int_s: 30
+        }
+    );
+    assert_eq!(recorder.len(), 0);
+
+    s.accept_logon(1, 30, true, &mut recorder).unwrap();
     assert_eq!(s.state(), State::Active);
     assert_eq!(recorder.len(), 1);
     // LogonReset (35=A carrying 141=Y) at seqnum 1.
@@ -268,33 +293,35 @@ fn app_message_emits_control() {
 }
 
 #[test]
-fn test_request_is_echoed() {
+fn test_request_surfaces_not_echoed() {
     let mut s = new_session();
     establish(&mut s);
 
     let mut recorder = RecordingEmitter::new();
-    s.on_test_request(
-        TestRequestIn {
-            test_req_id: b"PROBE7",
-            seq: 2,
-            is_poss_dup: false,
-        },
-        &mut recorder,
-    )
-    .unwrap();
-    assert_eq!(recorder.len(), 1);
-    // Heartbeat (35=0) echoing TestReqID(112)=PROBE7.
-    assert_eq!(recorder.mt(0), b"0");
-    assert_eq!(recorder.val(0, 112), Some(b"PROBE7".as_ref()));
+    // The engine no longer auto-echoes: an in-sequence TestRequest surfaces as
+    // `Control::TestRequest` (the user answers with `heartbeat`), emitting nothing.
+    let ctrl = s
+        .on_test_request(
+            TestRequestIn {
+                seq: 2,
+                is_poss_dup: false,
+            },
+            &mut recorder,
+        )
+        .unwrap();
+    assert_eq!(ctrl, Control::TestRequest);
+    assert_eq!(recorder.len(), 0, "no engine-driven Heartbeat echo");
+    assert_eq!(s.next_inbound_seq(), 3);
 }
 
 #[test]
-fn gap_triggers_resend_request() {
+fn gap_surfaces_gap_detected() {
     let mut s = new_session();
     establish(&mut s);
 
     let mut recorder = RecordingEmitter::new();
-    // A gap suppresses the app message but fires a ResendRequest.
+    // A gap suppresses the app message and surfaces GapDetected (the user drives
+    // the ResendRequest); the engine emits nothing but enters Resending.
     let ctrl = s
         .on_app(
             AppIn {
@@ -305,11 +332,8 @@ fn gap_triggers_resend_request() {
         )
         .unwrap();
     assert_eq!(s.state(), State::Resending);
-    assert_eq!(ctrl, Control::None);
-    assert_eq!(recorder.len(), 1);
-    // ResendRequest (35=2) with BeginSeqNo(7)=2.
-    assert_eq!(recorder.mt(0), b"2");
-    assert_eq!(recorder.num(0, 7), Some(2));
+    assert_eq!(ctrl, Control::GapDetected { begin: 2 });
+    assert_eq!(recorder.len(), 0);
 
     for seq in 2u32..=5 {
         s.on_app(
@@ -503,10 +527,13 @@ fn initiated_logout_round_trip() {
 }
 
 #[test]
-fn counterparty_logout_is_confirmed() {
+fn counterparty_logout_surfaces_request() {
     let mut s = new_session();
     establish(&mut s);
 
+    // A peer-initiated Logout while Active no longer auto-replies or disconnects:
+    // it surfaces as `Control::Logout` (Message::LogoutRequest) for the user to
+    // answer with `logout(..)`. The session stays Active until the user replies.
     let mut recorder = RecordingEmitter::new();
     let ctrl = s
         .on_logout(
@@ -517,10 +544,14 @@ fn counterparty_logout_is_confirmed() {
             &mut recorder,
         )
         .unwrap();
-    assert_eq!(s.state(), State::Disconnected);
-    assert_eq!(ctrl, Control::LoggedOut);
-    assert_eq!(recorder.len(), 1);
-    assert_eq!(recorder.mt(0), b"5", "must confirm with a Logout");
+    assert_eq!(ctrl, Control::Logout);
+    assert_eq!(recorder.len(), 0, "no engine-driven Logout reply");
+    assert_eq!(s.state(), State::Active);
+    assert_eq!(
+        s.next_inbound_seq(),
+        3,
+        "the in-sequence Logout advanced inbound"
+    );
 }
 
 #[test]
@@ -547,7 +578,9 @@ fn seq_nums_survive_reconnect() {
     s.allocate_seq().unwrap(); // outbound seq 2
 
     let mut recorder = RecordingEmitter::new();
-    // counterparty logout at inbound seq 2; session replies (seq 3), disconnects
+    // We initiate the logout (Logout seq 3, → LogoutPending); the counterparty's
+    // in-sequence Logout confirms it and disconnects.
+    s.logout(&mut recorder).unwrap();
     s.on_logout(
         LogoutIn {
             seq: 2,

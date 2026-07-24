@@ -147,12 +147,15 @@ mod unix_tests {
     /// Encode one admin message into `w` via the production [`Emitter`] with a
     /// no-op `after` (no journaling) — the successor to the deleted
     /// `MessageWriter::encode_admin`.
+    /// Fixed UTC-unix-nanos clock for the deterministic core (2026-05-31…).
+    const NOW: i128 = 1_780_505_733_000_000_000;
+
     fn emit_admin<M: AdminEncode>(
         w: &mut MessageWriter<MockDict>,
         config: &SessionConfig,
         msg: M,
     ) -> Result<(), TransportError> {
-        Emitter::new(w, config, |_seq, _frame| Ok(())).emit(msg)
+        Emitter::new(w, config, NOW, |_seq, _frame| Ok(())).emit(msg)
     }
 
     #[test]

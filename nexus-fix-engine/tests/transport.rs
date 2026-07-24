@@ -29,13 +29,66 @@ struct Rig<S> {
     stream: S,
 }
 
+/// Fixed UTC-unix-nanos clock for the deterministic core.
+const NOW: i128 = 1_780_505_733_000_000_000;
+
+/// The classification of one recv+reply [`Rig::step`].
+#[derive(Debug, PartialEq, Eq)]
+enum Step {
+    /// Nothing test-visible surfaced (or a no-reply message was handled).
+    Continue,
+    /// An in-order application message surfaced.
+    App,
+    /// A Heartbeat surfaced (the out-of-sequence-admin scenarios watch for it).
+    Heartbeat,
+    /// A clean logout terminal (LoggedOut, or a peer LogoutRequest we answered).
+    Ended,
+}
+
 impl<S: Read + Write> Rig<S> {
-    fn recv(&mut self) -> Result<Option<Message<'_, MockDict>>, TransportError> {
-        self.session
-            .recv(&mut self.reader, &mut self.writer, &mut self.stream)
+    /// Receive the next message and drive its required reply — the user-driven
+    /// model (the test sends what the engine used to auto-send). Destructures
+    /// `self` so the returned `Message` borrows `reader` only, freeing
+    /// `session`/`writer`/`stream` for the reply (contract §5).
+    fn step(&mut self) -> Result<Step, TransportError> {
+        let Rig {
+            session,
+            reader,
+            writer,
+            stream,
+        } = self;
+        match session.recv(reader, writer, stream, NOW)? {
+            Some(Message::LoggedOut { .. }) => Ok(Step::Ended),
+            Some(Message::LogoutRequest { .. }) => {
+                session.logout(writer, stream, NOW)?;
+                Ok(Step::Ended)
+            }
+            Some(Message::TestRequest { id }) => {
+                session.heartbeat(writer, stream, NOW, Some(id))?;
+                Ok(Step::Continue)
+            }
+            Some(Message::GapDetected { begin }) => {
+                session.resend_request(writer, stream, NOW, begin)?;
+                Ok(Step::Continue)
+            }
+            Some(Message::LogonRequest(d) | Message::LogonResetRequest(d)) => {
+                d.accept(session, writer, stream, NOW)?;
+                Ok(Step::Continue)
+            }
+            Some(Message::Application { .. }) => Ok(Step::App),
+            Some(Message::Heartbeat { .. }) => Ok(Step::Heartbeat),
+            // No reply required (Reject / SequenceReset / LogonAcknowledged /
+            // ResendRequest), or nothing surfaced (`None`).
+            _ => Ok(Step::Continue),
+        }
     }
     fn connect(&mut self) -> Result<(), TransportError> {
-        self.session.encode_connect(&mut self.writer)
+        self.session.encode_connect(&mut self.writer, NOW)
+    }
+    /// Initiate a logout (combined encode + flush): the peer's confirming Logout
+    /// then surfaces as `LoggedOut` (Flow 2).
+    fn logout(&mut self) -> Result<(), TransportError> {
+        self.session.logout(&mut self.writer, &mut self.stream, NOW)
     }
     fn send_app(&mut self, seq: u32, frame: &[u8]) -> Result<(), TransportError> {
         self.session.encode_send_app(&mut self.writer, seq, frame)
@@ -230,7 +283,7 @@ fn tmp_dir(suffix: &str) -> TempDir {
 /// peer-initiated logout, so the clean path is the expected outcome.
 fn drive<S: Read + Write>(conn: &mut Rig<S>) -> Result<(), TransportError> {
     loop {
-        if let Some(Message::LoggedOut { .. }) = conn.recv()? {
+        if conn.step()? == Step::Ended {
             return Ok(());
         }
     }
@@ -470,12 +523,10 @@ fn acceptor_receives_app_message() {
     );
 
     loop {
-        match conn.recv().unwrap() {
-            Some(Message::LoggedOut { .. }) => break,
-            Some(Message::Application { header: _ }) => {
-                received_app += 1;
-            }
-            Some(_) | None => {}
+        match conn.step().unwrap() {
+            Step::Ended => break,
+            Step::App => received_app += 1,
+            _ => {}
         }
     }
 
@@ -514,7 +565,7 @@ fn heartbeat_stale_seqnum_disconnects() {
     );
 
     let reason = loop {
-        match conn.recv() {
+        match conn.step() {
             Ok(_) => {}
             Err(TransportError::UnexpectedDisconnect { reason }) => break reason,
             Err(e) => panic!("unexpected transport error: {e:?}"),
@@ -603,10 +654,10 @@ fn inbound_gap_sends_resend_request_and_suppresses_app_message() {
 
     let mut saw_app = false;
     loop {
-        match conn.recv() {
-            Ok(Some(Message::LoggedOut { .. })) | Err(_) => break,
-            Ok(Some(Message::Application { .. })) => saw_app = true,
-            Ok(Some(_) | None) => {}
+        match conn.step() {
+            Ok(Step::Ended) | Err(_) => break,
+            Ok(Step::App) => saw_app = true,
+            Ok(_) => {}
         }
     }
 
@@ -614,7 +665,7 @@ fn inbound_gap_sends_resend_request_and_suppresses_app_message() {
     assert_eq!(
         conn.state().state(),
         State::Resending,
-        "engine must enter Resending state (= ResendRequest sent) on inbound gap"
+        "engine must enter Resending state (= ResendRequest sent by the user on GapDetected) on inbound gap"
     );
 
     handle.join().unwrap();
@@ -667,11 +718,11 @@ fn out_of_sequence_admin_suppressed_and_resends() {
 
     let mut saw_admin = false;
     loop {
-        match conn.recv() {
-            Ok(Some(Message::LoggedOut { .. })) | Err(_) => break,
+        match conn.step() {
+            Ok(Step::Ended) | Err(_) => break,
             // The out-of-sequence Heartbeat must never surface.
-            Ok(Some(Message::Heartbeat { .. })) => saw_admin = true,
-            Ok(Some(_) | None) => {}
+            Ok(Step::Heartbeat) => saw_admin = true,
+            Ok(_) => {}
         }
     }
 
@@ -720,11 +771,11 @@ fn duplicate_admin_suppressed_no_resend() {
     let mut saw_dup_admin = false;
     let mut saw_app = false;
     loop {
-        match conn.recv() {
-            Ok(Some(Message::LoggedOut { .. })) | Err(_) => break,
-            Ok(Some(Message::Application { .. })) => saw_app = true,
-            Ok(Some(Message::Heartbeat { .. })) => saw_dup_admin = true,
-            Ok(Some(_) | None) => {}
+        match conn.step() {
+            Ok(Step::Ended) | Err(_) => break,
+            Ok(Step::App) => saw_app = true,
+            Ok(Step::Heartbeat) => saw_dup_admin = true,
+            Ok(Step::Continue) => {}
         }
     }
 
@@ -814,8 +865,8 @@ fn corrupt_checksum_frame_counted_as_garbage() {
     );
 
     loop {
-        match conn.recv() {
-            Ok(Some(Message::LoggedOut { .. })) | Err(_) => break,
+        match conn.step() {
+            Ok(Step::Ended) | Err(_) => break,
             _ => {}
         }
     }
@@ -854,8 +905,8 @@ fn garbage_bytes_increment_counter() {
     );
 
     loop {
-        match conn.recv() {
-            Ok(Some(Message::LoggedOut { .. })) | Err(_) => break,
+        match conn.step() {
+            Ok(Step::Ended) | Err(_) => break,
             _ => {}
         }
     }
@@ -882,7 +933,7 @@ fn malformed_framing_surfaces_via_recv() {
         journal(dir.path()),
     );
 
-    let Err(err) = conn.recv() else {
+    let Err(err) = conn.step() else {
         panic!("expected TransportError::Malformed for raw garbage");
     };
     assert!(
@@ -917,7 +968,7 @@ fn malformed_checksum_surfaces_via_recv() {
         journal(dir.path()),
     );
 
-    let Err(err) = conn.recv() else {
+    let Err(err) = conn.step() else {
         panic!("expected TransportError::Malformed for a corrupt checksum");
     };
     let TransportError::Malformed { count, reason, .. } = err else {
@@ -957,7 +1008,7 @@ fn peer_eof_surfaces_peer_closed_not_logout() {
         journal(dir.path()),
     );
 
-    let Err(err) = conn.recv() else {
+    let Err(err) = conn.step() else {
         panic!("expected an error on peer EOF");
     };
     assert!(err.is_fatal(), "an abnormal disconnect is fatal");
@@ -985,13 +1036,13 @@ fn recv_after_abnormal_disconnect_is_closed() {
 
     // First recv terminates the session (peer EOF).
     assert!(matches!(
-        conn.recv(),
+        conn.step(),
         Err(TransportError::UnexpectedDisconnect { .. })
     ));
 
     // Every recv after that is Closed.
     for _ in 0..3 {
-        let Err(err) = conn.recv() else {
+        let Err(err) = conn.step() else {
             panic!("expected Closed on a terminated session");
         };
         assert!(err.is_fatal());
@@ -1004,7 +1055,9 @@ fn recv_after_abnormal_disconnect_is_closed() {
 fn recv_after_clean_logout_is_closed() {
     // The clean-logout terminal (LoggedOut, on the Ok side) arms the same Closed
     // guard as an abnormal disconnect: a recv after it returns Closed, not a
-    // re-read of a dead socket.
+    // re-read of a dead socket. Driven by a Flow-2 logout — WE initiate, the peer
+    // confirms — because that is the exchange that ends in `LoggedOut` in the
+    // user-driven model (a peer-initiated Logout surfaces `LogoutRequest`).
     let dir = tmp_dir("logout_then_closed");
     let (client_sock, server_sock) = loopback_pair();
     client_sock
@@ -1014,10 +1067,10 @@ fn recv_after_clean_logout_is_closed() {
     let handle = std::thread::spawn(move || {
         let mut peer = Peer::new(server_sock, target(), sender());
         let mut buf = [0u8; 512];
-        let _ = peer.recv_msg(&mut buf); // the server's Logon
-        peer.send_logon(30);
-        peer.send_logout();
-        let _ = peer.recv_msg(&mut buf);
+        let _ = peer.recv_msg(&mut buf); // the engine's opening Logon
+        peer.send_logon(30); // ack → engine Active
+        let _ = peer.recv_msg(&mut buf); // the engine's initiated Logout
+        peer.send_logout(); // confirm → engine LoggedOut
     });
 
     let mut conn: Rig<TcpStream> = rig_from_parts(
@@ -1028,9 +1081,23 @@ fn recv_after_clean_logout_is_closed() {
     );
     conn.connect().unwrap();
 
-    // Drive to the clean logout terminal, then any further recv is Closed.
-    drive(&mut conn).unwrap();
-    assert!(matches!(conn.recv(), Err(TransportError::Closed)));
+    // Reach Active (the peer's Logon ack).
+    loop {
+        conn.step().unwrap();
+        if conn.state().state() == State::Active {
+            break;
+        }
+    }
+    // We initiate the logout; the peer's confirming Logout surfaces as the clean
+    // `LoggedOut` terminal.
+    conn.logout().unwrap();
+    loop {
+        if conn.step().unwrap() == Step::Ended {
+            break;
+        }
+    }
+    // Any step after the terminal is Closed.
+    assert!(matches!(conn.step(), Err(TransportError::Closed)));
 
     handle.join().unwrap();
 }
@@ -1100,8 +1167,8 @@ fn sequence_reset_backward_ignored() {
     );
 
     loop {
-        match conn.recv() {
-            Ok(Some(Message::LoggedOut { .. })) | Err(_) => break,
+        match conn.step() {
+            Ok(Step::Ended) | Err(_) => break,
             _ => {}
         }
     }
@@ -1151,7 +1218,7 @@ fn overflowed_tag_34_yields_missing_seq_num() {
         journal(dir.path()),
     );
 
-    let result = conn.recv();
+    let result = conn.step();
     handle.join().unwrap();
 
     assert!(
@@ -1295,7 +1362,7 @@ fn frame_exceeding_reader_buffer_is_message_too_large_not_disconnect() {
         journal(dir.path()),
     );
 
-    match conn.recv() {
+    match conn.step() {
         Err(TransportError::MessageTooLarge(_)) => {}
         Err(TransportError::UnexpectedDisconnect { reason }) => {
             panic!("frame exceeding reader buffer was misread as a disconnect: {reason:?}")
@@ -1310,5 +1377,5 @@ fn frame_exceeding_reader_buffer_is_message_too_large_not_disconnect() {
     // session — the next recv must be Closed, not a re-read of the oversized frame.
     // Regression guard: the terminated flag must arm on any fatal error, not just
     // LoggedOut / UnexpectedDisconnect.
-    assert!(matches!(conn.recv(), Err(TransportError::Closed)));
+    assert!(matches!(conn.step(), Err(TransportError::Closed)));
 }

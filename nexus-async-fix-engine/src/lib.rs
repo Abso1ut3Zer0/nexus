@@ -33,10 +33,10 @@ use std::marker::PhantomData;
 use std::ops::{Deref, DerefMut};
 use std::pin::Pin;
 
-use nexus_fix_codec::{FixDictionary, NoCustomizer, SessionCustomizer};
+use nexus_fix_codec::{AsciiTextStr, FixDictionary, NoCustomizer, SessionCustomizer};
 use nexus_fix_engine::{
-    DisconnectReason, FixJournal, FixParts as CoreFixParts, FixSession as CoreFixSession, Message,
-    MessageReader, MessageWriter, PollOutcome, SessionConfig, SessionState,
+    DisconnectReason, FixJournal, FixParts as CoreFixParts, FixSession as CoreFixSession,
+    LogonDecision, Message, MessageReader, MessageWriter, PollOutcome, SessionConfig, SessionState,
 };
 
 /// Per-message resend reserve; see [`nexus_fix_engine::REFRAME_HEADROOM`].
@@ -90,12 +90,17 @@ impl<D: FixDictionary> FixSession<D> {
     /// twin of [`nexus_fix_engine::FixSession::recv`].
     ///
     /// Fills `reader` from `conn` copy-free (`poll_fill_into`), drives
-    /// [`poll`](nexus_fix_engine::FixSession::poll), drains any outbound
-    /// (auto-emit, resend) from `writer` to `conn`, and returns the message.
-    /// `Ok(None)` means a step produced nothing to surface (an out-of-sequence
-    /// app, or a session-level reject). The session holds no timers, so `recv`
-    /// simply awaits a full frame; run your own heartbeat/liveness timers
-    /// alongside it (e.g. a `tokio::select!` over `recv` and your tickers).
+    /// [`poll`](nexus_fix_engine::FixSession::poll), drains any *mechanism*
+    /// outbound (reset handshake, protocol-error Logout, resend) from `writer` to
+    /// `conn`, and returns the message. `Ok(None)` means a step produced nothing to
+    /// surface (an out-of-sequence app, or a session-level reject). The session
+    /// holds no timers, so `recv` simply awaits a full frame; run your own
+    /// heartbeat/liveness timers alongside it (e.g. a `tokio::select!` over `recv`
+    /// and your tickers).
+    ///
+    /// `now` (UTC unix-nanos) stamps `SendingTime(52)` on any mechanism emit the
+    /// engine drives inside `recv`; the reply to the returned message is still
+    /// yours to send with the send helpers.
     ///
     /// The returned `Message<'r>` borrows `reader`, *not* `&mut self`, so `&mut
     /// session` and `&mut writer` stay free for the reply while the payload is
@@ -105,6 +110,7 @@ impl<D: FixDictionary> FixSession<D> {
         reader: &'r mut MessageReader<D>,
         writer: &mut MessageWriter<D, C>,
         conn: &mut S,
+        now: i128,
     ) -> Result<Option<Message<'r, D>>, Error>
     where
         C: SessionCustomizer,
@@ -117,7 +123,7 @@ impl<D: FixDictionary> FixSession<D> {
         // terminated guard — on a clean logout or any fatal error — before
         // borrowing `reader` to reconstruct the message. The flag lives on the
         // core (a fresh `connect` clears it); we mark it via the wrapper-author API.
-        match self.recv_step(reader, writer, conn).await {
+        match self.recv_step(reader, writer, conn, now).await {
             Ok(RecvStep::Message) => Ok(Some(self.core.message(reader))),
             Ok(RecvStep::LoggedOut) => {
                 self.core.mark_terminated();
@@ -141,13 +147,14 @@ impl<D: FixDictionary> FixSession<D> {
         reader: &mut MessageReader<D>,
         writer: &mut MessageWriter<D, C>,
         conn: &mut S,
+        now: i128,
     ) -> Result<RecvStep, Error>
     where
         C: SessionCustomizer,
         S: WireStream + Unpin,
     {
         loop {
-            let outcome = self.core.poll(reader, writer)?;
+            let outcome = self.core.poll(reader, writer, now)?;
             // Drain any admin/resend the core enqueued this step. Also flushes a
             // pending opening Logon / `send_app` staged before `recv`.
             drain_outbound(writer, conn).await?;
@@ -200,103 +207,160 @@ impl<D: FixDictionary> FixSession<D> {
     // flush to `conn`. The encode-only primitives themselves are available
     // unchanged via `Deref` for the custom-transport / byte-seam path.
 
-    /// Encodes a Logon and flushes it to `conn` (initiate the session).
+    /// Encodes a Logon and flushes it to `conn` (initiate the session). `now`
+    /// stamps `SendingTime(52)` (UTC unix-nanos).
     pub async fn connect<C, S>(
         &mut self,
         writer: &mut MessageWriter<D, C>,
         conn: &mut S,
+        now: i128,
     ) -> Result<(), Error>
     where
         C: SessionCustomizer,
         S: WireStream + Unpin,
     {
-        self.core.encode_connect(writer)?;
+        self.core.encode_connect(writer, now)?;
         drain_outbound(writer, conn).await
     }
 
-    /// Encodes a Logon with `ResetSeqNumFlag=Y` and flushes it to `conn`.
+    /// Encodes a Logon with `ResetSeqNumFlag=Y` and flushes it to `conn`. `now`
+    /// stamps `SendingTime(52)` (UTC unix-nanos).
     pub async fn connect_reset<C, S>(
         &mut self,
         writer: &mut MessageWriter<D, C>,
         conn: &mut S,
+        now: i128,
     ) -> Result<(), Error>
     where
         C: SessionCustomizer,
         S: WireStream + Unpin,
     {
-        self.core.encode_connect_reset(writer)?;
+        self.core.encode_connect_reset(writer, now)?;
         drain_outbound(writer, conn).await
     }
 
     /// Encodes an in-session sequence reset handshake and flushes it to `conn`.
+    /// `now` stamps `SendingTime(52)` (UTC unix-nanos).
     pub async fn reset_sequence<C, S>(
         &mut self,
         writer: &mut MessageWriter<D, C>,
         conn: &mut S,
+        now: i128,
     ) -> Result<(), Error>
     where
         C: SessionCustomizer,
         S: WireStream + Unpin,
     {
-        self.core.encode_reset_sequence(writer)?;
+        self.core.encode_reset_sequence(writer, now)?;
         drain_outbound(writer, conn).await
     }
 
-    /// Encodes a Logout and flushes it to `conn`.
+    /// Encodes a Logout and flushes it to `conn`. Answers a
+    /// [`Message::LogoutRequest`] or
+    /// initiates a logout. `now` stamps `SendingTime(52)` (UTC unix-nanos).
     pub async fn logout<C, S>(
         &mut self,
         writer: &mut MessageWriter<D, C>,
         conn: &mut S,
+        now: i128,
     ) -> Result<(), Error>
     where
         C: SessionCustomizer,
         S: WireStream + Unpin,
     {
-        self.core.encode_logout(writer)?;
+        self.core.encode_logout(writer, now)?;
         drain_outbound(writer, conn).await
     }
 
     /// Encodes a Heartbeat (echoing `echo` if `Some`) and flushes it to `conn`.
+    /// Answers a [`Message::TestRequest`] with `Some(id)` (the validated
+    /// `TestReqID`). `now` stamps `SendingTime(52)` (UTC unix-nanos).
     pub async fn heartbeat<C, S>(
         &mut self,
         writer: &mut MessageWriter<D, C>,
         conn: &mut S,
-        echo: Option<&str>,
+        now: i128,
+        echo: Option<&AsciiTextStr>,
     ) -> Result<(), Error>
     where
         C: SessionCustomizer,
         S: WireStream + Unpin,
     {
-        self.core.encode_heartbeat(writer, echo)?;
+        self.core.encode_heartbeat(writer, now, echo)?;
         drain_outbound(writer, conn).await
     }
 
-    /// Encodes a TestRequest and flushes it to `conn`.
+    /// Encodes a TestRequest and flushes it to `conn`. `now` stamps
+    /// `SendingTime(52)` (UTC unix-nanos).
     pub async fn test_request<C, S>(
         &mut self,
         writer: &mut MessageWriter<D, C>,
         conn: &mut S,
+        now: i128,
     ) -> Result<(), Error>
     where
         C: SessionCustomizer,
         S: WireStream + Unpin,
     {
-        self.core.encode_test_request(writer)?;
+        self.core.encode_test_request(writer, now)?;
         drain_outbound(writer, conn).await
     }
 
     /// Encodes a ResendRequest covering `[begin, ∞)` and flushes it to `conn`.
+    /// Answers a [`Message::GapDetected`].
+    /// `now` stamps `SendingTime(52)` (UTC unix-nanos).
     pub async fn resend_request<C, S>(
         &mut self,
         writer: &mut MessageWriter<D, C>,
         conn: &mut S,
+        now: i128,
         begin: u32,
     ) -> Result<(), Error>
     where
         C: SessionCustomizer,
         S: WireStream + Unpin,
     {
-        self.core.encode_resend_request(writer, begin)?;
+        self.core.encode_resend_request(writer, now, begin)?;
+        drain_outbound(writer, conn).await
+    }
+
+    /// Accepts a counterparty-initiated Logon surfaced as
+    /// [`Message::LogonRequest`] /
+    /// [`Message::LogonResetRequest`]:
+    /// encodes the reply, advances the session, and flushes to `conn`. The async
+    /// twin of [`LogonDecision::accept`]. `now` stamps `SendingTime(52)`.
+    pub async fn accept_logon<C, S>(
+        &mut self,
+        decision: LogonDecision<'_, D>,
+        writer: &mut MessageWriter<D, C>,
+        conn: &mut S,
+        now: i128,
+    ) -> Result<(), Error>
+    where
+        C: SessionCustomizer,
+        S: WireStream + Unpin,
+    {
+        decision.encode_accept(&mut self.core, writer, now)?;
+        drain_outbound(writer, conn).await
+    }
+
+    /// Rejects a counterparty-initiated Logon: encodes a Logout, disconnects, and
+    /// flushes to `conn`. The async twin of [`LogonDecision::reject`]. `now` stamps
+    /// `SendingTime(52)`. **`reason` is captured for logging but NOT yet on the
+    /// wire** — `Text(58)` wiring lands in phase 5.
+    pub async fn reject_logon<C, S>(
+        &mut self,
+        decision: LogonDecision<'_, D>,
+        writer: &mut MessageWriter<D, C>,
+        conn: &mut S,
+        now: i128,
+        reason: &str,
+    ) -> Result<(), Error>
+    where
+        C: SessionCustomizer,
+        S: WireStream + Unpin,
+    {
+        decision.encode_reject(&mut self.core, writer, now, reason)?;
         drain_outbound(writer, conn).await
     }
 

@@ -85,6 +85,12 @@ impl<'buf> FixHeader<'buf> for Fix44Header<'buf> {
     }
 }
 
+/// Fixed UTC-unix-nanos clock. A production caller reads a real wall clock here
+/// (`SystemTime::now().duration_since(UNIX_EPOCH)`, or a venue-supplied time);
+/// the fixed value keeps this example deterministic. `now` stamps only
+/// `SendingTime(52)` — the session reads no clock of its own.
+const NOW: i128 = 1_780_505_733_000_000_000;
+
 // ── main ─────────────────────────────────────────────────────────────────────
 
 fn main() {
@@ -119,14 +125,42 @@ fn run_acceptor(listener: &TcpListener, dir: &Path) {
         FixJournal::open(dir, 0, 256).unwrap(),
     );
 
+    // The user-driven loop: the engine surfaces each situation and its one
+    // required response; the caller sends it. `recv` ties its `Message` to
+    // `reader` only, so the reply's `&mut session` / `&mut writer` / `&mut stream`
+    // stay free while a borrowed payload (a `TestReqID`, a `LogonDecision`) is
+    // still alive.
     let mut n = 0usize;
     loop {
-        match session.recv(&mut reader, &mut writer, &mut stream) {
+        match session.recv(&mut reader, &mut writer, &mut stream, NOW) {
+            // The initiator's Logon: authenticate (inspect `d.logon()`) then accept.
+            Ok(Some(Message::LogonRequest(d) | Message::LogonResetRequest(d))) => {
+                d.accept(&mut session, &mut writer, &mut stream, NOW)
+                    .unwrap();
+            }
+            // Peer liveness probe: echo the TestReqID in a Heartbeat.
+            Ok(Some(Message::TestRequest { id })) => {
+                session
+                    .heartbeat(&mut writer, &mut stream, NOW, Some(id))
+                    .unwrap();
+            }
+            // Inbound gap: ask for the missing range.
+            Ok(Some(Message::GapDetected { begin })) => {
+                session
+                    .resend_request(&mut writer, &mut stream, NOW, begin)
+                    .unwrap();
+            }
+            Ok(Some(Message::Application { .. })) => n += 1,
+            // Peer initiated a logout: reply and finish.
+            Ok(Some(Message::LogoutRequest { .. })) => {
+                let _ = session.logout(&mut writer, &mut stream, NOW);
+                println!("acceptor: peer logged out, {n} app message(s) received");
+                break;
+            }
             Ok(Some(Message::LoggedOut { .. })) => {
                 println!("acceptor: logged out cleanly, {n} app message(s) received");
                 break;
             }
-            Ok(Some(Message::Application { .. })) => n += 1,
             Ok(Some(_) | None) => {}
             Err(e) => {
                 eprintln!("acceptor error: {e}");
@@ -157,11 +191,21 @@ fn run_initiator(addr: std::net::SocketAddr, dir: &Path) {
     // Combined verb: encode the opening Logon and flush it to the socket in one
     // call. (The encode-only `encode_connect` + a manual drain of `writer` is the
     // sans-IO alternative for custom transports.)
-    session.connect(&mut writer, &mut stream).unwrap();
+    session.connect(&mut writer, &mut stream, NOW).unwrap();
 
     loop {
-        match session.recv(&mut reader, &mut writer, &mut stream) {
-            Ok(Some(Message::LoggedOut { .. })) => {
+        match session.recv(&mut reader, &mut writer, &mut stream, NOW) {
+            Ok(Some(Message::TestRequest { id })) => {
+                session
+                    .heartbeat(&mut writer, &mut stream, NOW, Some(id))
+                    .unwrap();
+            }
+            Ok(Some(Message::GapDetected { begin })) => {
+                session
+                    .resend_request(&mut writer, &mut stream, NOW, begin)
+                    .unwrap();
+            }
+            Ok(Some(Message::LoggedOut { .. } | Message::LogoutRequest { .. })) => {
                 eprintln!("initiator: logged out before active");
                 return;
             }
@@ -192,9 +236,11 @@ fn run_initiator(addr: std::net::SocketAddr, dir: &Path) {
         .send_app(&mut writer, &mut stream, seq, &msg)
         .unwrap();
 
-    session.logout(&mut writer, &mut stream).unwrap();
+    // We initiate the logout; the acceptor's confirming Logout ends the session
+    // cleanly (surfaces as `LoggedOut`).
+    session.logout(&mut writer, &mut stream, NOW).unwrap();
     loop {
-        match session.recv(&mut reader, &mut writer, &mut stream) {
+        match session.recv(&mut reader, &mut writer, &mut stream, NOW) {
             Ok(Some(_)) | Err(_) => break,
             Ok(None) => {}
         }

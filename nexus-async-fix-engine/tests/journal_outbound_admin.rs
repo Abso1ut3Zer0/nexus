@@ -140,7 +140,9 @@ async fn outbound_admin_is_journaled() {
             FixJournal::open(dir.path(), 0, 256).unwrap(),
         );
         // Encodes + journals the opening Logon at seq 1 into the writer.
-        session.encode_connect(&mut writer).unwrap();
+        session
+            .encode_connect(&mut writer, 1_780_505_733_000_000_000)
+            .unwrap();
     }
 
     // The Logon (seq 1) must be present in the outbound journal: recovering the

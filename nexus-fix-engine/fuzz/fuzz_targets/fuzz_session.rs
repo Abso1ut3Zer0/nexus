@@ -302,7 +302,7 @@ fn feed_and_poll(
     }
 
     loop {
-        match session.poll(reader, writer) {
+        match session.poll(reader, writer, 1_780_505_733_000_000_000) {
             Ok(outcome) => {
                 if outcome == PollOutcome::Message {
                     // Reconstructing the borrowed message must not panic.
@@ -348,7 +348,7 @@ fuzz_target!(|msgs: Vec<FuzzMsg>| {
 
     // Initiator role: send our Logon, then drive inbound. A generated Logon at
     // the expected seq completes the handshake and unlocks the Active paths.
-    if session.encode_connect(&mut writer).is_ok() {
+    if session.encode_connect(&mut writer, 1_780_505_733_000_000_000).is_ok() {
         let outn = writer.data().len();
         if outn > 0 {
             writer.advance(outn);
