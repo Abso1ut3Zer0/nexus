@@ -99,6 +99,7 @@ mod tests {
 
     #[test]
     fn alloc_borrow_free() {
+        // SAFETY: test slab; single-threaded, all handles freed before drop.
         let slab = unsafe { Slab::with_capacity(10) };
         let handle = slab.alloc(42u64);
 
@@ -112,6 +113,7 @@ mod tests {
 
     #[test]
     fn clone_and_free_both() {
+        // SAFETY: test slab; single-threaded, all handles freed before drop.
         let slab = unsafe { Slab::with_capacity(10) };
         let h1 = slab.alloc(42u64);
         let h2 = h1.clone();
@@ -124,6 +126,7 @@ mod tests {
 
     #[test]
     fn borrow_and_borrow_mut() {
+        // SAFETY: test slab; single-threaded, all handles freed before drop.
         let slab = unsafe { Slab::with_capacity(10) };
         let handle = slab.alloc(String::from("hello"));
 
@@ -144,6 +147,7 @@ mod tests {
 
     #[test]
     fn mutation_visible_across_clones() {
+        // SAFETY: test slab; single-threaded, all handles freed before drop.
         let slab = unsafe { Slab::with_capacity(10) };
         let h1 = slab.alloc(1u64);
         let h2 = h1.clone();
@@ -164,6 +168,7 @@ mod tests {
     #[test]
     #[should_panic(expected = "already borrowed")]
     fn double_borrow_panics() {
+        // SAFETY: test slab; single-threaded, all handles freed before drop.
         let slab = unsafe { Slab::with_capacity(10) };
         let h1 = slab.alloc(42u64);
         let h2 = h1.clone();
@@ -175,6 +180,7 @@ mod tests {
     #[test]
     #[should_panic(expected = "already borrowed")]
     fn borrow_while_mut_panics() {
+        // SAFETY: test slab; single-threaded, all handles freed before drop.
         let slab = unsafe { Slab::with_capacity(10) };
         let h1 = slab.alloc(42u64);
         let h2 = h1.clone();
@@ -185,6 +191,7 @@ mod tests {
 
     #[test]
     fn try_alloc_full() {
+        // SAFETY: test slab; single-threaded, all handles freed before drop.
         let slab = unsafe { Slab::with_capacity(1) };
         let h1 = slab.alloc(1u64);
 
@@ -209,6 +216,7 @@ mod tests {
         }
 
         let drops = Cell::new(0);
+        // SAFETY: test slab; single-threaded, all handles freed before drop.
         let slab = unsafe { Slab::with_capacity(10) };
 
         let h1 = slab.alloc(DropCounter { count: &drops });
@@ -224,6 +232,7 @@ mod tests {
     #[test]
     #[should_panic(expected = "already borrowed")]
     fn mut_while_borrow_panics() {
+        // SAFETY: test slab; single-threaded, all handles freed before drop.
         let slab = unsafe { Slab::with_capacity(10) };
         let h1 = slab.alloc(42u64);
         let h2 = h1.clone();
@@ -234,6 +243,7 @@ mod tests {
 
     #[test]
     fn pin_and_pin_mut() {
+        // SAFETY: test slab; single-threaded, all handles freed before drop.
         let slab = unsafe { Slab::with_capacity(10) };
         let handle = slab.alloc(42u64);
 
@@ -254,10 +264,12 @@ mod tests {
 
     #[test]
     fn into_raw_from_raw_roundtrip() {
+        // SAFETY: test slab; single-threaded, all handles freed before drop.
         let slab = unsafe { Slab::with_capacity(10) };
         let handle = slab.alloc(42u64);
 
         let raw = handle.into_raw();
+        // SAFETY: raw was obtained from into_raw() just above; refcount is still non-zero.
         let handle = unsafe { crate::RcSlot::from_raw(raw) };
 
         {
@@ -269,6 +281,7 @@ mod tests {
 
     #[test]
     fn freelist_integrity_after_rc_cycle() {
+        // SAFETY: test slab; single-threaded, all handles freed before drop.
         let slab = unsafe { Slab::with_capacity(4) };
 
         // Fill
@@ -313,6 +326,7 @@ mod tests {
     #[test]
     fn debug_drop_panics() {
         let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            // SAFETY: test slab; handle intentionally not freed (tests debug drop panic).
             let slab = unsafe { Slab::with_capacity(10) };
             let _h = slab.alloc(42u64);
         }));

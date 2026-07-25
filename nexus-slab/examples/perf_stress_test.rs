@@ -20,6 +20,7 @@ use std::hint::black_box;
 
 #[inline(always)]
 fn rdtsc_start() -> u64 {
+    // SAFETY: x86_64 intrinsics; benchmark is x86_64-only.
     unsafe {
         core::arch::x86_64::_mm_lfence();
         core::arch::x86_64::_rdtsc()
@@ -28,6 +29,7 @@ fn rdtsc_start() -> u64 {
 
 #[inline(always)]
 fn rdtsc_end() -> u64 {
+    // SAFETY: x86_64 intrinsics; benchmark is x86_64-only.
     unsafe {
         let tsc = core::arch::x86_64::__rdtscp(&mut 0u32 as *mut _);
         core::arch::x86_64::_mm_lfence();
@@ -154,6 +156,7 @@ fn test_long_running_churn() {
     // --- Slab test ---
     println!("\n  Slab<TestValue>:");
     {
+        // SAFETY: single-threaded benchmark; slab outlives all allocated slots.
         let alloc: BoundedSlab<TestValue> = unsafe { BoundedSlab::with_capacity(CAPACITY) };
 
         let mut items: Vec<Option<_>> = (0..CAPACITY).map(|_| None).collect();
@@ -255,6 +258,7 @@ fn test_burst_allocation() {
 
     // --- Slab bursts ---
     {
+        // SAFETY: single-threaded benchmark; slab outlives all allocated slots.
         let alloc: BoundedSlab<TestValue> = unsafe { BoundedSlab::with_capacity(BURST_SIZE) };
 
         let mut alloc_samples = Vec::with_capacity(BURSTS);
@@ -322,6 +326,7 @@ fn test_mixed_lifetimes() {
 
     // --- Slab mixed lifetimes ---
     {
+        // SAFETY: single-threaded benchmark; slab outlives all allocated slots.
         let alloc: BoundedSlab<TestValue> = unsafe { BoundedSlab::with_capacity(LONG_LIVED + 100) };
 
         // Create long-lived items
@@ -391,6 +396,7 @@ fn test_fifo_queue() {
 
     // --- Slab queue ---
     {
+        // SAFETY: single-threaded benchmark; slab outlives all allocated slots.
         let alloc: BoundedSlab<TestValue> = unsafe { BoundedSlab::with_capacity(QUEUE_SIZE + 100) };
 
         let mut queue: VecDeque<_> = VecDeque::with_capacity(QUEUE_SIZE);
@@ -458,6 +464,7 @@ fn test_tail_latency() {
 
     // --- Slab tail latency ---
     {
+        // SAFETY: single-threaded benchmark; slab outlives all allocated slots.
         let alloc: BoundedSlab<TestValue> = unsafe { BoundedSlab::with_capacity(100) };
 
         let mut samples = Vec::with_capacity(SAMPLES);
@@ -617,6 +624,7 @@ fn test_brutal_fragmentation() {
     // --- Slab (immune to fragmentation) ---
     println!();
     {
+        // SAFETY: single-threaded benchmark; slab outlives all allocated slots.
         let alloc: BoundedSlab<TestValue> = unsafe { BoundedSlab::with_capacity(1000) };
 
         let mut samples = Vec::with_capacity(MEASURE_COUNT);
@@ -687,6 +695,7 @@ fn test_sustained_pressure() {
     // --- Slab under pressure ---
     println!();
     {
+        // SAFETY: single-threaded benchmark; slab outlives all allocated slots.
         let alloc: BoundedSlab<TestValue> = unsafe { BoundedSlab::with_capacity(TARGET_COUNT) };
 
         // Build up pressure
@@ -906,6 +915,7 @@ fn size_test<T: Default + Clone + 'static>(name: &str) {
         print!("  Box  10% fill");
         print_full_histogram_inline(&mut box_samples);
 
+        // SAFETY: single-threaded benchmark; slab outlives all allocated slots.
         let alloc: BoundedSlab<T> = unsafe { BoundedSlab::with_capacity(SLAB_CAPACITY) };
         let _slab_long: Vec<_> = (0..fill).map(|_| alloc.alloc(T::default())).collect();
         let mut slab_samples = Vec::with_capacity(SIZE_CHURN_OPS);
@@ -936,6 +946,7 @@ fn size_test<T: Default + Clone + 'static>(name: &str) {
         print!("  Box  25% fill");
         print_full_histogram_inline(&mut box_samples);
 
+        // SAFETY: single-threaded benchmark; slab outlives all allocated slots.
         let alloc: BoundedSlab<T> = unsafe { BoundedSlab::with_capacity(SLAB_CAPACITY) };
         let _slab_long: Vec<_> = (0..fill).map(|_| alloc.alloc(T::default())).collect();
         let mut slab_samples = Vec::with_capacity(SIZE_CHURN_OPS);
@@ -966,6 +977,7 @@ fn size_test<T: Default + Clone + 'static>(name: &str) {
         print!("  Box  50% fill");
         print_full_histogram_inline(&mut box_samples);
 
+        // SAFETY: single-threaded benchmark; slab outlives all allocated slots.
         let alloc: BoundedSlab<T> = unsafe { BoundedSlab::with_capacity(SLAB_CAPACITY) };
         let _slab_long: Vec<_> = (0..fill).map(|_| alloc.alloc(T::default())).collect();
         let mut slab_samples = Vec::with_capacity(SIZE_CHURN_OPS);
@@ -1085,6 +1097,7 @@ fn contention_test<T: Default + Clone + 'static>(name: &str) {
 
     // Slab - with same noise pattern (global allocator equally warm)
     {
+        // SAFETY: single-threaded benchmark; slab outlives all allocated slots.
         let alloc: BoundedSlab<T> = unsafe { BoundedSlab::with_capacity(CONTENTION_BATCH + 100) };
 
         let mut samples = Vec::with_capacity(CONTENTION_SAMPLES);
@@ -1196,6 +1209,7 @@ fn test_first_allocation_latency() {
 
     // Slab - first allocation from pre-allocated pool
     {
+        // SAFETY: single-threaded benchmark; slab outlives all allocated slots.
         let alloc: BoundedSlab<TestValue> = unsafe { BoundedSlab::with_capacity(1000) };
 
         let mut first_alloc_times = Vec::with_capacity(TRIALS);

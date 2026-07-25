@@ -31,11 +31,15 @@ const SAMPLES: usize = 2000; // Fewer samples since we evict each time
 
 use std::cell::UnsafeCell;
 struct EvictBuffer(UnsafeCell<[u8; 24 * 1024 * 1024]>);
+// SAFETY: `EvictBuffer` wraps `UnsafeCell`; `evict_cache` is the only
+// accessor and is called single-threaded from main.
 unsafe impl Sync for EvictBuffer {}
 static EVICT_BUFFER: EvictBuffer = EvictBuffer(UnsafeCell::new([0u8; 24 * 1024 * 1024]));
 
 #[inline(never)]
 fn evict_cache() {
+    // SAFETY: single-threaded; no other reference to `EVICT_BUFFER` exists
+    // during this call.
     unsafe {
         let buf = &mut *EVICT_BUFFER.0.get();
         let len = buf.len();
@@ -56,6 +60,7 @@ fn evict_cache() {
 
 #[inline(never)]
 fn rdtsc_start() -> u64 {
+    // SAFETY: x86_64 intrinsics; benchmark is x86_64-only.
     unsafe {
         core::arch::x86_64::_mm_lfence();
         core::arch::x86_64::_rdtsc()
@@ -65,6 +70,7 @@ fn rdtsc_start() -> u64 {
 #[inline(never)]
 fn rdtsc_end() -> u64 {
     let mut aux: u32 = 0;
+    // SAFETY: x86_64 intrinsics; benchmark is x86_64-only.
     unsafe {
         let t = core::arch::x86_64::__rdtscp(&raw mut aux);
         core::arch::x86_64::_mm_lfence();
@@ -98,6 +104,7 @@ fn main() {
     // 64B test
     {
         println!("\n  -- 64B SINGLE OP --");
+        // SAFETY: single-threaded benchmark; slab outlives all allocated slots.
         let slab = unsafe { BoundedSlab::<Pod64>::with_capacity(SAMPLES * 4) };
 
         let mut box_samples = Vec::with_capacity(SAMPLES);
@@ -152,6 +159,7 @@ fn main() {
     // 256B test
     {
         println!("\n  -- 256B SINGLE OP --");
+        // SAFETY: single-threaded benchmark; slab outlives all allocated slots.
         let slab = unsafe { BoundedSlab::<Pod256>::with_capacity(SAMPLES * 4) };
 
         let mut box_samples = Vec::with_capacity(SAMPLES);

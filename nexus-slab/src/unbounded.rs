@@ -586,6 +586,7 @@ mod tests {
 
     #[test]
     fn slab_basic() {
+        // SAFETY: test slab; single-threaded, all slots freed before drop.
         let slab = unsafe { Slab::<u64>::with_chunk_capacity(16) };
 
         let slot = slab.alloc(42);
@@ -595,6 +596,7 @@ mod tests {
 
     #[test]
     fn slab_grows() {
+        // SAFETY: test slab; single-threaded, all slots freed before drop.
         let slab = unsafe { Slab::<u64>::with_chunk_capacity(4) };
 
         let mut slots = Vec::new();
@@ -611,6 +613,7 @@ mod tests {
 
     #[test]
     fn slot_deref_mut() {
+        // SAFETY: test slab; single-threaded, all slots freed before drop.
         let slab = unsafe { Slab::<String>::with_chunk_capacity(16) };
         let mut slot = slab.alloc("hello".to_string());
         slot.push_str(" world");
@@ -620,6 +623,7 @@ mod tests {
 
     #[test]
     fn slot_dealloc_take() {
+        // SAFETY: test slab; single-threaded, all slots freed before drop.
         let slab = unsafe { Slab::<String>::with_chunk_capacity(16) };
         let slot = slab.alloc("hello".to_string());
 
@@ -629,6 +633,7 @@ mod tests {
 
     #[test]
     fn chunk_freelist_maintenance() {
+        // SAFETY: test slab; single-threaded, all slots freed before drop.
         let slab = unsafe { Slab::<u64>::with_chunk_capacity(2) };
 
         // Fill first chunk
@@ -655,6 +660,7 @@ mod tests {
 
     #[test]
     fn borrow_traits() {
+        // SAFETY: test slab; single-threaded, all slots freed before drop.
         let slab = unsafe { Slab::<u64>::with_chunk_capacity(16) };
         let mut slot = slab.alloc(42);
 
@@ -674,6 +680,7 @@ mod tests {
 
     #[test]
     fn builder_defaults() {
+        // SAFETY: test slab; single-threaded, all slots freed before drop.
         let slab = unsafe { Builder::new().build::<u64>() };
         assert_eq!(slab.chunk_capacity(), 256);
         assert_eq!(slab.chunk_count(), 0);
@@ -685,6 +692,7 @@ mod tests {
 
     #[test]
     fn builder_custom_chunk_capacity() {
+        // SAFETY: test slab; single-threaded, all slots freed before drop.
         let slab = unsafe { Builder::new().chunk_capacity(64).build::<u64>() };
         assert_eq!(slab.chunk_capacity(), 64);
 
@@ -695,6 +703,7 @@ mod tests {
 
     #[test]
     fn builder_initial_chunks() {
+        // SAFETY: test slab; single-threaded, all slots freed before drop.
         let slab = unsafe {
             Builder::new()
                 .chunk_capacity(32)
@@ -708,6 +717,7 @@ mod tests {
     #[test]
     #[should_panic(expected = "chunk_capacity must be non-zero")]
     fn builder_zero_chunk_capacity_panics() {
+        // SAFETY: test slab; single-threaded; panics before any slot can be allocated.
         let _slab = unsafe { Builder::new().chunk_capacity(0).build::<u64>() };
     }
 }

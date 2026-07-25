@@ -11,6 +11,7 @@ use std::hint::black_box;
 
 #[inline(always)]
 fn rdtsc_start() -> u64 {
+    // SAFETY: x86_64 intrinsics; benchmark is x86_64-only.
     unsafe {
         core::arch::x86_64::_mm_lfence();
         core::arch::x86_64::_rdtsc()
@@ -19,6 +20,7 @@ fn rdtsc_start() -> u64 {
 
 #[inline(always)]
 fn rdtsc_end() -> u64 {
+    // SAFETY: x86_64 intrinsics; benchmark is x86_64-only.
     unsafe {
         let tsc = core::arch::x86_64::__rdtscp(&mut 0u32 as *mut _);
         core::arch::x86_64::_mm_lfence();
@@ -97,6 +99,7 @@ macro_rules! bench_size {
             // --- ALLOC (batched) ---
             {
                 let slab: BoundedSlab<Value> =
+                    // SAFETY: single-threaded benchmark; slab outlives all allocated slots.
                     unsafe { BoundedSlab::with_capacity(BATCH as usize * 2) };
                 let mut slab_samples = Vec::with_capacity(SAMPLES);
                 let mut box_samples = Vec::with_capacity(SAMPLES);
@@ -127,6 +130,7 @@ macro_rules! bench_size {
             // --- FREE only (pre-alloc, then batch free) ---
             {
                 let slab: BoundedSlab<Value> =
+                    // SAFETY: single-threaded benchmark; slab outlives all allocated slots.
                     unsafe { BoundedSlab::with_capacity(BATCH as usize * SAMPLES) };
                 let mut slab_samples = Vec::with_capacity(SAMPLES);
                 let mut box_samples = Vec::with_capacity(SAMPLES);

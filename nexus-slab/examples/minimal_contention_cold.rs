@@ -50,6 +50,8 @@ const BATCH: usize = 10;
 // Using 2x cache size ensures even with set-associativity we evict everything
 use std::cell::UnsafeCell;
 struct EvictBuffer(UnsafeCell<[u8; 24 * 1024 * 1024]>);
+// SAFETY: `EvictBuffer` wraps `UnsafeCell`; `evict_cache` is the only
+// accessor and is called single-threaded from main.
 unsafe impl Sync for EvictBuffer {}
 static EVICT_BUFFER: EvictBuffer = EvictBuffer(UnsafeCell::new([0u8; 24 * 1024 * 1024]));
 
@@ -58,6 +60,8 @@ fn evict_cache() {
     // Strided access pattern to defeat prefetchers
     // Stride of 4097 bytes (not power of 2, crosses cache lines unpredictably)
     // This forces actual memory fetches rather than prefetcher hits
+    // SAFETY: single-threaded; no other reference to `EVICT_BUFFER` exists
+    // during this call.
     unsafe {
         let buf = &mut *EVICT_BUFFER.0.get();
         let len = buf.len();
@@ -80,6 +84,7 @@ fn evict_cache() {
 
 #[inline(never)]
 fn rdtsc_start() -> u64 {
+    // SAFETY: x86_64 intrinsics; benchmark is x86_64-only.
     unsafe {
         core::arch::x86_64::_mm_lfence();
         core::arch::x86_64::_rdtsc()
@@ -89,6 +94,7 @@ fn rdtsc_start() -> u64 {
 #[inline(never)]
 fn rdtsc_end() -> u64 {
     let mut aux: u32 = 0;
+    // SAFETY: x86_64 intrinsics; benchmark is x86_64-only.
     unsafe {
         let t = core::arch::x86_64::__rdtscp(&raw mut aux);
         core::arch::x86_64::_mm_lfence();
@@ -180,12 +186,15 @@ fn main() {
     println!("==========================");
     println!("  24MB eviction buffer (2x L3), strided access, interleaved measurement");
 
+    // SAFETY: single-threaded benchmark; slab outlives all allocated slots.
     let slab64 = unsafe { BoundedSlab::<Pod64>::with_capacity(SAMPLES * 2) };
     cold_test("64B", &slab64);
 
+    // SAFETY: single-threaded benchmark; slab outlives all allocated slots.
     let slab256 = unsafe { BoundedSlab::<Pod256>::with_capacity(SAMPLES * 2) };
     cold_test("256B", &slab256);
 
+    // SAFETY: single-threaded benchmark; slab outlives all allocated slots.
     let slab4096 = unsafe { BoundedSlab::<Pod4096>::with_capacity(SAMPLES * 2) };
     cold_test("4096B", &slab4096);
 }
