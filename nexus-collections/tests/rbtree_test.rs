@@ -5,10 +5,12 @@ use nexus_slab::bounded::Slab;
 use nexus_slab::unbounded::Slab as UnboundedSlab;
 
 fn make_slab() -> Slab<RbNode<u64, String>> {
+    // SAFETY: single-threaded test; slab outlives all allocated slots.
     unsafe { Slab::with_capacity(200) }
 }
 
 fn make_u64_slab() -> Slab<RbNode<u64, u64>> {
+    // SAFETY: single-threaded test; slab outlives all allocated slots.
     unsafe { Slab::with_capacity(200) }
 }
 
@@ -254,6 +256,7 @@ fn many_inserts_and_removes() {
 #[test]
 fn reverse_comparator() {
     use nexus_collections::slab::Reverse;
+    // SAFETY: single-threaded test; slab outlives all allocated slots.
     let slab: Slab<RbNode<u64, u64>> = unsafe { Slab::with_capacity(100) };
     let mut tree = RbTree::with_comparator(Reverse);
 
@@ -273,6 +276,7 @@ fn reverse_comparator() {
 
 #[test]
 fn unbounded_insert() {
+    // SAFETY: single-threaded test; slab outlives all allocated slots.
     let slab: UnboundedSlab<RbNode<u64, u64>> = unsafe { UnboundedSlab::with_chunk_capacity(8) };
     let mut tree = RbTree::new();
 
@@ -312,6 +316,7 @@ fn slab_ops_trait_generic() {
     }
 
     // Test with bounded slab
+    // SAFETY: single-threaded test; slab outlives all allocated slots.
     let bounded_slab: Slab<RbNode<u64, u64>> = unsafe { Slab::with_capacity(100) };
     let mut tree = RbTree::new();
     tree.try_insert(&bounded_slab, 1, 10).unwrap();
@@ -321,6 +326,7 @@ fn slab_ops_trait_generic() {
 
     // Test with unbounded slab
     let unbounded_slab: UnboundedSlab<RbNode<u64, u64>> =
+        // SAFETY: single-threaded test; slab outlives all allocated slots.
         unsafe { UnboundedSlab::with_chunk_capacity(8) };
     let mut tree = RbTree::new();
     tree.insert(&unbounded_slab, 1, 10);
@@ -340,6 +346,7 @@ fn slab_ops_trait_generic() {
 fn drop_non_empty_tree_panics() {
     let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         let slab: UnboundedSlab<RbNode<u64, u64>> =
+            // SAFETY: single-threaded test; slab outlives all allocated slots.
             unsafe { UnboundedSlab::with_chunk_capacity(8) };
         let mut tree = RbTree::new();
         tree.insert(&slab, 1, 100);
@@ -363,6 +370,7 @@ fn drop_non_empty_tree_panics() {
 fn drop_non_empty_tree_during_unwind_no_double_panic() {
     let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         let slab: UnboundedSlab<RbNode<u64, u64>> =
+            // SAFETY: single-threaded test; slab outlives all allocated slots.
             unsafe { UnboundedSlab::with_chunk_capacity(8) };
         let mut tree = RbTree::new();
         tree.insert(&slab, 1, 100);
@@ -380,6 +388,7 @@ fn drop_non_empty_tree_during_unwind_no_double_panic() {
 #[test]
 fn non_empty_drop_panics_in_debug() {
     let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        // SAFETY: single-threaded test; slab outlives all allocated slots.
         let slab = unsafe { UnboundedSlab::with_chunk_capacity(8) };
         let mut tree = RbTree::<u64, u64>::new();
         tree.insert(&slab, 1, 100);

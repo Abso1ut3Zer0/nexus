@@ -102,6 +102,7 @@ unsafe fn node_deref<K, V, const B: usize>(ptr: NodePtr<K, V, B>) -> *const BTre
 unsafe fn node_deref_mut<K, V, const B: usize>(ptr: NodePtr<K, V, B>) -> *mut BTreeNode<K, V, B> {
     // Use value_ptr_mut to avoid creating &SlotCell which would give
     // read-only provenance under stacked borrows.
+    // SAFETY: ptr is non-null and points to an occupied SlotCell per caller contract.
     unsafe { nexus_slab::shared::SlotCell::value_ptr_mut(ptr) }
 }
 
@@ -111,11 +112,13 @@ unsafe fn node_deref_mut<K, V, const B: usize>(ptr: NodePtr<K, V, B>) -> *mut BT
 
 /// # Safety: `ptr` must be a valid non-null B-tree node.
 unsafe fn node_len<K, V, const B: usize>(ptr: NodePtr<K, V, B>) -> usize {
+    // SAFETY: ptr is non-null and points to an occupied SlotCell per caller contract.
     unsafe { (*node_deref(ptr)).len as usize }
 }
 
 /// # Safety: `ptr` must be a valid non-null B-tree node.
 unsafe fn node_is_leaf<K, V, const B: usize>(ptr: NodePtr<K, V, B>) -> bool {
+    // SAFETY: ptr is non-null and points to an occupied SlotCell per caller contract.
     unsafe { (*node_deref(ptr)).leaf }
 }
 
@@ -139,6 +142,7 @@ unsafe fn value_at_mut<'a, K, V, const B: usize>(ptr: NodePtr<K, V, B>, i: usize
 
 /// # Safety: `ptr` must be a valid non-leaf node, `i <= node.len`.
 unsafe fn child_at<K, V, const B: usize>(ptr: NodePtr<K, V, B>, i: usize) -> NodePtr<K, V, B> {
+    // SAFETY: ptr is non-null and points to an occupied SlotCell; i <= node.len per caller.
     unsafe { (*node_deref(ptr)).children[i] }
 }
 
@@ -175,7 +179,9 @@ unsafe fn search_in_node<K, V, const B: usize, C: Compare<K>>(
 unsafe fn take_kv<K, V, const B: usize>(ptr: NodePtr<K, V, B>, i: usize) -> (K, V) {
     // SAFETY: keys[i] and values[i] are initialized for i < node.len.
     let node = unsafe { &*node_deref(ptr) };
+    // SAFETY: keys[i] is initialized for i < node.len per caller contract.
     let k = unsafe { node.keys[i].assume_init_read() };
+    // SAFETY: same invariant as above; values[i] is initialized for i < node.len.
     let v = unsafe { node.values[i].assume_init_read() };
     (k, v)
 }
@@ -196,6 +202,8 @@ unsafe fn shift_right<K, V, const B: usize>(ptr: NodePtr<K, V, B>, i: usize) {
     let node = unsafe { &mut *node_deref_mut(ptr) };
     let len = node.len as usize;
     if i < len {
+        // SAFETY: keys/values at [i..len) are initialized; len < B-1 ensures [i+1..len+1)
+        // is within the array. ptr::copy handles overlapping regions (memmove semantics).
         unsafe {
             let kp = node.keys.as_mut_ptr();
             ptr::copy(kp.add(i).cast_const(), kp.add(i + 1), len - i);
@@ -204,6 +212,8 @@ unsafe fn shift_right<K, V, const B: usize>(ptr: NodePtr<K, V, B>, i: usize) {
         }
     }
     if !node.leaf && i < len {
+        // SAFETY: internal node has valid children at [i+1..=len]; len < B-1 so
+        // shifting to [i+2..=len+1] fits in the children array of size B.
         unsafe {
             let cp = node.children.as_mut_ptr();
             ptr::copy(cp.add(i + 1).cast_const(), cp.add(i + 2), len - i);
@@ -228,6 +238,8 @@ unsafe fn shift_left<K, V, const B: usize>(ptr: NodePtr<K, V, B>, i: usize) {
     let node = unsafe { &mut *node_deref_mut(ptr) };
     let len = node.len as usize;
     if i + 1 < len {
+        // SAFETY: [i+1..len) are initialized keys/values (caller moved out slot i);
+        // ptr::copy handles overlap when shifting left by 1 over len-i-1 elements.
         unsafe {
             let kp = node.keys.as_mut_ptr();
             ptr::copy(kp.add(i + 1).cast_const(), kp.add(i), len - i - 1);
@@ -236,6 +248,8 @@ unsafe fn shift_left<K, V, const B: usize>(ptr: NodePtr<K, V, B>, i: usize) {
         }
     }
     if !node.leaf && i + 2 <= len {
+        // SAFETY: internal node with `len` keys has valid children at [i+2..=len];
+        // shifting to [i+1..len-1] removes the right child of the eliminated separator.
         unsafe {
             let cp = node.children.as_mut_ptr();
             ptr::copy(cp.add(i + 2).cast_const(), cp.add(i + 1), len - i - 1);
@@ -291,6 +305,7 @@ unsafe fn split_child_core<K, V, const B: usize>(
     // root init, so it points to an occupied SlotCell. right_ptr was just
     // allocated by the caller. No other references exist to either node.
     let child_node = unsafe { &mut *node_deref_mut(child) };
+    // SAFETY: right_ptr was just allocated by the caller and points to an occupied SlotCell.
     let right_node = unsafe { &mut *node_deref_mut(right_ptr) };
     let child_is_leaf = child_node.leaf;
 
@@ -336,6 +351,7 @@ unsafe fn split_child_core<K, V, const B: usize>(
     // out; the slot becomes logically uninitialized (child.len set to mid
     // below, so it won't be accessed again).
     let median_key = unsafe { child_node.keys[mid].assume_init_read() };
+    // SAFETY: same invariant as above; values[mid] is initialized because child was full (len == B-1).
     let median_value = unsafe { child_node.values[mid].assume_init_read() };
     child_node.len = mid as u16;
 
@@ -469,6 +485,7 @@ impl<K, V, const B: usize, C: Compare<K>> BTree<K, V, B, C> {
             debug_assert!(path_len < MAX_DEPTH);
             path[path_len] = (current, 0);
             path_len += 1;
+            // SAFETY: current is a valid internal node; children[0] is the leftmost valid child.
             let next = unsafe { child_at(current, 0) };
             current = next;
         }
@@ -476,6 +493,7 @@ impl<K, V, const B: usize, C: Compare<K>> BTree<K, V, B, C> {
         // SAFETY: current is a valid leaf node with at least 1 key (tree is non-empty).
         // take_kv reads initialized key/value at index 0. shift_left closes the gap.
         let result = unsafe { take_kv(current, 0) };
+        // SAFETY: current is a valid leaf; shift_left closes the gap and decrements len.
         unsafe { shift_left(current, 0) };
         self.fixup_after_remove(slab, current, &path, path_len);
         self.len -= 1;
@@ -497,10 +515,12 @@ impl<K, V, const B: usize, C: Compare<K>> BTree<K, V, B, C> {
         // which starts as self.root (non-null, checked above) and each iteration
         // replaces it with a valid child pointer from a valid internal node.
         while !unsafe { node_is_leaf(current) } {
+            // SAFETY: current is a valid internal node on this loop iteration.
             let len = unsafe { node_len(current) };
             debug_assert!(path_len < MAX_DEPTH);
             path[path_len] = (current, len);
             path_len += 1;
+            // SAFETY: current is a valid internal node; children[len] is the rightmost valid child.
             let next = unsafe { child_at(current, len) };
             current = next;
         }
@@ -509,7 +529,9 @@ impl<K, V, const B: usize, C: Compare<K>> BTree<K, V, B, C> {
         // take_kv reads initialized key/value at the last index. Decrementing len
         // logically removes the last slot (already moved out by take_kv).
         let last = unsafe { node_len(current) } - 1;
+        // SAFETY: last == node.len - 1 < node.len, so keys[last] and values[last] are initialized.
         let result = unsafe { take_kv(current, last) };
+        // SAFETY: current is a valid node; take_kv moved out the last slot, decrementing len is sound.
         unsafe { (*node_deref_mut(current)).len -= 1 };
         self.fixup_after_remove(slab, current, &path, path_len);
         self.len -= 1;
@@ -854,10 +876,12 @@ impl<K, V, const B: usize, C: Compare<K>> BTree<K, V, B, C> {
         path: &[(NodePtr<K, V, B>, usize); MAX_DEPTH],
         path_len: usize,
     ) -> (K, V) {
+        // SAFETY: node is a valid B-tree node from the downward traversal; node_is_leaf reads the leaf flag.
         if unsafe { node_is_leaf(node) } {
             // SAFETY: idx < node.len, so take_kv reads initialized slots.
             // shift_left closes the gap and decrements len.
             let result = unsafe { take_kv(node, idx) };
+            // SAFETY: node is a valid leaf; shift_left closes the gap at idx and decrements len.
             unsafe { shift_left(node, idx) };
             self.fixup_after_remove(slab, node, path, path_len);
             result
@@ -875,7 +899,9 @@ impl<K, V, const B: usize, C: Compare<K>> BTree<K, V, B, C> {
             // child (B-tree invariant: internal node with len keys has len+1
             // children). We walk down rightmost children until we hit a leaf.
             let mut pred_node = unsafe { child_at(node, idx) };
+            // SAFETY: pred_node is non-null — initially children[idx] of an internal node, then a valid child on each iteration.
             while !unsafe { node_is_leaf(pred_node) } {
+                // SAFETY: pred_node is a valid internal node on this iteration.
                 let plen = unsafe { node_len(pred_node) };
                 debug_assert!(ext_len < MAX_DEPTH);
                 ext_path[ext_len] = (pred_node, plen);
@@ -896,6 +922,7 @@ impl<K, V, const B: usize, C: Compare<K>> BTree<K, V, B, C> {
             // values[pred_idx] are initialized. assume_init_read moves
             // the values out; we immediately write replacements into node.
             let pred_k = unsafe { (*node_deref(pred_node)).keys[pred_idx].assume_init_read() };
+            // SAFETY: same invariant as above; values[pred_idx] is initialized for pred_idx < pred_node.len.
             let pred_v = unsafe { (*node_deref(pred_node)).values[pred_idx].assume_init_read() };
 
             // SAFETY: node is valid, idx < node.len. We overwrite the
@@ -944,6 +971,7 @@ impl<K, V, const B: usize, C: Compare<K>> BTree<K, V, B, C> {
 
             if node == self.root {
                 if len == 0 {
+                    // SAFETY: node is the root with 0 keys; node_is_leaf reads the flag to decide how to collapse.
                     if unsafe { node_is_leaf(node) } {
                         // SAFETY: empty leaf root — tree is now empty.
                         // free_node drops 0 elements (len == 0) and frees
@@ -955,6 +983,7 @@ impl<K, V, const B: usize, C: Compare<K>> BTree<K, V, B, C> {
                         // SAFETY: internal root with 0 keys has exactly 1
                         // child at children[0] (post-merge). Promote it.
                         let new_root = unsafe { child_at(node, 0) };
+                        // SAFETY: node is the old root with 0 keys; free_node drops nothing and returns its slab slot.
                         unsafe { free_node(node, slab) };
                         self.root = new_root;
                         self.depth -= 1;
@@ -970,6 +999,7 @@ impl<K, V, const B: usize, C: Compare<K>> BTree<K, V, B, C> {
             // SAFETY: depth > 0 here (node != root), so path[depth-1] is
             // a valid (parent, child_idx) pair from the downward traversal.
             let (parent, child_idx) = path[depth - 1];
+            // SAFETY: parent is a valid node from path[], which holds valid traversal pointers.
             let parent_len = unsafe { node_len(parent) };
 
             // Try borrowing from left sibling.
@@ -977,7 +1007,9 @@ impl<K, V, const B: usize, C: Compare<K>> BTree<K, V, B, C> {
                 // SAFETY: parent is a valid internal node and child_idx-1
                 // is a valid child index (child_idx > 0).
                 let left = unsafe { child_at(parent, child_idx - 1) };
+                // SAFETY: left is a valid node obtained from child_at on a valid parent.
                 if unsafe { node_len(left) } > min {
+                    // SAFETY: parent is valid, child_idx > 0, and left has more than min keys (checked above).
                     unsafe { Self::rotate_right(parent, child_idx) };
                     return;
                 }
@@ -988,7 +1020,9 @@ impl<K, V, const B: usize, C: Compare<K>> BTree<K, V, B, C> {
                 // SAFETY: child_idx < parent_len, so child_idx+1 <= parent_len
                 // which is a valid child index for an internal node.
                 let right = unsafe { child_at(parent, child_idx + 1) };
+                // SAFETY: right is a valid node obtained from child_at on a valid parent.
                 if unsafe { node_len(right) } > min {
+                    // SAFETY: parent is valid, child_idx < parent_len, and right has more than min keys (checked above).
                     unsafe { Self::rotate_left(parent, child_idx) };
                     return;
                 }
@@ -1032,7 +1066,9 @@ impl<K, V, const B: usize, C: Compare<K>> BTree<K, V, B, C> {
         let parent_node = unsafe { &mut *node_deref_mut(parent) };
         let child = parent_node.children[child_idx];
         let left = parent_node.children[child_idx - 1];
+        // SAFETY: child is the valid pointer at parent.children[child_idx]; distinct slab allocation from parent.
         let child_node = unsafe { &mut *node_deref_mut(child) };
+        // SAFETY: left is the valid pointer at parent.children[child_idx-1]; distinct slab allocation from parent and child.
         let left_node = unsafe { &mut *node_deref_mut(left) };
         let child_len = child_node.len as usize;
         let left_len = left_node.len as usize;
@@ -1043,6 +1079,7 @@ impl<K, V, const B: usize, C: Compare<K>> BTree<K, V, B, C> {
         // After shift, [1..child_len+1) are initialized. child_len < B-1
         // (child was deficient), so index child_len is within the array.
         if child_len > 0 {
+            // SAFETY: child has child_len initialized keys/values at [0..child_len); child_len < B-1 so the shift destination is within bounds.
             unsafe {
                 let kp = child_node.keys.as_mut_ptr();
                 ptr::copy(kp.cast_const(), kp.add(1), child_len);
@@ -1065,6 +1102,7 @@ impl<K, V, const B: usize, C: Compare<K>> BTree<K, V, B, C> {
         // moves the value out; we immediately write a replacement below.
         child_node.keys[0] =
             MaybeUninit::new(unsafe { parent_node.keys[p_idx].assume_init_read() });
+        // SAFETY: same as above — p_idx < parent.len so values[p_idx] is initialized.
         child_node.values[0] =
             MaybeUninit::new(unsafe { parent_node.values[p_idx].assume_init_read() });
         if !child_node.leaf {
@@ -1076,6 +1114,7 @@ impl<K, V, const B: usize, C: Compare<K>> BTree<K, V, B, C> {
         // and left.keys[left_len-1] is initialized. Promoting it into parent.
         parent_node.keys[p_idx] =
             MaybeUninit::new(unsafe { left_node.keys[left_len - 1].assume_init_read() });
+        // SAFETY: same as above — left.values[left_len-1] is initialized (left_len > min).
         parent_node.values[p_idx] =
             MaybeUninit::new(unsafe { left_node.values[left_len - 1].assume_init_read() });
 
@@ -1104,7 +1143,9 @@ impl<K, V, const B: usize, C: Compare<K>> BTree<K, V, B, C> {
         let parent_node = unsafe { &mut *node_deref_mut(parent) };
         let child = parent_node.children[child_idx];
         let right = parent_node.children[child_idx + 1];
+        // SAFETY: child is the valid pointer at parent.children[child_idx]; distinct slab allocation from parent.
         let child_node = unsafe { &mut *node_deref_mut(child) };
+        // SAFETY: right is the valid pointer at parent.children[child_idx+1]; distinct slab allocation from parent and child.
         let right_node = unsafe { &mut *node_deref_mut(right) };
         let child_len = child_node.len as usize;
         let right_len = right_node.len as usize;
@@ -1116,6 +1157,7 @@ impl<K, V, const B: usize, C: Compare<K>> BTree<K, V, B, C> {
         // within the array bounds.
         child_node.keys[child_len] =
             MaybeUninit::new(unsafe { parent_node.keys[p_idx].assume_init_read() });
+        // SAFETY: same as above — p_idx < parent.len so values[p_idx] is initialized.
         child_node.values[child_len] =
             MaybeUninit::new(unsafe { parent_node.values[p_idx].assume_init_read() });
         if !child_node.leaf {
@@ -1128,6 +1170,7 @@ impl<K, V, const B: usize, C: Compare<K>> BTree<K, V, B, C> {
         // initialized. Promoting it into the parent at p_idx.
         parent_node.keys[p_idx] =
             MaybeUninit::new(unsafe { right_node.keys[0].assume_init_read() });
+        // SAFETY: same as above — right.values[0] is initialized (right_len > min >= 1).
         parent_node.values[p_idx] =
             MaybeUninit::new(unsafe { right_node.values[0].assume_init_read() });
 
@@ -1136,6 +1179,7 @@ impl<K, V, const B: usize, C: Compare<K>> BTree<K, V, B, C> {
         // has right_len-1 initialized elements. ptr::copy handles the
         // overlapping source/dest correctly.
         if right_len > 1 {
+            // SAFETY: right_len > 1 so [1..right_len) has right_len-1 initialized elements; ptr::copy handles overlapping regions.
             unsafe {
                 let kp = right_node.keys.as_mut_ptr();
                 ptr::copy(kp.add(1).cast_const(), kp, right_len - 1);
@@ -1183,6 +1227,7 @@ impl<K, V, const B: usize, C: Compare<K>> BTree<K, V, B, C> {
         // SAFETY: left and right are distinct slab-allocated nodes. We take
         // &mut of left (will be modified) and & of right (read-only, then freed).
         let left_node = unsafe { &mut *node_deref_mut(left) };
+        // SAFETY: right is the valid pointer at parent.children[merge_idx+1]; distinct slab allocation from parent and left.
         let right_node = unsafe { &*node_deref(right) };
         let left_len = left_node.len as usize;
         let right_len = right_node.len as usize;
@@ -1192,6 +1237,7 @@ impl<K, V, const B: usize, C: Compare<K>> BTree<K, V, B, C> {
         // left_len == min < B-1, so keys[left_len] is within array bounds.
         left_node.keys[left_len] =
             MaybeUninit::new(unsafe { (*node_deref(parent)).keys[merge_idx].assume_init_read() });
+        // SAFETY: same as above — merge_idx < parent.len so values[merge_idx] is initialized.
         left_node.values[left_len] =
             MaybeUninit::new(unsafe { (*node_deref(parent)).values[merge_idx].assume_init_read() });
 
@@ -1200,6 +1246,7 @@ impl<K, V, const B: usize, C: Compare<K>> BTree<K, V, B, C> {
         // == 2*min + 1 == B-1, so destination indices are within [0, B-1).
         // Source and destination are in different nodes — no overlap.
         if right_len > 0 {
+            // SAFETY: right has right_len initialized keys/values at [0..right_len); destination in left starts at left_len+1; nodes are distinct so no overlap.
             unsafe {
                 ptr::copy_nonoverlapping(
                     right_node.keys.as_ptr(),
@@ -1272,6 +1319,7 @@ impl<K, V, const B: usize, C: Compare<K>> BTree<K, V, B, C> {
                     // SAFETY: we initialized keys[0] and values[0] above before try_alloc.
                     // The alloc failed, returning the node. Read back the initialized slots.
                     let k = unsafe { node.keys[0].assume_init_read() };
+                    // SAFETY: same as above — values[0] was initialized before the failed alloc.
                     let v = unsafe { node.values[0].assume_init_read() };
                     return Err(Full((k, v)));
                 }
@@ -1325,6 +1373,7 @@ impl<K, V, const B: usize, C: Compare<K>> BTree<K, V, B, C> {
             if unsafe { node_is_leaf(current) } {
                 // SAFETY: current is a valid leaf with room (root was split if full).
                 unsafe { shift_right(current, idx) };
+                // SAFETY: current is a valid leaf node; &mut self ensures no aliasing.
                 let node = unsafe { &mut *node_deref_mut(current) };
                 node.keys[idx] = MaybeUninit::new(key);
                 node.values[idx] = MaybeUninit::new(value);
@@ -1427,6 +1476,7 @@ impl<K, V, const B: usize, C: Compare<K>> BTree<K, V, B, C> {
             if unsafe { node_is_leaf(current) } {
                 // SAFETY: current is a valid leaf with room (proactive split).
                 unsafe { shift_right(current, idx) };
+                // SAFETY: current is a valid leaf node; &mut self ensures no aliasing.
                 let node = unsafe { &mut *node_deref_mut(current) };
                 node.keys[idx] = MaybeUninit::new(key);
                 node.values[idx] = MaybeUninit::new(value);
@@ -1486,11 +1536,13 @@ impl<K, V, const B: usize, C: Compare<K>> BTree<K, V, B, C> {
             }
             // SAFETY: current is a valid node.
             if unsafe { node_is_leaf(current) } {
+                // SAFETY: current is a valid leaf node; node_len reads the len field.
                 if idx < unsafe { node_len(current) } {
                     return (current, idx as u16);
                 }
                 return result;
             }
+            // SAFETY: current is a valid internal node; node_len reads the len field.
             if idx < unsafe { node_len(current) } {
                 result = (current, idx as u16);
             }
@@ -1509,6 +1561,7 @@ impl<K, V, const B: usize, C: Compare<K>> BTree<K, V, B, C> {
             if found {
                 // SAFETY: current is a valid node.
                 if unsafe { node_is_leaf(current) } {
+                    // SAFETY: current is a valid leaf node; node_len reads the len field.
                     if idx + 1 < unsafe { node_len(current) } {
                         return (current, (idx + 1) as u16);
                     }
@@ -1518,17 +1571,20 @@ impl<K, V, const B: usize, C: Compare<K>> BTree<K, V, B, C> {
                 let mut c = unsafe { child_at(current, idx + 1) };
                 // SAFETY: c is a valid child node; loop descends leftmost children.
                 while !unsafe { node_is_leaf(c) } {
+                    // SAFETY: c is an internal node; child_at(c, 0) is the leftmost valid child.
                     c = unsafe { child_at(c, 0) };
                 }
                 return (c, 0);
             }
             // SAFETY: current is a valid node.
             if unsafe { node_is_leaf(current) } {
+                // SAFETY: current is a valid leaf node; node_len reads the len field.
                 if idx < unsafe { node_len(current) } {
                     return (current, idx as u16);
                 }
                 return result;
             }
+            // SAFETY: current is a valid internal node; node_len reads the len field.
             if idx < unsafe { node_len(current) } {
                 result = (current, idx as u16);
             }
@@ -1593,6 +1649,7 @@ impl<K, V, const B: usize, C: Compare<K>> BTree<K, V, B, C> {
         for i in 1..len {
             // SAFETY: keys[i-1] and keys[i] are initialized for i < len.
             let prev = unsafe { node.keys[i - 1].assume_init_ref() };
+            // SAFETY: keys[i] is initialized for i < len (same reasoning as above).
             let curr = unsafe { node.keys[i].assume_init_ref() };
             assert!(C::cmp(prev, curr) == Ordering::Less);
         }
@@ -1747,6 +1804,7 @@ impl<K, V, const B: usize, C> BTree<K, V, B, C> {
         loop {
             // SAFETY: current is non-null (root checked above, then valid children).
             let len = unsafe { node_len(current) };
+            // SAFETY: current is a valid node; node_is_leaf reads the leaf flag.
             if unsafe { node_is_leaf(current) } {
                 // SAFETY: current is a valid leaf with at least 1 key; len-1 is valid.
                 return Some(unsafe { (key_at(current, len - 1), value_at(current, len - 1)) });
@@ -1790,6 +1848,7 @@ impl<K, V, const B: usize, C> BTree<K, V, B, C> {
             for i in 0..=len {
                 let child = node.children[i];
                 if !child.is_null() {
+                    // SAFETY: child is a valid non-null node pointer from this internal node; exclusively owned.
                     unsafe { Self::clear_subtree(child, slab) };
                 }
             }
@@ -1848,12 +1907,14 @@ fn init_lower_bound_stack<K, V, const B: usize, C: Compare<K>>(
         }
         // SAFETY: current is a valid node.
         if unsafe { node_is_leaf(current) } {
+            // SAFETY: current is a valid leaf node; node_len reads the len field.
             if idx < unsafe { node_len(current) } {
                 stack[*stack_len] = (current, idx as u16);
                 *stack_len += 1;
             }
             return;
         }
+        // SAFETY: current is a valid internal node; node_len reads the len field.
         if idx < unsafe { node_len(current) } {
             stack[*stack_len] = (current, idx as u16);
             *stack_len += 1;
@@ -1876,6 +1937,7 @@ fn init_upper_bound_stack<K, V, const B: usize, C: Compare<K>>(
         if found {
             // SAFETY: current is a valid node.
             if unsafe { node_is_leaf(current) } {
+                // SAFETY: current is a valid leaf node; node_len reads the len field.
                 if idx + 1 < unsafe { node_len(current) } {
                     stack[*stack_len] = (current, (idx + 1) as u16);
                     *stack_len += 1;
@@ -1891,12 +1953,14 @@ fn init_upper_bound_stack<K, V, const B: usize, C: Compare<K>>(
         }
         // SAFETY: current is a valid node.
         if unsafe { node_is_leaf(current) } {
+            // SAFETY: current is a valid leaf node; node_len reads the len field.
             if idx < unsafe { node_len(current) } {
                 stack[*stack_len] = (current, idx as u16);
                 *stack_len += 1;
             }
             return;
         }
+        // SAFETY: current is a valid internal node; node_len reads the len field.
         if idx < unsafe { node_len(current) } {
             stack[*stack_len] = (current, idx as u16);
             *stack_len += 1;
@@ -2192,6 +2256,7 @@ impl<'a, K, V, const B: usize, C: Compare<K>, S: SlabOps<BTreeNode<K, V, B>>>
     pub fn insert(&mut self, value: V) -> V {
         // SAFETY: self.node is a valid node; self.idx < node.len; values[idx] initialized.
         let slot = unsafe { &mut (*node_deref_mut(self.node)).values[self.idx] };
+        // SAFETY: values[self.idx] is initialized (self.idx < node.len by OccupiedEntry invariant).
         let old = unsafe { slot.assume_init_read() };
         *slot = MaybeUninit::new(value);
         old
@@ -2284,6 +2349,7 @@ impl<K, V, const B: usize, C: Compare<K>, S: SlabOps<BTreeNode<K, V, B>>>
         if (idx as usize) >= unsafe { node_len(node) } {
             return None;
         }
+        // SAFETY: idx < node.len (checked above); node is a valid traversal-stack node.
         Some(unsafe { key_at(node, idx as usize) })
     }
 
@@ -2297,6 +2363,7 @@ impl<K, V, const B: usize, C: Compare<K>, S: SlabOps<BTreeNode<K, V, B>>>
         if (idx as usize) >= unsafe { node_len(node) } {
             return None;
         }
+        // SAFETY: idx < node.len (checked above); node is a valid traversal-stack node.
         Some(unsafe { value_at(node, idx as usize) })
     }
 
@@ -2310,6 +2377,7 @@ impl<K, V, const B: usize, C: Compare<K>, S: SlabOps<BTreeNode<K, V, B>>>
         if (idx as usize) >= unsafe { node_len(node) } {
             return None;
         }
+        // SAFETY: idx < node.len (checked above); node is a valid traversal-stack node; &mut self ensures exclusivity.
         Some(unsafe { value_at_mut(node, idx as usize) })
     }
 

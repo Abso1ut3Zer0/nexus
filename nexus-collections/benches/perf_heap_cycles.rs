@@ -38,6 +38,7 @@ impl Xorshift {
 
 #[inline(always)]
 fn rdtsc_start() -> u64 {
+    // SAFETY: x86_64 intrinsics; benchmark is x86_64-only.
     unsafe {
         std::arch::x86_64::_mm_lfence();
         std::arch::x86_64::_rdtsc()
@@ -46,6 +47,7 @@ fn rdtsc_start() -> u64 {
 
 #[inline(always)]
 fn rdtsc_end() -> u64 {
+    // SAFETY: x86_64 intrinsics; benchmark is x86_64-only.
     unsafe {
         let mut aux: u32 = 0;
         let tsc = std::arch::x86_64::__rdtscp(&raw mut aux);
@@ -73,6 +75,7 @@ fn print_row(label: &str, samples: &mut [u64]) {
 }
 
 fn main() {
+    // SAFETY: single-threaded benchmark; slab outlives all allocated nodes.
     let slab = unsafe { Slab::<HeapNode<u64>>::with_capacity(CAPACITY) };
     let mut rng = Xorshift::new(0xDEAD_BEEF_CAFE_BABEu64);
 
