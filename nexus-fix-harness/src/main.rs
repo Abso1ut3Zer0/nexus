@@ -162,7 +162,7 @@ fn main() {
                 }
                 // Peer initiated a logout: reply and finish.
                 Ok(Some(Message::LogoutRequest { .. })) => {
-                    let _ = session.logout(&mut writer, &mut stream, now);
+                    let _ = session.logout(&mut writer, &mut stream, now, None);
                     println!("peer logged out, {app_msgs} app message(s)");
                     break;
                 }

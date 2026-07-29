@@ -10,7 +10,32 @@ contained.
 
 ## [Unreleased]
 
+### Changed
+
+- **Repositioned as the tokio adapter to the sans-IO FIX session _framework_.**
+  Mirrors the core rework in `nexus-fix-engine` (see its changelog). The async
+  `FixSession` is now a thin newtype that `Deref`s to the core brain and adds a
+  `recv` that `.await`s I/O over any `nexus_net::WireStream`; the caller holds the
+  `FixParts` trio (session + `MessageReader` + `MessageWriter`) and passes the
+  reader/writer plus its transport per call.
+  - **Deterministic clock.** `recv` and every combined send helper take a
+    caller-supplied `now: i128` (UTC unix-nanos) that stamps `SendingTime(52)`; no
+    internal clock reads remain.
+  - **No timers.** The reactor's built-in heartbeat / TestRequest timer logic is
+    gone; the session exposes only `heartbeat_interval()`. Build the heartbeat,
+    two-phase peer-liveness, and handshake timers yourself — the worked tokio
+    recipe (`select!` over `recv` and one `sleep_until` per timer) ships as
+    `examples/timer_recipes.rs`.
+  - **User-driven replies + resend cursor.** `recv` returns a `Message` whose every
+    variant names its one required response; an inbound ResendRequest surfaces a
+    user-pumped `ResendCursor` (drop = refuse), with `ResendOutOfRange` for a
+    request outside the journal window.
+
 ### Added
+
+- `Text(58)` reason on Logout. `logout` and `reject_logon` take
+  `reason: Option<&AsciiTextStr>`, encoded as `Text(58)` when `Some` and omitted
+  when `None` — the async twins of the core change.
 
 - `FixConnection` now runs on the `nexus_net::WireStream` seam (via
   `nexus-net-tokio`) instead of a raw tokio `AsyncRead + AsyncWrite`, so it

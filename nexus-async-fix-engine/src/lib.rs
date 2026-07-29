@@ -1,17 +1,52 @@
-//! Tokio adapter for the sans-IO FIX session core.
+//! Tokio adapter for the sans-IO FIX session **framework**.
 //!
 //! [`FixSession`] is a thin newtype over the sans-IO
-//! [`nexus_fix_engine::FixSession`] brain: it [`Deref`]s to the
-//! core so the whole seam (encode-only sends, [`poll`], [`message`], the byte
-//! methods) is available unchanged, and it adds one thing — an async
-//! [`recv`](FixSession::recv) that `.await`s socket I/O over any
-//! [`WireStream`]. The caller holds the [`FixParts`] trio (session +
+//! [`nexus_fix_engine::FixSession`] brain: it [`Deref`]s to the core, so the whole
+//! seam (encode-only sends, [`poll`], [`message`], the byte methods) is available
+//! unchanged, and it adds an async [`recv`](FixSession::recv) that `.await`s socket
+//! I/O over any [`WireStream`]. The caller holds the [`FixParts`] trio (session +
 //! [`MessageReader`] + [`MessageWriter`]) and passes the reader/writer plus its
-//! transport per call, exactly as in the blocking engine; only the socket I/O in
-//! `recv` is `.await`ed.
+//! transport per call, exactly as in the blocking engine; only the socket I/O is
+//! `.await`ed.
 //!
 //! [`poll`]: nexus_fix_engine::FixSession::poll
 //! [`message`]: nexus_fix_engine::FixSession::message
+//!
+//! # The framework model
+//!
+//! See [`nexus_fix_engine`] for the full model — it applies verbatim here, since
+//! this crate only adds `.await`ed I/O:
+//!
+//! - **Mechanism, not policy.** We frame/checksum/sequence/journal and track
+//!   protocol state; you own the loop, the timers, and every decision.
+//! - **One variant, one required response.** [`recv`](FixSession::recv) returns a
+//!   [`Message`] borrowing `reader` only, so `&mut
+//!   session`/`&mut writer` stay free for the reply. `TestRequest` → `heartbeat(..,
+//!   Some(id))`, `GapDetected` → `resend_request`, `LogonRequest(decision)` →
+//!   [`accept_logon`](FixSession::accept_logon)/[`reject_logon`](FixSession::reject_logon),
+//!   `LogoutRequest` → [`logout`](FixSession::logout), and so on. An abnormal end
+//!   surfaces as an [`Error`], never as a variant.
+//! - **Send helpers, two forms.** Each action has an encode-only form (via
+//!   [`Deref`] to the core, for a custom / kernel-bypass transport) and a combined
+//!   `.await`ing form here. [`logout`](FixSession::logout) and
+//!   [`reject_logon`](FixSession::reject_logon) take `reason: Option<&AsciiTextStr>`,
+//!   encoded as `Text(58)` when `Some`.
+//! - **Deterministic clock.** The core reads no clock; every `SendingTime(52)`
+//!   stamps from a caller-supplied `now: i128` (UTC unix-nanos) passed to `recv`
+//!   and the send helpers, so the core stays a pure function of `(bytes, now)`.
+//! - **Resend is user-pumped.** An inbound ResendRequest surfaces a
+//!   [`ResendCursor`](nexus_fix_engine::ResendCursor) you pump (drop = refuse); a
+//!   request outside the journal's window surfaces `ResendOutOfRange` with no
+//!   cursor, and you answer with `sequence_reset`/`gap_fill` or log out.
+//!
+//! # Timers are yours
+//!
+//! The session holds **no timers** — only
+//! [`heartbeat_interval`](nexus_fix_engine::FixSession::heartbeat_interval). You
+//! own three: a heartbeat ticker, a two-phase peer-liveness probe (reset on *any*
+//! inbound), and a handshake/logout deadline. The worked, runnable tokio recipe is
+//! `examples/async_timer_recipes.rs` (a `select!` over `recv` and one
+//! `sleep_until` per timer); the blocking twin is in `nexus-fix-engine`.
 //!
 //! # Transports
 //!
@@ -257,17 +292,21 @@ impl<D: FixDictionary> FixSession<D> {
     /// Encodes a Logout and flushes it to `conn`. Answers a
     /// [`Message::LogoutRequest`] or
     /// initiates a logout. `now` stamps `SendingTime(52)` (UTC unix-nanos).
+    ///
+    /// `reason`, if `Some`, rides the wire as `Text(58)` — a printable-ASCII
+    /// [`AsciiTextStr`], SOH-safe by construction. `None` emits a bare Logout.
     pub async fn logout<C, S>(
         &mut self,
         writer: &mut MessageWriter<D, C>,
         conn: &mut S,
         now: i128,
+        reason: Option<&AsciiTextStr>,
     ) -> Result<(), Error>
     where
         C: SessionCustomizer,
         S: WireStream + Unpin,
     {
-        self.core.encode_logout(writer, now)?;
+        self.core.encode_logout(writer, now, reason)?;
         drain_outbound(writer, conn).await
     }
 
@@ -389,15 +428,18 @@ impl<D: FixDictionary> FixSession<D> {
 
     /// Rejects a counterparty-initiated Logon: encodes a Logout, disconnects, and
     /// flushes to `conn`. The async twin of [`LogonDecision::reject`]. `now` stamps
-    /// `SendingTime(52)`. **`reason` is captured for logging but NOT yet on the
-    /// wire** — `Text(58)` wiring lands in phase 5.
+    /// `SendingTime(52)`.
+    ///
+    /// `reason`, if `Some`, rides the wire as `Text(58)` on the Logout — a
+    /// printable-ASCII [`AsciiTextStr`], SOH-safe by construction; `None` sends a
+    /// bare Logout.
     pub async fn reject_logon<C, S>(
         &mut self,
         decision: LogonDecision<'_, D>,
         writer: &mut MessageWriter<D, C>,
         conn: &mut S,
         now: i128,
-        reason: &str,
+        reason: Option<&AsciiTextStr>,
     ) -> Result<(), Error>
     where
         C: SessionCustomizer,

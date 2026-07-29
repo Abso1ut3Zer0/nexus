@@ -428,13 +428,17 @@ impl<D: FixDictionary> FixSession<D> {
 
     /// Encodes a Logout into `writer`. Encode-only; see [`logout`](Self::logout)
     /// for the encode + flush form. `now` stamps `SendingTime(52)` (UTC unix-nanos).
+    ///
+    /// `reason`, if `Some`, rides the wire as `Text(58)` — a printable-ASCII
+    /// [`AsciiTextStr`], SOH-safe by construction. `None` emits a bare Logout.
     pub fn encode_logout<C: SessionCustomizer>(
         &mut self,
         writer: &mut MessageWriter<D, C>,
         now: i128,
+        reason: Option<&AsciiTextStr>,
     ) -> Result<(), Error> {
         let mut emitter = journaling_emitter(writer, &mut self.journal, &self.config, now);
-        self.state.logout(&mut emitter)?;
+        self.state.logout(reason, &mut emitter)?;
         Ok(())
     }
 
@@ -572,23 +576,19 @@ impl<D: FixDictionary> FixSession<D> {
     /// the encode-only half of [`LogonDecision::reject`]. `now` stamps
     /// `SendingTime(52)` (UTC unix-nanos).
     ///
-    /// **`reason` is NOT yet put on the wire.** It is the caller's rejection
-    /// rationale (e.g. failed authentication), captured for logging and
-    /// forward-compatibility, but the emitted Logout is a bare Logout: the codec's
-    /// `Logout` carries no `Text(58)` field today. **Wiring `reason` into
-    /// `Text(58)` lands in phase 5** with the codec `Logout`/`Reject` change; until
-    /// then a rejected peer sees a Logout with no reason string. The session is
-    /// marked terminated.
+    /// `reason` is the caller's rejection rationale (e.g. failed authentication).
+    /// When `Some`, it rides the wire as `Text(58)` on the emitted Logout — a
+    /// printable-ASCII [`AsciiTextStr`], SOH-safe by construction; `None` emits a
+    /// bare Logout. The session is marked terminated.
     pub fn encode_reject_logon<C: SessionCustomizer>(
         &mut self,
         writer: &mut MessageWriter<D, C>,
         now: i128,
-        // Captured for phase-5 `Text(58)` wiring; deliberately not on the wire yet.
-        _reason: &str,
+        reason: Option<&AsciiTextStr>,
     ) -> Result<(), Error> {
         {
             let mut emitter = journaling_emitter(writer, &mut self.journal, &self.config, now);
-            self.state.reject_logon(&mut emitter)?;
+            self.state.reject_logon(reason, &mut emitter)?;
         }
         self.terminated = true;
         Ok(())
@@ -674,17 +674,21 @@ impl<D: FixDictionary> FixSession<D> {
     /// Encodes a Logout and flushes it to `conn`. Use this to answer a
     /// [`Message::LogoutRequest`] or to initiate a logout. `now` stamps
     /// `SendingTime(52)` (UTC unix-nanos).
+    ///
+    /// `reason`, if `Some`, rides the wire as `Text(58)` — a printable-ASCII
+    /// [`AsciiTextStr`], SOH-safe by construction. `None` emits a bare Logout.
     pub fn logout<C, S>(
         &mut self,
         writer: &mut MessageWriter<D, C>,
         conn: &mut S,
         now: i128,
+        reason: Option<&AsciiTextStr>,
     ) -> Result<(), Error>
     where
         C: SessionCustomizer,
         S: Read + Write,
     {
-        self.encode_logout(writer, now)?;
+        self.encode_logout(writer, now, reason)?;
         writer.flush_to(conn).map_err(Error::Io)
     }
 
@@ -1381,14 +1385,15 @@ impl<D: FixDictionary> LogonDecision<'_, D> {
     /// Encodes the reject Logout into `writer` and disconnects — the encode-only
     /// half of [`reject`](Self::reject). `now` stamps `SendingTime(52)`.
     ///
-    /// **`reason` is captured but NOT yet on the wire** (`Text(58)` wiring lands in
-    /// phase 5); see [`FixSession::encode_reject_logon`].
+    /// `reason`, if `Some`, rides the wire as `Text(58)` on the Logout — a
+    /// printable-ASCII [`AsciiTextStr`], SOH-safe by construction; see
+    /// [`FixSession::encode_reject_logon`].
     pub fn encode_reject<C: SessionCustomizer>(
         self,
         session: &mut FixSession<D>,
         writer: &mut MessageWriter<D, C>,
         now: i128,
-        reason: &str,
+        reason: Option<&AsciiTextStr>,
     ) -> Result<(), Error> {
         session.encode_reject_logon(writer, now, reason)
     }
@@ -1414,16 +1419,16 @@ impl<D: FixDictionary> LogonDecision<'_, D> {
     /// Rejects the Logon: sends a Logout and disconnects. Encode + flush over a
     /// blocking transport. `now` stamps `SendingTime(52)`.
     ///
-    /// **`reason` is captured for logging but NOT yet encoded on the wire** — the
-    /// codec `Logout` has no `Text(58)` field today; the rejected peer sees a bare
-    /// Logout. Wiring `reason` into `Text(58)` lands in phase 5.
+    /// `reason`, if `Some`, rides the wire as `Text(58)` on the Logout — a
+    /// printable-ASCII [`AsciiTextStr`], SOH-safe by construction; `None` sends a
+    /// bare Logout. The rejected peer sees the reason string when supplied.
     pub fn reject<C, S>(
         self,
         session: &mut FixSession<D>,
         writer: &mut MessageWriter<D, C>,
         conn: &mut S,
         now: i128,
-        reason: &str,
+        reason: Option<&AsciiTextStr>,
     ) -> Result<(), Error>
     where
         C: SessionCustomizer,

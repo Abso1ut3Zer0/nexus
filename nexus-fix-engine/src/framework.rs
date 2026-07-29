@@ -128,9 +128,10 @@ pub enum Message<'r, D: FixDictionary> {
     /// `decision.accept(..)` (sends a `LogonReset` reply) or `decision.reject(..)`.
     LogonResetRequest(LogonDecision<'r, D>),
     /// Counterparty initiated a Logout (35=5). Answer with `logout(&mut writer,
-    /// &mut conn, now)` to send your Logout reply, then close the transport. (A
-    /// Logout confirming *your* initiated logout surfaces as [`LoggedOut`](Self::LoggedOut)
-    /// instead.)
+    /// &mut conn, now, reason)` to send your Logout reply (`reason:
+    /// Option<&AsciiTextStr>` rides as `Text(58)` when `Some`), then close the
+    /// transport. (A Logout confirming *your* initiated logout surfaces as
+    /// [`LoggedOut`](Self::LoggedOut) instead.)
     LogoutRequest { msg: D::Logout<'r> },
     /// Heartbeat (35=0). No reply required.
     Heartbeat { msg: D::Heartbeat<'r> },

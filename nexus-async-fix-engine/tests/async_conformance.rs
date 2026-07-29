@@ -208,7 +208,7 @@ impl Rig {
         match session.recv(reader, writer, stream, NOW).await? {
             Some(Message::LoggedOut { .. }) => Ok(Step::Ended),
             Some(Message::LogoutRequest { .. }) => {
-                session.logout(writer, stream, NOW).await?;
+                session.logout(writer, stream, NOW, None).await?;
                 Ok(Step::Ended)
             }
             Some(Message::TestRequest { id }) => {

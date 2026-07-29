@@ -11,9 +11,9 @@
 #![cfg(unix)]
 
 use nexus_fix_codec::{
-    AdminEncode, AdminMsgOut, DecodeError, FieldView, FixAdminMsg, FixDictionary, FixHeader,
-    FixTimestamp, Heartbeat, Logon, LogonReset, Logout, NoCustomizer, Reject, ResendRequest,
-    SequenceReset, SessionCustomizer, TestRequest, find_tag, validate_checksum,
+    AdminEncode, AdminMsgOut, AsciiTextStr, DecodeError, FieldView, FixAdminMsg, FixDictionary,
+    FixHeader, FixTimestamp, Heartbeat, Logon, LogonReset, Logout, NoCustomizer, Reject,
+    ResendRequest, SequenceReset, SessionCustomizer, TestRequest, find_tag, validate_checksum,
 };
 use nexus_fix_engine::{
     CompId, Emit, Emitter, FrameWriter, MessageWriter, SessionConfig, TransportError,
@@ -229,7 +229,88 @@ fn no_customizer_logon_reset_is_byte_identical() {
 
 #[test]
 fn no_customizer_logout_is_byte_identical() {
-    assert_matches_oracle(Logout { seq: 2 }, b"5", &[]);
+    assert_matches_oracle(
+        Logout {
+            seq: 2,
+            reason: None,
+        },
+        b"5",
+        &[],
+    );
+}
+
+// ── Text(58): a reason rides the wire when `Some`, is omitted when `None` ─────
+
+#[test]
+fn logout_with_reason_carries_text_58() {
+    // `Some(reason)` → exact frame (SendingTime lifted) carries `58=<reason>` as
+    // the sole body field of a Logout.
+    let reason = AsciiTextStr::try_from_str("session ended").unwrap();
+    assert_matches_oracle(
+        Logout {
+            seq: 2,
+            reason: Some(reason),
+        },
+        b"5",
+        &[(58, b"session ended".to_vec())],
+    );
+}
+
+#[test]
+fn logout_without_reason_omits_text_58() {
+    // `None` → tag 58 is absent from the produced frame.
+    let mut w: MessageWriter<MockDict> = MessageWriter::new();
+    emit_admin(
+        &mut w,
+        &config(),
+        Logout {
+            seq: 2,
+            reason: None,
+        },
+    )
+    .unwrap();
+    assert!(tag(w.data(), 58).is_none());
+}
+
+#[test]
+fn reject_with_reason_carries_text_58() {
+    // `Some(reason)` → `58=<reason>` follows the SessionRejectReason(373) in the
+    // exact frame.
+    let reason = AsciiTextStr::try_from_str("bad field").unwrap();
+    assert_matches_oracle(
+        Reject {
+            seq: 7,
+            ref_seq_num: 3,
+            ref_tag_id: Some(35),
+            session_reject_reason: 1,
+            reason: Some(reason),
+        },
+        b"3",
+        &[
+            (45, b"3".to_vec()),
+            (371, b"35".to_vec()),
+            (373, b"1".to_vec()),
+            (58, b"bad field".to_vec()),
+        ],
+    );
+}
+
+#[test]
+fn reject_without_reason_omits_text_58() {
+    let mut w: MessageWriter<MockDict> = MessageWriter::new();
+    emit_admin(
+        &mut w,
+        &config(),
+        Reject {
+            seq: 7,
+            ref_seq_num: 3,
+            ref_tag_id: Some(35),
+            session_reject_reason: 1,
+            reason: None,
+        },
+    )
+    .unwrap();
+    assert!(tag(w.data(), 58).is_none());
 }
 
 #[test]
@@ -320,6 +401,7 @@ fn no_customizer_reject_is_byte_identical() {
             ref_seq_num: 3,
             ref_tag_id: Some(35),
             session_reject_reason: 1,
+            reason: None,
         },
         b"3",
         &[
@@ -360,7 +442,10 @@ fn scan_body_tags(frame: &[u8]) -> Vec<u32> {
 #[test]
 fn dictionary_owned_consts_match_the_encoder_bodies() {
     // Each admin struct is a distinct type, so drive one assertion per type
-    // rather than a heterogeneous collection.
+    // rather than a heterogeneous collection. Logout and Reject are built with a
+    // reason so their conditional `Text(58)` lands, matching the pattern for
+    // Heartbeat's echo and Reject's RefTagID.
+    let reason = AsciiTextStr::try_from_str("test").unwrap();
     macro_rules! check {
         ($msg:expr, $owned:expr) => {{
             let mut w: MessageWriter<MockDict> = MessageWriter::new();
@@ -390,7 +475,13 @@ fn dictionary_owned_consts_match_the_encoder_bodies() {
         },
         MockDict::LOGON_RESET_OWNED
     );
-    check!(Logout { seq: 2 }, MockDict::LOGOUT_OWNED);
+    check!(
+        Logout {
+            seq: 2,
+            reason: Some(reason)
+        },
+        MockDict::LOGOUT_OWNED
+    );
     check!(
         Heartbeat {
             seq: 3,
@@ -416,7 +507,8 @@ fn dictionary_owned_consts_match_the_encoder_bodies() {
             seq: 7,
             ref_seq_num: 3,
             ref_tag_id: Some(35),
-            session_reject_reason: 1
+            session_reject_reason: 1,
+            reason: Some(reason),
         },
         MockDict::REJECT_OWNED
     );
@@ -620,7 +712,10 @@ fn logon_only_customizer_leaves_other_admin_messages_untouched() {
         }};
     }
 
-    check_untouched!(Logout { seq: 2 });
+    check_untouched!(Logout {
+        seq: 2,
+        reason: None
+    });
     check_untouched!(Heartbeat { seq: 3, echo: None });
     check_untouched!(TestRequest { seq: 4, id: 1 });
     check_untouched!(ResendRequest { seq: 5, begin: 1 });
@@ -633,7 +728,8 @@ fn logon_only_customizer_leaves_other_admin_messages_untouched() {
         seq: 7,
         ref_seq_num: 1,
         ref_tag_id: None,
-        session_reject_reason: 1
+        session_reject_reason: 1,
+        reason: None,
     });
 }
 
@@ -767,7 +863,13 @@ fn every_admin_type_runs_its_own_hook() {
         },
         b"logon_reset"
     );
-    check_hook!(Logout { seq: 2 }, b"logout");
+    check_hook!(
+        Logout {
+            seq: 2,
+            reason: None
+        },
+        b"logout"
+    );
     check_hook!(Heartbeat { seq: 3, echo: None }, b"heartbeat");
     check_hook!(TestRequest { seq: 4, id: 1 }, b"test_request");
     check_hook!(ResendRequest { seq: 5, begin: 1 }, b"resend_request");
@@ -784,7 +886,8 @@ fn every_admin_type_runs_its_own_hook() {
             seq: 7,
             ref_seq_num: 1,
             ref_tag_id: None,
-            session_reject_reason: 1
+            session_reject_reason: 1,
+            reason: None,
         },
         b"reject"
     );
@@ -873,7 +976,13 @@ fn accessor_msg_type_matches_the_frames_own_tag_35() {
         },
         b"A"
     );
-    check_mt!(Logout { seq: 2 }, b"5");
+    check_mt!(
+        Logout {
+            seq: 2,
+            reason: None
+        },
+        b"5"
+    );
     check_mt!(Heartbeat { seq: 3, echo: None }, b"0");
     check_mt!(TestRequest { seq: 4, id: 1 }, b"1");
     check_mt!(ResendRequest { seq: 5, begin: 1 }, b"2");
@@ -890,7 +999,8 @@ fn accessor_msg_type_matches_the_frames_own_tag_35() {
             seq: 7,
             ref_seq_num: 1,
             ref_tag_id: None,
-            session_reject_reason: 1
+            session_reject_reason: 1,
+            reason: None,
         },
         b"3"
     );
@@ -1062,7 +1172,8 @@ mod engine_owned_tripwire {
                 seq: 7,
                 ref_seq_num: 1,
                 ref_tag_id: Some(35),
-                session_reject_reason: 1
+                session_reject_reason: 1,
+                reason: None,
             },
             45
         );
@@ -1071,7 +1182,8 @@ mod engine_owned_tripwire {
                 seq: 7,
                 ref_seq_num: 1,
                 ref_tag_id: Some(35),
-                session_reject_reason: 1
+                session_reject_reason: 1,
+                reason: None,
             },
             371
         );
@@ -1080,7 +1192,8 @@ mod engine_owned_tripwire {
                 seq: 7,
                 ref_seq_num: 1,
                 ref_tag_id: Some(35),
-                session_reject_reason: 1
+                session_reject_reason: 1,
+                reason: None,
             },
             373
         );
@@ -1110,7 +1223,13 @@ mod engine_owned_tripwire {
         );
         // Logout's encoder writes nothing beyond the header.
         assert_eq!(
-            catch_hook_panic(Logout { seq: 2 }, 108),
+            catch_hook_panic(
+                Logout {
+                    seq: 2,
+                    reason: None
+                },
+                108
+            ),
             None,
             "108 must be writable on a Logout"
         );
@@ -1209,7 +1328,13 @@ fn oversized_hook_field_errors_instead_of_silent_drop() {
         },
         "logon"
     );
-    overflow_case!(Logout { seq: 2 }, "logout");
+    overflow_case!(
+        Logout {
+            seq: 2,
+            reason: None
+        },
+        "logout"
+    );
 }
 
 #[test]

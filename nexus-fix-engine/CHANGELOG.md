@@ -10,7 +10,45 @@ contained.
 
 ## [Unreleased]
 
+### Changed
+
+- **Repositioned as a sans-IO FIX session _framework_** (mechanism, not policy):
+  the caller owns the loop, the timers, and every protocol decision. This is a
+  large, breaking reshaping of the session API.
+  - **Three-object trio.** `FixSession` (the state-machine brain) plus caller-held
+    `MessageReader` / `MessageWriter`, with the transport passed per call — the
+    session no longer owns the socket, so reconnect is "same session, new socket"
+    (sequence numbers and the journal survive). The caller holds a `FixParts` trio.
+  - **Deterministic clock.** The internal `SystemTime::now()` reads are gone; every
+    `SendingTime(52)` stamps from a caller-supplied `now: i128` (UTC unix-nanos)
+    passed to `recv` and the send helpers, making the core a pure function of
+    `(bytes, now)` — fully replayable for testing and historical replay.
+  - **No timers.** The `Instant`-based timer state, `on_timeout` / `next_timeout`,
+    and every auto-emit (auto-Heartbeat answering a TestRequest, auto-Logon reply,
+    auto-ResendRequest on a gap, auto-driven resend) are removed. The session
+    exposes only `heartbeat_interval()`; you build the heartbeat, two-phase
+    peer-liveness, and handshake timers yourself. Worked, runnable blocking and
+    tokio recipes ship as `examples/timer_recipes.rs`.
+  - **User-driven replies.** `recv(.., now)` returns a `Message` whose every variant
+    names its one required response, which you send with a helper. `LogonRequest`
+    splits from `LogonResetRequest`, and gap detection surfaces as `GapDetected`
+    rather than the engine silently emitting a ResendRequest. Each protocol action
+    has an encode-only form (custom / kernel-bypass transport) and a combined
+    (encode + flush) form.
+  - **Resend cursor.** An inbound ResendRequest surfaces a user-pumped
+    `ResendCursor` (drop = refuse) instead of driving the whole replay inside
+    `recv` with blocking writes; a request outside the journal's retained window
+    surfaces `ResendOutOfRange` (no cursor) to answer with `sequence_reset` /
+    `gap_fill` or a logout.
+
 ### Added
+
+- `Text(58)` reason on Logout and Reject. `logout` / `encode_logout`,
+  `LogonDecision::reject` / `encode_reject`, and `FixSession::encode_reject_logon`
+  take `reason: Option<&AsciiTextStr>`, encoded as `Text(58)` when `Some` and
+  omitted when `None`. The codec `Logout` / `Reject` encode structs gain the
+  optional printable-ASCII field (SOH-safe by construction), and `58` joins their
+  `*_OWNED` customizer tripwire lists.
 
 - `FixSession` now implements `nexus_net::ParserSink` (forwarding to
   `read_spare`/`read_filled`), so a `WireStream` can fill the session's inbound

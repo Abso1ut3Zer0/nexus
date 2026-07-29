@@ -153,7 +153,7 @@ fn run_acceptor(listener: &TcpListener, dir: &Path) {
             Ok(Some(Message::Application { .. })) => n += 1,
             // Peer initiated a logout: reply and finish.
             Ok(Some(Message::LogoutRequest { .. })) => {
-                let _ = session.logout(&mut writer, &mut stream, NOW);
+                let _ = session.logout(&mut writer, &mut stream, NOW, None);
                 println!("acceptor: peer logged out, {n} app message(s) received");
                 break;
             }
@@ -238,7 +238,7 @@ fn run_initiator(addr: std::net::SocketAddr, dir: &Path) {
 
     // We initiate the logout; the acceptor's confirming Logout ends the session
     // cleanly (surfaces as `LoggedOut`).
-    session.logout(&mut writer, &mut stream, NOW).unwrap();
+    session.logout(&mut writer, &mut stream, NOW, None).unwrap();
     loop {
         match session.recv(&mut reader, &mut writer, &mut stream, NOW) {
             Ok(Some(_)) | Err(_) => break,

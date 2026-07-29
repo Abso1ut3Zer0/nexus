@@ -6,8 +6,8 @@ use std::time::Duration;
 pub use event::{Control, DisconnectReason, State};
 pub use input::*;
 use nexus_fix_codec::{
-    AdminEncode, Heartbeat, Logon, LogonReset, Logout, Reject, ResendRequest, SequenceReset,
-    TestRequest,
+    AdminEncode, AsciiTextStr, Heartbeat, Logon, LogonReset, Logout, Reject, ResendRequest,
+    SequenceReset, TestRequest,
 };
 
 use crate::framework::SessionError;
@@ -226,13 +226,19 @@ impl SessionState {
 
     /// Initiates a clean logout. No-op unless in an active state.
     ///
+    /// `reason`, if given, rides the wire as `Text(58)`.
+    ///
     /// Emits: Logout.
-    pub fn logout<E: Emit>(&mut self, emitter: &mut E) -> Result<Control, E::Error> {
+    pub fn logout<E: Emit>(
+        &mut self,
+        reason: Option<&AsciiTextStr>,
+        emitter: &mut E,
+    ) -> Result<Control, E::Error> {
         if !matches!(self.state, State::Active | State::Resending) {
             return Ok(Control::None);
         }
         let seq = seq!(self);
-        emitter.emit(Logout { seq })?;
+        emitter.emit(Logout { seq, reason })?;
         self.state = State::LogoutPending;
         Ok(Control::None)
     }
@@ -429,7 +435,10 @@ impl SessionState {
 
             if seq < self.next_inbound {
                 let logout_seq = seq!(self);
-                emitter.emit(Logout { seq: logout_seq })?;
+                emitter.emit(Logout {
+                    seq: logout_seq,
+                    reason: None,
+                })?;
                 return Ok(self.disconnect(DisconnectReason::SeqNumTooLow));
             }
             if seq > self.next_inbound {
@@ -509,7 +518,10 @@ impl SessionState {
 
         if seq < self.next_inbound {
             let logout_seq = seq!(self);
-            emitter.emit(Logout { seq: logout_seq })?;
+            emitter.emit(Logout {
+                seq: logout_seq,
+                reason: None,
+            })?;
             return Ok(self.disconnect(DisconnectReason::SeqNumTooLow));
         }
         if seq > self.next_inbound {
@@ -533,12 +545,16 @@ impl SessionState {
     ///
     /// The user's policy hook for refusing a session (e.g. failed authentication).
     /// Answers a [`Control::LogonRequest`] / [`Control::LogonResetRequest`] the
-    /// user declined.
+    /// user declined. `reason`, if given, rides the wire as `Text(58)`.
     ///
     /// Emits: Logout.
-    pub fn reject_logon<E: Emit>(&mut self, emitter: &mut E) -> Result<Control, E::Error> {
+    pub fn reject_logon<E: Emit>(
+        &mut self,
+        reason: Option<&AsciiTextStr>,
+        emitter: &mut E,
+    ) -> Result<Control, E::Error> {
         let seq = seq!(self);
-        emitter.emit(Logout { seq })?;
+        emitter.emit(Logout { seq, reason })?;
         self.state = State::Disconnected;
         Ok(Control::None)
     }
@@ -747,6 +763,7 @@ impl SessionState {
                         ref_seq_num: seq,
                         ref_tag_id: Some(36),
                         session_reject_reason: 5,
+                        reason: None,
                     })?;
                 }
                 return Ok(Control::SequenceReset);
@@ -842,6 +859,7 @@ impl SessionState {
             ref_seq_num: seq,
             ref_tag_id,
             session_reject_reason,
+            reason: None,
         })?;
         Ok(Control::None)
     }
@@ -854,7 +872,7 @@ impl SessionState {
             return Ok(Control::None);
         }
         let seq = seq!(self);
-        emitter.emit(Logout { seq })?;
+        emitter.emit(Logout { seq, reason: None })?;
         Ok(self.disconnect(DisconnectReason::CompIdMismatch))
     }
 
@@ -898,7 +916,10 @@ impl SessionState {
                 return Ok(Control::None);
             }
             let logout_seq = seq!(self);
-            emitter.emit(Logout { seq: logout_seq })?;
+            emitter.emit(Logout {
+                seq: logout_seq,
+                reason: None,
+            })?;
             return Ok(self.disconnect(DisconnectReason::SeqNumTooLow));
         }
         self.next_inbound += 1;
@@ -1091,7 +1112,7 @@ mod tests {
         let mut s = SessionState::new(Duration::from_secs(30));
         establish(&mut s);
         s.next_outbound = SEQ_MAX + 1;
-        let ctrl = s.logout(&mut RecordingEmitter::new()).unwrap();
+        let ctrl = s.logout(None, &mut RecordingEmitter::new()).unwrap();
         assert_eq!(
             ctrl,
             Control::Disconnected {
@@ -1101,13 +1122,48 @@ mod tests {
     }
 
     #[test]
+    fn logout_reason_rides_text_58() {
+        // A `Some(reason)` threads through the state machine into the emitted
+        // Logout's `Text(58)`; `None` omits the field. The RecordingEmitter
+        // encodes the real `AdminEncode` frame, so this pins the wire output.
+        let reason = AsciiTextStr::try_from_str("shutting down").unwrap();
+
+        let mut s = SessionState::new(Duration::from_secs(30));
+        establish(&mut s);
+        let mut with = RecordingEmitter::new();
+        s.logout(Some(reason), &mut with).unwrap();
+        assert_eq!(with.mt(0), b"5");
+        assert_eq!(with.val(0, 58), Some(b"shutting down".as_slice()));
+
+        let mut s2 = SessionState::new(Duration::from_secs(30));
+        establish(&mut s2);
+        let mut without = RecordingEmitter::new();
+        s2.logout(None, &mut without).unwrap();
+        assert_eq!(without.mt(0), b"5");
+        assert!(!without.has(0, 58), "a bare Logout carries no Text(58)");
+    }
+
+    #[test]
+    fn reject_logon_reason_rides_text_58() {
+        // Rejecting a peer Logon emits a Logout; a `Some(reason)` rides as
+        // `Text(58)`.
+        let reason = AsciiTextStr::try_from_str("auth failed").unwrap();
+        let mut s = SessionState::new(Duration::from_secs(30));
+        let mut rec = RecordingEmitter::new();
+        s.reject_logon(Some(reason), &mut rec).unwrap();
+        assert_eq!(rec.mt(0), b"5");
+        assert_eq!(rec.val(0, 58), Some(b"auth failed".as_slice()));
+        assert_eq!(s.state(), State::Disconnected);
+    }
+
+    #[test]
     fn connect_reset_clears_seqnums() {
         let mut s = SessionState::new(Duration::from_secs(30));
         establish(&mut s);
         s.allocate_seq().unwrap();
         // Reach Disconnected via a clean logout: we initiate (→ LogoutPending),
         // the peer's in-sequence Logout confirms it (→ Disconnected).
-        s.logout(&mut RecordingEmitter::new()).unwrap();
+        s.logout(None, &mut RecordingEmitter::new()).unwrap();
         s.on_logout(
             LogoutIn {
                 seq: 2,

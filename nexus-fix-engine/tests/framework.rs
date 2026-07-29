@@ -200,7 +200,15 @@ mod unix_tests {
     fn emit_admin_logout_produces_valid_frame() {
         let mut w: MessageWriter<MockDict> = MessageWriter::new();
         let config = config();
-        emit_admin(&mut w, &config, Logout { seq: 2 }).expect("logout fits");
+        emit_admin(
+            &mut w,
+            &config,
+            Logout {
+                seq: 2,
+                reason: None,
+            },
+        )
+        .expect("logout fits");
         assert!(!w.is_empty());
         let data = w.data();
         assert!(data.starts_with(b"8=FIX.4.4\x01"));
@@ -256,7 +264,15 @@ mod unix_tests {
     fn emit_admin_uses_dict_begin_string() {
         let mut w: MessageWriter<MockDict> = MessageWriter::new();
         let config = config();
-        emit_admin(&mut w, &config, Logout { seq: 1 }).expect("logout fits");
+        emit_admin(
+            &mut w,
+            &config,
+            Logout {
+                seq: 1,
+                reason: None,
+            },
+        )
+        .expect("logout fits");
         let data = w.data();
         assert!(data.starts_with(b"8=FIX.4.4\x01"));
     }

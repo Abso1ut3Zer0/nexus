@@ -13,6 +13,8 @@
 //! `sink.emit(ResendRequest { .. })` keeps a `ResendRequest` through encode,
 //! customize, and journal — cross-message mis-wiring is unrepresentable.
 
+use nexus_ascii::AsciiTextStr;
+
 use crate::customizer::{AdminMsgOut, SessionCustomizer};
 use crate::dict::{AdminHeader, FixDictionary};
 use crate::writer::FrameFormatter;
@@ -100,13 +102,19 @@ impl AdminEncode for LogonReset {
     }
 }
 
-/// Logout (35=5).
+/// Logout (35=5), optionally carrying a `Text(58)` reason.
+///
+/// `reason` is the human-readable rationale (e.g. failed authentication or a
+/// timeout) placed on the wire as `Text(58)`. It borrows a printable-ASCII
+/// [`AsciiTextStr`] — SOH-safe by construction, so encoding is infallible w.r.t.
+/// the reason. `None` emits a bare Logout with no `Text(58)`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct Logout {
+pub struct Logout<'a> {
     pub seq: u32,
+    pub reason: Option<&'a AsciiTextStr>,
 }
 
-impl AdminEncode for Logout {
+impl AdminEncode for Logout<'_> {
     const MSG_TYPE: &'static [u8] = b"5";
 
     fn seq(&self) -> u32 {
@@ -118,7 +126,7 @@ impl AdminEncode for Logout {
     }
 
     fn encode<D: FixDictionary>(&self, fmt: &mut FrameFormatter<'_>, hdr: &AdminHeader<'_>) {
-        D::encode_logout(fmt, hdr);
+        D::encode_logout(fmt, hdr, self.reason);
     }
 
     fn customize<C: SessionCustomizer>(&self, customizer: &mut C, out: &mut AdminMsgOut<'_, '_>) {
@@ -247,15 +255,20 @@ impl AdminEncode for SequenceReset {
 
 /// Session-level Reject (35=3), sent for a malformed or semantically invalid
 /// inbound message. Keeps the session alive.
+///
+/// `reason` is an optional `Text(58)` describing the rejection; it borrows a
+/// printable-ASCII [`AsciiTextStr`], SOH-safe by construction. `None` omits the
+/// field.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct Reject {
+pub struct Reject<'a> {
     pub seq: u32,
     pub ref_seq_num: u32,
     pub ref_tag_id: Option<u32>,
     pub session_reject_reason: u8,
+    pub reason: Option<&'a AsciiTextStr>,
 }
 
-impl AdminEncode for Reject {
+impl AdminEncode for Reject<'_> {
     const MSG_TYPE: &'static [u8] = b"3";
 
     fn seq(&self) -> u32 {
@@ -273,6 +286,7 @@ impl AdminEncode for Reject {
             self.ref_seq_num,
             self.ref_tag_id,
             self.session_reject_reason,
+            self.reason,
         );
     }
 

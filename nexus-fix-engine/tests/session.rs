@@ -508,7 +508,7 @@ fn initiated_logout_round_trip() {
     establish(&mut s);
 
     let mut recorder = RecordingEmitter::new();
-    s.logout(&mut recorder).unwrap();
+    s.logout(None, &mut recorder).unwrap();
     assert_eq!(s.state(), State::LogoutPending);
     assert!(recorder.any_mt(b"5"), "logout must send a Logout");
 
@@ -580,7 +580,7 @@ fn seq_nums_survive_reconnect() {
     let mut recorder = RecordingEmitter::new();
     // We initiate the logout (Logout seq 3, → LogoutPending); the counterparty's
     // in-sequence Logout confirms it and disconnects.
-    s.logout(&mut recorder).unwrap();
+    s.logout(None, &mut recorder).unwrap();
     s.on_logout(
         LogoutIn {
             seq: 2,

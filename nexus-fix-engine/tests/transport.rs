@@ -60,7 +60,7 @@ impl<S: Read + Write> Rig<S> {
         match session.recv(reader, writer, stream, NOW)? {
             Some(Message::LoggedOut { .. }) => Ok(Step::Ended),
             Some(Message::LogoutRequest { .. }) => {
-                session.logout(writer, stream, NOW)?;
+                session.logout(writer, stream, NOW, None)?;
                 Ok(Step::Ended)
             }
             Some(Message::TestRequest { id }) => {
@@ -115,7 +115,8 @@ impl<S: Read + Write> Rig<S> {
     /// Initiate a logout (combined encode + flush): the peer's confirming Logout
     /// then surfaces as `LoggedOut` (Flow 2).
     fn logout(&mut self) -> Result<(), TransportError> {
-        self.session.logout(&mut self.writer, &mut self.stream, NOW)
+        self.session
+            .logout(&mut self.writer, &mut self.stream, NOW, None)
     }
     fn send_app(&mut self, seq: u32, frame: &[u8]) -> Result<(), TransportError> {
         self.session.encode_send_app(&mut self.writer, seq, frame)
