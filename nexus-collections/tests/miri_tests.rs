@@ -43,6 +43,7 @@ fn get_drop_count() -> usize {
 
 #[test]
 fn list_link_unlink_basic() {
+    // SAFETY: single-threaded test; slab outlives all allocated nodes.
     let slab: RcSlab<ListNode<u64>> = unsafe { RcSlab::with_chunk_capacity(32) };
     let mut list = List::new();
 
@@ -72,6 +73,7 @@ fn list_link_unlink_basic() {
 
 #[test]
 fn list_clear_drops_refs() {
+    // SAFETY: single-threaded test; slab outlives all allocated nodes.
     let slab: RcSlab<ListNode<u64>> = unsafe { RcSlab::with_chunk_capacity(32) };
     let mut list = List::new();
 
@@ -94,6 +96,7 @@ fn list_clear_drops_refs() {
 
 #[test]
 fn list_cursor_traverse_and_remove() {
+    // SAFETY: single-threaded test; slab outlives all allocated nodes.
     let slab: RcSlab<ListNode<u64>> = unsafe { RcSlab::with_chunk_capacity(32) };
     let mut list = List::new();
 
@@ -119,6 +122,7 @@ fn list_cursor_traverse_and_remove() {
 
 #[test]
 fn list_link_front_back_interleaved() {
+    // SAFETY: single-threaded test; slab outlives all allocated nodes.
     let slab: RcSlab<ListNode<u64>> = unsafe { RcSlab::with_chunk_capacity(32) };
     let mut list = List::new();
 
@@ -148,6 +152,7 @@ fn list_link_front_back_interleaved() {
 
 #[test]
 fn list_single_element() {
+    // SAFETY: single-threaded test; slab outlives all allocated nodes.
     let slab: RcSlab<ListNode<u64>> = unsafe { RcSlab::with_chunk_capacity(32) };
     let mut list = List::new();
 
@@ -167,6 +172,7 @@ fn list_single_element() {
 fn list_drop_tracker() {
     reset_drop_count();
 
+    // SAFETY: single-threaded test; slab outlives all allocated nodes.
     let slab: RcSlab<ListNode<DropTracker>> = unsafe { RcSlab::with_chunk_capacity(32) };
     let mut list = List::new();
 
@@ -194,6 +200,7 @@ fn list_drop_tracker() {
 
 #[test]
 fn heap_push_pop_basic() {
+    // SAFETY: single-threaded test; slab outlives all allocated nodes.
     let slab: RcSlab<HeapNode<u64>> = unsafe { RcSlab::with_chunk_capacity(32) };
     let mut heap = Heap::new();
 
@@ -216,6 +223,7 @@ fn heap_push_pop_basic() {
 
 #[test]
 fn heap_push_pop_reverse_sorted() {
+    // SAFETY: single-threaded test; slab outlives all allocated nodes.
     let slab: RcSlab<HeapNode<u64>> = unsafe { RcSlab::with_chunk_capacity(32) };
     let mut heap = Heap::new();
 
@@ -238,6 +246,7 @@ fn heap_push_pop_reverse_sorted() {
 
 #[test]
 fn heap_clear() {
+    // SAFETY: single-threaded test; slab outlives all allocated nodes.
     let slab: RcSlab<HeapNode<u64>> = unsafe { RcSlab::with_chunk_capacity(32) };
     let mut heap = Heap::new();
 
@@ -256,6 +265,7 @@ fn heap_clear() {
 
 #[test]
 fn heap_decrease_key() {
+    // SAFETY: single-threaded test; slab outlives all allocated nodes.
     let slab: RcSlab<HeapNode<u64>> = unsafe { RcSlab::with_chunk_capacity(32) };
     let mut heap = Heap::new();
 
@@ -282,6 +292,7 @@ fn heap_decrease_key() {
 
 #[test]
 fn heap_single_element() {
+    // SAFETY: single-threaded test; slab outlives all allocated nodes.
     let slab: RcSlab<HeapNode<u64>> = unsafe { RcSlab::with_chunk_capacity(32) };
     let mut heap = Heap::new();
 
@@ -300,6 +311,7 @@ fn heap_single_element() {
 fn heap_drop_tracker() {
     reset_drop_count();
 
+    // SAFETY: single-threaded test; slab outlives all allocated nodes.
     let slab: RcSlab<HeapNode<DropTracker>> = unsafe { RcSlab::with_chunk_capacity(32) };
     let mut heap = Heap::new();
 
@@ -320,6 +332,7 @@ fn heap_drop_tracker() {
 
 #[test]
 fn rbtree_insert_ascending() {
+    // SAFETY: single-threaded test; slab outlives all allocated slots.
     let slab: Slab<RbNode<u64, u64>> = unsafe { Slab::with_chunk_capacity(32) };
     let mut tree = RbTree::new();
 
@@ -338,6 +351,7 @@ fn rbtree_insert_ascending() {
 
 #[test]
 fn rbtree_insert_descending() {
+    // SAFETY: single-threaded test; slab outlives all allocated slots.
     let slab: Slab<RbNode<u64, u64>> = unsafe { Slab::with_chunk_capacity(32) };
     let mut tree = RbTree::new();
 
@@ -355,6 +369,7 @@ fn rbtree_insert_descending() {
 
 #[test]
 fn rbtree_insert_random_pattern() {
+    // SAFETY: single-threaded test; slab outlives all allocated slots.
     let slab: Slab<RbNode<u64, u64>> = unsafe { Slab::with_chunk_capacity(32) };
     let mut tree = RbTree::new();
 
@@ -369,6 +384,7 @@ fn rbtree_insert_random_pattern() {
 
 #[test]
 fn rbtree_remove_leaf() {
+    // SAFETY: single-threaded test; slab outlives all allocated slots.
     let slab: Slab<RbNode<u64, u64>> = unsafe { Slab::with_chunk_capacity(32) };
     let mut tree = RbTree::new();
 
@@ -387,6 +403,7 @@ fn rbtree_remove_leaf() {
 
 #[test]
 fn rbtree_remove_node_with_one_child() {
+    // SAFETY: single-threaded test; slab outlives all allocated slots.
     let slab: Slab<RbNode<u64, u64>> = unsafe { Slab::with_chunk_capacity(32) };
     let mut tree = RbTree::new();
 
@@ -406,6 +423,7 @@ fn rbtree_remove_node_with_one_child() {
 
 #[test]
 fn rbtree_remove_node_with_two_children() {
+    // SAFETY: single-threaded test; slab outlives all allocated slots.
     let slab: Slab<RbNode<u64, u64>> = unsafe { Slab::with_chunk_capacity(32) };
     let mut tree = RbTree::new();
 
@@ -425,6 +443,7 @@ fn rbtree_remove_node_with_two_children() {
 
 #[test]
 fn rbtree_insert_remove_stress() {
+    // SAFETY: single-threaded test; slab outlives all allocated slots.
     let slab: Slab<RbNode<u64, u64>> = unsafe { Slab::with_chunk_capacity(64) };
     let mut tree = RbTree::new();
 
@@ -458,6 +477,7 @@ fn rbtree_insert_remove_stress() {
 
 #[test]
 fn rbtree_clear() {
+    // SAFETY: single-threaded test; slab outlives all allocated slots.
     let slab: Slab<RbNode<u64, u64>> = unsafe { Slab::with_chunk_capacity(32) };
     let mut tree = RbTree::new();
 
@@ -472,6 +492,7 @@ fn rbtree_clear() {
 
 #[test]
 fn rbtree_iteration() {
+    // SAFETY: single-threaded test; slab outlives all allocated slots.
     let slab: Slab<RbNode<u64, u64>> = unsafe { Slab::with_chunk_capacity(32) };
     let mut tree = RbTree::new();
 
@@ -491,6 +512,7 @@ fn rbtree_iteration() {
 
 #[test]
 fn rbtree_range_iteration() {
+    // SAFETY: single-threaded test; slab outlives all allocated slots.
     let slab: Slab<RbNode<u64, u64>> = unsafe { Slab::with_chunk_capacity(32) };
     let mut tree = RbTree::new();
 
@@ -506,6 +528,7 @@ fn rbtree_range_iteration() {
 
 #[test]
 fn rbtree_entry_api() {
+    // SAFETY: single-threaded test; slab outlives all allocated slots.
     let slab: Slab<RbNode<u64, u64>> = unsafe { Slab::with_chunk_capacity(32) };
     let mut tree = RbTree::new();
 
@@ -544,6 +567,7 @@ fn rbtree_entry_api() {
 
 #[test]
 fn rbtree_first_last_pop() {
+    // SAFETY: single-threaded test; slab outlives all allocated slots.
     let slab: Slab<RbNode<u64, u64>> = unsafe { Slab::with_chunk_capacity(32) };
     let mut tree = RbTree::new();
 
@@ -569,6 +593,7 @@ fn rbtree_first_last_pop() {
 fn rbtree_drop_tracker() {
     reset_drop_count();
 
+    // SAFETY: single-threaded test; slab outlives all allocated slots.
     let slab: Slab<RbNode<u64, DropTracker>> = unsafe { Slab::with_chunk_capacity(32) };
     let mut tree = RbTree::new();
 
@@ -587,6 +612,7 @@ fn rbtree_drop_tracker() {
 
 #[test]
 fn btree_insert_until_split() {
+    // SAFETY: single-threaded test; slab outlives all allocated slots.
     let slab: Slab<BTreeNode<u64, u64, 8>> = unsafe { Slab::with_chunk_capacity(32) };
     let mut tree = BTree::<u64, u64, 8>::new();
 
@@ -605,6 +631,7 @@ fn btree_insert_until_split() {
 
 #[test]
 fn btree_insert_causing_cascade_split() {
+    // SAFETY: single-threaded test; slab outlives all allocated slots.
     let slab: Slab<BTreeNode<u64, u64, 8>> = unsafe { Slab::with_chunk_capacity(32) };
     let mut tree = BTree::<u64, u64, 8>::new();
 
@@ -620,6 +647,7 @@ fn btree_insert_causing_cascade_split() {
 
 #[test]
 fn btree_remove_from_leaf() {
+    // SAFETY: single-threaded test; slab outlives all allocated slots.
     let slab: Slab<BTreeNode<u64, u64, 8>> = unsafe { Slab::with_chunk_capacity(32) };
     let mut tree = BTree::<u64, u64, 8>::new();
 
@@ -637,6 +665,7 @@ fn btree_remove_from_leaf() {
 
 #[test]
 fn btree_remove_causing_merge() {
+    // SAFETY: single-threaded test; slab outlives all allocated slots.
     let slab: Slab<BTreeNode<u64, u64, 8>> = unsafe { Slab::with_chunk_capacity(64) };
     let mut tree = BTree::<u64, u64, 8>::new();
 
@@ -657,6 +686,7 @@ fn btree_remove_causing_merge() {
 
 #[test]
 fn btree_remove_causing_redistribution() {
+    // SAFETY: single-threaded test; slab outlives all allocated slots.
     let slab: Slab<BTreeNode<u64, u64, 8>> = unsafe { Slab::with_chunk_capacity(64) };
     let mut tree = BTree::<u64, u64, 8>::new();
 
@@ -676,6 +706,7 @@ fn btree_remove_causing_redistribution() {
 
 #[test]
 fn btree_insert_remove_stress() {
+    // SAFETY: single-threaded test; slab outlives all allocated slots.
     let slab: Slab<BTreeNode<u64, u64, 8>> = unsafe { Slab::with_chunk_capacity(64) };
     let mut tree = BTree::<u64, u64, 8>::new();
 
@@ -705,6 +736,7 @@ fn btree_insert_remove_stress() {
 
 #[test]
 fn btree_clear() {
+    // SAFETY: single-threaded test; slab outlives all allocated slots.
     let slab: Slab<BTreeNode<u64, u64, 8>> = unsafe { Slab::with_chunk_capacity(64) };
     let mut tree = BTree::<u64, u64, 8>::new();
 
@@ -719,6 +751,7 @@ fn btree_clear() {
 
 #[test]
 fn btree_iteration() {
+    // SAFETY: single-threaded test; slab outlives all allocated slots.
     let slab: Slab<BTreeNode<u64, u64, 8>> = unsafe { Slab::with_chunk_capacity(64) };
     let mut tree = BTree::<u64, u64, 8>::new();
 
@@ -739,6 +772,7 @@ fn btree_iteration() {
 
 #[test]
 fn btree_entry_insert_and_remove() {
+    // SAFETY: single-threaded test; slab outlives all allocated slots.
     let slab: Slab<BTreeNode<u64, u64, 8>> = unsafe { Slab::with_chunk_capacity(32) };
     let mut tree = BTree::<u64, u64, 8>::new();
 
@@ -777,6 +811,7 @@ fn btree_entry_insert_and_remove() {
 
 #[test]
 fn btree_range() {
+    // SAFETY: single-threaded test; slab outlives all allocated slots.
     let slab: Slab<BTreeNode<u64, u64, 8>> = unsafe { Slab::with_chunk_capacity(64) };
     let mut tree = BTree::<u64, u64, 8>::new();
 
@@ -792,6 +827,7 @@ fn btree_range() {
 
 #[test]
 fn btree_first_last_pop() {
+    // SAFETY: single-threaded test; slab outlives all allocated slots.
     let slab: Slab<BTreeNode<u64, u64, 8>> = unsafe { Slab::with_chunk_capacity(32) };
     let mut tree = BTree::<u64, u64, 8>::new();
 
@@ -814,6 +850,7 @@ fn btree_first_last_pop() {
 fn btree_drop_tracker() {
     reset_drop_count();
 
+    // SAFETY: single-threaded test; slab outlives all allocated slots.
     let slab: Slab<BTreeNode<u64, DropTracker, 8>> = unsafe { Slab::with_chunk_capacity(32) };
     let mut tree = BTree::<u64, DropTracker, 8>::new();
 
