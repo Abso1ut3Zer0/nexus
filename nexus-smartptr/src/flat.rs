@@ -135,6 +135,7 @@ impl<T: ?Sized, B: Buffer> Flat<T, B> {
             // SAFETY: metadata was written at offset 0 during construction.
             // Reading as *const () preserves provenance.
             let metadata = Metadata(unsafe { base.cast::<*const ()>().read() });
+            // SAFETY: buffer has at least META_SIZE capacity (verified at construction).
             let data = unsafe { base.add(META_SIZE) }.cast::<()>();
             // SAFETY: data points to the value, metadata matches the concrete type.
             unsafe { meta::make_ptr(data, metadata) }
@@ -149,10 +150,14 @@ impl<T: ?Sized, B: Buffer> Flat<T, B> {
     fn as_mut_ptr(&mut self) -> *mut T {
         let base = self.inner.as_mut_ptr().cast::<u8>();
         if meta::is_fat_ptr::<T>() {
+            // SAFETY: metadata written at offset 0 during construction.
             let metadata = Metadata(unsafe { base.cast::<*const ()>().read() });
+            // SAFETY: buffer has at least META_SIZE capacity (verified at construction).
             let data = unsafe { base.add(META_SIZE) }.cast::<()>();
+            // SAFETY: data points to value, metadata matches the concrete type.
             unsafe { meta::make_ptr_mut(data, metadata) }
         } else {
+            // SAFETY: value at offset 0; Sized T needs no metadata.
             unsafe { meta::make_ptr_mut(base.cast::<()>(), Metadata::NULL) }
         }
     }
@@ -244,6 +249,7 @@ impl<T: ?Sized, B: Buffer> Drop for Flat<T, B> {
 // MaybeUninit<B> is raw storage, not a meaningful Send/Sync participant.
 #[allow(clippy::non_send_fields_in_send_ty)]
 unsafe impl<T: ?Sized + Send, B: Buffer> Send for Flat<T, B> {}
+// SAFETY: same as Send above; Sync depends only on T.
 unsafe impl<T: ?Sized + Sync, B: Buffer> Sync for Flat<T, B> {}
 
 #[cfg(test)]
@@ -274,6 +280,7 @@ mod tests {
 
     fn make_flat_greet<V: Greet + 'static, B: Buffer>(val: V) -> Flat<dyn Greet, B> {
         let ptr: *const dyn Greet = &val as &dyn Greet;
+        // SAFETY: ptr coerced from val above; metadata matches V.
         unsafe { Flat::new_raw(val, ptr) }
     }
 
@@ -351,6 +358,7 @@ mod tests {
 
         fn make<V: Increment + 'static, B: Buffer>(val: V) -> Flat<dyn Increment, B> {
             let ptr: *const dyn Increment = &val as &dyn Increment;
+            // SAFETY: ptr coerced from val above; metadata matches V.
             unsafe { Flat::new_raw(val, ptr) }
         }
 
@@ -426,6 +434,7 @@ mod tests {
     fn display_trait_object() {
         let val: u32 = 42;
         let ptr: *const dyn Display = &val as &dyn Display;
+        // SAFETY: ptr coerced from val above; metadata matches V.
         let f: Flat<dyn Display, B32> = unsafe { Flat::new_raw(val, ptr) };
         assert_eq!(format!("{}", &*f), "42");
     }
