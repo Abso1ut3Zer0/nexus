@@ -333,6 +333,7 @@ mod tests {
 
         receiver.try_recv_limit(&mut events, 3);
         assert_eq!(events.len(), 3);
+        events.drain().for_each(drop);
 
         receiver.try_recv(&mut events);
         assert_eq!(events.len(), 7);
@@ -470,9 +471,11 @@ mod tests {
 
         receiver.recv_limit(&mut events, 3);
         assert_eq!(events.len(), 3);
+        events.drain().for_each(drop);
 
         receiver.recv_limit(&mut events, 3);
         assert_eq!(events.len(), 3);
+        events.drain().for_each(drop);
 
         receiver.try_recv(&mut events);
         assert_eq!(events.len(), 4);

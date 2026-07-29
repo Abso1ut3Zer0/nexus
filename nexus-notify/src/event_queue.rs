@@ -174,8 +174,18 @@ impl Poller {
     ///
     /// If `limit` is 0, the events buffer is cleared and no tokens
     /// are drained.
+    ///
+    /// # Panics
+    ///
+    /// In debug builds, panics if `events` still has undrained tokens
+    /// from a previous poll — see [`Events::drain`].
     #[inline]
     pub fn poll_limit(&self, events: &mut Events, limit: usize) {
+        debug_assert!(
+            events.is_drained(),
+            "poll_limit called with undrained tokens still in the buffer — \
+             drain the previous batch before polling again"
+        );
         events.clear();
         for _ in 0..limit {
             match self.rx.pop() {
@@ -227,8 +237,26 @@ impl std::error::Error for NotifyError {}
 /// Follows the mio `Events` pattern: allocate once at setup,
 /// pass to `poll()` each iteration. The buffer is cleared and
 /// refilled on each poll.
+///
+/// # Consuming tokens
+///
+/// [`drain`](Events::drain) removes tokens as they're taken; stopping
+/// early (breaking the loop, dropping the iterator) leaves the rest in
+/// the buffer instead of discarding them. This is a deliberate
+/// divergence from mio's `Events`, which exposes only borrowing
+/// accessors (`iter()`, `IntoIterator for &Events`): mio's readiness
+/// notifications re-fire on the next poll, so a token a caller fails to
+/// act on is self-correcting. These tokens are one-shot and deduped —
+/// one that isn't consumed here is gone for good — so `poll`/`poll_limit`
+/// refuse, in debug builds, to clear a buffer that still has undrained
+/// tokens in it.
 pub struct Events {
     tokens: Vec<Token>,
+    /// Read cursor. Tokens before `head` have been taken via `drain()`;
+    /// `clear()` resets it to 0. Keeping this on `Events` (rather than in
+    /// `Drain`) means partial consumption is a pointer bump, not a
+    /// `Vec::drain`-style memmove of the remainder.
+    head: usize,
 }
 
 impl Events {
@@ -238,25 +266,27 @@ impl Events {
     pub fn with_capacity(capacity: usize) -> Self {
         Self {
             tokens: Vec::with_capacity(capacity),
+            head: 0,
         }
     }
 
-    /// Number of tokens from the last poll.
+    /// Number of undrained tokens from the last poll.
     #[inline]
     pub fn len(&self) -> usize {
-        self.tokens.len()
+        self.tokens.len() - self.head
     }
 
-    /// Returns true if no tokens fired.
+    /// Returns true if no undrained tokens remain.
     #[inline]
     pub fn is_empty(&self) -> bool {
-        self.tokens.is_empty()
+        self.head == self.tokens.len()
     }
 
     /// Clear the buffer.
     #[inline]
     pub fn clear(&mut self) {
         self.tokens.clear();
+        self.head = 0;
     }
 
     /// Push a token into the buffer.
@@ -265,16 +295,36 @@ impl Events {
         self.tokens.push(token);
     }
 
-    /// View the fired tokens as a slice.
+    /// True if every token from the last poll has been drained.
+    ///
+    /// Used by `Poller::poll_limit`/`LocalNotify::poll_limit` to assert
+    /// the caller finished with the previous batch before clearing and
+    /// refilling.
     #[inline]
-    pub fn as_slice(&self) -> &[Token] {
-        &self.tokens
+    pub(crate) fn is_drained(&self) -> bool {
+        self.head == self.tokens.len()
     }
 
-    /// Iterate over the fired tokens.
+    /// View the undrained tokens as a slice.
+    #[inline]
+    pub fn as_slice(&self) -> &[Token] {
+        &self.tokens[self.head..]
+    }
+
+    /// Iterate over the undrained tokens.
     #[inline]
     pub fn iter(&self) -> impl Iterator<Item = Token> + '_ {
-        self.tokens.iter().copied()
+        self.tokens[self.head..].iter().copied()
+    }
+
+    /// Drain tokens by value, removing each as it's yielded.
+    ///
+    /// Unlike [`Vec::drain`], stopping early leaves the untaken
+    /// remainder in the buffer rather than discarding it — the cursor
+    /// only advances as far as `next()` was actually called.
+    #[inline]
+    pub fn drain(&mut self) -> Drain<'_> {
+        Drain { events: self }
     }
 }
 
@@ -284,7 +334,32 @@ impl<'a> IntoIterator for &'a Events {
 
     #[inline]
     fn into_iter(self) -> Self::IntoIter {
-        self.tokens.iter().copied()
+        self.tokens[self.head..].iter().copied()
+    }
+}
+
+/// Draining iterator over undrained [`Token`]s in an [`Events`] buffer.
+///
+/// Created by [`Events::drain`]. Advances the buffer's internal cursor
+/// as tokens are yielded; stopping early (dropping this iterator before
+/// it's exhausted) leaves everything past the cursor in place for the
+/// next `drain()` call.
+pub struct Drain<'a> {
+    events: &'a mut Events,
+}
+
+impl Iterator for Drain<'_> {
+    type Item = Token;
+
+    #[inline]
+    fn next(&mut self) -> Option<Token> {
+        if self.events.head < self.events.tokens.len() {
+            let token = self.events.tokens[self.events.head];
+            self.events.head += 1;
+            Some(token)
+        } else {
+            None
+        }
     }
 }
 
@@ -393,6 +468,7 @@ mod tests {
         notifier.notify(Token::new(10)).unwrap();
         poller.poll(&mut events);
         assert_eq!(events.len(), 1);
+        events.drain().for_each(drop);
 
         poller.poll(&mut events);
         assert!(events.is_empty());
@@ -422,6 +498,7 @@ mod tests {
         notifier.notify(t).unwrap();
         poller.poll(&mut events);
         assert_eq!(events.len(), 1);
+        events.drain().for_each(drop);
 
         notifier.notify(t).unwrap();
         poller.poll(&mut events);
@@ -439,7 +516,7 @@ mod tests {
             notifier.notify(t).unwrap();
             poller.poll(&mut events);
             assert_eq!(events.len(), 1);
-            assert_eq!(events.iter().next().unwrap().index(), 5);
+            assert_eq!(events.drain().next().unwrap().index(), 5);
         }
     }
 
@@ -451,6 +528,7 @@ mod tests {
         notifier.notify(Token::new(0)).unwrap();
         poller.poll(&mut events);
         assert_eq!(events.len(), 1);
+        events.drain().for_each(drop);
 
         notifier.notify(Token::new(1)).unwrap();
         poller.poll(&mut events);
@@ -512,6 +590,7 @@ mod tests {
 
         poller.poll_limit(&mut events, 3);
         assert_eq!(events.len(), 3);
+        events.drain().for_each(drop);
 
         poller.poll(&mut events);
         assert_eq!(events.len(), 7);
@@ -528,6 +607,7 @@ mod tests {
 
         poller.poll_limit(&mut events, 100);
         assert_eq!(events.len(), 5);
+        events.drain().for_each(drop);
 
         poller.poll(&mut events);
         assert!(events.is_empty());
@@ -557,11 +637,11 @@ mod tests {
         }
 
         poller.poll_limit(&mut events, 2);
-        let indices: Vec<usize> = events.iter().map(Token::index).collect();
+        let indices: Vec<usize> = events.drain().map(Token::index).collect();
         assert_eq!(indices, vec![10, 20]);
 
         poller.poll_limit(&mut events, 2);
-        let indices: Vec<usize> = events.iter().map(Token::index).collect();
+        let indices: Vec<usize> = events.drain().map(Token::index).collect();
         assert_eq!(indices, vec![30, 40]);
 
         poller.poll(&mut events);
@@ -580,12 +660,15 @@ mod tests {
 
         poller.poll_limit(&mut events, 3);
         assert_eq!(events.len(), 3);
+        events.drain().for_each(drop);
 
         poller.poll_limit(&mut events, 3);
         assert_eq!(events.len(), 3);
+        events.drain().for_each(drop);
 
         poller.poll(&mut events);
         assert_eq!(events.len(), 4);
+        events.drain().for_each(drop);
 
         poller.poll(&mut events);
         assert!(events.is_empty());
@@ -601,7 +684,7 @@ mod tests {
         }
 
         poller.poll_limit(&mut events, 3);
-        let drained: Vec<usize> = events.iter().map(Token::index).collect();
+        let drained: Vec<usize> = events.drain().map(Token::index).collect();
         assert_eq!(drained.len(), 3);
 
         // Re-notify a token NOT yet drained — flag is still true. Conflated.
@@ -621,6 +704,7 @@ mod tests {
         notifier.notify(t).unwrap();
         poller.poll(&mut events);
         assert_eq!(events.len(), 1);
+        events.drain().for_each(drop);
 
         notifier.notify(t).unwrap();
         poller.poll(&mut events);
