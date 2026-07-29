@@ -22,6 +22,7 @@ fn heap_link(heap: &mut Heap<u64>, h: &RcSlot<HeapNode<u64>>) {
 
 #[inline(never)]
 unsafe fn heap_link_unchecked(heap: &mut Heap<u64>, h: &RcSlot<HeapNode<u64>>) {
+    // SAFETY: caller of this unsafe fn ensures h is not currently linked in the heap.
     unsafe { heap.link_unchecked(h) };
 }
 
@@ -41,6 +42,7 @@ unsafe fn heap_unlink_unchecked(
     h: &RcSlot<HeapNode<u64>>,
     slab: &Slab<HeapNode<u64>>,
 ) {
+    // SAFETY: caller of this unsafe fn ensures h is currently linked in the heap.
     unsafe { heap.unlink_unchecked(h, slab) };
 }
 
@@ -69,6 +71,7 @@ fn list_link_back(list: &mut List<u64>, h: &RcSlot<ListNode<u64>>) {
 
 #[inline(never)]
 unsafe fn list_link_back_unchecked(list: &mut List<u64>, h: &RcSlot<ListNode<u64>>) {
+    // SAFETY: caller of this unsafe fn ensures h is not currently linked in the list.
     unsafe { list.link_back_unchecked(h) };
 }
 
@@ -79,6 +82,7 @@ fn list_link_front(list: &mut List<u64>, h: &RcSlot<ListNode<u64>>) {
 
 #[inline(never)]
 unsafe fn list_link_front_unchecked(list: &mut List<u64>, h: &RcSlot<ListNode<u64>>) {
+    // SAFETY: caller of this unsafe fn ensures h is not currently linked in the list.
     unsafe { list.link_front_unchecked(h) };
 }
 
@@ -93,6 +97,7 @@ unsafe fn list_unlink_unchecked(
     h: &RcSlot<ListNode<u64>>,
     slab: &Slab<ListNode<u64>>,
 ) {
+    // SAFETY: caller of this unsafe fn ensures h is currently linked in the list.
     unsafe { list.unlink_unchecked(h, slab) };
 }
 
@@ -122,6 +127,7 @@ fn list_move_to_front(list: &mut List<u64>, h: &RcSlot<ListNode<u64>>) {
 
 #[inline(never)]
 unsafe fn list_move_to_front_unchecked(list: &mut List<u64>, h: &RcSlot<ListNode<u64>>) {
+    // SAFETY: caller of this unsafe fn ensures h is linked in list; precondition forwarded.
     unsafe { list.move_to_front_unchecked(h) };
 }
 
@@ -132,11 +138,14 @@ fn list_move_to_back(list: &mut List<u64>, h: &RcSlot<ListNode<u64>>) {
 
 #[inline(never)]
 unsafe fn list_move_to_back_unchecked(list: &mut List<u64>, h: &RcSlot<ListNode<u64>>) {
+    // SAFETY: caller of this unsafe fn ensures h is linked in list; precondition forwarded.
     unsafe { list.move_to_back_unchecked(h) };
 }
 
 fn main() {
+    // SAFETY: single-threaded benchmark; slab outlives all allocated slots.
     let heap_slab = unsafe { Slab::<HeapNode<u64>>::with_capacity(100) };
+    // SAFETY: single-threaded benchmark; slab outlives all allocated slots.
     let list_slab = unsafe { Slab::<ListNode<u64>>::with_capacity(100) };
 
     // Heap
@@ -151,8 +160,11 @@ fn main() {
     black_box(heap_peek(&heap));
     heap_unlink(&mut heap, &h3, &heap_slab);
     // unchecked link + unlink
+    // SAFETY: h3 was just unlinked; the node is not currently in the heap.
     unsafe { heap_link_unchecked(&mut heap, &h3) };
+    // SAFETY: h2 is linked in the heap; the precondition (node is linked) is upheld.
     unsafe { heap_unlink_unchecked(&mut heap, &h2, &heap_slab) };
+    // SAFETY: h3 was linked at the line above; the precondition (node is linked) is upheld.
     unsafe { heap_unlink_unchecked(&mut heap, &h3, &heap_slab) };
     while let Some(p) = heap_pop(&mut heap) {
         black_box(p.borrow().value());
@@ -175,14 +187,19 @@ fn main() {
     list_link_front(&mut list, &l3);
     list_link_back(&mut list, &l4);
     list_move_to_front(&mut list, &l2);
+    // SAFETY: l4 is linked in the list; the precondition (node is linked) is upheld.
     unsafe { list_move_to_front_unchecked(&mut list, &l4) };
     list_move_to_back(&mut list, &l3);
+    // SAFETY: l1 is linked in the list; the precondition (node is linked) is upheld.
     unsafe { list_move_to_back_unchecked(&mut list, &l1) };
     list_unlink(&mut list, &l4, &list_slab);
     // unchecked link variants
+    // SAFETY: l4 was just unlinked; the node is not currently in the list.
     unsafe { list_link_back_unchecked(&mut list, &l4) };
     list_unlink(&mut list, &l4, &list_slab);
+    // SAFETY: l4 was just unlinked; the node is not currently in the list.
     unsafe { list_link_front_unchecked(&mut list, &l4) };
+    // SAFETY: l4 was linked at the line above; the precondition (node is linked) is upheld.
     unsafe { list_unlink_unchecked(&mut list, &l4, &list_slab) };
     while let Some(p) = list_pop_front(&mut list) {
         black_box(&p.borrow().value);

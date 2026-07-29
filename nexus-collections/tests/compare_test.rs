@@ -6,10 +6,12 @@ use nexus_collections::slab::rbtree::{RbNode, RbTree};
 use nexus_slab::bounded::Slab;
 
 fn make_rb_slab() -> Slab<RbNode<u64, String>> {
+    // SAFETY: single-threaded test; slab outlives all allocated slots.
     unsafe { Slab::with_capacity(200) }
 }
 
 fn make_bt_slab() -> Slab<BTreeNode<u64, String, 8>> {
+    // SAFETY: single-threaded test; slab outlives all allocated slots.
     unsafe { Slab::with_capacity(500) }
 }
 

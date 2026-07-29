@@ -334,6 +334,7 @@ impl<T> List<T> {
             panic_wrong_list();
         }
 
+        // SAFETY: handle is a live RcSlot with refcount >= 1.
         let new_node = unsafe { node_deref(handle.as_ptr()) };
         if new_node.is_linked() {
             panic_already_linked();
@@ -373,6 +374,7 @@ impl<T> List<T> {
             panic_wrong_list();
         }
 
+        // SAFETY: handle is a live RcSlot with refcount >= 1.
         let new_node = unsafe { node_deref(handle.as_ptr()) };
         if new_node.is_linked() {
             panic_already_linked();
@@ -645,17 +647,20 @@ impl<T> List<T> {
 
         // SAFETY: prev/next are valid linked nodes if non-null (maintained by list ops).
         if !prev.is_null() {
+            // SAFETY: prev is non-null and a valid linked predecessor.
             unsafe { node_deref(prev) }.set_next(next);
         }
         if next.is_null() {
             self.tail = prev;
         } else {
+            // SAFETY: next is non-null and a valid linked successor.
             unsafe { node_deref(next) }.set_prev(prev);
         }
 
         node.set_prev(ptr::null_mut());
         node.set_next(self.head);
         if !self.head.is_null() {
+            // SAFETY: head is non-null and points to a linked node with refcount >= 2.
             unsafe { node_deref(self.head) }.set_prev(ptr);
         }
         self.head = ptr;
@@ -680,17 +685,20 @@ impl<T> List<T> {
 
         // SAFETY: prev/next are valid linked nodes if non-null.
         if !prev.is_null() {
+            // SAFETY: prev is non-null and a valid linked predecessor.
             unsafe { node_deref(prev) }.set_next(next);
         }
         if next.is_null() {
             self.tail = prev;
         } else {
+            // SAFETY: next is non-null and a valid linked successor.
             unsafe { node_deref(next) }.set_prev(prev);
         }
 
         node.set_prev(ptr::null_mut());
         node.set_next(self.head);
         if !self.head.is_null() {
+            // SAFETY: head is non-null and points to a linked node with refcount >= 2.
             unsafe { node_deref(self.head) }.set_prev(ptr);
         }
         self.head = ptr;
@@ -718,17 +726,20 @@ impl<T> List<T> {
 
         // SAFETY: prev/next are valid linked nodes if non-null.
         if !next.is_null() {
+            // SAFETY: next is non-null and a valid linked successor.
             unsafe { node_deref(next) }.set_prev(prev);
         }
         if prev.is_null() {
             self.head = next;
         } else {
+            // SAFETY: prev is non-null and a valid linked predecessor.
             unsafe { node_deref(prev) }.set_next(next);
         }
 
         node.set_next(ptr::null_mut());
         node.set_prev(self.tail);
         if !self.tail.is_null() {
+            // SAFETY: tail is non-null and points to a linked node with refcount >= 2.
             unsafe { node_deref(self.tail) }.set_next(ptr);
         }
         self.tail = ptr;
@@ -753,17 +764,20 @@ impl<T> List<T> {
 
         // SAFETY: prev/next are valid linked nodes if non-null.
         if !next.is_null() {
+            // SAFETY: next is non-null and a valid linked successor.
             unsafe { node_deref(next) }.set_prev(prev);
         }
         if prev.is_null() {
             self.head = next;
         } else {
+            // SAFETY: prev is non-null and a valid linked predecessor.
             unsafe { node_deref(prev) }.set_next(next);
         }
 
         node.set_next(ptr::null_mut());
         node.set_prev(self.tail);
         if !self.tail.is_null() {
+            // SAFETY: tail is non-null and points to a linked node with refcount >= 2.
             unsafe { node_deref(self.tail) }.set_next(ptr);
         }
         self.tail = ptr;

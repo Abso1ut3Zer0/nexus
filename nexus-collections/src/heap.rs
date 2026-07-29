@@ -181,6 +181,7 @@ unsafe fn link<T: Ord>(a: NodePtr<T>, b: NodePtr<T>) -> NodePtr<T> {
 
     // SAFETY: both pointers guaranteed non-null and valid by caller.
     let a_node = unsafe { node_deref(a) };
+    // SAFETY: same as above; b is non-null and valid by caller.
     let b_node = unsafe { node_deref(b) };
 
     let (winner, winner_node, loser, loser_node) = if a_node.value() <= b_node.value() {

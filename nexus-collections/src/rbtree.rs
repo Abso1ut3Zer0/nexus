@@ -159,6 +159,7 @@ unsafe fn node_deref<K, V>(ptr: NodePtr<K, V>) -> *const RbNode<K, V> {
 unsafe fn node_deref_mut<K, V>(ptr: NodePtr<K, V>) -> *mut RbNode<K, V> {
     // Use value_ptr_mut to avoid creating &SlotCell which would give
     // read-only provenance under stacked borrows.
+    // SAFETY: ptr is non-null and points to an occupied SlotCell per caller contract.
     unsafe { nexus_slab::shared::SlotCell::value_ptr_mut(ptr) }
 }
 
@@ -223,6 +224,7 @@ unsafe fn successor<K, V>(ptr: NodePtr<K, V>) -> NodePtr<K, V> {
     let node = unsafe { &*node_deref(ptr) };
     let right = node.right.get();
     if !right.is_null() {
+        // SAFETY: right is non-null (checked above) and a valid tree node.
         return unsafe { tree_minimum(right) };
     }
     let mut current = ptr;
@@ -246,6 +248,7 @@ unsafe fn predecessor<K, V>(ptr: NodePtr<K, V>) -> NodePtr<K, V> {
     let node = unsafe { &*node_deref(ptr) };
     let left = node.left.get();
     if !left.is_null() {
+        // SAFETY: left is non-null (checked above) and a valid tree node.
         return unsafe { tree_maximum(left) };
     }
     let mut current = ptr;
@@ -672,6 +675,7 @@ impl<K, V, C: Compare<K>> RbTree<K, V, C> {
         if !end.is_null() {
             // SAFETY: front and end are non-null valid tree nodes from lower/upper_bound.
             let front_key = unsafe { &(*node_deref(front)).key };
+            // SAFETY: same as above; end is non-null and a valid tree node from lower/upper_bound.
             let end_key = unsafe { &(*node_deref(end)).key };
             if C::cmp(front_key, end_key) != Ordering::Less {
                 return (ptr::null_mut(), ptr::null_mut());
@@ -752,6 +756,7 @@ impl<K, V, C: Compare<K>> RbTree<K, V, C> {
         // non-null by the RB-tree fixup algorithm that calls this.
         let x_node = unsafe { &*node_deref(x) };
         let y = x_node.right.get();
+        // SAFETY: y is non-null per the caller-guaranteed invariant above; it is a valid tree node.
         let y_node = unsafe { &*node_deref(y) };
 
         let b = y_node.left.get();
@@ -784,6 +789,7 @@ impl<K, V, C: Compare<K>> RbTree<K, V, C> {
         // non-null by the RB-tree fixup algorithm that calls this.
         let x_node = unsafe { &*node_deref(x) };
         let y = x_node.left.get();
+        // SAFETY: y is non-null per the caller-guaranteed invariant above; it is a valid tree node.
         let y_node = unsafe { &*node_deref(y) };
 
         let b = y_node.right.get();
@@ -850,6 +856,7 @@ impl<K, V, C: Compare<K>> RbTree<K, V, C> {
 
             // SAFETY: grandparent is non-null (parent is red, so not root).
             if parent == unsafe { (*node_deref(grandparent)).left.get() } {
+                // SAFETY: same as above; grandparent is non-null and a valid tree node.
                 let uncle = unsafe { (*node_deref(grandparent)).right.get() };
                 if is_red(uncle) {
                     set_color(parent, COLOR_BLACK);
@@ -860,15 +867,18 @@ impl<K, V, C: Compare<K>> RbTree<K, V, C> {
                     // SAFETY: parent is non-null and valid.
                     if z == unsafe { (*node_deref(parent)).right.get() } {
                         z = parent;
+                        // SAFETY: z was just set to parent which is non-null and a valid tree node.
                         unsafe { self.rotate_left(z) };
                     }
                     let parent = get_parent(z);
                     let grandparent = get_parent(parent);
                     set_color(parent, COLOR_BLACK);
                     set_color(grandparent, COLOR_RED);
+                    // SAFETY: grandparent is non-null (parent is red, not root) and a valid tree node.
                     unsafe { self.rotate_right(grandparent) };
                 }
             } else {
+                // SAFETY: grandparent is non-null (parent is red, not root) and a valid tree node.
                 let uncle = unsafe { (*node_deref(grandparent)).left.get() };
                 if is_red(uncle) {
                     set_color(parent, COLOR_BLACK);
@@ -879,12 +889,14 @@ impl<K, V, C: Compare<K>> RbTree<K, V, C> {
                     // SAFETY: parent is non-null and valid.
                     if z == unsafe { (*node_deref(parent)).left.get() } {
                         z = parent;
+                        // SAFETY: z was just set to parent which is non-null and a valid tree node.
                         unsafe { self.rotate_right(z) };
                     }
                     let parent = get_parent(z);
                     let grandparent = get_parent(parent);
                     set_color(parent, COLOR_BLACK);
                     set_color(grandparent, COLOR_RED);
+                    // SAFETY: grandparent is non-null (parent is red, not root) and a valid tree node.
                     unsafe { self.rotate_left(grandparent) };
                 }
             }
@@ -917,14 +929,18 @@ impl<K, V, C: Compare<K>> RbTree<K, V, C> {
             y_original_color = z_color;
             x = z_right;
             x_parent = get_parent(z);
+            // SAFETY: z is a valid non-null tree node; transplant accepts null for v.
             unsafe { self.transplant(z, z_right) };
         } else if z_right.is_null() {
             y_original_color = z_color;
             x = z_left;
             x_parent = get_parent(z);
+            // SAFETY: z is a valid non-null tree node; z_left is non-null (else branch).
             unsafe { self.transplant(z, z_left) };
         } else {
+            // SAFETY: z_right is non-null (both children present in this branch).
             let y = unsafe { tree_minimum(z_right) };
+            // SAFETY: y is non-null — tree_minimum returns a valid node from a non-null input.
             let y_node = unsafe { &*node_deref(y) };
             y_original_color = y_node.parent_color.get() & COLOR_MASK;
             x = y_node.right.get();
@@ -933,18 +949,23 @@ impl<K, V, C: Compare<K>> RbTree<K, V, C> {
                 x_parent = y;
             } else {
                 x_parent = get_parent(y);
+                // SAFETY: y is a valid non-null node (in-order successor); transplant accepts null for v.
                 unsafe { self.transplant(y, x) };
+                // SAFETY: y is non-null and a valid tree node; setting right via Cell is safe.
                 unsafe { (*node_deref(y)).right.set(z_right) };
                 set_parent(z_right, y);
             }
 
+            // SAFETY: z and y are both valid non-null tree nodes.
             unsafe { self.transplant(z, y) };
+            // SAFETY: y is non-null and a valid tree node; setting left via Cell is safe.
             unsafe { (*node_deref(y)).left.set(z_left) };
             set_parent(z_left, y);
             set_color(y, z_color);
         }
 
         if y_original_color == COLOR_BLACK {
+            // SAFETY: x_parent is a valid node; x may be null (treated as nil leaf).
             unsafe { self.delete_fixup(x, x_parent) };
         }
     }
@@ -962,14 +983,19 @@ impl<K, V, C: Compare<K>> RbTree<K, V, C> {
         while x != self.root && !is_red(x) {
             // SAFETY: x_parent is non-null (x is not the root).
             if x == unsafe { (*node_deref(x_parent)).left.get() } {
+                // SAFETY: same as above; x_parent is non-null and a valid tree node.
                 let mut w = unsafe { (*node_deref(x_parent)).right.get() };
                 if is_red(w) {
                     set_color(w, COLOR_BLACK);
                     set_color(x_parent, COLOR_RED);
+                    // SAFETY: x_parent is non-null and a valid tree node; w is red so rotation valid.
                     unsafe { self.rotate_left(x_parent) };
+                    // SAFETY: x_parent is still a valid non-null tree node after the rotation.
                     w = unsafe { (*node_deref(x_parent)).right.get() };
                 }
+                // SAFETY: w is non-null — RB-tree black-height invariant guarantees a non-nil sibling.
                 let w_left = unsafe { (*node_deref(w)).left.get() };
+                // SAFETY: same as above; w is a valid non-null sibling node.
                 let w_right = unsafe { (*node_deref(w)).right.get() };
                 if !is_red(w_left) && !is_red(w_right) {
                     set_color(w, COLOR_RED);
@@ -979,26 +1005,36 @@ impl<K, V, C: Compare<K>> RbTree<K, V, C> {
                     if !is_red(w_right) {
                         set_color(w_left, COLOR_BLACK);
                         set_color(w, COLOR_RED);
+                        // SAFETY: w is non-null and a valid tree node.
                         unsafe { self.rotate_right(w) };
+                        // SAFETY: x_parent is still a valid non-null tree node after the rotation.
                         w = unsafe { (*node_deref(x_parent)).right.get() };
                     }
+                    // SAFETY: x_parent is non-null and a valid tree node.
                     let parent_color =
                         unsafe { (*node_deref(x_parent)).parent_color.get() } & COLOR_MASK;
                     set_color(w, parent_color);
                     set_color(x_parent, COLOR_BLACK);
+                    // SAFETY: w is non-null and valid; its right child is non-null (w_right is red).
                     set_color(unsafe { (*node_deref(w)).right.get() }, COLOR_BLACK);
+                    // SAFETY: x_parent is non-null and a valid tree node.
                     unsafe { self.rotate_left(x_parent) };
                     x = self.root;
                 }
             } else {
+                // SAFETY: x_parent is non-null and a valid tree node.
                 let mut w = unsafe { (*node_deref(x_parent)).left.get() };
                 if is_red(w) {
                     set_color(w, COLOR_BLACK);
                     set_color(x_parent, COLOR_RED);
+                    // SAFETY: x_parent is non-null and a valid tree node; w is red so rotation valid.
                     unsafe { self.rotate_right(x_parent) };
+                    // SAFETY: x_parent is still a valid non-null tree node after the rotation.
                     w = unsafe { (*node_deref(x_parent)).left.get() };
                 }
+                // SAFETY: w is non-null — RB-tree black-height invariant guarantees a non-nil sibling.
                 let w_left = unsafe { (*node_deref(w)).left.get() };
+                // SAFETY: same as above; w is a valid non-null sibling node.
                 let w_right = unsafe { (*node_deref(w)).right.get() };
                 if !is_red(w_right) && !is_red(w_left) {
                     set_color(w, COLOR_RED);
@@ -1008,14 +1044,19 @@ impl<K, V, C: Compare<K>> RbTree<K, V, C> {
                     if !is_red(w_left) {
                         set_color(w_right, COLOR_BLACK);
                         set_color(w, COLOR_RED);
+                        // SAFETY: w is non-null and a valid tree node.
                         unsafe { self.rotate_left(w) };
+                        // SAFETY: x_parent is still a valid non-null tree node after the rotation.
                         w = unsafe { (*node_deref(x_parent)).left.get() };
                     }
+                    // SAFETY: x_parent is non-null and a valid tree node.
                     let parent_color =
                         unsafe { (*node_deref(x_parent)).parent_color.get() } & COLOR_MASK;
                     set_color(w, parent_color);
                     set_color(x_parent, COLOR_BLACK);
+                    // SAFETY: w is non-null and valid; its left child is non-null (w_left is red).
                     set_color(unsafe { (*node_deref(w)).left.get() }, COLOR_BLACK);
+                    // SAFETY: x_parent is non-null and a valid tree node.
                     unsafe { self.rotate_right(x_parent) };
                     x = self.root;
                 }
@@ -1048,6 +1089,7 @@ impl<K, V, C: Compare<K>> RbTree<K, V, C> {
 
         // SAFETY: root is non-null (checked above) and a valid tree node.
         let actual_min = unsafe { tree_minimum(self.root) };
+        // SAFETY: root is non-null (checked above) and a valid tree node.
         let actual_max = unsafe { tree_maximum(self.root) };
         assert_eq!(self.leftmost, actual_min, "leftmost cache mismatch");
         assert_eq!(self.rightmost, actual_max, "rightmost cache mismatch");
@@ -1407,6 +1449,7 @@ impl<'a, K: 'a, V: 'a> Iterator for Iter<'a, K, V> {
         let ptr = self.front;
         // SAFETY: ptr is non-null (len > 0) and a valid tree node from traversal.
         let node = unsafe { &*node_deref(ptr) };
+        // SAFETY: ptr is non-null and a valid tree node; successor follows right-subtree/parent pointers within the live tree.
         self.front = unsafe { successor(ptr) };
         self.len -= 1;
         Some((&node.key, &node.value))
@@ -1529,6 +1572,7 @@ impl<'a, K: 'a, V: 'a> Iterator for Range<'a, K, V> {
         let ptr = self.front;
         // SAFETY: ptr is non-null and a valid tree node within the range.
         let node = unsafe { &*node_deref(ptr) };
+        // SAFETY: ptr is non-null and a valid tree node; successor follows right-subtree/parent pointers within the live tree.
         self.front = unsafe { successor(ptr) };
         Some((&node.key, &node.value))
     }
@@ -1550,6 +1594,7 @@ impl<'a, K: 'a, V: 'a> Iterator for RangeMut<'a, K, V> {
         let ptr = self.front;
         // SAFETY: ptr is non-null and a valid tree node within the range.
         let next = unsafe { successor(ptr) };
+        // SAFETY: ptr is non-null and a valid tree node; &mut self ensures exclusivity over the value.
         let node = unsafe { &mut *node_deref_mut(ptr) };
         self.front = next;
         Some((&node.key, &mut node.value))

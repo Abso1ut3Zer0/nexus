@@ -12,10 +12,12 @@ struct Order {
 }
 
 fn make_slab() -> Slab<ListNode<Order>> {
+    // SAFETY: single-threaded test; slab outlives all allocated nodes.
     unsafe { Slab::with_capacity(100) }
 }
 
 fn make_u64_slab() -> Slab<ListNode<u64>> {
+    // SAFETY: single-threaded test; slab outlives all allocated nodes.
     unsafe { Slab::with_capacity(100) }
 }
 
@@ -341,6 +343,7 @@ fn is_head_is_tail() {
 
 #[test]
 fn unbounded_push_back_and_pop_front() {
+    // SAFETY: single-threaded test; slab outlives all allocated nodes.
     let slab = unsafe { UnboundedSlab::<ListNode<u64>>::with_chunk_capacity(4) };
     let mut list = List::new();
 
@@ -371,6 +374,7 @@ fn unbounded_push_back_and_pop_front() {
 
 #[test]
 fn unbounded_push_front_and_pop_back() {
+    // SAFETY: single-threaded test; slab outlives all allocated nodes.
     let slab = unsafe { UnboundedSlab::<ListNode<u64>>::with_chunk_capacity(4) };
     let mut list = List::new();
 
@@ -395,6 +399,7 @@ fn unbounded_push_front_and_pop_back() {
 
 #[test]
 fn stress_list_push_pop_cycle() {
+    // SAFETY: single-threaded test; slab outlives all allocated nodes.
     let slab = unsafe { Slab::<ListNode<u64>>::with_capacity(10_000) };
     let mut list = List::new();
 
@@ -586,6 +591,7 @@ fn drop_non_empty_list_during_unwind_no_double_panic() {
 #[test]
 fn non_empty_drop_panics_in_debug() {
     let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        // SAFETY: single-threaded test; slab outlives all allocated nodes.
         let slab = unsafe { UnboundedSlab::with_chunk_capacity(8) };
         let mut list = List::new();
         let order = Order {

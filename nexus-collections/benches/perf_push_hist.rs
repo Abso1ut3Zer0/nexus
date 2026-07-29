@@ -20,6 +20,7 @@ const N: usize = 50_000;
 #[inline(always)]
 fn rdtscp() -> u64 {
     #[cfg(target_arch = "x86_64")]
+    // SAFETY: x86_64 intrinsics; benchmark is x86_64-only.
     unsafe {
         let mut aux: u32 = 0;
         std::arch::x86_64::__rdtscp(&raw mut aux)
@@ -64,7 +65,9 @@ fn new_hist() -> Histogram<u64> {
 }
 
 fn main() {
+    // SAFETY: single-threaded benchmark; slab outlives all allocated nodes.
     let heap_slab = unsafe { Slab::<HeapNode<u64>>::with_capacity(CAPACITY) };
+    // SAFETY: single-threaded benchmark; slab outlives all allocated nodes.
     let list_slab = unsafe { Slab::<ListNode<u64>>::with_capacity(CAPACITY) };
 
     let mut rng = Xorshift::new(0xDEAD_BEEF_CAFE_BABEu64);
@@ -175,6 +178,7 @@ fn main() {
         }
         for h in &heap_handles {
             let s = rdtscp();
+            // SAFETY: every handle in `heap_handles` was linked into the heap above; the precondition (node is linked) is upheld.
             unsafe { heap.unlink_unchecked(h, &heap_slab) };
             let e = rdtscp();
             let _ = hist.record(e.wrapping_sub(s));
@@ -352,6 +356,7 @@ fn main() {
         }
         for h in &list_handles {
             let s = rdtscp();
+            // SAFETY: every handle in `list_handles` was linked into the list above; the precondition (node is linked) is upheld.
             unsafe { list.unlink_unchecked(h, &list_slab) };
             let e = rdtscp();
             let _ = hist.record(e.wrapping_sub(s));
@@ -385,6 +390,7 @@ fn main() {
         }
         for h in &list_handles {
             let s = rdtscp();
+            // SAFETY: all handles are currently linked in the list; move_to_front_unchecked precondition is met.
             unsafe { list.move_to_front_unchecked(h) };
             let e = rdtscp();
             let _ = hist.record(e.wrapping_sub(s));
@@ -419,6 +425,7 @@ fn main() {
         }
         for h in list_handles.iter().rev() {
             let s = rdtscp();
+            // SAFETY: all handles are currently linked in the list; move_to_back_unchecked precondition is met.
             unsafe { list.move_to_back_unchecked(h) };
             let e = rdtscp();
             let _ = hist.record(e.wrapping_sub(s));
