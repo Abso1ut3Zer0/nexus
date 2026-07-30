@@ -5,7 +5,13 @@
 //! The async twin of `nexus-fix-engine/examples/timer_recipes.rs`. Read that
 //! file first for the full theory of the three timers; this one shows the tokio
 //! shape. The session still holds **no timers** — it exposes only
-//! `heartbeat_interval()` — so you own all three:
+//! `heartbeat_interval()` — so you own all three. (This recipe drives the raw
+//! three-object trio — what `FixConnectionBuilder::connect` hands back as
+//! `(FixParts, transport)`; the timer logic is identical over the owns-everything
+//! `FixConnection` too — `heartbeat_interval()`, the send helpers, and `recv` are
+//! all there.)
+//!
+//! You own all three:
 //!
 //! | # | Timer | Reset on | Fires when | You do |
 //! |---|-------|----------|------------|--------|

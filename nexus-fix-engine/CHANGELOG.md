@@ -43,6 +43,26 @@ contained.
 
 ### Added
 
+- **Socket-setup batteries**, in the primary/secondary split `nexus-web` uses for
+  WebSocket (`WsStreamBuilder` → raw parts, `WsStream` → owns-everything).
+  - **Primary — `FixConnectionBuilder` → raw parts.** `connect(addr, state, config,
+    journal)` opens the socket and returns the raw `(FixParts, TcpStream)`; `accept(
+    stream, …)` pairs a preexisting stream. You run the ordinary three-object loop,
+    so admin replies stay **zero-copy** (`recv`'s `Message` borrows only `reader`).
+    Reconnect is "keep the `FixParts`, grab a new socket" via
+    `connect_socket(addr)` — no re-bundling; the sequence numbers and journal live in
+    the retained parts. Builder config: `reader_capacity` / `writer_capacity` /
+    `customizer` / `disable_nagle` / `read_timeout`.
+  - **Secondary — `FixConnection` owns everything.** Bundles the trio *and* the
+    socket into one object with `recv` + delegating send helpers (`connect` (Logon) /
+    `heartbeat` / `logout` / `send_app` / …), for callers who want a single value to
+    pass around. Build it one-step with `FixConnection::open(addr, …)`, or from B's
+    parts with `from_parts(parts, socket)`; `into_parts()` returns `(FixParts, S)`.
+    Because it owns everything, `recv` borrows the whole connection, so an admin
+    reply field (a `TestReqID`) is copied out before the reply — which is exactly why
+    the raw parts are primary. `parts_mut()` is the escape hatch for a raw verb the
+    bundle does not wrap (e.g. pumping a `ResendCursor`).
+
 - `Text(58)` reason on Logout and Reject. `logout` / `encode_logout`,
   `LogonDecision::reject` / `encode_reject`, and `FixSession::encode_reject_logon`
   take `reason: Option<&AsciiTextStr>`, encoded as `Text(58)` when `Some` and

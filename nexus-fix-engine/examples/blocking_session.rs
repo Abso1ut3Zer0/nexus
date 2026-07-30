@@ -3,6 +3,14 @@
 //! Blocking session recipe: one initiator connects to one acceptor on localhost,
 //! sends a NewOrder, then logs out.
 //!
+//! This example holds the raw three-object trio (`FixSession` + `MessageReader` +
+//! `MessageWriter`) with the socket passed per call — the primary framework
+//! surface, which keeps admin replies zero-copy. The batteries `FixConnectionBuilder`
+//! wraps exactly this: `connect(addr, …)` opens the socket and hands back
+//! `(FixParts, socket)` (with `connect_socket` for reconnect). For a single owned
+//! object, the secondary `FixConnection` bundles the trio *and* the socket at the
+//! cost of copying an admin reply field out before replying; see its docs.
+//!
 //! Run with: cargo run --example blocking_session
 
 use std::net::{TcpListener, TcpStream};

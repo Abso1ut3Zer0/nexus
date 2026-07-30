@@ -39,6 +39,28 @@
 //!   request outside the journal's window surfaces `ResendOutOfRange` with no
 //!   cursor, and you answer with `sequence_reset`/`gap_fill` or log out.
 //!
+//! # Batteries: transport setup, two layers
+//!
+//! Setup conveniences layer on top of the trio, primary/secondary like
+//! `nexus-web`'s `WsStreamBuilder`/`WsStream`:
+//!
+//! - **Primary — [`FixConnectionBuilder`] → raw parts.**
+//!   [`connect`](FixConnectionBuilder::connect) / `connect_tls` /
+//!   [`accept`](FixConnectionBuilder::accept) open the transport and hand back the
+//!   [`FixParts`] trio plus the transport (`(FixParts, S)`); you run the ordinary
+//!   three-object loop, so admin replies stay **zero-copy** (the `Message` borrows
+//!   only `reader`). TLS lands here: `connect_tls` (feature `tls`) drives the rustls
+//!   handshake via [`MaybeTls`]. Reconnect is "keep the parts, grab a new transport"
+//!   via [`connect_socket`](FixConnectionBuilder::connect_socket). This is the
+//!   default.
+//! - **Secondary — [`FixConnection`] owns everything.** Bundles the trio *and* the
+//!   transport into one object with an async `recv` + delegating send helpers, built
+//!   with [`FixConnection::open`] or [`from_parts`](FixConnection::from_parts). It is
+//!   deliberately **not** a `Stream`/`Sink` (FIX `recv` surfaces admin you must
+//!   *answer*). Because it owns everything, [`recv`](FixConnection::recv) borrows the
+//!   *whole* connection, so an admin reply field is **copied out** first — which is
+//!   exactly why the raw parts are primary.
+//!
 //! # Timers are yours
 //!
 //! The session holds **no timers** — only
@@ -62,6 +84,8 @@
     rustdoc::redundant_explicit_links
 )]
 
+mod connection;
+
 use std::future::poll_fn;
 use std::io;
 use std::marker::PhantomData;
@@ -74,6 +98,9 @@ use nexus_fix_engine::{
     LogonDecision, Message, MessageReader, MessageWriter, PollOutcome, SessionConfig, SessionState,
 };
 
+/// The batteries bundle: a [`FixConnection`] owning the session + reader + writer
+/// + transport, and its [`FixConnectionBuilder`].
+pub use connection::{FixConnection, FixConnectionBuilder};
 /// Per-message resend reserve; see [`nexus_fix_engine::REFRAME_HEADROOM`].
 pub use nexus_fix_engine::REFRAME_HEADROOM;
 /// Shared session error type, re-exported from `nexus-fix-engine`.
@@ -84,6 +111,11 @@ pub use nexus_fix_engine::TransportError as Error;
 /// The transport trait every stream implements — re-exported so callers can name
 /// the `S: WireStream` bound without depending on `nexus-net` directly.
 pub use nexus_net::WireStream;
+/// rustls client config for [`FixConnectionBuilder::connect_tls`] — re-exported so
+/// callers can name it without depending on `nexus-net` directly. Requires the
+/// `tls` feature.
+#[cfg(feature = "tls")]
+pub use nexus_net::tls::TlsConfig;
 /// Tokio wire transports: wrap a raw stream in [`AsyncReadAdapter`], or use the
 /// plaintext-or-TLS [`MaybeTls`]. Re-exported so callers need not depend on
 /// `nexus-net-tokio` directly.

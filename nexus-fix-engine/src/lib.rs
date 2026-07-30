@@ -20,6 +20,25 @@
 //! [`SessionState`] is the pure protocol state machine underneath [`FixSession`];
 //! use it directly only for a fully custom encode/journal layer.
 //!
+//! # Batteries: socket setup, two layers
+//!
+//! Setup conveniences layer on top of the trio, primary/secondary like
+//! `nexus-web`'s `WsStreamBuilder`/`WsStream`:
+//!
+//! - **Primary — [`FixConnectionBuilder`] → raw parts.**
+//!   [`connect`](FixConnectionBuilder::connect) /
+//!   [`accept`](FixConnectionBuilder::accept) open the socket and hand back the
+//!   [`FixParts`] trio plus the socket (`(FixParts, S)`); you run the ordinary
+//!   three-object loop, so admin replies stay **zero-copy** (the `Message` borrows
+//!   only `reader`). Reconnect is "keep the parts, grab a new socket" via
+//!   [`connect_socket`](FixConnectionBuilder::connect_socket). This is the default.
+//! - **Secondary — [`FixConnection`] owns everything.** Bundles the trio *and* the
+//!   socket into one object with `recv` + delegating send helpers, built with
+//!   [`FixConnection::open`] or [`from_parts`](FixConnection::from_parts). Because it
+//!   owns everything, [`recv`](FixConnection::recv) borrows the *whole* connection,
+//!   so an admin reply field is **copied out** first — which is exactly why the raw
+//!   parts are primary. Reach for it when one value to pass around is worth that.
+//!
 //! # Receive: one variant, one required response
 //!
 //! [`recv`](FixSession::recv) fills `reader` from the transport, advances the state
@@ -98,6 +117,8 @@
 )]
 
 #[cfg(unix)]
+mod connection;
+#[cfg(unix)]
 pub mod fix_session;
 mod frame;
 mod framework;
@@ -107,6 +128,8 @@ mod session;
 #[cfg(unix)]
 mod timestamp;
 
+#[cfg(unix)]
+pub use connection::{FixConnection, FixConnectionBuilder};
 #[cfg(unix)]
 pub use fix_session::{
     Error as TransportError, FixParts, FixSession, FixSessionBuilder, PollOutcome, REFRAME_HEADROOM,
