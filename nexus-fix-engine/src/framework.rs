@@ -51,8 +51,6 @@ pub struct SessionConfig {
 /// Error returned by the framework layer when decoding fails.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum SessionError {
-    /// Tag 35 (MsgType) absent.
-    MissingMsgType,
     /// Tag 34 (MsgSeqNum) absent.
     MissingMsgSeqNum,
     /// A required field for this message type is absent.
@@ -72,7 +70,6 @@ pub enum SessionError {
 impl core::fmt::Display for SessionError {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         match self {
-            Self::MissingMsgType => write!(f, "tag 35 (MsgType) missing"),
             Self::MissingMsgSeqNum => write!(f, "tag 34 (MsgSeqNum) missing"),
             Self::MissingField { tag } => write!(f, "required tag {tag} missing"),
             Self::MalformedField { tag } => write!(f, "tag {tag} malformed"),
@@ -149,8 +146,8 @@ pub enum Message<'r, D: FixDictionary> {
     /// falls outside the retained replay window `[low_water, high_water]`. **No
     /// cursor**: the user decides. `begin < low_water` means the start rotated off;
     /// `end > high_water` means the peer asked for messages we never sent (desync).
-    /// Answer with `sequence_reset(&mut writer, &mut conn, now, new_seq, gap_fill)`
-    /// (GapFill or Reset mode), or log out.
+    /// Answer with `sequence_reset(&mut writer, &mut conn, now, new_seq)` (Reset) or
+    /// `gap_fill(&mut writer, &mut conn, now, from_seq, new_seq)` (GapFill), or log out.
     ResendOutOfRange {
         /// Requested `BeginSeqNo(7)`.
         begin: u32,

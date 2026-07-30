@@ -807,6 +807,43 @@ impl<D: FixDictionary> FixSession<D> {
         writer.flush_to(conn).map_err(Error::Io)
     }
 
+    /// Accepts a counterparty-initiated Logon (surfaced as [`Message::LogonRequest`] /
+    /// [`Message::LogonResetRequest`]): sends the reply and brings the session up. The
+    /// session-method spelling of [`LogonDecision::accept`], and the sync twin of the
+    /// async `FixSession::accept_logon`. `now` stamps `SendingTime(52)`.
+    pub fn accept_logon<C, S>(
+        &mut self,
+        decision: LogonDecision<'_, D>,
+        writer: &mut MessageWriter<D, C>,
+        conn: &mut S,
+        now: i128,
+    ) -> Result<(), Error>
+    where
+        C: SessionCustomizer,
+        S: Read + Write,
+    {
+        decision.accept(self, writer, conn, now)
+    }
+
+    /// Rejects a counterparty-initiated Logon: sends a Logout (optional `Text(58)`
+    /// reason) and disconnects. The session-method spelling of [`LogonDecision::reject`],
+    /// and the sync twin of the async `FixSession::reject_logon`. `now` stamps
+    /// `SendingTime(52)`.
+    pub fn reject_logon<C, S>(
+        &mut self,
+        decision: LogonDecision<'_, D>,
+        writer: &mut MessageWriter<D, C>,
+        conn: &mut S,
+        now: i128,
+        reason: Option<&AsciiTextStr>,
+    ) -> Result<(), Error>
+    where
+        C: SessionCustomizer,
+        S: Read + Write,
+    {
+        decision.reject(self, writer, conn, now, reason)
+    }
+
     // ── inbound processing ───────────────────────────────────────────────────
 
     /// Processes the next buffered inbound frame in `reader`, driving the state
@@ -2211,7 +2248,7 @@ mod tests {
         }
     }
 
-    // ── providability check (phase 4) ────────────────────────────────────────
+    // ── providability check ──────────────────────────────────────────────────
 
     /// Build an `Active` [`Rig`] whose outbound journal has `window` retained slots
     /// and holds app frames for seqs `1..=stored_max` except `hole`. With a small

@@ -245,8 +245,8 @@ impl SessionState {
 
     /// Sends a Heartbeat (35=0), optionally echoing a peer's `TestReqID(112)`.
     ///
-    /// The user-driven counterpart of the Heartbeat the state machine auto-emits
-    /// when answering a TestRequest: it allocates the next outbound seqnum and
+    /// The engine no longer auto-emits a Heartbeat when answering a TestRequest;
+    /// this is the user-driven replacement. It allocates the next outbound seqnum and
     /// emits, but performs no state transition and no sequence validation — the
     /// caller decides when to send (a keepalive tick, or a manual reply). `echo`
     /// is the raw `TestReqID` bytes to mirror back, or `None` for an unsolicited
@@ -285,8 +285,8 @@ impl SessionState {
 
     /// Sends a ResendRequest (35=2) covering `[begin, ∞)` (encoded `EndSeqNo(16)=0`).
     ///
-    /// The user-driven counterpart of the ResendRequest the state machine
-    /// auto-emits on a detected gap: it allocates the next outbound seqnum and
+    /// The engine no longer auto-emits a ResendRequest on a detected gap; this is
+    /// the user-driven replacement. It allocates the next outbound seqnum and
     /// emits. No state transition — the caller drives recovery. `begin` is the
     /// first missing inbound seqnum.
     ///

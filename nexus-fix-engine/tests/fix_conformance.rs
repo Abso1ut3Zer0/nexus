@@ -566,9 +566,9 @@ fn conformance_test_request_long_id() {
 
 // Regression for confirmed engine bug Q1 (see .claude/fix-battletest-findings.md):
 // a below-expected SequenceReset-GapFill carrying PossDupFlag=Y must be discarded
-// (the session survives), NOT treated as SeqNumTooLow. The engine currently
-// disconnects because `on_sequence_reset` hard-codes `poss_dup=false`, so this
-// asserts the CORRECT behavior and fails today — kept `#[ignore]`'d until the fix.
+// (the session survives), NOT treated as SeqNumTooLow. `on_sequence_reset` once
+// hard-coded `poss_dup=false` and disconnected; the fix landed (#606), so this
+// asserts and verifies the CORRECT behavior.
 #[test]
 fn conformance_seq_reset_gap_fill_below_possdup() {
     let dir = tmp_dir("seq_reset_gap_fill_below_possdup");

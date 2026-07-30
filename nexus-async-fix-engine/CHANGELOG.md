@@ -25,7 +25,7 @@ contained.
     gone; the session exposes only `heartbeat_interval()`. Build the heartbeat,
     two-phase peer-liveness, and handshake timers yourself — the worked tokio
     recipe (`select!` over `recv` and one `sleep_until` per timer) ships as
-    `examples/timer_recipes.rs`.
+    `examples/async_timer_recipes.rs`.
   - **User-driven replies + resend cursor.** `recv` returns a `Message` whose every
     variant names its one required response; an inbound ResendRequest surfaces a
     user-pumped `ResendCursor` (drop = refuse), with `ResendOutOfRange` for a

@@ -93,10 +93,11 @@ use std::ops::{Deref, DerefMut};
 use std::pin::Pin;
 
 use nexus_fix_codec::{AsciiTextStr, FixDictionary, NoCustomizer, SessionCustomizer};
-use nexus_fix_engine::{
-    DisconnectReason, FixJournal, FixParts as CoreFixParts, FixSession as CoreFixSession,
-    LogonDecision, Message, MessageReader, MessageWriter, PollOutcome, SessionConfig, SessionState,
+pub use nexus_fix_engine::{
+    DisconnectReason, FixJournal, LogonDecision, Message, MessageReader, MessageWriter, PollOutcome,
+    SessionConfig, SessionError, SessionState,
 };
+use nexus_fix_engine::{FixParts as CoreFixParts, FixSession as CoreFixSession};
 
 /// The batteries bundle: a [`FixConnection`] owning the session + reader + writer
 /// + transport, and its [`FixConnectionBuilder`].
