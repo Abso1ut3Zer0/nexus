@@ -4,6 +4,8 @@ fn main() {}
 #[cfg(unix)]
 use std::fs;
 #[cfg(unix)]
+use std::io::Write;
+#[cfg(unix)]
 use std::net::TcpListener;
 #[cfg(unix)]
 use std::path::Path;
@@ -172,6 +174,30 @@ fn main() {
                 }
                 Ok(Some(Message::Application { .. })) => {
                     app_msgs += 1;
+                }
+                // Peer requested a resend: pump the cursor, writing each batch. Admin
+                // messages in the range become a SequenceReset-GapFill; app messages
+                // replay as PossDup. The user drives the replay — it never blocks recv.
+                Ok(Some(Message::ResendRequest { mut cursor })) => loop {
+                    match cursor.next(&mut session, &mut writer, now) {
+                        Ok(Some(bytes)) => {
+                            if stream.write_all(bytes).is_err() {
+                                break;
+                            }
+                        }
+                        Ok(None) => break,
+                        Err(e) => {
+                            eprintln!("resend failed: {e}");
+                            break;
+                        }
+                    }
+                },
+                // Peer asked for a range we have rotated off: gap-fill the gone prefix
+                // so it resumes (a harness policy; a venue might reset or log out).
+                Ok(Some(Message::ResendOutOfRange {
+                    begin, low_water, ..
+                })) => {
+                    let _ = session.gap_fill(&mut writer, &mut stream, now, begin, low_water);
                 }
                 Ok(Some(_) | None) => {}
                 // A recoverable error (a malformed frame: bad checksum, lying

@@ -94,8 +94,8 @@ use std::pin::Pin;
 
 use nexus_fix_codec::{AsciiTextStr, FixDictionary, NoCustomizer, SessionCustomizer};
 pub use nexus_fix_engine::{
-    DisconnectReason, FixJournal, LogonDecision, Message, MessageReader, MessageWriter, PollOutcome,
-    SessionConfig, SessionError, SessionState,
+    DisconnectReason, FixJournal, LogonDecision, Message, MessageReader, MessageWriter,
+    PollOutcome, SessionConfig, SessionError, SessionState,
 };
 use nexus_fix_engine::{FixParts as CoreFixParts, FixSession as CoreFixSession};
 
