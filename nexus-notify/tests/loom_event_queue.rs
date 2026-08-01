@@ -75,6 +75,7 @@ fn re_notification_after_poll() {
         notifier.notify(Token::new(2)).unwrap();
         poller.poll(&mut events);
         assert_eq!(events.len(), 1);
+        events.drain().for_each(drop);
 
         let handle = thread::spawn(move || {
             notifier.notify(Token::new(2)).unwrap();
@@ -100,6 +101,7 @@ fn concurrent_notify_and_poll() {
         let mut events = Events::with_capacity(4);
         poller.poll(&mut events);
         let first_poll = events.len();
+        events.drain().for_each(drop);
 
         handle.join().unwrap();
 

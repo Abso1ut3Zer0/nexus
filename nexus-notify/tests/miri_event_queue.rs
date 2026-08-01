@@ -81,6 +81,7 @@ fn notify_after_drain_works() {
     notifier.notify(t).unwrap();
     poller.poll(&mut events);
     assert_eq!(events.len(), 1);
+    events.drain().for_each(drop);
 
     // Second cycle — flag was cleared on poll, must accept new notify.
     notifier.notify(t).unwrap();
@@ -109,7 +110,7 @@ fn fill_to_capacity_then_drain() {
     poller.poll(&mut events);
     assert_eq!(events.len(), CAP);
 
-    let order: Vec<usize> = events.iter().map(Token::index).collect();
+    let order: Vec<usize> = events.drain().map(Token::index).collect();
     assert_eq!(order, (0..CAP).collect::<Vec<_>>());
 
     // Refill — flags were cleared, must work again.
@@ -267,5 +268,6 @@ fn racing_notifies_conflate_to_one_polled_event() {
         poller.poll(&mut events);
         assert_eq!(events.len(), 1);
         assert_eq!(events.iter().next().unwrap().index(), 0);
+        events.drain().for_each(drop);
     }
 }

@@ -184,8 +184,18 @@ impl LocalNotify {
     /// Tokens appear in mark order (FIFO).
     ///
     /// Mirrors [`Poller::poll_limit`](crate::Poller::poll_limit).
+    ///
+    /// # Panics
+    ///
+    /// In debug builds, panics if `events` still has undrained tokens
+    /// from a previous poll — see [`Events::drain`](crate::Events::drain).
     #[inline]
     pub fn poll_limit(&mut self, events: &mut Events, limit: usize) {
+        debug_assert!(
+            events.is_drained(),
+            "poll_limit called with undrained tokens still in the buffer — \
+             drain the previous batch before polling again"
+        );
         events.clear();
         let remaining = self.dispatch_list.len() - self.dispatch_head;
         let drain_count = remaining.min(limit);
@@ -312,6 +322,7 @@ mod tests {
         notify.mark(t);
         notify.poll(&mut events);
         assert_eq!(events.len(), 1);
+        events.drain().for_each(drop);
 
         // Cycle 2 — same token fires again
         notify.mark(t);
@@ -370,6 +381,7 @@ mod tests {
         for &t in &boundary {
             assert!(events.as_slice().contains(&t));
         }
+        events.drain().for_each(drop);
 
         // Second cycle — bits cleared correctly across word boundaries
         for &t in &boundary {
@@ -414,6 +426,7 @@ mod tests {
         notify.poll_limit(&mut events, 2);
         assert_eq!(events.len(), 2);
         assert_eq!(notify.notified_count(), 3); // 3 remaining
+        events.drain().for_each(drop);
 
         // Drain rest
         notify.poll(&mut events);
@@ -477,6 +490,7 @@ mod tests {
                 notify.mark(t);
             }
             notify.poll_limit(&mut events, limit);
+            events.drain().for_each(drop);
         }
 
         // Physical length must stay bounded regardless of tick count.
