@@ -5,6 +5,7 @@ use nexus_slab::rc::bounded::Slab;
 use nexus_slab::rc::unbounded::Slab as UnboundedSlab;
 
 fn make_slab() -> Slab<HeapNode<u64>> {
+    // SAFETY: single-threaded test; slab outlives all allocated nodes.
     unsafe { Slab::with_capacity(100) }
 }
 
@@ -87,6 +88,7 @@ fn contains() {
 
 #[test]
 fn try_push_full() {
+    // SAFETY: single-threaded test; slab outlives all allocated nodes.
     let slab: Slab<HeapNode<u64>> = unsafe { Slab::with_capacity(1) };
     let mut heap = Heap::new();
 
@@ -174,6 +176,7 @@ fn unlink_wrong_heap_panics() {
 
 #[test]
 fn unbounded_push_and_pop() {
+    // SAFETY: single-threaded test; slab outlives all allocated nodes.
     let slab = unsafe { UnboundedSlab::<HeapNode<u64>>::with_chunk_capacity(4) };
     let mut heap = Heap::new();
 
@@ -209,6 +212,7 @@ fn unbounded_push_and_pop() {
 
 #[test]
 fn stress_heap_push_pop_cycle() {
+    // SAFETY: single-threaded test; slab outlives all allocated nodes.
     let slab: Slab<HeapNode<u64>> = unsafe { Slab::with_capacity(10_000) };
     let mut heap = Heap::new();
 
@@ -339,6 +343,7 @@ fn drop_non_empty_heap_during_unwind_no_double_panic() {
 #[test]
 fn non_empty_drop_panics_in_debug() {
     let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        // SAFETY: single-threaded test; slab outlives all allocated nodes.
         let slab = unsafe { UnboundedSlab::with_chunk_capacity(8) };
         let mut heap = Heap::new();
         heap.push(&slab, 42u64);

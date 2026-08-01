@@ -4,6 +4,7 @@ use nexus_collections::slab::list::{List, ListNode};
 use nexus_slab::rc::bounded::Slab;
 
 fn make_slab() -> Slab<ListNode<u64>> {
+    // SAFETY: single-threaded test; slab outlives all allocated nodes.
     unsafe { Slab::with_capacity(100) }
 }
 
