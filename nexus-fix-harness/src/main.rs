@@ -137,15 +137,16 @@ fn main() {
         );
 
         // The engine is user-driven: it surfaces each situation and the caller
-        // sends the one required reply. `now` (UTC unix-nanos) stamps
-        // `SendingTime(52)`; a production harness reads a real wall clock.
-        let now = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_nanos() as i128)
-            .unwrap_or(0);
-
+        // sends the one required reply.
         let mut app_msgs = 0usize;
         loop {
+            // Read the wall clock fresh each iteration so every outbound
+            // `SendingTime(52)` stays current. `now` (UTC unix-nanos) is passed to
+            // `recv` and to every send helper; a production driver does the same.
+            let now = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_nanos() as i128)
+                .unwrap_or(0);
             match session.recv(&mut reader, &mut writer, &mut stream, now) {
                 // The initiator's Logon: accept it (this harness authenticates none).
                 Ok(Some(Message::LogonRequest(d) | Message::LogonResetRequest(d))) => {
@@ -156,15 +157,23 @@ fn main() {
                 }
                 // Liveness probe: echo the TestReqID.
                 Ok(Some(Message::TestRequest { id })) => {
-                    let _ = session.heartbeat(&mut writer, &mut stream, now, Some(id));
+                    if let Err(e) = session.heartbeat(&mut writer, &mut stream, now, Some(id)) {
+                        eprintln!("heartbeat reply failed: {e}");
+                        break;
+                    }
                 }
                 // Inbound gap: request the missing range.
                 Ok(Some(Message::GapDetected { begin })) => {
-                    let _ = session.resend_request(&mut writer, &mut stream, now, begin);
+                    if let Err(e) = session.resend_request(&mut writer, &mut stream, now, begin) {
+                        eprintln!("resend_request failed: {e}");
+                        break;
+                    }
                 }
                 // Peer initiated a logout: reply and finish.
                 Ok(Some(Message::LogoutRequest { .. })) => {
-                    let _ = session.logout(&mut writer, &mut stream, now, None);
+                    if let Err(e) = session.logout(&mut writer, &mut stream, now, None) {
+                        eprintln!("logout reply failed: {e}");
+                    }
                     println!("peer logged out, {app_msgs} app message(s)");
                     break;
                 }
@@ -197,7 +206,12 @@ fn main() {
                 Ok(Some(Message::ResendOutOfRange {
                     begin, low_water, ..
                 })) => {
-                    let _ = session.gap_fill(&mut writer, &mut stream, now, begin, low_water);
+                    if let Err(e) =
+                        session.gap_fill(&mut writer, &mut stream, now, begin, low_water)
+                    {
+                        eprintln!("gap_fill failed: {e}");
+                        break;
+                    }
                 }
                 Ok(Some(_) | None) => {}
                 // A recoverable error (a malformed frame: bad checksum, lying
