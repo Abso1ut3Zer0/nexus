@@ -37,6 +37,7 @@ fn main() {
     let data_ptr: *const u8 = &raw const val as *const u8;
     let trait_ptr: *const dyn Probe = &val as &dyn Probe;
 
+    // SAFETY: trait_ptr is a valid local reference; ptr::read copies its bytes to inspect fat pointer layout.
     let decomposed: FatPtr = unsafe { ptr::read(ptr::addr_of!(trait_ptr).cast::<FatPtr>()) };
 
     assert!(
@@ -48,6 +49,7 @@ fn main() {
     // Slice: data pointer first, length second.
     let array = [1_u8, 2, 3];
     let slice: &[u8] = &array;
+    // SAFETY: slice is a valid local reference; ptr::read copies its bytes to inspect fat pointer layout.
     let slice_repr: SlicePtr = unsafe { ptr::read(ptr::addr_of!(slice).cast::<SlicePtr>()) };
 
     assert!(

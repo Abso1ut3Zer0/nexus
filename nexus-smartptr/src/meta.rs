@@ -54,6 +54,7 @@ pub(crate) fn extract_metadata<T: ?Sized>(ptr: *const T) -> Metadata {
     // [data_ptr, metadata_ptr]. We read the second word as a pointer to
     // preserve provenance.
     let words = core::ptr::addr_of!(ptr).cast::<*const ()>();
+    // SAFETY: verified fat pointer above; second word is the metadata pointer.
     let metadata = unsafe { words.add(1).read() };
     Metadata(metadata)
 }
@@ -72,6 +73,7 @@ pub(crate) fn extract_metadata<T: ?Sized>(ptr: *const T) -> Metadata {
 pub(crate) unsafe fn make_ptr<T: ?Sized>(data: *const (), meta: Metadata) -> *const T {
     let mut result: mem::MaybeUninit<*const T> = mem::MaybeUninit::uninit();
     let words = result.as_mut_ptr().cast::<*const ()>();
+    // SAFETY: MaybeUninit<*const T> is written word-by-word; caller upholds data/meta validity.
     unsafe {
         words.write(data);
         if is_fat_ptr::<T>() {
@@ -110,7 +112,9 @@ mod tests {
         // SAFETY: data points to val, meta extracted from same concrete type.
         let reconstructed: *const dyn Display = unsafe { make_ptr(data, meta) };
 
+        // SAFETY: trait_ptr is a valid reference to val.
         let original = unsafe { &*trait_ptr };
+        // SAFETY: reconstructed points to val with the correct vtable.
         let recovered = unsafe { &*reconstructed };
         assert_eq!(format!("{original}"), format!("{recovered}"));
     }
@@ -127,6 +131,7 @@ mod tests {
 
         // SAFETY: data points to val, meta from same concrete type.
         let reconstructed: *mut dyn Debug = unsafe { make_ptr_mut(data, meta) };
+        // SAFETY: reconstructed points to val with the correct vtable.
         let recovered = unsafe { &*reconstructed };
         assert_eq!(format!("{recovered:?}"), "[1, 2, 3]");
     }
@@ -139,6 +144,7 @@ mod tests {
 
         // SAFETY: data points to val. For Sized T, meta is ignored.
         let reconstructed: *const u64 = unsafe { make_ptr(data, meta) };
+        // SAFETY: reconstructed points to val, a valid u64.
         assert_eq!(unsafe { *reconstructed }, 99);
     }
 
@@ -167,9 +173,12 @@ mod tests {
 
         // SAFETY: both a and b are u64, meta extracted from u64's Display vtable.
         let ptr_a: *const dyn Display = unsafe { make_ptr(&raw const a as *const (), meta) };
+        // SAFETY: b is u64; meta extracted from u64's Display vtable, compatible.
         let ptr_b: *const dyn Display = unsafe { make_ptr(&raw const b as *const (), meta) };
 
+        // SAFETY: ptr_a points to a, a valid u64.
         assert_eq!(format!("{}", unsafe { &*ptr_a }), "100");
+        // SAFETY: ptr_b points to b, a valid u64.
         assert_eq!(format!("{}", unsafe { &*ptr_b }), "200");
     }
 
@@ -184,6 +193,7 @@ mod tests {
 
         // SAFETY: data points to val, meta carries the slice length.
         let reconstructed: *const [u32] = unsafe { make_ptr(data, meta) };
+        // SAFETY: reconstructed points to val with the correct length metadata.
         let recovered = unsafe { &*reconstructed };
         assert_eq!(recovered.len(), 4);
         assert_eq!(recovered, &[10, 20, 30, 40]);
