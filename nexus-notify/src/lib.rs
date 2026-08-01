@@ -137,8 +137,9 @@
 //!
 //! // Drain only 10 per iteration (oldest first)
 //! poller.poll_limit(&mut events, 10);
-//! assert_eq!(events.len(), 10);
-//! assert_eq!(events.as_slice()[0].index(), 0);  // FIFO: oldest first
+//! let batch: Vec<usize> = events.drain().map(|t| t.index()).collect();
+//! assert_eq!(batch.len(), 10);
+//! assert_eq!(batch[0], 0);  // FIFO: oldest first
 //!
 //! // Remaining 90 stay in the queue
 //! poller.poll(&mut events);
@@ -153,5 +154,5 @@ pub mod local;
 mod loom_impl;
 
 pub use event_channel::{Receiver, Sender, event_channel};
-pub use event_queue::{Events, Notifier, NotifyError, Poller, Token, event_queue};
+pub use event_queue::{Drain, Events, Notifier, NotifyError, Poller, Token, event_queue};
 pub use local::LocalNotify;

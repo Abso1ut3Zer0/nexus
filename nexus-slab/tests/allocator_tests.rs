@@ -64,6 +64,7 @@ impl Drop for OrderedDrop {
 
 #[test]
 fn bounded_basic_insert_drop() {
+    // SAFETY: test slab; single-threaded, all slots freed before drop.
     let slab = unsafe { BoundedSlab::<u64>::with_capacity(16) };
 
     assert_eq!(slab.capacity(), 16);
@@ -76,6 +77,7 @@ fn bounded_basic_insert_drop() {
 
 #[test]
 fn bounded_fill_to_capacity() {
+    // SAFETY: test slab; single-threaded, all slots freed before drop.
     let slab = unsafe { BoundedSlab::<u64>::with_capacity(8) };
 
     let slots: Vec<_> = (0..8).map(|i| slab.alloc(i)).collect();
@@ -95,6 +97,7 @@ fn bounded_fill_to_capacity() {
 
 #[test]
 fn bounded_capacity_one() {
+    // SAFETY: test slab; single-threaded, all slots freed before drop.
     let slab = unsafe { BoundedSlab::<u64>::with_capacity(1) };
 
     assert_eq!(slab.capacity(), 1);
@@ -117,6 +120,7 @@ fn bounded_capacity_one() {
 
 #[test]
 fn unbounded_basic_insert_drop() {
+    // SAFETY: test slab; single-threaded, all slots freed before drop.
     let slab = unsafe { UnboundedSlab::<u64>::with_chunk_capacity(8) };
 
     let slot = slab.alloc(100);
@@ -127,6 +131,7 @@ fn unbounded_basic_insert_drop() {
 
 #[test]
 fn unbounded_grows_automatically() {
+    // SAFETY: test slab; single-threaded, all slots freed before drop.
     let slab = unsafe { UnboundedSlab::<u64>::with_chunk_capacity(4) };
 
     let initial_cap = slab.capacity();
@@ -153,6 +158,7 @@ fn unbounded_grows_automatically() {
 
 #[test]
 fn slot_deref() {
+    // SAFETY: test slab; single-threaded, all slots freed before drop.
     let slab = unsafe { BoundedSlab::<u64>::with_capacity(4) };
 
     let mut slot = slab.alloc(42);
@@ -167,6 +173,7 @@ fn slot_deref() {
 
 #[test]
 fn slot_dealloc_take() {
+    // SAFETY: test slab; single-threaded, all slots freed before drop.
     let slab = unsafe { BoundedSlab::<String>::with_capacity(4) };
 
     let slot = slab.alloc("hello".to_string());
@@ -178,6 +185,7 @@ fn slot_dealloc_take() {
 
 #[test]
 fn slot_debug_format() {
+    // SAFETY: test slab; single-threaded, all slots freed before drop.
     let slab = unsafe { BoundedSlab::<u64>::with_capacity(4) };
 
     let slot = slab.alloc(42);
@@ -201,6 +209,7 @@ fn slot_size_is_8_bytes() {
 
 #[test]
 fn multiple_slots_same_slab() {
+    // SAFETY: test slab; single-threaded, all slots freed before drop.
     let slab = unsafe { BoundedSlab::<u64>::with_capacity(10) };
 
     let slot1 = slab.alloc(1);
@@ -230,7 +239,9 @@ fn multiple_slots_same_slab() {
 
 #[test]
 fn multiple_slabs_independent() {
+    // SAFETY: test slabs; single-threaded, all slots freed before drop.
     let slab_a = unsafe { BoundedSlab::<u64>::with_capacity(4) };
+    // SAFETY: test slab; single-threaded, all slots freed before drop.
     let slab_b = unsafe { BoundedSlab::<u64>::with_capacity(4) };
 
     let slot_a = slab_a.alloc(1);
@@ -250,6 +261,7 @@ fn multiple_slabs_independent() {
 #[test]
 #[should_panic(expected = "slab full")]
 fn panic_insert_when_full() {
+    // SAFETY: test slab; single-threaded, all slots freed before drop.
     let slab = unsafe { BoundedSlab::<u64>::with_capacity(2) };
 
     let _s1 = slab.alloc(1);
@@ -260,6 +272,7 @@ fn panic_insert_when_full() {
 #[test]
 #[should_panic(expected = "capacity must be non-zero")]
 fn panic_zero_capacity() {
+    // SAFETY: test slab; single-threaded; panics before any slot can be allocated.
     let _ = unsafe { BoundedSlab::<u64>::with_capacity(0) };
 }
 
@@ -271,6 +284,7 @@ fn panic_zero_capacity() {
 fn drop_called_on_free() {
     reset_drop_count();
 
+    // SAFETY: test slab; single-threaded, all slots freed before drop.
     let slab = unsafe { BoundedSlab::<DropTracker>::with_capacity(4) };
 
     let slot = slab.alloc(DropTracker(1));
@@ -286,6 +300,7 @@ fn drop_called_on_free() {
 fn drop_called_multiple() {
     reset_drop_count();
 
+    // SAFETY: test slab; single-threaded, all slots freed before drop.
     let slab = unsafe { BoundedSlab::<DropTracker>::with_capacity(10) };
 
     let s1 = slab.alloc(DropTracker(1));
@@ -304,6 +319,7 @@ fn drop_called_multiple() {
 fn drop_called_on_dealloc_take() {
     reset_drop_count();
 
+    // SAFETY: test slab; single-threaded, all slots freed before drop.
     let slab = unsafe { BoundedSlab::<DropTracker>::with_capacity(4) };
 
     let slot = slab.alloc(DropTracker(1));
@@ -319,6 +335,7 @@ fn drop_called_on_dealloc_take() {
 fn drop_not_called_on_leak() {
     reset_drop_count();
 
+    // SAFETY: test slab; single-threaded; slot intentionally leaked (disarmed via into_raw).
     let slab = unsafe { BoundedSlab::<DropTracker>::with_capacity(4) };
 
     let slot = slab.alloc(DropTracker(1));
@@ -334,6 +351,7 @@ fn drop_not_called_on_leak() {
 
 #[test]
 fn stress_fill_drain_cycle() {
+    // SAFETY: test slab; single-threaded, all slots freed before drop.
     let slab = unsafe { BoundedSlab::<u64>::with_capacity(100) };
 
     for cycle in 0..10 {
@@ -355,6 +373,7 @@ fn stress_fill_drain_cycle() {
 
 #[test]
 fn stress_interleaved_insert_remove() {
+    // SAFETY: test slab; single-threaded, all slots freed before drop.
     let slab = unsafe { BoundedSlab::<u64>::with_capacity(50) };
 
     let mut slots = Vec::new();
@@ -383,6 +402,7 @@ fn stress_interleaved_insert_remove() {
 
 #[test]
 fn stress_slot_reuse() {
+    // SAFETY: test slab; single-threaded, all slots freed before drop.
     let slab = unsafe { BoundedSlab::<u64>::with_capacity(1) };
 
     for i in 0..1000 {
@@ -395,6 +415,7 @@ fn stress_slot_reuse() {
 
 #[test]
 fn stress_unbounded_growth() {
+    // SAFETY: test slab; single-threaded, all slots freed before drop.
     let slab = unsafe { UnboundedSlab::<u64>::with_chunk_capacity(16) };
 
     let slots: Vec<_> = (0..1000).map(|i| slab.alloc(i)).collect();
@@ -413,6 +434,7 @@ fn stress_unbounded_growth() {
 
 #[test]
 fn stress_unbounded_churn() {
+    // SAFETY: test slab; single-threaded, all slots freed before drop.
     let slab = unsafe { UnboundedSlab::<u64>::with_chunk_capacity(8) };
 
     let mut slots = Vec::new();
@@ -443,6 +465,7 @@ fn stress_unbounded_churn() {
 
 #[test]
 fn freelist_lifo_order() {
+    // SAFETY: test slab; single-threaded, all slots freed before drop.
     let slab = unsafe { BoundedSlab::<u64>::with_capacity(4) };
 
     // Insert 4 items
@@ -479,6 +502,7 @@ fn freelist_lifo_order() {
 
 #[test]
 fn type_string() {
+    // SAFETY: test slab; single-threaded, all slots freed before drop.
     let slab = unsafe { BoundedSlab::<String>::with_capacity(10) };
 
     let slot = slab.alloc("hello world".to_string());
@@ -545,6 +569,7 @@ fn type_option() {
 
 #[test]
 fn type_tuple() {
+    // SAFETY: test slab; single-threaded, all slots freed before drop.
     let slab = unsafe { BoundedSlab::<(u64, String, bool)>::with_capacity(10) };
 
     let slot = slab.alloc((42, "hello".to_string(), true));
@@ -558,6 +583,7 @@ fn type_tuple() {
 
 #[test]
 fn type_large_struct() {
+    // SAFETY: test slab; single-threaded, all slots freed before drop.
     let slab = unsafe { BoundedSlab::<LargeStruct>::with_capacity(10) };
 
     let mut data = [0u64; 128];
@@ -577,6 +603,7 @@ fn type_large_struct() {
 
 #[test]
 fn type_zst() {
+    // SAFETY: test slab; single-threaded, all slots freed before drop.
     let slab = unsafe { BoundedSlab::<ZeroSized>::with_capacity(100) };
 
     assert_eq!(std::mem::size_of::<ZeroSized>(), 0);
@@ -590,6 +617,7 @@ fn type_zst() {
 
 #[test]
 fn type_unit() {
+    // SAFETY: test slab; single-threaded, all slots freed before drop.
     let slab = unsafe { BoundedSlab::<()>::with_capacity(10) };
 
     let slot = slab.alloc(());
@@ -605,6 +633,7 @@ fn type_unit() {
 
 #[test]
 fn large_capacity() {
+    // SAFETY: test slab; single-threaded, all slots freed before drop.
     let slab = unsafe { BoundedSlab::<u64>::with_capacity(100_000) };
 
     assert_eq!(slab.capacity(), 100_000);
@@ -619,6 +648,7 @@ fn large_capacity() {
 
 #[test]
 fn unbounded_default_chunk_capacity() {
+    // SAFETY: test slab; single-threaded, all slots freed before drop.
     let slab = unsafe { UnboundedSlab::<u64>::with_chunk_capacity(4096) };
 
     // First insert should trigger chunk allocation
@@ -631,6 +661,7 @@ fn unbounded_default_chunk_capacity() {
 
 #[test]
 fn slab_debug_format() {
+    // SAFETY: test slab; single-threaded, no slots allocated.
     let slab = unsafe { BoundedSlab::<u64>::with_capacity(10) };
     let debug = format!("{:?}", slab);
     assert!(debug.contains("Slab"));
@@ -643,6 +674,7 @@ fn slab_debug_format() {
 
 #[test]
 fn slot_clone_ptr() {
+    // SAFETY: test slab; single-threaded, all slots freed before drop.
     let slab = unsafe { BoundedSlab::<u64>::with_capacity(4) };
 
     let slot = slab.alloc(42);
@@ -671,6 +703,7 @@ fn byte_slab_drop_type() {
 
     reset_drop_count();
 
+    // SAFETY: test slab; single-threaded, all slots freed before drop.
     let slab: ByteSlab<64> = unsafe { ByteSlab::with_capacity(4) };
 
     // Alloc a String (heap-allocated, has Drop)
@@ -695,6 +728,7 @@ fn byte_slab_drop_on_take() {
 
     reset_drop_count();
 
+    // SAFETY: test slab; single-threaded, all slots freed before drop.
     let slab: ByteSlab<64> = unsafe { ByteSlab::with_capacity(4) };
 
     let slot = slab.alloc(DropTracker(1));

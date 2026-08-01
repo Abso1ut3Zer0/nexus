@@ -1088,7 +1088,7 @@ impl World {
 
         // Dispatch — each reactor is moved out before run(), put back after.
         // &mut ReactorNotify is scoped tightly to avoid aliasing during run().
-        for token in events.iter() {
+        for token in events.drain() {
             let idx = token.index();
             let reactor = {
                 // SAFETY: notify_ptr is stable. Scoped — &mut is dropped

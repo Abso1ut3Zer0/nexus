@@ -66,6 +66,7 @@ mod tests {
 
     #[test]
     fn alloc_borrow_free() {
+        // SAFETY: test slab; single-threaded, all handles freed before drop.
         let slab = unsafe { Slab::with_chunk_capacity(4) };
         let h1 = slab.alloc(42u64);
         let h2 = h1.clone();
@@ -82,6 +83,7 @@ mod tests {
 
     #[test]
     fn grows_automatically() {
+        // SAFETY: test slab; single-threaded, all handles freed before drop.
         let slab = unsafe { Slab::with_chunk_capacity(2) };
         let mut handles = alloc::vec::Vec::new();
         for i in 0..100u64 {

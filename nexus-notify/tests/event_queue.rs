@@ -106,7 +106,7 @@ fn stress_no_lost_tokens() {
 
     while !handle.is_finished() {
         poller.poll(&mut events);
-        for t in &events {
+        for t in events.drain() {
             seen[t.index()] = true;
         }
     }
@@ -114,7 +114,7 @@ fn stress_no_lost_tokens() {
     handle.join().unwrap();
 
     poller.poll(&mut events);
-    for t in &events {
+    for t in events.drain() {
         seen[t.index()] = true;
     }
 
@@ -133,7 +133,7 @@ fn stress_poll_limit_fifo() {
     let mut all_indices = Vec::new();
     for _ in 0..4 {
         poller.poll_limit(&mut events, 5);
-        let chunk: Vec<usize> = events.iter().map(Token::index).collect();
+        let chunk: Vec<usize> = events.drain().map(Token::index).collect();
         assert_eq!(chunk.len(), 5);
         all_indices.extend(chunk);
     }
@@ -176,6 +176,7 @@ fn roundtrip_smoke() {
                 }
                 std::hint::spin_loop();
             }
+            events.drain().for_each(drop);
             n_rev.notify(t_rev).unwrap();
         }
     });
@@ -190,6 +191,7 @@ fn roundtrip_smoke() {
             }
             std::hint::spin_loop();
         }
+        events.drain().for_each(drop);
     }
 
     worker.join().unwrap();

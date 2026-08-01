@@ -5,6 +5,7 @@ use nexus_slab::bounded::Slab;
 use nexus_slab::unbounded::Slab as UnboundedSlab;
 
 fn make_slab() -> Slab<BTreeNode<u64, u64, 8>> {
+    // SAFETY: single-threaded test; slab outlives all allocated slots.
     unsafe { Slab::with_capacity(200) }
 }
 
@@ -221,6 +222,7 @@ fn many_inserts_and_removes() {
 
 #[test]
 fn custom_b_4() {
+    // SAFETY: single-threaded test; slab outlives all allocated slots.
     let slab: Slab<BTreeNode<u64, u64, 4>> = unsafe { Slab::with_capacity(200) };
     let mut tree = BTree::<u64, u64, 4>::new();
 
@@ -245,6 +247,7 @@ fn custom_b_4() {
 #[test]
 fn unbounded_insert() {
     let slab: UnboundedSlab<BTreeNode<u64, u64, 8>> =
+        // SAFETY: single-threaded test; slab outlives all allocated slots.
         unsafe { UnboundedSlab::with_chunk_capacity(8) };
     let mut tree = BTree::<u64, u64, 8>::new();
 
@@ -277,6 +280,7 @@ fn unbounded_insert() {
 fn drop_non_empty_btree_panics() {
     let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         let slab: UnboundedSlab<BTreeNode<u64, u64, 8>> =
+            // SAFETY: single-threaded test; slab outlives all allocated slots.
             unsafe { UnboundedSlab::with_chunk_capacity(8) };
         let mut tree = BTree::<u64, u64, 8>::new();
         tree.insert(&slab, 1, 100);
@@ -298,6 +302,7 @@ fn drop_non_empty_btree_panics() {
 fn drop_non_empty_btree_during_unwind_no_double_panic() {
     let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         let slab: UnboundedSlab<BTreeNode<u64, u64, 8>> =
+            // SAFETY: single-threaded test; slab outlives all allocated slots.
             unsafe { UnboundedSlab::with_chunk_capacity(8) };
         let mut tree = BTree::<u64, u64, 8>::new();
         tree.insert(&slab, 1, 100);
@@ -312,6 +317,7 @@ fn drop_non_empty_btree_during_unwind_no_double_panic() {
 #[test]
 fn non_empty_drop_panics_in_debug() {
     let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        // SAFETY: single-threaded test; slab outlives all allocated slots.
         let slab = unsafe { UnboundedSlab::with_chunk_capacity(8) };
         let mut tree = BTree::<u64, u64, 8>::new();
         tree.insert(&slab, 1, 100);

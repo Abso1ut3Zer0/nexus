@@ -56,6 +56,7 @@ pub struct Large {
 
 #[test]
 fn miri_bounded_basic() {
+    // SAFETY: test slab; single-threaded, all slots freed before drop.
     let slab = unsafe { BoundedSlab::<u64>::with_capacity(8) };
 
     let slot = slab.alloc(42);
@@ -66,6 +67,7 @@ fn miri_bounded_basic() {
 
 #[test]
 fn miri_unbounded_basic() {
+    // SAFETY: test slab; single-threaded, all slots freed before drop.
     let slab = unsafe { UnboundedSlab::<u64>::with_chunk_capacity(4) };
 
     let slot = slab.alloc(42);
@@ -76,6 +78,7 @@ fn miri_unbounded_basic() {
 
 #[test]
 fn miri_multiple_inserts() {
+    // SAFETY: test slab; single-threaded, all slots freed before drop.
     let slab = unsafe { BoundedSlab::<u64>::with_capacity(8) };
 
     let s1 = slab.alloc(1);
@@ -93,6 +96,7 @@ fn miri_multiple_inserts() {
 
 #[test]
 fn miri_slot_deref_mut() {
+    // SAFETY: test slab; single-threaded, all slots freed before drop.
     let slab = unsafe { BoundedSlab::<u64>::with_capacity(4) };
 
     let mut slot = slab.alloc(42);
@@ -105,6 +109,7 @@ fn miri_slot_deref_mut() {
 
 #[test]
 fn miri_slot_replace() {
+    // SAFETY: test slab; single-threaded, all slots freed before drop.
     let slab = unsafe { BoundedSlab::<u64>::with_capacity(4) };
 
     let mut slot = slab.alloc(1);
@@ -118,6 +123,7 @@ fn miri_slot_replace() {
 
 #[test]
 fn miri_slot_into_inner() {
+    // SAFETY: test slab; single-threaded, all slots freed before drop.
     let slab = unsafe { BoundedSlab::<u64>::with_capacity(4) };
 
     let slot = slab.alloc(42);
@@ -134,6 +140,7 @@ fn miri_slot_into_inner() {
 fn miri_drop_on_slot_drop() {
     reset_drop_count();
 
+    // SAFETY: test slab; single-threaded, all slots freed before drop.
     let slab = unsafe { BoundedSlab::<DropTracker>::with_capacity(4) };
 
     {
@@ -149,6 +156,7 @@ fn miri_drop_on_slot_drop() {
 fn miri_drop_on_into_inner() {
     reset_drop_count();
 
+    // SAFETY: test slab; single-threaded, all slots freed before drop.
     let slab = unsafe { BoundedSlab::<DropTracker>::with_capacity(4) };
 
     let slot = slab.alloc(DropTracker(1));
@@ -164,6 +172,7 @@ fn miri_drop_on_into_inner() {
 fn miri_drop_on_replace() {
     reset_drop_count();
 
+    // SAFETY: test slab; single-threaded, all slots freed before drop.
     let slab = unsafe { BoundedSlab::<DropTracker>::with_capacity(4) };
 
     let mut slot = slab.alloc(DropTracker(1));
@@ -180,6 +189,7 @@ fn miri_drop_on_replace() {
 fn miri_no_drop_after_leak() {
     reset_drop_count();
 
+    // SAFETY: test slab; single-threaded; slot intentionally leaked (tests drop suppression).
     let slab = unsafe { BoundedSlab::<DropTracker>::with_capacity(4) };
 
     let slot = slab.alloc(DropTracker(1));
@@ -195,6 +205,7 @@ fn miri_no_drop_after_leak() {
 
 #[test]
 fn miri_string_insert_drop() {
+    // SAFETY: test slab; single-threaded, all slots freed before drop.
     let slab = unsafe { BoundedSlab::<String>::with_capacity(4) };
 
     let slot = slab.alloc("hello world".to_string());
@@ -205,7 +216,7 @@ fn miri_string_insert_drop() {
 
 #[test]
 fn miri_vec_insert_drop() {
-    // SAFETY: slab outlives all slots
+    // SAFETY: test slab; single-threaded, all slots freed before drop.
     let slab = unsafe { BoundedSlab::<Vec<u64>>::with_capacity(4) };
 
     let slot = slab.alloc(vec![1, 2, 3, 4, 5]);
@@ -216,7 +227,7 @@ fn miri_vec_insert_drop() {
 
 #[test]
 fn miri_box_insert_drop() {
-    // SAFETY: slab outlives all slots
+    // SAFETY: test slab; single-threaded, all slots freed before drop.
     let slab = unsafe { BoundedSlab::<Box<[u8; 1024]>>::with_capacity(4) };
 
     let slot = slab.alloc(Box::new([0u8; 1024]));
@@ -227,6 +238,7 @@ fn miri_box_insert_drop() {
 
 #[test]
 fn miri_string_into_inner() {
+    // SAFETY: test slab; single-threaded, all slots freed before drop.
     let slab = unsafe { BoundedSlab::<String>::with_capacity(4) };
 
     let slot = slab.alloc("hello".to_string());
@@ -237,7 +249,7 @@ fn miri_string_into_inner() {
 
 #[test]
 fn miri_vec_replace() {
-    // SAFETY: slab outlives all slots
+    // SAFETY: test slab; single-threaded, all slots freed before drop.
     let slab = unsafe { BoundedSlab::<Vec<u64>>::with_capacity(4) };
 
     let mut slot = slab.alloc(vec![1, 2, 3]);
@@ -256,6 +268,7 @@ fn miri_vec_replace() {
 
 #[test]
 fn miri_slot_reuse_bounded() {
+    // SAFETY: test slab; single-threaded, all slots freed before drop.
     let slab = unsafe { BoundedSlab::<String>::with_capacity(2) };
 
     // Fill
@@ -290,6 +303,7 @@ fn miri_slot_reuse_bounded() {
 
 #[test]
 fn miri_slot_reuse_single() {
+    // SAFETY: test slab; single-threaded, all slots freed before drop.
     let slab = unsafe { BoundedSlab::<String>::with_capacity(1) };
 
     let mut last_ptr = std::ptr::null_mut();
@@ -312,6 +326,7 @@ fn miri_slot_reuse_single() {
 
 #[test]
 fn miri_unbounded_growth() {
+    // SAFETY: test slab; single-threaded, all slots freed before drop.
     let slab = unsafe { UnboundedSlab::<u64>::with_chunk_capacity(4) };
 
     // Fill multiple chunks
@@ -332,6 +347,7 @@ fn miri_unbounded_growth() {
 
 #[test]
 fn miri_unbounded_string_growth() {
+    // SAFETY: test slab; single-threaded, all slots freed before drop.
     let slab = unsafe { UnboundedSlab::<String>::with_chunk_capacity(4) };
 
     let slots: Vec<_> = (0..12)
@@ -355,6 +371,7 @@ fn miri_unbounded_string_growth() {
 
 #[test]
 fn miri_capacity_one() {
+    // SAFETY: test slab; single-threaded, all slots freed before drop.
     let slab = unsafe { BoundedSlab::<u64>::with_capacity(1) };
 
     let slot = slab.alloc(42);
@@ -370,6 +387,7 @@ fn miri_capacity_one() {
 
 #[test]
 fn miri_zst() {
+    // SAFETY: test slab; single-threaded, all slots freed before drop.
     let slab = unsafe { BoundedSlab::<ZeroSized>::with_capacity(10) };
 
     let slot = slab.alloc(ZeroSized);
@@ -380,6 +398,7 @@ fn miri_zst() {
 
 #[test]
 fn miri_large_struct() {
+    // SAFETY: test slab; single-threaded, all slots freed before drop.
     let slab = unsafe { BoundedSlab::<Large>::with_capacity(4) };
 
     let mut data = [0u64; 128];
@@ -401,6 +420,7 @@ fn miri_large_struct() {
 
 #[test]
 fn miri_bounded_claim_abandon() {
+    // SAFETY: test slab; single-threaded, all slots freed before drop.
     let slab = unsafe { BoundedSlab::<u64>::with_capacity(4) };
 
     // Claim and abandon — should return slot to freelist
@@ -419,6 +439,7 @@ fn miri_bounded_claim_abandon() {
 
 #[test]
 fn miri_bounded_claim_abandon_capacity_one() {
+    // SAFETY: test slab; single-threaded, all slots freed before drop.
     let slab = unsafe { BoundedSlab::<u64>::with_capacity(1) };
 
     // Claim and abandon
@@ -436,6 +457,7 @@ fn miri_bounded_claim_abandon_capacity_one() {
 
 #[test]
 fn miri_unbounded_claim_abandon() {
+    // SAFETY: test slab; single-threaded, all slots freed before drop.
     let slab = unsafe { UnboundedSlab::<u64>::with_chunk_capacity(4) };
 
     // Allocate and free to ensure chunk exists
@@ -457,6 +479,7 @@ fn miri_unbounded_claim_abandon() {
 
 #[test]
 fn miri_unbounded_claim_abandon_full_chunk() {
+    // SAFETY: test slab; single-threaded, all slots freed before drop.
     let slab = unsafe { UnboundedSlab::<u64>::with_chunk_capacity(2) };
 
     // Fill first chunk
@@ -484,6 +507,7 @@ fn miri_unbounded_claim_abandon_full_chunk() {
 
 #[test]
 fn miri_bounded_claim_write() {
+    // SAFETY: test slab; single-threaded, all slots freed before drop.
     let slab = unsafe { BoundedSlab::<u64>::with_capacity(4) };
 
     let claim = slab.claim().unwrap();
@@ -495,6 +519,7 @@ fn miri_bounded_claim_write() {
 
 #[test]
 fn miri_bounded_claim_write_string() {
+    // SAFETY: test slab; single-threaded, all slots freed before drop.
     let slab = unsafe { BoundedSlab::<String>::with_capacity(4) };
 
     let claim = slab.claim().unwrap();
@@ -508,6 +533,7 @@ fn miri_bounded_claim_write_string() {
 fn miri_bounded_claim_write_drop_type() {
     reset_drop_count();
 
+    // SAFETY: test slab; single-threaded, all slots freed before drop.
     let slab = unsafe { BoundedSlab::<DropTracker>::with_capacity(4) };
 
     let claim = slab.claim().unwrap();
@@ -520,6 +546,7 @@ fn miri_bounded_claim_write_drop_type() {
 
 #[test]
 fn miri_unbounded_claim_write() {
+    // SAFETY: test slab; single-threaded, all slots freed before drop.
     let slab = unsafe { UnboundedSlab::<u64>::with_chunk_capacity(4) };
 
     let claim = slab.claim();
@@ -540,6 +567,7 @@ mod rc_tests {
 
     #[test]
     fn miri_rc_alloc_clone_borrow_free() {
+        // SAFETY: test slab; single-threaded, all handles freed before drop.
         let slab = unsafe { RcSlab::<u64>::with_capacity(8) };
 
         let h1 = slab.alloc(42);
@@ -576,6 +604,7 @@ mod rc_tests {
     fn miri_rc_drop_counter() {
         reset_drop_count();
 
+        // SAFETY: test slab; single-threaded, all handles freed before drop.
         let slab = unsafe { RcSlab::<DropTracker>::with_capacity(8) };
 
         let h1 = slab.alloc(DropTracker(1));
@@ -597,6 +626,7 @@ mod rc_tests {
 
     #[test]
     fn miri_rc_sequential_borrows_across_clones() {
+        // SAFETY: test slab; single-threaded, all handles freed before drop.
         let slab = unsafe { RcSlab::<String>::with_capacity(8) };
 
         let h1 = slab.alloc(String::from("hello"));
@@ -646,6 +676,7 @@ mod byte_tests {
 
     #[test]
     fn miri_byte_bounded_alloc_write_free() {
+        // SAFETY: test slab; single-threaded, all slots freed before drop.
         let slab: ByteBoundedSlab<64> = unsafe { ByteBoundedSlab::with_capacity(8) };
 
         let ptr = slab.alloc(42u64);
@@ -655,6 +686,7 @@ mod byte_tests {
 
     #[test]
     fn miri_byte_bounded_alloc_write_different_types() {
+        // SAFETY: test slab; single-threaded, all slots freed before drop.
         let slab: ByteBoundedSlab<64> = unsafe { ByteBoundedSlab::with_capacity(8) };
 
         // Write a u64 (8 bytes)
@@ -671,6 +703,7 @@ mod byte_tests {
 
     #[test]
     fn miri_byte_bounded_abandon_claim() {
+        // SAFETY: test slab; single-threaded, all slots freed before drop.
         let slab: ByteBoundedSlab<64> = unsafe { ByteBoundedSlab::with_capacity(1) };
 
         // Claim and drop without writing — slot returns to freelist
@@ -687,6 +720,7 @@ mod byte_tests {
 
     #[test]
     fn miri_byte_unbounded_alloc_write_free() {
+        // SAFETY: test slab; single-threaded, all slots freed before drop.
         let slab: ByteUnboundedSlab<64> = unsafe { ByteUnboundedSlab::with_chunk_capacity(4) };
 
         let ptr = slab.alloc(42u64);
@@ -696,6 +730,7 @@ mod byte_tests {
 
     #[test]
     fn miri_byte_unbounded_multiple_chunks() {
+        // SAFETY: test slab; single-threaded, all slots freed before drop.
         let slab: ByteUnboundedSlab<64> = unsafe { ByteUnboundedSlab::with_chunk_capacity(2) };
 
         // Alloc enough to span multiple chunks
@@ -719,6 +754,7 @@ mod byte_tests {
     fn miri_byte_slab_drop_tracker() {
         reset_drop_count();
 
+        // SAFETY: test slab; single-threaded, all slots freed before drop.
         let slab: ByteBoundedSlab<64> = unsafe { ByteBoundedSlab::with_capacity(4) };
 
         let ptr = slab.alloc(DropTracker(1));
@@ -732,6 +768,7 @@ mod byte_tests {
     #[test]
     #[allow(clippy::float_cmp)]
     fn miri_byte_claim_write_aligned_type() {
+        // SAFETY: test slab; single-threaded, all slots freed before drop.
         let slab: ByteBoundedSlab<64> = unsafe { ByteBoundedSlab::with_capacity(4) };
 
         // f64 has alignment 8 — must be respected
@@ -758,10 +795,11 @@ fn miri_bounded_alloc_through_stored_pointer() {
     // Simulate the async-rt pattern: store raw pointer, cast to &Slab,
     // alloc (claim + write), read, free. Exercises the full provenance
     // chain through a stored pointer round-trip.
+    // SAFETY: test slab; single-threaded, all slots freed before drop.
     let slab = unsafe { BoundedSlab::<u64>::with_capacity(4) };
     let slab_ptr: *const BoundedSlab<u64> = &raw const slab;
 
-    // Access through raw pointer → &Slab (same as TLS round-trip)
+    // SAFETY: slab_ptr was obtained from &slab on the current stack; still valid.
     let slab_ref = unsafe { &*slab_ptr };
     let slot = slab_ref.alloc(42u64);
     assert_eq!(*slot, 42);
@@ -772,10 +810,12 @@ fn miri_bounded_alloc_through_stored_pointer() {
 fn miri_bounded_alloc_cycle_through_stored_pointer() {
     // Multiple alloc/free cycles through stored pointer — exercises freelist
     // pointer provenance across reuse.
+    // SAFETY: test slab; single-threaded, all slots freed before drop.
     let slab = unsafe { BoundedSlab::<u64>::with_capacity(2) };
     let slab_ptr: *const BoundedSlab<u64> = &raw const slab;
 
     for i in 0..10u64 {
+        // SAFETY: slab_ptr was obtained from &slab on the current stack; still valid.
         let slab_ref = unsafe { &*slab_ptr };
         let slot = slab_ref.alloc(i);
         assert_eq!(*slot, i);
@@ -787,9 +827,11 @@ fn miri_bounded_alloc_cycle_through_stored_pointer() {
 fn miri_bounded_two_slots_through_stored_pointer() {
     // Claim two slots via alloc, free in reverse order.
     // Exercises freelist pointer provenance when multiple slots are live.
+    // SAFETY: test slab; single-threaded, all slots freed before drop.
     let slab = unsafe { BoundedSlab::<String>::with_capacity(4) };
     let slab_ptr: *const BoundedSlab<String> = &raw const slab;
 
+    // SAFETY: slab_ptr was obtained from &slab on the current stack; still valid.
     let slab_ref = unsafe { &*slab_ptr };
     let slot1 = slab_ref.alloc(String::from("first"));
     let slot2 = slab_ref.alloc(String::from("second"));
@@ -805,9 +847,11 @@ fn miri_bounded_two_slots_through_stored_pointer() {
 fn miri_bounded_claim_write_through_stored_pointer() {
     // Two-phase alloc (claim + write) through stored pointer.
     // Exercises claim_ptr → write_value provenance chain.
+    // SAFETY: test slab; single-threaded, all slots freed before drop.
     let slab = unsafe { BoundedSlab::<u64>::with_capacity(4) };
     let slab_ptr: *const BoundedSlab<u64> = &raw const slab;
 
+    // SAFETY: slab_ptr was obtained from &slab on the current stack; still valid.
     let slab_ref = unsafe { &*slab_ptr };
     let claim = slab_ref.claim().unwrap();
     let slot = claim.write(99u64);
@@ -818,10 +862,12 @@ fn miri_bounded_claim_write_through_stored_pointer() {
 #[test]
 fn miri_unbounded_claim_write_through_stored_pointer() {
     // Same pattern for unbounded slab — exercises chunk-based allocation.
+    // SAFETY: test slab; single-threaded, all slots freed before drop.
     let slab = unsafe { UnboundedSlab::<u64>::with_chunk_capacity(4) };
     let slab_ptr: *const UnboundedSlab<u64> = &raw const slab;
 
     for i in 0..20u64 {
+        // SAFETY: slab_ptr was obtained from &slab on the current stack; still valid.
         let slab_ref = unsafe { &*slab_ptr };
         let slot = slab_ref.alloc(i);
         assert_eq!(*slot, i);
@@ -832,9 +878,11 @@ fn miri_unbounded_claim_write_through_stored_pointer() {
 #[test]
 fn miri_unbounded_stored_pointer_cross_chunk() {
     // Allocate enough to trigger chunk growth, all through stored pointer.
+    // SAFETY: test slab; single-threaded, all slots freed before drop.
     let slab = unsafe { UnboundedSlab::<u64>::with_chunk_capacity(2) };
     let slab_ptr: *const UnboundedSlab<u64> = &raw const slab;
 
+    // SAFETY: slab_ptr was obtained from &slab on the current stack; still valid.
     let slab_ref = unsafe { &*slab_ptr };
 
     // 6 allocs with capacity 2 per chunk = 3 chunks

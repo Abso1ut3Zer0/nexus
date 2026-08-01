@@ -83,8 +83,8 @@ impl<T> fmt::Debug for Claim<'_, T> {
 impl<T> Drop for Claim<'_, T> {
     fn drop(&mut self) {
         // Abandoned claim - return slot to freelist
-        // SAFETY: slot_ptr is valid and still vacant (never written to)
         let free_head = self.slab.free_head.get();
+        // SAFETY: slot_ptr is valid and still vacant (never written to)
         unsafe {
             (*self.slot_ptr).set_next_free(free_head);
         }
@@ -366,6 +366,7 @@ mod tests {
 
     #[test]
     fn slab_basic() {
+        // SAFETY: test slab; single-threaded, all slots freed before drop.
         let slab = unsafe { Slab::<u64>::with_capacity(100) };
         assert_eq!(slab.capacity(), 100);
 
@@ -376,6 +377,7 @@ mod tests {
 
     #[test]
     fn slab_full() {
+        // SAFETY: test slab; single-threaded, all slots freed before drop.
         let slab = unsafe { Slab::<u64>::with_capacity(2) };
         let s1 = slab.alloc(1);
         let s2 = slab.alloc(2);
@@ -391,6 +393,7 @@ mod tests {
 
     #[test]
     fn slot_deref_mut() {
+        // SAFETY: test slab; single-threaded, all slots freed before drop.
         let slab = unsafe { Slab::<String>::with_capacity(10) };
         let mut slot = slab.alloc("hello".to_string());
         slot.push_str(" world");
@@ -400,6 +403,7 @@ mod tests {
 
     #[test]
     fn slot_dealloc_take() {
+        // SAFETY: test slab; single-threaded, all slots freed before drop.
         let slab = unsafe { Slab::<String>::with_capacity(10) };
         let slot = slab.alloc("hello".to_string());
 
@@ -414,6 +418,7 @@ mod tests {
 
     #[test]
     fn slab_debug() {
+        // SAFETY: test slab; single-threaded, all slots freed before drop.
         let slab = unsafe { Slab::<u64>::with_capacity(10) };
         let s = slab.alloc(42);
         let debug = format!("{:?}", slab);
@@ -424,6 +429,7 @@ mod tests {
 
     #[test]
     fn borrow_traits() {
+        // SAFETY: test slab; single-threaded, all slots freed before drop.
         let slab = unsafe { Slab::<u64>::with_capacity(10) };
         let mut slot = slab.alloc(42);
 
@@ -441,6 +447,7 @@ mod tests {
     #[test]
     fn slot_debug_drop_panics() {
         let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            // SAFETY: test slab; slot intentionally not freed (tests debug drop panic).
             let slab = unsafe { Slab::<u64>::with_capacity(10) };
             let _slot = slab.alloc(42u64);
             // slot drops here without being freed
@@ -450,6 +457,7 @@ mod tests {
 
     #[test]
     fn capacity_one() {
+        // SAFETY: test slab; single-threaded, all slots freed before drop.
         let slab = unsafe { Slab::<u64>::with_capacity(1) };
 
         assert_eq!(slab.capacity(), 1);

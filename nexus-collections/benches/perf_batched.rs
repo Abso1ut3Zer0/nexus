@@ -27,6 +27,7 @@ const STEADY_SIZE: usize = 25_000;
 
 #[inline(always)]
 fn rdtsc_start() -> u64 {
+    // SAFETY: x86_64 intrinsics; benchmark is x86_64-only.
     unsafe {
         std::arch::x86_64::_mm_lfence();
         std::arch::x86_64::_rdtsc()
@@ -35,6 +36,7 @@ fn rdtsc_start() -> u64 {
 
 #[inline(always)]
 fn rdtsc_end() -> u64 {
+    // SAFETY: x86_64 intrinsics; benchmark is x86_64-only.
     unsafe {
         let mut aux: u32 = 0;
         let tsc = std::arch::x86_64::__rdtscp(&raw mut aux);
@@ -78,7 +80,9 @@ impl Xorshift {
 }
 
 fn main() {
+    // SAFETY: single-threaded benchmark; slab outlives all allocated nodes.
     let heap_slab = unsafe { Slab::<HeapNode<u64>>::with_capacity(CAPACITY) };
+    // SAFETY: single-threaded benchmark; slab outlives all allocated nodes.
     let list_slab = unsafe { Slab::<ListNode<u64>>::with_capacity(CAPACITY) };
 
     let mut rng = Xorshift::new(0xDEAD_BEEF_CAFE_BABEu64);
@@ -199,11 +203,13 @@ fn main() {
         let mut samples = Vec::with_capacity(SAMPLES);
         for _ in 0..WARMUP {
             seq!(I in 0..100 { heap.link(&h[I]); });
+            // SAFETY: each slot was linked in the preceding seq!; the precondition (node is linked) is upheld.
             seq!(I in 0..100 { unsafe { heap.unlink_unchecked(&h[I], &heap_slab) }; });
         }
         for _ in 0..SAMPLES {
             seq!(I in 0..100 { heap.link(&h[I]); });
             let s = rdtsc_start();
+            // SAFETY: each slot was linked in the preceding seq!; the precondition (node is linked) is upheld.
             seq!(I in 0..100 { unsafe { heap.unlink_unchecked(&h[I], &heap_slab) }; });
             let e = rdtsc_end();
             samples.push((e - s) / BATCH as u64);
@@ -388,11 +394,13 @@ fn main() {
         let mut samples = Vec::with_capacity(SAMPLES);
         for _ in 0..WARMUP {
             seq!(I in 0..100 { list.link_back(&h[I]); });
+            // SAFETY: each slot was linked in the preceding seq!; the precondition (node is linked) is upheld.
             seq!(I in 0..100 { unsafe { list.unlink_unchecked(&h[I], &list_slab) }; });
         }
         for _ in 0..SAMPLES {
             seq!(I in 0..100 { list.link_back(&h[I]); });
             let s = rdtsc_start();
+            // SAFETY: each slot was linked in the preceding seq!; the precondition (node is linked) is upheld.
             seq!(I in 0..100 { unsafe { list.unlink_unchecked(&h[I], &list_slab) }; });
             let e = rdtsc_end();
             samples.push((e - s) / BATCH as u64);
@@ -426,10 +434,12 @@ fn main() {
         seq!(I in 0..100 { list.link_back(&h[I]); });
         let mut samples = Vec::with_capacity(SAMPLES);
         for _ in 0..WARMUP {
+            // SAFETY: all slots are currently linked in the list; move_to_front_unchecked precondition is met.
             seq!(I in 0..100 { unsafe { list.move_to_front_unchecked(&h[I]) }; });
         }
         for _ in 0..SAMPLES {
             let s = rdtsc_start();
+            // SAFETY: all slots are currently linked in the list; move_to_front_unchecked precondition is met.
             seq!(I in 0..100 { unsafe { list.move_to_front_unchecked(&h[I]) }; });
             let e = rdtsc_end();
             samples.push((e - s) / BATCH as u64);
@@ -464,10 +474,12 @@ fn main() {
         seq!(I in 0..100 { list.link_back(&h[I]); });
         let mut samples = Vec::with_capacity(SAMPLES);
         for _ in 0..WARMUP {
+            // SAFETY: all slots are currently linked in the list; move_to_back_unchecked precondition is met.
             seq!(I in 0..100 { unsafe { list.move_to_back_unchecked(&h[I]) }; });
         }
         for _ in 0..SAMPLES {
             let s = rdtsc_start();
+            // SAFETY: all slots are currently linked in the list; move_to_back_unchecked precondition is met.
             seq!(I in 0..100 { unsafe { list.move_to_back_unchecked(&h[I]) }; });
             let e = rdtsc_end();
             samples.push((e - s) / BATCH as u64);

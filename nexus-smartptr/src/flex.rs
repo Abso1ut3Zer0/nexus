@@ -208,6 +208,7 @@ impl<T: ?Sized, B: Buffer> Flex<T, B> {
         if hp.is_null() {
             // Inline: value lives after the overhead.
             let base = self.inner.as_ptr().cast::<u8>();
+            // SAFETY: VALUE_OFFSET is within buffer bounds (enforced by const assert).
             unsafe { base.add(Self::VALUE_OFFSET) }.cast::<()>()
         } else {
             hp.cast::<()>().cast_const()
@@ -220,6 +221,7 @@ impl<T: ?Sized, B: Buffer> Flex<T, B> {
         let hp = self.heap_ptr();
         if hp.is_null() {
             let base = self.inner.as_mut_ptr().cast::<u8>();
+            // SAFETY: VALUE_OFFSET is within buffer bounds (enforced by const assert).
             unsafe { base.add(Self::VALUE_OFFSET) }.cast::<()>()
         } else {
             hp.cast::<()>()
@@ -234,8 +236,10 @@ impl<T: ?Sized, B: Buffer> Flex<T, B> {
             let base = self.inner.as_ptr().cast::<u8>();
             // SAFETY: metadata at offset 0, preserved from construction.
             let metadata = Metadata(unsafe { base.cast::<*const ()>().read() });
+            // SAFETY: data and metadata come from a valid Flex; metadata matches the concrete type.
             unsafe { meta::make_ptr(data, metadata) }
         } else {
+            // SAFETY: Sized T; data is a valid data pointer.
             unsafe { meta::make_ptr(data, Metadata::NULL) }
         }
     }
@@ -246,9 +250,12 @@ impl<T: ?Sized, B: Buffer> Flex<T, B> {
         let data = self.data_ptr_mut();
         if meta::is_fat_ptr::<T>() {
             let base = self.inner.as_ptr().cast::<u8>();
+            // SAFETY: metadata written at offset 0 during construction.
             let metadata = Metadata(unsafe { base.cast::<*const ()>().read() });
+            // SAFETY: data and metadata come from a valid Flex; metadata matches the concrete type.
             unsafe { meta::make_ptr_mut(data, metadata) }
         } else {
+            // SAFETY: Sized T; data is a valid data pointer.
             unsafe { meta::make_ptr_mut(data, Metadata::NULL) }
         }
     }
@@ -335,6 +342,7 @@ impl<T: ?Sized, B: Buffer> Drop for Flex<T, B> {
 // MaybeUninit<B> is raw storage, not a meaningful Send/Sync participant.
 #[allow(clippy::non_send_fields_in_send_ty)]
 unsafe impl<T: ?Sized + Send, B: Buffer> Send for Flex<T, B> {}
+// SAFETY: same as Send above; Sync depends only on T.
 unsafe impl<T: ?Sized + Sync, B: Buffer> Sync for Flex<T, B> {}
 
 #[cfg(test)]
@@ -365,6 +373,7 @@ mod tests {
 
     fn make_flex_greet<V: Greet + 'static, B: Buffer>(val: V) -> Flex<dyn Greet, B> {
         let ptr: *const dyn Greet = &val as &dyn Greet;
+        // SAFETY: ptr coerced from val above; metadata matches V.
         unsafe { Flex::new_raw(val, ptr) }
     }
 
@@ -484,6 +493,7 @@ mod tests {
 
         fn make<V: Increment + 'static, B: Buffer>(val: V) -> Flex<dyn Increment, B> {
             let ptr: *const dyn Increment = &val as &dyn Increment;
+            // SAFETY: ptr coerced from val above; metadata matches V.
             unsafe { Flex::new_raw(val, ptr) }
         }
 
@@ -525,6 +535,7 @@ mod tests {
 
         fn make<V: Accumulate + 'static, B: Buffer>(val: V) -> Flex<dyn Accumulate, B> {
             let ptr: *const dyn Accumulate = &val as &dyn Accumulate;
+            // SAFETY: ptr coerced from val above; metadata matches V.
             unsafe { Flex::new_raw(val, ptr) }
         }
 
@@ -610,6 +621,7 @@ mod tests {
     fn display_trait_object_inline() {
         let val: u32 = 42;
         let ptr: *const dyn Display = &val as &dyn Display;
+        // SAFETY: ptr coerced from val above; metadata matches V.
         let f: Flex<dyn Display, B32> = unsafe { Flex::new_raw(val, ptr) };
         assert!(f.is_inline());
         assert_eq!(format!("{}", &*f), "42");

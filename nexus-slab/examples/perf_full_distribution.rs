@@ -29,6 +29,7 @@ macro_rules! unroll {
 #[inline(always)]
 fn rdtsc_start() -> u64 {
     #[cfg(target_arch = "x86_64")]
+    // SAFETY: x86_64 intrinsics; benchmark is x86_64-only.
     unsafe {
         std::arch::x86_64::_mm_lfence();
         std::arch::x86_64::_rdtsc()
@@ -40,6 +41,7 @@ fn rdtsc_start() -> u64 {
 #[inline(always)]
 fn rdtsc_end() -> u64 {
     #[cfg(target_arch = "x86_64")]
+    // SAFETY: x86_64 intrinsics; benchmark is x86_64-only.
     unsafe {
         let tsc = std::arch::x86_64::__rdtscp(&mut 0u32 as *mut _);
         std::arch::x86_64::_mm_lfence();
@@ -75,6 +77,7 @@ fn bench_get() {
     let mut slab_hot_hist: Histogram<u64> = Histogram::new(3).unwrap();
 
     // Setup slab
+    // SAFETY: single-threaded benchmark; slab outlives all allocated slots.
     let slab = unsafe { BoundedSlab::<u64>::with_capacity(NUM_SLOTS) };
     let entries: Vec<Slot<u64>> = (0..NUM_SLOTS as u64).map(|i| slab.alloc(i)).collect();
 
@@ -159,6 +162,7 @@ fn bench_get_mut() {
     let mut slab_hist: Histogram<u64> = Histogram::new(3).unwrap();
 
     // Setup slab
+    // SAFETY: single-threaded benchmark; slab outlives all allocated slots.
     let slab = unsafe { BoundedSlab::<u64>::with_capacity(NUM_SLOTS) };
     let mut entries: Vec<Slot<u64>> = (0..NUM_SLOTS as u64).map(|i| slab.alloc(i)).collect();
 
@@ -216,6 +220,7 @@ fn bench_insert() {
     let mut slab_hist: Histogram<u64> = Histogram::new(3).unwrap();
 
     // slab insert - need to remove after each batch to make room
+    // SAFETY: single-threaded benchmark; slab outlives all allocated slots.
     let slab = unsafe { BoundedSlab::<u64>::with_capacity(NUM_SLOTS) };
     let mut temp_entries: Vec<Slot<u64>> = Vec::with_capacity(BATCH_SIZE as usize);
 
@@ -273,6 +278,7 @@ fn bench_remove() {
     let mut slab_hist: Histogram<u64> = Histogram::new(3).unwrap();
 
     // slot free_take - insert batch, then remove batch
+    // SAFETY: single-threaded benchmark; slab outlives all allocated slots.
     let slab = unsafe { BoundedSlab::<u64>::with_capacity(NUM_SLOTS) };
 
     for _ in 0..OPS / BATCH_SIZE as usize {
@@ -329,6 +335,7 @@ fn bench_replace() {
     let mut slab_hist: Histogram<u64> = Histogram::new(3).unwrap();
 
     // Setup slab
+    // SAFETY: single-threaded benchmark; slab outlives all allocated slots.
     let slab = unsafe { BoundedSlab::<u64>::with_capacity(NUM_SLOTS) };
     let mut entries: Vec<Slot<u64>> = (0..NUM_SLOTS as u64).map(|i| slab.alloc(i)).collect();
 
@@ -399,6 +406,7 @@ fn main() {
     // Warmup: exercise slab and slab-crate paths to trigger page faults,
     // TLS init, and cache priming before timed measurements.
     {
+        // SAFETY: single-threaded benchmark; slab outlives all allocated slots.
         let warmup_slab = unsafe { BoundedSlab::<u64>::with_capacity(NUM_SLOTS) };
         let warmup_entries: Vec<Slot<u64>> = (0..NUM_SLOTS as u64)
             .map(|i| warmup_slab.alloc(i))

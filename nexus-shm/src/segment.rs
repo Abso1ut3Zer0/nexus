@@ -148,6 +148,10 @@ impl Segment {
     /// `offset` must be 4-byte-aligned and within `data_len()`.
     #[inline]
     pub unsafe fn commit_len_at(&self, offset: usize) -> &AtomicU32 {
+        // SAFETY: The caller guarantees `offset` is 4-byte-aligned and within
+        // `data_len()`; `data()` is non-null (page-aligned mmap base + HEADER),
+        // so `data().add(offset)` is in bounds. The cast to `*mut AtomicU32` is
+        // sound because 4-byte alignment is guaranteed by the caller.
         unsafe { AtomicU32::from_ptr(self.data().add(offset).cast()) }
     }
 
@@ -158,6 +162,10 @@ impl Segment {
     /// load of `commit_len_at`) and within `data_len()`.
     #[inline]
     pub unsafe fn frame_kind_at(&self, offset: usize) -> u16 {
+        // SAFETY: The caller guarantees the frame header at `offset` is within
+        // `data_len()` and published (Acquire on the commit-len field); the 8-byte
+        // header means `offset + 4` is also in bounds. `read_unaligned` requires no
+        // stricter alignment than byte alignment, which the payload always satisfies.
         unsafe { std::ptr::read_unaligned(self.data().add(offset + 4).cast()) }
     }
 
@@ -168,6 +176,11 @@ impl Segment {
     /// reserved for this record.
     #[inline]
     pub unsafe fn write_frame_kind_at(&self, offset: usize, kind: u16) {
+        // SAFETY: The caller guarantees the 8-byte frame header starting at
+        // `offset` is within `data_len()` and exclusively reserved for this
+        // write; `offset + 4` and `offset + 6` are therefore also in bounds.
+        // `write_unaligned` requires only byte alignment, which the payload
+        // always provides.
         unsafe {
             std::ptr::write_unaligned(self.data().add(offset + 4).cast::<u16>(), kind);
             std::ptr::write_unaligned(self.data().add(offset + 6).cast::<u16>(), 0);
@@ -181,6 +194,9 @@ impl Segment {
     /// reserved for this write.
     #[inline]
     pub unsafe fn write_at<T: Copy>(&self, offset: usize, val: T) {
+        // SAFETY: The caller guarantees `[offset, offset + size_of::<T>())` is
+        // within `data_len()` and exclusively reserved. `write_unaligned` requires
+        // only byte alignment, which the payload always provides.
         unsafe { std::ptr::write_unaligned(self.data().add(offset).cast(), val) }
     }
 
@@ -191,6 +207,9 @@ impl Segment {
     /// the data must be published before this call.
     #[inline]
     pub unsafe fn read_at<T: Copy>(&self, offset: usize) -> T {
+        // SAFETY: The caller guarantees `[offset, offset + size_of::<T>())` is
+        // within `data_len()` and the bytes are published before this call.
+        // `read_unaligned` requires only byte alignment, which the payload provides.
         unsafe { std::ptr::read_unaligned(self.data().add(offset).cast()) }
     }
 
@@ -201,6 +220,10 @@ impl Segment {
     /// The returned slice borrows `self` so the segment must outlive the slice.
     #[inline]
     pub unsafe fn slice_at(&self, offset: usize, len: usize) -> &[u8] {
+        // SAFETY: The caller guarantees `[offset, offset + len)` is within
+        // `data_len()` and bytes are published. `data()` is non-null (mmap) and
+        // the pointer arithmetic stays within the single mapped allocation; the
+        // returned slice borrows `self` so the mapping outlives it.
         unsafe { std::slice::from_raw_parts(self.data().add(offset), len) }
     }
 
@@ -211,6 +234,9 @@ impl Segment {
     /// write, and the segment must outlive the slice.
     #[inline]
     pub unsafe fn slice_mut_at(&mut self, offset: usize, len: usize) -> &mut [u8] {
+        // SAFETY: The caller guarantees `[offset, offset + len)` is within
+        // `data_len()` and exclusively reserved. `&mut self` prevents a second
+        // aliased `&mut [u8]` reference for the duration of the returned borrow.
         unsafe { std::slice::from_raw_parts_mut(self.data().add(offset), len) }
     }
 
@@ -288,11 +314,15 @@ mod tests {
         assert_eq!(seg.data_len(), 4096);
         assert_eq!(seg.status(), Status::Alive);
 
+        // SAFETY: seg was created with data_len=4096; offset 0, len 1 is in
+        // bounds and exclusively owned within this test scope.
         unsafe { seg.slice_mut_at(0, 1)[0] = 0xAB };
 
         let peer = Segment::attach(open_file(&path)).unwrap();
         assert_eq!(peer.data_len(), 4096);
         assert_eq!(peer.status(), Status::Alive);
+        // SAFETY: peer is attached to the same 4096-byte segment; the writer
+        // (`seg`) has not dropped yet so the byte at offset 0 is published.
         assert_eq!(unsafe { peer.slice_at(0, 1)[0] }, 0xAB);
 
         std::fs::remove_file(&path).unwrap();
