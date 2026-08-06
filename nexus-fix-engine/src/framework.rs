@@ -280,7 +280,6 @@ impl<'r, D: FixDictionary> LogonDecision<'r, D> {
 /// Zero-copy FIX frame reader, dictionary-aware via `D::Header`.
 pub struct MessageReader<D: FixDictionary> {
     pub(crate) inner: FrameReader,
-    pub(crate) frame: Vec<u8>,
     _dict: PhantomData<fn() -> D>,
 }
 
@@ -288,7 +287,6 @@ impl<D: FixDictionary> MessageReader<D> {
     pub fn new() -> Self {
         Self {
             inner: FrameReader::builder().build(),
-            frame: Vec::new(),
             _dict: PhantomData,
         }
     }
@@ -296,7 +294,6 @@ impl<D: FixDictionary> MessageReader<D> {
     pub fn with_frame_reader(inner: FrameReader) -> Self {
         Self {
             inner,
-            frame: Vec::new(),
             _dict: PhantomData,
         }
     }

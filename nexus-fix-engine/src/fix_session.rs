@@ -31,11 +31,11 @@
 //! Returning a borrowed [`Message`] directly from a loop that also reads more
 //! bytes hits the borrow checker (the classic NLL conditional-borrow wall). So
 //! [`poll`](FixSession::poll) returns a *non-borrowing* [`PollOutcome`] after
-//! processing one frame into a stable buffer (`reader.frame`), and
-//! [`message`](FixSession::message) borrows that stable buffer to reconstruct the
-//! typed [`Message`]. The `Message` borrows the *reader*, never `&mut self`, so
-//! `&mut session` and `&mut writer` stay free for the reply while the payload is
-//! still borrowed.
+//! locating and processing one frame — which stays pinned at the front of the
+//! reader's buffer, not copied out — and [`message`](FixSession::message)
+//! borrows that frame in place (zero-copy) to reconstruct the typed [`Message`].
+//! The `Message` borrows the *reader*, never `&mut self`, so `&mut session` and
+//! `&mut writer` stay free for the reply while the payload is still borrowed.
 
 use core::marker::PhantomData;
 use std::io::{self, Read, Write};
@@ -867,14 +867,14 @@ impl<D: FixDictionary> FixSession<D> {
             self.journal.set_next_inbound(n);
         }
 
-        // Pull the next complete frame into the stable buffer. A malformed frame
-        // is surfaced as the recoverable `Error::Malformed` (one per poll) rather
-        // than silently skipped, so the caller can observe link deterioration; the
-        // reader has already advanced past it, so the next poll resumes cleanly.
+        // Locate the next complete frame. A malformed frame is surfaced as the
+        // recoverable `Error::Malformed` (one per poll) rather than silently
+        // skipped, so the caller can observe link deterioration; the reader has
+        // already advanced past it, so the next poll resumes cleanly.
         if reader.inner.should_compact() {
             reader.inner.compact();
         }
-        match reader.inner.next() {
+        match reader.inner.poll() {
             Err(FrameError::MessageTooLarge { size }) => {
                 return Err(Error::MessageTooLarge(size));
             }
@@ -886,11 +886,10 @@ impl<D: FixDictionary> FixSession<D> {
                     reason,
                 });
             }
-            Ok(None) => return Ok(PollOutcome::NeedMoreBytes),
-            Ok(Some(raw)) => {
-                reader.frame.clear();
-                reader.frame.extend_from_slice(raw);
-            }
+            Ok(0) => return Ok(PollOutcome::NeedMoreBytes),
+            // A complete frame is located and pinned at the buffer front;
+            // `process_frame`/`message` borrow it in place via `reader.inner.frame()`.
+            Ok(_) => {}
         }
 
         self.process_frame(reader, writer, now)
@@ -904,7 +903,7 @@ impl<D: FixDictionary> FixSession<D> {
     /// The borrow is over the `reader`'s stable frame buffer — *not* `&mut self` —
     /// so `&mut session` and `&mut writer` stay free for the reply.
     pub fn message<'r>(&self, reader: &'r MessageReader<D>) -> Message<'r, D> {
-        let frame = &reader.frame[..];
+        let frame = reader.inner.frame();
         match self.pending {
             // Only the initiator ack (`acknowledged == true`) is ever surfaced as a
             // `Control::Logon`; the acceptor returns `Control::LogonRequest`.
@@ -993,16 +992,16 @@ impl<D: FixDictionary> FixSession<D> {
         }
     }
 
-    /// Full protocol handling for the frame in `reader.frame`. Comp-id
-    /// validation, inbound journaling, per-type state driving, and outbound
-    /// admin/resend enqueue into `writer`.
+    /// Full protocol handling for the frame located in `reader` (borrowed in
+    /// place via `reader.inner.frame()`). Comp-id validation, inbound journaling,
+    /// per-type state driving, and outbound admin/resend enqueue into `writer`.
     fn process_frame<C: SessionCustomizer>(
         &mut self,
         reader: &MessageReader<D>,
         writer: &mut MessageWriter<D, C>,
         now: i128,
     ) -> Result<PollOutcome, Error> {
-        let frame = &reader.frame[..];
+        let frame = reader.inner.frame();
 
         let (sender_ok, target_ok, seq, poss_dup) = {
             let hdr = D::Header::decode(frame);
@@ -1045,7 +1044,7 @@ impl<D: FixDictionary> FixSession<D> {
         // not journaled — they never reach here.
         journal_write(frame.len(), || self.journal.store_inbound(frame))?;
 
-        let frame = &reader.frame[..];
+        let frame = reader.inner.frame();
         let raw_type = if let Some(s) = find_tag(frame, 0, 35) {
             s.slice(frame)
         } else {
