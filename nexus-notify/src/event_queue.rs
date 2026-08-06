@@ -711,4 +711,68 @@ mod tests {
         assert_eq!(events.len(), 1);
         assert_eq!(events.iter().next().unwrap().index(), 5);
     }
+
+    // ====================================================
+    // Drain tests
+    // ====================================================
+
+    #[test]
+    fn drain_partial_leaves_remainder() {
+        let (notifier, poller) = event_queue(64);
+        let mut events = Events::with_capacity(64);
+
+        for i in 0..5 {
+            notifier.notify(Token::new(i)).unwrap();
+        }
+        poller.poll(&mut events);
+        assert_eq!(events.len(), 5);
+
+        // Take only the first 2, then drop the iterator early.
+        {
+            let mut drain = events.drain();
+            assert_eq!(drain.next().unwrap().index(), 0);
+            assert_eq!(drain.next().unwrap().index(), 1);
+            // `drain` dropped here without exhausting — untaken tokens must survive.
+        }
+
+        assert_eq!(events.len(), 3);
+        let remaining: Vec<usize> = events.iter().map(Token::index).collect();
+        assert_eq!(remaining, vec![2, 3, 4]);
+    }
+
+    #[test]
+    fn drain_full_empties_buffer() {
+        let (notifier, poller) = event_queue(64);
+        let mut events = Events::with_capacity(64);
+
+        for i in 0..4 {
+            notifier.notify(Token::new(i)).unwrap();
+        }
+        poller.poll(&mut events);
+        assert_eq!(events.len(), 4);
+
+        let drained: Vec<usize> = events.drain().map(Token::index).collect();
+        assert_eq!(drained, vec![0, 1, 2, 3]);
+        assert!(events.is_empty());
+        assert!(events.as_slice().is_empty());
+
+        // Buffer is fully consumed — next poll must not panic (is_drained() holds).
+        poller.poll(&mut events);
+        assert!(events.is_empty());
+    }
+
+    #[test]
+    #[cfg(debug_assertions)]
+    #[should_panic(expected = "undrained tokens still in the buffer")]
+    fn poll_limit_panics_on_undrained_buffer() {
+        let (notifier, poller) = event_queue(64);
+        let mut events = Events::with_capacity(64);
+
+        notifier.notify(Token::new(0)).unwrap();
+        poller.poll(&mut events);
+        assert_eq!(events.len(), 1);
+
+        // Buffer not drained — next poll must panic, not silently discard.
+        poller.poll(&mut events);
+    }
 }
