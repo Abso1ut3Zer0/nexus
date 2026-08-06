@@ -502,4 +502,20 @@ mod tests {
             notify.dispatch_list.capacity(),
         );
     }
+
+    #[test]
+    #[cfg(debug_assertions)]
+    #[should_panic(expected = "undrained tokens still in the buffer")]
+    fn poll_limit_panics_on_undrained_buffer() {
+        let mut notify = LocalNotify::with_capacity(4);
+        let mut events = Events::with_capacity(4);
+
+        let t = notify.register();
+        notify.mark(t);
+        notify.poll(&mut events);
+        assert_eq!(events.len(), 1);
+
+        // Buffer not drained — next poll must panic, not silently discard.
+        notify.poll(&mut events);
+    }
 }

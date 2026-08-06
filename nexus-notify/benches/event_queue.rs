@@ -15,6 +15,7 @@ fn bench_notify(c: &mut Criterion) {
         let mut events = Events::with_capacity(4096);
         b.iter(|| {
             poller.poll(&mut events);
+            events.drain().for_each(drop);
             notifier.notify(token).ok();
         });
     });
@@ -69,6 +70,7 @@ fn bench_poll(c: &mut Criterion) {
                     notifier.notify(*t).ok();
                 }
                 poller.poll(&mut events);
+                events.drain().for_each(drop);
             });
         });
     }
@@ -94,8 +96,10 @@ fn bench_poll_limit(c: &mut Criterion) {
                     notifier.notify(*t).ok();
                 }
                 poller.poll_limit(&mut events, limit);
+                events.drain().for_each(drop);
                 // Drain rest
                 poller.poll(&mut events);
+                events.drain().for_each(drop);
             });
         });
     }
@@ -119,6 +123,7 @@ fn bench_channel_recv_wake(c: &mut Criterion) {
         b.iter(|| {
             sender.notify(token).ok();
             receiver.recv(&mut events);
+            events.drain().for_each(drop);
         });
     });
 
@@ -130,6 +135,7 @@ fn bench_channel_recv_wake(c: &mut Criterion) {
         b.iter(|| {
             sender.notify(token).ok();
             receiver.try_recv(&mut events);
+            events.drain().for_each(drop);
         });
     });
 
