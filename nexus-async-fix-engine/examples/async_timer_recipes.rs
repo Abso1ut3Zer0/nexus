@@ -292,7 +292,7 @@ async fn run_session(
         mut session,
         mut reader,
         mut writer,
-    } = FixSession::<Fix44>::builder().build(
+    } = FixSession::builder(Fix44).build(
         SessionState::new(hbi),
         config,
         FixJournal::open(dir, 0, 256).unwrap(),

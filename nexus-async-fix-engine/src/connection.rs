@@ -227,7 +227,7 @@ impl<D: FixDictionary, C: SessionCustomizer> FixConnectionBuilder<D, C> {
         config: SessionConfig,
         journal: FixJournal,
     ) -> FixParts<D, C> {
-        FixSession::builder()
+        crate::FixSessionBuilder::new()
             .reader_capacity(self.reader_cap)
             .writer_capacity(self.writer_cap)
             .customizer(self.customizer)
@@ -258,7 +258,8 @@ impl<D: FixDictionary, C: SessionCustomizer> FixConnectionBuilder<D, C> {
 /// use std::time::Duration;
 ///
 /// // One-step: open + build + bundle.
-/// let mut conn = FixConnection::<_, Fix44>::open(
+/// let mut conn = FixConnection::open(
+///     Fix44,
 ///     addr,
 ///     SessionState::new(Duration::from_secs(30)),
 ///     SessionConfig { sender, target },
@@ -289,26 +290,35 @@ pub struct FixConnection<S, D: FixDictionary, C = NoCustomizer> {
 impl<D: FixDictionary> FixConnection<MaybeTls, D, NoCustomizer> {
     /// Start a [`FixConnectionBuilder`] to size buffers, set socket options, attach
     /// a customizer, and `connect` / `connect_tls` / `accept`.
+    ///
+    /// Pass the dictionary marker (a ZST) so `D` is inferred — no turbofish:
+    /// `FixConnection::builder(Fix44)`. The value itself is unused; only its type
+    /// is read.
     #[must_use]
-    pub fn builder() -> FixConnectionBuilder<D, NoCustomizer> {
+    #[allow(clippy::needless_pass_by_value)] // ZST marker taken by value only to infer `D`.
+    pub fn builder(dictionary: D) -> FixConnectionBuilder<D, NoCustomizer> {
+        let _ = dictionary;
         FixConnectionBuilder::new()
     }
 
     /// One-step construction of the owns-everything bundle: open a plaintext TCP
     /// connection to `addr` and wrap the trio + transport. Equivalent to
-    /// `FixConnection::from_parts(FixConnection::builder().connect(addr, …).await?)`.
+    /// `FixConnection::from_parts(FixConnection::builder(dictionary).connect(addr, …).await?)`.
     ///
     /// Does **not** send a Logon — that is [`connect`](Self::connect), the FIX-level
     /// handshake. (Named `open`, not `connect`, because `connect(&mut self, now)` is
     /// already the Logon send helper — the same verb name as the raw
     /// `session.connect`.) For TLS or buffer/socket-option control, use the builder
     /// path.
+    #[allow(clippy::needless_pass_by_value)] // ZST marker taken by value only to infer `D`.
     pub async fn open<A: ToSocketAddrs>(
+        dictionary: D,
         addr: A,
         state: SessionState,
         config: SessionConfig,
         journal: FixJournal,
     ) -> io::Result<Self> {
+        let _ = dictionary;
         let (parts, stream) = FixConnectionBuilder::new()
             .connect(addr, state, config, journal)
             .await?;

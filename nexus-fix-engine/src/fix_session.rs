@@ -230,6 +230,29 @@ pub struct FixSessionBuilder<D: FixDictionary, C = NoCustomizer> {
     _dict: PhantomData<fn() -> D>,
 }
 
+impl<D: FixDictionary> FixSessionBuilder<D, NoCustomizer> {
+    /// A new builder with 64 KiB reader/writer buffers and no customizer.
+    ///
+    /// The value-free constructor behind [`FixSession::builder`](FixSession::builder);
+    /// prefer that (it infers `D` from the dictionary marker) unless `D` is already
+    /// fixed by context.
+    #[must_use]
+    pub fn new() -> Self {
+        Self {
+            reader_cap: 64 * 1024,
+            writer_cap: 64 * 1024,
+            customizer: NoCustomizer,
+            _dict: PhantomData,
+        }
+    }
+}
+
+impl<D: FixDictionary> Default for FixSessionBuilder<D, NoCustomizer> {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl<D: FixDictionary, C> FixSessionBuilder<D, C> {
     /// Inbound reader buffer capacity in bytes (largest single frame; default 64 KiB).
     pub fn reader_capacity(mut self, n: usize) -> Self {
@@ -302,13 +325,14 @@ impl<D: FixDictionary> FixSession<D> {
     }
 
     /// Starts a [`FixSessionBuilder`] to configure and build a [`FixParts`] trio.
-    pub fn builder() -> FixSessionBuilder<D, NoCustomizer> {
-        FixSessionBuilder {
-            reader_cap: 64 * 1024,
-            writer_cap: 64 * 1024,
-            customizer: NoCustomizer,
-            _dict: PhantomData,
-        }
+    ///
+    /// Pass the dictionary marker (a ZST) so `D` is inferred from the argument — no
+    /// turbofish: `FixSession::builder(Fix44).build(state, config, journal)`. The
+    /// value itself is unused; only its type is read.
+    #[allow(clippy::needless_pass_by_value)] // ZST marker taken by value only to infer `D`.
+    pub fn builder(dictionary: D) -> FixSessionBuilder<D, NoCustomizer> {
+        let _ = dictionary;
+        FixSessionBuilder::new()
     }
 
     // ── introspection ────────────────────────────────────────────────────────
@@ -1082,7 +1106,6 @@ impl<D: FixDictionary> FixSession<D> {
                 let reset = find_tag(frame, 0, 141)
                     .and_then(|s| parse_fix_bool(s.slice(frame)).ok())
                     .unwrap_or(false);
-                let was_logon_sent = self.state.state() == State::LogonSent;
                 let ctrl = {
                     let mut emitter =
                         journaling_emitter(writer, &mut self.journal, &self.config, now);
@@ -1091,7 +1114,6 @@ impl<D: FixDictionary> FixSession<D> {
                             seq,
                             heart_bt_int_s: hbi,
                             is_reset_seq_num: reset,
-                            send_reply: !was_logon_sent,
                         },
                         &mut emitter,
                     )?
@@ -1814,7 +1836,6 @@ mod tests {
                     seq: 1,
                     heart_bt_int_s: 30,
                     is_reset_seq_num: false,
-                    send_reply: false,
                 },
                 &mut NullEmitter,
             )

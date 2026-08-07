@@ -28,7 +28,7 @@ reply while the borrowed payload is still alive.
 
 ```rust
 let FixParts { mut session, mut reader, mut writer } =
-    FixSession::<Fix44>::builder().build(state, config, journal);
+    FixSession::builder(Fix44).build(state, config, journal);
 
 session.connect(&mut writer, &mut stream, now)?;   // initiator; acceptors feed the inbound Logon
 

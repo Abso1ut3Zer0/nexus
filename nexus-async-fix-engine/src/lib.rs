@@ -97,7 +97,10 @@ pub use nexus_fix_engine::{
     DisconnectReason, FixJournal, LogonDecision, Message, MessageReader, MessageWriter,
     PollOutcome, SessionConfig, SessionError, SessionState,
 };
-use nexus_fix_engine::{FixParts as CoreFixParts, FixSession as CoreFixSession};
+use nexus_fix_engine::{
+    FixParts as CoreFixParts, FixSession as CoreFixSession,
+    FixSessionBuilder as CoreFixSessionBuilder,
+};
 
 /// The batteries bundle: a [`FixConnection`] owning the session + reader + writer
 /// + transport, and its [`FixConnectionBuilder`].
@@ -145,13 +148,14 @@ impl<D: FixDictionary> FixSession<D> {
     }
 
     /// Starts a [`FixSessionBuilder`] to configure and build a [`FixParts`] trio.
-    pub fn builder() -> FixSessionBuilder<D, NoCustomizer> {
-        FixSessionBuilder {
-            reader_cap: 64 * 1024,
-            writer_cap: 64 * 1024,
-            customizer: NoCustomizer,
-            _dict: PhantomData,
-        }
+    ///
+    /// Pass the dictionary marker (a ZST) so `D` is inferred — no turbofish:
+    /// `FixSession::builder(Fix44).build(state, config, journal)`. The value itself
+    /// is unused; only its type is read.
+    #[allow(clippy::needless_pass_by_value)] // ZST marker taken by value only to infer `D`.
+    pub fn builder(dictionary: D) -> FixSessionBuilder<D, NoCustomizer> {
+        let _ = dictionary;
+        FixSessionBuilder::new()
     }
 
     /// Receives the next typed [`Message`] over any [`WireStream`] — the async
@@ -537,6 +541,29 @@ pub struct FixSessionBuilder<D: FixDictionary, C = NoCustomizer> {
     _dict: PhantomData<fn() -> D>,
 }
 
+impl<D: FixDictionary> FixSessionBuilder<D, NoCustomizer> {
+    /// A new builder with 64 KiB reader/writer buffers and no customizer.
+    ///
+    /// The value-free constructor behind [`FixSession::builder`](FixSession::builder);
+    /// prefer that (it infers `D` from the dictionary marker) unless `D` is already
+    /// fixed by context.
+    #[must_use]
+    pub fn new() -> Self {
+        Self {
+            reader_cap: 64 * 1024,
+            writer_cap: 64 * 1024,
+            customizer: NoCustomizer,
+            _dict: PhantomData,
+        }
+    }
+}
+
+impl<D: FixDictionary> Default for FixSessionBuilder<D, NoCustomizer> {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl<D: FixDictionary, C> FixSessionBuilder<D, C> {
     /// Inbound reader buffer capacity in bytes (default 64 KiB).
     pub fn reader_capacity(mut self, n: usize) -> Self {
@@ -575,7 +602,7 @@ impl<D: FixDictionary, C: SessionCustomizer> FixSessionBuilder<D, C> {
             session,
             reader,
             writer,
-        } = CoreFixSession::builder()
+        } = CoreFixSessionBuilder::new()
             .reader_capacity(self.reader_cap)
             .writer_capacity(self.writer_cap)
             .customizer(self.customizer)

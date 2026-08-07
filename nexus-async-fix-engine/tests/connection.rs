@@ -375,7 +375,8 @@ async fn bundle_open_roundtrip_heartbeat() {
     let dir = tmp_dir("a_heartbeat");
     let (mut child, port) = spawn_peer("heartbeat");
     // One-step A construction.
-    let mut conn = FixConnection::<MaybeTls, MockDict>::open(
+    let mut conn = FixConnection::open(
+        MockDict,
         ("127.0.0.1", port),
         SessionState::new(Duration::from_secs(30)),
         config(),
@@ -410,7 +411,8 @@ async fn bundle_into_from_parts_preserves_state() {
         }
     });
 
-    let mut conn = FixConnection::<MaybeTls, MockDict>::open(
+    let mut conn = FixConnection::open(
+        MockDict,
         addr,
         SessionState::new(Duration::from_secs(45)),
         config(),

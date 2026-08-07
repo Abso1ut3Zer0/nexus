@@ -366,7 +366,7 @@ fn run_session(
         mut session,
         mut reader,
         mut writer,
-    } = FixSession::<Fix44>::builder().build(
+    } = FixSession::builder(Fix44).build(
         SessionState::new(Duration::from_secs(1)),
         config,
         FixJournal::open(dir, 0, 256).unwrap(),

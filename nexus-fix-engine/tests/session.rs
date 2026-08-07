@@ -148,7 +148,6 @@ fn establish(s: &mut SessionState) {
             seq: 1,
             heart_bt_int_s: 30,
             is_reset_seq_num: false,
-            send_reply: false,
         },
         &mut recorder,
     )
@@ -171,14 +170,13 @@ fn initiator_handshake() {
     assert_eq!(recorder.num(0, 108), Some(30));
 
     recorder.clear();
-    // Initiator receiving the peer's Logon ack: send_reply = false → acknowledged.
+    // Initiator (state LogonSent) receiving the peer's Logon ack → acknowledged.
     let ctrl = s
         .on_logon(
             LogonIn {
                 seq: 1,
                 heart_bt_int_s: 30,
                 is_reset_seq_num: false,
-                send_reply: false,
             },
             &mut recorder,
         )
@@ -195,7 +193,7 @@ fn acceptor_handshake() {
     let mut s = new_session();
 
     let mut recorder = RecordingEmitter::new();
-    // Acceptor: send_reply = true. The Logon surfaces a decision (no auto-reply);
+    // Acceptor (fresh session, state Disconnected): the Logon surfaces a decision (no auto-reply);
     // the user then accepts, which emits the reply and brings the session up.
     let ctrl = s
         .on_logon(
@@ -203,7 +201,6 @@ fn acceptor_handshake() {
                 seq: 1,
                 heart_bt_int_s: 15,
                 is_reset_seq_num: false,
-                send_reply: true,
             },
             &mut recorder,
         )
@@ -251,7 +248,6 @@ fn logon_reset_seq_num_flag() {
                 seq: 1,
                 heart_bt_int_s: 30,
                 is_reset_seq_num: true,
-                send_reply: true,
             },
             &mut recorder,
         )
@@ -604,7 +600,6 @@ fn seq_nums_survive_reconnect() {
             seq: 3,
             heart_bt_int_s: 30,
             is_reset_seq_num: false,
-            send_reply: false,
         },
         &mut recorder,
     )

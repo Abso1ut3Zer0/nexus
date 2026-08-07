@@ -131,7 +131,7 @@ async fn outbound_admin_is_journaled() {
             mut session,
             reader: _reader,
             mut writer,
-        } = FixSession::<MockDict>::builder().build(
+        } = FixSession::builder(MockDict).build(
             SessionState::new(Duration::from_secs(30)),
             SessionConfig {
                 sender: CompId::new(b"ENGINE").unwrap(),

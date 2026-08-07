@@ -356,15 +356,23 @@ impl SessionState {
         Ok(Control::None)
     }
 
-    /// Handles a received Logon.
+    /// Handles a received Logon — dispatched on the current [`State`], since a
+    /// Logon means a different thing depending on where the session is:
     ///
-    /// Set `send_reply = true` when acting as acceptor. In the user-driven model
-    /// the acceptor reply is *not* emitted here: a counterparty-initiated Logon
-    /// surfaces as [`Control::LogonRequest`] / [`Control::LogonResetRequest`] and
-    /// the user answers via [`accept_logon`](Self::accept_logon) /
-    /// [`reject_logon`](Self::reject_logon). The initiator's incoming reply
-    /// (`send_reply = false`) is an acknowledgement handled inline and returns
-    /// [`Control::Logon`] with `acknowledged = true`.
+    /// - `LogonSent` — the *initiator's* incoming ack. Establishment seq handling
+    ///   (too-low → Logout + disconnect, gap → ResendRequest, in-sync → `Active`)
+    ///   stays engine-driven here — it is bringing the session up, not steady-state
+    ///   flow — and returns [`Control::Logon`] with `acknowledged = true`.
+    /// - `Disconnected` — the *acceptor's* incoming opening Logon. Surfaced as
+    ///   [`Control::LogonRequest`] / [`Control::LogonResetRequest`]; the user answers
+    ///   via [`accept_logon`](Self::accept_logon) / [`reject_logon`](Self::reject_logon).
+    ///   No emit, no transition.
+    /// - `Active` / `Resending` with `141=Y` — a peer-initiated in-session reset,
+    ///   surfaced the same way (`seq` must be 1).
+    /// - `AwaitingResetAck` — the peer's confirmation of a reset *we* initiated.
+    ///
+    /// The initiator/acceptor role is read from the state (`LogonSent` = we sent the
+    /// opening Logon), so no separate flag is needed.
     ///
     /// Emits (initiator-establishment mechanism only): Logout | ResendRequest.
     pub fn on_logon<E: Emit>(
@@ -376,84 +384,83 @@ impl SessionState {
             seq,
             heart_bt_int_s,
             is_reset_seq_num,
-            send_reply,
         } = msg;
 
-        // Reset ack: we initiated the reset and peer is confirming. No emit.
-        if self.state == State::AwaitingResetAck {
-            if !is_reset_seq_num || seq != 1 {
-                return Ok(self.disconnect(DisconnectReason::ProtocolViolation));
+        match self.state {
+            // We initiated an in-session reset; this is the peer's confirming
+            // Logon(141=Y, seq=1). No emit.
+            State::AwaitingResetAck => {
+                if !is_reset_seq_num || seq != 1 {
+                    return Ok(self.disconnect(DisconnectReason::ProtocolViolation));
+                }
+                self.hb = Duration::from_secs(u64::from(heart_bt_int_s));
+                self.next_inbound = 2;
+                self.state = State::Active;
+                Ok(Control::Logon { acknowledged: true })
             }
-            self.hb = Duration::from_secs(u64::from(heart_bt_int_s));
-            self.next_inbound = 2;
-            self.state = State::Active;
-            return Ok(Control::Logon { acknowledged: true });
-        }
 
-        // Peer-initiated reset while we are active: surface a reset decision.
-        // No emit, no transition — the user answers via `accept_logon`.
-        if matches!(self.state, State::Active | State::Resending) && is_reset_seq_num {
-            if seq != 1 {
-                return Ok(self.disconnect(DisconnectReason::ProtocolViolation));
-            }
-            return Ok(Control::LogonResetRequest {
-                seq,
-                heart_bt_int_s,
-            });
-        }
+            // We sent the opening Logon; this is the ack. Establishment seq
+            // handling stays engine-driven (bringing the session up, not
+            // steady-state flow — only steady-state gaps surface as GapDetected).
+            State::LogonSent => {
+                if is_reset_seq_num {
+                    self.next_inbound = 1;
+                }
+                self.hb = Duration::from_secs(u64::from(heart_bt_int_s));
 
-        if send_reply {
-            // Acceptor: surface a Logon decision. No emit, no transition — the
-            // reply and state advance happen in `accept_logon` on the user's
-            // decision. An out-of-state acceptor Logon has nothing to answer.
-            if self.state != State::Disconnected {
-                return Ok(Control::None);
+                if seq < self.next_inbound {
+                    let logout_seq = seq!(self);
+                    emitter.emit(Logout {
+                        seq: logout_seq,
+                        reason: None,
+                    })?;
+                    return Ok(self.disconnect(DisconnectReason::SeqNumTooLow));
+                }
+                if seq > self.next_inbound {
+                    self.gap_high = seq;
+                    let rr_seq = seq!(self);
+                    emitter.emit(ResendRequest {
+                        seq: rr_seq,
+                        begin: self.next_inbound,
+                    })?;
+                    self.state = State::Resending;
+                } else {
+                    self.next_inbound += 1;
+                    self.state = State::Active;
+                }
+                Ok(Control::Logon { acknowledged: true })
             }
-            if is_reset_seq_num {
+
+            // Fresh connection; we are the acceptor. Surface the decision — no
+            // emit, no transition; `accept_logon` does the reply + advance on the
+            // user's call.
+            State::Disconnected => Ok(if is_reset_seq_num {
+                Control::LogonResetRequest {
+                    seq,
+                    heart_bt_int_s,
+                }
+            } else {
+                Control::LogonRequest {
+                    seq,
+                    heart_bt_int_s,
+                }
+            }),
+
+            // Established; a Logon(141=Y) now is a peer-initiated in-session reset.
+            // Surface it the same way — `seq` must be 1.
+            State::Active | State::Resending if is_reset_seq_num => {
+                if seq != 1 {
+                    return Ok(self.disconnect(DisconnectReason::ProtocolViolation));
+                }
                 Ok(Control::LogonResetRequest {
                     seq,
                     heart_bt_int_s,
                 })
-            } else {
-                Ok(Control::LogonRequest {
-                    seq,
-                    heart_bt_int_s,
-                })
             }
-        } else {
-            // Initiator's incoming Logon ack. No reply emit. A gap or a too-low
-            // seqnum on the *establishment* Logon stays engine-driven (it is part
-            // of bringing the session up, not steady-state flow); only steady-state
-            // gaps surface as `GapDetected`.
-            if self.state != State::LogonSent {
-                return Ok(Control::Logon { acknowledged: true });
-            }
-            if is_reset_seq_num {
-                self.next_inbound = 1;
-            }
-            self.hb = Duration::from_secs(u64::from(heart_bt_int_s));
 
-            if seq < self.next_inbound {
-                let logout_seq = seq!(self);
-                emitter.emit(Logout {
-                    seq: logout_seq,
-                    reason: None,
-                })?;
-                return Ok(self.disconnect(DisconnectReason::SeqNumTooLow));
-            }
-            if seq > self.next_inbound {
-                self.gap_high = seq;
-                let rr_seq = seq!(self);
-                emitter.emit(ResendRequest {
-                    seq: rr_seq,
-                    begin: self.next_inbound,
-                })?;
-                self.state = State::Resending;
-            } else {
-                self.next_inbound += 1;
-                self.state = State::Active;
-            }
-            Ok(Control::Logon { acknowledged: true })
+            // Anything else — a non-reset Logon while active, a logout in flight,
+            // mid-reset drain: nothing to answer.
+            _ => Ok(Control::None),
         }
     }
 
@@ -1092,7 +1099,6 @@ mod tests {
                 seq: 1,
                 heart_bt_int_s: 30,
                 is_reset_seq_num: false,
-                send_reply: false,
             },
             &mut recorder,
         )
@@ -1269,7 +1275,6 @@ mod tests {
                     seq: 1,
                     heart_bt_int_s: 30,
                     is_reset_seq_num: true,
-                    send_reply: false,
                 },
                 &mut recorder,
             )
@@ -1321,7 +1326,6 @@ mod tests {
                     seq: 1,
                     heart_bt_int_s: 30,
                     is_reset_seq_num: true,
-                    send_reply: true,
                 },
                 &mut recorder,
             )
@@ -1381,7 +1385,6 @@ mod tests {
                     seq: 1,
                     heart_bt_int_s: 30,
                     is_reset_seq_num: false,
-                    send_reply: false,
                 },
                 &mut recorder,
             )

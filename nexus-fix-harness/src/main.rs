@@ -127,7 +127,7 @@ fn main() {
             mut session,
             mut reader,
             mut writer,
-        } = FixSession::<Fix44>::builder().build(
+        } = FixSession::builder(Fix44).build(
             SessionState::new(Duration::from_secs(30)),
             SessionConfig {
                 sender: CompId::new(b"ACCEPTOR").unwrap(),

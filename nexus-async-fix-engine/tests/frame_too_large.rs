@@ -212,7 +212,7 @@ async fn frame_exceeding_reader_buffer_is_message_too_large_not_disconnect() {
         mut session,
         mut reader,
         mut writer,
-    } = FixSession::<MockDict>::builder()
+    } = FixSession::builder(MockDict)
         .reader_capacity(READER_CAP)
         .build(
             SessionState::new(Duration::from_secs(30)),
@@ -269,7 +269,7 @@ async fn peer_eof_is_peer_closed_then_recv_is_closed() {
         mut session,
         mut reader,
         mut writer,
-    } = FixSession::<MockDict>::builder().build(
+    } = FixSession::builder(MockDict).build(
         SessionState::new(Duration::from_secs(30)),
         SessionConfig {
             sender: target(),

@@ -141,7 +141,7 @@ fn rig_from_parts<S>(
         session,
         reader,
         writer,
-    } = FixSession::builder().build(state, config, journal);
+    } = FixSession::builder(MockDict).build(state, config, journal);
     Rig {
         session,
         reader,
@@ -162,7 +162,7 @@ fn rig_with_reader_cap<S>(
         session,
         reader,
         writer,
-    } = FixSession::builder()
+    } = FixSession::builder(MockDict)
         .reader_capacity(reader_cap)
         .build(state, config, journal);
     Rig {

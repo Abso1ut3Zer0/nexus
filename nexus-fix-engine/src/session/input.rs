@@ -17,9 +17,6 @@ pub struct LogonIn {
     pub heart_bt_int_s: u32,
     /// `ResetSeqNumFlag(141)=Y` — peer asks both sides to reset to seqnum 1.
     pub is_reset_seq_num: bool,
-    /// We are the acceptor and must send a Logon reply; an initiator instead
-    /// receives this Logon as the acknowledgement of its own.
-    pub send_reply: bool,
 }
 
 /// Input to [`SessionState::on_logout`](super::SessionState::on_logout).

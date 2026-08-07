@@ -264,7 +264,7 @@ fn connect(port: u16, dir: &Path) -> Rig {
         session,
         reader,
         writer,
-    } = FixSession::builder().build(
+    } = FixSession::builder(MockDict).build(
         SessionState::new(Duration::from_secs(30)),
         SessionConfig {
             sender: CompId::new(b"ENGINE").unwrap(),
