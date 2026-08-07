@@ -1466,6 +1466,7 @@ mod tests {
         let wb = WorldBuilder::new();
         let mut world = wb.build();
 
+        // SAFETY: capacity 1 is a valid non-zero capacity for the bounded slab allocator.
         let bounded = unsafe { nexus_slab::byte::bounded::Slab::<256>::with_capacity(1) };
         let mut rt = Runtime::builder(&mut world).slab_bounded(bounded).build();
 
@@ -1487,6 +1488,7 @@ mod tests {
         let wb = WorldBuilder::new();
         let mut world = wb.build();
 
+        // SAFETY: capacity 1 is a valid non-zero capacity for the bounded slab allocator.
         let bounded = unsafe { nexus_slab::byte::bounded::Slab::<256>::with_capacity(1) };
         let mut rt = Runtime::builder(&mut world).slab_bounded(bounded).build();
 

@@ -47,6 +47,7 @@ fn test_executor() -> Executor {
 fn noop_waker() -> Waker {
     static VTABLE: RawWakerVTable =
         RawWakerVTable::new(|p| RawWaker::new(p, &VTABLE), |_| {}, |_| {}, |_| {});
+    // SAFETY: the vtable functions are all no-ops; the null data pointer is never dereferenced.
     unsafe { Waker::from_raw(RawWaker::new(std::ptr::null(), &VTABLE)) }
 }
 

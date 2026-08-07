@@ -52,6 +52,7 @@ struct Inner<T> {
 // are designed for cross-thread use (TaskWakerSlot, FallbackWaker, TxWakerSlot).
 // Producer and Consumer from nexus_queue::spsc are Send.
 unsafe impl<T: Send> Send for Inner<T> {}
+// SAFETY: Queue<T> owns the data; raw pointers are not shared across threads unsafely.
 unsafe impl<T: Send> Sync for Inner<T> {}
 
 impl<T> Inner<T> {

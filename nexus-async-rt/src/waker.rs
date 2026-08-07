@@ -91,9 +91,11 @@ pub(crate) static VTABLE: RawWakerVTable =
 pub(crate) unsafe fn task_waker(ptr: *mut u8) -> Waker {
     // Acquire a TaskRef (ref_inc), then forget it — the RawWaker now
     // owns the ref. drop_fn calls TaskRef::from_owned + drop to release.
+    // SAFETY: caller guarantees ptr points to a live task with ref_count >= 1.
     let task_ref = unsafe { TaskRef::acquire(ptr) };
     let raw = RawWaker::new(task_ref.as_ptr().cast(), &VTABLE);
     std::mem::forget(task_ref);
+    // SAFETY: raw uses VTABLE with correct vtable functions; data ptr is a live task ref.
     unsafe { Waker::from_raw(raw) }
 }
 
@@ -127,6 +129,7 @@ unsafe fn wake_fn(data: *const ()) {
     // SAFETY: data is a valid task pointer.
     unsafe { wake_impl(data) };
     // Consume the ref via TaskRef::Drop.
+    // SAFETY: data was given to wake_fn by the RawWaker; we own the ref and are consuming it.
     drop(unsafe { TaskRef::from_owned(data as *mut u8) });
 }
 
@@ -139,6 +142,7 @@ unsafe fn wake_by_ref_fn(data: *const ()) {
 
 /// Drop (without waking): decrement refcount via TaskRef::Drop.
 unsafe fn drop_fn(data: *const ()) {
+    // SAFETY: data was given to drop_fn by the RawWaker; we own the ref and are releasing it.
     drop(unsafe { TaskRef::from_owned(data as *mut u8) });
 }
 
@@ -192,9 +196,11 @@ unsafe fn wake_impl(data: *const ()) {
     }
 
     // Check dedup flag — don't queue twice.
+    // SAFETY: task_ptr is a valid task pointer; is_queued reads the queued flag from packed task state.
     if unsafe { task::is_queued(task_ptr) } {
         return;
     }
+    // SAFETY: task_ptr is a valid task pointer; set_queued writes the queued flag atomically.
     unsafe { task::set_queued(task_ptr, true) };
 
     // Push to ready queue.

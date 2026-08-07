@@ -134,6 +134,7 @@ impl TaskRef {
     /// `ptr` must point to a live task with refcount >= 1 at the time of call.
     #[inline]
     pub(crate) unsafe fn acquire(ptr: *mut u8) -> Self {
+        // SAFETY: acquire's safety contract requires ptr points to a live task with refcount >= 1.
         unsafe { ref_inc(ptr) };
         Self { ptr }
     }
@@ -162,6 +163,7 @@ impl TaskRef {
 impl Drop for TaskRef {
     #[inline]
     fn drop(&mut self) {
+        // SAFETY: self.ptr is a valid task pointer; TaskRef owns exactly one refcount unit.
         match unsafe { ref_dec(self.ptr) } {
             FreeAction::Retain => {}
             FreeAction::FreeBox | FreeAction::FreeSlab => {
@@ -417,13 +419,16 @@ impl<T: 'static> Future for JoinHandle<T> {
 
         // SAFETY: ptr is valid — JoinHandle holds a ref (refcount >= 1).
         if unsafe { is_completed(ptr) } {
+            // SAFETY: ptr is valid — JoinHandle holds a ref (refcount >= 1).
             let s = unsafe { state_load(ptr) };
             assert!(s & ABORTED == 0, "polled JoinHandle after task was aborted");
             // SAFETY: Task completed, so poll_join already transitioned the union
             // from F to T. The output is live at storage_offset. ptr::read moves
             // it out (bitwise copy). OUTPUT_TAKEN prevents double-read.
             let output_ptr = unsafe { ptr.add(storage_offset(ptr)) };
+            // SAFETY: output_ptr points to a live T at storage_offset; task is completed.
             let value = unsafe { std::ptr::read(output_ptr.cast::<T>()) };
+            // SAFETY: ptr is valid — setting OUTPUT_TAKEN on a completed task.
             unsafe { set_output_taken(ptr) };
             Poll::Ready(value)
         } else {
@@ -445,6 +450,7 @@ impl<T> JoinHandle<T> {
 
     /// Returns `true` if the task has completed (output is ready).
     pub fn is_finished(&self) -> bool {
+        // SAFETY: self.ptr is valid — JoinHandle holds a ref (refcount >= 1).
         unsafe { is_completed(self.ptr) }
     }
 
@@ -459,8 +465,10 @@ impl<T> JoinHandle<T> {
     #[must_use = "returns whether the task was still running"]
     pub fn abort(self) -> bool {
         let ptr = self.ptr;
+        // SAFETY: ptr is valid — JoinHandle holds a ref (refcount >= 1).
         let was_running = !unsafe { is_completed(ptr) };
         if was_running {
+            // SAFETY: ptr is valid — setting ABORTED on a live task.
             unsafe { set_aborted(ptr) };
         }
         // self is consumed — Drop runs, which clears HAS_JOIN,
@@ -494,7 +502,9 @@ impl<T> Drop for JoinHandle<T> {
 
         // Clear HAS_JOIN so complete_task knows nobody is waiting.
         // Take the join waker to release the parent task's refcount.
+        // SAFETY: ptr is valid — JoinHandle holds a ref (refcount >= 1).
         unsafe { clear_has_join(ptr) };
+        // SAFETY: ptr is valid — taking the join waker under single-threaded access.
         let _ = unsafe { take_join_waker(ptr) };
 
         // Release our reference via TaskRef. Drop routes terminal state
@@ -554,6 +564,7 @@ pub(crate) unsafe fn tracker_key(ptr: *mut u8) -> u32 {
 /// `ptr` must point to a live `Task<F>`.
 #[inline]
 pub(crate) unsafe fn ref_inc(ptr: *mut u8) {
+    // SAFETY: caller upholds ptr validity; state is at offset 24 in repr(C) Task.
     let state = unsafe { state_ref(ptr) };
     let prev = state.fetch_add(REF_ONE, Ordering::Relaxed);
     debug_assert!((prev & REF_MASK) > 0, "ref_inc on zero refcount");
@@ -567,6 +578,7 @@ pub(crate) unsafe fn ref_inc(ptr: *mut u8) {
 /// `ptr` must point to a live (or completed) `Task<F>`.
 #[inline]
 pub(crate) unsafe fn ref_dec(ptr: *mut u8) -> FreeAction {
+    // SAFETY: caller upholds ptr validity; state is at offset 24 in repr(C) Task.
     let state = unsafe { state_ref(ptr) };
     let prev = state.fetch_sub(REF_ONE, Ordering::AcqRel);
     debug_assert!((prev & REF_MASK) >= REF_ONE, "ref_dec on zero refcount");
@@ -596,6 +608,7 @@ pub(crate) unsafe fn ref_dec(ptr: *mut u8) -> FreeAction {
 /// `ptr` must point to a live `Task<F>`.
 #[inline]
 pub(crate) unsafe fn ref_count(ptr: *mut u8) -> usize {
+    // SAFETY: caller upholds ptr validity; state is at offset 24 in repr(C) Task.
     (unsafe { state_load(ptr) } & REF_MASK) >> 6
 }
 
@@ -610,6 +623,7 @@ pub(crate) unsafe fn ref_count(ptr: *mut u8) -> usize {
 /// `ptr` must point to a live, not-yet-completed `Task<F>`.
 #[inline]
 pub(crate) unsafe fn complete_and_unref(ptr: *mut u8) -> FreeAction {
+    // SAFETY: caller upholds ptr validity; state is at offset 24 in repr(C) Task.
     let state = unsafe { state_ref(ptr) };
     // Atomically: set COMPLETED (add 1 to bit 0) + dec refcount (sub REF_ONE)
     // Net subtraction = REF_ONE - COMPLETED.
@@ -643,6 +657,7 @@ pub(crate) unsafe fn complete_and_unref(ptr: *mut u8) -> FreeAction {
 /// `ptr` must point to a live `Task<F>`.
 #[inline]
 pub(crate) unsafe fn is_terminal(ptr: *mut u8) -> bool {
+    // SAFETY: caller upholds ptr validity; state is at offset 24 in repr(C) Task.
     let s = unsafe { state_load(ptr) };
     // Strip inert flags (SLAB_ALLOCATED, ABORTED, OUTPUT_TAKEN).
     // What remains must be exactly COMPLETED with zero refcount.
@@ -656,6 +671,7 @@ pub(crate) unsafe fn is_terminal(ptr: *mut u8) -> bool {
 /// `ptr` must point to a (possibly completed) `Task<F>`.
 #[inline]
 pub(crate) unsafe fn is_completed(ptr: *mut u8) -> bool {
+    // SAFETY: caller upholds ptr validity; state is at offset 24 in repr(C) Task.
     (unsafe { state_load(ptr) }) & COMPLETED != 0
 }
 
@@ -669,6 +685,7 @@ pub(crate) unsafe fn is_completed(ptr: *mut u8) -> bool {
 /// `ptr` must point to a live `Task<F>`.
 #[inline]
 pub(crate) unsafe fn is_slab_allocated(ptr: *mut u8) -> bool {
+    // SAFETY: caller upholds ptr validity; state is at offset 24 in repr(C) Task.
     (unsafe { state_load(ptr) }) & SLAB_ALLOCATED != 0
 }
 
@@ -679,6 +696,7 @@ pub(crate) unsafe fn is_slab_allocated(ptr: *mut u8) -> bool {
 /// `ptr` must point to a live `Task<F>`.
 #[inline]
 pub(crate) unsafe fn is_queued(ptr: *mut u8) -> bool {
+    // SAFETY: caller upholds ptr validity; state is at offset 24 in repr(C) Task.
     (unsafe { state_load(ptr) }) & QUEUED != 0
 }
 
@@ -689,6 +707,7 @@ pub(crate) unsafe fn is_queued(ptr: *mut u8) -> bool {
 /// `ptr` must point to a live `Task<F>`.
 #[inline]
 pub(crate) unsafe fn set_queued(ptr: *mut u8, queued: bool) {
+    // SAFETY: caller upholds ptr validity; state is at offset 24 in repr(C) Task.
     let state = unsafe { state_ref(ptr) };
     if queued {
         state.fetch_or(QUEUED, Ordering::Release);
@@ -705,6 +724,7 @@ pub(crate) unsafe fn set_queued(ptr: *mut u8, queued: bool) {
 /// `ptr` must point to a live `Task<F>`.
 #[inline]
 pub(crate) unsafe fn try_set_queued(ptr: *mut u8) -> bool {
+    // SAFETY: caller upholds ptr validity; state is at offset 24 in repr(C) Task.
     let state = unsafe { state_ref(ptr) };
     // fetch_or always sets the bit. Check if it was already set.
     let prev = state.fetch_or(QUEUED, Ordering::AcqRel);
@@ -718,6 +738,7 @@ pub(crate) unsafe fn try_set_queued(ptr: *mut u8) -> bool {
 /// `ptr` must point to a live `Task<F>`.
 #[inline]
 pub(crate) unsafe fn clear_queued(ptr: *mut u8) {
+    // SAFETY: caller upholds ptr validity; state is at offset 24 in repr(C) Task.
     let state = unsafe { state_ref(ptr) };
     state.fetch_and(!QUEUED, Ordering::Release);
 }
@@ -729,6 +750,7 @@ pub(crate) unsafe fn clear_queued(ptr: *mut u8) {
 /// `ptr` must point to a live `Task<F>`.
 #[inline]
 pub(crate) unsafe fn is_aborted(ptr: *mut u8) -> bool {
+    // SAFETY: caller upholds ptr validity; state is at offset 24 in repr(C) Task.
     (unsafe { state_load(ptr) }) & ABORTED != 0
 }
 
@@ -739,6 +761,7 @@ pub(crate) unsafe fn is_aborted(ptr: *mut u8) -> bool {
 /// `ptr` must point to a live `Task<F>`.
 #[inline]
 pub(crate) unsafe fn set_aborted(ptr: *mut u8) {
+    // SAFETY: caller upholds ptr validity; state is at offset 24 in repr(C) Task.
     let state = unsafe { state_ref(ptr) };
     state.fetch_or(ABORTED, Ordering::Release);
 }
@@ -750,6 +773,7 @@ pub(crate) unsafe fn set_aborted(ptr: *mut u8) {
 /// `ptr` must point to a live `Task<F>`.
 #[inline]
 pub(crate) unsafe fn has_join(ptr: *mut u8) -> bool {
+    // SAFETY: caller upholds ptr validity; state is at offset 24 in repr(C) Task.
     (unsafe { state_load(ptr) }) & HAS_JOIN != 0
 }
 
@@ -760,6 +784,7 @@ pub(crate) unsafe fn has_join(ptr: *mut u8) -> bool {
 /// `ptr` must point to a live `Task<F>`.
 #[inline]
 pub(crate) unsafe fn clear_has_join(ptr: *mut u8) {
+    // SAFETY: caller upholds ptr validity; state is at offset 24 in repr(C) Task.
     let state = unsafe { state_ref(ptr) };
     state.fetch_and(!HAS_JOIN, Ordering::Release);
 }
@@ -771,6 +796,7 @@ pub(crate) unsafe fn clear_has_join(ptr: *mut u8) {
 /// `ptr` must point to a live, completed `Task<F>`. Single-threaded.
 #[inline]
 unsafe fn set_output_taken(ptr: *mut u8) {
+    // SAFETY: caller upholds ptr validity; state is at offset 24 in repr(C) Task.
     let state = unsafe { state_ref(ptr) };
     state.fetch_or(OUTPUT_TAKEN, Ordering::Release);
 }
@@ -829,6 +855,7 @@ pub(crate) unsafe fn header_cross_wake_ctx(ptr: *mut u8) -> *const CrossWakeCont
 unsafe fn set_join_waker(ptr: *mut u8, waker: Waker) {
     // SAFETY: join_waker is UnsafeCell<Option<Waker>> at offset 40.
     let cell = unsafe { &*ptr.add(40).cast::<UnsafeCell<Option<Waker>>>() };
+    // SAFETY: task state is accessed only under the executor's single-thread invariant.
     unsafe { *cell.get() = Some(waker) };
 }
 
@@ -839,7 +866,9 @@ unsafe fn set_join_waker(ptr: *mut u8, waker: Waker) {
 /// `ptr` must point to a live `Task<F>`. Single-threaded access only.
 #[inline]
 pub(crate) unsafe fn take_join_waker(ptr: *mut u8) -> Option<Waker> {
+    // SAFETY: caller upholds ptr validity; join_waker is UnsafeCell<Option<Waker>> at offset 40.
     let cell = unsafe { &*ptr.add(40).cast::<UnsafeCell<Option<Waker>>>() };
+    // SAFETY: task state is accessed only under the executor's single-thread invariant.
     unsafe { (*cell.get()).take() }
 }
 
@@ -855,6 +884,7 @@ pub(crate) unsafe fn poll_task(ptr: *mut u8, cx: &mut Context<'_>) -> Poll<()> {
     let poll_fn: unsafe fn(*mut u8, &mut Context<'_>) -> Poll<()> =
         unsafe { *(ptr as *const unsafe fn(*mut u8, &mut Context<'_>) -> Poll<()>) };
     // Pass the task base pointer — the trampoline reads storage_offset.
+    // SAFETY: poll_fn is a valid function pointer for this task type; ptr is a live task.
     unsafe { poll_fn(ptr, cx) }
 }
 
@@ -868,6 +898,7 @@ pub(crate) unsafe fn drop_task_future(ptr: *mut u8) {
     // SAFETY: drop_fn is at offset 8 in repr(C) Task.
     let drop_fn: unsafe fn(*mut u8) = unsafe { *(ptr.add(8) as *const unsafe fn(*mut u8)) };
     // Pass base pointer — the trampoline reads storage_offset.
+    // SAFETY: drop_fn is a valid function pointer for this task; ptr is a live task.
     unsafe { drop_fn(ptr) }
 }
 
@@ -881,6 +912,7 @@ pub(crate) unsafe fn drop_task_future(ptr: *mut u8) {
 pub(crate) unsafe fn free_task(ptr: *mut u8) {
     // SAFETY: free_fn is at offset 16 in repr(C) Task.
     let free_fn: unsafe fn(*mut u8) = unsafe { *(ptr.add(16) as *const unsafe fn(*mut u8)) };
+    // SAFETY: free_fn is a valid function pointer; the future has already been dropped.
     unsafe { free_fn(ptr) }
 }
 
@@ -901,27 +933,35 @@ where
     F::Output: 'static,
 {
     // Check if aborted
+    // SAFETY: caller upholds ptr validity; reading ABORTED flag atomically.
     if unsafe { is_aborted(ptr) } {
         return Poll::Ready(());
     }
 
+    // SAFETY: caller upholds ptr validity; storage_offset is initialized at construction.
     let future_ptr = unsafe { ptr.add(storage_offset(ptr)) };
+    // SAFETY: the task future is pinned in place; we never move it.
     let future = unsafe { Pin::new_unchecked(&mut *future_ptr.cast::<F>()) };
     match future.poll(cx) {
         Poll::Pending => Poll::Pending,
         Poll::Ready(value) => {
+            // SAFETY: drop_fn is at offset 8 in repr(C) Task; ptr is a live task.
             let drop_fn_slot = unsafe { ptr.add(8).cast::<unsafe fn(*mut u8)>() };
             // 1. Overwrite drop_fn to no-op BEFORE dropping F.
             //    If F::drop() panics, this prevents double-drop —
             //    subsequent cleanup calls the no-op instead of
             //    drop_future_in_union on a partially-dropped F.
             //    The output (value) is dropped during unwind (stack-owned).
+            // SAFETY: drop_fn_slot points to the drop_fn field; written before F is dropped to prevent double-drop.
             unsafe { *drop_fn_slot = drop_noop };
             // 2. Drop the future in place (panic-safe now)
+            // SAFETY: future_ptr points to a live F at storage_offset; drop_fn overwritten to drop_noop first.
             unsafe { std::ptr::drop_in_place(future_ptr.cast::<F>()) };
             // 3. Write output T into the same location
+            // SAFETY: future_ptr storage is sized for F::Output via FutureOrOutput<F, T> union; F has been dropped.
             unsafe { std::ptr::write(future_ptr.cast::<F::Output>(), value) };
             // 4. Overwrite drop_fn: now drops T instead of F
+            // SAFETY: drop_fn_slot points to the drop_fn field; T is now live at storage_offset.
             unsafe { *drop_fn_slot = drop_output::<F::Output> };
             Poll::Ready(())
         }
@@ -935,7 +975,9 @@ where
 /// `ptr` must point to a live `Task<F>` with a live future at `storage_offset`.
 #[cfg(test)]
 unsafe fn drop_future<F>(ptr: *mut u8) {
+    // SAFETY: caller upholds ptr validity; storage_offset is initialized at construction.
     let future_ptr = unsafe { ptr.add(storage_offset(ptr)) };
+    // SAFETY: future_ptr points to a live F at storage_offset; caller ensures this is called once.
     unsafe { std::ptr::drop_in_place(future_ptr.cast::<F>()) }
 }
 
@@ -945,8 +987,10 @@ unsafe fn drop_future<F>(ptr: *mut u8) {
 ///
 /// `ptr` must point to a `Task<FutureOrOutput<F, T>>` with a live future.
 unsafe fn drop_future_in_union<F: Future>(ptr: *mut u8) {
+    // SAFETY: caller upholds ptr validity; storage_offset is initialized at construction.
     let storage_ptr = unsafe { ptr.add(storage_offset(ptr)) };
     // The future is at the start of the union (same offset as the union itself).
+    // SAFETY: storage_ptr points to a live F at the union's start; caller ensures this is called once.
     unsafe { std::ptr::drop_in_place(storage_ptr.cast::<F>()) }
 }
 
@@ -966,7 +1010,9 @@ unsafe fn drop_noop(_ptr: *mut u8) {}
 ///
 /// `ptr` must point to a `Task` with a live `T` at `storage_offset`.
 unsafe fn drop_output<T>(ptr: *mut u8) {
+    // SAFETY: caller upholds ptr validity; storage_offset is initialized at construction.
     let output_ptr = unsafe { ptr.add(storage_offset(ptr)) };
+    // SAFETY: output_ptr points to a live T at storage_offset; caller ensures this is called once.
     unsafe { std::ptr::drop_in_place(output_ptr.cast::<T>()) }
 }
 
@@ -983,6 +1029,7 @@ unsafe fn drop_output<T>(ptr: *mut u8) {
 unsafe fn box_free<F>(ptr: *mut u8) {
     // SAFETY: Layout matches what Box::new(Task<F>) allocated.
     let layout = std::alloc::Layout::new::<Task<F>>();
+    // SAFETY: ptr was produced by Box::into_raw(Box::new(Task<F>)); layout matches the allocation.
     unsafe { std::alloc::dealloc(ptr, layout) }
 }
 
@@ -1183,6 +1230,7 @@ mod tests {
 
     impl Drop for PanickingDrop {
         fn drop(&mut self) {
+            // SAFETY: drop_count is a valid pointer to a u32 on the test's stack; exclusive access during drop.
             unsafe { *self.drop_count += 1 };
             panic!("intentional drop panic");
         }
@@ -1208,6 +1256,7 @@ mod tests {
         );
 
         // poll_join completes the future, then drops F — which panics.
+        // SAFETY: ptr is a valid task; poll_task's safety contract is upheld for the test task.
         let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| unsafe {
             poll_task(ptr, &mut cx)
         }));
@@ -1249,6 +1298,7 @@ mod tests {
         struct TrackedOutput;
         impl Drop for TrackedOutput {
             fn drop(&mut self) {
+                // SAFETY: single-threaded test; no other references to OUTPUT_DROP_COUNT.
                 unsafe { OUTPUT_DROP_COUNT += 1 };
             }
         }
@@ -1264,6 +1314,7 @@ mod tests {
         let ptr = box_spawn_joinable(ProduceTracked, 0, std::ptr::null());
 
         // Poll to completion — F dropped, T written, drop_fn → drop_output.
+        // SAFETY: ptr is a valid task; poll_task's safety contract is upheld for the test task.
         let result = unsafe { poll_task(ptr, &mut cx) };
         assert!(result.is_ready());
 
@@ -1342,6 +1393,7 @@ mod tests {
         // Provide a free_fn that does Box dealloc (we box it manually below).
         type Storage = FutureOrOutput<Noop, u64>;
         unsafe fn slab_free(ptr: *mut u8) {
+            // SAFETY: ptr was produced by Box::into_raw(Box::new(Task<Storage>)); layout matches the allocation.
             unsafe {
                 let layout = std::alloc::Layout::new::<Task<Storage>>();
                 std::alloc::dealloc(ptr, layout);
