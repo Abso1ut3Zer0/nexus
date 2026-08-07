@@ -51,6 +51,7 @@ fn main() {
 
     // from_bytes_unchecked
     bench_batched("from_bytes_unchecked (7B)", || {
+        // SAFETY: b"BTC-USD" is valid ASCII.
         let s: AsciiString<32> =
             unsafe { AsciiString::from_bytes_unchecked(black_box(b"BTC-USD")) };
         s.as_raw()[0] as u64

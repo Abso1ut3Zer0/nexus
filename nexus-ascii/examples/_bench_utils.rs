@@ -20,6 +20,7 @@ pub const WARMUP: usize = 10_000;
 #[inline]
 #[cfg(target_arch = "x86_64")]
 pub fn rdtsc() -> u64 {
+    // SAFETY: x86_64 intrinsic; benchmark runs on x86_64 only.
     unsafe { core::arch::x86_64::_rdtsc() }
 }
 
@@ -193,6 +194,7 @@ pub const BATCH: u64 = 100;
 #[inline(always)]
 #[cfg(target_arch = "x86_64")]
 pub fn rdtsc_fenced_start() -> u64 {
+    // SAFETY: x86_64 intrinsic; benchmark runs on x86_64 only.
     unsafe {
         core::arch::x86_64::_mm_lfence();
         core::arch::x86_64::_rdtsc()
@@ -213,6 +215,7 @@ pub fn rdtsc_fenced_start() -> u64 {
 #[inline(always)]
 #[cfg(target_arch = "x86_64")]
 pub fn rdtsc_fenced_end() -> u64 {
+    // SAFETY: x86_64 intrinsic; benchmark runs on x86_64 only.
     unsafe {
         let mut aux = 0u32;
         let tsc = core::arch::x86_64::__rdtscp(&raw mut aux);

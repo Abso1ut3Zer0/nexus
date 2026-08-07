@@ -35,6 +35,7 @@ const ITERATIONS: usize = 100_000;
 #[inline(always)]
 fn rdtscp() -> u64 {
     #[cfg(target_arch = "x86_64")]
+    // SAFETY: x86_64 intrinsic; this file only runs on x86_64.
     unsafe {
         let mut aux: u32 = 0;
         std::arch::x86_64::__rdtscp(&raw mut aux)

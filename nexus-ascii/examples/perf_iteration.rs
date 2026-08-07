@@ -50,8 +50,9 @@ fn main() {
         black_box(&s8).get(100).map_or(0, |c| c.as_u8() as u64)
     });
 
-    bench("get_unchecked(0)", || unsafe {
-        black_box(&s8).get_unchecked(0).as_u8() as u64
+    bench("get_unchecked(0)", || {
+        // SAFETY: index 0 is within bounds of an 8-byte string.
+        unsafe { black_box(&s8).get_unchecked(0).as_u8() as u64 }
     });
 
     // =========================================================================

@@ -1873,8 +1873,8 @@ mod tests {
     #[test]
     fn replace_first_byte() {
         let s: FlatAsciiString<32> = FlatAsciiString::try_from("a-b-c").unwrap();
-        // SAFETY: b'_' is valid ASCII
         assert_eq!(
+            // SAFETY: b'_' is valid ASCII
             unsafe { s.replace_first_byte(b'-', b'_') }.as_str(),
             "a_b-c"
         );
@@ -1969,8 +1969,8 @@ mod tests {
     #[test]
     fn replaced() {
         let s: FlatAsciiString<32> = FlatAsciiString::try_from("foo bar foo").unwrap();
-        // SAFETY: b"baz" is valid ASCII
         assert_eq!(
+            // SAFETY: b"baz" is valid ASCII
             unsafe { s.replaced(b"foo", b"baz") }.as_str(),
             "baz bar baz"
         );
@@ -1986,8 +1986,8 @@ mod tests {
     #[test]
     fn replace_first() {
         let s: FlatAsciiString<32> = FlatAsciiString::try_from("foo bar foo").unwrap();
-        // SAFETY: b"baz" is valid ASCII
         assert_eq!(
+            // SAFETY: b"baz" is valid ASCII
             unsafe { s.replace_first(b"foo", b"baz") }.as_str(),
             "baz bar foo"
         );

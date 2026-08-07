@@ -702,6 +702,7 @@ mod tests {
     #[test]
     fn new_unchecked_valid() {
         for b in 0..=127 {
+            // SAFETY: b is in 0..=127, the valid ASCII range.
             let c = unsafe { AsciiChar::new_unchecked(b) };
             assert_eq!(c.as_u8(), b);
         }

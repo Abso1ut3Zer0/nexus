@@ -739,6 +739,7 @@ mod tests {
     #[test]
     fn test_push_bytes_unchecked() {
         let mut builder: AsciiStringBuilder<32> = AsciiStringBuilder::new();
+        // SAFETY: b"Hello" is valid ASCII.
         unsafe { builder.push_bytes_unchecked(b"Hello") };
         assert_eq!(builder.as_str(), "Hello");
     }
@@ -783,6 +784,7 @@ mod tests {
         let buffer: [u8; 16] = *b"USD\0\0\0\0\0\0\0\0\0\0\0\0\0";
         let mut builder: AsciiStringBuilder<32> = AsciiStringBuilder::new();
         builder.push_str("BTC-").unwrap();
+        // SAFETY: buffer contains valid ASCII bytes followed by null padding.
         unsafe { builder.push_raw_unchecked(buffer) };
         assert_eq!(builder.as_str(), "BTC-USD");
     }

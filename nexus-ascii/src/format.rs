@@ -125,6 +125,7 @@ macro_rules! impl_format_int_generic {
                         capacity: CAP,
                     });
                 }
+                // SAFETY: digits are always ASCII
                 Ok(unsafe { Self::$from_bytes(formatted) })
             }
 
@@ -139,6 +140,7 @@ macro_rules! impl_format_int_generic {
                         capacity: CAP,
                     });
                 }
+                // SAFETY: digits are always ASCII
                 Ok(unsafe { Self::$from_bytes(formatted) })
             }
 
@@ -162,6 +164,7 @@ macro_rules! impl_format_int_generic {
                         capacity: CAP,
                     });
                 }
+                // SAFETY: digits are always ASCII
                 Ok(unsafe { Self::$from_bytes(formatted) })
             }
 
@@ -176,6 +179,7 @@ macro_rules! impl_format_int_generic {
                         capacity: CAP,
                     });
                 }
+                // SAFETY: digits are always ASCII
                 Ok(unsafe { Self::$from_bytes(formatted) })
             }
 
@@ -190,6 +194,7 @@ macro_rules! impl_format_int_generic {
                         capacity: CAP,
                     });
                 }
+                // SAFETY: digits are always ASCII
                 Ok(unsafe { Self::$from_bytes(formatted) })
             }
 
@@ -213,6 +218,7 @@ macro_rules! impl_format_int_generic {
                         capacity: CAP,
                     });
                 }
+                // SAFETY: digits are always ASCII
                 Ok(unsafe { Self::$from_bytes(formatted) })
             }
 
@@ -227,6 +233,7 @@ macro_rules! impl_format_int_generic {
                         capacity: CAP,
                     });
                 }
+                // SAFETY: digits are always ASCII
                 Ok(unsafe { Self::$from_bytes(formatted) })
             }
 
@@ -241,6 +248,7 @@ macro_rules! impl_format_int_generic {
                         capacity: CAP,
                     });
                 }
+                // SAFETY: digits are always ASCII
                 Ok(unsafe { Self::$from_bytes(formatted) })
             }
 
@@ -264,6 +272,7 @@ macro_rules! impl_format_int_generic {
                         capacity: CAP,
                     });
                 }
+                // SAFETY: digits are always ASCII
                 Ok(unsafe { Self::$from_bytes(formatted) })
             }
 
@@ -278,6 +287,7 @@ macro_rules! impl_format_int_generic {
                         capacity: CAP,
                     });
                 }
+                // SAFETY: digits are always ASCII
                 Ok(unsafe { Self::$from_bytes(formatted) })
             }
 
@@ -292,6 +302,7 @@ macro_rules! impl_format_int_generic {
                         capacity: CAP,
                     });
                 }
+                // SAFETY: digits are always ASCII
                 Ok(unsafe { Self::$from_bytes(formatted) })
             }
         }

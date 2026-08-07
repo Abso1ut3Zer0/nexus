@@ -711,6 +711,7 @@ impl AsciiStr {
         let pos = self.find_byte(delimiter.as_u8())?;
         // SAFETY: pos is within bounds, and bytes contain valid ASCII
         let before = unsafe { AsciiStr::from_bytes_unchecked(&self.0[..pos]) };
+        // SAFETY: pos is within bounds, and bytes contain valid ASCII
         let after = unsafe { AsciiStr::from_bytes_unchecked(&self.0[pos + 1..]) };
         Some((before, after))
     }
@@ -1101,12 +1102,14 @@ mod tests {
 
     #[test]
     fn from_bytes_unchecked() {
+        // SAFETY: b"test" is valid ASCII.
         let s = unsafe { AsciiStr::from_bytes_unchecked(b"test") };
         assert_eq!(s.as_str(), "test");
     }
 
     #[test]
     fn from_str_unchecked() {
+        // SAFETY: "test" is valid ASCII.
         let s = unsafe { AsciiStr::from_str_unchecked("test") };
         assert_eq!(s.len(), 4);
     }
@@ -1128,6 +1131,7 @@ mod tests {
     #[test]
     fn get_unchecked_valid() {
         let s = AsciiStr::try_from_bytes(b"ABC").unwrap();
+        // SAFETY: indices 0 and 2 are within bounds of "ABC" (len = 3).
         unsafe {
             assert_eq!(s.get_unchecked(0), AsciiChar::A);
             assert_eq!(s.get_unchecked(2), AsciiChar::C);
