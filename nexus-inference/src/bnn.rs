@@ -258,6 +258,7 @@ impl Bnn {
 
         // SAFETY: predict is not reentrant. Scratch is !Sync, preventing concurrent access.
         let bits_a = unsafe { self.bits_a.get_mut() };
+        // SAFETY: same as above.
         let bits_b = unsafe { self.bits_b.get_mut() };
         #[cfg(not(all(
             target_arch = "x86_64",
@@ -266,6 +267,7 @@ impl Bnn {
                 all(target_feature = "avx2", target_feature = "fma")
             )
         )))]
+        // SAFETY: same as above.
         let float_scratch = unsafe { self.float_scratch.get_mut() };
 
         // fused input: matmul + binarize in one pass

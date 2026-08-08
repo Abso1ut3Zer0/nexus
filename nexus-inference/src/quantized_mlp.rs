@@ -230,7 +230,9 @@ impl QuantizedMlp {
 
         // SAFETY: predict is not reentrant. Scratch is !Sync, preventing concurrent access.
         let scratch_f32 = unsafe { self.scratch_f32.get_mut() };
+        // SAFETY: same as above.
         let scratch_i8 = unsafe { self.scratch_i8.get_mut() };
+        // SAFETY: same as above.
         let scratch_i32 = unsafe { self.scratch_i32.get_mut() };
 
         let n_layers = self.layers.len();
