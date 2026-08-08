@@ -272,6 +272,8 @@ impl Drop for Mapping {
 // state. Concurrent access to the mapped contents must be synchronized
 // by the caller — the handle itself is safe to move across threads.
 unsafe impl Send for Mapping {}
+// SAFETY: same as Send; the Mapping handle has no interior mutability,
+// so shared references can cross thread boundaries safely.
 unsafe impl Sync for Mapping {}
 
 // ── POSIX shared memory (forwarded to platform backend) ──────────
