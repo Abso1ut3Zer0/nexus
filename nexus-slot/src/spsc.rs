@@ -51,6 +51,7 @@ struct Inner<T> {
 // word-at-a-time atomics (atomic_store/atomic_load), and the seqlock protocol
 // ensures no torn reads. T: Send is required because values cross thread boundaries.
 unsafe impl<T: Send> Send for Inner<T> {}
+// SAFETY: same as Send; seqlock atomics make concurrent immutable access safe across threads.
 unsafe impl<T: Send> Sync for Inner<T> {}
 
 /// The writing half of a conflated slot.
@@ -304,6 +305,7 @@ mod tests {
         b: u64,
     }
 
+    // SAFETY: TestData is repr(C) with only Copy fields, no heap pointers, no Drop, all bit patterns valid.
     unsafe impl Pod for TestData {}
 
     // ========================================================================
@@ -468,6 +470,7 @@ mod tests {
             value: u64,
             check: u64,
         }
+        // SAFETY: Checkable is repr(C) with only Copy fields, no heap pointers, no Drop, all bit patterns valid.
         unsafe impl Pod for Checkable {}
 
         let (mut writer, mut reader) = slot::<Checkable>();
@@ -504,6 +507,7 @@ mod tests {
             seq: u64,
             data: [u64; 31],
         }
+        // SAFETY: Large is repr(C) with only Copy fields, no heap pointers, no Drop, all bit patterns valid.
         unsafe impl Pod for Large {}
 
         let (mut writer, mut reader) = slot::<Large>();
