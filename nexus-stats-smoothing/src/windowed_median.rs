@@ -80,6 +80,7 @@ impl WindowedMedianF64 {
         // SAFETY: both buffers allocated with capacity `window`, all elements initialized,
         // exclusively owned. We need both slices simultaneously plus scalar fields.
         let ring = unsafe { core::slice::from_raw_parts_mut(self.ring, window) };
+        // SAFETY: same as above for sorted buffer.
         let sorted = unsafe { core::slice::from_raw_parts_mut(self.sorted, window) };
 
         if self.count >= window as u64 {
@@ -453,6 +454,7 @@ impl WindowedMedianI64 {
         // SAFETY: both buffers allocated with capacity `window`, all elements initialized,
         // exclusively owned. We need both slices simultaneously plus scalar fields.
         let ring = unsafe { core::slice::from_raw_parts_mut(self.ring, window) };
+        // SAFETY: same as above for sorted buffer.
         let sorted = unsafe { core::slice::from_raw_parts_mut(self.sorted, window) };
 
         if self.count >= window as u64 {
