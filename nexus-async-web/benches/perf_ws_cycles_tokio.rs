@@ -23,6 +23,7 @@ use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
 
 #[inline(always)]
 fn rdtsc_start() -> u64 {
+    // SAFETY: x86_64 intrinsic; benchmark runs on x86_64 only.
     unsafe {
         core::arch::x86_64::_mm_lfence();
         core::arch::x86_64::_rdtsc()
@@ -31,6 +32,7 @@ fn rdtsc_start() -> u64 {
 
 #[inline(always)]
 fn rdtsc_end() -> u64 {
+    // SAFETY: x86_64 intrinsic; benchmark runs on x86_64 only.
     unsafe {
         let tsc = core::arch::x86_64::__rdtscp(&mut 0u32 as *mut _);
         core::arch::x86_64::_mm_lfence();
@@ -74,6 +76,9 @@ fn noop_waker() -> Waker {
         RawWaker::new(p, &VTABLE)
     }
     const VTABLE: RawWakerVTable = RawWakerVTable::new(clone, noop, noop, noop);
+    // SAFETY: VTABLE is valid (clone/wake/wake_by_ref/drop are all correct noop
+    // implementations), and the null data pointer is valid because all vtable
+    // functions ignore it.
     unsafe { Waker::from_raw(RawWaker::new(std::ptr::null(), &VTABLE)) }
 }
 
