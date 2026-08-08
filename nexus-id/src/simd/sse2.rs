@@ -27,6 +27,7 @@ pub fn hex_decode_32(bytes: &[u8; 32]) -> Result<(u64, u64), usize> {
     // references with the same lifetime as `bytes`. Alignment is irrelevant
     // because [u8; 16] has align 1.
     let hi_bytes: &[u8; 16] = unsafe { &*(bytes.as_ptr().cast::<[u8; 16]>()) };
+    // SAFETY: same as above.
     let lo_bytes: &[u8; 16] = unsafe { &*(bytes.as_ptr().add(16).cast::<[u8; 16]>()) };
 
     let hi = hex_decode_16(hi_bytes)?;
