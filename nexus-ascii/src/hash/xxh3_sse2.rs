@@ -40,6 +40,7 @@ pub fn hash_bounded_with_seed<const CAP: usize>(data: &[u8], seed: u64) -> u64 {
 #[cfg(target_arch = "x86_64")]
 #[target_feature(enable = "sse2")]
 unsafe fn hash_long_sse2(data: &[u8], seed: u64) -> u64 {
+    // SAFETY: #[target_feature(enable = "sse2")] guarantees SSE2 is available.
     unsafe {
         let len = data.len();
 
@@ -132,6 +133,7 @@ unsafe fn accumulate_stripe_sse2(
     stripe: *const u8,
     secret_offset: usize,
 ) {
+    // SAFETY: #[target_feature(enable = "sse2")] guarantees SSE2 is available.
     unsafe {
         let secret_ptr = SECRET.as_ptr().add(secret_offset);
 
@@ -191,6 +193,7 @@ unsafe fn scramble_acc_sse2(
     acc2: &mut __m128i,
     acc3: &mut __m128i,
 ) {
+    // SAFETY: #[target_feature(enable = "sse2")] guarantees SSE2 is available.
     unsafe {
         let prime = _mm_set1_epi32(PRIME32_1 as i32);
         let secret_ptr = SECRET.as_ptr().add(128);

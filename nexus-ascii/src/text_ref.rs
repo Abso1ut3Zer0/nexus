@@ -479,6 +479,7 @@ impl AsciiTextStr {
         let pos = self.find_byte(delimiter.as_u8())?;
         // SAFETY: pos is within bounds, AsciiTextStr guarantees printable ASCII
         let before = unsafe { AsciiTextStr::from_bytes_unchecked(&self.0[..pos]) };
+        // SAFETY: pos is within bounds, AsciiTextStr guarantees printable ASCII
         let after = unsafe { AsciiTextStr::from_bytes_unchecked(&self.0[pos + 1..]) };
         Some((before, after))
     }
@@ -866,6 +867,7 @@ mod tests {
 
     #[test]
     fn from_bytes_unchecked() {
+        // SAFETY: b"test" is valid printable ASCII.
         let s = unsafe { AsciiTextStr::from_bytes_unchecked(b"test") };
         assert_eq!(s.as_str(), "test");
     }

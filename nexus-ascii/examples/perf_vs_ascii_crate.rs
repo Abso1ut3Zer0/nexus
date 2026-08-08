@@ -138,6 +138,7 @@ fn main() {
     bench_wide("std: make_ascii_uppercase (7B, in-place)", || {
         ss7_buf.as_mut_str().make_ascii_uppercase();
         // Reset for next iteration
+        // SAFETY: b"btc-usd" is valid UTF-8 and same length as the string.
         unsafe { ss7_buf.as_bytes_mut().copy_from_slice(b"btc-usd") };
         black_box(ss7_buf.len() as u64)
     });
@@ -161,6 +162,7 @@ fn main() {
     let mut ss20_buf = String::from("order-id-abcdefghij");
     bench_wide("std: make_ascii_uppercase (20B, in-place)", || {
         ss20_buf.as_mut_str().make_ascii_uppercase();
+        // SAFETY: b"order-id-abcdefghij" is valid UTF-8 and same length as the string.
         unsafe {
             ss20_buf
                 .as_bytes_mut()
@@ -188,6 +190,7 @@ fn main() {
     let mut ss38_buf = String::from("abcdefghijklmnopqrstuvwxyz-0123456789a");
     bench_wide("std: make_ascii_uppercase (38B, in-place)", || {
         ss38_buf.as_mut_str().make_ascii_uppercase();
+        // SAFETY: replacement is valid UTF-8 and same length as the original string.
         unsafe {
             ss38_buf
                 .as_bytes_mut()

@@ -40,6 +40,7 @@ fn main() {
     });
 
     bench_wide("from_raw_unchecked (7B in 16B buffer)", || {
+        // SAFETY: buffer_7 contains valid ASCII followed by null padding.
         let s: AsciiString<16> = unsafe { AsciiString::from_raw_unchecked(black_box(buffer_7)) };
         s.len() as u64
     });
@@ -73,6 +74,7 @@ fn main() {
     });
 
     bench_wide("from_raw_unchecked (20B in 32B buffer)", || {
+        // SAFETY: buffer_20 contains valid ASCII followed by null padding.
         let s: AsciiString<32> = unsafe { AsciiString::from_raw_unchecked(black_box(buffer_20)) };
         s.len() as u64
     });
@@ -240,6 +242,7 @@ fn main() {
 
     // from_bytes_unchecked (no null search, no validation)
     bench_wide("from_bytes_unchecked (7B, no null search)", || {
+        // SAFETY: bytes_7 is valid ASCII.
         let s: AsciiString<16> = unsafe { AsciiString::from_bytes_unchecked(black_box(bytes_7)) };
         s.len() as u64
     });

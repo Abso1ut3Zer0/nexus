@@ -55,6 +55,7 @@ fn main() {
     });
 
     bench_batched("from_bytes_unchecked (7B)", || {
+        // SAFETY: b"BTC-USD" is valid ASCII.
         let s: FlatAsciiString<32> =
             unsafe { FlatAsciiString::from_bytes_unchecked(black_box(b"BTC-USD")) };
         s.as_raw()[0] as u64
@@ -92,6 +93,7 @@ fn main() {
     });
 
     bench_batched("from_raw_unchecked (7B in 16B)", || {
+        // SAFETY: buffer_7 contains valid ASCII followed by null padding.
         let s: FlatAsciiString<16> =
             unsafe { FlatAsciiString::from_raw_unchecked(black_box(buffer_7)) };
         s.as_raw()[0] as u64
@@ -177,10 +179,12 @@ fn main() {
     });
 
     bench_batched("replaced_byte (unsafe)", || {
+        // SAFETY: b'_' is valid ASCII.
         unsafe { black_box(sym).replaced_byte(b'-', b'_') }.len() as u64
     });
 
     bench_batched("replace_first_byte (unsafe)", || {
+        // SAFETY: b'_' is valid ASCII.
         unsafe { black_box(sym).replace_first_byte(b'-', b'_') }.len() as u64
     });
 

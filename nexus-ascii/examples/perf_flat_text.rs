@@ -97,6 +97,7 @@ fn main() {
     });
 
     bench_batched("replaced_char_unchecked (unsafe)", || {
+        // SAFETY: underscore is a valid printable ASCII char.
         unsafe { black_box(sym).replaced_char_unchecked(minus, underscore) }.len() as u64
     });
 
@@ -108,6 +109,7 @@ fn main() {
     });
 
     bench_batched("replace_first_char_unchecked (unsafe)", || {
+        // SAFETY: underscore is a valid printable ASCII char.
         unsafe { black_box(sym).replace_first_char_unchecked(minus, underscore) }.len() as u64
     });
 

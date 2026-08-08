@@ -729,6 +729,7 @@ impl<const CAP: usize> AsciiText<CAP> {
         let pos = bytes.iter().position(|&b| b == delimiter.as_u8())?;
         // SAFETY: pos is within bounds, AsciiText guarantees printable ASCII
         let before = unsafe { AsciiTextStr::from_bytes_unchecked(&bytes[..pos]) };
+        // SAFETY: pos is within bounds, AsciiText guarantees printable ASCII
         let after = unsafe { AsciiTextStr::from_bytes_unchecked(&bytes[pos + 1..]) };
         Some((before, after))
     }
@@ -1390,6 +1391,7 @@ mod tests {
     #[test]
     fn test_from_ascii_string_unchecked() {
         let s: AsciiString<32> = AsciiString::try_from("Hello").unwrap();
+        // SAFETY: s was created from "Hello" which is valid printable ASCII.
         let text: AsciiText<32> = unsafe { AsciiText::from_ascii_string_unchecked(s) };
         assert_eq!(text.as_str(), "Hello");
     }
@@ -1740,6 +1742,7 @@ mod tests {
 
     #[test]
     fn from_str_unchecked_basic() {
+        // SAFETY: "hello" is valid printable ASCII.
         let text: AsciiText<16> = unsafe { AsciiText::from_str_unchecked("hello") };
         assert_eq!(text.as_str(), "hello");
         assert_eq!(text.len(), 5);
@@ -1747,6 +1750,7 @@ mod tests {
 
     #[test]
     fn from_str_unchecked_matches_checked() {
+        // SAFETY: "test123" is valid printable ASCII.
         let unchecked: AsciiText<16> = unsafe { AsciiText::from_str_unchecked("test123") };
         let checked: AsciiText<16> = AsciiText::try_from_str("test123").unwrap();
         assert_eq!(unchecked, checked);
@@ -1759,12 +1763,14 @@ mod tests {
 
     #[test]
     fn from_bytes_unchecked_basic() {
+        // SAFETY: b"hello" is valid printable ASCII.
         let text: AsciiText<16> = unsafe { AsciiText::from_bytes_unchecked(b"hello") };
         assert_eq!(text.as_str(), "hello");
     }
 
     #[test]
     fn from_bytes_unchecked_matches_checked() {
+        // SAFETY: b"test" is valid printable ASCII.
         let unchecked: AsciiText<16> = unsafe { AsciiText::from_bytes_unchecked(b"test") };
         let checked: AsciiText<16> = AsciiText::try_from_bytes(b"test").unwrap();
         assert_eq!(unchecked, checked);

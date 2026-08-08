@@ -188,6 +188,7 @@ pub fn eq_ignore_ascii_case(a: &[u8], b: &[u8]) -> bool {
     while i + 8 <= len {
         // SAFETY: We just checked that i + 8 <= len
         let word_a = unsafe { a.as_ptr().add(i).cast::<[u8; 8]>().read_unaligned() };
+        // SAFETY: We just checked that i + 8 <= len
         let word_b = unsafe { b.as_ptr().add(i).cast::<[u8; 8]>().read_unaligned() };
 
         if !eq_ignore_ascii_case_word(u64::from_ne_bytes(word_a), u64::from_ne_bytes(word_b)) {
@@ -353,6 +354,7 @@ pub fn make_lowercase(bytes: &mut [u8]) {
         };
         let word = u64::from_ne_bytes(chunk);
         let lower = to_lowercase_word(word);
+        // SAFETY: len >= 8, so len - 8 is valid; write to last 8 bytes.
         unsafe {
             bytes
                 .as_mut_ptr()
@@ -388,6 +390,7 @@ pub fn make_uppercase(bytes: &mut [u8]) {
         let upper = to_uppercase_word(word);
 
         // Write back
+        // SAFETY: We just checked that i + 8 <= len
         unsafe {
             bytes
                 .as_mut_ptr()
@@ -413,6 +416,7 @@ pub fn make_uppercase(bytes: &mut [u8]) {
         };
         let word = u64::from_ne_bytes(chunk);
         let upper = to_uppercase_word(word);
+        // SAFETY: len >= 8, so len - 8 is valid; write to last 8 bytes.
         unsafe {
             bytes
                 .as_mut_ptr()
@@ -491,6 +495,7 @@ pub fn contains_control_chars(bytes: &[u8]) -> bool {
     // 1. len >= 8 (checked above)
     // 2. Re-checking bytes is harmless for OR operation
     if i < len {
+        // SAFETY: len >= 8 (checked above), so len - 8 is valid.
         let chunk: [u8; 8] = unsafe {
             bytes
                 .as_ptr()
@@ -544,6 +549,7 @@ pub fn is_all_printable(bytes: &[u8]) -> bool {
     // 1. len >= 8 (checked above)
     // 2. Re-checking bytes is harmless for AND operation
     if i < len {
+        // SAFETY: len >= 8 (checked above), so len - 8 is valid.
         let chunk: [u8; 8] = unsafe {
             bytes
                 .as_ptr()
@@ -622,6 +628,7 @@ pub fn is_all_numeric(bytes: &[u8]) -> bool {
 
     // Handle remainder by checking last 8 bytes (overlapping)
     if i < len {
+        // SAFETY: len >= 8 (checked above), so len - 8 is valid.
         let chunk: [u8; 8] = unsafe {
             bytes
                 .as_ptr()
@@ -712,6 +719,7 @@ pub fn is_all_alphanumeric(bytes: &[u8]) -> bool {
 
     // Handle remainder by checking last 8 bytes (overlapping)
     if i < len {
+        // SAFETY: len >= 8 (checked above), so len - 8 is valid.
         let chunk: [u8; 8] = unsafe {
             bytes
                 .as_ptr()

@@ -128,6 +128,7 @@ const EMPTY_HEADER: u64 = hash::pack_header(0, hash::hash_const::<0>(&[]));
 /// - `dst` and `src` must not overlap
 #[inline(always)]
 pub(crate) unsafe fn copy_short(dst: *mut u8, src: *const u8, len: usize) {
+    // SAFETY: caller guarantees dst/src validity, len, and non-overlap per function preconditions.
     unsafe {
         if len > 32 {
             core::ptr::copy_nonoverlapping(src, dst, len);
@@ -1582,6 +1583,7 @@ impl<const CAP: usize> AsciiString<CAP> {
         let pos = bytes.iter().position(|&b| b == delimiter.as_u8())?;
         // SAFETY: pos is within bounds, and bytes contain valid ASCII
         let before = unsafe { AsciiStr::from_bytes_unchecked(&bytes[..pos]) };
+        // SAFETY: pos is within bounds, and bytes contain valid ASCII
         let after = unsafe { AsciiStr::from_bytes_unchecked(&bytes[pos + 1..]) };
         Some((before, after))
     }
@@ -2293,6 +2295,7 @@ impl<const CAP: usize> Ord for AsciiString<CAP> {
             // SAFETY: CAP.is_multiple_of(8) guarantees i + 8 <= CAP
             let a =
                 u64::from_be_bytes(unsafe { self.data.as_ptr().add(i).cast::<[u8; 8]>().read() });
+            // SAFETY: CAP.is_multiple_of(8) guarantees i + 8 <= CAP
             let b =
                 u64::from_be_bytes(unsafe { other.data.as_ptr().add(i).cast::<[u8; 8]>().read() });
             match a.cmp(&b) {
@@ -3126,6 +3129,7 @@ mod tests {
     #[test]
     fn get_unchecked_valid() {
         let s: AsciiString<32> = AsciiString::try_from("ABC").unwrap();
+        // SAFETY: indices 0, 1, 2 are within bounds of "ABC" (len = 3).
         unsafe {
             assert_eq!(s.get_unchecked(0), AsciiChar::A);
             assert_eq!(s.get_unchecked(1), AsciiChar::B);
@@ -3743,6 +3747,7 @@ mod tests {
     #[test]
     fn from_raw_unchecked_basic() {
         let buffer: [u8; 16] = *b"BTC-USD\0\0\0\0\0\0\0\0\0";
+        // SAFETY: buffer contains valid ASCII bytes followed by null padding.
         let s: AsciiString<16> = unsafe { AsciiString::from_raw_unchecked(buffer) };
         assert_eq!(s.as_str(), "BTC-USD");
         assert_eq!(s.len(), 7);
@@ -3751,6 +3756,7 @@ mod tests {
     #[test]
     fn from_raw_unchecked_no_null() {
         let buffer: [u8; 8] = *b"BTCUSDT!";
+        // SAFETY: buffer is all valid ASCII, fully filled.
         let s: AsciiString<8> = unsafe { AsciiString::from_raw_unchecked(buffer) };
         assert_eq!(s.len(), 8);
     }
@@ -3758,6 +3764,7 @@ mod tests {
     #[test]
     fn from_raw_unchecked_empty() {
         let buffer: [u8; 8] = [0u8; 8];
+        // SAFETY: buffer is all null bytes; represents an empty string.
         let s: AsciiString<8> = unsafe { AsciiString::from_raw_unchecked(buffer) };
         assert!(s.is_empty());
     }
@@ -3766,6 +3773,7 @@ mod tests {
     fn from_raw_unchecked_matches_checked() {
         let buffer: [u8; 16] = *b"ETH-USDT\0\0\0\0\0\0\0\0";
         let checked: AsciiString<16> = AsciiString::try_from_raw(buffer).unwrap();
+        // SAFETY: buffer contains valid ASCII bytes followed by null padding.
         let unchecked: AsciiString<16> = unsafe { AsciiString::from_raw_unchecked(buffer) };
 
         assert_eq!(checked, unchecked);
@@ -4376,6 +4384,7 @@ mod tests {
 
     #[test]
     fn from_str_unchecked_basic() {
+        // SAFETY: "hello" is valid ASCII.
         let s: AsciiString<16> = unsafe { AsciiString::from_str_unchecked("hello") };
         assert_eq!(s.as_str(), "hello");
         assert_eq!(s.len(), 5);
@@ -4383,12 +4392,14 @@ mod tests {
 
     #[test]
     fn from_str_unchecked_empty() {
+        // SAFETY: "" is valid ASCII.
         let s: AsciiString<16> = unsafe { AsciiString::from_str_unchecked("") };
         assert!(s.is_empty());
     }
 
     #[test]
     fn from_str_unchecked_matches_checked() {
+        // SAFETY: "test123" is valid ASCII.
         let unchecked: AsciiString<16> = unsafe { AsciiString::from_str_unchecked("test123") };
         let checked: AsciiString<16> = AsciiString::try_from_str("test123").unwrap();
         assert_eq!(unchecked, checked);

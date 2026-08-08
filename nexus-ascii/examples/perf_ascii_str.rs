@@ -49,11 +49,13 @@ fn main() {
     });
 
     bench("from_bytes_unchecked (7B)", || {
+        // SAFETY: bytes_7 is valid ASCII.
         let s = unsafe { AsciiStr::from_bytes_unchecked(black_box(bytes_7)) };
         s.len() as u64
     });
 
     bench("from_bytes_unchecked (32B)", || {
+        // SAFETY: bytes_32 is valid ASCII.
         let s = unsafe { AsciiStr::from_bytes_unchecked(black_box(bytes_32)) };
         s.len() as u64
     });
