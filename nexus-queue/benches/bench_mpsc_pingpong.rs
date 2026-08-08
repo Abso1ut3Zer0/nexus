@@ -16,6 +16,7 @@ const SAMPLES: u64 = 100_000;
 #[inline]
 fn rdtscp() -> u64 {
     let mut aux: u32 = 0;
+    // SAFETY: x86_64 intrinsic; function is only compiled for x86_64.
     unsafe { core::arch::x86_64::__rdtscp(&raw mut aux) }
 }
 
