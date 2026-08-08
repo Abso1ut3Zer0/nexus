@@ -10,16 +10,27 @@ pub unsafe trait Pod: Sized + 'static {}
 // no heap pointers, have a stable platform-defined representation with no
 // padding, and every bit pattern within the type's width is a valid value.
 unsafe impl Pod for u8 {}
+// SAFETY: same as u8.
 unsafe impl Pod for u16 {}
+// SAFETY: same as u8.
 unsafe impl Pod for u32 {}
+// SAFETY: same as u8.
 unsafe impl Pod for u64 {}
+// SAFETY: same as u8.
 unsafe impl Pod for u128 {}
+// SAFETY: same as u8.
 unsafe impl Pod for i8 {}
+// SAFETY: same as u8.
 unsafe impl Pod for i16 {}
+// SAFETY: same as u8.
 unsafe impl Pod for i32 {}
+// SAFETY: same as u8.
 unsafe impl Pod for i64 {}
+// SAFETY: same as u8.
 unsafe impl Pod for i128 {}
+// SAFETY: same as u8.
 unsafe impl Pod for f32 {}
+// SAFETY: same as u8.
 unsafe impl Pod for f64 {}
 /// # Cross-process caveat
 ///
@@ -30,6 +41,7 @@ unsafe impl Pod for f64 {}
 // pointers, stable repr, every bit pattern valid. The cross-process caveat
 // above is a correctness concern for callers, not a soundness issue for `Pod`.
 unsafe impl Pod for usize {}
+// SAFETY: same as usize; Copy, no heap pointers, stable repr, all bit patterns valid.
 unsafe impl Pod for isize {}
 // SAFETY: `T: Pod` guarantees T has no heap pointers, no `Drop`, a stable
 // repr, and every bit pattern is valid. A fixed-size array `[T; N]` inherits
