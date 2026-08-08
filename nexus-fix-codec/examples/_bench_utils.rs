@@ -14,6 +14,7 @@ pub const BATCH: u64 = 100;
 #[inline(always)]
 #[cfg(target_arch = "x86_64")]
 pub fn rdtsc() -> u64 {
+    // SAFETY: x86_64 intrinsic; function is only compiled for x86_64.
     unsafe { core::arch::x86_64::_rdtsc() }
 }
 
@@ -26,6 +27,7 @@ pub fn rdtsc() -> u64 {
 #[inline(always)]
 #[cfg(target_arch = "x86_64")]
 pub fn rdtsc_fenced_start() -> u64 {
+    // SAFETY: x86_64 intrinsic; function is only compiled for x86_64.
     unsafe {
         core::arch::x86_64::_mm_lfence();
         core::arch::x86_64::_rdtsc()
@@ -41,6 +43,7 @@ pub fn rdtsc_fenced_start() -> u64 {
 #[inline(always)]
 #[cfg(target_arch = "x86_64")]
 pub fn rdtsc_fenced_end() -> u64 {
+    // SAFETY: x86_64 intrinsic; function is only compiled for x86_64.
     unsafe {
         let mut aux = 0u32;
         let tsc = core::arch::x86_64::__rdtscp(&raw mut aux);
