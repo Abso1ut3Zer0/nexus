@@ -106,6 +106,7 @@ fn uuid_v4_lifecycle() {
     assert_eq!(from_bytes, id);
 
     // Unsafe bytes round-trip
+    // SAFETY: bytes came from id.to_bytes(), so it encodes a valid Uuid.
     let from_unchecked = unsafe { Uuid::from_bytes_unchecked(&bytes) };
     assert_eq!(from_unchecked, id);
 
@@ -232,6 +233,7 @@ fn ulid_lifecycle() {
     assert_eq!(from_bytes, id);
 
     // Unsafe bytes round-trip
+    // SAFETY: bytes came from id.to_bytes(), so it encodes a valid Ulid.
     let from_unchecked = unsafe { Ulid::from_bytes_unchecked(&bytes) };
     assert_eq!(from_unchecked, id);
 

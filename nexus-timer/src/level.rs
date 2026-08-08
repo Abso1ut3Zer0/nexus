@@ -250,9 +250,11 @@ mod tests {
         assert!(ws.is_empty());
 
         let e1 = make_entry(&slab, 10, 100);
+        // SAFETY: e1 is a valid slab-allocated pointer; slot invariant upheld.
         unsafe { ws.push_entry(e1) };
         assert!(!ws.is_empty());
 
+        // SAFETY: e1 was pushed above and is still in the list.
         unsafe { ws.remove_entry(e1) };
         assert!(ws.is_empty());
 
@@ -270,6 +272,7 @@ mod tests {
         let e2 = make_entry(&slab, 20, 2);
         let e3 = make_entry(&slab, 30, 3);
 
+        // SAFETY: e1/e2/e3 are valid slab-allocated pointers; slot invariant upheld.
         unsafe {
             ws.push_entry(e1);
             ws.push_entry(e2);
@@ -277,19 +280,23 @@ mod tests {
         }
 
         // Remove middle
+        // SAFETY: e2 was pushed above and is still in the list.
         unsafe { ws.remove_entry(e2) };
         // Head should still be e1, e1.next = e3
         assert_eq!(ws.entry_head(), e1);
+        // SAFETY: e1 and e3 are valid slab-allocated pointers still in the list.
         unsafe {
             assert_eq!(entry_ref(e1).next(), e3);
             assert_eq!(entry_ref(e3).prev(), e1);
         }
 
         // Remove head
+        // SAFETY: e1 is still in the list.
         unsafe { ws.remove_entry(e1) };
         assert_eq!(ws.entry_head(), e3);
 
         // Remove last
+        // SAFETY: e3 is still in the list.
         unsafe { ws.remove_entry(e3) };
         assert!(ws.is_empty());
 

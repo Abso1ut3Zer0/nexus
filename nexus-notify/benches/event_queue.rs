@@ -70,7 +70,7 @@ fn bench_poll(c: &mut Criterion) {
                     notifier.notify(*t).ok();
                 }
                 poller.poll(&mut events);
-                events.drain().for_each(drop);
+                events.clear();
             });
         });
     }
@@ -96,10 +96,10 @@ fn bench_poll_limit(c: &mut Criterion) {
                     notifier.notify(*t).ok();
                 }
                 poller.poll_limit(&mut events, limit);
-                events.drain().for_each(drop);
+                events.clear();
                 // Drain rest
                 poller.poll(&mut events);
-                events.drain().for_each(drop);
+                events.clear();
             });
         });
     }

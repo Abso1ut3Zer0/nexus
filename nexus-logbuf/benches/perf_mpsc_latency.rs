@@ -21,6 +21,7 @@ const BUFFER_SIZE: usize = 64 * 1024;
 #[inline(always)]
 fn rdtscp() -> u64 {
     #[cfg(target_arch = "x86_64")]
+    // SAFETY: x86_64 intrinsic; benchmark runs on x86_64 only.
     unsafe {
         let mut aux: u32 = 0;
         std::arch::x86_64::__rdtscp(&raw mut aux)

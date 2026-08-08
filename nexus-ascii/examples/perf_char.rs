@@ -33,6 +33,7 @@ fn main() {
     });
 
     bench("new_unchecked", || {
+        // SAFETY: b'A' is valid ASCII.
         let c = unsafe { AsciiChar::new_unchecked(black_box(b'A')) };
         c.as_u8() as u64
     });

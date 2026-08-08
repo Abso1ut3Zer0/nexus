@@ -50,6 +50,7 @@ struct Inner {
 // SAFETY: All fields use atomics or are designed for cross-thread use
 // (TaskWakerSlot, FallbackWaker, TxWakerSlot). No raw non-atomic state.
 unsafe impl Send for Inner {}
+// SAFETY: Queue<T> owns the data; raw pointers are not shared across threads unsafely.
 unsafe impl Sync for Inner {}
 
 impl Inner {

@@ -74,6 +74,7 @@ fn main() {
 
     bench_wide("push_bytes_unchecked (7B)", || {
         let mut builder: AsciiStringBuilder<32> = AsciiStringBuilder::new();
+        // SAFETY: b"BTC-USD" is valid ASCII.
         unsafe { builder.push_bytes_unchecked(black_box(b"BTC-USD")) };
         builder.len() as u64
     });
@@ -101,6 +102,7 @@ fn main() {
 
     bench_wide("push_raw_unchecked (7B in 16B buffer)", || {
         let mut builder: AsciiStringBuilder<32> = AsciiStringBuilder::new();
+        // SAFETY: raw_buffer contains valid ASCII followed by null padding.
         unsafe { builder.push_raw_unchecked(black_box(raw_buffer)) };
         builder.len() as u64
     });

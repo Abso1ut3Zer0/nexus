@@ -21,6 +21,7 @@ struct Message {
     _padding: [u8; 56],
 }
 
+// SAFETY: Message is repr(C) with only Copy fields, no heap pointers, no Drop, all bit patterns valid.
 unsafe impl Pod for Message {}
 
 fn main() {
@@ -88,6 +89,7 @@ fn main() {
 #[inline]
 fn rdtsc() -> u64 {
     #[cfg(target_arch = "x86_64")]
+    // SAFETY: x86_64 intrinsic; benchmark runs on x86_64 only.
     unsafe {
         let mut aux: u32 = 0;
         core::arch::x86_64::__rdtscp(&raw mut aux)

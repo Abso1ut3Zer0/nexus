@@ -54,15 +54,18 @@ struct CountingAllocator {
     allocs: AtomicUsize,
 }
 
+// SAFETY: delegates to the system allocator; alloc/dealloc contract is upheld.
 unsafe impl GlobalAlloc for CountingAllocator {
     unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
         if self.counting_active.load(Ordering::Relaxed) {
             self.allocs.fetch_add(1, Ordering::Relaxed);
         }
+        // SAFETY: layout is non-zero; pointer returned by alloc is valid.
         unsafe { System.alloc(layout) }
     }
 
     unsafe fn dealloc(&self, ptr: *mut u8, layout: Layout) {
+        // SAFETY: layout is non-zero; pointer returned by alloc is valid.
         unsafe { System.dealloc(ptr, layout) };
     }
 }
@@ -92,15 +95,18 @@ fn tracking_waker(flag: &std::cell::Cell<bool>) -> Waker {
     static VTABLE: RawWakerVTable = RawWakerVTable::new(
         |p| RawWaker::new(p, &VTABLE),
         |p| {
+            // SAFETY: p is the data pointer set by RawWaker::new from a &Cell<bool>; valid for the waker's lifetime.
             let flag = unsafe { &*(p as *const std::cell::Cell<bool>) };
             flag.set(true);
         },
         |p| {
+            // SAFETY: p is the data pointer set by RawWaker::new from a &Cell<bool>; valid for the waker's lifetime.
             let flag = unsafe { &*(p as *const std::cell::Cell<bool>) };
             flag.set(true);
         },
         |_| {},
     );
+    // SAFETY: vtable functions match the data pointer layout; Cell<bool> outlives the waker.
     unsafe { Waker::from_raw(RawWaker::new(data, &VTABLE)) }
 }
 

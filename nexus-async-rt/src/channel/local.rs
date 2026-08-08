@@ -158,7 +158,9 @@ impl WaiterList {
     ///
     /// `waiter` must point to a pinned, live `Waiter` that is not in any list.
     unsafe fn push_back(&mut self, waiter: *mut Waiter) {
+        // SAFETY: waiter is a valid pointer to a live Waiter; accessed only from the single-threaded executor.
         debug_assert!(unsafe { !(*waiter).queued });
+        // SAFETY: waiter is a valid pointer to a live Waiter; accessed only from the single-threaded executor.
         unsafe {
             (*waiter).queued = true;
             (*waiter).next = std::ptr::null_mut();
@@ -168,6 +170,7 @@ impl WaiterList {
         if self.tail.is_null() {
             self.head = waiter;
         } else {
+            // SAFETY: self.tail is non-null (checked above) and points to a live Waiter; accessed only from the single-threaded executor.
             unsafe { (*self.tail).next = waiter };
         }
         self.tail = waiter;
@@ -180,13 +183,16 @@ impl WaiterList {
             return std::ptr::null_mut();
         }
 
+        // SAFETY: waiter is the head of this list and points to a live Waiter; accessed only from the single-threaded executor.
         self.head = unsafe { (*waiter).next };
         if self.head.is_null() {
             self.tail = std::ptr::null_mut();
         } else {
+            // SAFETY: self.head is non-null (checked above) and points to a live Waiter; accessed only from the single-threaded executor.
             unsafe { (*self.head).prev = std::ptr::null_mut() };
         }
 
+        // SAFETY: waiter is a valid pointer to a live Waiter being removed; accessed only from the single-threaded executor.
         unsafe {
             (*waiter).next = std::ptr::null_mut();
             (*waiter).prev = std::ptr::null_mut();
@@ -201,25 +207,31 @@ impl WaiterList {
     ///
     /// `waiter` must be in this list.
     unsafe fn remove(&mut self, waiter: *mut Waiter) {
+        // SAFETY: waiter is a valid pointer to a live Waiter; accessed only from the single-threaded executor.
         if unsafe { !(*waiter).queued } {
             return;
         }
 
+        // SAFETY: waiter is a valid pointer to a live Waiter; accessed only from the single-threaded executor.
         let prev = unsafe { (*waiter).prev };
+        // SAFETY: waiter is a valid pointer to a live Waiter; accessed only from the single-threaded executor.
         let next = unsafe { (*waiter).next };
 
         if prev.is_null() {
             self.head = next;
         } else {
+            // SAFETY: prev is non-null (checked above) and points to a live Waiter; accessed only from the single-threaded executor.
             unsafe { (*prev).next = next };
         }
 
         if next.is_null() {
             self.tail = prev;
         } else {
+            // SAFETY: next is non-null (checked above) and points to a live Waiter; accessed only from the single-threaded executor.
             unsafe { (*next).prev = prev };
         }
 
+        // SAFETY: waiter is a valid pointer to a live Waiter being unlinked; accessed only from the single-threaded executor.
         unsafe {
             (*waiter).next = std::ptr::null_mut();
             (*waiter).prev = std::ptr::null_mut();
@@ -231,12 +243,15 @@ impl WaiterList {
     unsafe fn wake_all(&mut self) {
         let mut cursor = self.head;
         while !cursor.is_null() {
+            // SAFETY: cursor is a valid pointer to a live Waiter; accessed only from the single-threaded executor.
             let next = unsafe { (*cursor).next };
+            // SAFETY: cursor is a valid pointer to a live Waiter being unlinked; accessed only from the single-threaded executor.
             unsafe {
                 (*cursor).next = std::ptr::null_mut();
                 (*cursor).prev = std::ptr::null_mut();
                 (*cursor).queued = false;
             }
+            // SAFETY: cursor is a valid pointer to a live Waiter; accessed only from the single-threaded executor.
             if let Some(waker) = unsafe { (*cursor).waker.take() } {
                 waker.wake();
             }
@@ -281,6 +296,7 @@ type Shared<T> = Rc<UnsafeCell<Inner<T>>>;
 #[inline]
 #[allow(clippy::mut_from_ref)] // Intentional: UnsafeCell + single-threaded guarantee.
 unsafe fn inner<T>(shared: &Shared<T>) -> &mut Inner<T> {
+    // SAFETY: accessed only from the single-threaded executor; no re-entrant access.
     unsafe { &mut *shared.get() }
 }
 
@@ -457,6 +473,7 @@ impl<T> Drop for Send<'_, T> {
         if self.waiter.queued {
             // SAFETY: single-threaded, waiter is in the list.
             let state = unsafe { inner(&self.sender.inner) };
+            // SAFETY: waiter is queued and this is the sole owner removing it; accessed only from the single-threaded executor.
             unsafe { state.tx_waiters.remove(&raw mut self.waiter) };
         }
     }
@@ -492,6 +509,7 @@ impl<T> Receiver<T> {
             let value = unsafe { state.buffer.pop() };
 
             // Wake one blocked sender.
+            // SAFETY: accessed only from the single-threaded executor.
             let waiter = unsafe { state.tx_waiters.pop_front() };
             if !waiter.is_null() {
                 // SAFETY: waiter was in the list, has a valid waker.
@@ -518,6 +536,7 @@ impl<T> Drop for Receiver<T> {
         state.closed = true;
 
         // Wake all blocked senders so they see the closed error.
+        // SAFETY: accessed only from the single-threaded executor; wake_all unlinks all waiters safely.
         unsafe { state.tx_waiters.wake_all() };
     }
 }
@@ -544,11 +563,13 @@ impl<T> Future for Recv<'_, T> {
             let value = unsafe { state.buffer.pop() };
 
             // Wake one blocked sender.
+            // SAFETY: accessed only from the single-threaded executor.
             let waiter = unsafe { state.tx_waiters.pop_front() };
-            if !waiter.is_null()
-                && let Some(waker) = unsafe { (*waiter).waker.take() }
-            {
-                waker.wake();
+            if !waiter.is_null() {
+                // SAFETY: waiter is non-null and points to a live Waiter; accessed only from the single-threaded executor.
+                if let Some(waker) = unsafe { (*waiter).waker.take() } {
+                    waker.wake();
+                }
             }
 
             return Poll::Ready(Ok(value));
@@ -605,13 +626,19 @@ mod tests {
         assert_eq!(rb.capacity(), 4);
         assert!(rb.is_empty());
 
+        // SAFETY: buffer is not full; verified by test setup.
         unsafe { rb.push(1) };
+        // SAFETY: buffer is not full; verified by test setup.
         unsafe { rb.push(2) };
+        // SAFETY: buffer is not full; verified by test setup.
         unsafe { rb.push(3) };
         assert_eq!(rb.len(), 3);
 
+        // SAFETY: buffer is not empty; verified by test setup.
         assert_eq!(unsafe { rb.pop() }, 1);
+        // SAFETY: buffer is not empty; verified by test setup.
         assert_eq!(unsafe { rb.pop() }, 2);
+        // SAFETY: buffer is not empty; verified by test setup.
         assert_eq!(unsafe { rb.pop() }, 3);
         assert!(rb.is_empty());
     }
@@ -621,11 +648,14 @@ mod tests {
         let mut rb = RingBuffer::<u32>::new(2);
         assert_eq!(rb.capacity(), 2);
 
+        // SAFETY: buffer is not full; verified by test setup.
         unsafe { rb.push(1) };
+        // SAFETY: buffer is not full; verified by test setup.
         unsafe { rb.push(2) };
         assert!(rb.is_full());
         assert_eq!(rb.len(), 2);
 
+        // SAFETY: buffer is not empty; verified by test setup.
         assert_eq!(unsafe { rb.pop() }, 1);
         assert!(!rb.is_full());
     }
@@ -637,15 +667,23 @@ mod tests {
         // Fill and drain a few times to wrap indices.
         for cycle in 0..10u32 {
             let base = cycle * 4;
+            // SAFETY: buffer is not full; verified by test setup.
             unsafe { rb.push(base) };
+            // SAFETY: buffer is not full; verified by test setup.
             unsafe { rb.push(base + 1) };
+            // SAFETY: buffer is not full; verified by test setup.
             unsafe { rb.push(base + 2) };
+            // SAFETY: buffer is not full; verified by test setup.
             unsafe { rb.push(base + 3) };
             assert!(rb.is_full());
 
+            // SAFETY: buffer is not empty; verified by test setup.
             assert_eq!(unsafe { rb.pop() }, base);
+            // SAFETY: buffer is not empty; verified by test setup.
             assert_eq!(unsafe { rb.pop() }, base + 1);
+            // SAFETY: buffer is not empty; verified by test setup.
             assert_eq!(unsafe { rb.pop() }, base + 2);
+            // SAFETY: buffer is not empty; verified by test setup.
             assert_eq!(unsafe { rb.pop() }, base + 3);
             assert!(rb.is_empty());
         }
@@ -684,8 +722,11 @@ mod tests {
         }
 
         let mut rb = RingBuffer::new(4);
+        // SAFETY: buffer is not full; verified by test setup.
         unsafe { rb.push(DropCounter(dropped.clone())) };
+        // SAFETY: buffer is not full; verified by test setup.
         unsafe { rb.push(DropCounter(dropped.clone())) };
+        // SAFETY: buffer is not full; verified by test setup.
         unsafe { rb.push(DropCounter(dropped.clone())) };
         assert_eq!(dropped.get(), 0);
 

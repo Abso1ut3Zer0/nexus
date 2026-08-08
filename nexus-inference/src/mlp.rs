@@ -185,6 +185,7 @@ impl Mlp {
 
         // SAFETY: predict is not reentrant. Scratch is !Sync, preventing concurrent access.
         let scratch_a = unsafe { self.scratch_a.get_mut() };
+        // SAFETY: same as above.
         let scratch_b = unsafe { self.scratch_b.get_mut() };
 
         let n_layers = self.layer_sizes.len() - 1;

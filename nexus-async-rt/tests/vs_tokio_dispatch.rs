@@ -37,11 +37,13 @@ const BATCH: usize = 100;
 
 #[inline(always)]
 fn rdtsc() -> u64 {
+    // SAFETY: x86_64 intrinsic; the file-level cfg(target_arch = "x86_64") guarantees the target.
     unsafe { core::arch::x86_64::_rdtsc() }
 }
 
 #[inline(always)]
 fn rdtscp() -> u64 {
+    // SAFETY: x86_64 intrinsic; the file-level cfg(target_arch = "x86_64") guarantees the target.
     unsafe {
         let mut aux: u32 = 0;
         let tsc = core::arch::x86_64::__rdtscp(&raw mut aux);
