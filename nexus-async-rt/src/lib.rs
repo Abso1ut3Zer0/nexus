@@ -568,10 +568,12 @@ impl Executor {
                     // SAFETY: terminal state; tracker_key at offset 60, free_task
                     // dispatches through the header's free_fn.
                     let key = unsafe { task::tracker_key(ptr) } as usize;
+                    // SAFETY: terminal state confirmed; free_task dispatches through the header's free_fn.
                     unsafe { task::free_task(ptr) };
                     self.all_tasks.remove(key);
                 }
             }
+        // SAFETY: has_join reads the HAS_JOIN flag from the packed task state word.
         } else if unsafe { task::has_join(ptr) } {
             // Joinable: poll_join dropped F and wrote T. drop_fn = drop_output::<T>.
             // Don't drop T — JoinHandle will read it or drop it on handle drop.
@@ -593,6 +595,7 @@ impl Executor {
                     unsafe { task::drop_task_future(ptr) };
                     // SAFETY: terminal state; read tracker_key then free.
                     let key = unsafe { task::tracker_key(ptr) } as usize;
+                    // SAFETY: terminal state confirmed; free_task dispatches through the header's free_fn.
                     unsafe { task::free_task(ptr) };
                     self.all_tasks.remove(key);
                 }
@@ -609,6 +612,7 @@ impl Executor {
                 task::FreeAction::FreeBox | task::FreeAction::FreeSlab => {
                     // SAFETY: terminal state; read tracker_key then free.
                     let key = unsafe { task::tracker_key(ptr) } as usize;
+                    // SAFETY: terminal state confirmed; free_task dispatches through the header's free_fn.
                     unsafe { task::free_task(ptr) };
                     self.all_tasks.remove(key);
                 }
@@ -812,6 +816,7 @@ impl Executor {
         while unsafe { task::ref_count(ptr) } > 0 && std::time::Instant::now() < deadline {
             std::thread::yield_now();
         }
+        // SAFETY: task allocation is alive; ref_count reads bits from the packed state word.
         if unsafe { task::ref_count(ptr) } > 0 {
             // Record before the abort — the eprintln stays per CALLOUT 5
             // (only signal at moment of process abort).

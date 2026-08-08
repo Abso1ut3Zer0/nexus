@@ -43,8 +43,10 @@ fn main() {
 
     let sentinel = 0xDEAD_BEEF_CAFE_u64 as *const ();
     let raw = RawWaker::new(sentinel, &VTABLE);
+    // SAFETY: VTABLE functions are all no-ops; sentinel data pointer is never dereferenced.
     let waker = std::mem::ManuallyDrop::new(unsafe { Waker::from_raw(raw) });
 
+    // SAFETY: ptr is a valid local reference; ptr::read copies bytes to inspect fat pointer layout.
     let repr: WakerRepr = unsafe { ptr::read(ptr::addr_of!(*waker).cast::<WakerRepr>()) };
 
     assert!(
@@ -70,6 +72,7 @@ fn main() {
     );
 
     let cx = Context::from_waker(&waker);
+    // SAFETY: ptr is a valid local reference; ptr::read copies bytes to inspect fat pointer layout.
     let first_word: *const () = unsafe { ptr::read(ptr::addr_of!(cx).cast::<*const ()>()) };
 
     assert!(

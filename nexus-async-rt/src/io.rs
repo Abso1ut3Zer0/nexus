@@ -346,6 +346,7 @@ impl IoHandle {
     pub unsafe fn deregister(&self, source: &mut impl Source, token: Token) -> io::Result<()> {
         // SAFETY: caller guarantees pointers are valid.
         let driver = unsafe { &mut *self.driver };
+        // SAFETY: caller guarantees registry pointer is valid for the Runtime lifetime.
         let registry = unsafe { &*self.registry };
         registry.deregister(source)?;
         driver.release_token(token);

@@ -33,6 +33,7 @@ use nexus_rt::WorldBuilder;
 
 #[test]
 fn slab_task_uncompleted_at_runtime_drop_no_panic() {
+    // SAFETY: single-threaded runtime.
     let slab = unsafe { nexus_slab::byte::unbounded::Slab::<256>::with_chunk_capacity(8) };
     let wb = WorldBuilder::new();
     let mut world = wb.build();
@@ -56,6 +57,7 @@ fn slab_task_uncompleted_at_runtime_drop_no_panic() {
 #[allow(clippy::async_yields_async)] // Intentional: returning the unawaited
 // JoinHandle so we can drop it outside block_on and exercise BUG-1's path.
 fn slab_handle_dropped_outside_block_on_no_panic() {
+    // SAFETY: single-threaded runtime.
     let slab = unsafe { nexus_slab::byte::unbounded::Slab::<256>::with_chunk_capacity(8) };
     let wb = WorldBuilder::new();
     let mut world = wb.build();
@@ -75,6 +77,7 @@ fn slab_handle_dropped_outside_block_on_no_panic() {
 
 #[test]
 fn many_slab_tasks_at_varying_lifecycle_states() {
+    // SAFETY: single-threaded runtime.
     let slab = unsafe { nexus_slab::byte::unbounded::Slab::<256>::with_chunk_capacity(64) };
     let wb = WorldBuilder::new();
     let mut world = wb.build();
@@ -127,6 +130,7 @@ fn no_slab_no_panic() {
 fn slab_task_completed_during_block_on() {
     // Path where the bug never fired (TLS held during free during run_loop).
     // Confirm the new lifecycle doesn't break it.
+    // SAFETY: single-threaded runtime.
     let slab = unsafe { nexus_slab::byte::unbounded::Slab::<256>::with_chunk_capacity(8) };
     let wb = WorldBuilder::new();
     let mut world = wb.build();
@@ -143,6 +147,7 @@ fn multiple_block_on_with_slab_tasks() {
     // Multiple block_on calls on the same Runtime. TLS is installed
     // once at construction; block_on no longer manages it, so calls
     // across separate block_on invocations all see the same slab.
+    // SAFETY: single-threaded runtime.
     let slab = unsafe { nexus_slab::byte::unbounded::Slab::<256>::with_chunk_capacity(8) };
     let wb = WorldBuilder::new();
     let mut world = wb.build();

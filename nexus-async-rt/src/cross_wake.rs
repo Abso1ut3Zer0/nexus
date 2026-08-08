@@ -176,6 +176,7 @@ fn on_owning_executor(ctx: &CrossWakeContext) -> bool {
 /// (set at spawn time, kept alive transitively by any holder of a
 /// TaskRef on this task).
 pub(crate) unsafe fn dispose_terminal(task_ptr: *mut u8) {
+    // SAFETY: caller guarantees task_ptr is a valid task; header_cross_wake_ctx reads the fixed-offset header field.
     let ctx_ptr = unsafe { task::header_cross_wake_ctx(task_ptr) };
 
     // Null ctx (bare Executor or test-only Task::new_boxed): same
@@ -205,7 +206,9 @@ pub(crate) unsafe fn dispose_terminal(task_ptr: *mut u8) {
     // yet, and dispose_terminal is the path that would). queue.push
     // uses the cross_next field and is thread-safe.
     let ctx = unsafe { &*ctx_ptr };
+    // SAFETY: task_ptr is alive and non-null; try_set_queued is an atomic CAS on the task header.
     if unsafe { task::try_set_queued(task_ptr) } {
+        // SAFETY: task_ptr is valid and not already queued; try_set_queued succeeded above.
         unsafe { ctx.queue.push(task_ptr) };
         if ctx.parked.load(Ordering::Acquire) {
             let _ = ctx.mio_waker.wake();
@@ -242,6 +245,7 @@ pub(crate) struct CrossWakeQueue {
 // Producers push from any thread (atomic tail swap).
 // Consumer pops from one thread (head is non-atomic).
 unsafe impl Send for CrossWakeQueue {}
+// SAFETY: CrossWakeQueue is designed for cross-thread use; producers use atomic ops, consumer owns head exclusively.
 unsafe impl Sync for CrossWakeQueue {}
 
 impl CrossWakeQueue {
@@ -331,6 +335,7 @@ impl CrossWakeQueue {
             }
             *head_ref = next;
             head = next;
+            // SAFETY: head was advanced to next, which is a valid task or stub pointer from the queue.
             next = unsafe { self.next_of(head) }.load(Ordering::Acquire);
         }
 
@@ -353,6 +358,7 @@ impl CrossWakeQueue {
         unsafe { self.push(stub) };
 
         // Now check if head got a next pointer (the stub push linked it).
+        // SAFETY: head is a valid task or stub pointer that was in the queue before the stub re-insertion.
         next = unsafe { self.next_of(head) }.load(Ordering::Acquire);
         if !next.is_null() {
             *head_ref = next;
@@ -383,6 +389,7 @@ pub(crate) struct CrossWakeContext {
 
 // SAFETY: CrossWakeQueue is Send + Sync, Arc<mio::Waker> is Send + Sync.
 unsafe impl Send for CrossWakeContext {}
+// SAFETY: CrossWakeContext fields are Send + Sync; queue uses atomic tail, mio::Waker is thread-safe.
 unsafe impl Sync for CrossWakeContext {}
 
 /// Wake a task via the cross-thread path: push to intrusive inbox,
@@ -394,6 +401,7 @@ unsafe impl Sync for CrossWakeContext {}
 /// `CrossWakeContext` (guaranteed by channel lifetime).
 pub(crate) unsafe fn wake_task_cross_thread(task_ptr: *mut u8, ctx: &CrossWakeContext) {
     // Don't wake completed tasks.
+    // SAFETY: caller guarantees task_ptr is a valid live task; is_completed reads an atomic flag.
     if unsafe { task::is_completed(task_ptr) } {
         return;
     }
@@ -478,6 +486,7 @@ pub(crate) struct TaskWakerSlot {
 
 // SAFETY: All fields are atomic or immutable after creation.
 unsafe impl Send for TaskWakerSlot {}
+// SAFETY: TaskWakerSlot fields are atomic or immutable after creation; UnsafeCell access is guarded by state.
 unsafe impl Sync for TaskWakerSlot {}
 
 impl TaskWakerSlot {
@@ -526,6 +535,7 @@ impl TaskWakerSlot {
         // interleavings.
         let prev_ptr = self.task_ptr.swap(ptr, Ordering::AcqRel);
         if !prev_ptr.is_null() {
+            // SAFETY: prev_ptr (non-null) was registered with a ref_inc; we own that ref and must release it.
             drop(unsafe { crate::task::TaskRef::from_owned(prev_ptr) });
         }
 
@@ -562,6 +572,7 @@ impl TaskWakerSlot {
                 // ref_inc'd before storing — that ref keeps the task
                 // allocated through the dispatch (see BUG-2 #168).
                 let ctx = unsafe { &*self.cross_ctx };
+                // SAFETY: task_ptr is alive (kept by register's ref_inc) and ctx is valid for the channel lifetime.
                 unsafe { wake_task_cross_thread(task_ptr, ctx) };
 
                 // BUG-2 fix: release the ref `register` acquired. Must
@@ -628,6 +639,7 @@ pub(crate) struct FallbackWaker {
 // the atomic state field (REGISTERING excludes concurrent writes,
 // CAS STORED→EMPTY excludes concurrent reads).
 unsafe impl Send for FallbackWaker {}
+// SAFETY: FallbackWaker UnsafeCell access is coordinated by the atomic state field.
 unsafe impl Sync for FallbackWaker {}
 
 impl FallbackWaker {
@@ -695,6 +707,7 @@ pub(crate) struct TxWakerSlot {
 // SAFETY: Access to the UnsafeCell<Option<Waker>> is coordinated by
 // the atomic state field. Single-sender register, single-receiver wake.
 unsafe impl Send for TxWakerSlot {}
+// SAFETY: TxWakerSlot UnsafeCell access is coordinated by the atomic state; single-sender, single-receiver.
 unsafe impl Sync for TxWakerSlot {}
 
 impl TxWakerSlot {
@@ -816,8 +829,8 @@ pub(crate) mod uaf_scenarios {
         let task_ptr = make_uaf_task();
 
         // Sanity: starting refcount is 1 (Task::new_boxed initial state).
-        // SAFETY: task_ptr was just created by make_uaf_task; valid task.
         assert_eq!(
+            // SAFETY: task_ptr was just created by make_uaf_task; valid task.
             unsafe { task::ref_count(task_ptr) },
             1,
             "make_uaf_task should produce refcount=1"
@@ -920,6 +933,7 @@ pub(crate) mod uaf_scenarios {
         // ref_inc brings rc to 2; complete_and_unref sets COMPLETED and
         // decrements rc back to 1, returning Retain.
         unsafe { task::ref_inc(task_ptr) };
+        // SAFETY: task_ptr is valid with rc=2; complete_and_unref sets COMPLETED and decrements rc.
         let action = unsafe { task::complete_and_unref(task_ptr) };
         assert!(matches!(action, FreeAction::Retain));
         // SAFETY: task_ptr is still valid (Retain means no free).
@@ -964,6 +978,7 @@ pub(crate) mod uaf_scenarios {
         // rc to 0 → FreeBox. free_task reclaims the Box allocation.
         let action = unsafe { task::ref_dec(task_ptr) };
         match action {
+            // SAFETY: FreeBox guarantees rc=0 and task is terminal; free_task reclaims the Box allocation.
             FreeAction::FreeBox => unsafe { task::free_task(task_ptr) },
             other => panic!("expected FreeBox on final ref_dec, got {other:?}"),
         }
@@ -994,6 +1009,7 @@ pub(crate) mod uaf_scenarios {
         // SAFETY: task_ptr valid from make_uaf_task (rc=1). ref_inc
         // brings rc to 2; complete_and_unref sets COMPLETED, rc → 1.
         unsafe { task::ref_inc(task_ptr) };
+        // SAFETY: task_ptr is valid with rc=2; complete_and_unref sets COMPLETED and decrements rc.
         let action = unsafe { task::complete_and_unref(task_ptr) };
         assert!(matches!(action, FreeAction::Retain));
         // SAFETY: task_ptr valid (Retain, rc=1).
@@ -1004,8 +1020,8 @@ pub(crate) mod uaf_scenarios {
 
         // ---- T0: initial register ----
         slot.register(task_ptr);
-        // SAFETY: task_ptr valid; reading refcount for assertion.
         assert_eq!(
+            // SAFETY: task_ptr valid; reading refcount for assertion.
             unsafe { task::ref_count(task_ptr) },
             baseline + 1,
             "initial register must take a ref (slot owns +1)"
@@ -1026,8 +1042,8 @@ pub(crate) mod uaf_scenarios {
         // — same task_ptr. Pre-fix: register's gate sees prev==EMPTY,
         // skips the release, leaks the old ref. Post-fix: release fires.
         slot.register(task_ptr);
-        // SAFETY: task_ptr valid; reading refcount for assertion.
         assert_eq!(
+            // SAFETY: task_ptr valid; reading refcount for assertion.
             unsafe { task::ref_count(task_ptr) },
             baseline + 1,
             "race register must NET to baseline+1 (slot still owns one ref). \
@@ -1045,8 +1061,8 @@ pub(crate) mod uaf_scenarios {
         // register acquired. from_owned + drop releases that ref.
         drop(unsafe { TaskRef::from_owned(captured) });
 
-        // SAFETY: task_ptr valid; reading refcount for assertion.
         assert_eq!(
+            // SAFETY: task_ptr valid; reading refcount for assertion.
             unsafe { task::ref_count(task_ptr) },
             baseline,
             "after wake's release, slot owes 0 refs to task. Pre-fix \
@@ -1059,8 +1075,8 @@ pub(crate) mod uaf_scenarios {
         // nothing — confirms the Drop impl correctly handles this
         // benign "post-race" inconsistency.
         drop(slot);
-        // SAFETY: task_ptr valid; reading refcount for assertion.
         assert_eq!(
+            // SAFETY: task_ptr valid; reading refcount for assertion.
             unsafe { task::ref_count(task_ptr) },
             baseline,
             "Drop on a STORED-but-null-task_ptr slot must be a no-op for refcount"
@@ -1069,6 +1085,7 @@ pub(crate) mod uaf_scenarios {
         // SAFETY: task_ptr valid with rc=baseline (1), COMPLETED.
         // ref_dec → rc=0 → FreeBox. free_task reclaims the allocation.
         match unsafe { task::ref_dec(task_ptr) } {
+            // SAFETY: FreeBox guarantees rc=0 and task is terminal; free_task reclaims the allocation.
             FreeAction::FreeBox => unsafe { task::free_task(task_ptr) },
             other => panic!("expected FreeBox on final ref_dec, got {other:?}"),
         }
@@ -1101,6 +1118,7 @@ mod tests {
     }
 
     unsafe fn free(ptr: *mut u8) {
+        // SAFETY: caller guarantees ptr is a valid task pointer from make_task; free_task reclaims the Box.
         unsafe { task::free_task(ptr) };
     }
 
@@ -1129,7 +1147,9 @@ mod tests {
         // SAFETY: t1, t2, t3 are valid task pointers with valid
         // cross_next fields. Each pushed once, not already in queue.
         unsafe { q.push(t1) };
+        // SAFETY: t2 is a valid task pointer, not already in queue.
         unsafe { q.push(t2) };
+        // SAFETY: t3 is a valid task pointer, not already in queue.
         unsafe { q.push(t3) };
 
         assert_eq!(q.pop(), Some(t1));
@@ -1139,7 +1159,9 @@ mod tests {
 
         // SAFETY: all popped from queue; free reclaims each Box.
         unsafe { free(t1) };
+        // SAFETY: t2 was popped from queue; free reclaims the Box.
         unsafe { free(t2) };
+        // SAFETY: t3 was popped from queue; free reclaims the Box.
         unsafe { free(t3) };
     }
 
@@ -1160,6 +1182,7 @@ mod tests {
 
         // SAFETY: both popped; free reclaims each Box.
         unsafe { free(t1) };
+        // SAFETY: t2 was popped; free reclaims the Box.
         unsafe { free(t2) };
     }
 

@@ -37,6 +37,7 @@ use nexus_async_rt::CancellationToken;
 fn noop_waker() -> Waker {
     static VTABLE: RawWakerVTable =
         RawWakerVTable::new(|p| RawWaker::new(p, &VTABLE), |_| {}, |_| {}, |_| {});
+    // SAFETY: the vtable functions are all no-ops; the null data pointer is never dereferenced.
     unsafe { Waker::from_raw(RawWaker::new(std::ptr::null(), &VTABLE)) }
 }
 
@@ -60,16 +61,19 @@ fn tracking_waker(flag: &std::cell::Cell<bool>) -> Waker {
         |p| RawWaker::new(p, &VTABLE),
         |p| {
             // wake: set the flag
+            // SAFETY: p is the data pointer set by RawWaker::new from a &Cell<bool>; valid for the waker's lifetime.
             let flag = unsafe { &*(p as *const std::cell::Cell<bool>) };
             flag.set(true);
         },
         |p| {
             // wake_by_ref: set the flag
+            // SAFETY: p is the data pointer set by RawWaker::new from a &Cell<bool>; valid for the waker's lifetime.
             let flag = unsafe { &*(p as *const std::cell::Cell<bool>) };
             flag.set(true);
         },
         |_| {}, // drop: no-op
     );
+    // SAFETY: vtable functions match the data pointer layout; Cell<bool> outlives the waker.
     unsafe { Waker::from_raw(RawWaker::new(data, &VTABLE)) }
 }
 
