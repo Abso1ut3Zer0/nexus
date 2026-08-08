@@ -24,6 +24,7 @@ const BATCH: u64 = 100;
 #[inline(always)]
 #[cfg(target_arch = "x86_64")]
 fn rdtsc_start() -> u64 {
+    // SAFETY: x86_64 intrinsic; function is only compiled for x86_64.
     unsafe {
         core::arch::x86_64::_mm_lfence();
         core::arch::x86_64::_rdtsc()
@@ -33,6 +34,7 @@ fn rdtsc_start() -> u64 {
 #[inline(always)]
 #[cfg(target_arch = "x86_64")]
 fn rdtsc_end() -> u64 {
+    // SAFETY: x86_64 intrinsic; function is only compiled for x86_64.
     unsafe {
         let mut aux = 0u32;
         let tsc = core::arch::x86_64::__rdtscp(&raw mut aux);
@@ -162,7 +164,9 @@ fn system_vec_downcast(container: &mut VecContainer) -> u64 {
     // Runtime downcast — what a naive Fetch impl would do
     let prices_ptr = container.slots[0].downcast_mut::<PriceCache>().unwrap() as *mut PriceCache;
     let venues_ptr = container.slots[4].downcast_ref::<VenueState>().unwrap() as *const VenueState;
+    // SAFETY: pointers come from successful downcast_mut/downcast_ref on non-overlapping slots.
     let prices = unsafe { &mut *prices_ptr };
+    // SAFETY: same as above.
     let venues = unsafe { &*venues_ptr };
     prices.values[0] = prices.values[0].wrapping_add(venues.values[0]);
     prices.values[0]
@@ -207,7 +211,9 @@ impl ErasedContainer {
 
 #[inline(never)]
 fn system_vec_erased(ptrs: &[*mut u8], price_id: usize, venue_id: usize) -> u64 {
+    // SAFETY: pointers in ptrs were initialized from valid Box allocations; price_id != venue_id.
     let prices = unsafe { &mut *(ptrs[price_id] as *mut PriceCache) };
+    // SAFETY: same as above.
     let venues = unsafe { &*(ptrs[venue_id] as *const VenueState) };
     prices.values[0] = prices.values[0].wrapping_add(venues.values[0]);
     prices.values[0]
@@ -222,6 +228,7 @@ fn system_vec_erased(ptrs: &[*mut u8], price_id: usize, venue_id: usize) -> u64 
 
 #[inline(never)]
 fn system_vec_unchecked(ptrs: &[*mut u8], price_id: usize, venue_id: usize) -> u64 {
+    // SAFETY: indices validated at build time; pointers are valid Box allocations; price_id != venue_id.
     unsafe {
         let prices = &mut *(*ptrs.get_unchecked(price_id) as *mut PriceCache);
         let venues = &*(*ptrs.get_unchecked(venue_id) as *const VenueState);
@@ -241,7 +248,9 @@ struct CachedFetch {
 
 #[inline(never)]
 fn system_cached(cached: &CachedFetch) -> u64 {
+    // SAFETY: prices and venues are valid non-null pointers from Box allocations; non-overlapping.
     let prices = unsafe { &mut *cached.prices };
+    // SAFETY: same as above.
     let venues = unsafe { &*cached.venues };
     prices.values[0] = prices.values[0].wrapping_add(venues.values[0]);
     prices.values[0]
@@ -257,7 +266,9 @@ struct BoxedCachedFetch {
 
 #[inline(never)]
 fn system_boxed_cached(cached: &BoxedCachedFetch) -> u64 {
+    // SAFETY: prices and venues are valid non-null pointers from Box allocations; non-overlapping.
     let prices = unsafe { &mut *cached.inner.prices };
+    // SAFETY: same as above.
     let venues = unsafe { &*cached.inner.venues };
     prices.values[0] = prices.values[0].wrapping_add(venues.values[0]);
     prices.values[0]
@@ -350,7 +361,9 @@ impl HashResolvedSystem {
 impl System for HashResolvedSystem {
     #[inline(never)]
     fn run(&mut self) -> u64 {
+        // SAFETY: pointers resolved from valid Box allocations at build time; non-overlapping.
         let prices = unsafe { &mut *(self.prices as *mut PriceCache) };
+        // SAFETY: same as above.
         let venues = unsafe { &*(self.venues as *const VenueState) };
         prices.values[0] = prices.values[0].wrapping_add(venues.values[0]);
         prices.values[0]
@@ -375,7 +388,9 @@ impl DenseResolvedSystem {
 impl System for DenseResolvedSystem {
     #[inline(never)]
     fn run(&mut self) -> u64 {
+        // SAFETY: pointers resolved from valid Box allocations at build time; non-overlapping.
         let prices = unsafe { &mut *(self.prices as *mut PriceCache) };
+        // SAFETY: same as above.
         let venues = unsafe { &*(self.venues as *const VenueState) };
         prices.values[0] = prices.values[0].wrapping_add(venues.values[0]);
         prices.values[0]

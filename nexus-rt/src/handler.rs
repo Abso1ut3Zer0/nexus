@@ -143,11 +143,11 @@ impl<T: Resource> Param for Option<Res<'_, T>> {
 
     #[inline(always)]
     unsafe fn fetch<'w>(world: &'w World, state: &'w mut Option<ResourceId>) -> Option<Res<'w, T>> {
-        // SAFETY: state was produced by init() on the same world.
-        // Caller ensures no mutable alias exists for T.
         state.map(|id| {
             #[cfg(debug_assertions)]
             world.track_borrow(id);
+            // SAFETY: state was produced by init() on the same world.
+            // Caller ensures no mutable alias exists for T.
             unsafe { Res::new(world.get::<T>(id)) }
         })
     }
@@ -172,11 +172,11 @@ impl<T: Resource> Param for Option<ResMut<'_, T>> {
         world: &'w World,
         state: &'w mut Option<ResourceId>,
     ) -> Option<ResMut<'w, T>> {
-        // SAFETY: state was produced by init() on the same world.
-        // Caller ensures no aliases exist for T.
         state.map(|id| {
             #[cfg(debug_assertions)]
             world.track_borrow(id);
+            // SAFETY: state was produced by init() on the same world.
+            // Caller ensures no aliases exist for T.
             unsafe { ResMut::new(world.get_mut::<T>(id)) }
         })
     }
@@ -656,11 +656,11 @@ macro_rules! impl_into_handler {
                     f($($P,)+ event);
                 }
 
+                #[cfg(debug_assertions)]
+                world.clear_borrows();
                 // SAFETY: state was produced by init() on the same registry
                 // that built this world. Single-threaded sequential dispatch
                 // ensures no mutable aliasing across params.
-                #[cfg(debug_assertions)]
-                world.clear_borrows();
                 let ($($P,)+) = unsafe {
                     <($($P,)+) as Param>::fetch(world, &mut self.state)
                 };
@@ -750,6 +750,9 @@ macro_rules! impl_into_handler_no_event {
 
                 #[cfg(debug_assertions)]
                 world.clear_borrows();
+                // SAFETY: state was produced by init() on the same registry
+                // that built this world. Single-threaded sequential dispatch
+                // ensures no mutable aliasing across params.
                 let ($($P,)+) = unsafe {
                     <($($P,)+) as Param>::fetch(world, &mut self.state)
                 };
@@ -917,6 +920,7 @@ mod tests {
         // New dispatch phase — previous borrows dropped above.
         #[cfg(debug_assertions)]
         world.clear_borrows();
+        // SAFETY: state from init on same registry; previous mutable borrow was dropped.
         unsafe {
             let mut read_state = <Res<u64> as Param>::init(world.registry_mut());
             let res = <Res<u64> as Param>::fetch(&world, &mut read_state);
@@ -943,6 +947,7 @@ mod tests {
         // New dispatch phase — previous borrows dropped above.
         #[cfg(debug_assertions)]
         world.clear_borrows();
+        // SAFETY: state from init on same registry; previous mutable borrow was dropped.
         unsafe {
             let mut read_state = <Res<bool> as Param>::init(world.registry_mut());
             let res = <Res<bool> as Param>::fetch(&world, &mut read_state);
@@ -1107,6 +1112,7 @@ mod tests {
     fn option_res_none_when_missing() {
         let mut world = WorldBuilder::new().build();
         let mut state = <Option<Res<u64>> as Param>::init(world.registry_mut());
+        // SAFETY: state from init on same registry; no mutable alias.
         let opt = unsafe { <Option<Res<u64>> as Param>::fetch(&world, &mut state) };
         assert!(opt.is_none());
     }
@@ -1118,6 +1124,7 @@ mod tests {
         let mut world = builder.build();
 
         let mut state = <Option<Res<u64>> as Param>::init(world.registry_mut());
+        // SAFETY: state from init on same registry; no mutable alias.
         let opt = unsafe { <Option<Res<u64>> as Param>::fetch(&world, &mut state) };
         assert_eq!(*opt.unwrap(), 42);
     }
@@ -1129,12 +1136,14 @@ mod tests {
         let mut world = builder.build();
 
         let mut state = <Option<ResMut<u64>> as Param>::init(world.registry_mut());
+        // SAFETY: state from init on same registry; exclusive access.
         unsafe {
             let opt = <Option<ResMut<u64>> as Param>::fetch(&world, &mut state);
             *opt.unwrap() = 99;
         }
         #[cfg(debug_assertions)]
         world.clear_borrows();
+        // SAFETY: state from init on same registry; previous mutable borrow was dropped.
         unsafe {
             let mut read_state = <Res<u64> as Param>::init(world.registry_mut());
             let res = <Res<u64> as Param>::fetch(&world, &mut read_state);
