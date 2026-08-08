@@ -1196,6 +1196,7 @@ mod tests {
         assert_ne!(id0, id2);
 
         let world = builder.build();
+        // SAFETY: ids obtained from register() on this world; types match the registered types.
         unsafe {
             assert_eq!(world.get::<Price>(id0).value, 0.0);
             assert_eq!(world.get::<Venue>(id1).name, "");
@@ -1310,6 +1311,7 @@ mod tests {
         let config_id = builder.register::<Config>(Config { max_orders: 500 });
         let world = builder.build();
 
+        // SAFETY: ids obtained from register() on this world; types match the registered types.
         unsafe {
             assert_eq!(world.get::<Price>(price_id).value, 10.0);
             assert_eq!(world.get::<Venue>(venue_id).name, "CB");
@@ -1554,6 +1556,7 @@ mod tests {
         let world = builder.build();
 
         // Handle's pre-resolved ID can access the resource.
+        // SAFETY: counter_id was obtained from register() inside install_driver; type matches.
         unsafe {
             assert_eq!(*world.get::<u64>(handle.counter_id), 0);
         }

@@ -227,10 +227,10 @@ macro_rules! impl_template_dispatch {
                         f($($P,)+ event);
                     }
 
-                    // SAFETY: state produced by init() on same registry.
-                    // Single-threaded sequential dispatch — no mutable aliasing.
                     #[cfg(debug_assertions)]
                     world.clear_borrows();
+                    // SAFETY: state produced by init() on same registry.
+                    // Single-threaded sequential dispatch — no mutable aliasing.
                     let ($($P,)+) = unsafe {
                         <($($P,)+) as Param>::fetch(world, state)
                     };
@@ -280,11 +280,11 @@ macro_rules! impl_template_dispatch {
                         f(ctx, $($P,)+ event);
                     }
 
+                    #[cfg(debug_assertions)]
+                    world.clear_borrows();
                     // SAFETY: state was produced by Param::init() on the same Registry
                     // that built this World. Borrows are disjoint — enforced by
                     // conflict detection at build time.
-                    #[cfg(debug_assertions)]
-                    world.clear_borrows();
                     let ($($P,)+) = unsafe {
                         <($($P,)+) as Param>::fetch(world, state)
                     };
@@ -385,6 +385,8 @@ macro_rules! impl_template_dispatch_no_event {
 
                     #[cfg(debug_assertions)]
                     world.clear_borrows();
+                    // SAFETY: state produced by init() on same registry.
+                    // Single-threaded sequential dispatch — no mutable aliasing.
                     let ($($P,)+) = unsafe {
                         <($($P,)+) as Param>::fetch(world, state)
                     };
@@ -433,6 +435,9 @@ macro_rules! impl_template_dispatch_no_event {
 
                     #[cfg(debug_assertions)]
                     world.clear_borrows();
+                    // SAFETY: state was produced by Param::init() on the same Registry
+                    // that built this World. Borrows are disjoint — enforced by
+                    // conflict detection at build time.
                     let ($($P,)+) = unsafe {
                         <($($P,)+) as Param>::fetch(world, state)
                     };
