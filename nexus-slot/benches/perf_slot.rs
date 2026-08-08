@@ -22,6 +22,7 @@ struct Quote {
     _padding: [u8; 216],
 }
 
+// SAFETY: Quote is repr(C) with only Copy fields, no heap pointers, no Drop, all bit patterns valid.
 unsafe impl Pod for Quote {}
 
 impl Quote {

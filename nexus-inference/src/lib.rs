@@ -162,6 +162,7 @@ impl<T> Scratch<T> {
     #[inline(always)]
     #[allow(clippy::mut_from_ref)]
     pub(crate) unsafe fn get_mut(&self) -> &mut T {
+        // SAFETY: caller guarantees no other references exist per the Safety doc comment.
         unsafe { &mut *self.0.get() }
     }
 }

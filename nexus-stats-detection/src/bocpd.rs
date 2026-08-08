@@ -172,8 +172,8 @@ impl BocpdF64 {
             simd_math::ln_inplace(&mut self.scratch2[..self.active]);
 
             // Pass 3: combine and find CP mass max.
-            // SAFETY: same invariant as Pass 1.
             let mut max_cp_term = f64::NEG_INFINITY;
+            // SAFETY: same invariant as Pass 1.
             unsafe {
                 let p_alpha = self.pre.alpha.as_ptr();
                 let p_lng = self.pre.lng_base.as_ptr();
@@ -198,10 +198,10 @@ impl BocpdF64 {
 
             // CP mass: exp-sum (SIMD when available).
             // Reuse scratch2 for the terms since pass 2 is done with it.
-            // SAFETY: same invariant as Pass 1.
             cp_terms = if max_cp_term == f64::NEG_INFINITY {
                 f64::NEG_INFINITY
             } else {
+                // SAFETY: same invariant as Pass 1.
                 unsafe {
                     let p_lp = self.log_posterior.as_ptr();
                     let p_sc = self.scratch.as_ptr();

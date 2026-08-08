@@ -237,6 +237,7 @@ unsafe impl Send for WaiterNode {}
 // Sync is required because Inner::cancel reads/writes node fields
 // from a different thread than Cancelled::poll. All such access is
 // under list_lock.
+// SAFETY: Sync is safe; WaiterNode fields are accessed only under Inner::list_lock.
 unsafe impl Sync for WaiterNode {}
 
 struct ChildNode {
@@ -244,12 +245,14 @@ struct ChildNode {
     next: *mut ChildNode,
 }
 
+// SAFETY: ChildNode owns an Arc<Inner> (Send) and a raw pointer managed under exclusive ownership.
 unsafe impl Send for ChildNode {}
 
 // SAFETY: Inner contains UnsafeCell<*mut WaiterNode> (head pointer)
 // which is mutated under list_lock. Send + Sync because all access
 // to mutable state is gated by the lock.
 unsafe impl Send for Inner {}
+// SAFETY: Inner's mutable state is fully guarded by list_lock; shared access is safe across threads.
 unsafe impl Sync for Inner {}
 
 impl Inner {
@@ -302,6 +305,7 @@ impl Inner {
             let _guard = SpinGuard::new(&self.list_lock);
             // SAFETY: list_lock held — exclusive access to head + node fields.
             let mut cur = unsafe { *self.head.get() };
+            // SAFETY: list_lock held — exclusive access to the head pointer.
             unsafe { *self.head.get() = std::ptr::null_mut() };
             while !cur.is_null() {
                 // SAFETY: `cur` was pushed under the lock by Cancelled::poll;
@@ -327,10 +331,12 @@ impl Inner {
                 // — see `cancel_race_regression`. In production builds the
                 // hook is compiled out.
                 let next = unsafe { *(*cur).next.get() };
+                // SAFETY: list_lock held; waker field accessed under lock while cur node is still alive.
                 let waker = unsafe { (*(*cur).waker.get()).take() };
                 // After this Release store, *cur may be invalidated by a
                 // concurrent Cancelled::Drop fast-path. Do not access
                 // *cur below this line.
+                // SAFETY: list_lock held; all node fields read above before this Release store.
                 unsafe { (*cur).in_list.store(false, Ordering::Release) };
                 #[cfg(test)]
                 if self.race_yield.load(Ordering::Relaxed) {

@@ -129,9 +129,9 @@ impl<const CAP: usize> Uuid<CAP> {
     /// scalar on other architectures.
     #[inline]
     pub fn decode(&self) -> (u64, u64) {
+        let bytes: &[u8; 36] = self.0.as_bytes().try_into().unwrap();
         // SAFETY: self.0 was validated at construction — always valid hex+dashes.
         // Uuid is always 36 bytes. try_into is infallible here.
-        let bytes: &[u8; 36] = self.0.as_bytes().try_into().unwrap();
         unsafe { crate::simd::uuid_parse_dashed(bytes).unwrap_unchecked() }
     }
 
@@ -1341,6 +1341,7 @@ mod tests {
     fn uuid_from_bytes_unchecked_roundtrip() {
         let original: Uuid = Uuid::from_raw(0xDEAD_BEEF_CAFE_BABE, 0x0123_4567_89AB_CDEF);
         let bytes = original.to_bytes();
+        // SAFETY: bytes came from original.to_bytes(), so it encodes a valid Uuid.
         let recovered: Uuid = unsafe { Uuid::from_bytes_unchecked(&bytes) };
         assert_eq!(original, recovered);
     }
@@ -1380,6 +1381,7 @@ mod tests {
     fn ulid_from_bytes_unchecked_roundtrip() {
         let original: Ulid = Ulid::from_raw(1_700_000_000_000, 0x1234, 0x0123_4567_89AB_CDEF);
         let bytes = original.to_bytes();
+        // SAFETY: bytes came from original.to_bytes(), so it encodes a valid Ulid.
         let recovered: Ulid = unsafe { Ulid::from_bytes_unchecked(&bytes) };
         assert_eq!(original, recovered);
     }

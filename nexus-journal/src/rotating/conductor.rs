@@ -62,6 +62,7 @@ impl SegmentSwap {
     /// # Safety
     /// `state` must be `SWAP_CLEAN` or `SWAP_DIRTY` (payload initialized).
     pub(crate) unsafe fn take(&self) -> Mapping {
+        // SAFETY: caller guarantees state is SWAP_CLEAN or SWAP_DIRTY (payload initialized).
         unsafe { (*self.inner.get()).assume_init_read() }
     }
 
@@ -70,6 +71,7 @@ impl SegmentSwap {
     /// # Safety
     /// `inner` must be uninit (caller just called `take()`).
     pub(crate) unsafe fn store_dirty(&self, mapping: Mapping) {
+        // SAFETY: caller guarantees inner is uninit (caller just called take()).
         unsafe { (*self.inner.get()).write(mapping) };
         self.state.store(SWAP_DIRTY, Ordering::Release);
     }
@@ -83,6 +85,7 @@ impl SegmentSwap {
     /// # Safety
     /// Called only from the conductor thread after `inner` was uninit.
     pub(crate) unsafe fn publish_clean(&self, mapping: Mapping) {
+        // SAFETY: caller is the conductor thread after inner was uninit.
         unsafe { (*self.inner.get()).write(mapping) };
         self.state.store(SWAP_CLEAN, Ordering::Release);
     }

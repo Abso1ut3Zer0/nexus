@@ -79,6 +79,7 @@ impl IntrusiveMpsc {
     #[inline]
     fn pop(&mut self) -> *mut Node {
         let mut head = self.head;
+        // SAFETY: head points to a valid Node (stub or previously pushed); single consumer ensures exclusive access.
         let mut next = unsafe { (*head).next.load(Ordering::Acquire) };
 
         // Skip stub
@@ -89,6 +90,7 @@ impl IntrusiveMpsc {
             }
             self.head = next;
             head = next;
+            // SAFETY: head was just updated to next (a non-null, valid Node); single consumer ensures exclusive access.
             next = unsafe { (*head).next.load(Ordering::Acquire) };
         }
 
@@ -104,6 +106,7 @@ impl IntrusiveMpsc {
 
         // Re-insert stub to prevent losing the tail
         self.push(stub_ptr);
+        // SAFETY: head is still valid; the stub re-insertion preserves queue invariants; single consumer.
         next = unsafe { (*head).next.load(Ordering::Acquire) };
         if !next.is_null() {
             self.head = next;

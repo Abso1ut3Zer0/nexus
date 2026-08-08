@@ -35,6 +35,7 @@ const ORDER: Order = Order {
 
 #[inline(always)]
 fn rdtsc_start() -> u64 {
+    // SAFETY: x86_64 intrinsic; this example targets x86_64 only.
     unsafe {
         std::arch::x86_64::_mm_lfence();
         std::arch::x86_64::_rdtsc()
@@ -43,6 +44,7 @@ fn rdtsc_start() -> u64 {
 
 #[inline(always)]
 fn rdtsc_end() -> u64 {
+    // SAFETY: x86_64 intrinsic; this example targets x86_64 only.
     unsafe {
         let mut aux = 0u32;
         let tsc = std::arch::x86_64::__rdtscp(&raw mut aux);

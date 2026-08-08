@@ -15,6 +15,7 @@ pub(crate) const fn footprint(body: usize) -> usize {
 /// `ptr` must be 4-byte-aligned and within the mapped region.
 #[inline]
 pub(crate) unsafe fn read_commit_len(ptr: *const u8) -> u32 {
+    // SAFETY: caller guarantees ptr is 4-byte-aligned and within the mapped region.
     unsafe { ptr.cast::<u32>().read() }
 }
 
@@ -22,6 +23,7 @@ pub(crate) unsafe fn read_commit_len(ptr: *const u8) -> u32 {
 /// `ptr` must be 4-byte-aligned and within the mapped region.
 #[inline]
 pub(crate) unsafe fn write_commit_len(ptr: *mut u8, val: u32) {
+    // SAFETY: caller guarantees ptr is 4-byte-aligned and within the mapped region.
     unsafe { ptr.cast::<u32>().write(val) }
 }
 

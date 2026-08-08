@@ -18,6 +18,7 @@ const THROUGHPUT_COUNT: u64 = 1_000_000;
 #[cfg(target_arch = "x86_64")]
 #[inline]
 fn rdtscp() -> u64 {
+    // SAFETY: x86_64 intrinsic; function is only compiled for x86_64.
     unsafe {
         let mut aux: u32 = 0;
         core::arch::x86_64::__rdtscp(&raw mut aux)

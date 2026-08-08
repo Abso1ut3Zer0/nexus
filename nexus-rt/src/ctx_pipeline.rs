@@ -182,14 +182,11 @@ macro_rules! impl_into_ctx_step {
                     f(ctx, $($P,)+ input)
                 }
 
+                #[cfg(debug_assertions)]
+                world.clear_borrows();
                 // SAFETY: state was produced by Param::init() on the same Registry
                 // that built this World. Borrows are disjoint — enforced by
                 // conflict detection at build time.
-                // SAFETY: state was produced by Param::init() on the same
-                // Registry that built this World. Single-threaded sequential
-                // dispatch ensures no mutable aliasing across params.
-                #[cfg(debug_assertions)]
-                world.clear_borrows();
                 let ($($P,)+) = unsafe {
                     <($($P,)+) as Param>::fetch(world, &mut self.state)
                 };
@@ -277,6 +274,9 @@ macro_rules! impl_into_ctx_step_no_event {
 
                 #[cfg(debug_assertions)]
                 world.clear_borrows();
+                // SAFETY: state was produced by Param::init() on the same Registry
+                // that built this World. Borrows are disjoint — enforced by
+                // conflict detection at build time.
                 let ($($P,)+) = unsafe {
                     <($($P,)+) as Param>::fetch(world, &mut self.state)
                 };
@@ -436,11 +436,11 @@ macro_rules! impl_into_ctx_ref_step {
                     f(ctx, $($P,)+ input)
                 }
 
+                #[cfg(debug_assertions)]
+                world.clear_borrows();
                 // SAFETY: state was produced by Param::init() on the same
                 // Registry that built this World. Single-threaded sequential
                 // dispatch ensures no mutable aliasing across params.
-                #[cfg(debug_assertions)]
-                world.clear_borrows();
                 let ($($P,)+) = unsafe {
                     <($($P,)+) as Param>::fetch(world, &mut self.state)
                 };
@@ -594,11 +594,11 @@ macro_rules! impl_into_ctx_producer {
                     f(ctx, $($P,)+)
                 }
 
+                #[cfg(debug_assertions)]
+                world.clear_borrows();
                 // SAFETY: state was produced by Param::init() on the same
                 // Registry that built this World. Single-threaded sequential
                 // dispatch ensures no mutable aliasing across params.
-                #[cfg(debug_assertions)]
-                world.clear_borrows();
                 let ($($P,)+) = unsafe {
                     <($($P,)+) as Param>::fetch(world, &mut self.state)
                 };

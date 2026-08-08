@@ -72,6 +72,7 @@ fn slab_spawn_and_free() {
 fn slab_spawn_with_drop_tracker() {
     // Verify slab-spawned tasks drop their captures.
     let count = Rc::new(Cell::new(0u32));
+    // SAFETY: single-threaded runtime.
     let slab = unsafe { nexus_slab::byte::unbounded::Slab::<256>::with_chunk_capacity(8) };
     let wb = WorldBuilder::new();
     let mut world = wb.build();
@@ -102,6 +103,7 @@ fn slab_spawn_with_drop_tracker() {
 fn slab_claim_and_spawn() {
     // Use claim_slab() → SlabClaim → .spawn(future).
     // Detach the handle so free fires inline.
+    // SAFETY: single-threaded runtime.
     let slab = unsafe { nexus_slab::byte::unbounded::Slab::<256>::with_chunk_capacity(8) };
     let wb = WorldBuilder::new();
     let mut world = wb.build();

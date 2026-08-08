@@ -55,6 +55,7 @@ struct SenderWakerNode {
 // cross-thread access. The waker UnsafeCell is only written when the node
 // is NOT in any shared list (exclusive access enforced by the queued flag).
 unsafe impl Send for SenderWakerNode {}
+// SAFETY: Queue<T> owns the data; raw pointers are not shared across threads unsafely.
 unsafe impl Sync for SenderWakerNode {}
 
 impl SenderWakerNode {
@@ -125,6 +126,7 @@ impl SenderWaitList {
             // SAFETY: cursor was in the linked list — Arc refcount bumped in
             // push(), so the node is alive. Atomic loads are safe.
             let next = unsafe { (*cursor).next.load(Ordering::Acquire) };
+            // SAFETY: pointer is non-null and was allocated by Box::new; not yet reclaimed.
             let cancelled = unsafe { (*cursor).cancelled.load(Ordering::Acquire) };
 
             // SAFETY: node removed from list (head swapped to null above).
@@ -139,6 +141,7 @@ impl SenderWaitList {
             if !cancelled && !woken {
                 // SAFETY: node unlinked — exclusive access to waker UnsafeCell.
                 let waker = unsafe { (*cursor).waker.get().read() };
+                // SAFETY: node is unlinked — exclusive access to waker UnsafeCell; write clears the slot.
                 unsafe { (*cursor).waker.get().write(None) };
                 // SAFETY: refcount was bumped in push(). Decrementing
                 // releases the list's ownership of this node.
@@ -154,6 +157,7 @@ impl SenderWaitList {
                     let cur_head = self.head.load(Ordering::Acquire);
                     // SAFETY: cursor is unlinked and alive (refcount held).
                     unsafe { (*cursor).next.store(cur_head, Ordering::Relaxed) };
+                    // SAFETY: cursor is unlinked and refcount held; atomic store to queued is safe.
                     unsafe { (*cursor).queued.store(true, Ordering::Relaxed) };
                     if self
                         .head
@@ -190,6 +194,7 @@ impl SenderWaitList {
             // SAFETY: node was in the linked list — Arc refcount bumped in
             // push(), so memory is alive. Atomic loads are safe.
             let next = unsafe { (*node).next.load(Ordering::Acquire) };
+            // SAFETY: pointer is non-null and was allocated by Box::new; not yet reclaimed.
             let cancelled = unsafe { (*node).cancelled.load(Ordering::Acquire) };
             // SAFETY: node unlinked (head swapped to null). Exclusive access.
             unsafe {
@@ -199,6 +204,7 @@ impl SenderWaitList {
             if !cancelled {
                 // SAFETY: node unlinked — exclusive access to waker UnsafeCell.
                 let waker = unsafe { (*node).waker.get().read() };
+                // SAFETY: node is unlinked — exclusive access to waker UnsafeCell; write clears the slot.
                 unsafe { (*node).waker.get().write(None) };
                 if let Some(w) = waker {
                     w.wake();
@@ -227,6 +233,7 @@ struct Inner {
 // SAFETY: All fields use atomics or are designed for cross-thread use
 // (TaskWakerSlot, FallbackWaker, SenderWaitList). No raw non-atomic state.
 unsafe impl Send for Inner {}
+// SAFETY: Queue<T> owns the data; raw pointers are not shared across threads unsafely.
 unsafe impl Sync for Inner {}
 
 impl Inner {
