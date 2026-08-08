@@ -165,6 +165,8 @@ struct Shared<T> {
 // SAFETY: Shared contains atomics and raw pointers. Access is synchronized via
 // the turn counters. T: Send ensures data can move between threads.
 unsafe impl<T: Send> Send for Shared<T> {}
+// SAFETY: same as Send — all shared state is atomic; cross-thread access is
+// coordinated by the turn counters.
 unsafe impl<T: Send> Sync for Shared<T> {}
 
 impl<T> Drop for Shared<T> {

@@ -158,6 +158,8 @@ struct Shared<T> {
 // The buffer is only accessed through Producer (write) and Consumer (read), which
 // are !Sync. T: Send ensures the data can be transferred between threads.
 unsafe impl<T: Send> Send for Shared<T> {}
+// SAFETY: same as Send — all shared state is atomic; access is coordinated by
+// Producer (write) and Consumer (read), which are !Sync.
 unsafe impl<T: Send> Sync for Shared<T> {}
 
 #[cfg(not(loom))]
