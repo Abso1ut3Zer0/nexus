@@ -24,6 +24,7 @@ const STEADY_SIZE: usize = 100_000;
 
 #[inline(always)]
 fn rdtsc_start() -> u64 {
+    // SAFETY: x86_64 intrinsic; benchmark runs on x86_64 only.
     unsafe {
         std::arch::x86_64::_mm_lfence();
         std::arch::x86_64::_rdtsc()
@@ -32,6 +33,7 @@ fn rdtsc_start() -> u64 {
 
 #[inline(always)]
 fn rdtsc_end() -> u64 {
+    // SAFETY: x86_64 intrinsic; benchmark runs on x86_64 only.
     unsafe {
         let tsc = std::arch::x86_64::__rdtscp(&mut 0u32 as *mut _);
         std::arch::x86_64::_mm_lfence();
