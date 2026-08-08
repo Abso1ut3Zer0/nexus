@@ -34,6 +34,7 @@ const WARMUP: usize = 10_000;
 #[inline(always)]
 fn rdtscp() -> u64 {
     #[cfg(target_arch = "x86_64")]
+    // SAFETY: x86_64 intrinsic; block is only compiled for x86_64.
     unsafe {
         let mut aux: u32 = 0;
         std::arch::x86_64::__rdtscp(&raw mut aux)
