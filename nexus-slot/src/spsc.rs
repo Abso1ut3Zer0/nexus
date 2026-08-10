@@ -10,8 +10,11 @@
 //! # Example
 //!
 //! ```rust
-//! #[derive(Copy, Clone, Default)]
+//! #[repr(C)]
+//! #[derive(Clone, Default)]
 //! struct Quote { bid: f64, ask: f64, seq: u64 }
+//! // SAFETY: repr(C), no padding (3 x 8-byte fields), all bit patterns valid
+//! unsafe impl nexus_slot::Pod for Quote {}
 //!
 //! let (mut writer, mut reader) = nexus_slot::spsc::slot::<Quote>();
 //!
@@ -49,7 +52,7 @@ struct Inner<T> {
 // SAFETY: Inner is shared via Arc between exactly one Writer and one Reader,
 // each on potentially different threads. All access to `data` goes through
 // word-at-a-time atomics (atomic_store/atomic_load), and the seqlock protocol
-// ensures no torn reads. T: Send is required because values cross thread boundaries.
+// detects torn reads and retries. T: Send is required because values cross thread boundaries.
 unsafe impl<T: Send> Send for Inner<T> {}
 // SAFETY: same as Send; seqlock atomics make concurrent immutable access safe across threads.
 unsafe impl<T: Send> Sync for Inner<T> {}
@@ -88,8 +91,8 @@ pub fn slot<T: Pod>() -> (Writer<T>, Reader<T>) {
         );
     };
 
-    // Start at 2 instead of 0 so that wrapping on 32-bit never hits
-    // 0 (the "never written" sentinel). Sequence uses even values for
+    // Start at 2 to reserve 0 as the "never written" sentinel; on 32-bit
+    // seq wraps to 0 after ~2^31 writes (known limitation). Sequence uses even values for
     // "write complete" and odd for "write in progress": 2→3→4→5→...
     let inner = Arc::new(Inner {
         seq: AtomicUsize::new(2),

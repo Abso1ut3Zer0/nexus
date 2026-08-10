@@ -55,7 +55,7 @@ struct Inner<T> {
 
 // SAFETY: Inner is shared via Arc between one Writer and multiple SharedReaders.
 // All access to `data` goes through word-at-a-time atomics (atomic_store/atomic_load),
-// and the seqlock protocol ensures no torn reads. T: Send is required because
+// and the seqlock protocol detects torn reads and retries. T: Send is required because
 // values cross thread boundaries. writer_alive uses atomic ordering for visibility.
 unsafe impl<T: Send> Send for Inner<T> {}
 // SAFETY: same as Send; seqlock atomics make concurrent immutable access safe across threads.
