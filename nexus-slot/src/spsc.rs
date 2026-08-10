@@ -196,16 +196,19 @@ impl<T: Pod> Reader<T> {
             // If a concurrent write occurs, we detect it via seq2 != seq1.
             // No references are created — raw pointer access through atomics.
             #[cfg(not(loom))]
-            let value = unsafe { atomic_load(inner.data.get().cast::<T>()) };
+            let buf = unsafe { atomic_load(inner.data.get().cast::<T>()) };
             #[cfg(loom)]
-            let value = crate::loom_impl::loom_load::<T>(&inner.data);
+            let buf = crate::loom_impl::loom_load::<T>(&inner.data);
 
             fence(Ordering::Acquire);
             let seq2 = inner.seq.load(Ordering::Relaxed);
 
             if seq1 == seq2 {
                 self.cached_seq = seq1;
-                return Some(value);
+                // SAFETY: seq1 == seq2 confirms a consistent seqlock read.
+                // The bytes in buf are exactly those stored by the writer,
+                // which for Pod types have no uninit bytes and form a valid T.
+                return Some(unsafe { buf.assume_init() });
             }
 
             // Torn read, retry
@@ -254,17 +257,18 @@ impl<T: Pod> Reader<T> {
 
             // SAFETY: same as read() — seq1 is even and non-zero.
             #[cfg(not(loom))]
-            let value = unsafe { atomic_load(inner.data.get().cast::<T>()) };
+            let buf = unsafe { atomic_load(inner.data.get().cast::<T>()) };
             #[cfg(loom)]
-            let value = crate::loom_impl::loom_load::<T>(&inner.data);
+            let buf = crate::loom_impl::loom_load::<T>(&inner.data);
 
             fence(Ordering::Acquire);
             let seq2 = inner.seq.load(Ordering::Relaxed);
 
             if seq1 == seq2 {
                 self.cached_seq = seq1;
+                // SAFETY: same as read(); seq1 == seq2 confirms consistency.
                 // Version = seq / 2 (writer increments by 2 per write)
-                return Some((value, seq1 as u64 / 2));
+                return Some((unsafe { buf.assume_init() }, seq1 as u64 / 2));
             }
 
             core::hint::spin_loop();

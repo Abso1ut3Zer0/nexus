@@ -200,16 +200,21 @@ pub(crate) unsafe fn atomic_store<T: Pod>(dst: *mut T, src: &T) {
 /// `AtomicU8` fallback for tail bytes or poorly-aligned types.
 /// All loads use `Relaxed` ordering — caller provides fences.
 ///
+/// Returns `MaybeUninit<T>`. The caller must call `assume_init` only after
+/// the seqlock confirms seq1 == seq2, ensuring the bytes form a complete,
+/// coherent value written by the writer.
+///
 /// # Safety
 ///
 /// - `src` must be valid for `size_of::<T>()` bytes
 /// - `src` must be aligned to `align_of::<T>()`
 /// - `src` must be derived from `UnsafeCell` (shared-mutable provenance)
 #[inline]
-pub(crate) unsafe fn atomic_load<T: Pod>(src: *const T) -> T {
+pub(crate) unsafe fn atomic_load<T: Pod>(src: *const T) -> MaybeUninit<T> {
     // SAFETY: Caller guarantees src is valid, aligned, and from UnsafeCell.
-    // Pod bound ensures T is byte-copyable; assume_init is sound because all
-    // bytes are written by the atomic loads before we return.
+    // All size_of::<T>() bytes of buf are written before returning.
+    // Callers must call assume_init only after the seqlock confirms seq1==seq2,
+    // which guarantees the bytes form a valid T written by the writer.
     unsafe {
         let mut buf = MaybeUninit::<T>::uninit();
         let dst = buf.as_mut_ptr().cast::<u8>();
@@ -238,6 +243,6 @@ pub(crate) unsafe fn atomic_load<T: Pod>(src: *const T) -> T {
             }
         }
 
-        buf.assume_init()
+        buf
     }
 }

@@ -214,16 +214,17 @@ impl<T: Pod> SharedReader<T> {
 
             // SAFETY: Same as spsc::Reader::read.
             #[cfg(not(loom))]
-            let value = unsafe { atomic_load(inner.data.get().cast::<T>()) };
+            let buf = unsafe { atomic_load(inner.data.get().cast::<T>()) };
             #[cfg(loom)]
-            let value = crate::loom_impl::loom_load::<T>(&inner.data);
+            let buf = crate::loom_impl::loom_load::<T>(&inner.data);
 
             fence(Ordering::Acquire);
             let seq2 = inner.seq.load(Ordering::Relaxed);
 
             if seq1 == seq2 {
                 self.cached_seq = seq1;
-                return Some(value);
+                // SAFETY: seq1 == seq2 confirms a consistent seqlock read.
+                return Some(unsafe { buf.assume_init() });
             }
 
             // Torn read, retry
@@ -255,16 +256,17 @@ impl<T: Pod> SharedReader<T> {
 
             // SAFETY: Same as spsc::Reader::read_versioned.
             #[cfg(not(loom))]
-            let value = unsafe { atomic_load(inner.data.get().cast::<T>()) };
+            let buf = unsafe { atomic_load(inner.data.get().cast::<T>()) };
             #[cfg(loom)]
-            let value = crate::loom_impl::loom_load::<T>(&inner.data);
+            let buf = crate::loom_impl::loom_load::<T>(&inner.data);
 
             fence(Ordering::Acquire);
             let seq2 = inner.seq.load(Ordering::Relaxed);
 
             if seq1 == seq2 {
                 self.cached_seq = seq1;
-                return Some((value, seq1 as u64 / 2));
+                // SAFETY: same as read(); seq1 == seq2 confirms consistency.
+                return Some((unsafe { buf.assume_init() }, seq1 as u64 / 2));
             }
 
             core::hint::spin_loop();
