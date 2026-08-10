@@ -11,8 +11,18 @@
 //!
 //! # The `Pod` Trait
 //!
-//! Types must implement [`Pod`] (Plain Old Data) — no heap allocations,
-//! no drop glue, byte-copyable. Any `Copy` type implements `Pod` automatically.
+//! Types must implement [`Pod`] (Plain Old Data). Every bit pattern within
+//! `size_of::<T>()` bytes must be a valid value of the type, and the type
+//! must have no padding bytes. This rules out types with validity invariants
+//! (`NonZero*`, `char`, `bool`) and padded structs. The no-padding rule is
+//! not cosmetic: atomic stores cannot carry uninit bytes, so a padded type
+//! cannot be stored through the seqlock without UB no matter how the store
+//! is written. The restriction lives at the type level so the store code
+//! stays simple and correct.
+//!
+//! Primitive integers and floats implement [`Pod`] automatically. Arrays of
+//! `Pod` types implement [`Pod`] automatically. Other types require a manual
+//! `unsafe impl Pod`.
 //!
 //! ```rust
 //! use nexus_slot::Pod;
@@ -24,15 +34,21 @@
 //!     sequence: u64,
 //! }
 //!
-//! // SAFETY: OrderBook is just bytes — no heap allocations
+//! // SAFETY: All fields are f64/u64 (8-byte aligned); repr(C) layout adds no
+//! // padding between them; every bit pattern is a valid value for each field.
 //! unsafe impl Pod for OrderBook {}
 //! ```
 //!
 //! # Examples
 //!
 //! ```rust
-//! #[derive(Copy, Clone, Default)]
+//! #[derive(Clone)]
+//! #[repr(C)]
 //! struct Quote { bid: f64, ask: f64, seq: u64 }
+//!
+//! // SAFETY: All fields are f64/u64; repr(C) adds no padding; every bit
+//! // pattern is valid for each field.
+//! unsafe impl nexus_slot::Pod for Quote {}
 //!
 //! // SPSC — single reader
 //! let (mut writer, mut reader) = nexus_slot::spsc::slot::<Quote>();
@@ -41,8 +57,13 @@
 //! ```
 //!
 //! ```rust
-//! #[derive(Copy, Clone, Default)]
+//! #[derive(Clone)]
+//! #[repr(C)]
 //! struct Quote { bid: f64, ask: f64, seq: u64 }
+//!
+//! // SAFETY: All fields are f64/u64; repr(C) adds no padding; every bit
+//! // pattern is valid for each field.
+//! unsafe impl nexus_slot::Pod for Quote {}
 //!
 //! // SPMC — multiple readers
 //! let (mut writer, mut reader1) = nexus_slot::spmc::shared_slot::<Quote>();
@@ -68,14 +89,25 @@ use std::sync::atomic::{AtomicU8, AtomicUsize, Ordering};
 ///
 /// # Safety
 ///
-/// Implementor guarantees:
+/// Every bit pattern within `size_of::<Self>()` bytes must be a valid value
+/// of this type. This rules out types with validity invariants such as `bool`,
+/// `char`, `NonZero*`, and enums with a niche, as well as any type with
+/// uninitialised padding bytes.
 ///
-/// 1. **No heap allocations**: No `Vec`, `String`, `Box`, `Arc`, etc.
-/// 2. **No owned resources**: No `File`, `TcpStream`, `Mutex`, etc.
-/// 3. **No drop glue**: `std::mem::needs_drop::<Self>()` returns false.
-/// 4. **Byte-copyable**: Safe to memcpy without cleanup.
+/// The no-padding requirement is not cosmetic: the seqlock stores values
+/// word-at-a-time by reading source bytes as `usize` integers. If any of
+/// those bytes are uninit padding, reading them as an integer is undefined
+/// behaviour. There is no UB-free way to atomically store a type with
+/// implicit padding regardless of how the store is implemented, so the
+/// constraint belongs at the type level.
 ///
-/// Essentially: the type could be `Copy`, but chooses not to.
+/// `Copy` alone is not sufficient: a padded `#[repr(C)]` struct is `Copy`
+/// but reading its padding bytes as a typed value is undefined behaviour.
+/// A `Pod` type must have no padding. Use `#[repr(C)]` and verify that
+/// the field layout introduces no gaps.
+///
+/// Additional requirement (checked at slot creation):
+/// `std::mem::needs_drop::<Self>()` must return false.
 ///
 /// # Example
 ///
@@ -83,32 +115,37 @@ use std::sync::atomic::{AtomicU8, AtomicUsize, Ordering};
 /// use nexus_slot::Pod;
 ///
 /// #[repr(C)]
-/// struct OrderBook {
-///     bids: [f64; 20],
-///     asks: [f64; 20],
-///     bid_count: u8,
-///     ask_count: u8,
-///     sequence: u64,
+/// struct Tick {
+///     price: f64,
+///     qty: f64,
+///     seq: u64,
 /// }
 ///
-/// // SAFETY: Just bytes, no heap
-/// unsafe impl Pod for OrderBook {}
+/// // SAFETY: All fields are f64/u64 (8-byte aligned, no padding between
+/// // them under repr(C)); every bit pattern is a valid value for each field.
+/// unsafe impl Pod for Tick {}
 /// ```
-pub unsafe trait Pod: Sized {
-    /// Compile-time assertion that the implementing type does not require
-    /// drop. Forces a build-time error if a `Pod` impl is added for a type
-    /// with a non-trivial destructor.
-    const _ASSERT_NO_DROP: () = {
-        assert!(
-            !std::mem::needs_drop::<Self>(),
-            "Pod types must not require drop"
-        );
-    };
-}
+pub unsafe trait Pod: Sized {}
 
-// SAFETY: Copy types are byte-copyable, have no drop glue, and own no resources.
-// This is the canonical set of Pod guarantees.
-unsafe impl<T: Copy> Pod for T {}
+// SAFETY: All primitive integer and float types: no Drop, no heap pointers,
+// no padding, and every bit pattern within the type's width is a valid value.
+unsafe impl Pod for u8 {}
+unsafe impl Pod for u16 {}
+unsafe impl Pod for u32 {}
+unsafe impl Pod for u64 {}
+unsafe impl Pod for u128 {}
+unsafe impl Pod for usize {}
+unsafe impl Pod for i8 {}
+unsafe impl Pod for i16 {}
+unsafe impl Pod for i32 {}
+unsafe impl Pod for i64 {}
+unsafe impl Pod for i128 {}
+unsafe impl Pod for isize {}
+unsafe impl Pod for f32 {}
+unsafe impl Pod for f64 {}
+// SAFETY: [T; N] inherits T's properties; its layout is N contiguous copies
+// of T with no padding added by the compiler, so every bit pattern is valid.
+unsafe impl<T: Pod, const N: usize> Pod for [T; N] {}
 
 #[cfg(not(loom))]
 /// Atomically stores `size_of::<T>()` bytes into shared memory.
@@ -125,7 +162,8 @@ unsafe impl<T: Copy> Pod for T {}
 #[inline]
 pub(crate) unsafe fn atomic_store<T: Pod>(dst: *mut T, src: &T) {
     // SAFETY: Caller guarantees dst is valid, aligned, and from UnsafeCell.
-    // Pod bound ensures T is byte-copyable with no drop glue.
+    // Pod bound ensures T has no padding, so reading src bytes as usize
+    // values is sound; all bytes are initialised and every bit pattern valid.
     unsafe {
         let dst = dst.cast::<u8>();
         let src = (src as *const T).cast::<u8>();

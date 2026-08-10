@@ -117,6 +117,7 @@ impl<T: Pod> Writer<T> {
     /// Writes a value, overwriting any previous.
     ///
     /// Never blocks. If the reader is mid-read, they detect and retry.
+    #[allow(clippy::needless_pass_by_value)] // must own value; T: Pod has no drop glue
     #[inline]
     pub fn write(&mut self, value: T) {
         let inner = &*self.inner;
