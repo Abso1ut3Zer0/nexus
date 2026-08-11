@@ -3,16 +3,175 @@
 use std::io::{Read, Write};
 use std::net::{TcpListener, TcpStream};
 use std::path::{Path, PathBuf};
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use nexus_fix_codec::{
     FieldView, FixAdminMsg, FixDictionary, FixHeader, FixTimestamp, FrameFormatter,
     encode_fix_uint, find_tag,
 };
 use nexus_fix_engine::{
-    CompId, DisconnectReason, FixConnection, FixJournal, MalformedReason, Message, SessionConfig,
-    SessionError, SessionState, State, TransportError,
+    CompId, DisconnectReason, FixJournal, FixParts, FixSession, MalformedReason, Message,
+    MessageReader, MessageWriter, SessionConfig, SessionError, SessionState, State, TransportError,
 };
+
+// ── test-local bundle over the three-object API ──────────────────────────────
+
+/// The sans-IO [`FixSession`] brain plus its caller-held `reader`/`writer` and the
+/// owned transport, wrapped so the transport-behavior scenarios (terminated
+/// guard, EOF, MessageTooLarge, malformed surfacing) read the same across the
+/// un-nesting. Each method is a one-liner over
+/// `session.recv(&mut reader, &mut writer, &mut stream)` and the encode-only send
+/// helpers — a preview of the phase-6 bundle.
+struct Rig<S> {
+    session: FixSession<MockDict>,
+    reader: MessageReader<MockDict>,
+    writer: MessageWriter<MockDict>,
+    stream: S,
+}
+
+/// Fixed UTC-unix-nanos clock for the deterministic core.
+const NOW: i128 = 1_780_505_733_000_000_000;
+
+/// The classification of one recv+reply [`Rig::step`].
+#[derive(Debug, PartialEq, Eq)]
+enum Step {
+    /// Nothing test-visible surfaced (or a no-reply message was handled).
+    Continue,
+    /// An in-order application message surfaced.
+    App,
+    /// A Heartbeat surfaced (the out-of-sequence-admin scenarios watch for it).
+    Heartbeat,
+    /// A clean logout terminal (LoggedOut, or a peer LogoutRequest we answered).
+    Ended,
+}
+
+impl<S: Read + Write> Rig<S> {
+    /// Receive the next message and drive its required reply — the user-driven
+    /// model (the test sends what the engine used to auto-send). Destructures
+    /// `self` so the returned `Message` borrows `reader` only, freeing
+    /// `session`/`writer`/`stream` for the reply (contract §5).
+    fn step(&mut self) -> Result<Step, TransportError> {
+        let Rig {
+            session,
+            reader,
+            writer,
+            stream,
+        } = self;
+        match session.recv(reader, writer, stream, NOW)? {
+            Some(Message::LoggedOut { .. }) => Ok(Step::Ended),
+            Some(Message::LogoutRequest { .. }) => {
+                session.logout(writer, stream, NOW, None)?;
+                Ok(Step::Ended)
+            }
+            Some(Message::TestRequest { id }) => {
+                session.heartbeat(writer, stream, NOW, Some(id))?;
+                Ok(Step::Continue)
+            }
+            Some(Message::GapDetected { begin }) => {
+                session.resend_request(writer, stream, NOW, begin)?;
+                Ok(Step::Continue)
+            }
+            Some(Message::LogonRequest(d) | Message::LogonResetRequest(d)) => {
+                d.accept(session, writer, stream, NOW)?;
+                Ok(Step::Continue)
+            }
+            Some(Message::ResendRequest { cursor }) => {
+                // Pump the cursor: reframe each item into `writer`, write the yielded
+                // bytes, repeat until Done. The cursor is `Copy`, so it carries no
+                // reader borrow.
+                let mut c = cursor;
+                while let Some(bytes) = c.next(session, writer, NOW)? {
+                    stream.write_all(bytes).map_err(TransportError::Io)?;
+                }
+                stream.flush().map_err(TransportError::Io)?;
+                Ok(Step::Continue)
+            }
+            Some(Message::ResendOutOfRange {
+                begin,
+                low_water,
+                high_water,
+                ..
+            }) => {
+                // The requested range fell outside the retained window. If the start
+                // rotated off, gap-fill from `begin` (SequenceReset-GapFill); if the
+                // peer is simply ahead of us, force it forward (SequenceReset-Reset).
+                if begin < low_water {
+                    session.gap_fill(writer, stream, NOW, begin, high_water + 1)?;
+                } else {
+                    session.sequence_reset(writer, stream, NOW, high_water + 1)?;
+                }
+                Ok(Step::Continue)
+            }
+            Some(Message::Application { .. }) => Ok(Step::App),
+            Some(Message::Heartbeat { .. }) => Ok(Step::Heartbeat),
+            // No reply required (Reject / SequenceReset / LogonAcknowledged), or
+            // nothing surfaced (`None`).
+            _ => Ok(Step::Continue),
+        }
+    }
+    fn connect(&mut self) -> Result<(), TransportError> {
+        self.session.encode_connect(&mut self.writer, NOW)
+    }
+    /// Initiate a logout (combined encode + flush): the peer's confirming Logout
+    /// then surfaces as `LoggedOut` (Flow 2).
+    fn logout(&mut self) -> Result<(), TransportError> {
+        self.session
+            .logout(&mut self.writer, &mut self.stream, NOW, None)
+    }
+    fn send_app(&mut self, seq: u32, frame: &[u8]) -> Result<(), TransportError> {
+        self.session.encode_send_app(&mut self.writer, seq, frame)
+    }
+    fn state(&self) -> &SessionState {
+        self.session.state()
+    }
+    fn garbage_frame_count(&self) -> u64 {
+        self.session.garbage_frame_count()
+    }
+}
+
+/// Assemble a [`Rig`] with default (64 KiB) buffers — the three-object analogue of
+/// the removed `FixConnection::from_parts`.
+fn rig_from_parts<S>(
+    stream: S,
+    state: SessionState,
+    config: SessionConfig,
+    journal: FixJournal,
+) -> Rig<S> {
+    let FixParts {
+        session,
+        reader,
+        writer,
+    } = FixSession::builder(MockDict).build(state, config, journal);
+    Rig {
+        session,
+        reader,
+        writer,
+        stream,
+    }
+}
+
+/// Assemble a [`Rig`] with a custom reader-buffer capacity.
+fn rig_with_reader_cap<S>(
+    reader_cap: usize,
+    stream: S,
+    state: SessionState,
+    config: SessionConfig,
+    journal: FixJournal,
+) -> Rig<S> {
+    let FixParts {
+        session,
+        reader,
+        writer,
+    } = FixSession::builder(MockDict)
+        .reader_capacity(reader_cap)
+        .build(state, config, journal);
+    Rig {
+        session,
+        reader,
+        writer,
+        stream,
+    }
+}
 
 // ── mock dictionary ──────────────────────────────────────────────────────────
 
@@ -150,9 +309,9 @@ fn tmp_dir(suffix: &str) -> TempDir {
 /// propagated — an abnormal end surfaces as
 /// `Err(TransportError::UnexpectedDisconnect { .. })`. Every caller here drives a
 /// peer-initiated logout, so the clean path is the expected outcome.
-fn drive(conn: &mut FixConnection<TcpStream, MockDict>) -> Result<(), TransportError> {
+fn drive<S: Read + Write>(conn: &mut Rig<S>) -> Result<(), TransportError> {
     loop {
-        if let Some(Message::LoggedOut { .. }) = conn.recv(Instant::now())? {
+        if conn.step()? == Step::Ended {
             return Ok(());
         }
     }
@@ -351,13 +510,13 @@ fn initiator_logon_and_logout() {
         let _ = peer.recv_msg(&mut buf);
     });
 
-    let mut conn: FixConnection<TcpStream, MockDict> = FixConnection::from_parts(
+    let mut conn: Rig<TcpStream> = rig_from_parts(
         client_sock,
         SessionState::new(Duration::from_secs(30)),
         session_cfg(t_sender, t_target),
         journal(dir.path()),
     );
-    conn.connect(Instant::now()).unwrap();
+    conn.connect().unwrap();
 
     drive(&mut conn).unwrap();
 
@@ -384,7 +543,7 @@ fn acceptor_receives_app_message() {
 
     let mut received_app = 0usize;
     let dir2 = tmp_dir("acceptor_app_srv");
-    let mut conn: FixConnection<TcpStream, MockDict> = FixConnection::from_parts(
+    let mut conn: Rig<TcpStream> = rig_from_parts(
         server_sock,
         SessionState::new(Duration::from_secs(30)),
         session_cfg(target(), sender()),
@@ -392,12 +551,10 @@ fn acceptor_receives_app_message() {
     );
 
     loop {
-        match conn.recv(Instant::now()).unwrap() {
-            Some(Message::LoggedOut { .. }) => break,
-            Some(Message::Application { header: _ }) => {
-                received_app += 1;
-            }
-            Some(_) | None => {}
+        match conn.step().unwrap() {
+            Step::Ended => break,
+            Step::App => received_app += 1,
+            _ => {}
         }
     }
 
@@ -428,7 +585,7 @@ fn heartbeat_stale_seqnum_disconnects() {
         let _ = peer.recv_msg(&mut buf); // drain the engine's Logout
     });
 
-    let mut conn: FixConnection<TcpStream, MockDict> = FixConnection::from_parts(
+    let mut conn: Rig<TcpStream> = rig_from_parts(
         server_sock,
         SessionState::new(Duration::from_secs(30)),
         session_cfg(target(), sender()),
@@ -436,7 +593,7 @@ fn heartbeat_stale_seqnum_disconnects() {
     );
 
     let reason = loop {
-        match conn.recv(Instant::now()) {
+        match conn.step() {
             Ok(_) => {}
             Err(TransportError::UnexpectedDisconnect { reason }) => break reason,
             Err(e) => panic!("unexpected transport error: {e:?}"),
@@ -483,13 +640,13 @@ fn resend_request_triggers_gap_fill() {
         let _ = peer.recv_msg(&mut buf);
     });
 
-    let mut conn: FixConnection<TcpStream, MockDict> = FixConnection::from_parts(
+    let mut conn: Rig<TcpStream> = rig_from_parts(
         client_sock,
         SessionState::new(Duration::from_secs(30)),
         session_cfg(sender(), target()),
         journal(dir_cli.path()),
     );
-    conn.connect(Instant::now()).unwrap();
+    conn.connect().unwrap();
 
     drive(&mut conn).unwrap();
 
@@ -516,7 +673,7 @@ fn inbound_gap_sends_resend_request_and_suppresses_app_message() {
         // Drop peer — engine sees EOF; no need to read ResendRequest here.
     });
 
-    let mut conn: FixConnection<TcpStream, MockDict> = FixConnection::from_parts(
+    let mut conn: Rig<TcpStream> = rig_from_parts(
         server_sock,
         SessionState::new(Duration::from_secs(30)),
         session_cfg(target(), sender()),
@@ -525,10 +682,10 @@ fn inbound_gap_sends_resend_request_and_suppresses_app_message() {
 
     let mut saw_app = false;
     loop {
-        match conn.recv(Instant::now()) {
-            Ok(Some(Message::LoggedOut { .. })) | Err(_) => break,
-            Ok(Some(Message::Application { .. })) => saw_app = true,
-            Ok(Some(_) | None) => {}
+        match conn.step() {
+            Ok(Step::Ended) | Err(_) => break,
+            Ok(Step::App) => saw_app = true,
+            Ok(_) => {}
         }
     }
 
@@ -536,7 +693,7 @@ fn inbound_gap_sends_resend_request_and_suppresses_app_message() {
     assert_eq!(
         conn.state().state(),
         State::Resending,
-        "engine must enter Resending state (= ResendRequest sent) on inbound gap"
+        "engine must enter Resending state (= ResendRequest sent by the user on GapDetected) on inbound gap"
     );
 
     handle.join().unwrap();
@@ -580,7 +737,7 @@ fn out_of_sequence_admin_suppressed_and_resends() {
         // Drop peer → engine sees EOF and disconnects, ending the recv loop.
     });
 
-    let mut conn: FixConnection<TcpStream, MockDict> = FixConnection::from_parts(
+    let mut conn: Rig<TcpStream> = rig_from_parts(
         server_sock,
         SessionState::new(Duration::from_secs(30)),
         session_cfg(target(), sender()),
@@ -589,11 +746,11 @@ fn out_of_sequence_admin_suppressed_and_resends() {
 
     let mut saw_admin = false;
     loop {
-        match conn.recv(Instant::now()) {
-            Ok(Some(Message::LoggedOut { .. })) | Err(_) => break,
+        match conn.step() {
+            Ok(Step::Ended) | Err(_) => break,
             // The out-of-sequence Heartbeat must never surface.
-            Ok(Some(Message::Heartbeat { .. })) => saw_admin = true,
-            Ok(Some(_) | None) => {}
+            Ok(Step::Heartbeat) => saw_admin = true,
+            Ok(_) => {}
         }
     }
 
@@ -632,7 +789,7 @@ fn duplicate_admin_suppressed_no_resend() {
         // Drop peer → engine sees EOF and disconnects.
     });
 
-    let mut conn: FixConnection<TcpStream, MockDict> = FixConnection::from_parts(
+    let mut conn: Rig<TcpStream> = rig_from_parts(
         server_sock,
         SessionState::new(Duration::from_secs(30)),
         session_cfg(target(), sender()),
@@ -642,11 +799,11 @@ fn duplicate_admin_suppressed_no_resend() {
     let mut saw_dup_admin = false;
     let mut saw_app = false;
     loop {
-        match conn.recv(Instant::now()) {
-            Ok(Some(Message::LoggedOut { .. })) | Err(_) => break,
-            Ok(Some(Message::Application { .. })) => saw_app = true,
-            Ok(Some(Message::Heartbeat { .. })) => saw_dup_admin = true,
-            Ok(Some(_) | None) => {}
+        match conn.step() {
+            Ok(Step::Ended) | Err(_) => break,
+            Ok(Step::App) => saw_app = true,
+            Ok(Step::Heartbeat) => saw_dup_admin = true,
+            Ok(Step::Continue) => {}
         }
     }
 
@@ -672,9 +829,11 @@ fn duplicate_admin_suppressed_no_resend() {
 }
 
 #[test]
-fn resend_request_huge_end_seq_clamped() {
-    // Fix 1: peer sends EndSeqNo=4_000_000_000; engine must clamp to next_outbound-1
-    // and respond immediately (not iterate 4B times).
+fn resend_request_huge_end_seq_out_of_range() {
+    // Peer sends EndSeqNo=4_000_000_000, far above our high-water. The engine must
+    // classify this as out-of-range up front (never iterate 4B times) and surface
+    // `ResendOutOfRange`; the user answers with a SequenceReset-Reset forcing the
+    // peer's expected seqnum to our next outbound (high_water + 1 = 2).
     let dir = tmp_dir("resend_huge");
     let (client_sock, server_sock) = loopback_pair();
     client_sock
@@ -687,24 +846,27 @@ fn resend_request_huge_end_seq_clamped() {
         let _ = peer.recv_msg(&mut buf); // initiator logon
         peer.send_logon(30);
         peer.send_resend_request(1, 4_000_000_000); // seq=2, begin=1, end=4B
-        let n = peer.recv_msg(&mut buf); // must receive GapFill quickly
-        assert!(n > 0, "engine must respond to clamped ResendRequest");
+        let n = peer.recv_msg(&mut buf); // must receive the reset quickly
+        assert!(
+            n > 0,
+            "engine must respond to an out-of-range ResendRequest"
+        );
         let new_seq: u32 = find_tag(&buf[..n], 0, 36)
             .and_then(|s| FieldView::new(s, &buf[..n]))
-            .expect("GapFill must contain NewSeqNo(36)")
+            .expect("SequenceReset must contain NewSeqNo(36)")
             .get();
-        assert_eq!(new_seq, 2u32, "GapFill new_seq must equal next_outbound");
+        assert_eq!(new_seq, 2u32, "reset new_seq must equal next_outbound");
         peer.send_logout();
         let _ = peer.recv_msg(&mut buf);
     });
 
-    let mut conn: FixConnection<TcpStream, MockDict> = FixConnection::from_parts(
+    let mut conn: Rig<TcpStream> = rig_from_parts(
         client_sock,
         SessionState::new(Duration::from_secs(30)),
         session_cfg(sender(), target()),
         journal(dir.path()),
     );
-    conn.connect(Instant::now()).unwrap();
+    conn.connect().unwrap();
     drive(&mut conn).unwrap();
     handle.join().unwrap();
 }
@@ -728,7 +890,7 @@ fn corrupt_checksum_frame_counted_as_garbage() {
         // Drop peer
     });
 
-    let mut conn: FixConnection<TcpStream, MockDict> = FixConnection::from_parts(
+    let mut conn: Rig<TcpStream> = rig_from_parts(
         server_sock,
         SessionState::new(Duration::from_secs(30)),
         session_cfg(target(), sender()),
@@ -736,8 +898,8 @@ fn corrupt_checksum_frame_counted_as_garbage() {
     );
 
     loop {
-        match conn.recv(Instant::now()) {
-            Ok(Some(Message::LoggedOut { .. })) | Err(_) => break,
+        match conn.step() {
+            Ok(Step::Ended) | Err(_) => break,
             _ => {}
         }
     }
@@ -768,7 +930,7 @@ fn garbage_bytes_increment_counter() {
         // Drop peer
     });
 
-    let mut conn: FixConnection<TcpStream, MockDict> = FixConnection::from_parts(
+    let mut conn: Rig<TcpStream> = rig_from_parts(
         server_sock,
         SessionState::new(Duration::from_secs(30)),
         session_cfg(target(), sender()),
@@ -776,8 +938,8 @@ fn garbage_bytes_increment_counter() {
     );
 
     loop {
-        match conn.recv(Instant::now()) {
-            Ok(Some(Message::LoggedOut { .. })) | Err(_) => break,
+        match conn.step() {
+            Ok(Step::Ended) | Err(_) => break,
             _ => {}
         }
     }
@@ -797,14 +959,14 @@ fn malformed_framing_surfaces_via_recv() {
     let dir = tmp_dir("malformed_framing");
     let garbage = b"GARBAGE_NOT_FIX";
 
-    let mut conn: FixConnection<ChunkStream, MockDict> = FixConnection::from_parts(
+    let mut conn: Rig<ChunkStream> = rig_from_parts(
         ChunkStream::new(garbage),
         SessionState::new(Duration::from_secs(30)),
         session_cfg(target(), sender()),
         journal(dir.path()),
     );
 
-    let Err(err) = conn.recv(Instant::now()) else {
+    let Err(err) = conn.step() else {
         panic!("expected TransportError::Malformed for raw garbage");
     };
     assert!(
@@ -832,14 +994,14 @@ fn malformed_checksum_surfaces_via_recv() {
     // transit" signal, distinct from raw framing garbage.
     let dir = tmp_dir("malformed_checksum");
 
-    let mut conn: FixConnection<ChunkStream, MockDict> = FixConnection::from_parts(
+    let mut conn: Rig<ChunkStream> = rig_from_parts(
         ChunkStream::new(&corrupt_checksum_frame()),
         SessionState::new(Duration::from_secs(30)),
         session_cfg(target(), sender()),
         journal(dir.path()),
     );
 
-    let Err(err) = conn.recv(Instant::now()) else {
+    let Err(err) = conn.step() else {
         panic!("expected TransportError::Malformed for a corrupt checksum");
     };
     let TransportError::Malformed { count, reason, .. } = err else {
@@ -872,14 +1034,14 @@ fn peer_eof_surfaces_peer_closed_not_logout() {
     // drop, reported as UnexpectedDisconnect{PeerClosed} — NOT a fake clean
     // Logout (the pre-#612 conflation). It is fatal and Displays legibly.
     let dir = tmp_dir("peer_eof");
-    let mut conn: FixConnection<ChunkStream, MockDict> = FixConnection::from_parts(
+    let mut conn: Rig<ChunkStream> = rig_from_parts(
         ChunkStream::new(b""), // peer connected, then immediately closed
         SessionState::new(Duration::from_secs(30)),
         session_cfg(target(), sender()),
         journal(dir.path()),
     );
 
-    let Err(err) = conn.recv(Instant::now()) else {
+    let Err(err) = conn.step() else {
         panic!("expected an error on peer EOF");
     };
     assert!(err.is_fatal(), "an abnormal disconnect is fatal");
@@ -898,7 +1060,7 @@ fn recv_after_abnormal_disconnect_is_closed() {
     // recv returns the fatal `Closed` (tungstenite's AlreadyClosed) — a caller-bug
     // signal, never a fresh disconnect or a hang. Idempotent.
     let dir = tmp_dir("recv_after_abnormal");
-    let mut conn: FixConnection<ChunkStream, MockDict> = FixConnection::from_parts(
+    let mut conn: Rig<ChunkStream> = rig_from_parts(
         ChunkStream::new(b""),
         SessionState::new(Duration::from_secs(30)),
         session_cfg(target(), sender()),
@@ -907,13 +1069,13 @@ fn recv_after_abnormal_disconnect_is_closed() {
 
     // First recv terminates the session (peer EOF).
     assert!(matches!(
-        conn.recv(Instant::now()),
+        conn.step(),
         Err(TransportError::UnexpectedDisconnect { .. })
     ));
 
     // Every recv after that is Closed.
     for _ in 0..3 {
-        let Err(err) = conn.recv(Instant::now()) else {
+        let Err(err) = conn.step() else {
             panic!("expected Closed on a terminated session");
         };
         assert!(err.is_fatal());
@@ -926,7 +1088,9 @@ fn recv_after_abnormal_disconnect_is_closed() {
 fn recv_after_clean_logout_is_closed() {
     // The clean-logout terminal (LoggedOut, on the Ok side) arms the same Closed
     // guard as an abnormal disconnect: a recv after it returns Closed, not a
-    // re-read of a dead socket.
+    // re-read of a dead socket. Driven by a Flow-2 logout — WE initiate, the peer
+    // confirms — because that is the exchange that ends in `LoggedOut` in the
+    // user-driven model (a peer-initiated Logout surfaces `LogoutRequest`).
     let dir = tmp_dir("logout_then_closed");
     let (client_sock, server_sock) = loopback_pair();
     client_sock
@@ -936,26 +1100,37 @@ fn recv_after_clean_logout_is_closed() {
     let handle = std::thread::spawn(move || {
         let mut peer = Peer::new(server_sock, target(), sender());
         let mut buf = [0u8; 512];
-        let _ = peer.recv_msg(&mut buf); // the server's Logon
-        peer.send_logon(30);
-        peer.send_logout();
-        let _ = peer.recv_msg(&mut buf);
+        let _ = peer.recv_msg(&mut buf); // the engine's opening Logon
+        peer.send_logon(30); // ack → engine Active
+        let _ = peer.recv_msg(&mut buf); // the engine's initiated Logout
+        peer.send_logout(); // confirm → engine LoggedOut
     });
 
-    let mut conn: FixConnection<TcpStream, MockDict> = FixConnection::from_parts(
+    let mut conn: Rig<TcpStream> = rig_from_parts(
         client_sock,
         SessionState::new(Duration::from_secs(30)),
         session_cfg(sender(), target()),
         journal(dir.path()),
     );
-    conn.connect(Instant::now()).unwrap();
+    conn.connect().unwrap();
 
-    // Drive to the clean logout terminal, then any further recv is Closed.
-    drive(&mut conn).unwrap();
-    assert!(matches!(
-        conn.recv(Instant::now()),
-        Err(TransportError::Closed)
-    ));
+    // Reach Active (the peer's Logon ack).
+    loop {
+        conn.step().unwrap();
+        if conn.state().state() == State::Active {
+            break;
+        }
+    }
+    // We initiate the logout; the peer's confirming Logout surfaces as the clean
+    // `LoggedOut` terminal.
+    conn.logout().unwrap();
+    loop {
+        if conn.step().unwrap() == Step::Ended {
+            break;
+        }
+    }
+    // Any step after the terminal is Closed.
+    assert!(matches!(conn.step(), Err(TransportError::Closed)));
 
     handle.join().unwrap();
 }
@@ -1017,7 +1192,7 @@ fn sequence_reset_backward_ignored() {
         // Drop peer
     });
 
-    let mut conn: FixConnection<TcpStream, MockDict> = FixConnection::from_parts(
+    let mut conn: Rig<TcpStream> = rig_from_parts(
         server_sock,
         SessionState::new(Duration::from_secs(30)),
         session_cfg(target(), sender()),
@@ -1025,8 +1200,8 @@ fn sequence_reset_backward_ignored() {
     );
 
     loop {
-        match conn.recv(Instant::now()) {
-            Ok(Some(Message::LoggedOut { .. })) | Err(_) => break,
+        match conn.step() {
+            Ok(Step::Ended) | Err(_) => break,
             _ => {}
         }
     }
@@ -1069,14 +1244,14 @@ fn overflowed_tag_34_yields_missing_seq_num() {
         s.flush().unwrap();
     });
 
-    let mut conn: FixConnection<TcpStream, MockDict> = FixConnection::from_parts(
+    let mut conn: Rig<TcpStream> = rig_from_parts(
         server_sock,
         SessionState::new(Duration::from_secs(30)),
         session_cfg(target(), sender()),
         journal(dir.path()),
     );
 
-    let result = conn.recv(Instant::now());
+    let result = conn.step();
     handle.join().unwrap();
 
     assert!(
@@ -1105,13 +1280,13 @@ fn journal_recovers_admin_seqnums() {
         let _ = peer.recv_msg(&mut buf);
     });
 
-    let mut conn: FixConnection<TcpStream, MockDict> = FixConnection::from_parts(
+    let mut conn: Rig<TcpStream> = rig_from_parts(
         client_sock,
         SessionState::new(Duration::from_secs(30)),
         session_cfg(sender(), target()),
         journal(dir.path()),
     );
-    conn.connect(Instant::now()).unwrap();
+    conn.connect().unwrap();
     drive(&mut conn).unwrap();
     handle.join().unwrap();
     drop(conn);
@@ -1132,7 +1307,7 @@ fn send_app_rejects_oversized_frame() {
     // runtime fallback. The cap fires before any journal or socket write.
     let dir = tmp_dir("oversized");
     let (client_sock, _server_sock) = loopback_pair();
-    let mut conn: FixConnection<TcpStream, MockDict> = FixConnection::from_parts(
+    let mut conn: Rig<TcpStream> = rig_from_parts(
         client_sock,
         SessionState::new(Duration::from_secs(30)),
         session_cfg(sender(), target()),
@@ -1212,15 +1387,15 @@ fn frame_exceeding_reader_buffer_is_message_too_large_not_disconnect() {
     );
 
     let stream = ChunkStream::new(&frame);
-    let mut conn: FixConnection<ChunkStream, MockDict> =
-        FixConnection::builder().reader_capacity(READER_CAP).accept(
-            stream,
-            SessionState::new(Duration::from_secs(30)),
-            session_cfg(target(), sender()),
-            journal(dir.path()),
-        );
+    let mut conn: Rig<ChunkStream> = rig_with_reader_cap(
+        READER_CAP,
+        stream,
+        SessionState::new(Duration::from_secs(30)),
+        session_cfg(target(), sender()),
+        journal(dir.path()),
+    );
 
-    match conn.recv(Instant::now()) {
+    match conn.step() {
         Err(TransportError::MessageTooLarge(_)) => {}
         Err(TransportError::UnexpectedDisconnect { reason }) => {
             panic!("frame exceeding reader buffer was misread as a disconnect: {reason:?}")
@@ -1235,8 +1410,5 @@ fn frame_exceeding_reader_buffer_is_message_too_large_not_disconnect() {
     // session — the next recv must be Closed, not a re-read of the oversized frame.
     // Regression guard: the terminated flag must arm on any fatal error, not just
     // LoggedOut / UnexpectedDisconnect.
-    assert!(matches!(
-        conn.recv(Instant::now()),
-        Err(TransportError::Closed)
-    ));
+    assert!(matches!(conn.step(), Err(TransportError::Closed)));
 }

@@ -10,26 +10,54 @@ contained.
 
 ## [Unreleased]
 
+### Changed
+
+- **Repositioned as the tokio adapter to the sans-IO FIX session _framework_.**
+  Mirrors the core rework in `nexus-fix-engine` (see its changelog). The async
+  `FixSession` is now a thin newtype that `Deref`s to the core brain and adds a
+  `recv` that `.await`s I/O over any `nexus_net::WireStream`; the caller holds the
+  `FixParts` trio (session + `MessageReader` + `MessageWriter`) and passes the
+  reader/writer plus its transport per call.
+  - **Deterministic clock.** `recv` and every combined send helper take a
+    caller-supplied `now: i128` (UTC unix-nanos) that stamps `SendingTime(52)`; no
+    internal clock reads remain.
+  - **No timers.** The reactor's built-in heartbeat / TestRequest timer logic is
+    gone; the session exposes only `heartbeat_interval()`. Build the heartbeat,
+    two-phase peer-liveness, and handshake timers yourself — the worked tokio
+    recipe (`select!` over `recv` and one `sleep_until` per timer) ships as
+    `examples/async_timer_recipes.rs`.
+  - **User-driven replies + resend cursor.** `recv` returns a `Message` whose every
+    variant names its one required response; an inbound ResendRequest surfaces a
+    user-pumped `ResendCursor` (drop = refuse), with `ResendOutOfRange` for a
+    request outside the journal window.
+
 ### Added
 
-- `FixConnection` now runs on the `nexus_net::WireStream` seam (via
-  `nexus-net-tokio`) instead of a raw tokio `AsyncRead + AsyncWrite`, so it
-  composes with the same transport layer as the web stack and gains transparent
-  TLS. `connect`/`tcp_connect` now yield `FixConnection<MaybeTls, _>` (plaintext);
-  `connect_tls` (feature `tls`) performs the TLS handshake. Raw-stream callers
-  wrap in `nexus_net_tokio::AsyncReadAdapter`. The reactor and heartbeat/
-  TestRequest timer logic are unchanged — only the byte primitive moved to
-  `poll_fill_into`/`poll_write` — and the async conformance suite stays green.
+- `Text(58)` reason on Logout. `logout` and `reject_logon` take
+  `reason: Option<&AsciiTextStr>`, encoded as `Text(58)` when `Some` and omitted
+  when `None` — the async twins of the core change.
 
-- Venue Logon auth, mirroring the sync engine. `FixConnection` and
-  `FixConnectionBuilder` take a per-venue `SessionCustomizer` (from
-  `nexus-fix-codec`) as a trailing type parameter defaulting to `NoCustomizer`,
-  so existing call sites — `FixConnection<TcpStream, Fix44>`,
-  `FixConnection::from_parts(...)`, `FixConnection::builder()` — are unchanged.
-
-  Attach one with `FixConnectionBuilder::customizer(c)` or
-  `FixConnection::from_parts_with_customizer(...)`. All hook behavior lives in
-  the shared `FixSession` core; this crate only threads the type parameter.
+- **Transport-setup batteries** (async twin of the `nexus-fix-engine` change), in
+  the primary/secondary split `nexus-web` uses for WebSocket (`WsStreamBuilder` → raw
+  parts, `WsStream` → owns-everything).
+  - **Primary — `FixConnectionBuilder` → raw parts.** `connect(addr, …).await`
+    returns the raw `(FixParts, MaybeTls)` (plaintext, `MaybeTls::Plain`);
+    `connect_tls(addr, domain, &TlsConfig, …).await` (feature `tls`) drives the
+    rustls handshake and returns `(FixParts, MaybeTls)` (`MaybeTls::Tls`) — the
+    transparent-TLS path that puts the `tokio-rustls` optional dep back to use;
+    `accept(stream, …)` pairs a preexisting `WireStream`. You run the ordinary
+    three-object loop, so admin replies stay **zero-copy**. Reconnect is "keep the
+    `FixParts`, grab a new transport" via `connect_socket` / `connect_socket_tls`.
+    Raw tokio streams wrap in `nexus_net_tokio::AsyncReadAdapter`.
+  - **Secondary — `FixConnection` owns everything** (async twin of
+    `nexus_fix_engine::FixConnection`). Bundles the trio *and* the transport into one
+    object with an async `recv` + delegating send helpers. Build it one-step with
+    `FixConnection::open(addr, …).await`, or from B's parts with `from_parts(parts,
+    transport)`; `into_parts()` returns `(FixParts, S)`. It is deliberately **not** a
+    `Stream`/`Sink` (FIX `recv` surfaces admin you must *answer*), and its `recv`
+    borrows the whole connection, so an admin reply field is copied out before the
+    reply — which is exactly why the raw parts are primary. `TlsConfig` is re-exported
+    (feature `tls`) so callers can name the `connect_tls` argument.
 
 - `recv()` now surfaces a garbled/bad-`BodyLength`/bad-`CheckSum` inbound frame as
   the shared recoverable `Err(TransportError::Malformed { skipped, count, reason })`,

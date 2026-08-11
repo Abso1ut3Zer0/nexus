@@ -1,12 +1,12 @@
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use nexus_fix_codec::{
     AdminEncode, AdminHeader, AdminMsgOut, AsciiTextStr, DecodeError, FieldView, FixAdminMsg,
     FixDictionary, FixHeader, FixTimestamp, FrameFormatter, NoCustomizer, find_tag, parse_fix_uint,
 };
 use nexus_fix_engine::{
-    AppIn, Control, DisconnectReason, Emit, HeartbeatIn, LogonIn, LogoutIn, RejectIn,
-    RejectInboundIn, ResendRequestIn, SequenceResetIn, SessionState, State, TestRequestIn,
+    AppIn, Control, DisconnectReason, Emit, LogonIn, LogoutIn, RejectIn, ResendRequestIn,
+    SequenceResetIn, SessionState, State, TestRequestIn,
 };
 
 const HB: Duration = Duration::from_secs(30);
@@ -107,10 +107,6 @@ impl RecordingEmitter {
         find_tag(&self.frames[i], 0, tag)
             .and_then(|s| parse_fix_uint(s.slice(&self.frames[i])).ok())
     }
-    /// A body tag's raw bytes.
-    fn val(&self, i: usize, tag: u32) -> Option<&[u8]> {
-        find_tag(&self.frames[i], 0, tag).map(|s| s.slice(&self.frames[i]))
-    }
     /// Whether a body tag is present on the `i`-th frame.
     fn has(&self, i: usize, tag: u32) -> bool {
         find_tag(&self.frames[i], 0, tag).is_some()
@@ -144,17 +140,15 @@ impl Emit for RecordingEmitter {
     }
 }
 
-fn establish(s: &mut SessionState, now: Instant) {
+fn establish(s: &mut SessionState) {
     let mut recorder = RecordingEmitter::new();
-    s.connect(now, &mut recorder).unwrap();
+    s.connect(&mut recorder).unwrap();
     s.on_logon(
         LogonIn {
             seq: 1,
             heart_bt_int_s: 30,
             is_reset_seq_num: false,
-            send_reply: false,
         },
-        now,
         &mut recorder,
     )
     .unwrap();
@@ -164,10 +158,9 @@ fn establish(s: &mut SessionState, now: Instant) {
 #[test]
 fn initiator_handshake() {
     let mut s = new_session();
-    let now = Instant::now();
 
     let mut recorder = RecordingEmitter::new();
-    s.connect(now, &mut recorder).unwrap();
+    s.connect(&mut recorder).unwrap();
     assert_eq!(s.state(), State::LogonSent);
     assert_eq!(recorder.len(), 1);
     // Logon (35=A, no 141) at seqnum 1 with HeartBtInt(108)=30.
@@ -177,16 +170,14 @@ fn initiator_handshake() {
     assert_eq!(recorder.num(0, 108), Some(30));
 
     recorder.clear();
-    // Initiator receiving the peer's Logon ack: send_reply = false → acknowledged.
+    // Initiator (state LogonSent) receiving the peer's Logon ack → acknowledged.
     let ctrl = s
         .on_logon(
             LogonIn {
                 seq: 1,
                 heart_bt_int_s: 30,
                 is_reset_seq_num: false,
-                send_reply: false,
             },
-            now,
             &mut recorder,
         )
         .unwrap();
@@ -200,22 +191,35 @@ fn initiator_handshake() {
 #[test]
 fn acceptor_handshake() {
     let mut s = new_session();
-    let now = Instant::now();
 
     let mut recorder = RecordingEmitter::new();
-    // Acceptor: send_reply = true → this Logon is answered, not an ack.
+    // Acceptor (fresh session, state Disconnected): the Logon surfaces a decision (no auto-reply);
+    // the user then accepts, which emits the reply and brings the session up.
     let ctrl = s
         .on_logon(
             LogonIn {
                 seq: 1,
                 heart_bt_int_s: 15,
                 is_reset_seq_num: false,
-                send_reply: true,
             },
-            now,
             &mut recorder,
         )
         .unwrap();
+    assert_eq!(
+        ctrl,
+        Control::LogonRequest {
+            seq: 1,
+            heart_bt_int_s: 15
+        }
+    );
+    assert_eq!(recorder.len(), 0, "no reply before the user accepts");
+    assert_eq!(
+        s.state(),
+        State::Disconnected,
+        "state unchanged until accept"
+    );
+
+    let ctrl = s.accept_logon(1, 15, false, &mut recorder).unwrap();
     assert_eq!(s.state(), State::Active);
     assert_eq!(
         ctrl,
@@ -234,20 +238,30 @@ fn acceptor_handshake() {
 #[test]
 fn logon_reset_seq_num_flag() {
     let mut s = new_session();
-    let now = Instant::now();
 
     let mut recorder = RecordingEmitter::new();
-    s.on_logon(
-        LogonIn {
+    // A reset Logon (141=Y) surfaces a reset decision; accepting emits the
+    // LogonReset reply.
+    let ctrl = s
+        .on_logon(
+            LogonIn {
+                seq: 1,
+                heart_bt_int_s: 30,
+                is_reset_seq_num: true,
+            },
+            &mut recorder,
+        )
+        .unwrap();
+    assert_eq!(
+        ctrl,
+        Control::LogonResetRequest {
             seq: 1,
-            heart_bt_int_s: 30,
-            is_reset_seq_num: true,
-            send_reply: true,
-        },
-        now,
-        &mut recorder,
-    )
-    .unwrap();
+            heart_bt_int_s: 30
+        }
+    );
+    assert_eq!(recorder.len(), 0);
+
+    s.accept_logon(1, 30, true, &mut recorder).unwrap();
     assert_eq!(s.state(), State::Active);
     assert_eq!(recorder.len(), 1);
     // LogonReset (35=A carrying 141=Y) at seqnum 1.
@@ -259,8 +273,7 @@ fn logon_reset_seq_num_flag() {
 #[test]
 fn app_message_emits_control() {
     let mut s = new_session();
-    let now = Instant::now();
-    establish(&mut s, now);
+    establish(&mut s);
 
     let ctrl = s
         .on_app(
@@ -268,7 +281,6 @@ fn app_message_emits_control() {
                 seq: 2,
                 is_poss_dup: false,
             },
-            now,
             &mut RecordingEmitter::new(),
         )
         .unwrap();
@@ -277,176 +289,47 @@ fn app_message_emits_control() {
 }
 
 #[test]
-fn test_request_is_echoed() {
+fn test_request_surfaces_not_echoed() {
     let mut s = new_session();
-    let now = Instant::now();
-    establish(&mut s, now);
+    establish(&mut s);
 
     let mut recorder = RecordingEmitter::new();
-    s.on_test_request(
-        TestRequestIn {
-            test_req_id: b"PROBE7",
-            seq: 2,
-            is_poss_dup: false,
-        },
-        now,
-        &mut recorder,
-    )
-    .unwrap();
-    assert_eq!(recorder.len(), 1);
-    // Heartbeat (35=0) echoing TestReqID(112)=PROBE7.
-    assert_eq!(recorder.mt(0), b"0");
-    assert_eq!(recorder.val(0, 112), Some(b"PROBE7".as_ref()));
-}
-
-#[test]
-fn heartbeat_fires_on_outbound_idle() {
-    let mut s = new_session();
-    let now = Instant::now();
-    establish(&mut s, now);
-
-    let mut recorder = RecordingEmitter::new();
-    s.on_timeout(now + Duration::from_secs(29), &mut recorder)
+    // The engine no longer auto-echoes: an in-sequence TestRequest surfaces as
+    // `Control::TestRequest` (the user answers with `heartbeat`), emitting nothing.
+    let ctrl = s
+        .on_test_request(
+            TestRequestIn {
+                seq: 2,
+                is_poss_dup: false,
+            },
+            &mut recorder,
+        )
         .unwrap();
-    assert_eq!(recorder.len(), 0);
-
-    recorder.clear();
-    s.on_timeout(now + Duration::from_secs(30), &mut recorder)
-        .unwrap();
-    assert_eq!(recorder.len(), 1);
-    // Heartbeat (35=0) with no echo (no 112).
-    assert_eq!(recorder.mt(0), b"0");
-    assert!(
-        !recorder.has(0, 112),
-        "idle Heartbeat must not echo a TestReqID"
-    );
+    assert_eq!(ctrl, Control::TestRequest);
+    assert_eq!(recorder.len(), 0, "no engine-driven Heartbeat echo");
+    assert_eq!(s.next_inbound_seq(), 3);
 }
 
 #[test]
-fn heartbeat_not_queued_twice() {
+fn gap_surfaces_gap_detected() {
     let mut s = new_session();
-    let now = Instant::now();
-    establish(&mut s, now);
-
-    let mut rec1 = RecordingEmitter::new();
-    s.on_timeout(now + Duration::from_secs(31), &mut rec1)
-        .unwrap();
-    let mut rec2 = RecordingEmitter::new();
-    s.on_timeout(now + Duration::from_secs(32), &mut rec2)
-        .unwrap();
-
-    assert_eq!(rec1.len(), 1);
-    assert_eq!(rec2.len(), 0);
-}
-
-#[test]
-fn inbound_silence_probes_then_disconnects() {
-    let mut s = new_session();
-    let now = Instant::now();
-    establish(&mut s, now);
-
-    let probe_at = now + Duration::from_secs(36);
-    let mut recorder = RecordingEmitter::new();
-    s.on_timeout(probe_at, &mut recorder).unwrap();
-    assert!(recorder.any_mt(b"1"), "must send a TestRequest probe");
-
-    recorder.clear();
-    let ctrl = s.on_timeout(probe_at + HB, &mut recorder).unwrap();
-    assert_eq!(s.state(), State::Disconnected);
-    assert_eq!(
-        ctrl,
-        Control::Disconnected {
-            reason: DisconnectReason::TestRequestTimeout
-        }
-    );
-    assert!(recorder.any_mt(b"5"), "timeout must send a Logout");
-}
-
-#[test]
-fn probe_answered_keeps_session_alive() {
-    let mut s = new_session();
-    let now = Instant::now();
-    establish(&mut s, now);
-
-    let probe_at = now + Duration::from_secs(36);
-    let mut recorder = RecordingEmitter::new();
-    s.on_timeout(probe_at, &mut recorder).unwrap();
-    s.on_heartbeat(
-        HeartbeatIn {
-            echo_id: None,
-            seq: 2,
-            is_poss_dup: false,
-        },
-        probe_at + Duration::from_secs(1),
-        &mut recorder,
-    )
-    .unwrap();
-
-    s.on_timeout(probe_at + HB, &mut recorder).unwrap();
-    assert_eq!(s.state(), State::Active);
-}
-
-/// A peer that answers a probe with a frame we cannot dispatch (e.g. no MsgType)
-/// has still demonstrated liveness, so the probe must be disarmed. Otherwise the
-/// next timeout drops a live session with `TestRequestTimeout`.
-#[test]
-fn probe_answered_by_unprocessable_message_keeps_session_alive() {
-    let mut s = new_session();
-    let now = Instant::now();
-    establish(&mut s, now);
-
-    let probe_at = now + Duration::from_secs(36);
-    let mut recorder = RecordingEmitter::new();
-    s.on_timeout(probe_at, &mut recorder).unwrap();
-    assert!(recorder.any_mt(b"1"), "must send a TestRequest probe");
-
-    recorder.clear();
-    s.on_reject_inbound(
-        RejectInboundIn {
-            seq: 2,
-            ref_tag_id: Some(35),
-            session_reject_reason: 1,
-            is_poss_dup: false,
-        },
-        probe_at + Duration::from_secs(1),
-        &mut recorder,
-    )
-    .unwrap();
-
-    let ctrl = s.on_timeout(probe_at + HB, &mut recorder).unwrap();
-    assert_eq!(s.state(), State::Active);
-    assert_ne!(
-        ctrl,
-        Control::Disconnected {
-            reason: DisconnectReason::TestRequestTimeout
-        }
-    );
-}
-
-#[test]
-fn gap_triggers_resend_request() {
-    let mut s = new_session();
-    let now = Instant::now();
-    establish(&mut s, now);
+    establish(&mut s);
 
     let mut recorder = RecordingEmitter::new();
-    // A gap suppresses the app message but fires a ResendRequest.
+    // A gap suppresses the app message and surfaces GapDetected (the user drives
+    // the ResendRequest); the engine emits nothing but enters Resending.
     let ctrl = s
         .on_app(
             AppIn {
                 seq: 5,
                 is_poss_dup: false,
             },
-            now,
             &mut recorder,
         )
         .unwrap();
     assert_eq!(s.state(), State::Resending);
-    assert_eq!(ctrl, Control::None);
-    assert_eq!(recorder.len(), 1);
-    // ResendRequest (35=2) with BeginSeqNo(7)=2.
-    assert_eq!(recorder.mt(0), b"2");
-    assert_eq!(recorder.num(0, 7), Some(2));
+    assert_eq!(ctrl, Control::GapDetected { begin: 2 });
+    assert_eq!(recorder.len(), 0);
 
     for seq in 2u32..=5 {
         s.on_app(
@@ -454,7 +337,6 @@ fn gap_triggers_resend_request() {
                 seq,
                 is_poss_dup: true,
             },
-            now,
             &mut RecordingEmitter::new(),
         )
         .unwrap();
@@ -466,8 +348,7 @@ fn gap_triggers_resend_request() {
 #[test]
 fn gap_fill_advances_past_admin_messages() {
     let mut s = new_session();
-    let now = Instant::now();
-    establish(&mut s, now);
+    establish(&mut s);
 
     let mut recorder = RecordingEmitter::new();
     s.on_app(
@@ -475,7 +356,6 @@ fn gap_fill_advances_past_admin_messages() {
             seq: 6,
             is_poss_dup: false,
         },
-        now,
         &mut recorder,
     )
     .unwrap();
@@ -490,7 +370,6 @@ fn gap_fill_advances_past_admin_messages() {
                 is_poss_dup: false,
                 is_gap_fill: true,
             },
-            now,
             &mut recorder,
         )
         .unwrap();
@@ -503,8 +382,7 @@ fn gap_fill_advances_past_admin_messages() {
 #[test]
 fn sequence_reset_reset_mode_ignores_seq() {
     let mut s = new_session();
-    let now = Instant::now();
-    establish(&mut s, now);
+    establish(&mut s);
 
     let ctrl = s
         .on_sequence_reset(
@@ -514,7 +392,6 @@ fn sequence_reset_reset_mode_ignores_seq() {
                 is_poss_dup: false,
                 is_gap_fill: false,
             },
-            now,
             &mut RecordingEmitter::new(),
         )
         .unwrap();
@@ -525,10 +402,9 @@ fn sequence_reset_reset_mode_ignores_seq() {
 #[test]
 fn resend_request_surfaces_control() {
     let mut s = new_session();
-    let now = Instant::now();
-    establish(&mut s, now);
-    s.allocate_seq(now).unwrap(); // seq 2
-    s.allocate_seq(now).unwrap(); // seq 3
+    establish(&mut s);
+    s.allocate_seq().unwrap(); // seq 2
+    s.allocate_seq().unwrap(); // seq 3
 
     let mut recorder = RecordingEmitter::new();
     let ctrl = s
@@ -537,7 +413,6 @@ fn resend_request_surfaces_control() {
                 seq: 2,
                 is_poss_dup: false,
             },
-            now,
             &mut recorder,
         )
         .unwrap();
@@ -550,14 +425,12 @@ fn resend_request_surfaces_control() {
 #[test]
 fn seq_too_low_disconnects() {
     let mut s = new_session();
-    let now = Instant::now();
-    establish(&mut s, now);
+    establish(&mut s);
     s.on_app(
         AppIn {
             seq: 2,
             is_poss_dup: false,
         },
-        now,
         &mut RecordingEmitter::new(),
     )
     .unwrap(); // seq 2 consumed
@@ -568,7 +441,6 @@ fn seq_too_low_disconnects() {
                 seq: 2,
                 is_poss_dup: false,
             },
-            now,
             &mut RecordingEmitter::new(),
         )
         .unwrap(); // seq 2 again, no poss_dup
@@ -584,14 +456,12 @@ fn seq_too_low_disconnects() {
 #[test]
 fn poss_dup_below_expected_is_ignored() {
     let mut s = new_session();
-    let now = Instant::now();
-    establish(&mut s, now);
+    establish(&mut s);
     s.on_app(
         AppIn {
             seq: 2,
             is_poss_dup: false,
         },
-        now,
         &mut RecordingEmitter::new(),
     )
     .unwrap();
@@ -603,7 +473,6 @@ fn poss_dup_below_expected_is_ignored() {
                 seq: 2,
                 is_poss_dup: true,
             },
-            now,
             &mut recorder,
         )
         .unwrap(); // poss_dup — silent ignore
@@ -615,11 +484,10 @@ fn poss_dup_below_expected_is_ignored() {
 #[test]
 fn comp_id_mismatch_disconnects() {
     let mut s = new_session();
-    let now = Instant::now();
-    establish(&mut s, now);
+    establish(&mut s);
 
     let mut recorder = RecordingEmitter::new();
-    let ctrl = s.on_comp_id_mismatch(now, &mut recorder).unwrap();
+    let ctrl = s.on_comp_id_mismatch(&mut recorder).unwrap();
     assert_eq!(s.state(), State::Disconnected);
     assert_eq!(
         ctrl,
@@ -633,11 +501,10 @@ fn comp_id_mismatch_disconnects() {
 #[test]
 fn initiated_logout_round_trip() {
     let mut s = new_session();
-    let now = Instant::now();
-    establish(&mut s, now);
+    establish(&mut s);
 
     let mut recorder = RecordingEmitter::new();
-    s.logout(now, &mut recorder).unwrap();
+    s.logout(None, &mut recorder).unwrap();
     assert_eq!(s.state(), State::LogoutPending);
     assert!(recorder.any_mt(b"5"), "logout must send a Logout");
 
@@ -648,7 +515,6 @@ fn initiated_logout_round_trip() {
                 seq: 2,
                 is_poss_dup: false,
             },
-            now,
             &mut recorder,
         )
         .unwrap();
@@ -657,11 +523,13 @@ fn initiated_logout_round_trip() {
 }
 
 #[test]
-fn counterparty_logout_is_confirmed() {
+fn counterparty_logout_surfaces_request() {
     let mut s = new_session();
-    let now = Instant::now();
-    establish(&mut s, now);
+    establish(&mut s);
 
+    // A peer-initiated Logout while Active no longer auto-replies or disconnects:
+    // it surfaces as `Control::Logout` (Message::LogoutRequest) for the user to
+    // answer with `logout(..)`. The session stays Active until the user replies.
     let mut recorder = RecordingEmitter::new();
     let ctrl = s
         .on_logout(
@@ -669,58 +537,23 @@ fn counterparty_logout_is_confirmed() {
                 seq: 2,
                 is_poss_dup: false,
             },
-            now,
             &mut recorder,
         )
         .unwrap();
-    assert_eq!(s.state(), State::Disconnected);
-    assert_eq!(ctrl, Control::LoggedOut);
-    assert_eq!(recorder.len(), 1);
-    assert_eq!(recorder.mt(0), b"5", "must confirm with a Logout");
-}
-
-#[test]
-fn logout_timeout_disconnects() {
-    let mut s = new_session();
-    let now = Instant::now();
-    establish(&mut s, now);
-    let mut recorder = RecordingEmitter::new();
-    s.logout(now, &mut recorder).unwrap();
-
-    recorder.clear();
-    let ctrl = s.on_timeout(now + HB, &mut recorder).unwrap();
-    assert_eq!(s.state(), State::Disconnected);
+    assert_eq!(ctrl, Control::Logout);
+    assert_eq!(recorder.len(), 0, "no engine-driven Logout reply");
+    assert_eq!(s.state(), State::Active);
     assert_eq!(
-        ctrl,
-        Control::Disconnected {
-            reason: DisconnectReason::LogoutTimeout
-        }
-    );
-}
-
-#[test]
-fn logon_timeout_disconnects() {
-    let mut s = new_session();
-    let now = Instant::now();
-    let mut recorder = RecordingEmitter::new();
-    s.connect(now, &mut recorder).unwrap();
-
-    recorder.clear();
-    let ctrl = s.on_timeout(now + HB, &mut recorder).unwrap();
-    assert_eq!(s.state(), State::Disconnected);
-    assert_eq!(
-        ctrl,
-        Control::Disconnected {
-            reason: DisconnectReason::LogonTimeout
-        }
+        s.next_inbound_seq(),
+        3,
+        "the in-sequence Logout advanced inbound"
     );
 }
 
 #[test]
 fn reject_received_surfaces_control() {
     let mut s = new_session();
-    let now = Instant::now();
-    establish(&mut s, now);
+    establish(&mut s);
 
     let ctrl = s
         .on_reject(
@@ -728,7 +561,6 @@ fn reject_received_surfaces_control() {
                 seq: 2,
                 is_poss_dup: false,
             },
-            now,
             &mut RecordingEmitter::new(),
         )
         .unwrap();
@@ -738,18 +570,18 @@ fn reject_received_surfaces_control() {
 #[test]
 fn seq_nums_survive_reconnect() {
     let mut s = new_session();
-    let now = Instant::now();
-    establish(&mut s, now);
-    s.allocate_seq(now).unwrap(); // outbound seq 2
+    establish(&mut s);
+    s.allocate_seq().unwrap(); // outbound seq 2
 
     let mut recorder = RecordingEmitter::new();
-    // counterparty logout at inbound seq 2; session replies (seq 3), disconnects
+    // We initiate the logout (Logout seq 3, → LogoutPending); the counterparty's
+    // in-sequence Logout confirms it and disconnects.
+    s.logout(None, &mut recorder).unwrap();
     s.on_logout(
         LogoutIn {
             seq: 2,
             is_poss_dup: false,
         },
-        now,
         &mut recorder,
     )
     .unwrap();
@@ -757,7 +589,7 @@ fn seq_nums_survive_reconnect() {
     assert_eq!(s.state(), State::Disconnected);
 
     recorder.clear();
-    s.connect(now, &mut recorder).unwrap();
+    s.connect(&mut recorder).unwrap();
     // Reconnect resumes at outbound seq 4 (Logon, no 141).
     assert_eq!(recorder.mt(0), b"A");
     assert!(!recorder.has(0, 141));
@@ -768,9 +600,7 @@ fn seq_nums_survive_reconnect() {
             seq: 3,
             heart_bt_int_s: 30,
             is_reset_seq_num: false,
-            send_reply: false,
         },
-        now,
         &mut recorder,
     )
     .unwrap();
@@ -778,33 +608,8 @@ fn seq_nums_survive_reconnect() {
 }
 
 #[test]
-fn next_timeout_tracks_deadlines() {
-    let mut s = new_session();
-    assert!(s.next_timeout().is_none());
-
-    let now = Instant::now();
-    let mut recorder = RecordingEmitter::new();
-    s.connect(now, &mut recorder).unwrap();
-    assert_eq!(s.next_timeout(), Some(now + HB));
-
-    s.on_logon(
-        LogonIn {
-            seq: 1,
-            heart_bt_int_s: 30,
-            is_reset_seq_num: false,
-            send_reply: false,
-        },
-        now,
-        &mut recorder,
-    )
-    .unwrap();
-    assert_eq!(s.next_timeout(), Some(now + HB));
-}
-
-#[test]
 fn messages_ignored_while_disconnected() {
     let mut s = new_session();
-    let now = Instant::now();
 
     let mut recorder = RecordingEmitter::new();
     let ctrl = s
@@ -813,7 +618,6 @@ fn messages_ignored_while_disconnected() {
                 seq: 1,
                 is_poss_dup: false,
             },
-            now,
             &mut recorder,
         )
         .unwrap();

@@ -334,6 +334,22 @@ impl FixJournal {
         self.next_outbound
     }
 
+    /// Oldest outbound seqnum still replayable from the retained window — the low
+    /// water mark `next_outbound - window`. A ResendRequest whose `BeginSeqNo` is
+    /// below this has rotated off the ring and cannot be replayed as PossDup.
+    /// Saturates to 0 before the ring has filled once (fewer than `window`
+    /// messages sent), so seqnum 1 is always `>= low_water` in that regime.
+    pub fn resend_low_water(&self) -> u32 {
+        self.next_outbound.saturating_sub(self.window as u32)
+    }
+
+    /// Highest outbound seqnum available to replay — the last message stored,
+    /// `next_outbound - 1`. A ResendRequest whose resolved `EndSeqNo` exceeds this
+    /// asks for messages we never sent (the peer is ahead of us).
+    pub fn resend_high_water(&self) -> u32 {
+        self.next_outbound.saturating_sub(1)
+    }
+
     pub fn next_inbound(&self) -> u32 {
         self.next_inbound
     }

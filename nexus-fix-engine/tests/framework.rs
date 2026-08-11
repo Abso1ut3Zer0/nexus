@@ -1,6 +1,5 @@
 use nexus_fix_codec::{FieldView, FixAdminMsg, FixDictionary, FixHeader, FixTimestamp, find_tag};
 use nexus_fix_engine::{FrameReader, MessageReader, MessageWriter};
-use nexus_net::wire::ParserSink;
 
 // ── minimal mock dictionary ──────────────────────────────────────────────────
 
@@ -148,12 +147,15 @@ mod unix_tests {
     /// Encode one admin message into `w` via the production [`Emitter`] with a
     /// no-op `after` (no journaling) — the successor to the deleted
     /// `MessageWriter::encode_admin`.
+    /// Fixed UTC-unix-nanos clock for the deterministic core (2026-05-31…).
+    const NOW: i128 = 1_780_505_733_000_000_000;
+
     fn emit_admin<M: AdminEncode>(
         w: &mut MessageWriter<MockDict>,
         config: &SessionConfig,
         msg: M,
     ) -> Result<(), TransportError> {
-        Emitter::new(w, config, |_seq, _frame| Ok(())).emit(msg)
+        Emitter::new(w, config, NOW, |_seq, _frame| Ok(())).emit(msg)
     }
 
     #[test]
@@ -198,7 +200,15 @@ mod unix_tests {
     fn emit_admin_logout_produces_valid_frame() {
         let mut w: MessageWriter<MockDict> = MessageWriter::new();
         let config = config();
-        emit_admin(&mut w, &config, Logout { seq: 2 }).expect("logout fits");
+        emit_admin(
+            &mut w,
+            &config,
+            Logout {
+                seq: 2,
+                reason: None,
+            },
+        )
+        .expect("logout fits");
         assert!(!w.is_empty());
         let data = w.data();
         assert!(data.starts_with(b"8=FIX.4.4\x01"));
@@ -239,6 +249,7 @@ mod unix_tests {
             SequenceReset {
                 seq: 5,
                 new_seq: 10,
+                gap_fill: true,
             },
         )
         .expect("sequence reset fits");
@@ -253,7 +264,15 @@ mod unix_tests {
     fn emit_admin_uses_dict_begin_string() {
         let mut w: MessageWriter<MockDict> = MessageWriter::new();
         let config = config();
-        emit_admin(&mut w, &config, Logout { seq: 1 }).expect("logout fits");
+        emit_admin(
+            &mut w,
+            &config,
+            Logout {
+                seq: 1,
+                reason: None,
+            },
+        )
+        .expect("logout fits");
         let data = w.data();
         assert!(data.starts_with(b"8=FIX.4.4\x01"));
     }

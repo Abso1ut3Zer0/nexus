@@ -1,12 +1,13 @@
 mod event;
 mod input;
 
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 pub use event::{Control, DisconnectReason, State};
 pub use input::*;
 use nexus_fix_codec::{
-    AdminEncode, Heartbeat, Logon, LogonReset, Logout, Reject, ResendRequest, TestRequest,
+    AdminEncode, AsciiTextStr, Heartbeat, Logon, LogonReset, Logout, Reject, ResendRequest,
+    SequenceReset, TestRequest,
 };
 
 use crate::framework::SessionError;
@@ -46,8 +47,8 @@ pub trait Emit {
 /// `match` + early `return` so the ~8 handler sites that consume an outbound
 /// seqnum share one definition of disconnect-on-exhaustion.
 macro_rules! seq {
-    ($self:ident, $now:ident) => {
-        match $self.bump_outbound($now) {
+    ($self:ident) => {
+        match $self.bump_outbound() {
             Some(s) => s,
             None => return Ok($self.disconnect(DisconnectReason::SeqNumExhausted)),
         }
@@ -56,21 +57,30 @@ macro_rules! seq {
 
 /// Pure FIX session state machine.
 ///
-/// Owns sequence numbers, timers, and state transitions. The framework above
-/// owns the transport, clock, and wire encoding. Each typed handler receives
-/// pre-decoded admin fields plus an [`Emit`] for outbound admin messages,
-/// and returns a [`Control`] verdict. Never allocates.
+/// Owns sequence numbers and state transitions. The framework above owns the
+/// transport, clock, and wire encoding. Each typed handler receives pre-decoded
+/// admin fields plus an [`Emit`] for outbound admin messages, and returns a
+/// [`Control`] verdict. Never allocates.
+///
+/// The session holds **no timers**: keepalive and liveness are the caller's
+/// policy, built from [`heartbeat_interval`](Self::heartbeat_interval). Nothing
+/// here reads a clock.
 pub struct SessionState {
     state: State,
     hb: Duration,
     next_outbound: u32,
     next_inbound: u32,
     gap_high: u32,
-    last_sent: Option<Instant>,
-    last_received: Option<Instant>,
-    test_request_sent: Option<Instant>,
-    state_entered: Option<Instant>,
-    test_req_counter: u64,
+    /// Monotonic `TestReqID(112)` source for user-driven liveness probes
+    /// ([`test_request`](Self::test_request)). Kept separate from
+    /// [`reset_counter`](Self::reset_counter) so a liveness probe issued while a
+    /// sequence-reset handshake is mid-flight cannot perturb the reset's
+    /// drain-echo match.
+    liveness_counter: u64,
+    /// Monotonic `TestReqID(112)` source for the in-session reset handshake
+    /// ([`reset_sequence`](Self::reset_sequence)); the drain confirm in
+    /// [`on_heartbeat`](Self::on_heartbeat) matches against exactly this value.
+    reset_counter: u64,
 }
 
 impl SessionState {
@@ -82,12 +92,18 @@ impl SessionState {
             next_outbound: 1,
             next_inbound: 1,
             gap_high: 0,
-            last_sent: None,
-            last_received: None,
-            test_request_sent: None,
-            state_entered: None,
-            test_req_counter: 0,
+            liveness_counter: 0,
+            reset_counter: 0,
         }
+    }
+
+    /// The negotiated heartbeat interval (`HeartBtInt(108)`), updated to the
+    /// peer's value at Logon.
+    ///
+    /// The session holds no timers; this is the one value it exposes so the
+    /// caller can build their own heartbeat ticker and peer-liveness timers.
+    pub const fn heartbeat_interval(&self) -> Duration {
+        self.hb
     }
 
     /// Current lifecycle state.
@@ -112,12 +128,11 @@ impl SessionState {
         self.next_inbound = next_inbound;
     }
 
-    /// Allocates the next outbound sequence number for an application message
-    /// and updates the outbound activity timestamp used by the heartbeat timer.
+    /// Allocates the next outbound sequence number for an application message.
     ///
     /// Returns `Err(SeqNumExhausted)` when `next_outbound` has reached `i32::MAX`.
     /// Returns `Err(ResetInProgress)` while an in-session reset handshake is active.
-    pub fn allocate_seq(&mut self, now: Instant) -> Result<u32, SessionError> {
+    pub fn allocate_seq(&mut self) -> Result<u32, SessionError> {
         if matches!(
             self.state,
             State::AwaitingResetDrain | State::AwaitingResetAck
@@ -129,61 +144,34 @@ impl SessionState {
         }
         let s = self.next_outbound;
         self.next_outbound += 1;
-        self.last_sent = Some(now);
         Ok(s)
     }
 
-    /// Bumps the next outbound sequence number, updating the outbound activity
-    /// timestamp. Returns `None` when exhausted (`next_outbound > i32::MAX`); the
-    /// caller decides the disconnect (see the [`seq!`] macro). No internal side
-    /// effect on exhaustion.
-    fn bump_outbound(&mut self, now: Instant) -> Option<u32> {
+    /// Bumps the next outbound sequence number. Returns `None` when exhausted
+    /// (`next_outbound > i32::MAX`); the caller decides the disconnect (see the
+    /// [`seq!`] macro). No internal side effect on exhaustion.
+    fn bump_outbound(&mut self) -> Option<u32> {
         if self.next_outbound > SEQ_MAX {
             return None;
         }
         let s = self.next_outbound;
         self.next_outbound += 1;
-        self.last_sent = Some(now);
         Some(s)
-    }
-
-    /// Earliest instant at which [`on_timeout`](Self::on_timeout) has work.
-    pub fn next_timeout(&self) -> Option<Instant> {
-        match self.state {
-            State::Disconnected => None,
-            State::LogonSent
-            | State::LogoutPending
-            | State::AwaitingResetDrain
-            | State::AwaitingResetAck => self.state_entered.map(|t| t + self.hb),
-            State::Active | State::Resending => {
-                let outbound = self.last_sent.map(|t| t + self.hb);
-                let inbound = self.test_request_sent.map_or_else(
-                    || self.last_received.map(|t| t + self.inbound_grace()),
-                    |t| Some(t + self.hb),
-                );
-                match (outbound, inbound) {
-                    (Some(a), Some(b)) => Some(a.min(b)),
-                    (a, b) => a.or(b),
-                }
-            }
-        }
     }
 
     /// Initiates a session: sends a Logon. No-op if not disconnected.
     ///
     /// Emits: Logon.
-    pub fn connect<E: Emit>(&mut self, now: Instant, emitter: &mut E) -> Result<Control, E::Error> {
+    pub fn connect<E: Emit>(&mut self, emitter: &mut E) -> Result<Control, E::Error> {
         if self.state != State::Disconnected {
             return Ok(Control::None);
         }
-        let seq = seq!(self, now);
+        let seq = seq!(self);
         emitter.emit(Logon {
             seq,
             heart_bt_int_s: self.hb.as_secs() as u32,
         })?;
         self.state = State::LogonSent;
-        self.state_entered = Some(now);
-        self.last_received = Some(now);
         Ok(Control::None)
     }
 
@@ -192,11 +180,7 @@ impl SessionState {
     /// if not disconnected.
     ///
     /// Emits: LogonReset.
-    pub fn connect_reset<E: Emit>(
-        &mut self,
-        now: Instant,
-        emitter: &mut E,
-    ) -> Result<Control, E::Error>
+    pub fn connect_reset<E: Emit>(&mut self, emitter: &mut E) -> Result<Control, E::Error>
     where
         E::Error: From<SessionError>,
     {
@@ -205,14 +189,12 @@ impl SessionState {
         }
         self.next_outbound = 1;
         self.next_inbound = 1;
-        let seq = seq!(self, now);
+        let seq = seq!(self);
         emitter.emit(LogonReset {
             seq,
             heart_bt_int_s: self.hb.as_secs() as u32,
         })?;
         self.state = State::LogonSent;
-        self.state_entered = Some(now);
-        self.last_received = Some(now);
         Ok(Control::None)
     }
 
@@ -225,203 +207,333 @@ impl SessionState {
     /// Returns `Err(SessionError::InvalidState)` if not Active.
     ///
     /// Emits: TestRequest.
-    pub fn reset_sequence<E: Emit>(
-        &mut self,
-        now: Instant,
-        emitter: &mut E,
-    ) -> Result<Control, E::Error>
+    pub fn reset_sequence<E: Emit>(&mut self, emitter: &mut E) -> Result<Control, E::Error>
     where
         E::Error: From<SessionError>,
     {
         if self.state != State::Active {
             return Err(SessionError::InvalidState.into());
         }
-        self.test_req_counter += 1;
-        let seq = seq!(self, now);
+        self.reset_counter += 1;
+        let seq = seq!(self);
         emitter.emit(TestRequest {
             seq,
-            id: self.test_req_counter,
+            id: self.reset_counter,
         })?;
-        self.test_request_sent = Some(now);
         self.state = State::AwaitingResetDrain;
-        self.state_entered = Some(now);
         Ok(Control::None)
     }
 
     /// Initiates a clean logout. No-op unless in an active state.
     ///
+    /// `reason`, if given, rides the wire as `Text(58)`.
+    ///
     /// Emits: Logout.
-    pub fn logout<E: Emit>(&mut self, now: Instant, emitter: &mut E) -> Result<Control, E::Error> {
+    pub fn logout<E: Emit>(
+        &mut self,
+        reason: Option<&AsciiTextStr>,
+        emitter: &mut E,
+    ) -> Result<Control, E::Error> {
         if !matches!(self.state, State::Active | State::Resending) {
             return Ok(Control::None);
         }
-        let seq = seq!(self, now);
-        emitter.emit(Logout { seq })?;
+        let seq = seq!(self);
+        emitter.emit(Logout { seq, reason })?;
         self.state = State::LogoutPending;
-        self.state_entered = Some(now);
         Ok(Control::None)
     }
 
-    /// Fires due timers: logon/logout/reset timeouts, heartbeat emission, and
-    /// TestRequest probing. Call at or after [`next_timeout`](Self::next_timeout).
+    /// Sends a Heartbeat (35=0), optionally echoing a peer's `TestReqID(112)`.
     ///
-    /// Returns [`Control::Disconnected`] if a timeout drove a disconnect,
-    /// otherwise [`Control::None`].
+    /// The engine no longer auto-emits a Heartbeat when answering a TestRequest;
+    /// this is the user-driven replacement. It allocates the next outbound seqnum and
+    /// emits, but performs no state transition and no sequence validation — the
+    /// caller decides when to send (a keepalive tick, or a manual reply). `echo`
+    /// is the raw `TestReqID` bytes to mirror back, or `None` for an unsolicited
+    /// keepalive.
     ///
-    /// Emits: Heartbeat | TestRequest | Logout.
-    pub fn on_timeout<E: Emit>(
+    /// Emits: Heartbeat.
+    pub fn heartbeat<E: Emit>(
         &mut self,
-        now: Instant,
+        echo: Option<&[u8]>,
         emitter: &mut E,
     ) -> Result<Control, E::Error> {
-        match self.state {
-            State::Disconnected => {}
-            State::LogonSent => {
-                if let Some(t) = self.state_entered
-                    && now.duration_since(t) >= self.hb
-                {
-                    return Ok(self.disconnect(DisconnectReason::LogonTimeout));
-                }
-            }
-            State::LogoutPending => {
-                if let Some(t) = self.state_entered
-                    && now.duration_since(t) >= self.hb
-                {
-                    return Ok(self.disconnect(DisconnectReason::LogoutTimeout));
-                }
-            }
-            State::AwaitingResetDrain | State::AwaitingResetAck => {
-                if let Some(t) = self.state_entered
-                    && now.duration_since(t) >= self.hb
-                {
-                    return Ok(self.disconnect(DisconnectReason::ResetTimeout));
-                }
-            }
-            State::Active | State::Resending => {
-                if let Some(t) = self.test_request_sent {
-                    if now.duration_since(t) >= self.hb {
-                        let seq = seq!(self, now);
-                        emitter.emit(Logout { seq })?;
-                        return Ok(self.disconnect(DisconnectReason::TestRequestTimeout));
-                    }
-                } else if let Some(t) = self.last_received
-                    && now.duration_since(t) >= self.inbound_grace()
-                {
-                    self.test_req_counter += 1;
-                    let seq = seq!(self, now);
-                    emitter.emit(TestRequest {
-                        seq,
-                        id: self.test_req_counter,
-                    })?;
-                    self.test_request_sent = Some(now);
-                }
-                if let Some(t) = self.last_sent
-                    && now.duration_since(t) >= self.hb
-                {
-                    let seq = seq!(self, now);
-                    emitter.emit(Heartbeat { seq, echo: None })?;
-                }
-            }
-        }
+        let seq = seq!(self);
+        emitter.emit(Heartbeat { seq, echo })?;
         Ok(Control::None)
     }
 
-    /// Handles a received Logon.
+    /// Sends a TestRequest (35=1) carrying a fresh `TestReqID(112)`.
     ///
-    /// Set `send_reply = true` when acting as acceptor; the session emits a Logon
-    /// reply via `emitter`. Pass `false` for the initiator's incoming reply. Returns
-    /// [`Control::Logon`] with `acknowledged = !send_reply`.
+    /// The user-driven liveness probe (contract timer 2): it allocates the next
+    /// outbound seqnum, bumps the monotonic liveness `TestReqID` counter, and
+    /// emits. No state transition — unlike [`reset_sequence`](Self::reset_sequence),
+    /// which also sends a TestRequest but as the first leg of a reset handshake and
+    /// off a *separate* counter. Peer liveness is proven by *any* inbound message,
+    /// so the caller never needs to match the returned id.
     ///
-    /// Emits: Logon | LogonReset | Logout | ResendRequest.
+    /// Emits: TestRequest.
+    pub fn test_request<E: Emit>(&mut self, emitter: &mut E) -> Result<Control, E::Error> {
+        self.liveness_counter += 1;
+        let seq = seq!(self);
+        emitter.emit(TestRequest {
+            seq,
+            id: self.liveness_counter,
+        })?;
+        Ok(Control::None)
+    }
+
+    /// Sends a ResendRequest (35=2) covering `[begin, ∞)` (encoded `EndSeqNo(16)=0`).
+    ///
+    /// The engine no longer auto-emits a ResendRequest on a detected gap; this is
+    /// the user-driven replacement. It allocates the next outbound seqnum and
+    /// emits. No state transition — the caller drives recovery. `begin` is the
+    /// first missing inbound seqnum.
+    ///
+    /// Emits: ResendRequest.
+    pub fn resend_request<E: Emit>(
+        &mut self,
+        begin: u32,
+        emitter: &mut E,
+    ) -> Result<Control, E::Error> {
+        let seq = seq!(self);
+        emitter.emit(ResendRequest { seq, begin })?;
+        Ok(Control::None)
+    }
+
+    /// Sends a SequenceReset-Reset (35=4, `GapFillFlag=N`) forcing the peer's
+    /// expected inbound seqnum to `new_seq` unconditionally — the "force the peer
+    /// forward" answer to a [`Control::ResendOutOfRange`] whose `EndSeqNo` exceeds
+    /// what we sent (the peer is ahead of us).
+    ///
+    /// Allocates the next outbound seqnum for `MsgSeqNum(34)` and advances it, like
+    /// every other outbound verb (a Reset-mode SequenceReset is a fresh outbound
+    /// admin; the receiver ignores its `MsgSeqNum`). No state transition. Distinct
+    /// from [`reset_sequence`](Self::reset_sequence), the in-session reset
+    /// *handshake* (a TestRequest/Logon exchange), and from
+    /// [`gap_fill`](Self::gap_fill), the GapFill-mode SequenceReset.
+    ///
+    /// Emits: SequenceReset.
+    pub fn sequence_reset<E: Emit>(
+        &mut self,
+        new_seq: u32,
+        emitter: &mut E,
+    ) -> Result<Control, E::Error> {
+        let seq = seq!(self);
+        emitter.emit(SequenceReset {
+            seq,
+            new_seq,
+            gap_fill: false,
+        })?;
+        Ok(Control::None)
+    }
+
+    /// Sends a SequenceReset-GapFill (35=4, `GapFillFlag=Y` + `PossDupFlag=Y`)
+    /// standing in for the skipped outbound range `[from_seq, new_seq)` — the answer
+    /// to a [`Control::ResendOutOfRange`] whose `BeginSeqNo` rotated off the replay
+    /// window.
+    ///
+    /// **Unlike every other outbound verb it does NOT allocate or advance the
+    /// outbound seqnum.** A gap-fill carries the seqnum of the first message it
+    /// replaces (`from_seq` → `MsgSeqNum(34)`) — the seqnum the peer is waiting on —
+    /// so consuming a fresh one would open a new gap on the peer instead of closing
+    /// theirs. `new_seq` is the `NewSeqNo(36)` the peer should expect next. The user
+    /// answers `ResendOutOfRange { begin, .. }` with `gap_fill(begin, <resume
+    /// seqnum>)`; `from_seq`/`new_seq` are their recovery policy.
+    ///
+    /// Emits: SequenceReset (at `from_seq`, no seqnum consumed).
+    pub fn gap_fill<E: Emit>(
+        &mut self,
+        from_seq: u32,
+        new_seq: u32,
+        emitter: &mut E,
+    ) -> Result<Control, E::Error> {
+        emitter.emit(SequenceReset {
+            seq: from_seq,
+            new_seq,
+            gap_fill: true,
+        })?;
+        Ok(Control::None)
+    }
+
+    /// Handles a received Logon — dispatched on the current [`State`], since a
+    /// Logon means a different thing depending on where the session is:
+    ///
+    /// - `LogonSent` — the *initiator's* incoming ack. Establishment seq handling
+    ///   (too-low → Logout + disconnect, gap → ResendRequest, in-sync → `Active`)
+    ///   stays engine-driven here — it is bringing the session up, not steady-state
+    ///   flow — and returns [`Control::Logon`] with `acknowledged = true`.
+    /// - `Disconnected` — the *acceptor's* incoming opening Logon. Surfaced as
+    ///   [`Control::LogonRequest`] / [`Control::LogonResetRequest`]; the user answers
+    ///   via [`accept_logon`](Self::accept_logon) / [`reject_logon`](Self::reject_logon).
+    ///   No emit, no transition.
+    /// - `Active` / `Resending` with `141=Y` — a peer-initiated in-session reset,
+    ///   surfaced the same way (`seq` must be 1).
+    /// - `AwaitingResetAck` — the peer's confirmation of a reset *we* initiated.
+    ///
+    /// The initiator/acceptor role is read from the state (`LogonSent` = we sent the
+    /// opening Logon), so no separate flag is needed.
+    ///
+    /// Emits (initiator-establishment mechanism only): Logout | ResendRequest.
     pub fn on_logon<E: Emit>(
         &mut self,
         msg: LogonIn,
-        now: Instant,
         emitter: &mut E,
     ) -> Result<Control, E::Error> {
         let LogonIn {
             seq,
             heart_bt_int_s,
             is_reset_seq_num,
-            send_reply,
         } = msg;
-        // Acceptor sends its own Logon reply; the initiator receives an ack.
-        // `acknowledged` is the mirror of `send_reply`.
-        let acknowledged = !send_reply;
-        self.last_received = Some(now);
-        self.test_request_sent = None;
 
-        // Reset ack: we initiated the reset and peer is confirming.
-        if self.state == State::AwaitingResetAck {
-            if !is_reset_seq_num || seq != 1 {
-                return Ok(self.disconnect(DisconnectReason::ProtocolViolation));
+        match self.state {
+            // We initiated an in-session reset; this is the peer's confirming
+            // Logon(141=Y, seq=1). No emit.
+            State::AwaitingResetAck => {
+                if !is_reset_seq_num || seq != 1 {
+                    return Ok(self.disconnect(DisconnectReason::ProtocolViolation));
+                }
+                self.hb = Duration::from_secs(u64::from(heart_bt_int_s));
+                self.next_inbound = 2;
+                self.state = State::Active;
+                Ok(Control::Logon { acknowledged: true })
             }
-            self.hb = Duration::from_secs(u64::from(heart_bt_int_s));
-            self.next_inbound = 2;
-            self.state = State::Active;
-            self.state_entered = None;
-            return Ok(Control::Logon { acknowledged });
+
+            // We sent the opening Logon; this is the ack. Establishment seq
+            // handling stays engine-driven (bringing the session up, not
+            // steady-state flow — only steady-state gaps surface as GapDetected).
+            State::LogonSent => {
+                if is_reset_seq_num {
+                    self.next_inbound = 1;
+                }
+                self.hb = Duration::from_secs(u64::from(heart_bt_int_s));
+
+                if seq < self.next_inbound {
+                    let logout_seq = seq!(self);
+                    emitter.emit(Logout {
+                        seq: logout_seq,
+                        reason: None,
+                    })?;
+                    return Ok(self.disconnect(DisconnectReason::SeqNumTooLow));
+                }
+                if seq > self.next_inbound {
+                    self.gap_high = seq;
+                    let rr_seq = seq!(self);
+                    emitter.emit(ResendRequest {
+                        seq: rr_seq,
+                        begin: self.next_inbound,
+                    })?;
+                    self.state = State::Resending;
+                } else {
+                    self.next_inbound += 1;
+                    self.state = State::Active;
+                }
+                Ok(Control::Logon { acknowledged: true })
+            }
+
+            // Fresh connection; we are the acceptor. Surface the decision — no
+            // emit, no transition; `accept_logon` does the reply + advance on the
+            // user's call.
+            State::Disconnected => Ok(if is_reset_seq_num {
+                Control::LogonResetRequest {
+                    seq,
+                    heart_bt_int_s,
+                }
+            } else {
+                Control::LogonRequest {
+                    seq,
+                    heart_bt_int_s,
+                }
+            }),
+
+            // Established; a Logon(141=Y) now is a peer-initiated in-session reset.
+            // Surface it the same way — `seq` must be 1.
+            State::Active | State::Resending if is_reset_seq_num => {
+                if seq != 1 {
+                    return Ok(self.disconnect(DisconnectReason::ProtocolViolation));
+                }
+                Ok(Control::LogonResetRequest {
+                    seq,
+                    heart_bt_int_s,
+                })
+            }
+
+            // Anything else — a non-reset Logon while active, a logout in flight,
+            // mid-reset drain: nothing to answer.
+            _ => Ok(Control::None),
         }
+    }
 
-        // Peer-initiated reset while we are active.
-        if matches!(self.state, State::Active | State::Resending) && is_reset_seq_num {
-            if seq != 1 {
-                return Ok(self.disconnect(DisconnectReason::ProtocolViolation));
-            }
+    /// Accepts a counterparty-initiated Logon surfaced as
+    /// [`Control::LogonRequest`] / [`Control::LogonResetRequest`]: emits the reply
+    /// (a Logon, or a LogonReset when `is_reset`), applies the negotiated
+    /// `HeartBtInt`, and advances the session — the reply + state work `on_logon`
+    /// used to do inline, now gated on the user's decision.
+    ///
+    /// Dispatches on the current state: from `Disconnected` this is an acceptor
+    /// opening a session (with the establishment seq-check preserved: a gap emits a
+    /// ResendRequest and enters `Resending`, a too-low seqnum emits a Logout and
+    /// disconnects); from `Active`/`Resending` it is the reply leg of a
+    /// peer-initiated in-session reset.
+    ///
+    /// `seq`/`heart_bt_int_s`/`is_reset` are the fields captured from the peer
+    /// Logon when the decision was surfaced.
+    ///
+    /// Emits: Logon | LogonReset | Logout | ResendRequest.
+    pub fn accept_logon<E: Emit>(
+        &mut self,
+        seq: u32,
+        heart_bt_int_s: u32,
+        is_reset: bool,
+        emitter: &mut E,
+    ) -> Result<Control, E::Error> {
+        // Peer-initiated reset while active: the decision was surfaced from
+        // Active/Resending, and `seq == 1` was already validated by `on_logon`.
+        if matches!(self.state, State::Active | State::Resending) {
             self.hb = Duration::from_secs(u64::from(heart_bt_int_s));
             self.next_outbound = 1;
-            let reply_seq = seq!(self, now);
+            let reply_seq = seq!(self);
             emitter.emit(LogonReset {
                 seq: reply_seq,
                 heart_bt_int_s: self.hb.as_secs() as u32,
             })?;
             self.next_inbound = 2;
             self.state = State::Active;
-            return Ok(Control::Logon { acknowledged });
+            return Ok(Control::Logon {
+                acknowledged: false,
+            });
         }
 
-        // Normal logon: acceptor or initiator's ack.
-        let valid = if send_reply {
-            self.state == State::Disconnected
-        } else {
-            self.state == State::LogonSent
-        };
-        if !valid {
-            return Ok(Control::Logon { acknowledged });
-        }
-
-        if is_reset_seq_num {
+        // Disconnected acceptor: reply + establishment seq-check.
+        if is_reset {
             self.next_inbound = 1;
-            if send_reply {
-                self.next_outbound = 1;
-            }
+            self.next_outbound = 1;
         }
         self.hb = Duration::from_secs(u64::from(heart_bt_int_s));
-
-        if send_reply {
-            let reply_seq = seq!(self, now);
-            if is_reset_seq_num {
-                emitter.emit(LogonReset {
-                    seq: reply_seq,
-                    heart_bt_int_s,
-                })?;
-            } else {
-                emitter.emit(Logon {
-                    seq: reply_seq,
-                    heart_bt_int_s,
-                })?;
-            }
+        let reply_seq = seq!(self);
+        if is_reset {
+            emitter.emit(LogonReset {
+                seq: reply_seq,
+                heart_bt_int_s,
+            })?;
+        } else {
+            emitter.emit(Logon {
+                seq: reply_seq,
+                heart_bt_int_s,
+            })?;
         }
 
         if seq < self.next_inbound {
-            let logout_seq = seq!(self, now);
-            emitter.emit(Logout { seq: logout_seq })?;
+            let logout_seq = seq!(self);
+            emitter.emit(Logout {
+                seq: logout_seq,
+                reason: None,
+            })?;
             return Ok(self.disconnect(DisconnectReason::SeqNumTooLow));
         }
-
         if seq > self.next_inbound {
             self.gap_high = seq;
-            let rr_seq = seq!(self, now);
+            let rr_seq = seq!(self);
             emitter.emit(ResendRequest {
                 seq: rr_seq,
                 begin: self.next_inbound,
@@ -431,21 +543,44 @@ impl SessionState {
             self.next_inbound += 1;
             self.state = State::Active;
         }
-        Ok(Control::Logon { acknowledged })
+        Ok(Control::Logon {
+            acknowledged: false,
+        })
+    }
+
+    /// Rejects a counterparty-initiated Logon: emits a Logout and disconnects.
+    ///
+    /// The user's policy hook for refusing a session (e.g. failed authentication).
+    /// Answers a [`Control::LogonRequest`] / [`Control::LogonResetRequest`] the
+    /// user declined. `reason`, if given, rides the wire as `Text(58)`.
+    ///
+    /// Emits: Logout.
+    pub fn reject_logon<E: Emit>(
+        &mut self,
+        reason: Option<&AsciiTextStr>,
+        emitter: &mut E,
+    ) -> Result<Control, E::Error> {
+        let seq = seq!(self);
+        emitter.emit(Logout { seq, reason })?;
+        self.state = State::Disconnected;
+        Ok(Control::None)
     }
 
     /// Handles a received Logout.
     ///
-    /// Emits (some via `validate_seq`): ResendRequest | Logout.
+    /// A Logout confirming *our* initiated logout (state `LogoutPending`, in
+    /// sequence) completes the exchange and surfaces as [`Control::LoggedOut`]. A
+    /// peer-*initiated* Logout while `Active`/`Resending` surfaces as
+    /// [`Control::Logout`] ([`Message::LogoutRequest`](crate::Message::LogoutRequest));
+    /// the reply is now user-driven (`logout(..)`), no longer engine-emitted.
+    ///
+    /// Emits (only the too-low Logout via `validate_seq`): Logout.
     pub fn on_logout<E: Emit>(
         &mut self,
         msg: LogoutIn,
-        now: Instant,
         emitter: &mut E,
     ) -> Result<Control, E::Error> {
         let LogoutIn { seq, is_poss_dup } = msg;
-        self.last_received = Some(now);
-        self.test_request_sent = None;
         if self.state == State::LogonSent {
             return Ok(self.logged_out());
         }
@@ -453,23 +588,22 @@ impl SessionState {
             self.state,
             State::Active | State::Resending | State::LogoutPending
         ) {
-            match self.validate_seq(seq, is_poss_dup, now, emitter)? {
-                // In-sequence Logout: complete the exchange and disconnect.
+            match self.validate_seq(seq, is_poss_dup, emitter)? {
                 Control::Proceed => {
-                    if self.state != State::LogoutPending {
-                        let logout_seq = seq!(self, now);
-                        emitter.emit(Logout { seq: logout_seq })?;
+                    if self.state == State::LogoutPending {
+                        // Confirm of our own initiated logout: terminal.
+                        return Ok(self.logged_out());
                     }
-                    return Ok(self.logged_out());
+                    // Peer-initiated logout: surface it; the user replies with
+                    // `logout(..)`. No auto-reply, no state change.
+                    return Ok(Control::Logout);
                 }
-                // Gap/duplicate: suppressed (ResendRequest already emitted, or a
-                // PossDup-too-low frame ignored). Too-low without PossDup:
-                // disconnect. Neither surfaces the Logout.
+                // Gap (GapDetected) / duplicate (None) / too-low (Disconnected):
+                // propagated; none surfaces the Logout.
                 ctrl => return Ok(ctrl),
             }
         }
-        // Out-of-state (e.g. mid-reset) Logout. The in-sequence path above always
-        // disconnects, so this is the only path that surfaces a Logout message.
+        // Out-of-state (e.g. mid-reset) Logout — surfaced for the user to answer.
         Ok(Control::Logout)
     }
 
@@ -479,7 +613,6 @@ impl SessionState {
     pub fn on_heartbeat<E: Emit>(
         &mut self,
         msg: HeartbeatIn,
-        now: Instant,
         emitter: &mut E,
     ) -> Result<Control, E::Error> {
         let HeartbeatIn {
@@ -487,26 +620,23 @@ impl SessionState {
             seq,
             is_poss_dup,
         } = msg;
-        self.last_received = Some(now);
-        self.test_request_sent = None;
 
         if self.state == State::AwaitingResetDrain {
-            let echo_matches = echo_id == Some(self.test_req_counter);
+            let echo_matches = echo_id == Some(self.reset_counter);
             if echo_matches && seq == self.next_inbound {
                 // Drain confirmed: all in-flight messages received, send LogonReset.
                 self.next_inbound += 1;
                 self.next_outbound = 1;
-                let logon_seq = seq!(self, now);
+                let logon_seq = seq!(self);
                 emitter.emit(LogonReset {
                     seq: logon_seq,
                     heart_bt_int_s: self.hb.as_secs() as u32,
                 })?;
                 self.state = State::AwaitingResetAck;
-                self.state_entered = Some(now);
                 return Ok(Control::Heartbeat);
             }
             // Not the drain confirm: validate sequence normally.
-            match self.validate_seq(seq, is_poss_dup, now, emitter)? {
+            match self.validate_seq(seq, is_poss_dup, emitter)? {
                 Control::Proceed => self.check_resend_done(),
                 // Gap/duplicate: suppressed, not surfaced.
                 ctrl => return Ok(ctrl),
@@ -520,7 +650,7 @@ impl SessionState {
         ) {
             return Ok(Control::Heartbeat);
         }
-        match self.validate_seq(seq, is_poss_dup, now, emitter)? {
+        match self.validate_seq(seq, is_poss_dup, emitter)? {
             Control::Proceed => self.check_resend_done(),
             // Gap/duplicate: suppressed, not surfaced.
             ctrl => return Ok(ctrl),
@@ -528,20 +658,21 @@ impl SessionState {
         Ok(Control::Heartbeat)
     }
 
-    /// Handles a received TestRequest. Replies with a Heartbeat echoing the TestReqID.
+    /// Handles a received TestRequest.
     ///
-    /// Emits (some via `validate_seq`): Heartbeat | ResendRequest | Logout.
+    /// The engine no longer auto-emits the Heartbeat echo: an in-sequence
+    /// TestRequest surfaces as [`Control::TestRequest`]
+    /// ([`Message::TestRequest`](crate::Message::TestRequest) carrying the
+    /// `TestReqID`), and the user answers with `heartbeat(Some(id))`. A gap/dup is
+    /// a recovery event, propagated (never surfaced).
+    ///
+    /// Emits (only the too-low Logout via `validate_seq`): Logout.
     pub fn on_test_request<E: Emit>(
         &mut self,
-        msg: TestRequestIn<'_>,
-        now: Instant,
+        msg: TestRequestIn,
         emitter: &mut E,
     ) -> Result<Control, E::Error> {
-        let TestRequestIn {
-            test_req_id,
-            seq,
-            is_poss_dup,
-        } = msg;
+        let TestRequestIn { seq, is_poss_dup } = msg;
         if !matches!(
             self.state,
             State::Active
@@ -552,20 +683,9 @@ impl SessionState {
         ) {
             return Ok(Control::TestRequest);
         }
-        self.last_received = Some(now);
-        self.test_request_sent = None;
-        match self.validate_seq(seq, is_poss_dup, now, emitter)? {
-            // In-sequence only: reply with the echoing Heartbeat. A gap/dup must
-            // not trigger a Heartbeat reply — it is a recovery event.
-            Control::Proceed => {
-                let hb_seq = seq!(self, now);
-                emitter.emit(Heartbeat {
-                    seq: hb_seq,
-                    echo: Some(test_req_id),
-                })?;
-                self.check_resend_done();
-            }
-            // Gap/duplicate: suppressed, not surfaced.
+        match self.validate_seq(seq, is_poss_dup, emitter)? {
+            Control::Proceed => self.check_resend_done(),
+            // Gap (GapDetected) / duplicate (None): propagated, not surfaced.
             ctrl => return Ok(ctrl),
         }
         Ok(Control::TestRequest)
@@ -581,7 +701,6 @@ impl SessionState {
     pub fn on_resend_request<E: Emit>(
         &mut self,
         msg: ResendRequestIn,
-        now: Instant,
         emitter: &mut E,
     ) -> Result<Control, E::Error> {
         let ResendRequestIn { seq, is_poss_dup } = msg;
@@ -591,9 +710,7 @@ impl SessionState {
         ) {
             return Ok(Control::None);
         }
-        self.last_received = Some(now);
-        self.test_request_sent = None;
-        match self.validate_seq(seq, is_poss_dup, now, emitter)? {
+        match self.validate_seq(seq, is_poss_dup, emitter)? {
             Control::Proceed => {
                 self.check_resend_done();
                 Ok(Control::ResendRequest)
@@ -613,7 +730,6 @@ impl SessionState {
     pub fn on_sequence_reset<E: Emit>(
         &mut self,
         msg: SequenceResetIn,
-        now: Instant,
         emitter: &mut E,
     ) -> Result<Control, E::Error> {
         let SequenceResetIn {
@@ -628,14 +744,12 @@ impl SessionState {
         ) {
             return Ok(Control::SequenceReset);
         }
-        self.last_received = Some(now);
-        self.test_request_sent = None;
         if is_gap_fill {
             // Honor the frame's PossDupFlag: a below-expected GapFill carrying
             // PossDup=Y is a benign duplicate (the overlapping-ResendRequest
             // race) — discarded, not a disconnect (FIX 4.4 / QuickFIX). Without
             // PossDup it is a genuine too-low error.
-            match self.validate_seq(seq, is_poss_dup, now, emitter)? {
+            match self.validate_seq(seq, is_poss_dup, emitter)? {
                 // In-sequence GapFill only: advance next_inbound to NewSeqNo. A
                 // gap/dup must not advance — it is a recovery event.
                 Control::Proceed => {
@@ -650,12 +764,13 @@ impl SessionState {
         } else {
             // Reset mode: ignores MsgSeqNum. A backward/zero NewSeqNo is rejected.
             if new_seq == 0 || new_seq < self.next_inbound {
-                if let Some(reject_seq) = self.bump_outbound(now) {
+                if let Some(reject_seq) = self.bump_outbound() {
                     emitter.emit(Reject {
                         seq: reject_seq,
                         ref_seq_num: seq,
                         ref_tag_id: Some(36),
                         session_reject_reason: 5,
+                        reason: None,
                     })?;
                 }
                 return Ok(Control::SequenceReset);
@@ -672,7 +787,6 @@ impl SessionState {
     pub fn on_reject<E: Emit>(
         &mut self,
         msg: RejectIn,
-        now: Instant,
         emitter: &mut E,
     ) -> Result<Control, E::Error> {
         let RejectIn { seq, is_poss_dup } = msg;
@@ -682,9 +796,7 @@ impl SessionState {
         ) {
             return Ok(Control::Reject);
         }
-        self.last_received = Some(now);
-        self.test_request_sent = None;
-        match self.validate_seq(seq, is_poss_dup, now, emitter)? {
+        match self.validate_seq(seq, is_poss_dup, emitter)? {
             Control::Proceed => self.check_resend_done(),
             // Gap/duplicate: suppressed, not surfaced.
             ctrl => return Ok(ctrl),
@@ -698,12 +810,7 @@ impl SessionState {
     /// surface), or [`Control::Disconnected`] on a too-low seqnum.
     ///
     /// Emits (via `validate_seq`): ResendRequest | Logout.
-    pub fn on_app<E: Emit>(
-        &mut self,
-        msg: AppIn,
-        now: Instant,
-        emitter: &mut E,
-    ) -> Result<Control, E::Error> {
+    pub fn on_app<E: Emit>(&mut self, msg: AppIn, emitter: &mut E) -> Result<Control, E::Error> {
         let AppIn { seq, is_poss_dup } = msg;
         if !matches!(
             self.state,
@@ -715,9 +822,7 @@ impl SessionState {
         ) {
             return Ok(Control::None);
         }
-        self.last_received = Some(now);
-        self.test_request_sent = None;
-        match self.validate_seq(seq, is_poss_dup, now, emitter)? {
+        match self.validate_seq(seq, is_poss_dup, emitter)? {
             Control::Proceed => {}
             ctrl => return Ok(ctrl),
         }
@@ -735,7 +840,6 @@ impl SessionState {
     pub fn on_reject_inbound<E: Emit>(
         &mut self,
         msg: RejectInboundIn,
-        now: Instant,
         emitter: &mut E,
     ) -> Result<Control, E::Error> {
         let RejectInboundIn {
@@ -750,20 +854,19 @@ impl SessionState {
         ) {
             return Ok(Control::None);
         }
-        self.last_received = Some(now);
-        self.test_request_sent = None;
-        match self.validate_seq(seq, is_poss_dup, now, emitter)? {
+        match self.validate_seq(seq, is_poss_dup, emitter)? {
             Control::Proceed => {}
             ctrl => return Ok(ctrl),
         }
         // `seq` is the rejected inbound message's seqnum (`RefSeqNum`); the Reject
         // we send carries its own freshly allocated outbound seqnum.
-        let reject_seq = seq!(self, now);
+        let reject_seq = seq!(self);
         emitter.emit(Reject {
             seq: reject_seq,
             ref_seq_num: seq,
             ref_tag_id,
             session_reject_reason,
+            reason: None,
         })?;
         Ok(Control::None)
     }
@@ -771,59 +874,59 @@ impl SessionState {
     /// Handles a CompID mismatch detected by the framework. Sends Logout and disconnects.
     ///
     /// Emits: Logout.
-    pub fn on_comp_id_mismatch<E: Emit>(
-        &mut self,
-        now: Instant,
-        emitter: &mut E,
-    ) -> Result<Control, E::Error> {
+    pub fn on_comp_id_mismatch<E: Emit>(&mut self, emitter: &mut E) -> Result<Control, E::Error> {
         if self.state == State::Disconnected {
             return Ok(Control::None);
         }
-        let seq = seq!(self, now);
-        emitter.emit(Logout { seq })?;
+        let seq = seq!(self);
+        emitter.emit(Logout { seq, reason: None })?;
         Ok(self.disconnect(DisconnectReason::CompIdMismatch))
     }
 
-    /// Validates an inbound sequence number, emitting a ResendRequest on a gap or
-    /// a Logout on a too-low seqnum. Returns:
+    /// Validates an inbound sequence number. Returns:
     /// - [`Control::Proceed`] — seq matched and advanced; caller keeps processing.
-    /// - [`Control::None`] — a gap (ResendRequest emitted) or a `poss_dup`-too-low
-    ///   frame (ignored). The caller propagates this as its own verdict, so the
-    ///   message is suppressed: an out-of-sequence or duplicate frame is a recovery
-    ///   event, never surfaced to the application.
+    /// - [`Control::GapDetected`] — a gap (seq above expected) that opens recovery:
+    ///   the engine records `gap_high` and enters `Resending`, but the
+    ///   ResendRequest is now *user-driven* (surfaced as
+    ///   [`Message::GapDetected`](crate::Message::GapDetected)). A further gap while
+    ///   already `Resending` is suppressed as [`Control::None`], not re-surfaced.
+    /// - [`Control::None`] — a `poss_dup`-too-low frame (a benign duplicate,
+    ///   ignored). Propagated as the caller's verdict: the message is suppressed.
     /// - [`Control::Disconnected`] — a too-low seqnum without `poss_dup`, or
-    ///   outbound exhaustion while emitting.
+    ///   outbound exhaustion while emitting the Logout.
     ///
-    /// Emits: ResendRequest | Logout.
+    /// Emits (only the too-low Logout): Logout.
     fn validate_seq<E: Emit>(
         &mut self,
         seq: u32,
         poss_dup: bool,
-        now: Instant,
         emitter: &mut E,
     ) -> Result<Control, E::Error> {
         if seq > self.next_inbound {
             if self.gap_high < seq {
                 self.gap_high = seq;
             }
-            if self.state != State::Resending {
-                let rr_seq = seq!(self, now);
-                emitter.emit(ResendRequest {
-                    seq: rr_seq,
-                    begin: self.next_inbound,
-                })?;
-                if self.state == State::Active {
-                    self.state = State::Resending;
-                }
+            // Already recovering: a further gap is suppressed (the user has one
+            // outstanding ResendRequest to drive). Otherwise open recovery and
+            // surface the gap so the user sends the ResendRequest.
+            if self.state == State::Resending {
+                return Ok(Control::None);
             }
-            return Ok(Control::None);
+            let begin = self.next_inbound;
+            if self.state == State::Active {
+                self.state = State::Resending;
+            }
+            return Ok(Control::GapDetected { begin });
         }
         if seq < self.next_inbound {
             if poss_dup {
                 return Ok(Control::None);
             }
-            let logout_seq = seq!(self, now);
-            emitter.emit(Logout { seq: logout_seq })?;
+            let logout_seq = seq!(self);
+            emitter.emit(Logout {
+                seq: logout_seq,
+                reason: None,
+            })?;
             return Ok(self.disconnect(DisconnectReason::SeqNumTooLow));
         }
         self.next_inbound += 1;
@@ -833,8 +936,6 @@ impl SessionState {
     /// Transitions to `Disconnected` and returns the matching verdict.
     fn disconnect(&mut self, reason: DisconnectReason) -> Control {
         self.state = State::Disconnected;
-        self.test_request_sent = None;
-        self.state_entered = None;
         Control::Disconnected { reason }
     }
 
@@ -843,8 +944,6 @@ impl SessionState {
     /// verdict — surfaced as `Message::LoggedOut`, not an error.
     fn logged_out(&mut self) -> Control {
         self.state = State::Disconnected;
-        self.test_request_sent = None;
-        self.state_entered = None;
         Control::LoggedOut
     }
 
@@ -852,10 +951,6 @@ impl SessionState {
         if self.state == State::Resending && self.next_inbound > self.gap_high {
             self.state = State::Active;
         }
-    }
-
-    fn inbound_grace(&self) -> Duration {
-        self.hb + self.hb / 5
     }
 }
 
@@ -996,17 +1091,15 @@ mod tests {
         }
     }
 
-    fn establish(s: &mut SessionState, now: Instant) {
+    fn establish(s: &mut SessionState) {
         let mut recorder = RecordingEmitter::new();
-        s.connect(now, &mut recorder).unwrap();
+        s.connect(&mut recorder).unwrap();
         s.on_logon(
             LogonIn {
                 seq: 1,
                 heart_bt_int_s: 30,
                 is_reset_seq_num: false,
-                send_reply: false,
             },
-            now,
             &mut recorder,
         )
         .unwrap();
@@ -1015,19 +1108,17 @@ mod tests {
     #[test]
     fn allocate_seq_errors_at_i32_max() {
         let mut s = SessionState::new(Duration::from_secs(30));
-        let now = Instant::now();
-        establish(&mut s, now);
+        establish(&mut s);
         s.next_outbound = SEQ_MAX + 1;
-        assert_eq!(s.allocate_seq(now), Err(SessionError::SeqNumExhausted));
+        assert_eq!(s.allocate_seq(), Err(SessionError::SeqNumExhausted));
     }
 
     #[test]
     fn bump_outbound_disconnects_at_i32_max() {
         let mut s = SessionState::new(Duration::from_secs(30));
-        let now = Instant::now();
-        establish(&mut s, now);
+        establish(&mut s);
         s.next_outbound = SEQ_MAX + 1;
-        let ctrl = s.logout(now, &mut RecordingEmitter::new()).unwrap();
+        let ctrl = s.logout(None, &mut RecordingEmitter::new()).unwrap();
         assert_eq!(
             ctrl,
             Control::Disconnected {
@@ -1037,23 +1128,59 @@ mod tests {
     }
 
     #[test]
+    fn logout_reason_rides_text_58() {
+        // A `Some(reason)` threads through the state machine into the emitted
+        // Logout's `Text(58)`; `None` omits the field. The RecordingEmitter
+        // encodes the real `AdminEncode` frame, so this pins the wire output.
+        let reason = AsciiTextStr::try_from_str("shutting down").unwrap();
+
+        let mut s = SessionState::new(Duration::from_secs(30));
+        establish(&mut s);
+        let mut with = RecordingEmitter::new();
+        s.logout(Some(reason), &mut with).unwrap();
+        assert_eq!(with.mt(0), b"5");
+        assert_eq!(with.val(0, 58), Some(b"shutting down".as_slice()));
+
+        let mut s2 = SessionState::new(Duration::from_secs(30));
+        establish(&mut s2);
+        let mut without = RecordingEmitter::new();
+        s2.logout(None, &mut without).unwrap();
+        assert_eq!(without.mt(0), b"5");
+        assert!(!without.has(0, 58), "a bare Logout carries no Text(58)");
+    }
+
+    #[test]
+    fn reject_logon_reason_rides_text_58() {
+        // Rejecting a peer Logon emits a Logout; a `Some(reason)` rides as
+        // `Text(58)`.
+        let reason = AsciiTextStr::try_from_str("auth failed").unwrap();
+        let mut s = SessionState::new(Duration::from_secs(30));
+        let mut rec = RecordingEmitter::new();
+        s.reject_logon(Some(reason), &mut rec).unwrap();
+        assert_eq!(rec.mt(0), b"5");
+        assert_eq!(rec.val(0, 58), Some(b"auth failed".as_slice()));
+        assert_eq!(s.state(), State::Disconnected);
+    }
+
+    #[test]
     fn connect_reset_clears_seqnums() {
         let mut s = SessionState::new(Duration::from_secs(30));
-        let now = Instant::now();
-        establish(&mut s, now);
-        s.allocate_seq(now).unwrap();
+        establish(&mut s);
+        s.allocate_seq().unwrap();
+        // Reach Disconnected via a clean logout: we initiate (→ LogoutPending),
+        // the peer's in-sequence Logout confirms it (→ Disconnected).
+        s.logout(None, &mut RecordingEmitter::new()).unwrap();
         s.on_logout(
             LogoutIn {
                 seq: 2,
                 is_poss_dup: false,
             },
-            now,
             &mut RecordingEmitter::new(),
         )
         .unwrap();
         assert_eq!(s.state(), State::Disconnected);
         let mut recorder = RecordingEmitter::new();
-        s.connect_reset(now, &mut recorder).unwrap();
+        s.connect_reset(&mut recorder).unwrap();
         assert_eq!(recorder.len(), 1);
         // LogonReset is 35=A carrying ResetSeqNumFlag(141)=Y, at seqnum 1.
         assert_eq!(recorder.mt(0), b"A");
@@ -1066,11 +1193,10 @@ mod tests {
     #[test]
     fn connect_reset_wrong_state_returns_err() {
         let mut s = SessionState::new(Duration::from_secs(30));
-        let now = Instant::now();
-        establish(&mut s, now);
+        establish(&mut s);
         // The wrong-state guard returns before any emit; the emitter records nothing.
         assert_eq!(
-            s.connect_reset(now, &mut RecordingEmitter::new()),
+            s.connect_reset(&mut RecordingEmitter::new()),
             Err(SessionError::InvalidState)
         );
     }
@@ -1078,15 +1204,14 @@ mod tests {
     #[test]
     fn reset_sequence_wrong_state_returns_err() {
         let mut s = SessionState::new(Duration::from_secs(30));
-        let now = Instant::now();
         let mut recorder = RecordingEmitter::new();
         assert_eq!(
-            s.reset_sequence(now, &mut recorder),
+            s.reset_sequence(&mut recorder),
             Err(SessionError::InvalidState)
         ); // Disconnected
-        s.connect(now, &mut recorder).unwrap();
+        s.connect(&mut recorder).unwrap();
         assert_eq!(
-            s.reset_sequence(now, &mut recorder),
+            s.reset_sequence(&mut recorder),
             Err(SessionError::InvalidState)
         ); // LogonSent
     }
@@ -1094,14 +1219,13 @@ mod tests {
     #[test]
     fn in_session_reset_initiator_roundtrip() {
         let mut s = SessionState::new(Duration::from_secs(30));
-        let now = Instant::now();
-        establish(&mut s, now);
-        s.allocate_seq(now).unwrap(); // seq 2
-        s.allocate_seq(now).unwrap(); // seq 3
+        establish(&mut s);
+        s.allocate_seq().unwrap(); // seq 2
+        s.allocate_seq().unwrap(); // seq 3
 
         // Initiate reset: sends TestRequest, enters AwaitingResetDrain.
         let mut recorder = RecordingEmitter::new();
-        s.reset_sequence(now, &mut recorder).unwrap();
+        s.reset_sequence(&mut recorder).unwrap();
         assert_eq!(s.state(), State::AwaitingResetDrain);
         assert_eq!(recorder.len(), 1);
         // TestRequest (35=1) carrying TestReqID(112)=1.
@@ -1109,7 +1233,7 @@ mod tests {
         assert_eq!(recorder.num(0, 112), Some(1));
 
         // allocate_seq blocked.
-        assert_eq!(s.allocate_seq(now), Err(SessionError::ResetInProgress));
+        assert_eq!(s.allocate_seq(), Err(SessionError::ResetInProgress));
 
         // Non-drain heartbeat: wrong echo — drain NOT triggered.
         recorder.clear();
@@ -1119,7 +1243,6 @@ mod tests {
                 seq: 2,
                 is_poss_dup: false,
             },
-            now,
             &mut recorder,
         )
         .unwrap();
@@ -1134,7 +1257,6 @@ mod tests {
                 seq: 3,
                 is_poss_dup: false,
             },
-            now,
             &mut recorder,
         )
         .unwrap();
@@ -1153,9 +1275,7 @@ mod tests {
                     seq: 1,
                     heart_bt_int_s: 30,
                     is_reset_seq_num: true,
-                    send_reply: false,
                 },
-                now,
                 &mut recorder,
             )
             .unwrap();
@@ -1167,12 +1287,11 @@ mod tests {
     #[test]
     fn in_flight_app_delivered_during_drain() {
         let mut s = SessionState::new(Duration::from_secs(30));
-        let now = Instant::now();
-        establish(&mut s, now);
-        s.allocate_seq(now).unwrap(); // seq 2
+        establish(&mut s);
+        s.allocate_seq().unwrap(); // seq 2
 
         let mut recorder = RecordingEmitter::new();
-        s.reset_sequence(now, &mut recorder).unwrap(); // → AwaitingResetDrain
+        s.reset_sequence(&mut recorder).unwrap(); // → AwaitingResetDrain
         assert_eq!(s.state(), State::AwaitingResetDrain);
 
         // App message arrives with old inbound seq while draining.
@@ -1183,7 +1302,6 @@ mod tests {
                     seq: 2,
                     is_poss_dup: false,
                 },
-                now,
                 &mut recorder,
             )
             .unwrap();
@@ -1195,12 +1313,12 @@ mod tests {
     #[test]
     fn in_session_reset_responder() {
         let mut s = SessionState::new(Duration::from_secs(30));
-        let now = Instant::now();
-        establish(&mut s, now);
-        s.allocate_seq(now).unwrap(); // seq 2
-        s.allocate_seq(now).unwrap(); // seq 3
+        establish(&mut s);
+        s.allocate_seq().unwrap(); // seq 2
+        s.allocate_seq().unwrap(); // seq 3
 
-        // Peer sends Logon(141=Y, seq=1) while we are Active.
+        // Peer sends Logon(141=Y, seq=1) while we are Active: surfaces a reset
+        // decision (no auto-reply), which the user then accepts.
         let mut recorder = RecordingEmitter::new();
         let ctrl = s
             .on_logon(
@@ -1208,12 +1326,26 @@ mod tests {
                     seq: 1,
                     heart_bt_int_s: 30,
                     is_reset_seq_num: true,
-                    send_reply: true,
                 },
-                now,
                 &mut recorder,
             )
             .unwrap();
+        assert_eq!(
+            ctrl,
+            Control::LogonResetRequest {
+                seq: 1,
+                heart_bt_int_s: 30
+            }
+        );
+        assert_eq!(
+            recorder.len(),
+            0,
+            "no reply emitted before the user accepts"
+        );
+        assert_eq!(s.state(), State::Active, "state unchanged until accept");
+
+        // The user accepts: the LogonReset reply is emitted and the reset completes.
+        let ctrl = s.accept_logon(1, 30, true, &mut recorder).unwrap();
         assert_eq!(s.state(), State::Active);
         assert_eq!(s.next_outbound_seq(), 2); // reply Logon consumed seq 1
         assert_eq!(s.next_inbound_seq(), 2);
@@ -1222,7 +1354,6 @@ mod tests {
         assert_eq!(recorder.mt(0), b"A");
         assert!(recorder.has(0, 141), "reply must carry 141=Y");
         assert_eq!(recorder.num(0, 34), Some(1));
-        // send_reply = true → this Logon is one we answer, not an ack.
         assert_eq!(
             ctrl,
             Control::Logon {
@@ -1234,17 +1365,15 @@ mod tests {
     #[test]
     fn reset_ack_without_flag_disconnects() {
         let mut s = SessionState::new(Duration::from_secs(30));
-        let now = Instant::now();
-        establish(&mut s, now);
+        establish(&mut s);
         let mut recorder = RecordingEmitter::new();
-        s.reset_sequence(now, &mut recorder).unwrap();
+        s.reset_sequence(&mut recorder).unwrap();
         s.on_heartbeat(
             HeartbeatIn {
                 echo_id: Some(1),
                 seq: 2,
                 is_poss_dup: false,
             },
-            now,
             &mut recorder,
         )
         .unwrap(); // → AwaitingResetAck
@@ -1256,9 +1385,7 @@ mod tests {
                     seq: 1,
                     heart_bt_int_s: 30,
                     is_reset_seq_num: false,
-                    send_reply: false,
                 },
-                now,
                 &mut recorder,
             )
             .unwrap();
@@ -1271,38 +1398,9 @@ mod tests {
     }
 
     #[test]
-    fn reset_timeout_disconnects() {
-        let mut s = SessionState::new(Duration::from_secs(30));
-        let now = Instant::now();
-        establish(&mut s, now);
-        let mut recorder = RecordingEmitter::new();
-        s.reset_sequence(now, &mut recorder).unwrap();
-        s.on_heartbeat(
-            HeartbeatIn {
-                echo_id: Some(1),
-                seq: 2,
-                is_poss_dup: false,
-            },
-            now,
-            &mut recorder,
-        )
-        .unwrap(); // → AwaitingResetAck
-        let ctrl = s
-            .on_timeout(now + Duration::from_secs(31), &mut recorder)
-            .unwrap();
-        assert_eq!(
-            ctrl,
-            Control::Disconnected {
-                reason: DisconnectReason::ResetTimeout
-            }
-        );
-    }
-
-    #[test]
     fn sequence_reset_backward_sends_reject() {
         let mut s = SessionState::new(Duration::from_secs(30));
-        let now = Instant::now();
-        establish(&mut s, now);
+        establish(&mut s);
         let mut recorder = RecordingEmitter::new();
         let ctrl = s
             .on_sequence_reset(
@@ -1312,7 +1410,6 @@ mod tests {
                     is_poss_dup: false,
                     is_gap_fill: false,
                 },
-                now,
                 &mut recorder,
             )
             .unwrap();
@@ -1329,8 +1426,7 @@ mod tests {
     #[test]
     fn reject_inbound_sends_reject_and_advances_seq() {
         let mut s = SessionState::new(Duration::from_secs(30));
-        let now = Instant::now();
-        establish(&mut s, now);
+        establish(&mut s);
         let mut recorder = RecordingEmitter::new();
         s.on_reject_inbound(
             RejectInboundIn {
@@ -1339,7 +1435,6 @@ mod tests {
                 session_reject_reason: 1,
                 is_poss_dup: false,
             },
-            now,
             &mut recorder,
         )
         .unwrap();
@@ -1353,26 +1448,26 @@ mod tests {
     }
 
     #[test]
-    fn reject_inbound_gap_sends_resend_request() {
+    fn reject_inbound_gap_surfaces_gap_detected() {
         let mut s = SessionState::new(Duration::from_secs(30));
-        let now = Instant::now();
-        establish(&mut s, now);
+        establish(&mut s);
         let mut recorder = RecordingEmitter::new();
-        s.on_reject_inbound(
-            RejectInboundIn {
-                seq: 5,
-                ref_tag_id: Some(35),
-                session_reject_reason: 1,
-                is_poss_dup: false,
-            },
-            now,
-            &mut recorder,
-        )
-        .unwrap();
-        assert_eq!(recorder.len(), 1);
-        // ResendRequest (35=2) with BeginSeqNo(7)=2.
-        assert_eq!(recorder.mt(0), b"2", "expected ResendRequest");
-        assert_eq!(recorder.num(0, 7), Some(2));
+        // A gap on the to-be-rejected message opens recovery: the engine surfaces
+        // GapDetected (the user drives the ResendRequest) and emits nothing.
+        let ctrl = s
+            .on_reject_inbound(
+                RejectInboundIn {
+                    seq: 5,
+                    ref_tag_id: Some(35),
+                    session_reject_reason: 1,
+                    is_poss_dup: false,
+                },
+                &mut recorder,
+            )
+            .unwrap();
+        assert_eq!(ctrl, Control::GapDetected { begin: 2 });
+        assert_eq!(recorder.len(), 0, "gap emits nothing; the user resends");
+        assert_eq!(s.state(), State::Resending);
         assert_eq!(
             s.next_inbound_seq(),
             2,
@@ -1390,14 +1485,13 @@ mod tests {
 
     /// Advances `next_inbound` from 2 to 3 by consuming an in-sequence app at
     /// seq 2, so a later `seq 2` PossDup frame is a genuine duplicate (< 3).
-    fn consume_seq_2(s: &mut SessionState, now: Instant) {
+    fn consume_seq_2(s: &mut SessionState) {
         assert_eq!(
             s.on_app(
                 AppIn {
                     seq: 2,
                     is_poss_dup: false,
                 },
-                now,
                 &mut RecordingEmitter::new()
             )
             .unwrap(),
@@ -1407,12 +1501,11 @@ mod tests {
     }
 
     #[test]
-    fn heartbeat_out_of_sequence_suppressed_and_resends() {
+    fn heartbeat_out_of_sequence_surfaces_gap_detected() {
         let mut s = SessionState::new(Duration::from_secs(30));
-        let now = Instant::now();
-        establish(&mut s, now); // next_inbound = 2
+        establish(&mut s); // next_inbound = 2
         let mut recorder = RecordingEmitter::new();
-        // seq 5 > 2: gap.
+        // seq 5 > 2: gap. The Heartbeat itself is not surfaced; the gap is.
         let ctrl = s
             .on_heartbeat(
                 HeartbeatIn {
@@ -1420,23 +1513,19 @@ mod tests {
                     seq: 5,
                     is_poss_dup: false,
                 },
-                now,
                 &mut recorder,
             )
             .unwrap();
-        assert_eq!(ctrl, Control::None, "gap Heartbeat must be suppressed");
-        assert_eq!(recorder.len(), 1);
-        assert_eq!(recorder.mt(0), b"2", "gap must emit a ResendRequest");
-        assert_eq!(recorder.num(0, 7), Some(2));
+        assert_eq!(ctrl, Control::GapDetected { begin: 2 });
+        assert_eq!(recorder.len(), 0, "gap emits nothing; the user resends");
         assert_eq!(s.state(), State::Resending);
     }
 
     #[test]
     fn heartbeat_duplicate_suppressed_no_resend() {
         let mut s = SessionState::new(Duration::from_secs(30));
-        let now = Instant::now();
-        establish(&mut s, now);
-        consume_seq_2(&mut s, now); // next_inbound = 3
+        establish(&mut s);
+        consume_seq_2(&mut s); // next_inbound = 3
         let mut recorder = RecordingEmitter::new();
         // seq 2 < 3 with PossDup: duplicate.
         let ctrl = s
@@ -1446,7 +1535,6 @@ mod tests {
                     seq: 2,
                     is_poss_dup: true,
                 },
-                now,
                 &mut recorder,
             )
             .unwrap();
@@ -1462,8 +1550,7 @@ mod tests {
     #[test]
     fn heartbeat_in_sequence_surfaces() {
         let mut s = SessionState::new(Duration::from_secs(30));
-        let now = Instant::now();
-        establish(&mut s, now);
+        establish(&mut s);
         let mut recorder = RecordingEmitter::new();
         let ctrl = s
             .on_heartbeat(
@@ -1472,7 +1559,6 @@ mod tests {
                     seq: 2,
                     is_poss_dup: false,
                 },
-                now,
                 &mut recorder,
             )
             .unwrap();
@@ -1481,49 +1567,38 @@ mod tests {
     }
 
     #[test]
-    fn test_request_out_of_sequence_suppressed_no_echo() {
+    fn test_request_out_of_sequence_surfaces_gap_detected() {
         let mut s = SessionState::new(Duration::from_secs(30));
-        let now = Instant::now();
-        establish(&mut s, now);
+        establish(&mut s);
         let mut recorder = RecordingEmitter::new();
         let ctrl = s
             .on_test_request(
                 TestRequestIn {
-                    test_req_id: b"PROBE",
                     seq: 5,
                     is_poss_dup: false,
                 },
-                now,
                 &mut recorder,
             )
             .unwrap();
-        assert_eq!(ctrl, Control::None, "gap TestRequest must be suppressed");
-        // A gap emits a ResendRequest and NOT the Heartbeat echo (which is
-        // Proceed-only work).
-        assert_eq!(recorder.len(), 1);
-        assert_eq!(
-            recorder.mt(0),
-            b"2",
-            "gap must emit ResendRequest, not a Heartbeat echo"
-        );
-        assert_eq!(recorder.num(0, 7), Some(2));
+        // A gap surfaces GapDetected and emits nothing — no Heartbeat echo (which
+        // is Proceed-only) and no engine ResendRequest (the user drives it).
+        assert_eq!(ctrl, Control::GapDetected { begin: 2 });
+        assert_eq!(recorder.len(), 0);
+        assert_eq!(s.state(), State::Resending);
     }
 
     #[test]
     fn test_request_duplicate_suppressed_no_echo() {
         let mut s = SessionState::new(Duration::from_secs(30));
-        let now = Instant::now();
-        establish(&mut s, now);
-        consume_seq_2(&mut s, now); // next_inbound = 3
+        establish(&mut s);
+        consume_seq_2(&mut s); // next_inbound = 3
         let mut recorder = RecordingEmitter::new();
         let ctrl = s
             .on_test_request(
                 TestRequestIn {
-                    test_req_id: b"PROBE",
                     seq: 2,
                     is_poss_dup: true,
                 },
-                now,
                 &mut recorder,
             )
             .unwrap();
@@ -1541,10 +1616,9 @@ mod tests {
     }
 
     #[test]
-    fn reject_out_of_sequence_suppressed_and_resends() {
+    fn reject_out_of_sequence_surfaces_gap_detected() {
         let mut s = SessionState::new(Duration::from_secs(30));
-        let now = Instant::now();
-        establish(&mut s, now);
+        establish(&mut s);
         let mut recorder = RecordingEmitter::new();
         let ctrl = s
             .on_reject(
@@ -1552,23 +1626,19 @@ mod tests {
                     seq: 5,
                     is_poss_dup: false,
                 },
-                now,
                 &mut recorder,
             )
             .unwrap();
-        assert_eq!(ctrl, Control::None, "gap Reject must be suppressed");
-        assert_eq!(recorder.len(), 1);
-        assert_eq!(recorder.mt(0), b"2", "gap must emit ResendRequest");
-        assert_eq!(recorder.num(0, 7), Some(2));
+        assert_eq!(ctrl, Control::GapDetected { begin: 2 });
+        assert_eq!(recorder.len(), 0, "gap emits nothing; the user resends");
         assert_eq!(s.state(), State::Resending);
     }
 
     #[test]
     fn reject_duplicate_suppressed_no_resend() {
         let mut s = SessionState::new(Duration::from_secs(30));
-        let now = Instant::now();
-        establish(&mut s, now);
-        consume_seq_2(&mut s, now); // next_inbound = 3
+        establish(&mut s);
+        consume_seq_2(&mut s); // next_inbound = 3
         let mut recorder = RecordingEmitter::new();
         let ctrl = s
             .on_reject(
@@ -1576,7 +1646,6 @@ mod tests {
                     seq: 2,
                     is_poss_dup: true,
                 },
-                now,
                 &mut recorder,
             )
             .unwrap();
@@ -1588,8 +1657,7 @@ mod tests {
     #[test]
     fn sequence_reset_gap_fill_out_of_sequence_suppressed_and_resends() {
         let mut s = SessionState::new(Duration::from_secs(30));
-        let now = Instant::now();
-        establish(&mut s, now); // next_inbound = 2
+        establish(&mut s); // next_inbound = 2
         let mut recorder = RecordingEmitter::new();
         // GapFill (is_gap_fill = true) at seq 5 > 2: out of sequence.
         let ctrl = s
@@ -1600,18 +1668,16 @@ mod tests {
                     is_poss_dup: false,
                     is_gap_fill: true,
                 },
-                now,
                 &mut recorder,
             )
             .unwrap();
         assert_eq!(
             ctrl,
-            Control::None,
-            "out-of-sequence GapFill must be suppressed"
+            Control::GapDetected { begin: 2 },
+            "out-of-sequence GapFill must surface a gap"
         );
-        assert_eq!(recorder.len(), 1);
-        assert_eq!(recorder.mt(0), b"2", "gap must emit ResendRequest");
-        assert_eq!(recorder.num(0, 7), Some(2));
+        assert_eq!(recorder.len(), 0, "gap emits nothing; the user resends");
+        assert_eq!(s.state(), State::Resending);
         // Proceed-only work (advance to new_seq) must NOT run on a gap.
         assert_eq!(
             s.next_inbound_seq(),
@@ -1626,9 +1692,8 @@ mod tests {
         // classic overlapping-ResendRequest race) — discarded, session survives,
         // next_inbound unchanged. Matches FIX 4.4 / QuickFIX.
         let mut s = SessionState::new(Duration::from_secs(30));
-        let now = Instant::now();
-        establish(&mut s, now);
-        consume_seq_2(&mut s, now); // next_inbound = 3
+        establish(&mut s);
+        consume_seq_2(&mut s); // next_inbound = 3
         let mut recorder = RecordingEmitter::new();
         // seq 2 < 3, PossDup = true.
         let ctrl = s
@@ -1639,7 +1704,6 @@ mod tests {
                     is_poss_dup: true,
                     is_gap_fill: true,
                 },
-                now,
                 &mut recorder,
             )
             .unwrap();
@@ -1659,9 +1723,8 @@ mod tests {
     fn sequence_reset_gap_fill_below_expected_no_possdup_disconnects() {
         // Without PossDup, a below-expected GapFill is a genuine too-low error.
         let mut s = SessionState::new(Duration::from_secs(30));
-        let now = Instant::now();
-        establish(&mut s, now);
-        consume_seq_2(&mut s, now); // next_inbound = 3
+        establish(&mut s);
+        consume_seq_2(&mut s); // next_inbound = 3
         let mut recorder = RecordingEmitter::new();
         // seq 2 < 3, PossDup = false.
         let ctrl = s
@@ -1672,7 +1735,6 @@ mod tests {
                     is_poss_dup: false,
                     is_gap_fill: true,
                 },
-                now,
                 &mut recorder,
             )
             .unwrap();
@@ -1693,8 +1755,7 @@ mod tests {
     #[test]
     fn sequence_reset_gap_fill_in_sequence_surfaces_and_advances() {
         let mut s = SessionState::new(Duration::from_secs(30));
-        let now = Instant::now();
-        establish(&mut s, now); // next_inbound = 2
+        establish(&mut s); // next_inbound = 2
         let mut recorder = RecordingEmitter::new();
         // In-sequence GapFill at seq 2 advancing to new_seq 7.
         let ctrl = s
@@ -1705,7 +1766,6 @@ mod tests {
                     is_poss_dup: false,
                     is_gap_fill: true,
                 },
-                now,
                 &mut recorder,
             )
             .unwrap();
@@ -1717,8 +1777,7 @@ mod tests {
     #[test]
     fn logout_out_of_sequence_suppressed_and_resends() {
         let mut s = SessionState::new(Duration::from_secs(30));
-        let now = Instant::now();
-        establish(&mut s, now); // Active, next_inbound = 2
+        establish(&mut s); // Active, next_inbound = 2
         let mut recorder = RecordingEmitter::new();
         // seq 5 > 2: gap. A gap Logout must be suppressed (ResendRequest), NOT
         // treated as a logout exchange.
@@ -1728,18 +1787,15 @@ mod tests {
                     seq: 5,
                     is_poss_dup: false,
                 },
-                now,
                 &mut recorder,
             )
             .unwrap();
-        assert_eq!(ctrl, Control::None, "gap Logout must be suppressed");
-        assert_eq!(recorder.len(), 1);
         assert_eq!(
-            recorder.mt(0),
-            b"2",
-            "gap must emit ResendRequest, not a Logout"
+            ctrl,
+            Control::GapDetected { begin: 2 },
+            "a gap Logout surfaces the gap, not the Logout"
         );
-        assert_eq!(recorder.num(0, 7), Some(2));
+        assert_eq!(recorder.len(), 0, "gap emits nothing; the user resends");
         assert_eq!(
             s.state(),
             State::Resending,
@@ -1750,9 +1806,8 @@ mod tests {
     #[test]
     fn logout_duplicate_suppressed_no_disconnect() {
         let mut s = SessionState::new(Duration::from_secs(30));
-        let now = Instant::now();
-        establish(&mut s, now);
-        consume_seq_2(&mut s, now); // next_inbound = 3
+        establish(&mut s);
+        consume_seq_2(&mut s); // next_inbound = 3
         let mut recorder = RecordingEmitter::new();
         // seq 2 < 3 with PossDup: duplicate Logout — ignored, session survives.
         let ctrl = s
@@ -1761,7 +1816,6 @@ mod tests {
                     seq: 2,
                     is_poss_dup: true,
                 },
-                now,
                 &mut recorder,
             )
             .unwrap();

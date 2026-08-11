@@ -245,17 +245,21 @@ impl FrameReader {
         self.buf.capacity()
     }
 
-    /// Parse the next complete FIX message.
+    /// Locate the next complete FIX message, returning its length in bytes.
     ///
-    /// Returns the full message bytes (`8=…` through `10=XXX\x01`) or
-    /// `None` if more data is needed. Call in a loop after each
-    /// [`read`](Self::read) to drain all complete messages from the buffer.
+    /// `Ok(n)` with `n > 0` means a complete frame sits at the front of the
+    /// buffer — fetch its bytes with [`frame`](Self::frame). `Ok(0)` means more
+    /// data is needed; a complete frame is never zero-length, so `0` is
+    /// unambiguous. On invalid data, scans forward to the next `8=` boundary and
+    /// returns [`FrameError::Malformed`] — the reader always makes progress.
     ///
-    /// On invalid data, scans forward to the next `8=` boundary and
-    /// returns [`FrameError::Malformed`]. The reader always makes progress
-    /// on error — the next call starts from the new position.
-    #[allow(clippy::should_implement_trait)]
-    pub fn next(&mut self) -> Result<Option<&[u8]>, FrameError> {
+    /// This is the two-phase primitive under [`next`](Self::next): it reports the
+    /// frame *length* — a `Copy` value that outlives the `&mut self` borrow —
+    /// rather than a borrow, so a caller can carry "a frame is ready" across a
+    /// call boundary and re-borrow the bytes with [`frame`](Self::frame) with no
+    /// copy. Zero-copy: the located frame is a view into the internal buffer,
+    /// pinned at the front until the next `poll`/`next` advances past it.
+    pub fn poll(&mut self) -> Result<usize, FrameError> {
         if self.pending_advance > 0 {
             self.buf.advance(self.pending_advance);
             self.pending_advance = 0;
@@ -264,9 +268,9 @@ impl FrameReader {
         match self.try_parse() {
             ParseResult::Complete(end) => {
                 self.pending_advance = end;
-                Ok(Some(&self.buf.data()[..end]))
+                Ok(end)
             }
-            ParseResult::Incomplete => Ok(None),
+            ParseResult::Incomplete => Ok(0),
             ParseResult::Malformed { reason, frame_len } => {
                 // A located frame (checksum failure) is skipped exactly; an
                 // untrustworthy one is scanned past to the next `8=`.
@@ -288,6 +292,33 @@ impl FrameReader {
                 Err(FrameError::MessageTooLarge { size })
             }
         }
+    }
+
+    /// The frame located by the most recent [`poll`](Self::poll) that returned
+    /// `Ok(n)` with `n > 0` (equivalently, the last [`next`](Self::next) that
+    /// yielded `Some`). A view into the internal buffer, valid until the next
+    /// `poll`/`next` advances past it. Empty when no frame is pending.
+    #[inline]
+    pub fn frame(&self) -> &[u8] {
+        &self.buf.data()[..self.pending_advance]
+    }
+
+    /// Parse the next complete FIX message.
+    ///
+    /// Returns the full message bytes (`8=…` through `10=XXX\x01`) or
+    /// `None` if more data is needed. Call in a loop after each
+    /// [`read`](Self::read) to drain all complete messages from the buffer.
+    ///
+    /// On invalid data, scans forward to the next `8=` boundary and
+    /// returns [`FrameError::Malformed`]. The reader always makes progress
+    /// on error — the next call starts from the new position.
+    ///
+    /// A convenience wrapper over [`poll`](Self::poll) + [`frame`](Self::frame)
+    /// for callers that can hold the borrow across the read.
+    #[allow(clippy::should_implement_trait)]
+    pub fn next(&mut self) -> Result<Option<&[u8]>, FrameError> {
+        let n = self.poll()?;
+        Ok(if n > 0 { Some(self.frame()) } else { None })
     }
 
     /// Pure read-only parse: determines the message boundary or error
