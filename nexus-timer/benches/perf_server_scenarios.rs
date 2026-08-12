@@ -25,6 +25,8 @@ use std::hint::black_box;
 use std::time::{Duration, Instant};
 
 use nexus_timer::{TimerHandle, Wheel, WheelBuilder};
+use perf_event::events::Hardware;
+use perf_event::{Builder, Group};
 
 // ── deterministic RNG (xorshift64*) — identical workload every run ───────────
 struct Rng(u64);
@@ -320,6 +322,106 @@ fn print_poll_row(label: &str, samples: &[u64]) {
     );
 }
 
+/// Same realistic timeline as `run_env`, but measures the poll's **cache
+/// behavior** with `perf_event` (counters enabled only during the poll, after
+/// warmup). High IPC ⇒ compute-bound (cache-resident, like the contiguous
+/// micro-bench); low IPC ⇒ memory-bound (scattered). Pin to a P-core.
+fn realistic_cache(env: &Env, cancel_pct: u32) {
+    let epoch = Instant::now();
+    let mut wheel: Wheel<u64> = WheelBuilder::default().unbounded(4096).build(epoch);
+    let mut rng = Rng(0x1234_5678_9abc_def0);
+    let periodic_count: usize = env.periodic.iter().map(|p| p.count).sum();
+    for p in env.periodic {
+        for _ in 0..p.count {
+            let first = rng.range(1, p.period_ms);
+            wheel.schedule_forget(epoch + Duration::from_millis(first), p.period_ms);
+        }
+    }
+    let mut cancels: BinaryHeap<Reverse<(u64, u64)>> = BinaryHeap::new();
+    let mut handles: Vec<Option<TimerHandle<u64>>> = Vec::new();
+    let mut buf: Vec<u64> = Vec::with_capacity(2_048);
+
+    let mut group = Group::new().expect("perf_event Group (need perf_event_paranoid <= 2)");
+    let cache_misses = Builder::new()
+        .group(&mut group)
+        .kind(Hardware::CACHE_MISSES)
+        .build()
+        .unwrap();
+    let cycles = Builder::new()
+        .group(&mut group)
+        .kind(Hardware::CPU_CYCLES)
+        .build()
+        .unwrap();
+    let insns = Builder::new()
+        .group(&mut group)
+        .kind(Hardware::INSTRUCTIONS)
+        .build()
+        .unwrap();
+
+    let mut total_fired: u64 = 0;
+    let mut polls: u64 = 0;
+
+    for tick in 0..(WARMUP_TICKS + SIM_TICKS) {
+        let now = epoch + Duration::from_millis(tick);
+        while let Some(&Reverse((ct, _))) = cancels.peek() {
+            if ct > tick {
+                break;
+            }
+            let Reverse((_, seq)) = cancels.pop().unwrap();
+            if let Some(h) = handles[seq as usize].take() {
+                wheel.cancel(h);
+            }
+        }
+        let live = wheel.len().saturating_sub(periodic_count);
+        for _ in live..env.population {
+            let dur = rng.range(env.dur_min_ms, env.dur_max_ms + 1);
+            let deadline = now + Duration::from_millis(dur);
+            if rng.pct(cancel_pct) {
+                let h = wheel.schedule(deadline, 0);
+                let slack = rng.range(1, dur.max(2));
+                let cancel_tick = tick + dur.saturating_sub(slack);
+                let seq = handles.len() as u64;
+                handles.push(Some(h));
+                cancels.push(Reverse((cancel_tick, seq)));
+            } else {
+                wheel.schedule_forget(deadline, 0);
+            }
+        }
+
+        buf.clear();
+        let measure = tick >= WARMUP_TICKS;
+        if measure {
+            group.enable().unwrap();
+        }
+        let fired = wheel.poll_and_rebalance(now, &mut buf);
+        if measure {
+            group.disable().unwrap();
+            total_fired += fired as u64;
+            polls += 1;
+        }
+
+        for &v in &buf {
+            if v != 0 {
+                wheel.schedule_forget(now + Duration::from_millis(v), v);
+            }
+        }
+    }
+
+    let counts = group.read().unwrap();
+    let cm = counts[&cache_misses] as f64;
+    let cy = counts[&cycles] as f64;
+    let ins = counts[&insns] as f64;
+    let fired = total_fired.max(1) as f64;
+    println!(
+        "  {:<42} IPC={:.2}  {:>6.2} miss/fired  {:>6.1} cy/fired  {:>7.3} miss/poll",
+        env.name,
+        ins / cy.max(1.0),
+        cm / fired,
+        cy / fired,
+        cm / polls.max(1) as f64,
+    );
+}
+
 fn main() {
     println!("================================================================");
     println!("TIMER WHEEL — realistic server-scenario poll cost (cycles/poll)");
@@ -403,4 +505,12 @@ fn main() {
         &format!("rebalance (ran on {ran_pct:.0}% of ticks, the empty ones)"),
         &rebal,
     );
+
+    // #669: where does a REALISTIC workload land on the cache spectrum? High IPC
+    // ⇒ compute-bound (cache-resident); low IPC ⇒ memory-bound (scattered).
+    // (perf_event; pin to a P-core, e.g. taskset -c 0.)
+    println!("\nRealistic-workload poll cache behavior (perf_event; pin to a P-core):");
+    for env in [&EDGE, &APP, &GATEWAY] {
+        realistic_cache(env, env.cancel_pct);
+    }
 }

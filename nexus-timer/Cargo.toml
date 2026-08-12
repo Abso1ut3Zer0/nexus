@@ -13,6 +13,7 @@ categories = ["data-structures"]
 nexus-slab = { version = "2", path = "../nexus-slab" }
 
 [dev-dependencies]
+perf-event = "0.4.9"
 proptest = "1.4"
 seq-macro.workspace = true
 
@@ -29,4 +30,8 @@ workspace = true
 
 [[bench]]
 name = "perf_server_scenarios"
+harness = false
+
+[[bench]]
+name = "perf_669_walk"
 harness = false
