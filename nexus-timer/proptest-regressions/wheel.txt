@@ -1,0 +1,7 @@
+# Seeds for failure cases proptest has generated in the past. It is
+# automatically read and these particular cases re-run before any
+# novel cases are generated.
+#
+# It is recommended to check this file in to source control so that
+# everyone who runs the test benefits from these saved cases.
+cc fa2e302061fc050322f91e033885f0df882f9d34cabc065d34a6500c12c09ad4 # shrinks to ops = [Poll { at_ms: 7941 }, Schedule { deadline_ms: 2437 }, ScheduleForget { deadline_ms: 8004 }, Schedule { deadline_ms: 2436 }, Cancel { idx: 5668724590699869859 }, Poll { at_ms: 2436 }]

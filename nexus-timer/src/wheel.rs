@@ -568,7 +568,17 @@ impl<T: 'static, S: SlabStore<Item = WheelEntry<T>>> TimerWheel<T, S> {
     /// Returns the number of timers fired in this call.
     pub fn poll_with_limit(&mut self, now: Instant, limit: usize, buf: &mut Vec<T>) -> usize {
         let now_ticks = self.instant_to_ticks(now);
-        self.current_ticks = now_ticks;
+        self.current_ticks = now_ticks; // MUST precede the early return — select_level reads it.
+
+        // Fast path: if the cached global minimum is beyond now, nothing is due,
+        // so skip the level walk entirely. The cache may be stale-low (a lower
+        // bound), so this is conservative — it can miss the shortcut, never fire
+        // late.
+        if let Some(min) = self.min_deadline.get()
+            && min > now_ticks
+        {
+            return 0;
+        }
 
         let mut fired = 0;
         let mut mask = self.active_levels;
@@ -581,10 +591,16 @@ impl<T: 'static, S: SlabStore<Item = WheelEntry<T>>> TimerWheel<T, S> {
         fired
     }
 
-    /// Returns the `Instant` of the next timer that will fire, or `None` if empty.
+    /// Returns an `Instant` no later than when the next timer fires, or `None`
+    /// if the wheel is empty.
     ///
-    /// O(1) on cache hit (common case). Falls back to a full walk when the
-    /// cache is invalidated by cancel, fire, or reschedule.
+    /// **Lower bound, not exact.** The per-slot minima are stale-low after a
+    /// cancel/fire (they are not recomputed on removal — see the design), so the
+    /// returned instant may be *earlier* than the true next deadline, never
+    /// later. It is safe as a sleep/wake bound: you may wake early and find
+    /// nothing due, but you can never miss a timer.
+    ///
+    /// O(1) on cache hit; otherwise ~one compare per active slot to recompute.
     pub fn next_deadline(&self) -> Option<Instant> {
         if let Some(ticks) = self.min_deadline.get() {
             return Some(self.ticks_to_instant(ticks));
@@ -597,8 +613,36 @@ impl<T: 'static, S: SlabStore<Item = WheelEntry<T>>> TimerWheel<T, S> {
         min_ticks.map(|t| self.ticks_to_instant(t))
     }
 
+    /// Recomputes the wheel's minimum deadline from the per-slot minima —
+    /// ~one compare per active slot, not one per entry.
+    ///
+    /// The per-slot minima may be stale-low (see `WheelSlot::min_deadline`), so
+    /// the result is a **lower bound**: it may be earlier than the true minimum,
+    /// never later. Callers (`next_deadline`, the poll early-exit) treat it
+    /// conservatively — an under-estimate only ever costs extra work.
     #[cold]
     fn walk_min_deadline(&self) -> Option<u64> {
+        let mut min_ticks = u64::MAX;
+        let mut lvl_mask = self.active_levels;
+        while lvl_mask != 0 {
+            let lvl_idx = lvl_mask.trailing_zeros() as usize;
+            lvl_mask &= lvl_mask - 1;
+            let level = &self.levels[lvl_idx];
+            let mut slot_mask = level.active_slots();
+            while slot_mask != 0 {
+                let slot_idx = slot_mask.trailing_zeros() as usize;
+                slot_mask &= slot_mask - 1;
+                min_ticks = min_ticks.min(level.slot(slot_idx).min_deadline());
+            }
+        }
+        (min_ticks != u64::MAX).then_some(min_ticks)
+    }
+
+    /// Test-only **exact** minimum deadline via a full entry walk (ignoring the
+    /// per-slot minima) — the ground truth the lower-bound [`next_deadline`] is
+    /// checked against.
+    #[cfg(test)]
+    fn next_deadline_uncached(&self) -> Option<Instant> {
         let mut min_ticks: Option<u64> = None;
         let mut lvl_mask = self.active_levels;
         while lvl_mask != 0 {
@@ -615,17 +659,12 @@ impl<T: 'static, S: SlabStore<Item = WheelEntry<T>>> TimerWheel<T, S> {
                     // SAFETY: entry_ptr is in this slot's DLL
                     let entry = unsafe { entry_ref(entry_ptr) };
                     let dt = entry.deadline_ticks();
-                    min_ticks = Some(min_ticks.map_or(dt, |current| current.min(dt)));
+                    min_ticks = Some(min_ticks.map_or(dt, |c| c.min(dt)));
                     entry_ptr = entry.next();
                 }
             }
         }
-        min_ticks
-    }
-
-    #[cfg(test)]
-    fn next_deadline_uncached(&self) -> Option<Instant> {
-        self.walk_min_deadline().map(|t| self.ticks_to_instant(t))
+        min_ticks.map(|t| self.ticks_to_instant(t))
     }
 
     /// Returns the number of timers currently in the wheel.
@@ -701,6 +740,13 @@ impl<T: 'static, S: SlabStore<Item = WheelEntry<T>>> TimerWheel<T, S> {
         // SAFETY: entry_ptr is valid (just allocated), not in any DLL yet
         unsafe { self.levels[lvl_idx].slot(slot_idx).push_entry(entry_ptr) };
 
+        // Per-slot min: this entry may lower the slot's minimum. (Maintained here,
+        // not in push_entry, so TimeoutList's shared slot pays nothing.)
+        {
+            let slot = self.levels[lvl_idx].slot(slot_idx);
+            slot.set_min_deadline(slot.min_deadline().min(deadline_ticks));
+        }
+
         // Activate slot and level (idempotent — OR is a no-op if already set)
         self.levels[lvl_idx].activate_slot(slot_idx);
         self.active_levels |= 1 << lvl_idx;
@@ -737,6 +783,12 @@ impl<T: 'static, S: SlabStore<Item = WheelEntry<T>>> TimerWheel<T, S> {
         unsafe { self.levels[lvl_idx].slot(slot_idx).remove_entry(entry_ptr) };
 
         if self.levels[lvl_idx].slot(slot_idx).is_empty() {
+            // Drained: reset the slot min so an empty slot never reports a
+            // stale-low deadline. A non-empty slot is left stale-low on purpose
+            // (safe — see WheelSlot::min_deadline).
+            self.levels[lvl_idx]
+                .slot(slot_idx)
+                .set_min_deadline(u64::MAX);
             self.levels[lvl_idx].deactivate_slot(slot_idx);
             if !self.levels[lvl_idx].is_active() {
                 self.active_levels &= !(1 << lvl_idx);
@@ -809,14 +861,24 @@ impl<T: 'static, S: SlabStore<Item = WheelEntry<T>>> TimerWheel<T, S> {
             // (Box<[WheelSlot<T>]>), a stable heap allocation. fire_entry
             // only mutates self.slab and self.len, not self.levels.
             let slot = unsafe { &*slot_ptr };
+
+            // Slot-skip: if the slot's minimum deadline is beyond now, nothing
+            // in it is due — do not touch a single entry. Stale-low is safe: it
+            // only costs an unnecessary walk (handled below), never a skip.
+            if slot.min_deadline() > now_ticks {
+                continue;
+            }
+
+            let mut new_min = u64::MAX; // recomputed over surviving entries
             let mut entry_ptr = slot.entry_head();
 
             while !entry_ptr.is_null() && fired < limit {
                 // SAFETY: entry_ptr is in this slot's DLL
                 let entry = unsafe { entry_ref(entry_ptr) };
                 let next_entry = entry.next();
+                let dt = entry.deadline_ticks();
 
-                if entry.deadline_ticks() <= now_ticks {
+                if dt <= now_ticks {
                     // SAFETY: entry_ptr is in this slot's DLL (obtained from entry_head
                     // and walked via next pointers within the same slot).
                     unsafe { slot.remove_entry(entry_ptr) };
@@ -825,9 +887,20 @@ impl<T: 'static, S: SlabStore<Item = WheelEntry<T>>> TimerWheel<T, S> {
                         buf.push(value);
                     }
                     fired += 1;
+                } else {
+                    new_min = new_min.min(dt); // survivor
                 }
 
                 entry_ptr = next_entry;
+            }
+
+            // Trust the recomputed min ONLY if we walked the whole slot. If the
+            // limit truncated the walk (entry_ptr still non-null), new_min omits
+            // the un-walked entries, so setting it could be stale-HIGH — which
+            // would let a later poll skip a due entry. Leave the slot min
+            // stale-low instead; the next poll re-walks and heals it.
+            if entry_ptr.is_null() {
+                slot.set_min_deadline(new_min);
             }
 
             if slot.is_empty() {
@@ -1436,6 +1509,59 @@ mod tests {
         let val = wheel.cancel(h);
         assert_eq!(val, Some(42));
         assert_eq!(wheel.len(), 0);
+    }
+
+    // -------------------------------------------------------------------------
+    // Per-slot min: stale-low safety
+    // -------------------------------------------------------------------------
+
+    #[test]
+    fn slot_min_stale_low_after_cancel_still_fires() {
+        // Cancelling the earliest entry in a non-empty slot leaves that slot's
+        // cached min stale-low (the per-slot minima are not recomputed on
+        // remove). Poll must still fire the SURVIVORS at the right times — never
+        // skip a due entry, never fire an early one.
+        let now = Instant::now();
+        let mut wheel: Wheel<u64> = Wheel::unbounded(1024, now);
+
+        // 3000 / 3001 / 3002 ms all land in the same level-2 slot.
+        let h0 = wheel.schedule(now + ms(3000), 0);
+        wheel.schedule_forget(now + ms(3001), 1);
+        wheel.schedule_forget(now + ms(3002), 2);
+
+        // Cancel the earliest — the slot min now points at 3000 (gone): stale-low.
+        assert_eq!(wheel.cancel(h0), Some(0));
+
+        let mut buf = Vec::new();
+        assert_eq!(wheel.poll(now + ms(3000), &mut buf), 0, "nothing due yet");
+        assert!(buf.is_empty());
+
+        let fired = wheel.poll(now + ms(3002), &mut buf);
+        assert_eq!(fired, 2, "both survivors fire once due");
+        buf.sort_unstable();
+        assert_eq!(buf, vec![1, 2]);
+    }
+
+    #[test]
+    fn slot_min_resets_on_drain_and_reinsert() {
+        // A drained slot resets its min to u64::MAX; a later insert must set the
+        // min fresh, not inherit a stale value.
+        let now = Instant::now();
+        let mut wheel: Wheel<u64> = Wheel::unbounded(1024, now);
+
+        wheel.schedule_forget(now + ms(3000), 0);
+        let mut buf = Vec::new();
+        assert_eq!(wheel.poll(now + ms(3000), &mut buf), 1);
+        assert!(wheel.is_empty());
+        assert!(wheel.next_deadline().is_none());
+
+        // Re-insert (likely into the same drained slot).
+        wheel.schedule_forget(now + ms(3000), 1);
+        let nd = wheel.next_deadline().expect("non-empty");
+        assert!(nd <= now + ms(3000)); // lower bound — never later than the true deadline
+        buf.clear();
+        assert_eq!(wheel.poll(now + ms(2999), &mut buf), 0);
+        assert_eq!(wheel.poll(now + ms(3000), &mut buf), 1);
     }
 
     // -------------------------------------------------------------------------
@@ -2233,9 +2359,27 @@ mod proptests {
                     }
                 }
 
+                // Contract: `next_deadline()` is a LOWER BOUND — the per-slot
+                // minima are stale-low after removal, so it may report earlier
+                // than the true next fire, never later. Assert it never exceeds
+                // the exact minimum, and that emptiness agrees.
                 let cached = wheel.next_deadline();
-                let uncached = wheel.next_deadline_uncached();
-                prop_assert_eq!(cached, uncached, "cache disagrees with walk after {:?}", op);
+                let exact = wheel.next_deadline_uncached();
+                prop_assert_eq!(
+                    cached.is_none(),
+                    exact.is_none(),
+                    "emptiness disagrees after {:?}",
+                    op
+                );
+                if let (Some(c), Some(e)) = (cached, exact) {
+                    prop_assert!(
+                        c <= e,
+                        "next_deadline {:?} exceeded exact {:?} after {:?}",
+                        c,
+                        e,
+                        op
+                    );
+                }
             }
 
             for (h, _) in handles {
