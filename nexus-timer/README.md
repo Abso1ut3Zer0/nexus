@@ -165,10 +165,14 @@ Nothing-due poll is flat across population — the whole point:
 
 | Live population | wheel poll (0-fire) | `TimeoutList` poll (0-fire) |
 |---|---|---|
-| 100 | 0.2 µs | ~30 cycles |
-| 1,000 | 5.6 µs | ~30 cycles |
-| 10,000 | 454 µs | ~30 cycles |
-| 50,000 | 2.4 ms | ~30 cycles |
+| 100 | 0.2 µs | ~12 cycles |
+| 1,000 | 5.6 µs | ~12 cycles |
+| 10,000 | 454 µs | ~12 cycles |
+| 50,000 | 2.4 ms | ~12 cycles |
+
+Amortized cycles/op — a single-op `rdtsc` bracket carries a ~20-cycle
+measurement floor, so the bench reports that floor and the percentile tails
+alongside these amortized figures to keep them honest.
 
 ```bash
 cargo build --release --bench perf_timeout_list -p nexus-timer
