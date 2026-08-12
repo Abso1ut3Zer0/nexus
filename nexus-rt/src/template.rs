@@ -554,6 +554,29 @@ where
         }
     }
 
+    /// Create a template from a named function that **ignores the event**.
+    ///
+    /// Like [`new`](Self::new), but `f` omits the trailing event parameter — the
+    /// blueprint's `Event` (whatever its type) is dropped. Use it for a handler
+    /// that reads only resources, e.g. a timer handler that ignores the
+    /// `Instant`:
+    ///
+    /// ```ignore
+    /// fn on_tick(mut c: ResMut<Count>) { c.0 += 1; }         // no `_: Instant`
+    /// let t = HandlerTemplate::<OnTick>::new_event_ignored(on_tick, reg);
+    /// ```
+    ///
+    /// # Panics
+    ///
+    /// Same as [`new`](Self::new).
+    #[allow(clippy::needless_pass_by_value)]
+    pub fn new_event_ignored<F>(f: F, registry: &Registry) -> Self
+    where
+        NoEvent<F>: TemplateDispatch<K::Params, K::Event>,
+    {
+        Self::new(NoEvent(f), registry)
+    }
+
     /// Stamp out a new handler by copying pre-resolved state.
     #[must_use = "the generated handler must be stored or dispatched"]
     pub fn generate(&self) -> TemplatedHandler<K> {
@@ -753,6 +776,30 @@ where
             name: std::any::type_name::<F>(),
             _key: PhantomData,
         }
+    }
+
+    /// Create a callback template from a named function that **ignores the
+    /// event**.
+    ///
+    /// Like [`new`](Self::new), but `f` omits the trailing event parameter (it
+    /// still takes `&mut Context` and its params) — the blueprint's `Event` is
+    /// dropped. This is the timer / self-rescheduling shape where the callback
+    /// doesn't need the `Instant`:
+    ///
+    /// ```ignore
+    /// fn heartbeat(ctx: &mut HeartbeatCtx, mut wheel: ResMut<TimerWheel>) { /* re-arm */ }
+    /// let cb = CallbackTemplate::<Heartbeat>::new_event_ignored(heartbeat, reg);
+    /// ```
+    ///
+    /// # Panics
+    ///
+    /// Same as [`new`](Self::new).
+    #[allow(clippy::needless_pass_by_value)]
+    pub fn new_event_ignored<F>(f: F, registry: &Registry) -> Self
+    where
+        NoEvent<F>: CallbackTemplateDispatch<K::Context, K::Params, K::Event>,
+    {
+        Self::new(NoEvent(f), registry)
     }
 
     /// Stamp out a new callback with the given context.
@@ -1226,9 +1273,9 @@ mod tests {
     // -- no_event ignoring a non-unit event (timer shape) ---------------------
 
     #[test]
-    fn no_event_ignores_a_non_unit_event() {
+    fn new_event_ignored_drops_a_non_unit_event() {
         // A blueprint whose Event is `u32`, backed by a function that ignores it
-        // (no trailing `_: u32`). `no_event` drops the event.
+        // (no trailing `_: u32`). `new_event_ignored` drops the event.
         struct OnTick;
         impl Blueprint for OnTick {
             type Event = u32;
@@ -1243,7 +1290,7 @@ mod tests {
         builder.register::<u64>(0);
         let mut world = builder.build();
 
-        let template = HandlerTemplate::<OnTick>::new(no_event(bump), world.registry());
+        let template = HandlerTemplate::<OnTick>::new_event_ignored(bump, world.registry());
         let mut h = template.generate();
         h.run(&mut world, 999u32); // event dropped
         h.run(&mut world, 7u32);
@@ -1251,7 +1298,7 @@ mod tests {
     }
 
     #[test]
-    fn callback_no_event_ignores_a_non_unit_event() {
+    fn callback_new_event_ignored_drops_a_non_unit_event() {
         // The timer shape: a callback template whose Event is non-unit (`u32`,
         // stands in for `Instant`), ignored by the function.
         struct OnTimer;
@@ -1272,7 +1319,7 @@ mod tests {
         builder.register::<u64>(0);
         let mut world = builder.build();
 
-        let template = CallbackTemplate::<OnTimer>::new(no_event(fire), world.registry());
+        let template = CallbackTemplate::<OnTimer>::new_event_ignored(fire, world.registry());
         let mut cb = template.generate(0u64);
         cb.run(&mut world, 42u32); // Instant-like event dropped
         assert_eq!(*cb.ctx(), 1);

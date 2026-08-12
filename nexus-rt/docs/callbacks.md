@@ -255,6 +255,20 @@ assert_eq!(callbacks[99].ctx.bytes, 20);
 assert_eq!(world.resource::<SharedState>().total, 30);
 ```
 
+### Ignoring the event
+
+If the callback function doesn't use the event (common for timers — the callback
+fires on a deadline but doesn't need the `Instant`), drop the trailing event
+parameter and build with `new_event_ignored` instead of `new`:
+
+```rust,ignore
+// fn on_fire(ctx: &mut TimerCtx, mut wheel: ResMut<TimerWheel>) { /* no _: Instant */ }
+let template = CallbackTemplate::<OnFire>::new_event_ignored(on_fire, reg);
+```
+
+The blueprint's `Event` (whatever its type) is dropped. Same as
+`into_handler_event_ignored` on the raw handler side.
+
 ## Self-Rescheduling Callbacks (Periodic Timers, Retries)
 
 `CallbackTemplate` is `Copy`, so a callback's **context can carry its own

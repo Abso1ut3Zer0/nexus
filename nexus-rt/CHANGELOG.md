@@ -12,6 +12,20 @@ contained.
 
 ### Added
 
+- **Ignore the event without naming it.** A handler or callback that doesn't use
+  the event can omit the trailing `_: Event` parameter and say so at the build
+  site instead:
+  - Raw handlers: `f.into_handler_event_ignored(reg)` (trait
+    `IntoHandlerIgnoringEvent`) produces a `Handler<E>` that drops the event —
+    for **any** `E`, including borrowed / non-`'static` wire events (the handler
+    stores no `E`, so there's no `'static` bound).
+  - Templates: `HandlerTemplate::new_event_ignored(f, reg)` and
+    `CallbackTemplate::new_event_ignored(f, reg)`.
+
+  Common for timers (ignore the `Instant`) and event-triggered handlers that only
+  read resources. The event is still dispatched and then dropped — zero runtime
+  cost, identical to writing `_: Event`. These are the preferred form; the
+  `no_event` wrapper remains for the `E = ()` case.
 - **Self-referential blueprints — `CallbackTemplate` is now `Copy` / `Clone`.**
   A callback can carry its own template in its context and stamp its own successor
   (a periodic re-arm, a retry timer, any "produce the next me" pattern) through the
