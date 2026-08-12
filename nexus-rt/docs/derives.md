@@ -41,13 +41,14 @@ error points at the derived struct and names the offending field, via the
 ### Self-referential resource types
 
 Some resources are legitimately self-referential — most commonly a slot that
-holds callbacks which themselves read that slot, e.g. a timer-wheel-like
-`struct Pending(Option<TemplatedCallback<K>>)` used by the
+holds callbacks which themselves read that slot. For a concrete callback
+blueprint `Heartbeat`, that slot is
+`struct Pending(Option<TemplatedCallback<Heartbeat>>)`, as used by the
 [self-rescheduling pattern](callbacks.md#self-rescheduling-callbacks-periodic-timers-retries).
 The referenced type is finite (a callback holds a fn pointer and pre-resolved
-state, never the slot), so `#[derive(Resource)]` works on it. (The derive no
-longer emits an explicit `Send` bound, which previously overflowed auto-trait
-resolution on exactly this shape.)
+state, never the slot), so `#[derive(Resource)]` works on it. (For a concrete
+type the derive no longer emits an explicit `Send` bound, which previously
+overflowed auto-trait resolution on exactly this shape.)
 
 ## `new_resource!`
 
