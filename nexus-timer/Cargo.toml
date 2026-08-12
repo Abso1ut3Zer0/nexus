@@ -26,3 +26,7 @@ harness = false
 
 [lints]
 workspace = true
+
+[[bench]]
+name = "perf_server_scenarios"
+harness = false

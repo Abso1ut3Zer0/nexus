@@ -1,9 +1,10 @@
 //! Timer wheel — the main data structure.
 //!
-//! `TimerWheel<T, S>` is a multi-level, no-cascade timer wheel. Entries are
-//! placed into a level based on how far in the future their deadline is.
-//! Once placed, an entry never moves — poll checks `deadline_ticks <= now`
-//! per entry.
+//! `TimerWheel<T, S>` is a multi-level, rebalancing timer wheel. Entries are
+//! placed into a level based on how far in the future their deadline is, and
+//! **rebalanced** down to finer levels as their deadline approaches; `poll`
+//! then collects ready timers from the small, exact fine-level slots. Timers
+//! fire at their exact tick, never early, never missed.
 
 use std::cell::Cell;
 use std::marker::PhantomData;
@@ -50,6 +51,7 @@ pub struct WheelBuilder {
     slots_per_level: usize,
     clk_shift: u32,
     num_levels: usize,
+    max_rebalances_per_poll: usize,
 }
 
 impl Default for WheelBuilder {
@@ -59,6 +61,7 @@ impl Default for WheelBuilder {
             slots_per_level: 64,
             clk_shift: 3,
             num_levels: 7,
+            max_rebalances_per_poll: usize::MAX,
         }
     }
 }
@@ -75,13 +78,19 @@ impl WheelBuilder {
         self
     }
 
-    /// Sets the number of slots per level. Must be a power of 2. Default: 64.
+    /// Sets the number of slots per level. Must be a power of 2, at most 64, and
+    /// greater than `2^clk_shift` so a rebalance always moves an entry to a
+    /// strictly finer level (`clk_shift` and `slots_per_level` are validated
+    /// together at [`build`](UnboundedWheelBuilder::build)). Default: 64.
     pub fn slots_per_level(mut self, n: usize) -> Self {
         self.slots_per_level = n;
         self
     }
 
-    /// Sets the bit shift between levels (multiplier = 2^clk_shift). Default: 3 (8x).
+    /// Sets the bit shift between levels (multiplier = 2^clk_shift). Must satisfy
+    /// `2^clk_shift < slots_per_level` so a rebalance always moves an entry to a
+    /// strictly finer level (validated at build); with the default 64 slots that
+    /// allows `clk_shift` up to 5. Default: 3 (8x).
     pub fn clk_shift(mut self, s: u32) -> Self {
         self.clk_shift = s;
         self
@@ -90,6 +99,35 @@ impl WheelBuilder {
     /// Sets the number of levels. Default: 7.
     pub fn num_levels(mut self, n: usize) -> Self {
         self.num_levels = n;
+        self
+    }
+
+    /// Sets the maximum number of entries **rebalanced** (moved to a finer
+    /// level) per [`poll_and_rebalance`](TimerWheel::poll_and_rebalance).
+    /// Default: `usize::MAX` (unbounded).
+    ///
+    /// Rebalancing is maintenance: as time advances, a timer scheduled far in
+    /// the future is placed in a coarse level, and when its slot comes due it is
+    /// moved down to a finer level so it is not re-scanned on every future poll.
+    /// Unbounded (the default), one poll rebalances a whole slot at once — least
+    /// total work, but a rare poll can spike. A cap spreads that work across
+    /// several polls: each poll rebalances at most `n` entries and leaves the
+    /// rest in place, trading the rare spike for slightly more total work (the
+    /// leftover entries are walked again on a later poll).
+    ///
+    /// **This bounds only rebalancing, never firing.** Every due timer is still
+    /// collected at its exact deadline regardless of the cap, because a
+    /// not-yet-due entry left un-rebalanced simply fires from whatever level it
+    /// is sitting in when its time comes. The cap can therefore never make a
+    /// timer fire late or be missed; it is purely a latency-smoothing knob for
+    /// the poll hot path.
+    ///
+    /// **Recommended to tune** for latency-sensitive loops: pick `n` large
+    /// enough to keep up with the steady rebalance rate (roughly
+    /// `population * num_levels / average_timeout_in_ticks`) so entries do not
+    /// backlog, yet small enough that no single poll stalls.
+    pub fn max_rebalances_per_poll(mut self, n: usize) -> Self {
+        self.max_rebalances_per_poll = n;
         self
     }
 
@@ -147,6 +185,21 @@ impl WheelBuilder {
             slots_log2 + max_shift < 64,
             "slots_per_level << max_shift would overflow u64"
         );
+        // Rebalance progress guard. When a due slot is polled, a not-yet-due entry
+        // is relocated to a strictly finer level (see `TimerWheel::poll_level`).
+        // That requires a level's per-slot granularity (2^clk_shift) to be
+        // smaller than the number of slots per level; otherwise an entry could
+        // relocate to the *same* level and poll would live-lock. Both are powers
+        // of two, so `2^clk_shift < slots_per_level` iff `clk_shift < slots_log2`
+        // (avoids a shift that could overflow for absurd clk_shift). Checked last
+        // so a config that also overflows reports the overflow first.
+        assert!(
+            (self.clk_shift as u64) < slots_log2,
+            "2^clk_shift must be < slots_per_level so rebalancing relocates to a \
+             strictly finer level (got clk_shift = {}, slots_per_level = {})",
+            self.clk_shift,
+            self.slots_per_level,
+        );
     }
 
     fn tick_ns(&self) -> u64 {
@@ -189,6 +242,7 @@ impl UnboundedWheelBuilder {
             active_levels: 0,
             len: 0,
             min_deadline: Cell::new(None),
+            max_rebalances_per_poll: self.config.max_rebalances_per_poll,
             _marker: PhantomData,
         }
     }
@@ -229,6 +283,7 @@ impl BoundedWheelBuilder {
             active_levels: 0,
             len: 0,
             min_deadline: Cell::new(None),
+            max_rebalances_per_poll: self.config.max_rebalances_per_poll,
             _marker: PhantomData,
         }
     }
@@ -238,7 +293,7 @@ impl BoundedWheelBuilder {
 // TimerWheel
 // =============================================================================
 
-/// A multi-level, no-cascade timer wheel.
+/// A multi-level, rebalancing timer wheel.
 ///
 /// Generic over:
 /// - `T` — the user payload stored with each timer.
@@ -264,6 +319,9 @@ pub struct TimerWheel<
     epoch: Instant,
     len: usize,
     min_deadline: Cell<Option<u64>>,
+    /// Max entries rebalanced (moved to a finer level) per poll_and_rebalance (see
+    /// [`WheelBuilder::max_rebalances_per_poll`]). `usize::MAX` = unbounded.
+    max_rebalances_per_poll: usize,
     _marker: PhantomData<*const ()>, // !Send (overridden below), !Sync
 }
 
@@ -553,27 +611,149 @@ impl<T: 'static, S: SlabStore<Item = WheelEntry<T>>> TimerWheel<T, S> {
         TimerHandle::new(ptr)
     }
 
-    /// Fires all expired timers, collecting their values into `buf`.
+    /// Collects all ready (due) timers into `buf`, **without rebalancing**, and
+    /// returns how many were collected.
     ///
-    /// Returns the number of timers fired.
+    /// This is the minimal poll: it hands back the timers whose deadline has
+    /// passed and does no maintenance, so a not-yet-due entry stays in whatever
+    /// level it was placed in. Cheap on any single call — but if you *only* ever
+    /// call `poll`, entries are never moved to finer levels and a busy wheel
+    /// degrades to an O(population) scan per poll. For steady low-latency
+    /// polling, prefer [`poll_and_rebalance`](Self::poll_and_rebalance)
+    /// (collect + maintain in one pass).
     pub fn poll(&mut self, now: Instant, buf: &mut Vec<T>) -> usize {
         self.poll_with_limit(now, usize::MAX, buf)
     }
 
-    /// Fires expired timers up to `limit`, collecting values into `buf`.
+    /// Collects up to `limit` ready timers into `buf`, without rebalancing.
     ///
     /// Resumable: if the limit is hit, the next call continues where this one
-    /// left off (as long as `now` hasn't changed).
+    /// left off (as long as `now` hasn't changed). See [`poll`](Self::poll) for
+    /// the rebalancing tradeoff.
     ///
-    /// Returns the number of timers fired in this call.
+    /// Returns the number collected in this call.
     pub fn poll_with_limit(&mut self, now: Instant, limit: usize, buf: &mut Vec<T>) -> usize {
+        // Rebalance budget 0 → collect only, never move an entry to a finer level.
+        self.poll_inner(now, limit, 0, buf)
+    }
+
+    /// Collects all ready timers into `buf` **and rebalances** the wheel in the
+    /// same pass — the batteries-included poll. Returns how many were collected.
+    ///
+    /// Collecting is unbounded; **rebalancing** (moving not-yet-due entries to
+    /// finer levels so future polls stay cheap) is capped at
+    /// [`max_rebalances_per_poll`](WheelBuilder::max_rebalances_per_poll)
+    /// (default unbounded). The cap only smooths rebalance work across polls — it
+    /// never delays or drops a fire.
+    pub fn poll_and_rebalance(&mut self, now: Instant, buf: &mut Vec<T>) -> usize {
+        self.poll_and_rebalance_with_limit(now, usize::MAX, buf)
+    }
+
+    /// Collects up to `limit` ready timers into `buf` and rebalances the wheel.
+    ///
+    /// The collect phase is resumable like
+    /// [`poll_with_limit`](Self::poll_with_limit); rebalancing is capped by
+    /// [`max_rebalances_per_poll`](WheelBuilder::max_rebalances_per_poll).
+    /// Returns the number collected in this call.
+    pub fn poll_and_rebalance_with_limit(
+        &mut self,
+        now: Instant,
+        limit: usize,
+        buf: &mut Vec<T>,
+    ) -> usize {
+        self.poll_inner(now, limit, self.max_rebalances_per_poll, buf)
+    }
+
+    /// **Proactively** rebalances the wheel: moves up to `limit` not-yet-due
+    /// entries down to the finest level they now belong in, and returns how many
+    /// moved. Does **not** collect or fire anything.
+    ///
+    /// This is the maintenance half of [`poll_and_rebalance`](Self::poll_and_rebalance),
+    /// exposed on its own so you can move it *off* the collect hot path.
+    ///
+    /// # When to reach for this
+    ///
+    /// Use `poll` + `rebalance` (instead of `poll_and_rebalance`) when you have a
+    /// **large number of outstanding timers and want to cut the poll tail**. The
+    /// cost of a poll that has work is dominated by walking a fat coarse slot to
+    /// find the ready timers; by pulling entries down to exact fine-level slots
+    /// *before* their slot comes due, `rebalance` keeps that walk small, so the
+    /// collect stays cheap and flat. In practice this moves the poll-tail work
+    /// off the hot path onto `rebalance`, roughly quartering the collect's p99.9
+    /// on a busy wheel — at the price of doing the maintenance yourself, when it
+    /// suits you.
+    ///
+    /// # Recommended pattern: opportunistic + bounded
+    ///
+    /// Rebalance only when a poll came back empty — i.e. during genuine slack —
+    /// and bound each call so a high-frequency loop spreads the work instead of
+    /// stalling on one big sweep (`rebalance` is resumable; the next call
+    /// continues):
+    ///
+    /// ```ignore
+    /// let collected = wheel.poll(now, &mut buf);
+    /// if collected == 0 {
+    ///     // nothing to deliver — maintain during the slack, a bounded slice
+    ///     wheel.rebalance(now, REBALANCE_BUDGET);
+    /// }
+    /// ```
+    ///
+    /// This self-tunes to load: busy iterations pay only the cheap collect, and
+    /// the maintenance lands exactly on the idle ones. A fixed cadence (rebalance
+    /// every N iterations) also works — just avoid rebalancing on *every* poll,
+    /// which re-walks the look-ahead window and is pure overhead.
+    ///
+    /// # Safety of skipping it
+    ///
+    /// `rebalance` only visits slots whose earliest entry is already within a
+    /// finer level's reach, and moving nothing is always safe: an un-rebalanced
+    /// entry simply fires from wherever it is sitting when its time comes. If you
+    /// never call it, the wheel still works — it just degrades to walking coarse
+    /// slots on the collect path (which is what [`poll_and_rebalance`] does for
+    /// you in one call).
+    ///
+    /// [`poll_and_rebalance`]: Self::poll_and_rebalance
+    pub fn rebalance(&mut self, now: Instant, limit: usize) -> usize {
+        let now_ticks = self.instant_to_ticks(now);
+        self.current_ticks = now_ticks; // select_level / rebalance_level read this.
+
+        let mut moved = 0;
+        // Level 0 is already the finest — nothing to pull down from it. Ascending
+        // order; select_level places each entry at its correct level directly, so
+        // no entry is touched twice.
+        let mut mask = self.active_levels & !1;
+        while mask != 0 && moved < limit {
+            let lvl_idx = mask.trailing_zeros() as usize;
+            mask &= mask - 1;
+            // An entry at this level belongs at a finer one once it is within the
+            // next-finer level's range; a slot is worth visiting only if its
+            // earliest entry has reached that window.
+            let finer_reach = now_ticks.saturating_add(self.levels[lvl_idx - 1].range());
+            moved += self.rebalance_level(lvl_idx, finer_reach, limit - moved);
+        }
+
+        // Entries moved and per-slot minima changed; refresh the global-min cache.
+        self.min_deadline.set(self.walk_min_deadline());
+        moved
+    }
+
+    /// Shared poll body: collect ready timers (up to `limit`) and rebalance
+    /// not-yet-due entries to finer levels (up to `rebalance_budget`).
+    /// `rebalance_budget == 0` is collect-only.
+    fn poll_inner(
+        &mut self,
+        now: Instant,
+        limit: usize,
+        rebalance_budget: usize,
+        buf: &mut Vec<T>,
+    ) -> usize {
         let now_ticks = self.instant_to_ticks(now);
         self.current_ticks = now_ticks; // MUST precede the early return — select_level reads it.
 
         // Fast path: if the cached global minimum is beyond now, nothing is due,
-        // so skip the level walk entirely. The cache may be stale-low (a lower
-        // bound), so this is conservative — it can miss the shortcut, never fire
-        // late.
+        // so skip the level walk entirely — and with nothing due there is nothing
+        // to rebalance either. The cache may be stale-low (a lower bound), so this
+        // is conservative: it can miss the shortcut, never fire late.
         if let Some(min) = self.min_deadline.get()
             && min > now_ticks
         {
@@ -581,12 +761,23 @@ impl<T: 'static, S: SlabStore<Item = WheelEntry<T>>> TimerWheel<T, S> {
         }
 
         let mut fired = 0;
+        // Rebalance budget for this whole poll. Bounds only rebalancing, never
+        // collection — so the level loop below is NOT gated on it; due entries
+        // keep being collected after the budget is spent.
+        let mut rebalances = 0;
         let mut mask = self.active_levels;
 
         while mask != 0 && fired < limit {
             let lvl_idx = mask.trailing_zeros() as usize;
             mask &= mask - 1; // clear lowest set bit
-            fired += self.poll_level(lvl_idx, now_ticks, limit - fired, buf);
+            fired += self.poll_level(
+                lvl_idx,
+                now_ticks,
+                limit - fired,
+                rebalance_budget,
+                &mut rebalances,
+                buf,
+            );
         }
 
         // Refresh the global-min cache from the (now-healed) per-slot minima.
@@ -863,6 +1054,8 @@ impl<T: 'static, S: SlabStore<Item = WheelEntry<T>>> TimerWheel<T, S> {
         lvl_idx: usize,
         now_ticks: u64,
         limit: usize,
+        rebalance_budget: usize,
+        rebalances: &mut usize,
         buf: &mut Vec<T>,
     ) -> usize {
         let mut fired = 0;
@@ -874,8 +1067,12 @@ impl<T: 'static, S: SlabStore<Item = WheelEntry<T>>> TimerWheel<T, S> {
 
             let slot_ptr = self.levels[lvl_idx].slot(slot_idx) as *const crate::level::WheelSlot<T>;
             // SAFETY: slot_ptr points into self.levels[lvl_idx].slots
-            // (Box<[WheelSlot<T>]>), a stable heap allocation. fire_entry
-            // only mutates self.slab and self.len, not self.levels.
+            // (Box<[WheelSlot<T>]>), a stable heap allocation never reallocated
+            // during poll. fire_entry and insert_entry mutate self.slab, self.len,
+            // self.active_levels, self.min_deadline, and *other* levels' slots —
+            // rebalancing relocates only to strictly finer levels (< lvl_idx), never
+            // this slot — so this slot's backing memory is untouched and `slot`
+            // stays valid across the loop.
             let slot = unsafe { &*slot_ptr };
 
             // Slot-skip: if the slot's minimum deadline is beyond now, nothing
@@ -885,36 +1082,56 @@ impl<T: 'static, S: SlabStore<Item = WheelEntry<T>>> TimerWheel<T, S> {
                 continue;
             }
 
-            let mut new_min = u64::MAX; // recomputed over surviving entries
+            let mut new_min = u64::MAX; // min over entries that stay in this slot
             let mut entry_ptr = slot.entry_head();
 
             while !entry_ptr.is_null() && fired < limit {
                 // SAFETY: entry_ptr is in this slot's DLL
                 let entry = unsafe { entry_ref(entry_ptr) };
-                let next_entry = entry.next();
+                let next_entry = entry.next(); // captured before any unlink below
                 let dt = entry.deadline_ticks();
 
                 if dt <= now_ticks {
-                    // SAFETY: entry_ptr is in this slot's DLL (obtained from entry_head
-                    // and walked via next pointers within the same slot).
+                    // Due — fire it.
+                    // SAFETY: entry_ptr is in this slot's DLL (from entry_head,
+                    // walked via next pointers within the same slot).
                     unsafe { slot.remove_entry(entry_ptr) };
-
                     if let Some(value) = self.fire_entry(entry_ptr) {
                         buf.push(value);
                     }
                     fired += 1;
+                } else if *rebalances < rebalance_budget && self.select_level(dt) < lvl_idx {
+                    // Not due, it now belongs at a strictly finer level, and we are
+                    // still under the per-poll rebalance budget: relocate it down
+                    // instead of re-walking it every poll until this slot's span
+                    // passes. The target (< lvl_idx) is never this slot, so the walk
+                    // terminates and the entry is not re-processed this poll (finer
+                    // levels are polled first). current_ticks == now_ticks (set in
+                    // poll_inner before this loop), so insert_entry selects the
+                    // correct finer level.
+                    // SAFETY: entry_ptr is in this slot's DLL.
+                    unsafe { slot.remove_entry(entry_ptr) };
+                    self.insert_entry(entry_ptr, dt);
+                    *rebalances += 1;
                 } else {
-                    new_min = new_min.min(dt); // survivor
+                    // Not due, and left in place — either it still belongs at this
+                    // level (a far entry sharing the slot via the modular index:
+                    // deadlines a full level-range apart map to the same slot), or
+                    // the per-poll rebalance budget is spent. Either way it stays put
+                    // and fires (or rebalances) on a later poll from wherever it sits;
+                    // track it as the slot's surviving minimum. A spent budget can
+                    // never make a timer fire late — poll still fires it the moment
+                    // dt <= now, regardless of which level it is in.
+                    new_min = new_min.min(dt);
                 }
 
                 entry_ptr = next_entry;
             }
 
-            // Trust the recomputed min ONLY if we walked the whole slot. If the
-            // limit truncated the walk (entry_ptr still non-null), new_min omits
-            // the un-walked entries, so setting it could be stale-HIGH — which
-            // would let a later poll skip a due entry. Leave the slot min
-            // stale-low instead; the next poll re-walks and heals it.
+            // If we walked the whole slot, its minimum is exactly the min over the
+            // entries that stayed (u64::MAX — the empty sentinel — when the slot
+            // drained via fires + rebalances). A limit-truncated walk (entry_ptr
+            // non-null) leaves the min stale-low; the next poll re-walks and heals.
             if entry_ptr.is_null() {
                 slot.set_min_deadline(new_min);
             }
@@ -930,6 +1147,70 @@ impl<T: 'static, S: SlabStore<Item = WheelEntry<T>>> TimerWheel<T, S> {
         }
 
         fired
+    }
+
+    /// Proactively pulls not-yet-due entries at `lvl_idx` down to a finer level.
+    /// Visits only active slots whose earliest entry has reached `finer_reach`
+    /// (is within the next-finer level's range) and relocates each entry that now
+    /// belongs at a strictly finer level, up to `limit`. Returns how many moved.
+    /// Fires nothing.
+    fn rebalance_level(&mut self, lvl_idx: usize, finer_reach: u64, limit: usize) -> usize {
+        let mut moved = 0;
+        let mut mask = self.levels[lvl_idx].active_slots();
+
+        while mask != 0 && moved < limit {
+            let slot_idx = mask.trailing_zeros() as usize;
+            mask &= mask - 1;
+
+            let slot_ptr = self.levels[lvl_idx].slot(slot_idx) as *const crate::level::WheelSlot<T>;
+            // SAFETY: same argument as poll_level — slot_ptr points into the
+            // stable Box<[WheelSlot<T>]>; insert_entry only ever relocates to a
+            // strictly finer level (< lvl_idx), never this slot, so `slot` stays
+            // valid across the loop.
+            let slot = unsafe { &*slot_ptr };
+
+            // Nothing to pull down yet if the earliest entry hasn't reached the
+            // finer level's window.
+            if slot.min_deadline() >= finer_reach {
+                continue;
+            }
+
+            let mut new_min = u64::MAX;
+            let mut entry_ptr = slot.entry_head();
+
+            while !entry_ptr.is_null() && moved < limit {
+                // SAFETY: entry_ptr is in this slot's DLL.
+                let entry = unsafe { entry_ref(entry_ptr) };
+                let next_entry = entry.next();
+                let dt = entry.deadline_ticks();
+
+                if self.select_level(dt) < lvl_idx {
+                    // SAFETY: entry_ptr is in this slot's DLL.
+                    unsafe { slot.remove_entry(entry_ptr) };
+                    self.insert_entry(entry_ptr, dt);
+                    moved += 1;
+                } else {
+                    // Still belongs at this level (modular-index neighbor a full
+                    // range away, or budget-truncated). Leave it; track its min.
+                    new_min = new_min.min(dt);
+                }
+
+                entry_ptr = next_entry;
+            }
+
+            // Fully-walked slot: its min is exactly the min over entries that
+            // stayed. A limit-truncated walk (entry_ptr non-null) leaves it
+            // stale-low; the next rebalance/poll re-walks and heals it.
+            if entry_ptr.is_null() {
+                slot.set_min_deadline(new_min);
+            }
+
+            if slot.is_empty() {
+                self.levels[lvl_idx].deactivate_slot(slot_idx);
+            }
+        }
+
+        moved
     }
 }
 
@@ -2058,6 +2339,165 @@ mod tests {
             .build::<u64>(now);
     }
 
+    #[test]
+    #[should_panic(expected = "strictly finer level")]
+    fn invalid_config_rebalance_progress() {
+        let now = Instant::now();
+        // slots_per_level = 4 (2^2), clk_shift = 3 → 2^3 = 8 >= 4, so a not-due
+        // entry could rebalance to the *same* level and poll would live-lock.
+        // Must be rejected at build time.
+        WheelBuilder::default()
+            .slots_per_level(4)
+            .clk_shift(3)
+            .num_levels(2)
+            .unbounded(64)
+            .build::<u64>(now);
+    }
+
+    // -------------------------------------------------------------------------
+    // Rebalance tests (#668)
+    // -------------------------------------------------------------------------
+
+    #[test]
+    fn rebalanced_entry_fires_at_its_deadline() {
+        let now = Instant::now();
+        let mut wheel: Wheel<u64> = WheelBuilder::default().unbounded(256).build(now);
+
+        // Both deadlines land in the same level-2 slot (46): 3000>>6 == 3005>>6.
+        // At now=3000 the slot's min (3000) is due, so the slot is walked: 3000
+        // is collected, and 3005 (not yet due) is rebalanced to a finer level
+        // rather than being re-walked. It must still fire at its exact deadline.
+        wheel.schedule_forget(now + ms(3000), 1);
+        wheel.schedule_forget(now + ms(3005), 2);
+
+        let mut buf = Vec::new();
+        wheel.poll_and_rebalance(now + ms(3000), &mut buf);
+        assert_eq!(buf, vec![1], "3000 collected, 3005 rebalanced");
+
+        buf.clear();
+        wheel.poll_and_rebalance(now + ms(3005), &mut buf);
+        assert_eq!(buf, vec![2], "rebalanced entry fires at its exact deadline");
+        assert!(wheel.is_empty());
+    }
+
+    #[test]
+    fn cancel_after_rebalance() {
+        let now = Instant::now();
+        let mut wheel: Wheel<u64> = WheelBuilder::default().unbounded(256).build(now);
+
+        wheel.schedule_forget(now + ms(3000), 1);
+        let h = wheel.schedule(now + ms(3005), 2); // rebalanced on the 3000 poll
+
+        let mut buf = Vec::new();
+        wheel.poll_and_rebalance(now + ms(3000), &mut buf);
+        assert_eq!(buf, vec![1]);
+        assert_eq!(wheel.len(), 1, "rebalanced entry still live");
+
+        // cancel must find the entry at its new (finer) location and return it.
+        assert_eq!(wheel.cancel(h), Some(2));
+        assert_eq!(wheel.len(), 0);
+    }
+
+    #[test]
+    fn bounded_rebalance_still_fires_everything_on_time() {
+        let now = Instant::now();
+        // Cap = 1 rebalance per poll — a herd of not-yet-due entries in one
+        // coarse slot drains over many polls instead of all at once, but every
+        // timer must still fire at its exact deadline.
+        let mut wheel: Wheel<u64> = WheelBuilder::default()
+            .max_rebalances_per_poll(1)
+            .unbounded(256)
+            .build(now);
+
+        // 20 deadlines spread across one level-2 slot (all map to slot 46).
+        let mut expected: Vec<u64> = Vec::new();
+        for i in 0..20u64 {
+            let d = 2950 + i * 2; // 2950, 2952, ... 2988 — all in level-2 slot 46
+            wheel.schedule_forget(now + ms(d), d);
+            expected.push(d);
+        }
+
+        let mut fired: Vec<u64> = Vec::new();
+        let mut buf = Vec::new();
+        for t in 0..=3000u64 {
+            buf.clear();
+            wheel.poll_and_rebalance(now + ms(t), &mut buf);
+            for &v in &buf {
+                assert!(v <= t, "timer {v} fired early at {t}");
+                fired.push(v);
+            }
+        }
+        fired.sort_unstable();
+        assert_eq!(fired, expected, "every timer fires exactly once, on time");
+        assert!(wheel.is_empty());
+    }
+
+    #[test]
+    fn rebalance_cap_zero_is_collect_only() {
+        let now = Instant::now();
+        // Cap = 0: no rebalancing at all — entries never move levels and fire
+        // from wherever they were placed (pure drip-fire). Must still be correct.
+        let mut wheel: Wheel<u64> = WheelBuilder::default()
+            .max_rebalances_per_poll(0)
+            .unbounded(256)
+            .build(now);
+
+        wheel.schedule_forget(now + ms(3000), 1);
+        wheel.schedule_forget(now + ms(3005), 2); // would rebalance if the cap allowed
+
+        let mut buf = Vec::new();
+        wheel.poll_and_rebalance(now + ms(3000), &mut buf);
+        assert_eq!(buf, vec![1]); // 3000 collected; 3005 left in its coarse slot
+        buf.clear();
+        wheel.poll_and_rebalance(now + ms(3005), &mut buf);
+        assert_eq!(buf, vec![2]); // fires on time from its original slot
+        assert!(wheel.is_empty());
+    }
+
+    #[test]
+    fn proactive_rebalance_moves_and_preserves_firing() {
+        let now = Instant::now();
+        let mut wheel: Wheel<u64> = WheelBuilder::default().unbounded(256).build(now);
+
+        // 10 deadlines at level 2 (delta ~3000 ∈ [512, 4096)).
+        let mut expected = Vec::new();
+        for i in 0..10u64 {
+            let d = 3000 + i * 4;
+            wheel.schedule_forget(now + ms(d), d);
+            expected.push(d);
+        }
+
+        // Far from the deadlines, nothing is within a finer level's reach.
+        assert_eq!(
+            wheel.rebalance(now, usize::MAX),
+            0,
+            "nothing to pull down yet"
+        );
+
+        // Drive the timeline with proactive rebalance + collect-only poll. Every
+        // timer must still fire exactly once, on time — and rebalance must have
+        // actually pulled entries down as they approached.
+        let mut fired = Vec::new();
+        let mut buf = Vec::new();
+        let mut total_moved = 0;
+        for t in 0..=3040u64 {
+            total_moved += wheel.rebalance(now + ms(t), usize::MAX);
+            buf.clear();
+            wheel.poll(now + ms(t), &mut buf);
+            for &v in &buf {
+                assert!(v <= t, "timer {v} fired early at {t}");
+                fired.push(v);
+            }
+        }
+        assert!(
+            total_moved > 0,
+            "rebalance pulled entries down as they neared"
+        );
+        fired.sort_unstable();
+        assert_eq!(fired, expected, "every timer fires once, on time");
+        assert!(wheel.is_empty());
+    }
+
     // -------------------------------------------------------------------------
     // Miri-compatible tests (L12)
     // -------------------------------------------------------------------------
@@ -2214,6 +2654,50 @@ mod tests {
         wheel.free(h3);
         wheel.free(h4);
         wheel.free(h5);
+    }
+
+    #[test]
+    fn miri_rebalance_relocate_drop_type() {
+        // Exercises the rebalance relocate path (insert_entry called while this
+        // slot's `&WheelSlot` is held) with a Drop type, to catch any aliasing
+        // UB in that hot-path borrow. Must use poll_and_rebalance — plain poll
+        // never relocates, so it would not exercise the path.
+        let now = Instant::now();
+        let mut wheel: Wheel<String> = Wheel::unbounded(64, now);
+
+        // Same level-2 slot: 3000>>6 == 3005>>6. At now=3000 the "collected"
+        // entry fires and the "rebalanced" entry relocates to a finer level.
+        wheel.schedule_forget(now + ms(3000), "collected".to_string());
+        wheel.schedule_forget(now + ms(3005), "rebalanced".to_string());
+
+        let mut buf = Vec::new();
+        wheel.poll_and_rebalance(now + ms(3000), &mut buf);
+        assert_eq!(buf, vec!["collected".to_string()]);
+
+        buf.clear();
+        wheel.poll_and_rebalance(now + ms(3005), &mut buf);
+        assert_eq!(buf, vec!["rebalanced".to_string()]);
+        assert!(wheel.is_empty());
+    }
+
+    #[test]
+    fn miri_rebalance_method_drop_type() {
+        // Standalone rebalance() uses the same insert_entry-while-slot-borrowed
+        // pattern as poll_and_rebalance; exercise it with a Drop type.
+        let now = Instant::now();
+        let mut wheel: Wheel<String> = Wheel::unbounded(64, now);
+        wheel.schedule_forget(now + ms(3000), "a".to_string());
+        wheel.schedule_forget(now + ms(3004), "b".to_string());
+
+        // Advance so both are within a finer level's reach, then rebalance.
+        let moved = wheel.rebalance(now + ms(2960), usize::MAX);
+        assert!(moved >= 1);
+
+        let mut buf = Vec::new();
+        wheel.poll(now + ms(3004), &mut buf);
+        buf.sort();
+        assert_eq!(buf, vec!["a".to_string(), "b".to_string()]);
+        assert!(wheel.is_empty());
     }
 }
 
