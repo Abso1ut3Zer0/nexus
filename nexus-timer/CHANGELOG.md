@@ -28,6 +28,18 @@ contained.
   (~12 cycles/op, amortized, at 100 / 1k / 10k / 50k), versus the wheel's
   O(population) 0.2 µs → 2.4 ms.
 
+- Timer wheel poll fast path — a cached global-minimum early-exit plus a
+  per-slot minimum deadline. A nothing-due poll returns after a single compare
+  instead of walking every active level, and the global minimum is recomputed
+  from ~one compare per populated slot rather than one per entry.
+
+### Changed
+
+- `TimerWheel::next_deadline()` now returns a **lower bound** rather than the
+  exact next deadline. Per-slot minima are left stale-low after a cancel or fire
+  (not recomputed on removal), so the result may be earlier than the true next
+  deadline, never later — safe as a sleep/wake bound (wake early, never miss).
+
 ## [1.4.2] and earlier
 
 Earlier history is not documented in this CHANGELOG. See git history

@@ -116,7 +116,7 @@ wheel.cancel(handle);
 
 | Method | Returns | Notes |
 |---|---|---|
-| `next_deadline()` | `Option<Instant>` | Earliest deadline across all levels |
+| `next_deadline()` | `Option<Instant>` | Lower bound on the earliest deadline (never later; may read early after cancel/fire) |
 | `len()` | `usize` | Number of active timers |
 | `is_empty()` | `bool` | Whether the wheel is empty |
 
