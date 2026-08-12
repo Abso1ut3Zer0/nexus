@@ -14,6 +14,10 @@ ready timers from small, exact slots.
   backends and their tradeoffs
 - [patterns.md](patterns.md) — cookbook: timeouts, heartbeats, periodic
   tasks, deadline scheduling
+- [perf-walk-locality.md](perf-walk-locality.md) — cache/locality audit (#669):
+  the poll walk is compute-bound and cache-resident at realistic sizes; when
+  slab fragmentation actually bites (> L3 working set), and why free-list
+  ordering is the wrong fix
 
 ## Related crates
 
