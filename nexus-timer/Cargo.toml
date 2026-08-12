@@ -22,7 +22,7 @@ name = "perf_timer"
 harness = false
 
 [[bench]]
-name = "perf_timeout_list"
+name = "perf_timeout_queue"
 harness = false
 
 [lints]

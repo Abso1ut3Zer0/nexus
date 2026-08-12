@@ -90,6 +90,7 @@ fn build<T: 'static>(now: Instant) -> Wheel<T> {
         .max_rebalances_per_poll(64) // smooth the rebalance burst
         .unbounded(4096)
         .build(now)
+        .expect("default-derived config is valid")
 }
 ```
 

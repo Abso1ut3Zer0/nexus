@@ -1,25 +1,25 @@
 //! Low-latency timer primitives: a hierarchical **timer wheel** (O(1) insert +
-//! cancel) for arbitrary deadlines, and a fixed-duration **[`TimeoutList`]** for
+//! cancel) for arbitrary deadlines, and a fixed-duration **[`TimeoutQueue`]** for
 //! the common case where every timer shares one timeout.
 //!
 //! # Two structures — pick by workload
 //!
 //! - [`TimerWheel`] ([`Wheel`] / [`BoundedWheel`]) — **arbitrary deadlines**:
 //!   timers that fire at different, unrelated future times.
-//! - [`TimeoutList`] ([`BoundedTimeoutList`]) — **a single fixed timeout**:
+//! - [`TimeoutQueue`] ([`BoundedTimeoutQueue`]) — **a single fixed timeout**:
 //!   every timer expires the *same* duration after it is scheduled.
 //!
 //! The tell: *"do all my timers time out after the same amount of time?"* —
-//! yes → [`TimeoutList`], no → the wheel.
+//! yes → [`TimeoutQueue`], no → the wheel.
 //!
-//! | | [`TimerWheel`] | [`TimeoutList`] |
+//! | | [`TimerWheel`] | [`TimeoutQueue`] |
 //! |---|---|---|
 //! | Timeout per timer | arbitrary | one fixed duration |
 //! | Poll | O(active population) | **O(fired)** |
 //! | `next_deadline` | lower bound (cached) | **O(1) exact** |
 //! | Clock | any monotone source | monotone, non-decreasing |
 //!
-//! Reach for [`TimeoutList`] on the hot path when it fits — idle timeouts (all
+//! Reach for [`TimeoutQueue`] on the hot path when it fits — idle timeouts (all
 //! 30 s), request deadlines (all 5 s), a fixed retry/debounce delay, uniform
 //! TTL expiry. Fixed duration ⇒ monotone deadlines ⇒ a sorted list, so a
 //! nothing-due poll stays flat (~12 cycles) no matter how many timers are
@@ -32,7 +32,7 @@
 //! `Instant` has no absolute zero (you can only measure durations *between*
 //! instants), so deadlines are stored relative to this epoch. Pass one monotone
 //! clock source (e.g. `Instant::now()`) to the constructor *and* to every
-//! `schedule` / `poll`. A `now` that goes backwards is a bug — [`TimeoutList`]
+//! `schedule` / `poll`. A `now` that goes backwards is a bug — [`TimeoutQueue`]
 //! debug-asserts on it.
 //!
 //! # Timer wheel design
@@ -80,17 +80,18 @@ mod entry;
 mod handle;
 mod level;
 pub mod store;
-pub mod timeout_list;
+pub mod timeout_queue;
 mod wheel;
 
 pub use entry::WheelEntry;
 pub use handle::TimerHandle;
-pub use timeout_list::{
-    BoundedTimeoutList, BoundedTimeoutListBuilder, TimeoutList, TimeoutListBuilder,
-    UnboundedTimeoutListBuilder,
+pub use timeout_queue::{
+    BoundedTimeoutQueue, BoundedTimeoutQueueBuilder, TimeoutQueue, TimeoutQueueBuilder,
+    UnboundedTimeoutQueueBuilder,
 };
 pub use wheel::{
-    BoundedWheel, BoundedWheelBuilder, TimerWheel, UnboundedWheelBuilder, Wheel, WheelBuilder,
+    BoundedWheel, BoundedWheelBuilder, ConfigError, TimerWheel, UnboundedWheelBuilder, Wheel,
+    WheelBuilder,
 };
 
 // Re-export Full for bounded wheel users

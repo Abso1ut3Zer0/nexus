@@ -10,13 +10,13 @@ use std::pin::Pin;
 use std::task::{Context, Poll, Waker};
 use std::time::{Duration, Instant};
 
-use nexus_timer::{Wheel, WheelBuilder};
+use nexus_timer::Wheel;
 
 // =============================================================================
 // TimerDriver — owned by Runtime
 // =============================================================================
 
-/// Timer wheel driver. O(1) insert, O(1) cancel, no-cascade poll.
+/// Timer wheel driver. O(1) insert, O(1) cancel, O(fired) poll.
 pub(crate) struct TimerDriver {
     wheel: Wheel<Waker>,
     /// Pre-allocated buffer for expired wakers. Reused across cycles.
@@ -26,7 +26,7 @@ pub(crate) struct TimerDriver {
 impl TimerDriver {
     pub(crate) fn new(capacity: usize) -> Self {
         let now = Instant::now();
-        let wheel = WheelBuilder::default().unbounded(capacity).build(now);
+        let wheel = Wheel::unbounded(capacity, now);
         Self {
             wheel,
             expired: Vec::with_capacity(64),

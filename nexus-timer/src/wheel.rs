@@ -18,6 +18,29 @@ use crate::handle::TimerHandle;
 use crate::level::Level;
 use crate::store::{BoundedStore, SlabStore};
 
+/// Error returned by a builder's `build` when the configuration is invalid.
+///
+/// A wheel / queue is configured at construction from your own constants, so an
+/// invalid config is a programmer error — but it is *returned* rather than
+/// panicked, both for consistency with the rest of the workspace and so a caller
+/// that sources configuration from runtime input can handle it. The message
+/// names the constraint that was violated.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ConfigError {
+    /// A configuration value is out of range; the message names the constraint.
+    Invalid(&'static str),
+}
+
+impl std::fmt::Display for ConfigError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Invalid(msg) => write!(f, "timer configuration error: {msg}"),
+        }
+    }
+}
+
+impl std::error::Error for ConfigError {}
+
 // =============================================================================
 // WheelBuilder (typestate)
 // =============================================================================
@@ -36,14 +59,15 @@ use crate::store::{BoundedStore, SlabStore};
 /// let now = Instant::now();
 ///
 /// // All defaults
-/// let wheel: Wheel<u64> = WheelBuilder::default().unbounded(4096).build(now);
+/// let wheel: Wheel<u64> = WheelBuilder::default().unbounded(4096).build(now).unwrap();
 ///
 /// // Custom config
 /// let wheel: Wheel<u64> = WheelBuilder::default()
 ///     .tick_duration(Duration::from_micros(100))
 ///     .slots_per_level(32)
 ///     .unbounded(4096)
-///     .build(now);
+///     .build(now)
+///     .unwrap();
 /// ```
 #[derive(Debug, Clone, Copy)]
 pub struct WheelBuilder {
@@ -152,54 +176,60 @@ impl WheelBuilder {
         }
     }
 
-    fn validate(&self) {
-        assert!(
-            self.slots_per_level.is_power_of_two(),
-            "slots_per_level must be a power of 2, got {}",
-            self.slots_per_level
-        );
-        assert!(
-            self.slots_per_level <= 64,
-            "slots_per_level must be <= 64 (u64 bitmask), got {}",
-            self.slots_per_level
-        );
-        assert!(self.num_levels > 0, "num_levels must be > 0");
-        assert!(
-            self.num_levels <= 8,
-            "num_levels must be <= 8 (u8 bitmask), got {}",
-            self.num_levels
-        );
-        assert!(self.clk_shift > 0, "clk_shift must be > 0");
-        assert!(
-            !self.tick_duration.is_zero(),
-            "tick_duration must be non-zero"
-        );
+    fn validate(&self) -> Result<(), ConfigError> {
+        if !self.slots_per_level.is_power_of_two() {
+            return Err(ConfigError::Invalid("slots_per_level must be a power of 2"));
+        }
+        if self.slots_per_level > 64 {
+            return Err(ConfigError::Invalid(
+                "slots_per_level must be <= 64 (u64 bitmask)",
+            ));
+        }
+        if self.num_levels == 0 {
+            return Err(ConfigError::Invalid("num_levels must be > 0"));
+        }
+        if self.num_levels > 8 {
+            return Err(ConfigError::Invalid("num_levels must be <= 8 (u8 bitmask)"));
+        }
+        if self.clk_shift == 0 {
+            return Err(ConfigError::Invalid("clk_shift must be > 0"));
+        }
+        if self.tick_duration.is_zero() {
+            return Err(ConfigError::Invalid("tick_duration must be non-zero"));
+        }
+        // tick_ns() narrows as_nanos() (u128) to u64; a duration whose nanos
+        // exceed u64::MAX would truncate — and a nonzero multiple of 2^64 would
+        // truncate to 0, making inv_tick_ns a divide-by-zero. Reject up front so
+        // build() stays panic-free.
+        if self.tick_duration.as_nanos() > u64::MAX as u128 {
+            return Err(ConfigError::Invalid(
+                "tick_duration must fit in u64 nanoseconds",
+            ));
+        }
         let max_shift = (self.num_levels - 1) as u64 * self.clk_shift as u64;
-        assert!(
-            max_shift < 64,
-            "(num_levels - 1) * clk_shift must be < 64, got {}",
-            max_shift
-        );
+        if max_shift >= 64 {
+            return Err(ConfigError::Invalid(
+                "(num_levels - 1) * clk_shift must be < 64",
+            ));
+        }
         let slots_log2 = self.slots_per_level.trailing_zeros() as u64;
-        assert!(
-            slots_log2 + max_shift < 64,
-            "slots_per_level << max_shift would overflow u64"
-        );
-        // Rebalance progress guard. When a due slot is polled, a not-yet-due entry
-        // is relocated to a strictly finer level (see `TimerWheel::poll_level`).
-        // That requires a level's per-slot granularity (2^clk_shift) to be
-        // smaller than the number of slots per level; otherwise an entry could
-        // relocate to the *same* level and poll would live-lock. Both are powers
-        // of two, so `2^clk_shift < slots_per_level` iff `clk_shift < slots_log2`
-        // (avoids a shift that could overflow for absurd clk_shift). Checked last
-        // so a config that also overflows reports the overflow first.
-        assert!(
-            (self.clk_shift as u64) < slots_log2,
-            "2^clk_shift must be < slots_per_level so rebalancing relocates to a \
-             strictly finer level (got clk_shift = {}, slots_per_level = {})",
-            self.clk_shift,
-            self.slots_per_level,
-        );
+        if slots_log2 + max_shift >= 64 {
+            return Err(ConfigError::Invalid(
+                "slots_per_level << max_shift would overflow u64",
+            ));
+        }
+        // Rebalance progress guard. When a due slot is polled, a not-yet-due
+        // entry is relocated to a strictly finer level (see `TimerWheel::poll_level`);
+        // that requires 2^clk_shift < slots_per_level (both powers of two, so
+        // `clk_shift < slots_log2`, avoiding a shift that could overflow for
+        // absurd clk_shift). Checked last so a config that also overflows reports
+        // the overflow first.
+        if (self.clk_shift as u64) >= slots_log2 {
+            return Err(ConfigError::Invalid(
+                "2^clk_shift must be < slots_per_level so rebalancing relocates to a strictly finer level",
+            ));
+        }
+        Ok(())
     }
 
     fn tick_ns(&self) -> u64 {
@@ -217,21 +247,22 @@ pub struct UnboundedWheelBuilder {
 }
 
 impl UnboundedWheelBuilder {
-    /// Builds the unbounded timer wheel.
+    /// Builds the unbounded timer wheel, validating the configuration.
     ///
-    /// # Panics
+    /// # Errors
     ///
-    /// Panics if the configuration is invalid (non-power-of-2 slots, zero
-    /// levels, zero clk_shift, or zero tick duration).
-    pub fn build<T: 'static>(self, now: Instant) -> Wheel<T> {
-        self.config.validate();
+    /// Returns [`ConfigError`] if the configuration is invalid (e.g.
+    /// non-power-of-2 `slots_per_level`, out-of-range `num_levels` / `clk_shift`,
+    /// zero tick duration, or `2^clk_shift >= slots_per_level`).
+    pub fn build<T: 'static>(self, now: Instant) -> Result<Wheel<T>, ConfigError> {
+        self.config.validate()?;
         // SAFETY: Timer wheel is single-threaded (!Send, !Sync). All slots
         // are freed via Slot::from_raw() + slab.free() before the wheel drops.
         // The slab is never shared across threads.
         let slab = unsafe { unbounded::Slab::with_chunk_capacity(self.chunk_capacity) };
         let levels = build_levels::<T>(&self.config);
         let tick_ns = self.config.tick_ns();
-        TimerWheel {
+        Ok(TimerWheel {
             slab,
             num_levels: self.config.num_levels,
             levels,
@@ -244,7 +275,7 @@ impl UnboundedWheelBuilder {
             min_deadline: Cell::new(None),
             max_rebalances_per_poll: self.config.max_rebalances_per_poll,
             _marker: PhantomData,
-        }
+        })
     }
 }
 
@@ -258,21 +289,22 @@ pub struct BoundedWheelBuilder {
 }
 
 impl BoundedWheelBuilder {
-    /// Builds the bounded timer wheel.
+    /// Builds the bounded timer wheel, validating the configuration.
     ///
-    /// # Panics
+    /// # Errors
     ///
-    /// Panics if the configuration is invalid (non-power-of-2 slots, zero
-    /// levels, zero clk_shift, or zero tick duration).
-    pub fn build<T: 'static>(self, now: Instant) -> BoundedWheel<T> {
-        self.config.validate();
+    /// Returns [`ConfigError`] if the configuration is invalid (e.g.
+    /// non-power-of-2 `slots_per_level`, out-of-range `num_levels` / `clk_shift`,
+    /// zero tick duration, or `2^clk_shift >= slots_per_level`).
+    pub fn build<T: 'static>(self, now: Instant) -> Result<BoundedWheel<T>, ConfigError> {
+        self.config.validate()?;
         // SAFETY: Timer wheel is single-threaded (!Send, !Sync). All slots
         // are freed via Slot::from_raw() + slab.free() before the wheel drops.
         // The slab is never shared across threads.
         let slab = unsafe { bounded::Slab::with_capacity(self.capacity) };
         let levels = build_levels::<T>(&self.config);
         let tick_ns = self.config.tick_ns();
-        TimerWheel {
+        Ok(TimerWheel {
             slab,
             num_levels: self.config.num_levels,
             levels,
@@ -285,7 +317,7 @@ impl BoundedWheelBuilder {
             min_deadline: Cell::new(None),
             max_rebalances_per_poll: self.config.max_rebalances_per_poll,
             _marker: PhantomData,
-        }
+        })
     }
 }
 
@@ -372,7 +404,10 @@ impl<T: 'static> Wheel<T> {
     /// (e.g. `Instant::now()`) here and to every `schedule`/`poll`. For custom
     /// configuration, use [`WheelBuilder`].
     pub fn unbounded(chunk_capacity: usize, now: Instant) -> Self {
-        WheelBuilder::default().unbounded(chunk_capacity).build(now)
+        WheelBuilder::default()
+            .unbounded(chunk_capacity)
+            .build(now)
+            .expect("default WheelBuilder config is valid")
     }
 }
 
@@ -383,7 +418,10 @@ impl<T: 'static> BoundedWheel<T> {
     /// (e.g. `Instant::now()`) here and to every `schedule`/`poll`. For custom
     /// configuration, use [`WheelBuilder`].
     pub fn bounded(capacity: usize, now: Instant) -> Self {
-        WheelBuilder::default().bounded(capacity).build(now)
+        WheelBuilder::default()
+            .bounded(capacity)
+            .build(now)
+            .expect("default WheelBuilder config is valid")
     }
 }
 
@@ -948,7 +986,7 @@ impl<T: 'static, S: SlabStore<Item = WheelEntry<T>>> TimerWheel<T, S> {
         unsafe { self.levels[lvl_idx].slot(slot_idx).push_entry(entry_ptr) };
 
         // Per-slot min: this entry may lower the slot's minimum. (Maintained here,
-        // not in push_entry, so TimeoutList's shared slot pays nothing.)
+        // not in push_entry, so TimeoutQueue's shared slot pays nothing.)
         {
             let slot = self.levels[lvl_idx].slot(slot_idx);
             slot.set_min_deadline(slot.min_deadline().min(deadline_ticks));
@@ -1294,13 +1332,13 @@ mod tests {
     }
 
     #[test]
-    #[should_panic(expected = "slots_per_level must be a power of 2")]
     fn invalid_config_non_power_of_two() {
         let now = Instant::now();
-        WheelBuilder::default()
+        let result = WheelBuilder::default()
             .slots_per_level(65)
             .unbounded(1024)
             .build::<u64>(now);
+        assert_invalid(&result, "power of 2");
     }
 
     // -------------------------------------------------------------------------
@@ -1659,7 +1697,8 @@ mod tests {
             let wheel: Wheel<u64> = WheelBuilder::default()
                 .tick_duration(Duration::from_nanos(tick_ns))
                 .unbounded(64)
-                .build(now);
+                .build(now)
+                .unwrap();
 
             for n in 0..500u64 {
                 let nanos = n * tick_ns;
@@ -2154,7 +2193,8 @@ mod tests {
         let mut wheel: Wheel<u64> = WheelBuilder::default()
             .slots_per_level(32)
             .unbounded(256)
-            .build(now);
+            .build(now)
+            .unwrap();
 
         // Level 0 range = 32 ticks (32ms with 1ms tick)
         // Deadline at 20ms should go to level 0
@@ -2181,7 +2221,8 @@ mod tests {
         let mut wheel: Wheel<u64> = WheelBuilder::default()
             .clk_shift(2)
             .unbounded(256)
-            .build(now);
+            .build(now)
+            .unwrap();
 
         // Level 0: 64 slots × 1ms = 64ms range
         // Level 1: 64 slots × 4ms = 256ms range (with 4x multiplier)
@@ -2207,7 +2248,8 @@ mod tests {
         let mut wheel: Wheel<u64> = WheelBuilder::default()
             .num_levels(3)
             .unbounded(256)
-            .build(now);
+            .build(now)
+            .unwrap();
 
         // Level 0: 64ms, Level 1: 512ms, Level 2: 4096ms
         // Max range is level 2 = 4096ms. Beyond that, clamped.
@@ -2228,7 +2270,8 @@ mod tests {
         let mut wheel: Wheel<u64> = WheelBuilder::default()
             .tick_duration(Duration::from_micros(100))
             .unbounded(256)
-            .build(now);
+            .build(now)
+            .unwrap();
 
         // 1ms = 10 ticks, should be level 0 (< 64 ticks)
         wheel.schedule_forget(now + ms(1), 1);
@@ -2251,7 +2294,8 @@ mod tests {
             .slots_per_level(16)
             .num_levels(4)
             .bounded(8)
-            .build(now);
+            .build(now)
+            .unwrap();
 
         // Fill to capacity
         let mut handles = Vec::new();
@@ -2275,83 +2319,110 @@ mod tests {
     // Builder validation (L13)
     // -------------------------------------------------------------------------
 
+    /// Asserts `result` is `Err(ConfigError::Invalid(_))` whose message contains
+    /// `expect_substr`. Generic over the Ok type so it needs no `Debug` bound on
+    /// the built wheel.
+    #[track_caller]
+    fn assert_invalid<T>(result: &Result<T, ConfigError>, expect_substr: &str) {
+        match result {
+            Err(ConfigError::Invalid(msg)) => assert!(
+                msg.contains(expect_substr),
+                "message {msg:?} does not contain {expect_substr:?}"
+            ),
+            Ok(_) => panic!("expected ConfigError::Invalid containing {expect_substr:?}, got Ok"),
+        }
+    }
+
     #[test]
-    #[should_panic(expected = "slots_per_level must be <= 64")]
     fn invalid_config_too_many_slots() {
         let now = Instant::now();
-        WheelBuilder::default()
+        let result = WheelBuilder::default()
             .slots_per_level(128)
             .unbounded(1024)
             .build::<u64>(now);
+        assert_invalid(&result, "slots_per_level must be <= 64");
     }
 
     #[test]
-    #[should_panic(expected = "num_levels must be > 0")]
     fn invalid_config_zero_levels() {
         let now = Instant::now();
-        WheelBuilder::default()
+        let result = WheelBuilder::default()
             .num_levels(0)
             .unbounded(1024)
             .build::<u64>(now);
+        assert_invalid(&result, "num_levels must be > 0");
     }
 
     #[test]
-    #[should_panic(expected = "num_levels must be <= 8")]
     fn invalid_config_too_many_levels() {
         let now = Instant::now();
-        WheelBuilder::default()
+        let result = WheelBuilder::default()
             .num_levels(9)
             .unbounded(1024)
             .build::<u64>(now);
+        assert_invalid(&result, "num_levels must be <= 8");
     }
 
     #[test]
-    #[should_panic(expected = "clk_shift must be > 0")]
     fn invalid_config_zero_shift() {
         let now = Instant::now();
-        WheelBuilder::default()
+        let result = WheelBuilder::default()
             .clk_shift(0)
             .unbounded(1024)
             .build::<u64>(now);
+        assert_invalid(&result, "clk_shift must be > 0");
     }
 
     #[test]
-    #[should_panic(expected = "tick_duration must be non-zero")]
     fn invalid_config_zero_tick() {
         let now = Instant::now();
-        WheelBuilder::default()
+        let result = WheelBuilder::default()
             .tick_duration(Duration::ZERO)
             .unbounded(1024)
             .build::<u64>(now);
+        assert_invalid(&result, "tick_duration must be non-zero");
     }
 
     #[test]
-    #[should_panic(expected = "overflow")]
+    fn invalid_config_tick_too_large() {
+        let now = Instant::now();
+        // as_nanos() would exceed u64::MAX (~584 years), which would truncate on
+        // the cast to u64 — must be rejected, not silently narrowed (a nonzero
+        // multiple of 2^64 would truncate to 0 → divide-by-zero in build()).
+        let result = WheelBuilder::default()
+            .tick_duration(Duration::from_secs(20_000_000_000))
+            .unbounded(1024)
+            .build::<u64>(now);
+        assert_invalid(&result, "tick_duration must fit in u64 nanoseconds");
+    }
+
+    #[test]
     fn invalid_config_shift_overflow() {
         let now = Instant::now();
         // 8 levels × clk_shift=8 = 56 bits shift on level 7
         // Plus 64 slots (6 bits) = 62 bits, should be OK
         // But 8 levels × clk_shift=9 = 63 + 6 = 69 bits — overflow
-        WheelBuilder::default()
+        let result = WheelBuilder::default()
             .num_levels(8)
             .clk_shift(9)
             .unbounded(1024)
             .build::<u64>(now);
+        assert_invalid(&result, "overflow");
     }
 
     #[test]
-    #[should_panic(expected = "strictly finer level")]
     fn invalid_config_rebalance_progress() {
         let now = Instant::now();
         // slots_per_level = 4 (2^2), clk_shift = 3 → 2^3 = 8 >= 4, so a not-due
         // entry could rebalance to the *same* level and poll would live-lock.
         // Must be rejected at build time.
-        WheelBuilder::default()
+        let result = WheelBuilder::default()
             .slots_per_level(4)
             .clk_shift(3)
             .num_levels(2)
             .unbounded(64)
             .build::<u64>(now);
+        assert_invalid(&result, "strictly finer level");
     }
 
     // -------------------------------------------------------------------------
@@ -2361,7 +2432,7 @@ mod tests {
     #[test]
     fn rebalanced_entry_fires_at_its_deadline() {
         let now = Instant::now();
-        let mut wheel: Wheel<u64> = WheelBuilder::default().unbounded(256).build(now);
+        let mut wheel: Wheel<u64> = WheelBuilder::default().unbounded(256).build(now).unwrap();
 
         // Both deadlines land in the same level-2 slot (46): 3000>>6 == 3005>>6.
         // At now=3000 the slot's min (3000) is due, so the slot is walked: 3000
@@ -2383,7 +2454,7 @@ mod tests {
     #[test]
     fn cancel_after_rebalance() {
         let now = Instant::now();
-        let mut wheel: Wheel<u64> = WheelBuilder::default().unbounded(256).build(now);
+        let mut wheel: Wheel<u64> = WheelBuilder::default().unbounded(256).build(now).unwrap();
 
         wheel.schedule_forget(now + ms(3000), 1);
         let h = wheel.schedule(now + ms(3005), 2); // rebalanced on the 3000 poll
@@ -2407,7 +2478,8 @@ mod tests {
         let mut wheel: Wheel<u64> = WheelBuilder::default()
             .max_rebalances_per_poll(1)
             .unbounded(256)
-            .build(now);
+            .build(now)
+            .unwrap();
 
         // 20 deadlines spread across one level-2 slot (all map to slot 46).
         let mut expected: Vec<u64> = Vec::new();
@@ -2440,7 +2512,8 @@ mod tests {
         let mut wheel: Wheel<u64> = WheelBuilder::default()
             .max_rebalances_per_poll(0)
             .unbounded(256)
-            .build(now);
+            .build(now)
+            .unwrap();
 
         wheel.schedule_forget(now + ms(3000), 1);
         wheel.schedule_forget(now + ms(3005), 2); // would rebalance if the cap allowed
@@ -2457,7 +2530,7 @@ mod tests {
     #[test]
     fn proactive_rebalance_moves_and_preserves_firing() {
         let now = Instant::now();
-        let mut wheel: Wheel<u64> = WheelBuilder::default().unbounded(256).build(now);
+        let mut wheel: Wheel<u64> = WheelBuilder::default().unbounded(256).build(now).unwrap();
 
         // 10 deadlines at level 2 (delta ~3000 ∈ [512, 4096)).
         let mut expected = Vec::new();
