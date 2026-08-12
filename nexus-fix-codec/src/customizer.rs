@@ -230,9 +230,9 @@ pub trait SessionCustomizer {
 
 /// The null customizer: every hook is a no-op.
 ///
-/// The default customizer type parameter for the engine's `FixSession` and
-/// `FixConnection`, so plain-FIX callers never name it. A ZST with empty method
-/// bodies — it monomorphizes to nothing.
+/// The default customizer type parameter for the engine's `MessageWriter`, so
+/// plain-FIX callers never name it. A ZST with empty method bodies — it
+/// monomorphizes to nothing.
 #[derive(Clone, Copy, Debug, Default)]
 pub struct NoCustomizer;
 

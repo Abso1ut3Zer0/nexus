@@ -109,13 +109,26 @@ pub trait FixDictionary {
         fmt.field(141, b"Y");
     }
 
-    /// Body tags [`encode_logout`](Self::encode_logout) writes (none — header
-    /// only). See [`LOGON_OWNED`](Self::LOGON_OWNED).
-    const LOGOUT_OWNED: &'static [u32] = &[];
+    /// Body tags [`encode_logout`](Self::encode_logout) writes. `58` is written
+    /// only when a reason string is supplied, but the tripwire is unconditional.
+    /// See [`LOGON_OWNED`](Self::LOGON_OWNED).
+    const LOGOUT_OWNED: &'static [u32] = &[58];
 
-    /// Write Logout's (35=5) standard fields.
-    fn encode_logout(fmt: &mut FrameFormatter<'_>, hdr: &AdminHeader<'_>) {
+    /// Write Logout's (35=5) standard fields, appending `Text(58)` if a reason is
+    /// given.
+    ///
+    /// `reason` is a printable-ASCII [`AsciiTextStr`] — SOH-safe by construction —
+    /// so appending it can never break framing; encoding is infallible w.r.t. the
+    /// reason.
+    fn encode_logout(
+        fmt: &mut FrameFormatter<'_>,
+        hdr: &AdminHeader<'_>,
+        reason: Option<&AsciiTextStr>,
+    ) {
         write_admin_header(fmt, hdr);
+        if let Some(text) = reason {
+            fmt.field(58, text.as_bytes());
+        }
     }
 
     /// Body tags [`encode_heartbeat`](Self::encode_heartbeat) writes. `112` is
@@ -164,28 +177,50 @@ pub trait FixDictionary {
     const SEQUENCE_RESET_OWNED: &'static [u32] = &[43, 123, 36];
 
     /// Write SequenceReset's (35=4) standard fields.
-    fn encode_sequence_reset(fmt: &mut FrameFormatter<'_>, hdr: &AdminHeader<'_>, new_seq: u32) {
+    ///
+    /// `gap_fill = true` is GapFill mode: `PossDupFlag(43)=Y` +
+    /// `GapFillFlag(123)=Y`, used to replace admin holes during a resend, so the
+    /// receiver validates the sequence and advances to `NewSeqNo`. `gap_fill =
+    /// false` is Reset mode: `GapFillFlag(123)=N`, no `PossDupFlag` — an
+    /// administrative reset the receiver honors unconditionally, forcing its
+    /// expected inbound seqnum to `NewSeqNo` regardless of `MsgSeqNum`.
+    fn encode_sequence_reset(
+        fmt: &mut FrameFormatter<'_>,
+        hdr: &AdminHeader<'_>,
+        new_seq: u32,
+        gap_fill: bool,
+    ) {
         use crate::types::encode_fix_uint;
         write_admin_header(fmt, hdr);
-        fmt.field(43, b"Y");
-        fmt.field(123, b"Y");
+        if gap_fill {
+            fmt.field(43, b"Y");
+            fmt.field(123, b"Y");
+        } else {
+            fmt.field(123, b"N");
+        }
         let mut tmp = [0u8; 10];
         let n = encode_fix_uint(new_seq, &mut tmp);
         fmt.field(36, &tmp[..n]);
     }
 
     /// Body tags [`encode_reject`](Self::encode_reject) writes. `371` is written
-    /// only when a `RefTagID` is cited, but the tripwire is unconditional.
+    /// only when a `RefTagID` is cited and `58` only when a reason string is
+    /// supplied, but the tripwire is unconditional.
     /// See [`LOGON_OWNED`](Self::LOGON_OWNED).
-    const REJECT_OWNED: &'static [u32] = &[45, 371, 373];
+    const REJECT_OWNED: &'static [u32] = &[45, 371, 373, 58];
 
-    /// Write Reject's (35=3) standard fields.
+    /// Write Reject's (35=3) standard fields, appending `Text(58)` if a reason is
+    /// given.
+    ///
+    /// `reason` is a printable-ASCII [`AsciiTextStr`] — SOH-safe by construction —
+    /// so appending it can never break framing.
     fn encode_reject(
         fmt: &mut FrameFormatter<'_>,
         hdr: &AdminHeader<'_>,
         ref_seq_num: u32,
         ref_tag_id: Option<u32>,
         session_reject_reason: u8,
+        reason: Option<&AsciiTextStr>,
     ) {
         use crate::types::encode_fix_uint;
         write_admin_header(fmt, hdr);
@@ -198,6 +233,9 @@ pub trait FixDictionary {
         }
         let n = encode_fix_uint(session_reject_reason as u32, &mut tmp);
         fmt.field(373, &tmp[..n]);
+        if let Some(text) = reason {
+            fmt.field(58, text.as_bytes());
+        }
     }
 }
 

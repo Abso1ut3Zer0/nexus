@@ -3,18 +3,27 @@
 //! Blocking session recipe: one initiator connects to one acceptor on localhost,
 //! sends a NewOrder, then logs out.
 //!
+//! This example holds the raw three-object trio (`FixSession` + `MessageReader` +
+//! `MessageWriter`) with the socket passed per call — the primary framework
+//! surface, which keeps admin replies zero-copy. The batteries `FixConnectionBuilder`
+//! wraps exactly this: `connect(addr, …)` opens the socket and hands back
+//! `(FixParts, socket)` (with `connect_socket` for reconnect). For a single owned
+//! object, the secondary `FixConnection` bundles the trio *and* the socket at the
+//! cost of copying an admin reply field out before replying; see its docs.
+//!
 //! Run with: cargo run --example blocking_session
 
-use std::net::TcpListener;
+use std::net::{TcpListener, TcpStream};
 use std::path::{Path, PathBuf};
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use nexus_fix_codec::{
     FieldView, FixAdminMsg, FixDictionary, FixHeader, FixTimestamp, FrameFormatter,
     encode_fix_uint, find_tag,
 };
 use nexus_fix_engine::{
-    CompId, FixConnection, FixJournal, Message, SessionConfig, SessionError, SessionState, State,
+    CompId, FixJournal, FixParts, FixSession, Message, SessionConfig, SessionError, SessionState,
+    State,
 };
 
 // ── minimal FIX 4.4 dictionary ───────────────────────────────────────────────
@@ -84,6 +93,12 @@ impl<'buf> FixHeader<'buf> for Fix44Header<'buf> {
     }
 }
 
+/// Fixed UTC-unix-nanos clock. A production caller reads a real wall clock here
+/// (`SystemTime::now().duration_since(UNIX_EPOCH)`, or a venue-supplied time);
+/// the fixed value keeps this example deterministic. `now` stamps only
+/// `SendingTime(52)` — the session reads no clock of its own.
+const NOW: i128 = 1_780_505_733_000_000_000;
+
 // ── main ─────────────────────────────────────────────────────────────────────
 
 fn main() {
@@ -99,13 +114,17 @@ fn main() {
 }
 
 fn run_acceptor(listener: &TcpListener, dir: &Path) {
-    let (stream, _) = listener.accept().unwrap();
+    let (mut stream, _) = listener.accept().unwrap();
     stream
         .set_read_timeout(Some(Duration::from_secs(5)))
         .unwrap();
 
-    let mut conn: FixConnection<_, Fix44> = FixConnection::builder().accept(
-        stream,
+    // The caller holds the trio; the socket is separate and passed per call.
+    let FixParts {
+        mut session,
+        mut reader,
+        mut writer,
+    } = FixSession::builder(Fix44).build(
         SessionState::new(Duration::from_secs(30)),
         SessionConfig {
             sender: CompId::new(b"ACCEPTOR").unwrap(),
@@ -114,14 +133,42 @@ fn run_acceptor(listener: &TcpListener, dir: &Path) {
         FixJournal::open(dir, 0, 256).unwrap(),
     );
 
+    // The user-driven loop: the engine surfaces each situation and its one
+    // required response; the caller sends it. `recv` ties its `Message` to
+    // `reader` only, so the reply's `&mut session` / `&mut writer` / `&mut stream`
+    // stay free while a borrowed payload (a `TestReqID`, a `LogonDecision`) is
+    // still alive.
     let mut n = 0usize;
     loop {
-        match conn.recv(Instant::now()) {
+        match session.recv(&mut reader, &mut writer, &mut stream, NOW) {
+            // The initiator's Logon: authenticate (inspect `d.logon()`) then accept.
+            Ok(Some(Message::LogonRequest(d) | Message::LogonResetRequest(d))) => {
+                d.accept(&mut session, &mut writer, &mut stream, NOW)
+                    .unwrap();
+            }
+            // Peer liveness probe: echo the TestReqID in a Heartbeat.
+            Ok(Some(Message::TestRequest { id })) => {
+                session
+                    .heartbeat(&mut writer, &mut stream, NOW, Some(id))
+                    .unwrap();
+            }
+            // Inbound gap: ask for the missing range.
+            Ok(Some(Message::GapDetected { begin })) => {
+                session
+                    .resend_request(&mut writer, &mut stream, NOW, begin)
+                    .unwrap();
+            }
+            Ok(Some(Message::Application { .. })) => n += 1,
+            // Peer initiated a logout: reply and finish.
+            Ok(Some(Message::LogoutRequest { .. })) => {
+                let _ = session.logout(&mut writer, &mut stream, NOW, None);
+                println!("acceptor: peer logged out, {n} app message(s) received");
+                break;
+            }
             Ok(Some(Message::LoggedOut { .. })) => {
                 println!("acceptor: logged out cleanly, {n} app message(s) received");
                 break;
             }
-            Ok(Some(Message::Application { .. })) => n += 1,
             Ok(Some(_) | None) => {}
             Err(e) => {
                 eprintln!("acceptor error: {e}");
@@ -132,23 +179,41 @@ fn run_acceptor(listener: &TcpListener, dir: &Path) {
 }
 
 fn run_initiator(addr: std::net::SocketAddr, dir: &Path) {
-    let mut conn: FixConnection<_, Fix44> = FixConnection::builder()
-        .connect(
-            addr,
-            SessionState::new(Duration::from_secs(30)),
-            SessionConfig {
-                sender: CompId::new(b"INITIATOR").unwrap(),
-                target: CompId::new(b"ACCEPTOR").unwrap(),
-            },
-            FixJournal::open(dir, 0, 256).unwrap(),
-        )
-        .unwrap();
+    // The caller opens the socket; reconnect is "same trio, new socket."
+    let mut stream = TcpStream::connect(addr).unwrap();
+    stream.set_nodelay(true).unwrap();
 
-    conn.connect(Instant::now()).unwrap();
+    let FixParts {
+        mut session,
+        mut reader,
+        mut writer,
+    } = FixSession::builder(Fix44).build(
+        SessionState::new(Duration::from_secs(30)),
+        SessionConfig {
+            sender: CompId::new(b"INITIATOR").unwrap(),
+            target: CompId::new(b"ACCEPTOR").unwrap(),
+        },
+        FixJournal::open(dir, 0, 256).unwrap(),
+    );
+
+    // Combined verb: encode the opening Logon and flush it to the socket in one
+    // call. (The encode-only `encode_connect` + a manual drain of `writer` is the
+    // sans-IO alternative for custom transports.)
+    session.connect(&mut writer, &mut stream, NOW).unwrap();
 
     loop {
-        match conn.recv(Instant::now()) {
-            Ok(Some(Message::LoggedOut { .. })) => {
+        match session.recv(&mut reader, &mut writer, &mut stream, NOW) {
+            Ok(Some(Message::TestRequest { id })) => {
+                session
+                    .heartbeat(&mut writer, &mut stream, NOW, Some(id))
+                    .unwrap();
+            }
+            Ok(Some(Message::GapDetected { begin })) => {
+                session
+                    .resend_request(&mut writer, &mut stream, NOW, begin)
+                    .unwrap();
+            }
+            Ok(Some(Message::LoggedOut { .. } | Message::LogoutRequest { .. })) => {
                 eprintln!("initiator: logged out before active");
                 return;
             }
@@ -158,12 +223,12 @@ fn run_initiator(addr: std::net::SocketAddr, dir: &Path) {
             }
             Ok(Some(_) | None) => {}
         }
-        if conn.state().state() == State::Active {
+        if session.state().state() == State::Active {
             break;
         }
     }
 
-    let seq = match conn.allocate_seq() {
+    let seq = match session.allocate_seq() {
         Ok(s) => s,
         Err(SessionError::SeqNumExhausted) => {
             eprintln!("initiator: sequence number exhausted; force a sequence reset");
@@ -175,11 +240,15 @@ fn run_initiator(addr: std::net::SocketAddr, dir: &Path) {
         }
     };
     let msg = new_order(seq);
-    conn.send_app(seq, &msg).unwrap();
+    session
+        .send_app(&mut writer, &mut stream, seq, &msg)
+        .unwrap();
 
-    conn.logout(Instant::now()).unwrap();
+    // We initiate the logout; the acceptor's confirming Logout ends the session
+    // cleanly (surfaces as `LoggedOut`).
+    session.logout(&mut writer, &mut stream, NOW, None).unwrap();
     loop {
-        match conn.recv(Instant::now()) {
+        match session.recv(&mut reader, &mut writer, &mut stream, NOW) {
             Ok(Some(_)) | Err(_) => break,
             Ok(None) => {}
         }

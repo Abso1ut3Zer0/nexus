@@ -1,7 +1,7 @@
 use core::marker::PhantomData;
 use std::io::Write;
 
-use nexus_fix_codec::{FixDictionary, NoCustomizer, SessionCustomizer};
+use nexus_fix_codec::{AsciiTextStr, FixDictionary, NoCustomizer, SessionCustomizer};
 use nexus_net::wire::ParserSink;
 
 #[cfg(unix)]
@@ -51,8 +51,6 @@ pub struct SessionConfig {
 /// Error returned by the framework layer when decoding fails.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum SessionError {
-    /// Tag 35 (MsgType) absent.
-    MissingMsgType,
     /// Tag 34 (MsgSeqNum) absent.
     MissingMsgSeqNum,
     /// A required field for this message type is absent.
@@ -72,7 +70,6 @@ pub enum SessionError {
 impl core::fmt::Display for SessionError {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         match self {
-            Self::MissingMsgType => write!(f, "tag 35 (MsgType) missing"),
             Self::MissingMsgSeqNum => write!(f, "tag 34 (MsgSeqNum) missing"),
             Self::MissingField { tag } => write!(f, "required tag {tag} missing"),
             Self::MalformedField { tag } => write!(f, "tag {tag} malformed"),
@@ -86,44 +83,203 @@ impl core::fmt::Display for SessionError {
 
 impl core::error::Error for SessionError {}
 
-/// Typed inbound message returned by the transport layer.
+/// Typed inbound message returned by the receive surface.
 ///
-/// Admin messages carry the dictionary's zero-copy decoder for the message type
-/// so callers can read any field — protocol-required or venue-specific — without
-/// re-parsing. App messages surface the decoded header so the caller can route
-/// by `MsgType` and decode the body independently.
-pub enum Message<'buf, D: FixDictionary> {
-    /// Counterparty initiated a Logon (acceptor role). Send your own Logon back.
-    LogonRequest { msg: D::Logon<'buf> },
-    /// Counterparty acknowledged our Logon (initiator role). Session is live.
-    LogonAcknowledged { msg: D::Logon<'buf> },
-    /// A Logout (35=5) that did not end the session, which only happens
-    /// out-of-state (e.g. mid-reset). The engine answers and closes an
-    /// in-sequence logout itself; that surfaces as [`Message::LoggedOut`].
-    LogoutRequest { msg: D::Logout<'buf> },
-    /// Heartbeat (35=0). No reply required unless it carries a TestReqID.
-    Heartbeat { msg: D::Heartbeat<'buf> },
-    /// TestRequest (35=1). Echo the `TestReqID` in a Heartbeat reply.
-    TestRequest { msg: D::TestRequest<'buf> },
-    /// ResendRequest (35=2). Re-send or gap-fill the requested range.
-    ResendRequest { msg: D::ResendRequest<'buf> },
-    /// SequenceReset (35=4). State updated internally; inspect if needed.
-    SequenceReset { msg: D::SequenceReset<'buf> },
-    /// Reject (35=3). State updated internally; inspect if needed.
-    Reject { msg: D::Reject<'buf> },
+/// The session is a **framework**: it surfaces what happened and the *one*
+/// response each situation needs; the caller drives every reply with the send
+/// helpers. Nothing is auto-answered on your behalf (the engine drives only its
+/// own mechanism — the reset handshake and protocol-error disconnects).
+///
+/// Admin messages that carry data (`Heartbeat`, `Reject`, …) surface the
+/// dictionary's zero-copy decoder so callers can read any field without
+/// re-parsing; app messages surface the decoded header so the caller can route by
+/// `MsgType` and decode the body independently. Every borrowed payload ties to the
+/// `MessageReader` frame, never to `&mut session`, so the reply's `&mut session` /
+/// `&mut writer` stay free while the payload is still borrowed.
+pub enum Message<'r, D: FixDictionary> {
     /// Business message. Route by `header.raw_msg_type()` and decode the body.
-    Application { header: D::Header<'buf> },
+    Application { header: D::Header<'r> },
+    /// TestRequest (35=1). Answer with `heartbeat(&mut writer, &mut conn, now,
+    /// Some(id))` — `id` is the borrowed `TestReqID(112)`, echoed verbatim.
+    ///
+    /// The `TestReqID` is a validated [`AsciiTextStr`]: the receive path checks tag
+    /// 112 is **present and printable-ASCII** before this variant is produced (an
+    /// absent or non-ASCII 112 surfaces as an `Err`, not a silently-empty echo), so
+    /// the borrowed value is sound to read as text and re-encode.
+    TestRequest {
+        /// The validated `TestReqID(112)` to echo back, borrowed from the frame.
+        id: &'r AsciiTextStr,
+    },
+    /// An inbound gap was detected. Answer with `resend_request(&mut writer, &mut
+    /// conn, now, begin)`. The engine has entered `Resending`; a further gap in the
+    /// same window is suppressed until recovery completes.
+    GapDetected {
+        /// First missing inbound seqnum — the `BeginSeqNo(7)` for the reply.
+        begin: u32,
+    },
+    /// Counterparty initiated a Logon (acceptor role). Answer with
+    /// `decision.accept(..)` or `decision.reject(..)` — the reply is yours to send,
+    /// gated on your auth policy.
+    LogonRequest(LogonDecision<'r, D>),
+    /// Counterparty initiated a reset Logon (`ResetSeqNumFlag(141)=Y`). Answer with
+    /// `decision.accept(..)` (sends a `LogonReset` reply) or `decision.reject(..)`.
+    LogonResetRequest(LogonDecision<'r, D>),
+    /// Counterparty initiated a Logout (35=5). Answer with `logout(&mut writer,
+    /// &mut conn, now, reason)` to send your Logout reply (`reason:
+    /// Option<&AsciiTextStr>` rides as `Text(58)` when `Some`), then close the
+    /// transport. (A Logout confirming *your* initiated logout surfaces as
+    /// [`LoggedOut`](Self::LoggedOut) instead.)
+    LogoutRequest { msg: D::Logout<'r> },
+    /// Heartbeat (35=0). No reply required.
+    Heartbeat { msg: D::Heartbeat<'r> },
+    /// ResendRequest (35=2) whose requested range is fully within the journal's
+    /// retained replay window. Pump the [`ResendCursor`] to replay it — each
+    /// [`next`](ResendCursor::next) yields bytes to write; dropping it refuses the
+    /// resend. The up-front providability check guarantees the cursor fulfills, so
+    /// it never hits out-of-range mid-pump.
+    ResendRequest {
+        /// The retransmission cursor. `Copy`, so binding it carries no reader
+        /// borrow: copy it out and pump `next(&mut session, &mut writer, now)`.
+        cursor: ResendCursor,
+    },
+    /// ResendRequest (35=2) the journal can no longer fulfill — the requested range
+    /// falls outside the retained replay window `[low_water, high_water]`. **No
+    /// cursor**: the user decides. `begin < low_water` means the start rotated off;
+    /// `end > high_water` means the peer asked for messages we never sent (desync).
+    /// Answer with `sequence_reset(&mut writer, &mut conn, now, new_seq)` (Reset) or
+    /// `gap_fill(&mut writer, &mut conn, now, from_seq, new_seq)` (GapFill), or log out.
+    ResendOutOfRange {
+        /// Requested `BeginSeqNo(7)`.
+        begin: u32,
+        /// Resolved `EndSeqNo(16)` (open-ended `0` clamped to `high_water`).
+        end: u32,
+        /// Oldest outbound seqnum still replayable (`next_outbound - window`).
+        low_water: u32,
+        /// Highest outbound seqnum ever sent (`next_outbound - 1`).
+        high_water: u32,
+    },
+    /// SequenceReset (35=4). State updated internally; inspect if needed. No reply.
+    SequenceReset { msg: D::SequenceReset<'r> },
+    /// Reject (35=3). State updated internally; inspect if needed. No reply.
+    Reject { msg: D::Reject<'r> },
+    /// Counterparty acknowledged our Logon (initiator role). Session is live. No reply.
+    LogonAcknowledged { msg: D::Logon<'r> },
     /// A clean, negotiated logout completed and the session ended — the graceful
-    /// terminal event. Carries the peer's Logout (35=5), so the caller can read
-    /// `Text(58)`. An *abnormal* end never appears here: it surfaces as
+    /// terminal event confirming *our* initiated logout. Carries the peer's Logout
+    /// (35=5). An *abnormal* end never appears here: it surfaces as
     /// `Err(TransportError::UnexpectedDisconnect { reason })`.
-    LoggedOut { msg: D::Logout<'buf> },
+    LoggedOut { msg: D::Logout<'r> },
+}
+
+/// A user-pumped cursor over a retransmission, surfaced inside
+/// [`Message::ResendRequest`].
+///
+/// The engine hands one back only after an **up-front providability check**: the
+/// requested `[begin, end]` lies fully within the journal's retained replay window
+/// (`[low_water, high_water]`), so the cursor is *guaranteed* to fulfill — it never
+/// hits an out-of-range mid-pump. A request outside the window surfaces as
+/// [`Message::ResendOutOfRange`] instead, with no cursor.
+///
+/// # Pumping
+///
+/// The caller drives the replay one write at a time. `next` reframes the next
+/// journalled item into the caller's `writer` — an app message as a PossDup replay
+/// (`PossDupFlag(43)=Y`, `OrigSendingTime(122)` from the stored frame, a fresh
+/// `SendingTime(52)` from `now`), or a run of admin holes / never-sent seqnums as
+/// one `SequenceReset-GapFill` — and returns the reframed bytes. `Ok(None)` means
+/// the whole range has drained (Done). The bytes borrow the writer, so **write each
+/// yielded slice before the next call** — the next call reuses (overwrites) the
+/// writer buffer.
+///
+/// ```ignore
+/// Message::ResendRequest { cursor } => {
+///     let mut c = cursor;                       // Copy — carries no reader borrow
+///     while let Some(bytes) = c.next(&mut session, &mut writer, now)? {
+///         conn.write_all(bytes)?;               // pace / bound / abort is yours
+///     }
+/// }
+/// ```
+///
+/// # Sans-IO and `Copy`
+///
+/// The cursor performs no I/O — it yields bytes and the caller writes them, so the
+/// same cursor drives sync (`write_all`) and async (`.await` the write). It holds
+/// only three seqnums (`Copy`, no borrowed iterator): re-deriving
+/// `journal.resend(pos, end)` each call is O(1) to locate a seqnum via the offset
+/// table. Being `Copy`, it rides in the non-borrowing verdict from `poll` straight
+/// into `message()` with no frame borrow, and — because `Copy` and `Drop` are
+/// mutually exclusive — it has no destructor: **dropping it without pumping simply
+/// refuses the resend** (nothing is sent). Pace, bound, or abort the replay in your
+/// own loop; that is how you refuse an abusive multi-million-message demand instead
+/// of parking your session thread.
+///
+/// The replay pump (`next` / `next_batch`) is defined on the unix-only
+/// [`FixSession`](crate::FixSession) side, since it drives the journal; the state
+/// here is platform-independent.
+#[derive(Clone, Copy, Debug)]
+pub struct ResendCursor {
+    /// Requested `BeginSeqNo(7)` — retained for [`begin`](Self::begin)/logging.
+    pub(crate) begin: u32,
+    /// Resolved `EndSeqNo(16)` (open-ended `0` clamped to high-water) — the last
+    /// seqnum to replay, inclusive.
+    pub(crate) end: u32,
+    /// Next outbound seqnum to replay; starts at `begin`, advances past each item
+    /// (one past an app, to a gap-fill's `NewSeqNo`). `> end` means Done.
+    pub(crate) pos: u32,
+}
+
+impl ResendCursor {
+    /// Construct a cursor over the (already validated, providable) resolved range.
+    pub(crate) fn new(begin: u32, end: u32) -> Self {
+        Self {
+            begin,
+            end,
+            pos: begin,
+        }
+    }
+
+    /// The requested `BeginSeqNo(7)`.
+    pub fn begin(&self) -> u32 {
+        self.begin
+    }
+
+    /// The resolved `EndSeqNo(16)` (open-ended `0` clamped to the journal
+    /// high-water at the time the request was classified).
+    pub fn end(&self) -> u32 {
+        self.end
+    }
+}
+
+/// The binary-choice response object for a counterparty-initiated Logon.
+///
+/// Surfaced inside [`Message::LogonRequest`] / [`Message::LogonResetRequest`]. A
+/// Logon has exactly one required response — accept it (send the reply, bring the
+/// session up) or reject it (send a Logout, disconnect) — so it is a decision
+/// object rather than a plain payload: the type makes "answer it" unavoidable.
+///
+/// It borrows only the reader frame (`'r`); [`accept`](Self::accept) /
+/// [`reject`](Self::reject) take `&mut session` / `&mut writer` / `&mut conn`
+/// separately, so the reply's mutable borrows stay disjoint from the borrowed
+/// Logon fields ([`logon`](Self::logon)).
+#[must_use = "a Logon must be accepted or rejected"]
+pub struct LogonDecision<'r, D: FixDictionary> {
+    pub(crate) msg: D::Logon<'r>,
+    pub(crate) seq: u32,
+    pub(crate) heart_bt_int_s: u32,
+    pub(crate) is_reset: bool,
+}
+
+impl<'r, D: FixDictionary> LogonDecision<'r, D> {
+    /// Reads the peer's Logon for the auth decision (`HeartBtInt`, `Username`,
+    /// venue fields, …) — the zero-copy decoder, borrowing the frame.
+    pub fn logon(&self) -> &D::Logon<'r> {
+        &self.msg
+    }
 }
 
 /// Zero-copy FIX frame reader, dictionary-aware via `D::Header`.
 pub struct MessageReader<D: FixDictionary> {
     pub(crate) inner: FrameReader,
-    pub(crate) frame: Vec<u8>,
     _dict: PhantomData<fn() -> D>,
 }
 
@@ -131,7 +287,6 @@ impl<D: FixDictionary> MessageReader<D> {
     pub fn new() -> Self {
         Self {
             inner: FrameReader::builder().build(),
-            frame: Vec::new(),
             _dict: PhantomData,
         }
     }
@@ -139,9 +294,44 @@ impl<D: FixDictionary> MessageReader<D> {
     pub fn with_frame_reader(inner: FrameReader) -> Self {
         Self {
             inner,
-            frame: Vec::new(),
             _dict: PhantomData,
         }
+    }
+
+    /// Spare region of the inbound buffer for the caller to read transport bytes
+    /// into. Commit the number actually read with [`filled`](Self::filled). This
+    /// is the inbound half of the sans-IO byte seam: a custom transport fills
+    /// `spare()`, commits with `filled(n)`, then drives
+    /// [`FixSession::poll`](crate::FixSession::poll).
+    ///
+    /// Compacts on the usual `should_compact()` threshold, but *also* whenever the
+    /// buffer is full (`remaining() == 0`) even below that threshold. Without the
+    /// full-buffer case a buffer that is full but <50% consumed would return an
+    /// empty spare slice; a wrapper's `stream.read(&mut [])` then returns `Ok(0)`
+    /// and is misread as EOF/disconnect. Compacting reclaims all consumed space, so
+    /// the spare is non-empty whenever there is anything to reclaim. If nothing is
+    /// reclaimable (a single incomplete frame already fills the whole buffer) the
+    /// spare stays empty, and the caller turns that into a "message too large"
+    /// condition rather than reading into a zero-length slice.
+    pub fn spare(&mut self) -> &mut [u8] {
+        if self.inner.should_compact() || self.inner.remaining() == 0 {
+            self.inner.compact();
+        }
+        self.inner.spare()
+    }
+
+    /// Commit `n` bytes read into [`spare`](Self::spare).
+    pub fn filled(&mut self, n: usize) {
+        self.inner.filled(n);
+    }
+
+    /// Inbound buffer capacity in bytes (fixed at construction).
+    ///
+    /// The largest single frame the reader can buffer. A wrapper reports this as
+    /// the "message too large" size when [`spare`](Self::spare) returns an empty
+    /// slice — the buffer is full with one incomplete frame that cannot grow.
+    pub fn capacity(&self) -> usize {
+        self.inner.capacity()
     }
 }
 
@@ -151,13 +341,18 @@ impl<D: FixDictionary> Default for MessageReader<D> {
     }
 }
 
+/// Lets a [`nexus_net::WireStream`] transport fill the reader's inbound buffer
+/// directly (`poll_fill_into(&mut reader, …)`), skipping the intermediate
+/// `&mut [u8]` copy. Forwards to the inherent [`spare`](MessageReader::spare) /
+/// [`filled`](MessageReader::filled) so the compaction contract holds on both
+/// paths.
 impl<D: FixDictionary> ParserSink for MessageReader<D> {
     fn spare(&mut self) -> &mut [u8] {
-        self.inner.spare()
+        MessageReader::spare(self)
     }
 
     fn filled(&mut self, n: usize) {
-        self.inner.filled(n);
+        MessageReader::filled(self, n);
     }
 }
 
@@ -259,6 +454,10 @@ impl<D: FixDictionary, C> MessageWriter<D, C> {
 pub struct Emitter<'a, D: FixDictionary, C, J> {
     writer: &'a mut MessageWriter<D, C>,
     config: &'a SessionConfig,
+    /// `SendingTime(52)` stamped into every frame this emitter produces, formatted
+    /// once from the caller-supplied `now`. There is no internal clock read: the
+    /// core is a pure function of `(bytes, now)`.
+    ts: [u8; crate::timestamp::UTC_TIMESTAMP_LEN],
     after: J,
 }
 
@@ -269,10 +468,22 @@ where
 {
     /// Build an emitter over `writer`, stamping headers from `config` and running
     /// `after(seq, frame)` on every committed frame.
-    pub fn new(writer: &'a mut MessageWriter<D, C>, config: &'a SessionConfig, after: J) -> Self {
+    ///
+    /// `now` is a UTC wall-clock timestamp in nanoseconds since the Unix epoch; it
+    /// is formatted once into the `SendingTime(52)` every emitted frame carries.
+    /// The emitter reads no clock of its own — every stamp comes from this `now`.
+    pub fn new(
+        writer: &'a mut MessageWriter<D, C>,
+        config: &'a SessionConfig,
+        now: i128,
+        after: J,
+    ) -> Self {
+        let mut ts = [0u8; crate::timestamp::UTC_TIMESTAMP_LEN];
+        crate::timestamp::format_utc_timestamp(now, &mut ts);
         Self {
             writer,
             config,
+            ts,
             after,
         }
     }
@@ -313,12 +524,11 @@ where
     fn emit<M: AdminEncode>(&mut self, msg: M) -> Result<(), Error> {
         use nexus_fix_codec::{AdminHeader, AdminMsgOut, FrameFormatter};
 
-        let ts = make_ts();
         let hdr = AdminHeader {
             seq: msg.seq(),
             sender: self.config.sender.as_bytes(),
             target: self.config.target.as_bytes(),
-            ts: &ts,
+            ts: &self.ts,
         };
 
         // Offset of this frame within the (possibly non-empty) outbound buffer,
@@ -360,17 +570,4 @@ impl<D: FixDictionary> Default for MessageWriter<D, NoCustomizer> {
     fn default() -> Self {
         Self::new()
     }
-}
-
-#[cfg(unix)]
-fn make_ts() -> [u8; crate::timestamp::UTC_TIMESTAMP_LEN] {
-    use std::time::{SystemTime, UNIX_EPOCH};
-
-    let unix_nanos = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_nanos() as i128;
-    let mut ts = [0u8; crate::timestamp::UTC_TIMESTAMP_LEN];
-    crate::timestamp::format_utc_timestamp(unix_nanos, &mut ts);
-    ts
 }

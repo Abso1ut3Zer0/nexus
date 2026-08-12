@@ -17,9 +17,6 @@ pub struct LogonIn {
     pub heart_bt_int_s: u32,
     /// `ResetSeqNumFlag(141)=Y` — peer asks both sides to reset to seqnum 1.
     pub is_reset_seq_num: bool,
-    /// We are the acceptor and must send a Logon reply; an initiator instead
-    /// receives this Logon as the acknowledgement of its own.
-    pub send_reply: bool,
 }
 
 /// Input to [`SessionState::on_logout`](super::SessionState::on_logout).
@@ -44,10 +41,13 @@ pub struct HeartbeatIn {
 }
 
 /// Input to [`SessionState::on_test_request`](super::SessionState::on_test_request).
+///
+/// The `TestReqID(112)` is *not* carried here: the session no longer echoes it
+/// (the user answers a surfaced [`Message::TestRequest`](crate::Message::TestRequest)
+/// with `heartbeat(Some(id))`), so the handler only needs the sequence fields to
+/// validate ordering.
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
-pub struct TestRequestIn<'a> {
-    /// `TestReqID(112)` bytes to echo back in the Heartbeat reply.
-    pub test_req_id: &'a [u8],
+pub struct TestRequestIn {
     /// `MsgSeqNum(34)` of the received TestRequest.
     pub seq: u32,
     /// `PossDupFlag(43)=Y` — a below-expected seqnum is discarded, not rejected.

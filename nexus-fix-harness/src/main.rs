@@ -4,18 +4,22 @@ fn main() {}
 #[cfg(unix)]
 use std::fs;
 #[cfg(unix)]
+use std::io::Write;
+#[cfg(unix)]
 use std::net::TcpListener;
 #[cfg(unix)]
 use std::path::Path;
 #[cfg(unix)]
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 #[cfg(unix)]
 use nexus_fix_codec::{
     AsciiTextStr, FieldView, FixAdminMsg, FixDictionary, FixHeader, FixTimestamp, find_tag,
 };
 #[cfg(unix)]
-use nexus_fix_engine::{CompId, FixConnection, FixJournal, Message, SessionConfig, SessionState};
+use nexus_fix_engine::{
+    CompId, FixJournal, FixParts, FixSession, Message, SessionConfig, SessionState,
+};
 
 #[cfg(unix)]
 struct Fix44;
@@ -113,14 +117,17 @@ fn main() {
 
     loop {
         reset_journal(&dir);
-        let (stream, peer) = listener.accept().expect("accept failed");
+        let (mut stream, peer) = listener.accept().expect("accept failed");
         stream
             .set_read_timeout(Some(Duration::from_secs(5)))
             .expect("set_read_timeout failed");
         println!("accepted {peer}");
 
-        let mut conn: FixConnection<_, Fix44> = FixConnection::builder().accept(
-            stream,
+        let FixParts {
+            mut session,
+            mut reader,
+            mut writer,
+        } = FixSession::builder(Fix44).build(
             SessionState::new(Duration::from_secs(30)),
             SessionConfig {
                 sender: CompId::new(b"ACCEPTOR").unwrap(),
@@ -129,15 +136,82 @@ fn main() {
             FixJournal::open(&dir, 0, 256).unwrap(),
         );
 
+        // The engine is user-driven: it surfaces each situation and the caller
+        // sends the one required reply.
         let mut app_msgs = 0usize;
         loop {
-            match conn.recv(Instant::now()) {
+            // Read the wall clock fresh each iteration so every outbound
+            // `SendingTime(52)` stays current. `now` (UTC unix-nanos) is passed to
+            // `recv` and to every send helper; a production driver does the same.
+            let now = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_nanos() as i128)
+                .unwrap_or(0);
+            match session.recv(&mut reader, &mut writer, &mut stream, now) {
+                // The initiator's Logon: accept it (this harness authenticates none).
+                Ok(Some(Message::LogonRequest(d) | Message::LogonResetRequest(d))) => {
+                    if let Err(e) = d.accept(&mut session, &mut writer, &mut stream, now) {
+                        eprintln!("logon accept failed: {e}");
+                        break;
+                    }
+                }
+                // Liveness probe: echo the TestReqID.
+                Ok(Some(Message::TestRequest { id })) => {
+                    if let Err(e) = session.heartbeat(&mut writer, &mut stream, now, Some(id)) {
+                        eprintln!("heartbeat reply failed: {e}");
+                        break;
+                    }
+                }
+                // Inbound gap: request the missing range.
+                Ok(Some(Message::GapDetected { begin })) => {
+                    if let Err(e) = session.resend_request(&mut writer, &mut stream, now, begin) {
+                        eprintln!("resend_request failed: {e}");
+                        break;
+                    }
+                }
+                // Peer initiated a logout: reply and finish.
+                Ok(Some(Message::LogoutRequest { .. })) => {
+                    if let Err(e) = session.logout(&mut writer, &mut stream, now, None) {
+                        eprintln!("logout reply failed: {e}");
+                    }
+                    println!("peer logged out, {app_msgs} app message(s)");
+                    break;
+                }
                 Ok(Some(Message::LoggedOut { .. })) => {
                     println!("logged out cleanly, {app_msgs} app message(s)");
                     break;
                 }
                 Ok(Some(Message::Application { .. })) => {
                     app_msgs += 1;
+                }
+                // Peer requested a resend: pump the cursor, writing each batch. Admin
+                // messages in the range become a SequenceReset-GapFill; app messages
+                // replay as PossDup. The user drives the replay — it never blocks recv.
+                Ok(Some(Message::ResendRequest { mut cursor })) => loop {
+                    match cursor.next(&mut session, &mut writer, now) {
+                        Ok(Some(bytes)) => {
+                            if stream.write_all(bytes).is_err() {
+                                break;
+                            }
+                        }
+                        Ok(None) => break,
+                        Err(e) => {
+                            eprintln!("resend failed: {e}");
+                            break;
+                        }
+                    }
+                },
+                // Peer asked for a range we have rotated off: gap-fill the gone prefix
+                // so it resumes (a harness policy; a venue might reset or log out).
+                Ok(Some(Message::ResendOutOfRange {
+                    begin, low_water, ..
+                })) => {
+                    if let Err(e) =
+                        session.gap_fill(&mut writer, &mut stream, now, begin, low_water)
+                    {
+                        eprintln!("gap_fill failed: {e}");
+                        break;
+                    }
                 }
                 Ok(Some(_) | None) => {}
                 // A recoverable error (a malformed frame: bad checksum, lying

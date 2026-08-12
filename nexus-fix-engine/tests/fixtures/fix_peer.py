@@ -20,6 +20,12 @@ SENDER = "PEER"
 TARGET = "ENGINE"
 TS = "20260101-00:00:00.000"
 
+# The engine runs the deterministic core with a FIXED caller clock
+# (`now = 1_780_505_733_000_000_000` unix-nanos), so every `SendingTime(52)` it
+# stamps is exactly this value. Scenarios that read an engine message assert it,
+# proving the caller-supplied-clock determinism end to end.
+ENGINE_ST = "20260603-16:55:33.000"
+
 
 def checksum(data: bytes) -> int:
     return sum(data) % 256
@@ -81,12 +87,16 @@ def logon_logout(conn: socket.socket):
     seq = 1
     msg = recv_msg(conn)
     assert msg.get("35") == "A", f"expected Logon, got {msg.get('35')}"
+    # The engine's SendingTime(52) comes from the fixed caller clock — assert it
+    # exactly (the deterministic-core payoff).
+    assert msg.get("52") == ENGINE_ST, f"engine SendingTime {msg.get('52')} != {ENGINE_ST}"
     conn.sendall(build("A", seq, [(108, "30")]))
     seq += 1
     conn.sendall(build("5", seq))
     seq += 1
     msg = recv_msg(conn)
     assert msg.get("35") == "5", f"expected Logout, got {msg.get('35')}"
+    assert msg.get("52") == ENGINE_ST, f"engine Logout SendingTime {msg.get('52')} != {ENGINE_ST}"
 
 
 def heartbeat(conn: socket.socket):
@@ -100,6 +110,8 @@ def heartbeat(conn: socket.socket):
     while True:
         msg = recv_msg(conn)
         if msg.get("35") == "0" and msg.get("112") == "TEST1":
+            # The user-driven Heartbeat echo also carries the fixed SendingTime.
+            assert msg.get("52") == ENGINE_ST, f"engine HB SendingTime {msg.get('52')} != {ENGINE_ST}"
             break
     conn.sendall(build("5", seq))
     seq += 1
@@ -325,14 +337,6 @@ def test_request_long_id(conn):
     _read_until_logout(conn)
 
 
-def test_request_timeout(conn):
-    """Case 26: inbound idle → engine probes → still silent → TestRequestTimeout."""
-    _logon(conn, hbi="1")  # 1s heartbeat so the timeout fires fast
-    # Go silent. The engine sends a TestRequest, periodic Heartbeats, then a
-    # Logout when the probe is unanswered. Read until that Logout.
-    _read_until_logout(conn)
-
-
 # ── regression (finding Q1 — currently a confirmed engine bug) ───────────────
 
 
@@ -376,7 +380,6 @@ SCENARIOS = {
     "seq_reset_gap_fill_oos": seq_reset_gap_fill_oos,
     # battle-test — Tier 3
     "test_request_long_id": test_request_long_id,
-    "test_request_timeout": test_request_timeout,
     # regression (finding Q1)
     "seq_reset_gap_fill_below_possdup": seq_reset_gap_fill_below_possdup,
 }
