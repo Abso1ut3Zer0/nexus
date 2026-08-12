@@ -147,6 +147,21 @@ impl WheelBuilder {
             slots_log2 + max_shift < 64,
             "slots_per_level << max_shift would overflow u64"
         );
+        // Cascade progress guard. When a due slot is polled, a not-yet-due entry
+        // is relocated to a strictly finer level (see `TimerWheel::poll_level`).
+        // That requires a level's per-slot granularity (2^clk_shift) to be
+        // smaller than the number of slots per level; otherwise an entry could
+        // relocate to the *same* level and poll would live-lock. Both are powers
+        // of two, so `2^clk_shift < slots_per_level` iff `clk_shift < slots_log2`
+        // (avoids a shift that could overflow for absurd clk_shift). Checked last
+        // so a config that also overflows reports the overflow first.
+        assert!(
+            (self.clk_shift as u64) < slots_log2,
+            "2^clk_shift must be < slots_per_level so cascade relocates to a \
+             strictly finer level (got clk_shift = {}, slots_per_level = {})",
+            self.clk_shift,
+            self.slots_per_level,
+        );
     }
 
     fn tick_ns(&self) -> u64 {
@@ -874,8 +889,12 @@ impl<T: 'static, S: SlabStore<Item = WheelEntry<T>>> TimerWheel<T, S> {
 
             let slot_ptr = self.levels[lvl_idx].slot(slot_idx) as *const crate::level::WheelSlot<T>;
             // SAFETY: slot_ptr points into self.levels[lvl_idx].slots
-            // (Box<[WheelSlot<T>]>), a stable heap allocation. fire_entry
-            // only mutates self.slab and self.len, not self.levels.
+            // (Box<[WheelSlot<T>]>), a stable heap allocation never reallocated
+            // during poll. fire_entry and insert_entry mutate self.slab, self.len,
+            // self.active_levels, self.min_deadline, and *other* levels' slots —
+            // cascade relocates only to strictly finer levels (< lvl_idx), never
+            // this slot — so this slot's backing memory is untouched and `slot`
+            // stays valid across the loop.
             let slot = unsafe { &*slot_ptr };
 
             // Slot-skip: if the slot's minimum deadline is beyond now, nothing
@@ -885,36 +904,53 @@ impl<T: 'static, S: SlabStore<Item = WheelEntry<T>>> TimerWheel<T, S> {
                 continue;
             }
 
-            let mut new_min = u64::MAX; // recomputed over surviving entries
+            let mut new_min = u64::MAX; // min over entries that stay in this slot
             let mut entry_ptr = slot.entry_head();
 
             while !entry_ptr.is_null() && fired < limit {
                 // SAFETY: entry_ptr is in this slot's DLL
                 let entry = unsafe { entry_ref(entry_ptr) };
-                let next_entry = entry.next();
+                let next_entry = entry.next(); // captured before any unlink below
                 let dt = entry.deadline_ticks();
 
                 if dt <= now_ticks {
-                    // SAFETY: entry_ptr is in this slot's DLL (obtained from entry_head
-                    // and walked via next pointers within the same slot).
+                    // Due — fire it.
+                    // SAFETY: entry_ptr is in this slot's DLL (from entry_head,
+                    // walked via next pointers within the same slot).
                     unsafe { slot.remove_entry(entry_ptr) };
-
                     if let Some(value) = self.fire_entry(entry_ptr) {
                         buf.push(value);
                     }
                     fired += 1;
+                } else if self.select_level(dt) < lvl_idx {
+                    // Not due, and it now belongs at a strictly finer level:
+                    // cascade it down instead of re-walking it every poll until
+                    // this slot's span passes. The target (< lvl_idx) is never this
+                    // slot, so the walk terminates and the entry is not re-processed
+                    // this poll (finer levels are polled first). current_ticks ==
+                    // now_ticks (set in poll_with_limit before this loop), so
+                    // insert_entry selects the correct finer level.
+                    // SAFETY: entry_ptr is in this slot's DLL.
+                    unsafe { slot.remove_entry(entry_ptr) };
+                    self.insert_entry(entry_ptr, dt);
                 } else {
-                    new_min = new_min.min(dt); // survivor
+                    // Not due, and still belongs at this level. This happens when a
+                    // far entry shares the slot via the modular index: deadlines a
+                    // full level-range apart map to the same slot, so a slot made
+                    // due by its earliest entry can also hold entries that are not
+                    // yet within a finer level's reach. Leave it in place (it fires
+                    // or cascades on a later poll) and track it as the slot's
+                    // surviving minimum.
+                    new_min = new_min.min(dt);
                 }
 
                 entry_ptr = next_entry;
             }
 
-            // Trust the recomputed min ONLY if we walked the whole slot. If the
-            // limit truncated the walk (entry_ptr still non-null), new_min omits
-            // the un-walked entries, so setting it could be stale-HIGH — which
-            // would let a later poll skip a due entry. Leave the slot min
-            // stale-low instead; the next poll re-walks and heals it.
+            // If we walked the whole slot, its minimum is exactly the min over the
+            // entries that stayed (u64::MAX — the empty sentinel — when the slot
+            // drained via fires + cascades). A limit-truncated walk (entry_ptr
+            // non-null) leaves the min stale-low; the next poll re-walks and heals.
             if entry_ptr.is_null() {
                 slot.set_min_deadline(new_min);
             }
@@ -2058,6 +2094,65 @@ mod tests {
             .build::<u64>(now);
     }
 
+    #[test]
+    #[should_panic(expected = "strictly finer level")]
+    fn invalid_config_cascade_progress() {
+        let now = Instant::now();
+        // slots_per_level = 4 (2^2), clk_shift = 3 → 2^3 = 8 >= 4, so a not-due
+        // entry could relocate to the *same* level and poll would live-lock.
+        // Must be rejected at build time.
+        WheelBuilder::default()
+            .slots_per_level(4)
+            .clk_shift(3)
+            .num_levels(2)
+            .unbounded(64)
+            .build::<u64>(now);
+    }
+
+    // -------------------------------------------------------------------------
+    // Cascade tests (#668)
+    // -------------------------------------------------------------------------
+
+    #[test]
+    fn cascaded_entry_fires_at_its_deadline() {
+        let now = Instant::now();
+        let mut wheel: Wheel<u64> = WheelBuilder::default().unbounded(256).build(now);
+
+        // Both deadlines land in the same level-2 slot (46): 3000>>6 == 3005>>6.
+        // At now=3000 the slot's min (3000) is due, so the slot is walked: 3000
+        // fires, and 3005 (not yet due) cascades down to a finer level rather
+        // than being re-walked. It must still fire at its exact deadline.
+        wheel.schedule_forget(now + ms(3000), 1);
+        wheel.schedule_forget(now + ms(3005), 2);
+
+        let mut buf = Vec::new();
+        wheel.poll(now + ms(3000), &mut buf);
+        assert_eq!(buf, vec![1], "3000 fires, 3005 cascades");
+
+        buf.clear();
+        wheel.poll(now + ms(3005), &mut buf);
+        assert_eq!(buf, vec![2], "cascaded entry fires at its exact deadline");
+        assert!(wheel.is_empty());
+    }
+
+    #[test]
+    fn cancel_after_cascade() {
+        let now = Instant::now();
+        let mut wheel: Wheel<u64> = WheelBuilder::default().unbounded(256).build(now);
+
+        wheel.schedule_forget(now + ms(3000), 1);
+        let h = wheel.schedule(now + ms(3005), 2); // cascades on the 3000 poll
+
+        let mut buf = Vec::new();
+        wheel.poll(now + ms(3000), &mut buf);
+        assert_eq!(buf, vec![1]);
+        assert_eq!(wheel.len(), 1, "cascaded entry still live");
+
+        // cancel must find the entry at its new (finer) location and return it.
+        assert_eq!(wheel.cancel(h), Some(2));
+        assert_eq!(wheel.len(), 0);
+    }
+
     // -------------------------------------------------------------------------
     // Miri-compatible tests (L12)
     // -------------------------------------------------------------------------
@@ -2214,6 +2309,29 @@ mod tests {
         wheel.free(h3);
         wheel.free(h4);
         wheel.free(h5);
+    }
+
+    #[test]
+    fn miri_cascade_relocate_drop_type() {
+        // Exercises the cascade relocate path (insert_entry called while this
+        // slot's `&WheelSlot` is held) with a Drop type, to catch any aliasing
+        // UB in that hot-path borrow.
+        let now = Instant::now();
+        let mut wheel: Wheel<String> = Wheel::unbounded(64, now);
+
+        // Same level-2 slot: 3000>>6 == 3005>>6. At now=3000 the "fires" entry
+        // fires and the "cascades" entry relocates to a finer level.
+        wheel.schedule_forget(now + ms(3000), "fires".to_string());
+        wheel.schedule_forget(now + ms(3005), "cascades".to_string());
+
+        let mut buf = Vec::new();
+        wheel.poll(now + ms(3000), &mut buf);
+        assert_eq!(buf, vec!["fires".to_string()]);
+
+        buf.clear();
+        wheel.poll(now + ms(3005), &mut buf);
+        assert_eq!(buf, vec!["cascades".to_string()]);
+        assert!(wheel.is_empty());
     }
 }
 
