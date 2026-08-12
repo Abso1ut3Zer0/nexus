@@ -123,17 +123,29 @@ wheel.schedule_forget(now + Duration::from_millis(5), 1);
 wheel.schedule_forget(now + Duration::from_millis(10), 2);
 
 let mut fired: Vec<u64> = Vec::with_capacity(64);
-wheel.poll(now + Duration::from_millis(12), &mut fired);
+wheel.poll_and_rebalance(now + Duration::from_millis(12), &mut fired);
 // fired contains [1, 2] — all expired timer values
 ```
 
-`poll(now, buf)` fires every expired timer and appends its value to `buf`.
+`poll(now, buf)` collects every ready (expired) timer and appends its value
+to `buf`. It does **not** reorganize the wheel — see `poll_and_rebalance`
+below.
 
-`poll_with_limit(now, limit, buf)` is the budgeted version: fire up to
-`limit` timers and return how many fired. Useful in a poll loop where you
-want to cap the work done in one iteration to keep tail latency bounded.
-If the limit is hit, the next call with the same `now` will resume
-wherever you left off.
+`poll_with_limit(now, limit, buf)` is the budgeted version: collect up to
+`limit` timers and return how many. Useful in a poll loop where you want to
+cap the work done in one iteration. If the limit is hit, the next call with
+the same `now` resumes wherever you left off.
+
+`poll_and_rebalance(now, buf)` is the batteries-included poll: it collects
+ready timers **and** rebalances the wheel — moving not-yet-due entries down
+to finer levels so future polls stay cheap under a large number of timers.
+Rebalancing here is bounded by `WheelBuilder::max_rebalances_per_poll` and
+never delays a fire. Reach for this by default.
+
+`rebalance(now, limit)` does the reorganizing on its own, so a
+latency-sensitive loop can `poll` cheaply on the hot path and `rebalance`
+during slack (for example, only when a poll comes back empty). See the
+`rebalance` rustdoc for the recommended pattern.
 
 ## `next_deadline`
 

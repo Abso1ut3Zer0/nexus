@@ -1,9 +1,10 @@
 //! Timer wheel — the main data structure.
 //!
-//! `TimerWheel<T, S>` is a multi-level, no-cascade timer wheel. Entries are
-//! placed into a level based on how far in the future their deadline is.
-//! Once placed, an entry never moves — poll checks `deadline_ticks <= now`
-//! per entry.
+//! `TimerWheel<T, S>` is a multi-level, rebalancing timer wheel. Entries are
+//! placed into a level based on how far in the future their deadline is, and
+//! **rebalanced** down to finer levels as their deadline approaches; `poll`
+//! then collects ready timers from the small, exact fine-level slots. Timers
+//! fire at their exact tick, never early, never missed.
 
 use std::cell::Cell;
 use std::marker::PhantomData;
@@ -286,7 +287,7 @@ impl BoundedWheelBuilder {
 // TimerWheel
 // =============================================================================
 
-/// A multi-level, no-cascade timer wheel.
+/// A multi-level, rebalancing timer wheel.
 ///
 /// Generic over:
 /// - `T` — the user payload stored with each timer.

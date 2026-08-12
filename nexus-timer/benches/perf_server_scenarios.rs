@@ -7,10 +7,10 @@
 //! increasing scale, each a mix of both, and drives the wheel through a
 //! simulated 1 ms-tick timeline while measuring **per-poll cost in cycles**.
 //!
-//! Poll is the hot path and the operation the cascade design affects, so we
+//! Poll is the hot path and the operation the rebalance design affects, so we
 //! report its full distribution (p50 / p99 / p99.9 / max), never a mean — a
 //! mean hides exactly the two things this bench exists to compare: the
-//! cascade re-hash burst and the no-cascade per-poll re-walk of a due slot.
+//! rebalance burst and the per-poll re-walk of a fat coarse slot.
 //!
 //! Run pinned, turbo off:
 //! ```text

@@ -8,12 +8,15 @@ Standard timer implementations (priority queues, sorted trees) have
 O(log n) insert or O(log n) cancel. Timer wheels give O(1) for both by
 hashing deadlines into coarse-grained slots across multiple levels.
 
-`nexus-timer` is a hierarchical timer wheel inspired by the Linux kernel's
-timer infrastructure (Gleixner 2016):
+`nexus-timer` is a hierarchical, rebalancing timer wheel:
 
-- **No cascade** — once placed, an entry never moves between levels.
-  Poll checks each entry's exact deadline. This eliminates the latency
-  spikes that cascading timer wheels exhibit.
+- **Collect + rebalance** — a timer is placed in the coarsest level that fits
+  its deadline, then **rebalanced** down to finer levels as its deadline nears,
+  so `poll` collects ready timers from small, exact fine-level slots instead of
+  walking a fat coarse slot on every call. Rebalancing folds into the poll
+  (`poll_and_rebalance`), can be bounded (`max_rebalances_per_poll`), or run
+  proactively off the hot path (`rebalance`) to keep the poll tail flat under a
+  large number of timers. Timers fire at their exact tick.
 - **Intrusive active-slot lists** — only non-empty slots are visited
   during poll and next-deadline queries. No bitmap, no full scan.
 - **Embedded refcounting** — lightweight `Cell<u8>` refcount per entry
@@ -194,7 +197,7 @@ Level 6:                    ≈  4.7 hour range
 
 Each level covers 8x the time range of the previous (configurable via
 `clk_shift`). A timer is placed in the coarsest level that can represent
-its deadline. Once placed, it never moves.
+its deadline, and rebalanced down to finer levels as its deadline nears.
 
 ### Handle Lifecycle
 

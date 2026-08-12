@@ -1,12 +1,13 @@
 # nexus-timer documentation
 
-Hierarchical, no-cascade timer wheel with O(1) insert and cancel. Modeled
-on the Linux kernel timer infrastructure (Gleixner 2016).
+Hierarchical, rebalancing timer wheel with O(1) insert and cancel: entries
+rebalance down to finer levels as they near their deadline, so `poll` collects
+ready timers from small, exact slots.
 
 ## Contents
 
 - [overview.md](overview.md) — when a timer wheel is the right tool, and why
-  the no-cascade design matters
+  the collect / rebalance design matters
 - [wheel.md](wheel.md) — `Wheel`, `BoundedWheel`, `WheelBuilder`, scheduling
   and cancellation
 - [bounded-vs-unbounded.md](bounded-vs-unbounded.md) — the two storage

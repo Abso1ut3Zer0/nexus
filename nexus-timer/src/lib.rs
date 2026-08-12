@@ -37,13 +37,18 @@
 //!
 //! # Timer wheel design
 //!
-//! The wheel is hierarchical, inspired by the Linux kernel's timer
-//! infrastructure (Gleixner 2016): timers are placed into coarser slots at
-//! higher levels — no cascading, no entry movement after insertion.
+//! The wheel is hierarchical: a timer is placed into a slot at the level whose
+//! granularity matches how far away its deadline is — coarse levels for distant
+//! deadlines, fine levels for near ones.
 //!
-//! - **No cascade:** Once placed, an entry never moves. Poll checks each
-//!   entry's exact deadline. This eliminates the latency spikes that
-//!   cascading timer wheels exhibit.
+//! - **Rebalance, don't re-walk:** as a timer's deadline approaches it is moved
+//!   ("rebalanced") down to finer levels, so `poll` collects ready timers from
+//!   small, exact fine-level slots instead of walking a fat coarse slot on every
+//!   call. Rebalancing can be folded into the poll
+//!   ([`TimerWheel::poll_and_rebalance`]), bounded per poll
+//!   ([`WheelBuilder::max_rebalances_per_poll`]), or run proactively off the hot
+//!   path ([`TimerWheel::rebalance`]) to keep the poll tail flat under a large
+//!   number of timers. Timers still fire at their exact tick.
 //! - **Intrusive active-slot lists:** Only non-empty slots are visited
 //!   during poll and next-deadline queries. No bitmap, no full scan.
 //! - **Embedded refcounting:** Lightweight `Cell<u8>` refcount per entry
