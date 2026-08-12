@@ -24,8 +24,10 @@ contained.
 
   Common for timers (ignore the `Instant`) and event-triggered handlers that only
   read resources. The event is still dispatched and then dropped — zero runtime
-  cost, identical to writing `_: Event`. These are the preferred form; the
-  `no_event` wrapper remains for the `E = ()` case.
+  cost, identical to writing `_: Event`. These are the preferred form. `no_event`
+  / `NoEvent` remain — the `E = ()` shorthand on the raw path, and the
+  template-dispatch mechanism `new_event_ignored` builds on (its `NoEvent<F>`
+  template impls now cover any blueprint `Event`, not just `()`).
 - **Self-referential blueprints — `CallbackTemplate` is now `Copy` / `Clone`.**
   A callback can carry its own template in its context and stamp its own successor
   (a periodic re-arm, a retry timer, any "produce the next me" pattern) through the

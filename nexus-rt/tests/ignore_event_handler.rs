@@ -51,3 +51,25 @@ fn drops_borrowed_nonstatic_event() {
     run_with_borrowed(&mut world, &mut h, &data);
     assert_eq!(world.resource::<Count>().0, 2);
 }
+
+// Arity-0: a `fn()` (no params, no event) ignoring the event. Guards the
+// hand-written arity-0 impl (all_tuples! starts at 1 param).
+use std::sync::atomic::{AtomicU64, Ordering};
+
+static ARITY0_FIRES: AtomicU64 = AtomicU64::new(0);
+
+fn arity0_tick() {
+    ARITY0_FIRES.fetch_add(1, Ordering::Relaxed);
+}
+
+#[test]
+fn drops_event_arity_0() {
+    let wb = WorldBuilder::new();
+    let mut world = wb.build();
+
+    let mut h: Box<dyn Handler<u32>> =
+        Box::new(arity0_tick.into_handler_event_ignored(world.registry()));
+    h.run(&mut world, 5);
+    h.run(&mut world, 9);
+    assert_eq!(ARITY0_FIRES.load(Ordering::Relaxed), 2);
+}

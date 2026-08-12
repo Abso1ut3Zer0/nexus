@@ -825,6 +825,30 @@ pub trait IntoHandlerIgnoringEvent<Params> {
     fn into_handler_event_ignored(self, registry: &Registry) -> Self::Handler;
 }
 
+// Arity 0: fn() with no params — ignores the event (any E). `all_tuples!` starts
+// at one param, so this arity is hand-written (mirrors the arity-0 no-event path).
+impl<F: FnMut() + Send + 'static> IntoHandlerIgnoringEvent<()> for F {
+    type Handler = IgnoreEventHandler<F, ()>;
+
+    fn into_handler_event_ignored(self, _registry: &Registry) -> Self::Handler {
+        IgnoreEventHandler {
+            f: self,
+            state: <() as Param>::init(_registry),
+            name: std::any::type_name::<F>(),
+        }
+    }
+}
+
+impl<E, F: FnMut() + Send + 'static> Handler<E> for IgnoreEventHandler<F, ()> {
+    fn run(&mut self, _world: &mut World, _event: E) {
+        (self.f)();
+    }
+
+    fn name(&self) -> &'static str {
+        self.name
+    }
+}
+
 macro_rules! impl_into_handler_ignoring_event {
     ($($P:ident),+) => {
         impl<F: Send + 'static, $($P: Param + 'static),+>
