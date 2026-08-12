@@ -40,11 +40,11 @@ use std::time::{Duration, Instant};
 
 use nexus_slab::{Full, Slot, bounded, unbounded};
 
+use crate::ConfigError;
 use crate::entry::{EntryPtr, WheelEntry, entry_ref};
 use crate::handle::TimerHandle;
 use crate::level::WheelSlot;
 use crate::store::{BoundedStore, SlabStore};
-use crate::wheel::ConfigError;
 
 // =============================================================================
 // TimeoutQueueBuilder (typestate)
@@ -86,7 +86,9 @@ pub struct TimeoutQueueBuilder {
 impl TimeoutQueueBuilder {
     /// Creates a builder with the fixed timeout every timer will use.
     ///
-    /// Tick duration defaults to 1ms. The timeout must be non-zero.
+    /// Tick duration defaults to 1ms. The timeout must be non-zero — this is not
+    /// checked here but enforced at [`build`](UnboundedTimeoutQueueBuilder::build),
+    /// which returns [`ConfigError`] otherwise.
     pub fn new(timeout: Duration) -> Self {
         TimeoutQueueBuilder {
             timeout,
@@ -128,6 +130,14 @@ impl TimeoutQueueBuilder {
         if self.tick_duration.is_zero() {
             return Err(ConfigError::Invalid("tick_duration must be non-zero"));
         }
+        // tick_ns() narrows as_nanos() (u128) to u64; reject a tick that would
+        // not fit so build() cannot produce a zero tick (divide-by-zero). See
+        // WheelBuilder::validate.
+        if self.tick_duration.as_nanos() > u64::MAX as u128 {
+            return Err(ConfigError::Invalid(
+                "tick_duration must fit in u64 nanoseconds",
+            ));
+        }
         Ok(())
     }
 
@@ -163,8 +173,8 @@ impl UnboundedTimeoutQueueBuilder {
     ///
     /// # Errors
     ///
-    /// Returns [`ConfigError`] if the configuration is invalid (zero timeout or
-    /// zero tick duration).
+    /// Returns [`ConfigError`] if the configuration is invalid (zero timeout, or a
+    /// tick duration that is zero or exceeds u64 nanoseconds).
     pub fn build<T: 'static>(self, now: Instant) -> Result<TimeoutQueue<T>, ConfigError> {
         self.config.validate()?;
         let tick_ns = self.config.tick_ns();
@@ -200,8 +210,8 @@ impl BoundedTimeoutQueueBuilder {
     ///
     /// # Errors
     ///
-    /// Returns [`ConfigError`] if the configuration is invalid (zero timeout or
-    /// zero tick duration).
+    /// Returns [`ConfigError`] if the configuration is invalid (zero timeout, or a
+    /// tick duration that is zero or exceeds u64 nanoseconds).
     pub fn build<T: 'static>(self, now: Instant) -> Result<BoundedTimeoutQueue<T>, ConfigError> {
         self.config.validate()?;
         let tick_ns = self.config.tick_ns();
@@ -307,7 +317,7 @@ impl<T: 'static> TimeoutQueue<T> {
         TimeoutQueueBuilder::new(timeout)
             .unbounded(chunk_capacity)
             .build(now)
-            .expect("non-zero timeout with default tick is a valid config")
+            .expect("TimeoutQueue requires a non-zero timeout")
     }
 }
 
@@ -327,7 +337,7 @@ impl<T: 'static> BoundedTimeoutQueue<T> {
         TimeoutQueueBuilder::new(timeout)
             .bounded(capacity)
             .build(now)
-            .expect("non-zero timeout with default tick is a valid config")
+            .expect("TimeoutQueue requires a non-zero timeout")
     }
 }
 
@@ -779,6 +789,17 @@ mod tests {
             .unbounded(64)
             .build::<u64>(now);
         assert_invalid(&result, "tick_duration must be non-zero");
+    }
+
+    #[test]
+    fn invalid_tick_too_large() {
+        let now = Instant::now();
+        // as_nanos() would exceed u64::MAX and truncate on the cast — reject.
+        let result = TimeoutQueueBuilder::new(ms(50))
+            .tick_duration(Duration::from_secs(20_000_000_000))
+            .unbounded(64)
+            .build::<u64>(now);
+        assert_invalid(&result, "tick_duration must fit in u64 nanoseconds");
     }
 
     // -------------------------------------------------------------------------

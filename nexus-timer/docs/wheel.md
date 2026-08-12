@@ -28,7 +28,8 @@ let wheel: Wheel<u64> = WheelBuilder::new()
 The builder validates at `.build()` time, returning `Err(ConfigError)` on a bad
 config — `slots_per_level` must be a power of 2 and ≤ 64, `num_levels` must be
 ≤ 8, `2^clk_shift` must be `< slots_per_level` (so rebalancing always relocates
-to a strictly finer level), and the total range
+to a strictly finer level), `tick_duration` must be non-zero and fit in u64
+nanoseconds, and the total range
 (`slots_per_level << ((num_levels-1) * clk_shift)`) must not overflow u64. The
 convenience constructors (`Wheel::unbounded`, `Wheel::bounded`) use the default
 config and are infallible.

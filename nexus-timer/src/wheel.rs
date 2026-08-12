@@ -197,6 +197,15 @@ impl WheelBuilder {
         if self.tick_duration.is_zero() {
             return Err(ConfigError::Invalid("tick_duration must be non-zero"));
         }
+        // tick_ns() narrows as_nanos() (u128) to u64; a duration whose nanos
+        // exceed u64::MAX would truncate — and a nonzero multiple of 2^64 would
+        // truncate to 0, making inv_tick_ns a divide-by-zero. Reject up front so
+        // build() stays panic-free.
+        if self.tick_duration.as_nanos() > u64::MAX as u128 {
+            return Err(ConfigError::Invalid(
+                "tick_duration must fit in u64 nanoseconds",
+            ));
+        }
         let max_shift = (self.num_levels - 1) as u64 * self.clk_shift as u64;
         if max_shift >= 64 {
             return Err(ConfigError::Invalid(
@@ -2372,6 +2381,19 @@ mod tests {
             .unbounded(1024)
             .build::<u64>(now);
         assert_invalid(&result, "tick_duration must be non-zero");
+    }
+
+    #[test]
+    fn invalid_config_tick_too_large() {
+        let now = Instant::now();
+        // as_nanos() would exceed u64::MAX (~584 years), which would truncate on
+        // the cast to u64 — must be rejected, not silently narrowed (a nonzero
+        // multiple of 2^64 would truncate to 0 → divide-by-zero in build()).
+        let result = WheelBuilder::default()
+            .tick_duration(Duration::from_secs(20_000_000_000))
+            .unbounded(1024)
+            .build::<u64>(now);
+        assert_invalid(&result, "tick_duration must fit in u64 nanoseconds");
     }
 
     #[test]
