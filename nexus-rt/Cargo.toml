@@ -27,7 +27,7 @@ nexus-notify = { version = "1.0", path = "../nexus-notify", optional = true }
 rustc-hash = "2"
 slab = { version = "0.4", optional = true }
 nexus-smartptr = { version = "0.1", path = "../nexus-smartptr", optional = true }
-nexus-timer = { version = "1.4", path = "../nexus-timer", optional = true }
+nexus-timer = { version = "1.5", path = "../nexus-timer", optional = true }
 mio = { version = "1", features = ["os-poll", "net"], optional = true }
 signal-hook = { version = "0.3", optional = true }
 

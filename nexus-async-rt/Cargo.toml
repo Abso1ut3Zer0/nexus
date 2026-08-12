@@ -21,7 +21,7 @@ slab = "0.4"
 nexus-logbuf = { version = "2.2.0", path = "../nexus-logbuf" }
 nexus-queue = { version = "1.2.0", path = "../nexus-queue" }
 nexus-slab = { version = "2.3.1", path = "../nexus-slab" }
-nexus-timer = { version = "1.4.0", path = "../nexus-timer" }
+nexus-timer = { version = "1.5.0", path = "../nexus-timer" }
 signal-hook = "0.3"
 socket2 = { version = "0.5", features = ["all"] }
 tokio = { version = "1", features = ["rt-multi-thread", "net", "io-util", "time", "sync"], optional = true }

@@ -10,6 +10,8 @@ contained.
 
 ## [Unreleased]
 
+## [1.5.0] — 2026-08-12
+
 ### Added
 
 - `TimeoutQueue<T, S>` — a fixed-duration timeout queue front-end over the same

@@ -1,6 +1,6 @@
 [package]
 name = "nexus-timer"
-version = "1.4.3"
+version = "1.5.0"
 description = "High-performance timer wheel with O(1) insert and cancel"
 edition.workspace = true
 rust-version.workspace = true
