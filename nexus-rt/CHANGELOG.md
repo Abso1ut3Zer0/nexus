@@ -12,6 +12,16 @@ contained.
 
 ### Added
 
+- **Self-referential blueprints — `CallbackTemplate` is now `Copy` / `Clone`.**
+  A callback can carry its own template in its context and stamp its own successor
+  (a periodic re-arm, a retry timer, any "produce the next me" pattern) through the
+  safe API — no `&mut World` reach-in, no unsafe borrow split. The impls are
+  hand-written (not derived) so the `K` blueprint marker needn't be `Copy`/`Clone`;
+  the copy is `State` (already `Copy`), a fn pointer, and a `&'static str`.
+  Paired with a `nexus-rt-derive` fix so `#[derive(Resource)]` works on the
+  self-referential slot type this pattern uses
+  (`struct Pending(Option<TemplatedCallback<K>>)`), which previously overflowed
+  auto-trait resolution.
 - **`WorldBuilder::try_register`** — a non-dropping fallible register. Returns
   `Err(value)` (the value handed back, not dropped) when the type is already
   registered, so a plugin can detect that another plugin registered a different

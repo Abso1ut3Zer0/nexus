@@ -34,6 +34,21 @@ note: add `#[derive(Resource)]` to your type, or use `new_resource!` for a newty
 Use `#[derive(Resource)]` on any struct you pass to
 `WorldBuilder::register()`.
 
+A genuinely non-`Send` type (e.g. one holding an `Rc`) is still rejected — the
+error points at the derived struct and names the offending field, via the
+`Resource: Send + 'static` supertrait.
+
+### Self-referential resource types
+
+Some resources are legitimately self-referential — most commonly a slot that
+holds callbacks which themselves read that slot, e.g. a timer-wheel-like
+`struct Pending(Option<TemplatedCallback<K>>)` used by the
+[self-rescheduling pattern](callbacks.md#self-rescheduling-callbacks-periodic-timers-retries).
+The referenced type is finite (a callback holds a fn pointer and pre-resolved
+state, never the slot), so `#[derive(Resource)]` works on it. (The derive no
+longer emits an explicit `Send` bound, which previously overflowed auto-trait
+resolution on exactly this shape.)
+
 ## `new_resource!`
 
 Shorthand for a newtype wrapper that implements `Resource`, `Deref`,

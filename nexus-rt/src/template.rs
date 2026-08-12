@@ -647,6 +647,63 @@ type CallbackRunFn<K> = unsafe fn(
 ///
 /// // Each carries its own context, shares pre-resolved state.
 /// ```
+///
+/// # Self-rescheduling (self-referential blueprint)
+///
+/// Because `CallbackTemplate` is `Copy`, a callback's context can hold **its own
+/// template** and use it to stamp its successor — a periodic re-arm, a retry
+/// timer, any "produce the next me" pattern — entirely through the safe API,
+/// with no `&mut World` reach-in and no unsafe borrow split:
+///
+/// ```
+/// use nexus_rt::{WorldBuilder, ResMut, Handler, Resource, no_event};
+/// use nexus_rt::template::{Blueprint, CallbackBlueprint, CallbackTemplate, TemplatedCallback};
+///
+/// #[derive(Resource)]
+/// struct Fires(u64);
+///
+/// // The "reschedule" target — a real driver uses a timer wheel; here, one slot.
+/// // `#[derive(Resource)]` works even though this type is self-referential
+/// // (`Pending` → `TemplatedCallback<Reschedule>` → ... → reads `Pending`).
+/// #[derive(Resource)]
+/// struct Pending(Option<TemplatedCallback<Reschedule>>);
+///
+/// // The context carries the callback's OWN template — the self-reference.
+/// struct ReschedCtx { template: CallbackTemplate<Reschedule>, remaining: u64 }
+///
+/// struct Reschedule;
+/// impl Blueprint for Reschedule {
+///     type Event = ();
+///     type Params = (ResMut<'static, Fires>, ResMut<'static, Pending>);
+/// }
+/// impl CallbackBlueprint for Reschedule {
+///     type Context = ReschedCtx;
+/// }
+///
+/// fn tick(ctx: &mut ReschedCtx, mut fires: ResMut<Fires>, mut pending: ResMut<Pending>) {
+///     fires.0 += 1;
+///     if ctx.remaining > 0 {
+///         // Copy our own template out of the context and stamp the successor.
+///         pending.0 = Some(ctx.template.generate(ReschedCtx {
+///             template: ctx.template,        // `Copy` — no `Reschedule: Copy` needed
+///             remaining: ctx.remaining - 1,
+///         }));
+///     }
+/// }
+///
+/// let mut builder = WorldBuilder::new();
+/// builder.register(Fires(0));
+/// builder.register(Pending(None));
+/// let mut world = builder.build();
+///
+/// let template = CallbackTemplate::<Reschedule>::new(no_event(tick), world.registry());
+/// let mut next = Some(template.generate(ReschedCtx { template, remaining: 3 }));
+/// while let Some(mut cb) = next.take() {
+///     cb.run(&mut world, ());
+///     next = world.resource_mut::<Pending>().0.take();
+/// }
+/// assert_eq!(world.resource::<Fires>().0, 4); // 1 initial fire + 3 reschedules
+/// ```
 pub struct CallbackTemplate<K: CallbackBlueprint>
 where
     <K::Params as Param>::State: Copy,
@@ -704,6 +761,25 @@ where
         }
     }
 }
+
+// `CallbackTemplate` is `Copy`. Hand-written rather than `#[derive(Copy, Clone)]`:
+// a derive would emit `K: Copy` / `K: Clone` bounds from the
+// `PhantomData<fn() -> K>` field, but `K` is a ZST blueprint marker that
+// implements neither — and the copy does not depend on it. Every real field is
+// `Copy`: `prototype` (`State`) by the where-clause, `run_fn` is a fn pointer,
+// `name` is `&'static str`. Being `Copy` is what lets a callback carry its own
+// template in its context and stamp its own successor (a periodic re-arm or
+// retry timer) with no `&mut World` and no unsafe — see the type-level docs.
+impl<K: CallbackBlueprint> Clone for CallbackTemplate<K>
+where
+    <K::Params as Param>::State: Copy,
+{
+    fn clone(&self) -> Self {
+        *self
+    }
+}
+
+impl<K: CallbackBlueprint> Copy for CallbackTemplate<K> where <K::Params as Param>::State: Copy {}
 
 // =============================================================================
 // TemplatedCallback<K>
@@ -1064,6 +1140,81 @@ mod tests {
         cb.ctx_mut().order_id = 99;
         cb.run(&mut world, ());
         assert_eq!(*world.resource::<u64>(), 42 + 99);
+    }
+
+    // -- Self-referential blueprint: a callback reschedules itself -------------
+
+    // A one-slot "reschedule" target. A real driver uses a timer wheel; a slot
+    // is enough to drive the chain in a test. `Resource` requires `Send +
+    // 'static`, so this also asserts `TemplatedCallback<SelfResched>: Send`.
+    struct Pending(Option<TemplatedCallback<SelfResched>>);
+    impl crate::world::Resource for Pending {}
+
+    // The context carries the callback's OWN template — the self-reference.
+    struct ReschedCtx {
+        template: CallbackTemplate<SelfResched>,
+        remaining: u64,
+    }
+
+    struct SelfResched;
+    impl Blueprint for SelfResched {
+        type Event = ();
+        type Params = (ResMut<'static, u64>, ResMut<'static, Pending>);
+    }
+    impl CallbackBlueprint for SelfResched {
+        type Context = ReschedCtx;
+    }
+
+    fn reschedule(ctx: &mut ReschedCtx, mut count: ResMut<u64>, mut pending: ResMut<Pending>) {
+        *count += 1;
+        if ctx.remaining > 0 {
+            // Copy our own template out of the context and stamp the successor.
+            pending.0 = Some(ctx.template.generate(ReschedCtx {
+                template: ctx.template, // Copy — no `SelfResched: Copy` needed
+                remaining: ctx.remaining - 1,
+            }));
+        }
+    }
+
+    #[test]
+    fn self_referential_blueprint_reschedules_itself() {
+        let mut builder = WorldBuilder::new();
+        builder.register::<u64>(0);
+        builder.register::<Pending>(Pending(None));
+        let mut world = builder.build();
+
+        let template = CallbackTemplate::<SelfResched>::new(no_event(reschedule), world.registry());
+
+        const N: u64 = 5;
+        let mut next = Some(template.generate(ReschedCtx {
+            template,
+            remaining: N,
+        }));
+        let mut fired = 0u64;
+        while let Some(mut cb) = next.take() {
+            cb.run(&mut world, ());
+            fired += 1;
+            next = world.resource_mut::<Pending>().0.take();
+        }
+
+        assert_eq!(fired, N + 1, "one initial fire + N reschedules");
+        assert_eq!(*world.resource::<u64>(), N + 1);
+    }
+
+    #[test]
+    fn template_copies_without_requiring_key_copy() {
+        // `SelfResched` is a ZST marker implementing neither `Copy` nor `Clone`;
+        // the template still copies. Guards against an accidental
+        // `#[derive(Copy, Clone)]`, which would add a bogus `K: Copy` bound.
+        let mut builder = WorldBuilder::new();
+        builder.register::<u64>(0);
+        builder.register::<Pending>(Pending(None));
+        let world = builder.build();
+
+        let template = CallbackTemplate::<SelfResched>::new(no_event(reschedule), world.registry());
+        let a = template; // copy
+        let b = template; // copy again — only compiles if `Copy`
+        let _ = (a, b, template);
     }
 
     // -- Convenience macros ---------------------------------------------------

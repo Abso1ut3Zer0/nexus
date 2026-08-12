@@ -1,0 +1,17 @@
+error[E0277]: `Rc<u32>` cannot be sent between threads safely
+ --> tests/ui/derive_resource_non_send.rs:6:8
+  |
+6 | struct Bad(std::rc::Rc<u32>);
+  |        ^^^ `Rc<u32>` cannot be sent between threads safely
+  |
+  = help: within `Bad`, the trait `Send` is not implemented for `Rc<u32>`
+note: required because it appears within the type `Bad`
+ --> tests/ui/derive_resource_non_send.rs:6:8
+  |
+6 | struct Bad(std::rc::Rc<u32>);
+  |        ^^^
+note: required by a bound in `Resource`
+ --> src/world.rs
+  |
+  | pub trait Resource: Send + 'static {}
+  |                     ^^^^ required by this bound in `Resource`
