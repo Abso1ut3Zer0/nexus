@@ -55,7 +55,7 @@ struct Inner<T> {
 
 // SAFETY: Inner is shared via Arc between one Writer and multiple SharedReaders.
 // All access to `data` goes through word-at-a-time atomics (atomic_store/atomic_load),
-// and the seqlock protocol ensures no torn reads. T: Send is required because
+// and the seqlock protocol detects torn reads and retries. T: Send is required because
 // values cross thread boundaries. writer_alive uses atomic ordering for visibility.
 unsafe impl<T: Send> Send for Inner<T> {}
 // SAFETY: same as Send; seqlock atomics make concurrent immutable access safe across threads.
@@ -137,6 +137,7 @@ impl<T: Pod> Writer<T> {
     /// Writes a value, overwriting any previous.
     ///
     /// Never blocks. If any reader is mid-read, they detect and retry.
+    #[allow(clippy::needless_pass_by_value)] // must own value; T: Pod has no drop glue
     #[inline]
     pub fn write(&mut self, value: T) {
         let inner = &*self.inner;
@@ -213,16 +214,17 @@ impl<T: Pod> SharedReader<T> {
 
             // SAFETY: Same as spsc::Reader::read.
             #[cfg(not(loom))]
-            let value = unsafe { atomic_load(inner.data.get().cast::<T>()) };
+            let buf = unsafe { atomic_load(inner.data.get().cast::<T>()) };
             #[cfg(loom)]
-            let value = crate::loom_impl::loom_load::<T>(&inner.data);
+            let buf = crate::loom_impl::loom_load::<T>(&inner.data);
 
             fence(Ordering::Acquire);
             let seq2 = inner.seq.load(Ordering::Relaxed);
 
             if seq1 == seq2 {
                 self.cached_seq = seq1;
-                return Some(value);
+                // SAFETY: seq1 == seq2 confirms a consistent seqlock read.
+                return Some(unsafe { buf.assume_init() });
             }
 
             // Torn read, retry
@@ -254,16 +256,17 @@ impl<T: Pod> SharedReader<T> {
 
             // SAFETY: Same as spsc::Reader::read_versioned.
             #[cfg(not(loom))]
-            let value = unsafe { atomic_load(inner.data.get().cast::<T>()) };
+            let buf = unsafe { atomic_load(inner.data.get().cast::<T>()) };
             #[cfg(loom)]
-            let value = crate::loom_impl::loom_load::<T>(&inner.data);
+            let buf = crate::loom_impl::loom_load::<T>(&inner.data);
 
             fence(Ordering::Acquire);
             let seq2 = inner.seq.load(Ordering::Relaxed);
 
             if seq1 == seq2 {
                 self.cached_seq = seq1;
-                return Some((value, seq1 as u64 / 2));
+                // SAFETY: same as read(); seq1 == seq2 confirms consistency.
+                return Some((unsafe { buf.assume_init() }, seq1 as u64 / 2));
             }
 
             core::hint::spin_loop();

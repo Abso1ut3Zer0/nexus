@@ -41,19 +41,19 @@ pub(crate) fn loom_store<T>(data: &AtomicUsize, value: &T) {
 }
 
 #[cfg(loom)]
-pub(crate) fn loom_load<T>(data: &AtomicUsize) -> T {
+pub(crate) fn loom_load<T>(data: &AtomicUsize) -> std::mem::MaybeUninit<T> {
     const { assert!(std::mem::size_of::<T>() <= std::mem::size_of::<usize>()) };
     let bits = data.load(Ordering::Relaxed);
-    // SAFETY: T fits in usize (const-asserted). We copy the relevant bytes
-    // from the loaded usize into a zeroed T-sized buffer. All bytes of T
-    // are written before assume_init.
+    // SAFETY: T fits in usize (const-asserted). We copy size_of::<T>() bytes
+    // from the loaded usize into a MaybeUninit<T> buffer. The caller assumes
+    // init only after seqlock validation, mirroring the real atomic_load path.
     unsafe {
-        let mut value = std::mem::MaybeUninit::<T>::zeroed();
+        let mut value = std::mem::MaybeUninit::<T>::uninit();
         std::ptr::copy_nonoverlapping(
             std::ptr::addr_of!(bits).cast::<u8>(),
             value.as_mut_ptr().cast::<u8>(),
             std::mem::size_of::<T>(),
         );
-        value.assume_init()
+        value
     }
 }

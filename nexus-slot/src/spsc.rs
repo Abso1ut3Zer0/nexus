@@ -10,8 +10,11 @@
 //! # Example
 //!
 //! ```rust
-//! #[derive(Copy, Clone, Default)]
+//! #[repr(C)]
+//! #[derive(Clone, Default)]
 //! struct Quote { bid: f64, ask: f64, seq: u64 }
+//! // SAFETY: repr(C), no padding (3 x 8-byte fields), all bit patterns valid
+//! unsafe impl nexus_slot::Pod for Quote {}
 //!
 //! let (mut writer, mut reader) = nexus_slot::spsc::slot::<Quote>();
 //!
@@ -49,7 +52,7 @@ struct Inner<T> {
 // SAFETY: Inner is shared via Arc between exactly one Writer and one Reader,
 // each on potentially different threads. All access to `data` goes through
 // word-at-a-time atomics (atomic_store/atomic_load), and the seqlock protocol
-// ensures no torn reads. T: Send is required because values cross thread boundaries.
+// detects torn reads and retries. T: Send is required because values cross thread boundaries.
 unsafe impl<T: Send> Send for Inner<T> {}
 // SAFETY: same as Send; seqlock atomics make concurrent immutable access safe across threads.
 unsafe impl<T: Send> Sync for Inner<T> {}
@@ -88,8 +91,8 @@ pub fn slot<T: Pod>() -> (Writer<T>, Reader<T>) {
         );
     };
 
-    // Start at 2 instead of 0 so that wrapping on 32-bit never hits
-    // 0 (the "never written" sentinel). Sequence uses even values for
+    // Start at 2 to reserve 0 as the "never written" sentinel; on 32-bit
+    // seq wraps to 0 after ~2^31 writes (known limitation). Sequence uses even values for
     // "write complete" and odd for "write in progress": 2→3→4→5→...
     let inner = Arc::new(Inner {
         seq: AtomicUsize::new(2),
@@ -117,6 +120,7 @@ impl<T: Pod> Writer<T> {
     /// Writes a value, overwriting any previous.
     ///
     /// Never blocks. If the reader is mid-read, they detect and retry.
+    #[allow(clippy::needless_pass_by_value)] // must own value; T: Pod has no drop glue
     #[inline]
     pub fn write(&mut self, value: T) {
         let inner = &*self.inner;
@@ -195,16 +199,19 @@ impl<T: Pod> Reader<T> {
             // If a concurrent write occurs, we detect it via seq2 != seq1.
             // No references are created — raw pointer access through atomics.
             #[cfg(not(loom))]
-            let value = unsafe { atomic_load(inner.data.get().cast::<T>()) };
+            let buf = unsafe { atomic_load(inner.data.get().cast::<T>()) };
             #[cfg(loom)]
-            let value = crate::loom_impl::loom_load::<T>(&inner.data);
+            let buf = crate::loom_impl::loom_load::<T>(&inner.data);
 
             fence(Ordering::Acquire);
             let seq2 = inner.seq.load(Ordering::Relaxed);
 
             if seq1 == seq2 {
                 self.cached_seq = seq1;
-                return Some(value);
+                // SAFETY: seq1 == seq2 confirms a consistent seqlock read.
+                // The bytes in buf are exactly those stored by the writer,
+                // which for Pod types have no uninit bytes and form a valid T.
+                return Some(unsafe { buf.assume_init() });
             }
 
             // Torn read, retry
@@ -253,17 +260,18 @@ impl<T: Pod> Reader<T> {
 
             // SAFETY: same as read() — seq1 is even and non-zero.
             #[cfg(not(loom))]
-            let value = unsafe { atomic_load(inner.data.get().cast::<T>()) };
+            let buf = unsafe { atomic_load(inner.data.get().cast::<T>()) };
             #[cfg(loom)]
-            let value = crate::loom_impl::loom_load::<T>(&inner.data);
+            let buf = crate::loom_impl::loom_load::<T>(&inner.data);
 
             fence(Ordering::Acquire);
             let seq2 = inner.seq.load(Ordering::Relaxed);
 
             if seq1 == seq2 {
                 self.cached_seq = seq1;
+                // SAFETY: same as read(); seq1 == seq2 confirms consistency.
                 // Version = seq / 2 (writer increments by 2 per write)
-                return Some((value, seq1 as u64 / 2));
+                return Some((unsafe { buf.assume_init() }, seq1 as u64 / 2));
             }
 
             core::hint::spin_loop();

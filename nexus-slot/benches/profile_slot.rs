@@ -42,6 +42,10 @@ impl Default for Quote {
     }
 }
 
+// SAFETY: repr(C), no implicit padding (u64+f64+f64+[u8;40] = 64 bytes exact),
+// all bit patterns valid for all fields.
+unsafe impl nexus_slot::Pod for Quote {}
+
 #[cfg(target_arch = "x86_64")]
 #[inline]
 fn rdtscp() -> u64 {
