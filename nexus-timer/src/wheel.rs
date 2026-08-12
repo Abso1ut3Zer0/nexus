@@ -310,7 +310,9 @@ pub type Wheel<T> = TimerWheel<T, unbounded::Slab<WheelEntry<T>>>;
 impl<T: 'static> Wheel<T> {
     /// Creates an unbounded timer wheel with default configuration.
     ///
-    /// For custom configuration, use [`WheelBuilder`].
+    /// `now` fixes the reference epoch — pass one monotone clock source
+    /// (e.g. `Instant::now()`) here and to every `schedule`/`poll`. For custom
+    /// configuration, use [`WheelBuilder`].
     pub fn unbounded(chunk_capacity: usize, now: Instant) -> Self {
         WheelBuilder::default().unbounded(chunk_capacity).build(now)
     }
@@ -319,7 +321,9 @@ impl<T: 'static> Wheel<T> {
 impl<T: 'static> BoundedWheel<T> {
     /// Creates a bounded timer wheel with default configuration.
     ///
-    /// For custom configuration, use [`WheelBuilder`].
+    /// `now` fixes the reference epoch — pass one monotone clock source
+    /// (e.g. `Instant::now()`) here and to every `schedule`/`poll`. For custom
+    /// configuration, use [`WheelBuilder`].
     pub fn bounded(capacity: usize, now: Instant) -> Self {
         WheelBuilder::default().bounded(capacity).build(now)
     }

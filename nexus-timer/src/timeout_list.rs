@@ -28,7 +28,7 @@
 //!
 //! # Reuse
 //!
-//! [`WheelEntry`](crate::WheelEntry), [`TimerHandle`], the slab
+//! [`WheelEntry`], [`TimerHandle`], the slab
 //! [`store`](crate::store) traits, and the DLL splice logic (`WheelSlot`) are
 //! shared verbatim with the wheel — this front-end is the same machinery with
 //! one head/tail pair in place of `Vec<Level>`, and the whole `min_deadline`
@@ -287,7 +287,10 @@ pub type BoundedTimeoutList<T> = TimeoutList<T, bounded::Slab<WheelEntry<T>>>;
 impl<T: 'static> TimeoutList<T> {
     /// Creates an unbounded timeout list with the default 1ms tick.
     ///
-    /// For custom tick duration, use [`TimeoutListBuilder`].
+    /// Every timer fires `timeout` after the `now` passed to `schedule`. The
+    /// `now` here fixes the reference epoch — pass one monotone clock source
+    /// (e.g. `Instant::now()`) here and to every `schedule`/`poll`. For a custom
+    /// tick duration, use [`TimeoutListBuilder`].
     pub fn unbounded(timeout: Duration, chunk_capacity: usize, now: Instant) -> Self {
         TimeoutListBuilder::new(timeout)
             .unbounded(chunk_capacity)
@@ -298,7 +301,10 @@ impl<T: 'static> TimeoutList<T> {
 impl<T: 'static> BoundedTimeoutList<T> {
     /// Creates a bounded timeout list with the default 1ms tick.
     ///
-    /// For custom tick duration, use [`TimeoutListBuilder`].
+    /// Every timer fires `timeout` after the `now` passed to `schedule`. The
+    /// `now` here fixes the reference epoch — pass one monotone clock source
+    /// (e.g. `Instant::now()`) here and to every `schedule`/`poll`. For a custom
+    /// tick duration, use [`TimeoutListBuilder`].
     pub fn bounded(timeout: Duration, capacity: usize, now: Instant) -> Self {
         TimeoutListBuilder::new(timeout)
             .bounded(capacity)
