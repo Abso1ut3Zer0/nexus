@@ -72,6 +72,11 @@ for id in 0..100 {
 }
 ```
 
+`CallbackTemplate` is `Copy`, so a callback's context can even hold **its own
+template** and stamp its own successor — the basis for self-rearming timers and
+retry loops. See
+[Self-Rescheduling Callbacks](callbacks.md#self-rescheduling-callbacks-periodic-timers-retries).
+
 ## Blueprint Macros
 
 The `handler_blueprint!` and `callback_blueprint!` macros use keyword

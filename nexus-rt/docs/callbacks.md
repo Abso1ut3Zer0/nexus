@@ -255,6 +255,93 @@ assert_eq!(callbacks[99].ctx.bytes, 20);
 assert_eq!(world.resource::<SharedState>().total, 30);
 ```
 
+## Self-Rescheduling Callbacks (Periodic Timers, Retries)
+
+`CallbackTemplate` is `Copy`, so a callback's **context can carry its own
+template** and use it to stamp its own successor — a periodic re-arm, a
+retry-with-backoff, any "produce the next me" pattern. This happens entirely
+through the safe API: no `&mut World` reach-in, no unsafe borrow split. The
+self-reference is not a cyclic type — the template holds a fn pointer and
+pre-resolved state, never the context — so a context can hold a
+`CallbackTemplate<K>` field as plain data.
+
+The canonical case is a **self-rearming timer**. The callback fires, does its
+work, then stamps a fresh copy of itself and schedules it back into the timer
+wheel at the next deadline:
+
+```rust
+use std::time::{Duration, Instant};
+use nexus_rt::{WorldBuilder, ResMut};
+use nexus_rt::timer::{TimerInstaller, TimerWheel, Wheel};
+use nexus_rt::template::CallbackTemplate;
+
+// The context carries the callback's OWN template (the self-reference),
+// plus whatever per-timer state it needs.
+struct HeartbeatCtx {
+    template: CallbackTemplate<Heartbeat>,
+    interval: Duration,
+    remaining: u32,
+}
+
+// `now: Instant` is the fire time the timer driver dispatches with.
+fn heartbeat(ctx: &mut HeartbeatCtx, mut wheel: ResMut<TimerWheel>, now: Instant) {
+    // ... do the periodic work (send a ping, sample a metric) ...
+
+    if ctx.remaining > 0 {
+        // Copy our own template out of the context and stamp the successor.
+        let next = ctx.template.generate(HeartbeatCtx {
+            template: ctx.template,          // `Copy` — no move, template stays usable
+            interval: ctx.interval,
+            remaining: ctx.remaining - 1,
+        });
+        // Re-arm: schedule the successor one interval out. The wheel stores
+        // `Box<dyn Handler<Instant>>`, so the concrete callback type is erased.
+        wheel.schedule_forget(now + ctx.interval, Box::new(next));
+    }
+}
+
+nexus_rt::callback_blueprint!(
+    Heartbeat,
+    Context = HeartbeatCtx,
+    Event = Instant,
+    Params = (ResMut<'static, TimerWheel>,)
+);
+
+// Setup: install the timer driver, then prime the first heartbeat.
+let mut wb = WorldBuilder::new();
+let mut timer = wb.install_driver(TimerInstaller::new(Wheel::unbounded(64, Instant::now())));
+let mut world = wb.build();
+
+let template = CallbackTemplate::<Heartbeat>::new(heartbeat, world.registry());
+let first = template.generate(HeartbeatCtx {
+    template,                                 // the template copies into the context
+    interval: Duration::from_millis(10),
+    remaining: 5,
+});
+world.resource_mut::<TimerWheel>().schedule_forget(Instant::now(), Box::new(first));
+
+// In the poll loop, `timer.poll(&mut world, Instant::now())` fires due
+// callbacks; each fire re-arms the next until `remaining` reaches 0.
+```
+
+**Storing typed callbacks instead of erasing them.** The timer wheel erases to
+`Box<dyn Handler<Instant>>`, which sidesteps the type entirely. If instead you
+keep a *typed* slot — a resource holding `Option<TemplatedCallback<K>>` or a
+`Vec<TemplatedCallback<K>>` — that resource type is **self-referential**
+(`Slot` → `TemplatedCallback<K>` → context → reads `Slot`). This is a
+well-formed, finite type, and `#[derive(Resource)]` works on it:
+
+```rust
+use nexus_rt::Resource;
+use nexus_rt::template::TemplatedCallback;
+
+#[derive(Resource)]
+struct Pending(Option<TemplatedCallback<Heartbeat>>);
+```
+
+(Earlier versions of the `Resource` derive overflowed auto-trait resolution on
+this self-referential shape; that is fixed — see [derives.md](derives.md).)
+
 ## Returning Callbacks from Functions (Rust 2024)
 
 When a factory function takes `&Registry` and returns `impl Handler<E>`,

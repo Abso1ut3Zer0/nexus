@@ -34,18 +34,36 @@ pub fn derive_resource(input: TokenStream) -> TokenStream {
     let name = &input.ident;
     let (impl_generics, ty_generics, where_clause) = input.generics.split_for_impl();
 
-    // Add Send + 'static where clause so errors point at the derive,
-    // not at the register() call site.
-    let mut bounds = where_clause.cloned();
-    let predicate: syn::WherePredicate = syn::parse_quote!(#name #ty_generics: Send + 'static);
-    bounds
-        .get_or_insert_with(|| syn::parse_quote!(where))
-        .predicates
-        .push(predicate);
+    // The `Resource: Send + 'static` supertrait is what actually enforces the
+    // bound. How we express the impl depends on whether the type is generic:
+    //
+    // - CONCRETE type: rely on the supertrait alone (no explicit predicate). It
+    //   still reports a genuinely non-Send type at the derive site, and — unlike
+    //   an explicit predicate — is discharged coinductively, so it does NOT
+    //   overflow on self-referential resources such as a timer-wheel slot
+    //   `struct Pending(Option<TemplatedCallback<K>>)`. (An explicit
+    //   `where Self: Send + 'static` forces `Send` to be proven eagerly and
+    //   overflows on that shape.)
+    // - GENERIC type: add `where Self: Send + 'static` so the impl is
+    //   *conditional*. Without it, an unconditional `impl<T> Resource for Foo<T>`
+    //   would require EVERY instantiation to be Send + 'static and reject e.g.
+    //   `Foo<Rc<_>>`. With it, `Foo<T>` is a `Resource` exactly when it is
+    //   Send + 'static.
+    let where_clause = if input.generics.params.is_empty() {
+        where_clause.cloned()
+    } else {
+        let mut bounds = where_clause.cloned();
+        let predicate: syn::WherePredicate = syn::parse_quote!(#name #ty_generics: Send + 'static);
+        bounds
+            .get_or_insert_with(|| syn::parse_quote!(where))
+            .predicates
+            .push(predicate);
+        bounds
+    };
 
     quote! {
         impl #impl_generics ::nexus_rt::Resource for #name #ty_generics
-            #bounds
+            #where_clause
         {}
     }
     .into()

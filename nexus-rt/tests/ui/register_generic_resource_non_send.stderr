@@ -1,0 +1,32 @@
+error[E0277]: `Rc<u32>` cannot be sent between threads safely
+  --> tests/ui/register_generic_resource_non_send.rs:13:17
+   |
+13 |     wb.register(Wrap(Rc::new(0u32)));
+   |        -------- ^^^^^^^^^^^^^^^^^^^ `Rc<u32>` cannot be sent between threads safely
+   |        |
+   |        required by a bound introduced by this call
+   |
+   = help: within `Wrap<Rc<u32>>`, the trait `Send` is not implemented for `Rc<u32>`
+help: the trait `Resource` is implemented for `Wrap<T>`
+  --> tests/ui/register_generic_resource_non_send.rs:8:10
+   |
+ 8 | #[derive(Resource)]
+   |          ^^^^^^^^
+note: required because it appears within the type `Wrap<Rc<u32>>`
+  --> tests/ui/register_generic_resource_non_send.rs:9:8
+   |
+ 9 | struct Wrap<T>(T);
+   |        ^^^^
+note: required for `Wrap<Rc<u32>>` to implement `Resource`
+  --> tests/ui/register_generic_resource_non_send.rs:8:10
+   |
+ 8 | #[derive(Resource)]
+   |          ^^^^^^^^ unsatisfied trait bound introduced in this `derive` macro
+ 9 | struct Wrap<T>(T);
+   |        ^^^^^^^
+note: required by a bound in `WorldBuilder::register`
+  --> src/world.rs
+   |
+   |     pub fn register<T: Resource>(&mut self, value: T) -> ResourceId {
+   |                        ^^^^^^^^ required by this bound in `WorldBuilder::register`
+   = note: this error originates in the derive macro `Resource` (in Nightly builds, run with -Z macro-backtrace for more info)
