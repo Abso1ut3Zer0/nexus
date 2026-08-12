@@ -1,11 +1,45 @@
-//! High-performance timer wheel with O(1) insert and cancel.
+//! Low-latency timer primitives: a hierarchical **timer wheel** (O(1) insert +
+//! cancel) for arbitrary deadlines, and a fixed-duration **[`TimeoutList`]** for
+//! the common case where every timer shares one timeout.
 //!
-//! `nexus-timer` provides a hierarchical timer wheel inspired by the Linux
-//! kernel's timer infrastructure (Gleixner 2016). Timers are placed into
-//! coarser slots at higher levels — no cascading, no entry movement after
-//! insertion.
+//! # Two structures — pick by workload
 //!
-//! # Design
+//! - [`TimerWheel`] ([`Wheel`] / [`BoundedWheel`]) — **arbitrary deadlines**:
+//!   timers that fire at different, unrelated future times.
+//! - [`TimeoutList`] ([`BoundedTimeoutList`]) — **a single fixed timeout**:
+//!   every timer expires the *same* duration after it is scheduled.
+//!
+//! The tell: *"do all my timers time out after the same amount of time?"* —
+//! yes → [`TimeoutList`], no → the wheel.
+//!
+//! | | [`TimerWheel`] | [`TimeoutList`] |
+//! |---|---|---|
+//! | Timeout per timer | arbitrary | one fixed duration |
+//! | Poll | O(active population) | **O(fired)** |
+//! | `next_deadline` | cached | **O(1) exact** |
+//! | Clock | any monotone source | monotone, non-decreasing |
+//!
+//! Reach for [`TimeoutList`] on the hot path when it fits — idle timeouts (all
+//! 30 s), request deadlines (all 5 s), a fixed retry/debounce delay, uniform
+//! TTL expiry. Fixed duration ⇒ monotone deadlines ⇒ a sorted list, so a
+//! nothing-due poll stays flat (~12 cycles) no matter how many timers are
+//! outstanding. A handful of distinct durations → one list each; many or
+//! arbitrary deadlines → the wheel.
+//!
+//! # The clock
+//!
+//! Every constructor takes `now` — it fixes the **reference epoch**. An
+//! `Instant` has no absolute zero (you can only measure durations *between*
+//! instants), so deadlines are stored relative to this epoch. Pass one monotone
+//! clock source (e.g. `Instant::now()`) to the constructor *and* to every
+//! `schedule` / `poll`. A `now` that goes backwards is a bug — [`TimeoutList`]
+//! debug-asserts on it.
+//!
+//! # Timer wheel design
+//!
+//! The wheel is hierarchical, inspired by the Linux kernel's timer
+//! infrastructure (Gleixner 2016): timers are placed into coarser slots at
+//! higher levels — no cascading, no entry movement after insertion.
 //!
 //! - **No cascade:** Once placed, an entry never moves. Poll checks each
 //!   entry's exact deadline. This eliminates the latency spikes that
@@ -41,10 +75,15 @@ mod entry;
 mod handle;
 mod level;
 pub mod store;
+pub mod timeout_list;
 mod wheel;
 
 pub use entry::WheelEntry;
 pub use handle::TimerHandle;
+pub use timeout_list::{
+    BoundedTimeoutList, BoundedTimeoutListBuilder, TimeoutList, TimeoutListBuilder,
+    UnboundedTimeoutListBuilder,
+};
 pub use wheel::{
     BoundedWheel, BoundedWheelBuilder, TimerWheel, UnboundedWheelBuilder, Wheel, WheelBuilder,
 };

@@ -20,5 +20,9 @@ seq-macro.workspace = true
 name = "perf_timer"
 harness = false
 
+[[bench]]
+name = "perf_timeout_list"
+harness = false
+
 [lints]
 workspace = true
