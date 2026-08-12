@@ -10,6 +10,40 @@ contained.
 
 ## [Unreleased]
 
+### Added
+
+- **`WorldBuilder::try_register`** — a non-dropping fallible register. Returns
+  `Err(value)` (the value handed back, not dropped) when the type is already
+  registered, so a plugin can detect that another plugin registered a different
+  configuration of the same type. `ensure` now delegates to it. The
+  duplicate-registration panic in `register` also gained a hint pointing at
+  `ensure()` / `try_register()` / `contains::<T>()`.
+- **`WorldBuilder::id` / `try_id`** — resolve the `ResourceId` of a type
+  registered so far, for a driver/plugin that requires a dependency another one
+  provides (`id` panics at setup if absent; `try_id` returns `None`). Mirrors the
+  `id`/`try_id` already on `World` and `Registry` — `WorldBuilder` previously had
+  only `contains`.
+- **Clock pollers return the time they compute.** `RealtimeClockPoller`,
+  `TestClockPoller`, and `HistoricalClockPoller` `sync()` now return the `Clock`
+  they wrote (`Copy`), so event-loop code holding a poller can stamp/log the
+  timestamp without a second `world.resource::<Clock>()` lookup. Source-compatible
+  for the common case — the return is not `#[must_use]`, so statement-position
+  `poller.sync(...)` calls compile unchanged — but it is a return-type signature
+  change: code that named the old `-> ()` shape (a `fn` pointer, or a closure bound
+  to `FnMut(&mut World)`) would need updating.
+
+### Changed
+
+- **Clock installers register `Clock` with `ensure_default` instead of
+  `register`.** A `Clock` is a shared read dependency, not installer-owned state,
+  so a clock source now composes with anything that already registered a `Clock`
+  (e.g. a baseline default) instead of panicking on install order. The three
+  installers drive the value of whichever `Clock` slot exists. The owned-vs-shared
+  registration pattern behind this is now documented on the `Installer` trait
+  (own → `register`, share → `ensure`/`ensure_default`, require → resolve via
+  `id`, which panics at setup if absent — a missing dependency is a wiring error,
+  not a `Result`), cross-referenced from `register`, `Resource`, and `Plugin`.
+
 ## [2.4.1] — 2026-06-02
 
 ### Added

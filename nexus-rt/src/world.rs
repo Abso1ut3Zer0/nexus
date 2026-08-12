@@ -463,6 +463,11 @@ pub struct WorldBuilder {
 /// Without the marker trait, two modules can independently register
 /// `u64` and silently collide. The `Resource` bound forces a newtype,
 /// making collisions a compile error.
+///
+/// When a collision is *intentional* — several drivers sharing one resource
+/// type — register it with [`ensure`](WorldBuilder::ensure) rather than
+/// [`register`](WorldBuilder::register); see the owned-vs-shared guidance on
+/// the [`Installer`](crate::Installer) trait.
 #[diagnostic::on_unimplemented(
     message = "this type cannot be stored as a resource in the World",
     note = "add `#[derive(Resource)]` to your type, or use `new_resource!` for a newtype wrapper"
@@ -499,6 +504,12 @@ impl WorldBuilder {
     /// is transferred to the container. The pointer is stable for the
     /// lifetime of the resulting [`World`].
     ///
+    /// Use this when the caller **owns** the resource (its sole writer). For a
+    /// resource multiple drivers may share, use [`ensure`](Self::ensure); to
+    /// detect a duplicate without dropping your value, use
+    /// [`try_register`](Self::try_register). See the
+    /// [`Installer`](crate::Installer) docs for the owned-vs-shared pattern.
+    ///
     /// # Panics
     ///
     /// Panics if a resource of the same type is already registered.
@@ -507,7 +518,9 @@ impl WorldBuilder {
         let type_id = TypeId::of::<T>();
         assert!(
             !self.registry.indices.contains_key(&type_id),
-            "resource `{}` already registered",
+            "resource `{}` already registered \
+             (use `ensure()` if duplicate registration is expected, or \
+             `try_register()` / `contains::<T>()` to branch on it)",
             type_name::<T>(),
         );
 
@@ -533,20 +546,39 @@ impl WorldBuilder {
         self.register(T::default())
     }
 
+    /// Attempts to register a resource, returning its [`ResourceId`].
+    ///
+    /// Returns `Err(value)` if a resource of the same type is already
+    /// registered — the value is handed **back** rather than dropped, so the
+    /// caller can decide whether the duplicate is benign (e.g. compare it to
+    /// the existing registration's configuration).
+    ///
+    /// Use [`ensure`](Self::ensure) when the existing registration always wins
+    /// and the value is safe to discard; use [`register`](Self::register) when
+    /// a duplicate is a bug that should panic.
+    #[cold]
+    pub fn try_register<T: Resource>(&mut self, value: T) -> Result<ResourceId, T> {
+        if self.registry.contains::<T>() {
+            return Err(value);
+        }
+        Ok(self.register(value))
+    }
+
     /// Ensure a resource is registered, returning its [`ResourceId`].
     ///
     /// If the type is already registered, returns the existing ID and
     /// drops `value`. If not, registers it and returns the new ID.
     ///
     /// Use [`register`](Self::register) when duplicate registration is a
-    /// bug that should panic. Use `ensure` when multiple plugins or
-    /// drivers may independently need the same resource type.
+    /// bug that should panic, or [`try_register`](Self::try_register) when the
+    /// caller wants the rejected value handed back. Use `ensure` when multiple
+    /// plugins or drivers may independently need the same resource type.
     #[cold]
     pub fn ensure<T: Resource>(&mut self, value: T) -> ResourceId {
-        if let Some(id) = self.registry.try_id::<T>() {
-            return id;
+        match self.try_register(value) {
+            Ok(id) => id,
+            Err(_) => self.registry.id::<T>(),
         }
-        self.register(value)
     }
 
     /// Ensure a resource is registered using its [`Default`] value,
@@ -595,6 +627,26 @@ impl WorldBuilder {
     /// Returns `true` if a resource of type `T` has been registered.
     pub fn contains<T: Resource>(&self) -> bool {
         self.registry.contains::<T>()
+    }
+
+    /// Resolve the [`ResourceId`] for a type registered so far.
+    ///
+    /// Use during install to resolve a **required** dependency another driver
+    /// or plugin must have registered earlier (install order matters). See the
+    /// [`Installer`](crate::Installer) owned-vs-shared guidance.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the resource type has not been registered.
+    pub fn id<T: Resource>(&self) -> ResourceId {
+        self.registry.id::<T>()
+    }
+
+    /// Resolve the [`ResourceId`] for a type, or `None` if it has not been
+    /// registered — the non-panicking form of [`id`](Self::id), for an optional
+    /// dependency.
+    pub fn try_id<T: Resource>(&self) -> Option<ResourceId> {
+        self.registry.try_id::<T>()
     }
 
     /// Install a plugin. The plugin is consumed and registers its
@@ -1449,6 +1501,49 @@ mod tests {
         assert_eq!(id, world.id::<Vec<u32>>());
         // Original value preserved.
         assert_eq!(*world.resource::<Vec<u32>>(), vec![1, 2, 3]);
+    }
+
+    #[test]
+    fn try_register_fresh_returns_ok() {
+        let mut builder = WorldBuilder::new();
+        let id = builder
+            .try_register::<u64>(42)
+            .expect("fresh type registers");
+        let world = builder.build();
+
+        assert_eq!(id, world.id::<u64>());
+        assert_eq!(*world.resource::<u64>(), 42);
+    }
+
+    #[test]
+    fn try_register_duplicate_hands_value_back() {
+        let mut builder = WorldBuilder::new();
+        builder.register::<u64>(42);
+
+        // Duplicate: the rejected value is returned, not dropped — unlike
+        // `ensure`, which discards it.
+        assert_eq!(builder.try_register::<u64>(99), Err(99));
+
+        // Original registration untouched.
+        let world = builder.build();
+        assert_eq!(*world.resource::<u64>(), 42);
+    }
+
+    #[test]
+    fn builder_id_and_try_id_resolve_during_build() {
+        let mut builder = WorldBuilder::new();
+        assert!(builder.try_id::<Price>().is_none());
+
+        let id = builder.register::<Price>(Price { value: 1.0 });
+        assert_eq!(builder.id::<Price>(), id);
+        assert_eq!(builder.try_id::<Price>(), Some(id));
+    }
+
+    #[test]
+    #[should_panic(expected = "not registered")]
+    fn builder_id_panics_when_absent() {
+        let builder = WorldBuilder::new();
+        builder.id::<Price>();
     }
 
     // -- Sequence tests -----------------------------------------------------------
