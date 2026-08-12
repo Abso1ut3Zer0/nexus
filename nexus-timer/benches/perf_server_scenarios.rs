@@ -102,11 +102,26 @@ const EDGE: Env = Env {
     dur_max_ms: 2_000,
     cancel_pct: 90,
     periodic: &[
-        Periodic { period_ms: 3_000, count: 2 },
-        Periodic { period_ms: 5_000, count: 2 },
-        Periodic { period_ms: 10_000, count: 2 },
-        Periodic { period_ms: 15_000, count: 1 },
-        Periodic { period_ms: 30_000, count: 1 },
+        Periodic {
+            period_ms: 3_000,
+            count: 2,
+        },
+        Periodic {
+            period_ms: 5_000,
+            count: 2,
+        },
+        Periodic {
+            period_ms: 10_000,
+            count: 2,
+        },
+        Periodic {
+            period_ms: 15_000,
+            count: 1,
+        },
+        Periodic {
+            period_ms: 30_000,
+            count: 1,
+        },
     ],
 };
 const APP: Env = Env {
@@ -116,11 +131,26 @@ const APP: Env = Env {
     dur_max_ms: 5_000,
     cancel_pct: 75,
     periodic: &[
-        Periodic { period_ms: 3_000, count: 16 },
-        Periodic { period_ms: 5_000, count: 16 },
-        Periodic { period_ms: 10_000, count: 12 },
-        Periodic { period_ms: 15_000, count: 12 },
-        Periodic { period_ms: 30_000, count: 8 },
+        Periodic {
+            period_ms: 3_000,
+            count: 16,
+        },
+        Periodic {
+            period_ms: 5_000,
+            count: 16,
+        },
+        Periodic {
+            period_ms: 10_000,
+            count: 12,
+        },
+        Periodic {
+            period_ms: 15_000,
+            count: 12,
+        },
+        Periodic {
+            period_ms: 30_000,
+            count: 8,
+        },
     ],
 };
 const GATEWAY: Env = Env {
@@ -130,11 +160,26 @@ const GATEWAY: Env = Env {
     dur_max_ms: 30_000,
     cancel_pct: 95,
     periodic: &[
-        Periodic { period_ms: 3_000, count: 64 },
-        Periodic { period_ms: 5_000, count: 64 },
-        Periodic { period_ms: 10_000, count: 48 },
-        Periodic { period_ms: 15_000, count: 48 },
-        Periodic { period_ms: 30_000, count: 32 },
+        Periodic {
+            period_ms: 3_000,
+            count: 64,
+        },
+        Periodic {
+            period_ms: 5_000,
+            count: 64,
+        },
+        Periodic {
+            period_ms: 10_000,
+            count: 48,
+        },
+        Periodic {
+            period_ms: 15_000,
+            count: 48,
+        },
+        Periodic {
+            period_ms: 30_000,
+            count: 32,
+        },
     ],
 };
 
@@ -201,7 +246,7 @@ fn run_env(env: &Env, cancel_pct: u32) -> Vec<u64> {
         // 3. Poll — the measured hot path.
         buf.clear();
         let s = rdtsc_start();
-        let fired = black_box(wheel.poll(now, &mut buf));
+        let fired = black_box(wheel.poll_and_rebalance(now, &mut buf));
         let e = rdtsc_end();
         black_box(fired);
         if tick >= WARMUP_TICKS {
@@ -233,18 +278,26 @@ fn print_poll_row(label: &str, samples: &[u64]) {
 fn main() {
     println!("================================================================");
     println!("TIMER WHEEL — realistic server-scenario poll cost (cycles/poll)");
-    println!("  1 ms tick; {SIM_TICKS} samples/env after {WARMUP_TICKS} warmup; best effort — pin with taskset -c 0");
+    println!(
+        "  1 ms tick; {SIM_TICKS} samples/env after {WARMUP_TICKS} warmup; best effort — pin with taskset -c 0"
+    );
     println!("================================================================");
 
     println!("\nPer-environment poll cost:");
-    println!("  {:<52} {:>6} {:>6} {:>7} {:>7}", "environment", "p50", "p99", "p99.9", "max");
+    println!(
+        "  {:<52} {:>6} {:>6} {:>7} {:>7}",
+        "environment", "p50", "p99", "p99.9", "max"
+    );
     for env in [&EDGE, &APP, &GATEWAY] {
         let samples = run_env(env, env.cancel_pct);
         print_poll_row(env.name, &samples);
     }
 
     println!("\nCancel-ratio sweep (app env, 15k one-shots):");
-    println!("  {:<52} {:>6} {:>6} {:>7} {:>7}", "cancelled %", "p50", "p99", "p99.9", "max");
+    println!(
+        "  {:<52} {:>6} {:>6} {:>7} {:>7}",
+        "cancelled %", "p50", "p99", "p99.9", "max"
+    );
     for pct in [10u32, 50, 75, 90, 95] {
         let samples = run_env(&APP, pct);
         print_poll_row(&format!("{pct}% cancelled"), &samples);
