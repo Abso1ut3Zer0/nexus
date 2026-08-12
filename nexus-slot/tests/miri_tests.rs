@@ -13,15 +13,12 @@ fn write_and_read() {
 
 #[test]
 fn overwrite_conflation() {
-    // Use u64 (no padding) to avoid miri false positive from the
-    // word-at-a-time atomic_store on structs with padding bytes.
     let (mut writer, mut reader) = spsc::slot::<u64>();
 
     writer.write(10);
     writer.write(20);
     writer.write(30);
 
-    // Conflation: only the last written value is observed.
     assert_eq!(reader.read(), Some(30));
 }
 

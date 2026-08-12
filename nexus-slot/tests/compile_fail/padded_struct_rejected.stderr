@@ -1,0 +1,26 @@
+error[E0277]: the trait bound `Padded: Pod` is not satisfied
+  --> tests/compile_fail/padded_struct_rejected.rs:10:30
+   |
+10 |     nexus_slot::spsc::slot::<Padded>();
+   |                              ^^^^^^ unsatisfied trait bound
+   |
+help: the trait `Pod` is not implemented for `Padded`
+  --> tests/compile_fail/padded_struct_rejected.rs:4:1
+   |
+ 4 | struct Padded {
+   | ^^^^^^^^^^^^^
+   = help: the following other types implement trait `Pod`:
+             [T; N]
+             f32
+             f64
+             i128
+             i16
+             i32
+             i64
+             i8
+           and $N others
+note: required by a bound in `slot`
+  --> src/spsc.rs
+   |
+   | pub fn slot<T: Pod>() -> (Writer<T>, Reader<T>) {
+   |                ^^^ required by this bound in `slot`
