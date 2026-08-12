@@ -10,6 +10,20 @@ contained.
 
 ## [Unreleased]
 
+### Added
+
+- **`WorldBuilder::try_register`** — a non-dropping fallible register. Returns
+  `Err(value)` (the value handed back, not dropped) when the type is already
+  registered, so a plugin can detect that another plugin registered a different
+  configuration of the same type. `ensure` now delegates to it. The
+  duplicate-registration panic in `register` also gained a hint pointing at
+  `ensure()` / `try_register()` / `contains::<T>()`.
+- **Clock pollers return the time they compute.** `RealtimeClockPoller`,
+  `TestClockPoller`, and `HistoricalClockPoller` `sync()` now return the `Clock`
+  they wrote (`Copy`), so event-loop code holding a poller can stamp/log the
+  timestamp without a second `world.resource::<Clock>()` lookup. Non-breaking —
+  the return is not `#[must_use]`, so callers that ignore it keep compiling.
+
 ## [2.4.1] — 2026-06-02
 
 ### Added
