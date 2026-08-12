@@ -78,13 +78,19 @@ impl WheelBuilder {
         self
     }
 
-    /// Sets the number of slots per level. Must be a power of 2. Default: 64.
+    /// Sets the number of slots per level. Must be a power of 2, at most 64, and
+    /// greater than `2^clk_shift` so a rebalance always moves an entry to a
+    /// strictly finer level (`clk_shift` and `slots_per_level` are validated
+    /// together at [`build`](UnboundedWheelBuilder::build)). Default: 64.
     pub fn slots_per_level(mut self, n: usize) -> Self {
         self.slots_per_level = n;
         self
     }
 
-    /// Sets the bit shift between levels (multiplier = 2^clk_shift). Default: 3 (8x).
+    /// Sets the bit shift between levels (multiplier = 2^clk_shift). Must satisfy
+    /// `2^clk_shift < slots_per_level` so a rebalance always moves an entry to a
+    /// strictly finer level (validated at build); with the default 64 slots that
+    /// allows `clk_shift` up to 5. Default: 3 (8x).
     pub fn clk_shift(mut self, s: u32) -> Self {
         self.clk_shift = s;
         self
@@ -685,8 +691,8 @@ impl<T: 'static, S: SlabStore<Item = WheelEntry<T>>> TimerWheel<T, S> {
     /// continues):
     ///
     /// ```ignore
-    /// let fired = wheel.poll(now, &mut buf);
-    /// if fired == 0 {
+    /// let collected = wheel.poll(now, &mut buf);
+    /// if collected == 0 {
     ///     // nothing to deliver — maintain during the slack, a bounded slice
     ///     wheel.rebalance(now, REBALANCE_BUDGET);
     /// }
