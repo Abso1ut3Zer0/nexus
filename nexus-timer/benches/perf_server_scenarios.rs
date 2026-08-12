@@ -186,11 +186,34 @@ const GATEWAY: Env = Env {
 const WARMUP_TICKS: u64 = 5_000; // 5 s to reach steady-state population
 const SIM_TICKS: u64 = 30_000; // 30 s measured window (1 sample per 1 ms tick)
 
-/// Drive one environment through the simulated timeline and return the sorted
-/// per-poll cycle samples over the measured window.
-fn run_env(env: &Env, cancel_pct: u32) -> Vec<u64> {
+/// Which poll strategy the driver measures.
+#[derive(Clone, Copy, PartialEq)]
+enum Mode {
+    /// One `poll_and_rebalance` per tick (collect + maintain together).
+    Combined,
+    /// Collect-only `poll` per tick (the measured cost) plus a proactive
+    /// `rebalance` done separately — its cost tracked apart, as idle-time work.
+    Proactive,
+    /// Adaptive: collect-only `poll`, and `rebalance` only when the poll came
+    /// back empty (nothing fired) — maintain during genuine slack.
+    Opportunistic,
+}
+
+/// Drive one environment through the simulated timeline. Returns the sorted
+/// (poll-cost, rebalance-cost) cycle samples over the measured window;
+/// rebalance-cost is empty in Combined mode (folded into the poll).
+fn run_env(
+    env: &Env,
+    cancel_pct: u32,
+    rebalance_cap: usize,
+    mode: Mode,
+    rebalance_every: u64,
+) -> (Vec<u64>, Vec<u64>) {
     let epoch = Instant::now();
-    let mut wheel: Wheel<u64> = WheelBuilder::default().unbounded(4096).build(epoch);
+    let mut wheel: Wheel<u64> = WheelBuilder::default()
+        .max_rebalances_per_poll(rebalance_cap)
+        .unbounded(4096)
+        .build(epoch);
     let mut rng = Rng(0x1234_5678_9abc_def0);
     let periodic_count: usize = env.periodic.iter().map(|p| p.count).sum();
 
@@ -210,6 +233,7 @@ fn run_env(env: &Env, cancel_pct: u32) -> Vec<u64> {
 
     let mut buf: Vec<u64> = Vec::with_capacity(2_048);
     let mut samples: Vec<u64> = Vec::with_capacity(SIM_TICKS as usize);
+    let mut rebalance_samples: Vec<u64> = Vec::new();
 
     for tick in 0..(WARMUP_TICKS + SIM_TICKS) {
         let now = epoch + Duration::from_millis(tick);
@@ -243,14 +267,34 @@ fn run_env(env: &Env, cancel_pct: u32) -> Vec<u64> {
             }
         }
 
-        // 3. Poll — the measured hot path.
+        // 3. Poll — the measured hot path. In Proactive mode the poll is
+        // collect-only and a separate rebalance does the maintenance, whose cost
+        // is recorded apart (a real caller runs it off the fire path).
         buf.clear();
         let s = rdtsc_start();
-        let fired = black_box(wheel.poll_and_rebalance(now, &mut buf));
+        let fired = black_box(match mode {
+            Mode::Combined => wheel.poll_and_rebalance(now, &mut buf),
+            Mode::Proactive | Mode::Opportunistic => wheel.poll(now, &mut buf),
+        });
         let e = rdtsc_end();
         black_box(fired);
         if tick >= WARMUP_TICKS {
             samples.push(e.wrapping_sub(s));
+        }
+
+        let do_rebalance = match mode {
+            Mode::Combined => false,
+            Mode::Proactive => tick % rebalance_every == 0,
+            Mode::Opportunistic => fired == 0,
+        };
+        if do_rebalance {
+            let rs = rdtsc_start();
+            let moved = black_box(wheel.rebalance(now, usize::MAX));
+            let re = rdtsc_end();
+            black_box(moved);
+            if tick >= WARMUP_TICKS {
+                rebalance_samples.push(re.wrapping_sub(rs));
+            }
         }
 
         // 4. Re-arm periodic timers that fired (non-zero value == period_ms).
@@ -262,7 +306,8 @@ fn run_env(env: &Env, cancel_pct: u32) -> Vec<u64> {
     }
 
     samples.sort_unstable();
-    samples
+    rebalance_samples.sort_unstable();
+    (samples, rebalance_samples)
 }
 
 fn print_poll_row(label: &str, samples: &[u64]) {
@@ -289,17 +334,73 @@ fn main() {
         "environment", "p50", "p99", "p99.9", "max"
     );
     for env in [&EDGE, &APP, &GATEWAY] {
-        let samples = run_env(env, env.cancel_pct);
+        let (samples, _) = run_env(env, env.cancel_pct, usize::MAX, Mode::Combined, 1);
         print_poll_row(env.name, &samples);
     }
 
-    println!("\nCancel-ratio sweep (app env, 15k one-shots):");
+    println!("\nCancel-ratio sweep (app env, 15k one-shots, unbounded rebalance):");
     println!(
         "  {:<52} {:>6} {:>6} {:>7} {:>7}",
         "cancelled %", "p50", "p99", "p99.9", "max"
     );
     for pct in [10u32, 50, 75, 90, 95] {
-        let samples = run_env(&APP, pct);
+        let (samples, _) = run_env(&APP, pct, usize::MAX, Mode::Combined, 1);
         print_poll_row(&format!("{pct}% cancelled"), &samples);
     }
+
+    // Option (b): does capping rebalances-per-poll flatten the tail? Same app
+    // workload, sweeping max_rebalances_per_poll from unbounded down. Expect the
+    // tail (p99.9/max) to fall as the cap tightens, at a modest cost to the body.
+    println!("\nRebalance-cap sweep (app env, 75% cancelled):");
+    println!(
+        "  {:<52} {:>6} {:>6} {:>7} {:>7}",
+        "max_rebalances_per_poll", "p50", "p99", "p99.9", "max"
+    );
+    for cap in [usize::MAX, 256, 64, 16] {
+        let (samples, _) = run_env(&APP, APP.cancel_pct, cap, Mode::Combined, 1);
+        let label = if cap == usize::MAX {
+            "unbounded".to_string()
+        } else {
+            cap.to_string()
+        };
+        print_poll_row(&label, &samples);
+    }
+
+    // Proactive rebalance: move maintenance off the collect hot path. Combined
+    // does collect+rebalance in one poll; Proactive collects with a cheap `poll`
+    // and does `rebalance` separately on a cadence (its cost shown apart, as
+    // idle-time work). Sweeping the cadence: rebalancing more often keeps the
+    // collect cheap but re-walks the look-ahead window; less often lets the
+    // collect drift up but amortizes rebalance down. (rebalance rows are
+    // per-CALL cost — amortized cost per tick ≈ that / cadence.)
+    println!("\nProactive rebalance vs combined (app env, 75% cancelled):");
+    println!(
+        "  {:<52} {:>6} {:>6} {:>7} {:>7}",
+        "operation measured", "p50", "p99", "p99.9", "max"
+    );
+    let (combined, _) = run_env(&APP, APP.cancel_pct, usize::MAX, Mode::Combined, 1);
+    print_poll_row("poll_and_rebalance (combined baseline)", &combined);
+    for every in [1u64, 16, 64, 256] {
+        let (collect, rebal) = run_env(&APP, APP.cancel_pct, usize::MAX, Mode::Proactive, every);
+        print_poll_row(
+            &format!("poll (collect-only), rebalance every {every}t"),
+            &collect,
+        );
+        print_poll_row(&format!("  rebalance call cost (every {every}t)"), &rebal);
+    }
+
+    // Adaptive: rebalance only when a poll comes back empty (nothing fired) —
+    // maintain during genuine slack, never steal from a poll that has work.
+    println!("\nOpportunistic rebalance (rebalance only on an empty poll, app env):");
+    println!(
+        "  {:<52} {:>6} {:>6} {:>7} {:>7}",
+        "operation measured", "p50", "p99", "p99.9", "max"
+    );
+    let (collect, rebal) = run_env(&APP, APP.cancel_pct, usize::MAX, Mode::Opportunistic, 1);
+    let ran_pct = rebal.len() as f64 / SIM_TICKS as f64 * 100.0;
+    print_poll_row("poll (collect-only)", &collect);
+    print_poll_row(
+        &format!("rebalance (ran on {ran_pct:.0}% of ticks, the empty ones)"),
+        &rebal,
+    );
 }
