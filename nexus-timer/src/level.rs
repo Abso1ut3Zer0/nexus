@@ -29,7 +29,7 @@ pub(crate) struct WheelSlot<T> {
     /// Minimum deadline over this slot's entries, or `u64::MAX` when empty.
     ///
     /// Maintained by the **wheel** (in `insert_entry` / `poll_level` / on drain),
-    /// NOT by `push_entry` / `remove_entry` — so `TimeoutList`, which reuses this
+    /// NOT by `push_entry` / `remove_entry` — so `TimeoutQueue`, which reuses this
     /// slot type as its whole list, pays nothing for a field it never reads.
     ///
     /// **Stale-low after a wheel remove:** an under-estimate only ever causes an
@@ -42,7 +42,7 @@ impl<T: 'static> WheelSlot<T> {
     /// Creates an empty slot (no entries).
     ///
     /// `pub(crate)` so both wheel front-ends can hold slots directly:
-    /// the wheel builds an array of them per level, while `TimeoutList`
+    /// the wheel builds an array of them per level, while `TimeoutQueue`
     /// holds a single one as its whole sorted list.
     pub(crate) fn new() -> Self {
         WheelSlot {
@@ -131,7 +131,7 @@ impl<T: 'static> WheelSlot<T> {
 
     /// Returns the tail entry pointer (may be null if slot is empty).
     ///
-    /// Used by `TimeoutList` to peek the last-inserted deadline for the
+    /// Used by `TimeoutQueue` to peek the last-inserted deadline for the
     /// monotone-insertion `debug_assert`. Not read on any wheel hot path.
     #[inline]
     pub(crate) fn entry_tail(&self) -> EntryPtr<T> {

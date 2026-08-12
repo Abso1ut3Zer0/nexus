@@ -1,6 +1,6 @@
-//! TimeoutList cycle-level benchmark.
+//! TimeoutQueue cycle-level benchmark.
 //!
-//! The point of `TimeoutList` is that poll is O(fired), not O(population).
+//! The point of `TimeoutQueue` is that poll is O(fired), not O(population).
 //! This bench proves it *and* reports honest per-op costs.
 //!
 //! ## Why two methods
@@ -21,14 +21,14 @@
 //!      what matters there.
 //!
 //! Run pinned, turbo disabled, best of a few:
-//!   cargo build --release --bench perf_timeout_list -p nexus-timer
-//!   taskset -c 0 ./target/release/deps/perf_timeout_list-*
+//!   cargo build --release --bench perf_timeout_queue -p nexus-timer
+//!   taskset -c 0 ./target/release/deps/perf_timeout_queue-*
 
 use std::hint::black_box;
 use std::mem;
 use std::time::{Duration, Instant};
 
-use nexus_timer::{TimeoutList, TimerHandle};
+use nexus_timer::{TimeoutQueue, TimerHandle};
 
 const SAMPLES: usize = 50_000;
 const WARMUP: usize = 5_000;
@@ -150,7 +150,7 @@ fn main() {
 
     // schedule + cancel (paired) — self-cleaning, list stays ~empty.
     {
-        let mut list: TimeoutList<u64> = TimeoutList::unbounded(timeout(3600), 4096, now);
+        let mut list: TimeoutQueue<u64> = TimeoutQueue::unbounded(timeout(3600), 4096, now);
         let c = amortized_per_op(AMORT_ITERS, || {
             let h = list.schedule(now, 0);
             black_box(list.cancel(h));
@@ -163,8 +163,8 @@ fn main() {
     {
         let mut best = f64::INFINITY;
         for _ in 0..AMORT_RUNS {
-            let mut list: TimeoutList<u64> =
-                TimeoutList::unbounded(timeout(3600), AMORT_ITERS as usize + 16, now);
+            let mut list: TimeoutQueue<u64> =
+                TimeoutQueue::unbounded(timeout(3600), AMORT_ITERS as usize + 16, now);
             let s = rdtsc_start();
             for _ in 0..AMORT_ITERS {
                 list.schedule_forget(now, 0);
@@ -177,7 +177,7 @@ fn main() {
 
     // nothing-due poll, per population — MUST be flat (O(1), no scan).
     for &pop in &POPULATIONS {
-        let mut list: TimeoutList<u64> = TimeoutList::unbounded(timeout(3600), pop + 16, now);
+        let mut list: TimeoutQueue<u64> = TimeoutQueue::unbounded(timeout(3600), pop + 16, now);
         let mut handles: Vec<TimerHandle<u64>> = Vec::with_capacity(pop);
         for i in 0..pop {
             handles.push(list.schedule(now, i as u64));
@@ -198,7 +198,7 @@ fn main() {
 
     // schedule + cancel (paired)
     {
-        let mut list: TimeoutList<u64> = TimeoutList::unbounded(timeout(3600), 4096, now);
+        let mut list: TimeoutQueue<u64> = TimeoutQueue::unbounded(timeout(3600), 4096, now);
         let mut samples = Vec::with_capacity(SAMPLES);
         for _ in 0..WARMUP {
             let h = list.schedule(now, 0);
@@ -216,7 +216,7 @@ fn main() {
 
     // nothing-due poll, per population
     for &pop in &POPULATIONS {
-        let mut list: TimeoutList<u64> = TimeoutList::unbounded(timeout(3600), pop + 16, now);
+        let mut list: TimeoutQueue<u64> = TimeoutQueue::unbounded(timeout(3600), pop + 16, now);
         let mut handles: Vec<TimerHandle<u64>> = Vec::with_capacity(pop);
         for i in 0..pop {
             handles.push(list.schedule(now, i as u64));
@@ -249,7 +249,7 @@ fn main() {
         let iters = (SAMPLES / 20).max(1);
         let mut samples = Vec::with_capacity(iters);
         for _ in 0..(iters / 10).max(1) {
-            let mut list: TimeoutList<u64> = TimeoutList::unbounded(timeout(3600), pop + 16, now);
+            let mut list: TimeoutQueue<u64> = TimeoutQueue::unbounded(timeout(3600), pop + 16, now);
             for i in 0..K_DUE {
                 list.schedule_forget(due_at, i as u64);
             }
@@ -260,7 +260,7 @@ fn main() {
             black_box(list.poll_with_limit(poll_at, K_DUE, &mut buf));
         }
         for _ in 0..iters {
-            let mut list: TimeoutList<u64> = TimeoutList::unbounded(timeout(3600), pop + 16, now);
+            let mut list: TimeoutQueue<u64> = TimeoutQueue::unbounded(timeout(3600), pop + 16, now);
             for i in 0..K_DUE {
                 list.schedule_forget(due_at, i as u64);
             }

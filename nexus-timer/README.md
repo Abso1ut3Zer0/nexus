@@ -59,7 +59,8 @@ let wheel: Wheel<u64> = WheelBuilder::default()
     .tick_duration(Duration::from_micros(100))
     .slots_per_level(32)
     .unbounded(4096)
-    .build(now);
+    .build(now)
+    .unwrap(); // Err(ConfigError) only on an invalid config
 ```
 
 The builder uses a typestate pattern — configuration setters are only
@@ -69,6 +70,11 @@ available before selecting bounded or unbounded mode:
 WheelBuilder  ─.unbounded(chunk_cap)─▶  UnboundedWheelBuilder  ─.build(now)─▶  Wheel<T>
               ─.bounded(cap)──────────▶  BoundedWheelBuilder    ─.build(now)─▶  BoundedWheel<T>
 ```
+
+`build(now)` returns `Result<_, ConfigError>` — the `Wheel<T>` / `BoundedWheel<T>`
+above is the `Ok` payload (`?`/`.unwrap()` it). `ConfigError::Invalid` is only
+produced by a bad configuration; the default-config `Wheel::unbounded` /
+`Wheel::bounded` constructors are infallible.
 
 ## Bounded vs Unbounded
 
@@ -123,7 +129,7 @@ wheel.cancel(handle);
 | `len()` | `usize` | Number of active timers |
 | `is_empty()` | `bool` | Whether the wheel is empty |
 
-## TimeoutList — Fixed-Duration Variant
+## TimeoutQueue — Fixed-Duration Variant
 
 The wheel's poll is O(active population): it walks every entry of every
 active slot to prove which are due. That is the right trade when deadlines
@@ -131,7 +137,7 @@ are *arbitrary*. But many callers schedule **one fixed timeout for
 everything** — a flat 5 s deadline on every item. For that workload the
 wheel buckets by deadline to solve an ordering problem that does not exist.
 
-`TimeoutList<T>` exploits the single duration. A constant timeout plus a
+`TimeoutQueue<T>` exploits the single duration. A constant timeout plus a
 monotone clock means deadlines are monotone in insertion order, so a new
 entry is always appended at the tail of one intrusive list, keeping it
 sorted with no comparisons. Poll walks from the head and stops at the first
@@ -144,14 +150,15 @@ merely discouraged.
 
 ```rust
 use std::time::{Duration, Instant};
-use nexus_timer::{TimeoutList, TimeoutListBuilder};
+use nexus_timer::{TimeoutQueue, TimeoutQueueBuilder};
 
 let now = Instant::now();
 
 // Every timer gets the same 5-second timeout.
-let mut list: TimeoutList<u64> = TimeoutListBuilder::new(Duration::from_secs(5))
+let mut list: TimeoutQueue<u64> = TimeoutQueueBuilder::new(Duration::from_secs(5))
     .unbounded(4096)
-    .build(now);
+    .build(now)
+    .unwrap(); // Err(ConfigError) only on a zero timeout/tick
 
 let handle = list.schedule(now, 42);   // fires at now + 5s
 let value = list.cancel(handle);       // O(1) mid-list unlink
@@ -166,7 +173,7 @@ would break the sort) and no `min_deadline` cache (the head *is* the min).
 
 Nothing-due poll is flat across population — the whole point:
 
-| Live population | wheel poll (0-fire) | `TimeoutList` poll (0-fire) |
+| Live population | wheel poll (0-fire) | `TimeoutQueue` poll (0-fire) |
 |---|---|---|
 | 100 | 0.2 µs | ~12 cycles |
 | 1,000 | 5.6 µs | ~12 cycles |
@@ -178,8 +185,8 @@ measurement floor, so the bench reports that floor and the percentile tails
 alongside these amortized figures to keep them honest.
 
 ```bash
-cargo build --release --bench perf_timeout_list -p nexus-timer
-taskset -c 0 ./target/release/deps/perf_timeout_list-*
+cargo build --release --bench perf_timeout_queue -p nexus-timer
+taskset -c 0 ./target/release/deps/perf_timeout_queue-*
 ```
 
 ## Design

@@ -1,6 +1,6 @@
-//! Fixed-duration timeout list — a sorted front-end over the wheel machinery.
+//! Fixed-duration timeout queue — a sorted front-end over the wheel machinery.
 //!
-//! `TimeoutList<T, S>` schedules every timer with the **same** duration, fixed
+//! `TimeoutQueue<T, S>` schedules every timer with the **same** duration, fixed
 //! at construction. Because the duration is constant and the clock is monotone,
 //! deadlines are monotone in insertion order: appending each new entry at the
 //! tail of one intrusive DLL keeps the list sorted with no comparisons. Poll
@@ -14,7 +14,7 @@
 //! among earlier and later expirations. But a large class of callers schedule
 //! **one fixed timeout for everything** (a flat 5 s deadline on every item).
 //! For that workload the wheel buckets by deadline and walks buckets to solve
-//! an ordering problem that does not exist. `TimeoutList` exploits the single
+//! an ordering problem that does not exist. `TimeoutQueue` exploits the single
 //! duration directly.
 //!
 //! # The invariant is structural, not documented
@@ -44,12 +44,13 @@ use crate::entry::{EntryPtr, WheelEntry, entry_ref};
 use crate::handle::TimerHandle;
 use crate::level::WheelSlot;
 use crate::store::{BoundedStore, SlabStore};
+use crate::wheel::ConfigError;
 
 // =============================================================================
-// TimeoutListBuilder (typestate)
+// TimeoutQueueBuilder (typestate)
 // =============================================================================
 
-/// Builder for a [`TimeoutList`], mirroring [`WheelBuilder`](crate::WheelBuilder).
+/// Builder for a [`TimeoutQueue`], mirroring [`WheelBuilder`](crate::WheelBuilder).
 ///
 /// The timeout duration is fixed up front in [`new`](Self::new) — that is the
 /// whole point of the type, so it cannot be a per-schedule parameter later.
@@ -58,34 +59,36 @@ use crate::store::{BoundedStore, SlabStore};
 ///
 /// ```
 /// use std::time::{Duration, Instant};
-/// use nexus_timer::{TimeoutList, TimeoutListBuilder};
+/// use nexus_timer::{TimeoutQueue, TimeoutQueueBuilder};
 ///
 /// let now = Instant::now();
 ///
 /// // 5-second timeout, unbounded storage, default 1ms tick.
-/// let list: TimeoutList<u64> = TimeoutListBuilder::new(Duration::from_secs(5))
+/// let list: TimeoutQueue<u64> = TimeoutQueueBuilder::new(Duration::from_secs(5))
 ///     .unbounded(4096)
-///     .build(now);
+///     .build(now)
+///     .unwrap();
 ///
 /// // Custom tick, bounded storage.
-/// let list: nexus_timer::BoundedTimeoutList<u64> =
-///     TimeoutListBuilder::new(Duration::from_millis(250))
+/// let list: nexus_timer::BoundedTimeoutQueue<u64> =
+///     TimeoutQueueBuilder::new(Duration::from_millis(250))
 ///         .tick_duration(Duration::from_micros(100))
 ///         .bounded(1024)
-///         .build(now);
+///         .build(now)
+///         .unwrap();
 /// ```
 #[derive(Debug, Clone, Copy)]
-pub struct TimeoutListBuilder {
+pub struct TimeoutQueueBuilder {
     timeout: Duration,
     tick_duration: Duration,
 }
 
-impl TimeoutListBuilder {
+impl TimeoutQueueBuilder {
     /// Creates a builder with the fixed timeout every timer will use.
     ///
     /// Tick duration defaults to 1ms. The timeout must be non-zero.
     pub fn new(timeout: Duration) -> Self {
-        TimeoutListBuilder {
+        TimeoutQueueBuilder {
             timeout,
             tick_duration: Duration::from_millis(1),
         }
@@ -101,8 +104,8 @@ impl TimeoutListBuilder {
     ///
     /// `chunk_capacity` is the slab chunk size (entries per chunk); the slab
     /// grows by adding chunks as needed.
-    pub fn unbounded(self, chunk_capacity: usize) -> UnboundedTimeoutListBuilder {
-        UnboundedTimeoutListBuilder {
+    pub fn unbounded(self, chunk_capacity: usize) -> UnboundedTimeoutQueueBuilder {
+        UnboundedTimeoutQueueBuilder {
             config: self,
             chunk_capacity,
         }
@@ -111,19 +114,21 @@ impl TimeoutListBuilder {
     /// Transitions to a bounded (fixed-capacity) builder.
     ///
     /// `capacity` is the maximum number of concurrent timers.
-    pub fn bounded(self, capacity: usize) -> BoundedTimeoutListBuilder {
-        BoundedTimeoutListBuilder {
+    pub fn bounded(self, capacity: usize) -> BoundedTimeoutQueueBuilder {
+        BoundedTimeoutQueueBuilder {
             config: self,
             capacity,
         }
     }
 
-    fn validate(&self) {
-        assert!(!self.timeout.is_zero(), "timeout must be non-zero");
-        assert!(
-            !self.tick_duration.is_zero(),
-            "tick_duration must be non-zero"
-        );
+    fn validate(&self) -> Result<(), ConfigError> {
+        if self.timeout.is_zero() {
+            return Err(ConfigError::Invalid("timeout must be non-zero"));
+        }
+        if self.tick_duration.is_zero() {
+            return Err(ConfigError::Invalid("tick_duration must be non-zero"));
+        }
+        Ok(())
     }
 
     #[inline]
@@ -144,30 +149,31 @@ impl TimeoutListBuilder {
     }
 }
 
-/// Terminal builder for an unbounded [`TimeoutList`].
+/// Terminal builder for an unbounded [`TimeoutQueue`].
 ///
-/// Created via [`TimeoutListBuilder::unbounded`]. The only method is `.build()`.
+/// Created via [`TimeoutQueueBuilder::unbounded`]. The only method is `.build()`.
 #[derive(Debug)]
-pub struct UnboundedTimeoutListBuilder {
-    config: TimeoutListBuilder,
+pub struct UnboundedTimeoutQueueBuilder {
+    config: TimeoutQueueBuilder,
     chunk_capacity: usize,
 }
 
-impl UnboundedTimeoutListBuilder {
-    /// Builds the unbounded timeout list.
+impl UnboundedTimeoutQueueBuilder {
+    /// Builds the unbounded timeout queue, validating the configuration.
     ///
-    /// # Panics
+    /// # Errors
     ///
-    /// Panics if the configuration is invalid (zero timeout or zero tick).
-    pub fn build<T: 'static>(self, now: Instant) -> TimeoutList<T> {
-        self.config.validate();
+    /// Returns [`ConfigError`] if the configuration is invalid (zero timeout or
+    /// zero tick duration).
+    pub fn build<T: 'static>(self, now: Instant) -> Result<TimeoutQueue<T>, ConfigError> {
+        self.config.validate()?;
         let tick_ns = self.config.tick_ns();
         let timeout_ticks = self.config.timeout_ticks();
-        // SAFETY: TimeoutList is single-threaded (!Sync). Every slot is freed
+        // SAFETY: TimeoutQueue is single-threaded (!Sync). Every slot is freed
         // via Slot::from_raw() + slab.free() before the list drops. The slab is
         // never shared across threads.
         let slab = unsafe { unbounded::Slab::with_chunk_capacity(self.chunk_capacity) };
-        TimeoutList {
+        Ok(TimeoutQueue {
             list: WheelSlot::new(),
             slab,
             timeout_ticks,
@@ -176,34 +182,35 @@ impl UnboundedTimeoutListBuilder {
             epoch: now,
             len: 0,
             _marker: PhantomData,
-        }
+        })
     }
 }
 
-/// Terminal builder for a bounded [`TimeoutList`].
+/// Terminal builder for a bounded [`TimeoutQueue`].
 ///
-/// Created via [`TimeoutListBuilder::bounded`]. The only method is `.build()`.
+/// Created via [`TimeoutQueueBuilder::bounded`]. The only method is `.build()`.
 #[derive(Debug)]
-pub struct BoundedTimeoutListBuilder {
-    config: TimeoutListBuilder,
+pub struct BoundedTimeoutQueueBuilder {
+    config: TimeoutQueueBuilder,
     capacity: usize,
 }
 
-impl BoundedTimeoutListBuilder {
-    /// Builds the bounded timeout list.
+impl BoundedTimeoutQueueBuilder {
+    /// Builds the bounded timeout queue, validating the configuration.
     ///
-    /// # Panics
+    /// # Errors
     ///
-    /// Panics if the configuration is invalid (zero timeout or zero tick).
-    pub fn build<T: 'static>(self, now: Instant) -> BoundedTimeoutList<T> {
-        self.config.validate();
+    /// Returns [`ConfigError`] if the configuration is invalid (zero timeout or
+    /// zero tick duration).
+    pub fn build<T: 'static>(self, now: Instant) -> Result<BoundedTimeoutQueue<T>, ConfigError> {
+        self.config.validate()?;
         let tick_ns = self.config.tick_ns();
         let timeout_ticks = self.config.timeout_ticks();
-        // SAFETY: TimeoutList is single-threaded (!Sync). Every slot is freed
+        // SAFETY: TimeoutQueue is single-threaded (!Sync). Every slot is freed
         // via Slot::from_raw() + slab.free() before the list drops. The slab is
         // never shared across threads.
         let slab = unsafe { bounded::Slab::with_capacity(self.capacity) };
-        TimeoutList {
+        Ok(TimeoutQueue {
             list: WheelSlot::new(),
             slab,
             timeout_ticks,
@@ -212,22 +219,22 @@ impl BoundedTimeoutListBuilder {
             epoch: now,
             len: 0,
             _marker: PhantomData,
-        }
+        })
     }
 }
 
 // =============================================================================
-// TimeoutList
+// TimeoutQueue
 // =============================================================================
 
-/// A fixed-duration timeout list with O(fired) poll and O(1) exact next-deadline.
+/// A fixed-duration timeout queue with O(fired) poll and O(1) exact next-deadline.
 ///
 /// Generic over:
 /// - `T` — the user payload stored with each timer.
 /// - `S` — the slab storage backend. Defaults to `unbounded::Slab`.
 ///
 /// Every timer uses the same duration, fixed at construction. See the
-/// [module docs](crate::timeout_list) for the invariant this exploits.
+/// [module docs](crate::timeout_queue) for the invariant this exploits.
 ///
 /// # No `reschedule`
 ///
@@ -242,7 +249,7 @@ impl BoundedTimeoutListBuilder {
 /// `Send` but `!Sync`. Can be moved to a thread at setup but must not be
 /// shared. All internal raw pointers point into owned allocations (slab
 /// chunks) — moving the list moves the heap data with it.
-pub struct TimeoutList<
+pub struct TimeoutQueue<
     T: 'static,
     S: SlabStore<Item = WheelEntry<T>> = unbounded::Slab<WheelEntry<T>>,
 > {
@@ -259,7 +266,7 @@ pub struct TimeoutList<
     _marker: PhantomData<*const ()>, // !Send (overridden below), !Sync
 }
 
-// SAFETY: TimeoutList<T, S> exclusively owns all memory behind its raw
+// SAFETY: TimeoutQueue<T, S> exclusively owns all memory behind its raw
 // pointers. The slot head/tail and the WheelEntry prev/next links point into
 // slab-owned memory (SlotCell in a slab chunk, a Vec<SlotCell<T>> heap
 // allocation). When the list is moved, those heap allocations stay at their
@@ -271,44 +278,56 @@ pub struct TimeoutList<
 // Cell), but the list exclusively owns its slab — no shared access, no
 // aliasing. Outstanding TimerHandle<T> values are !Send and cannot follow the
 // list across threads; they become inert (consuming one requires &mut
-// TimeoutList, which the original thread no longer has). Worst case is a slot
+// TimeoutQueue, which the original thread no longer has). Worst case is a slot
 // leak (refcount stuck at 1), not unsoundness — the same reasoning as the
 // wheel.
 #[allow(clippy::non_send_fields_in_send_ty)]
-unsafe impl<T: Send + 'static, S: SlabStore<Item = WheelEntry<T>>> Send for TimeoutList<T, S> {}
+unsafe impl<T: Send + 'static, S: SlabStore<Item = WheelEntry<T>>> Send for TimeoutQueue<T, S> {}
 
-/// A timeout list backed by a fixed-capacity slab.
-pub type BoundedTimeoutList<T> = TimeoutList<T, bounded::Slab<WheelEntry<T>>>;
+/// A timeout queue backed by a fixed-capacity slab.
+pub type BoundedTimeoutQueue<T> = TimeoutQueue<T, bounded::Slab<WheelEntry<T>>>;
 
 // =============================================================================
 // Construction convenience
 // =============================================================================
 
-impl<T: 'static> TimeoutList<T> {
-    /// Creates an unbounded timeout list with the default 1ms tick.
+impl<T: 'static> TimeoutQueue<T> {
+    /// Creates an unbounded timeout queue with the default 1ms tick.
     ///
     /// Every timer fires `timeout` after the `now` passed to `schedule`. The
     /// `now` here fixes the reference epoch — pass one monotone clock source
     /// (e.g. `Instant::now()`) here and to every `schedule`/`poll`. For a custom
-    /// tick duration, use [`TimeoutListBuilder`].
+    /// tick duration, use [`TimeoutQueueBuilder`].
+    ///
+    /// # Panics
+    ///
+    /// Panics if `timeout` is zero. Use [`TimeoutQueueBuilder::build`] to handle
+    /// a runtime-sourced timeout without panicking.
     pub fn unbounded(timeout: Duration, chunk_capacity: usize, now: Instant) -> Self {
-        TimeoutListBuilder::new(timeout)
+        TimeoutQueueBuilder::new(timeout)
             .unbounded(chunk_capacity)
             .build(now)
+            .expect("non-zero timeout with default tick is a valid config")
     }
 }
 
-impl<T: 'static> BoundedTimeoutList<T> {
-    /// Creates a bounded timeout list with the default 1ms tick.
+impl<T: 'static> BoundedTimeoutQueue<T> {
+    /// Creates a bounded timeout queue with the default 1ms tick.
     ///
     /// Every timer fires `timeout` after the `now` passed to `schedule`. The
     /// `now` here fixes the reference epoch — pass one monotone clock source
     /// (e.g. `Instant::now()`) here and to every `schedule`/`poll`. For a custom
-    /// tick duration, use [`TimeoutListBuilder`].
+    /// tick duration, use [`TimeoutQueueBuilder`].
+    ///
+    /// # Panics
+    ///
+    /// Panics if `timeout` is zero. Use [`TimeoutQueueBuilder::build`] to handle
+    /// a runtime-sourced timeout without panicking.
     pub fn bounded(timeout: Duration, capacity: usize, now: Instant) -> Self {
-        TimeoutListBuilder::new(timeout)
+        TimeoutQueueBuilder::new(timeout)
             .bounded(capacity)
             .build(now)
+            .expect("non-zero timeout with default tick is a valid config")
     }
 }
 
@@ -316,7 +335,7 @@ impl<T: 'static> BoundedTimeoutList<T> {
 // Schedule
 // =============================================================================
 
-impl<T: 'static, S: SlabStore<Item = WheelEntry<T>>> TimeoutList<T, S> {
+impl<T: 'static, S: SlabStore<Item = WheelEntry<T>>> TimeoutQueue<T, S> {
     /// Schedules a timer for `now + timeout` and returns a handle for cancellation.
     ///
     /// The handle must be consumed via [`cancel`](Self::cancel) or
@@ -361,7 +380,7 @@ impl<T: 'static, S: SlabStore<Item = WheelEntry<T>>> TimeoutList<T, S> {
 // Schedule — fallible (bounded slabs only)
 // =============================================================================
 
-impl<T: 'static, S: BoundedStore<Item = WheelEntry<T>>> TimeoutList<T, S> {
+impl<T: 'static, S: BoundedStore<Item = WheelEntry<T>>> TimeoutQueue<T, S> {
     /// Attempts to schedule a timer, returning a handle on success.
     ///
     /// Returns `Err(Full(value))` — with the caller's `T` recovered, not the
@@ -416,7 +435,7 @@ fn recover_value<T>(full: Full<WheelEntry<T>>) -> T {
 // Cancel / Free / Poll / Query — generic over any store
 // =============================================================================
 
-impl<T: 'static, S: SlabStore<Item = WheelEntry<T>>> TimeoutList<T, S> {
+impl<T: 'static, S: SlabStore<Item = WheelEntry<T>>> TimeoutQueue<T, S> {
     /// Cancels a timer and returns its value.
     ///
     /// - Still active (refs == 2): unlinks from the list, extracts the value,
@@ -600,7 +619,7 @@ impl<T: 'static, S: SlabStore<Item = WheelEntry<T>>> TimeoutList<T, S> {
                 // SAFETY: tail, when non-null, points into self.list's DLL.
                 tail.is_null() || deadline_ticks >= unsafe { entry_ref(tail) }.deadline_ticks()
             },
-            "TimeoutList: deadline {deadline_ticks} inserted out of order \
+            "TimeoutQueue: deadline {deadline_ticks} inserted out of order \
              (did `now` go backwards?)",
         );
 
@@ -638,7 +657,7 @@ impl<T: 'static, S: SlabStore<Item = WheelEntry<T>>> TimeoutList<T, S> {
 // Drop
 // =============================================================================
 
-impl<T: 'static, S: SlabStore<Item = WheelEntry<T>>> Drop for TimeoutList<T, S> {
+impl<T: 'static, S: SlabStore<Item = WheelEntry<T>>> Drop for TimeoutQueue<T, S> {
     fn drop(&mut self) {
         // Walk the single list, free every remaining entry so nothing leaks.
         let mut entry_ptr = self.list.entry_head();
@@ -694,8 +713,8 @@ mod tests {
         Duration::from_millis(millis)
     }
 
-    fn list_50ms(now: Instant) -> TimeoutList<u64> {
-        TimeoutList::unbounded(ms(50), 1024, now)
+    fn list_50ms(now: Instant) -> TimeoutQueue<u64> {
+        TimeoutQueue::unbounded(ms(50), 1024, now)
     }
 
     // -------------------------------------------------------------------------
@@ -705,9 +724,9 @@ mod tests {
     fn assert_send<T: Send>() {}
 
     #[test]
-    fn timeout_list_is_send() {
-        assert_send::<TimeoutList<u64>>();
-        assert_send::<BoundedTimeoutList<u64>>();
+    fn timeout_queue_is_send() {
+        assert_send::<TimeoutQueue<u64>>();
+        assert_send::<BoundedTimeoutQueue<u64>>();
     }
 
     // -------------------------------------------------------------------------
@@ -726,27 +745,40 @@ mod tests {
     #[test]
     fn bounded_construction() {
         let now = Instant::now();
-        let list: BoundedTimeoutList<u64> = BoundedTimeoutList::bounded(ms(50), 128, now);
+        let list: BoundedTimeoutQueue<u64> = BoundedTimeoutQueue::bounded(ms(50), 128, now);
         assert!(list.is_empty());
     }
 
-    #[test]
-    #[should_panic(expected = "timeout must be non-zero")]
-    fn invalid_zero_timeout() {
-        let now = Instant::now();
-        TimeoutListBuilder::new(Duration::ZERO)
-            .unbounded(64)
-            .build::<u64>(now);
+    /// Asserts `result` is `Err(ConfigError::Invalid(_))` whose message contains
+    /// `expect_substr`. Generic over the Ok type so it needs no `Debug` bound.
+    #[track_caller]
+    fn assert_invalid<T>(result: &Result<T, ConfigError>, expect_substr: &str) {
+        match result {
+            Err(ConfigError::Invalid(msg)) => assert!(
+                msg.contains(expect_substr),
+                "message {msg:?} does not contain {expect_substr:?}"
+            ),
+            Ok(_) => panic!("expected ConfigError::Invalid containing {expect_substr:?}, got Ok"),
+        }
     }
 
     #[test]
-    #[should_panic(expected = "tick_duration must be non-zero")]
+    fn invalid_zero_timeout() {
+        let now = Instant::now();
+        let result = TimeoutQueueBuilder::new(Duration::ZERO)
+            .unbounded(64)
+            .build::<u64>(now);
+        assert_invalid(&result, "timeout must be non-zero");
+    }
+
+    #[test]
     fn invalid_zero_tick() {
         let now = Instant::now();
-        TimeoutListBuilder::new(ms(50))
+        let result = TimeoutQueueBuilder::new(ms(50))
             .tick_duration(Duration::ZERO)
             .unbounded(64)
             .build::<u64>(now);
+        assert_invalid(&result, "tick_duration must be non-zero");
     }
 
     // -------------------------------------------------------------------------
@@ -833,7 +865,7 @@ mod tests {
     #[test]
     fn bounded_full() {
         let now = Instant::now();
-        let mut list: BoundedTimeoutList<u64> = BoundedTimeoutList::bounded(ms(50), 2, now);
+        let mut list: BoundedTimeoutQueue<u64> = BoundedTimeoutQueue::bounded(ms(50), 2, now);
 
         let h1 = list.try_schedule(now, 1).unwrap();
         let h2 = list.try_schedule(now, 2).unwrap();
@@ -855,7 +887,7 @@ mod tests {
     #[test]
     fn bounded_schedule_forget_full() {
         let now = Instant::now();
-        let mut list: BoundedTimeoutList<u64> = BoundedTimeoutList::bounded(ms(50), 1, now);
+        let mut list: BoundedTimeoutQueue<u64> = BoundedTimeoutQueue::bounded(ms(50), 1, now);
 
         list.try_schedule_forget(now, 1).unwrap();
         let err = list.try_schedule_forget(now, 2);
@@ -1031,8 +1063,8 @@ mod tests {
 
         for &population in &[100usize, 1_000, 10_000, 50_000] {
             // Big timeout so nothing is due at poll time.
-            let mut list: TimeoutList<u64> =
-                TimeoutList::unbounded(Duration::from_secs(3600), population + 16, now);
+            let mut list: TimeoutQueue<u64> =
+                TimeoutQueue::unbounded(Duration::from_secs(3600), population + 16, now);
             for i in 0..population as u64 {
                 list.schedule_forget(now, i);
             }
@@ -1145,7 +1177,7 @@ mod tests {
 
         let dropped = Arc::new(AtomicUsize::new(0));
         let now = Instant::now();
-        let mut list: TimeoutList<DropCounter> = TimeoutList::unbounded(ms(50), 1024, now);
+        let mut list: TimeoutQueue<DropCounter> = TimeoutQueue::unbounded(ms(50), 1024, now);
         for i in 0..100u64 {
             list.schedule_forget(now + ms(i), DropCounter(Arc::clone(&dropped)));
         }
@@ -1178,7 +1210,7 @@ mod tests {
 
         let dropped = Arc::new(AtomicUsize::new(0));
         let now = Instant::now();
-        let mut list: TimeoutList<DropCounter> = TimeoutList::unbounded(ms(50), 1024, now);
+        let mut list: TimeoutQueue<DropCounter> = TimeoutQueue::unbounded(ms(50), 1024, now);
         for i in 0..100u64 {
             let h = list.schedule(now + ms(i), DropCounter(Arc::clone(&dropped)));
             std::mem::forget(h); // outstanding handle — never consumed (refs stays 2)
@@ -1217,7 +1249,7 @@ mod tests {
     #[test]
     fn miri_schedule_cancel_drop_type() {
         let now = Instant::now();
-        let mut list: TimeoutList<String> = TimeoutList::unbounded(ms(50), 64, now);
+        let mut list: TimeoutQueue<String> = TimeoutQueue::unbounded(ms(50), 64, now);
 
         let h = list.schedule(now, "hello".to_string());
         let val = list.cancel(h);
@@ -1228,7 +1260,7 @@ mod tests {
     #[test]
     fn miri_poll_fires_drop_type() {
         let now = Instant::now();
-        let mut list: TimeoutList<String> = TimeoutList::unbounded(ms(10), 64, now);
+        let mut list: TimeoutQueue<String> = TimeoutQueue::unbounded(ms(10), 64, now);
 
         list.schedule_forget(now, "a".to_string());
         list.schedule_forget(now, "b".to_string());
@@ -1244,7 +1276,7 @@ mod tests {
     #[test]
     fn miri_cancel_zombie_drop_type() {
         let now = Instant::now();
-        let mut list: TimeoutList<String> = TimeoutList::unbounded(ms(10), 64, now);
+        let mut list: TimeoutQueue<String> = TimeoutQueue::unbounded(ms(10), 64, now);
 
         let h = list.schedule(now, "zombie".to_string());
 
@@ -1259,7 +1291,7 @@ mod tests {
     #[test]
     fn miri_free_active_and_zombie() {
         let now = Instant::now();
-        let mut list: TimeoutList<String> = TimeoutList::unbounded(ms(10), 64, now);
+        let mut list: TimeoutQueue<String> = TimeoutQueue::unbounded(ms(10), 64, now);
 
         // Active → fire-and-forget via free.
         let h1 = list.schedule(now, "active".to_string());
@@ -1279,7 +1311,7 @@ mod tests {
     #[test]
     fn miri_mid_list_unlink_drop_type() {
         let now = Instant::now();
-        let mut list: TimeoutList<Vec<u8>> = TimeoutList::unbounded(ms(10), 64, now);
+        let mut list: TimeoutQueue<Vec<u8>> = TimeoutQueue::unbounded(ms(10), 64, now);
 
         let mut handles: Vec<_> = (0..5u8)
             .map(|i| list.schedule(now + Duration::from_micros(i as u64), vec![i; 32]))
@@ -1303,7 +1335,7 @@ mod tests {
     #[test]
     fn miri_drop_list_with_entries() {
         let now = Instant::now();
-        let mut list: TimeoutList<String> = TimeoutList::unbounded(ms(50), 64, now);
+        let mut list: TimeoutQueue<String> = TimeoutQueue::unbounded(ms(50), 64, now);
 
         for i in 0..20u64 {
             list.schedule_forget(now + ms(i), format!("entry-{i}"));
@@ -1315,7 +1347,7 @@ mod tests {
     #[test]
     fn miri_bounded_lifecycle() {
         let now = Instant::now();
-        let mut list: BoundedTimeoutList<String> = BoundedTimeoutList::bounded(ms(30), 4, now);
+        let mut list: BoundedTimeoutQueue<String> = BoundedTimeoutQueue::bounded(ms(30), 4, now);
 
         let h1 = list.try_schedule(now, "a".to_string()).unwrap();
         let h2 = list.try_schedule(now, "b".to_string()).unwrap();
@@ -1392,7 +1424,7 @@ mod proptests {
         #[test]
         fn fuzz_schedule_cancel_poll(ops in proptest::collection::vec(op_strategy(), 1..300)) {
             let now = Instant::now();
-            let mut list: TimeoutList<u64> = TimeoutList::unbounded(
+            let mut list: TimeoutQueue<u64> = TimeoutQueue::unbounded(
                 Duration::from_millis(TIMEOUT_MS),
                 4096,
                 now,

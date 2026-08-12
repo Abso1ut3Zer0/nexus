@@ -47,7 +47,7 @@
 //!
 //! let mut builder = WorldBuilder::new();
 //! builder.register::<bool>(false);
-//! let wheel = WheelBuilder::default().unbounded(64).build(Instant::now());
+//! let wheel = WheelBuilder::default().unbounded(64).build(Instant::now()).unwrap();
 //! let mut timer: TimerPoller = builder.install_driver(
 //!     TimerInstaller::new(wheel),
 //! );
@@ -72,8 +72,8 @@ use nexus_timer::store::SlabStore;
 
 // Re-export types that users need from nexus-timer
 pub use nexus_timer::{
-    BoundedWheel, BoundedWheelBuilder, Full, TimerHandle, UnboundedWheelBuilder, Wheel,
-    WheelBuilder, WheelEntry,
+    BoundedWheel, BoundedWheelBuilder, ConfigError, Full, TimerHandle, UnboundedWheelBuilder,
+    Wheel, WheelBuilder, WheelEntry,
 };
 
 // Resource impls for timer wheel types registered by the timer driver.
@@ -217,18 +217,19 @@ impl TimerConfig for FlexTimers {
 /// use nexus_rt::{TimerInstaller, TimerPoller, BoundedTimerPoller, WheelBuilder};
 ///
 /// // Unbounded — slab grows as needed, scheduling never fails
-/// let wheel = WheelBuilder::default().unbounded(64).build(Instant::now());
+/// let wheel = WheelBuilder::default().unbounded(64).build(Instant::now()).unwrap();
 /// let timer: TimerPoller = wb.install_driver(TimerInstaller::new(wheel));
 ///
 /// // Bounded — fixed capacity, try_schedule returns Err(Full) when full
-/// let wheel = WheelBuilder::default().bounded(1024).build(Instant::now());
+/// let wheel = WheelBuilder::default().bounded(1024).build(Instant::now()).unwrap();
 /// let timer: BoundedTimerPoller = wb.install_driver(TimerInstaller::new(wheel));
 ///
 /// // Custom tick resolution for microsecond-precision timers
 /// let wheel = WheelBuilder::default()
 ///     .tick_duration(Duration::from_micros(100))
 ///     .unbounded(256)
-///     .build(Instant::now());
+///     .build(Instant::now())
+///     .unwrap();
 /// let timer: TimerPoller = wb.install_driver(TimerInstaller::new(wheel));
 /// ```
 pub struct TimerInstaller<
@@ -1016,7 +1017,8 @@ mod tests {
             WheelBuilder::default()
                 .tick_duration(Duration::from_micros(100))
                 .unbounded(64)
-                .build(now),
+                .build(now)
+                .unwrap(),
         ));
     }
 
@@ -1027,7 +1029,8 @@ mod tests {
             WheelBuilder::default()
                 .slots_per_level(32)
                 .unbounded(64)
-                .build(now),
+                .build(now)
+                .unwrap(),
         ));
     }
 
@@ -1038,7 +1041,8 @@ mod tests {
             WheelBuilder::default()
                 .clk_shift(2)
                 .unbounded(64)
-                .build(now),
+                .build(now)
+                .unwrap(),
         ));
     }
 
@@ -1049,7 +1053,8 @@ mod tests {
             WheelBuilder::default()
                 .num_levels(4)
                 .unbounded(64)
-                .build(now),
+                .build(now)
+                .unwrap(),
         ));
     }
 
@@ -1063,7 +1068,8 @@ mod tests {
                 .clk_shift(2)
                 .num_levels(5)
                 .unbounded(128)
-                .build(now),
+                .build(now)
+                .unwrap(),
         ));
     }
 
@@ -1073,7 +1079,7 @@ mod tests {
     fn cfg_bounded_default() {
         let now = Instant::now();
         assert_bounded_fires(TimerInstaller::new(
-            WheelBuilder::default().bounded(64).build(now),
+            WheelBuilder::default().bounded(64).build(now).unwrap(),
         ));
     }
 
@@ -1084,7 +1090,8 @@ mod tests {
             WheelBuilder::default()
                 .tick_duration(Duration::from_micros(100))
                 .bounded(64)
-                .build(now),
+                .build(now)
+                .unwrap(),
         ));
     }
 
@@ -1095,7 +1102,8 @@ mod tests {
             WheelBuilder::default()
                 .slots_per_level(32)
                 .bounded(64)
-                .build(now),
+                .build(now)
+                .unwrap(),
         ));
     }
 
@@ -1103,7 +1111,11 @@ mod tests {
     fn cfg_bounded_clk_shift() {
         let now = Instant::now();
         assert_bounded_fires(TimerInstaller::new(
-            WheelBuilder::default().clk_shift(2).bounded(64).build(now),
+            WheelBuilder::default()
+                .clk_shift(2)
+                .bounded(64)
+                .build(now)
+                .unwrap(),
         ));
     }
 
@@ -1111,7 +1123,11 @@ mod tests {
     fn cfg_bounded_num_levels() {
         let now = Instant::now();
         assert_bounded_fires(TimerInstaller::new(
-            WheelBuilder::default().num_levels(4).bounded(64).build(now),
+            WheelBuilder::default()
+                .num_levels(4)
+                .bounded(64)
+                .build(now)
+                .unwrap(),
         ));
     }
 
@@ -1125,7 +1141,8 @@ mod tests {
                 .clk_shift(2)
                 .num_levels(5)
                 .bounded(128)
-                .build(now),
+                .build(now)
+                .unwrap(),
         ));
     }
 

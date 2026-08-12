@@ -51,7 +51,7 @@ impl Rng {
     }
 }
 
-// ── rdtsc brackets (match perf_timeout_list.rs) ──────────────────────────────
+// ── rdtsc brackets (match perf_timeout_queue.rs) ──────────────────────────────
 #[inline(always)]
 fn rdtsc_start() -> u64 {
     // SAFETY: x86_64 intrinsic; benchmark runs on x86_64 only.
@@ -215,7 +215,8 @@ fn run_env(
     let mut wheel: Wheel<u64> = WheelBuilder::default()
         .max_rebalances_per_poll(rebalance_cap)
         .unbounded(4096)
-        .build(epoch);
+        .build(epoch)
+        .unwrap();
     let mut rng = Rng(0x1234_5678_9abc_def0);
     let periodic_count: usize = env.periodic.iter().map(|p| p.count).sum();
 
@@ -328,7 +329,10 @@ fn print_poll_row(label: &str, samples: &[u64]) {
 /// micro-bench); low IPC ⇒ memory-bound (scattered). Pin to a P-core.
 fn realistic_cache(env: &Env, cancel_pct: u32) {
     let epoch = Instant::now();
-    let mut wheel: Wheel<u64> = WheelBuilder::default().unbounded(4096).build(epoch);
+    let mut wheel: Wheel<u64> = WheelBuilder::default()
+        .unbounded(4096)
+        .build(epoch)
+        .unwrap();
     let mut rng = Rng(0x1234_5678_9abc_def0);
     let periodic_count: usize = env.periodic.iter().map(|p| p.count).sum();
     for p in env.periodic {
