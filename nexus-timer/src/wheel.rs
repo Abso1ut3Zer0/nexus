@@ -588,6 +588,17 @@ impl<T: 'static, S: SlabStore<Item = WheelEntry<T>>> TimerWheel<T, S> {
             mask &= mask - 1; // clear lowest set bit
             fired += self.poll_level(lvl_idx, now_ticks, limit - fired, buf);
         }
+
+        // Refresh the global-min cache from the (now-healed) per-slot minima.
+        // poll_level heals every slot it walks, so this recomputes an accurate
+        // minimum (> now when nothing is due). Without it the cache can stay
+        // stale-low (<= now) after a cancel or a no-fire poll, permanently
+        // defeating the early-exit above and making next_deadline() report a
+        // past instant. Cheap now — one compare per active slot. (If a limit
+        // truncated the poll, a walked-but-not-drained slot stays stale-low, so
+        // the cache stays <= now and the next poll correctly re-enters.)
+        self.min_deadline.set(self.walk_min_deadline());
+
         fired
     }
 
@@ -622,7 +633,11 @@ impl<T: 'static, S: SlabStore<Item = WheelEntry<T>>> TimerWheel<T, S> {
     /// conservatively — an under-estimate only ever costs extra work.
     #[cold]
     fn walk_min_deadline(&self) -> Option<u64> {
+        // `any` (not `min_ticks != u64::MAX`) is the emptiness test: a real
+        // far-future deadline can saturate to exactly u64::MAX in
+        // `instant_to_ticks`, so the sentinel value is a legitimate minimum.
         let mut min_ticks = u64::MAX;
+        let mut any = false;
         let mut lvl_mask = self.active_levels;
         while lvl_mask != 0 {
             let lvl_idx = lvl_mask.trailing_zeros() as usize;
@@ -632,10 +647,11 @@ impl<T: 'static, S: SlabStore<Item = WheelEntry<T>>> TimerWheel<T, S> {
             while slot_mask != 0 {
                 let slot_idx = slot_mask.trailing_zeros() as usize;
                 slot_mask &= slot_mask - 1;
+                any = true;
                 min_ticks = min_ticks.min(level.slot(slot_idx).min_deadline());
             }
         }
-        (min_ticks != u64::MAX).then_some(min_ticks)
+        any.then_some(min_ticks)
     }
 
     /// Test-only **exact** minimum deadline via a full entry walk (ignoring the
@@ -1562,6 +1578,40 @@ mod tests {
         buf.clear();
         assert_eq!(wheel.poll(now + ms(2999), &mut buf), 0);
         assert_eq!(wheel.poll(now + ms(3000), &mut buf), 1);
+    }
+
+    #[test]
+    fn poll_refreshes_stale_low_cache() {
+        // Cancelling the slot-min entry leaves the slot min — and, once read, the
+        // global cache — stale-low, pointing at the cancelled deadline. A poll
+        // that finds nothing due must refresh the cache off that stale value;
+        // otherwise it stays <= now forever, defeating the early-exit and making
+        // next_deadline() report a past instant.
+        let now = Instant::now();
+        let mut wheel: Wheel<u64> = Wheel::unbounded(1024, now);
+
+        // 3000 / 3002 ms share a slot. Cancel the earlier one.
+        let h0 = wheel.schedule(now + ms(3000), 0);
+        wheel.schedule_forget(now + ms(3002), 1);
+        assert_eq!(wheel.cancel(h0), Some(0));
+
+        // Populate the (now stale-low) cache: it points at the cancelled 3000.
+        let stale = wheel.next_deadline().expect("non-empty");
+        assert!(stale <= now + ms(3000));
+
+        // Poll past 3000 but before 3002 — nothing fires; the slot heals to 3002
+        // and the cache is refreshed at the end of the poll.
+        let mut buf = Vec::new();
+        assert_eq!(wheel.poll(now + ms(3001), &mut buf), 0);
+
+        // Regression: without the poll-end refresh this would still be the
+        // cancelled ~3000 (in the past). It must now reflect the survivor —
+        // compared against the captured stale value so tick-rounding is irrelevant.
+        let refreshed = wheel.next_deadline().expect("non-empty");
+        assert!(
+            refreshed > stale,
+            "cache must refresh past the stale-low value after a no-fire poll",
+        );
     }
 
     // -------------------------------------------------------------------------
