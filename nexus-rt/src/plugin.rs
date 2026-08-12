@@ -9,6 +9,12 @@ use crate::world::WorldBuilder;
 /// Plugins register resources into a [`WorldBuilder`]. The runtime is
 /// assembled by installing plugins via [`WorldBuilder::install_plugin`].
 ///
+/// When choosing how to register — [`register`](WorldBuilder::register) for a
+/// resource the plugin owns, [`ensure`](WorldBuilder::ensure) /
+/// [`ensure_default`](WorldBuilder::ensure_default) for one it shares with other
+/// plugins — see the owned-vs-shared guidance on the
+/// [`Installer`](crate::Installer) trait.
+///
 /// # Examples
 ///
 /// ```ignore

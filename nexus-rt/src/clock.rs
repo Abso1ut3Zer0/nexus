@@ -145,7 +145,11 @@ impl Installer for RealtimeClockInstaller {
     type Poller = RealtimeClockPoller;
 
     fn install(self, world: &mut WorldBuilder) -> RealtimeClockPoller {
-        let clock_id = world.register(Clock::default());
+        // `Clock` is a shared dependency (handlers read it via `Res<Clock>`); the
+        // installer owns the value it writes each `sync()`, not the slot. `ensure`
+        // rather than `register` so a clock source composes even if something else
+        // already registered a `Clock` — see the `Installer` trait docs.
+        let clock_id = world.ensure_default::<Clock>();
 
         let (base_instant, base_nanos, gap) =
             RealtimeClockPoller::calibrate(self.threshold, self.max_retries);
@@ -214,7 +218,8 @@ impl RealtimeClockPoller {
         let elapsed = now.saturating_duration_since(self.base_instant);
         let nanos = self.base_nanos + elapsed.as_nanos() as i128;
 
-        // SAFETY: clock_id was returned by register() during install()
+        // SAFETY: clock_id was obtained via ensure_default() during install()
+        // and points at the registered Clock.
         let clock = unsafe { world.get_mut::<Clock>(self.clock_id) };
         clock.instant = now;
         clock.unix_nanos = nanos;
@@ -375,7 +380,11 @@ impl Installer for TestClockInstaller {
     type Poller = TestClockPoller;
 
     fn install(self, world: &mut WorldBuilder) -> TestClockPoller {
-        let clock_id = world.register(Clock::default());
+        // `Clock` is a shared dependency (handlers read it via `Res<Clock>`); the
+        // installer owns the value it writes each `sync()`, not the slot. `ensure`
+        // rather than `register` so a clock source composes even if something else
+        // already registered a `Clock` — see the `Installer` trait docs.
+        let clock_id = world.ensure_default::<Clock>();
         TestClockPoller {
             clock_id,
             elapsed: Duration::ZERO,
@@ -404,7 +413,8 @@ impl TestClockPoller {
     /// return is fine.
     #[inline]
     pub fn sync(&self, world: &mut World) -> Clock {
-        // SAFETY: clock_id was returned by register() during install()
+        // SAFETY: clock_id was obtained via ensure_default() during install()
+        // and points at the registered Clock.
         let clock = unsafe { world.get_mut::<Clock>(self.clock_id) };
         clock.instant = self.base_instant + self.elapsed;
         clock.unix_nanos = self.base_nanos + self.elapsed.as_nanos() as i128;
@@ -502,7 +512,11 @@ impl Installer for HistoricalClockInstaller {
     type Poller = HistoricalClockPoller;
 
     fn install(self, world: &mut WorldBuilder) -> HistoricalClockPoller {
-        let clock_id = world.register(Clock::default());
+        // `Clock` is a shared dependency (handlers read it via `Res<Clock>`); the
+        // installer owns the value it writes each `sync()`, not the slot. `ensure`
+        // rather than `register` so a clock source composes even if something else
+        // already registered a `Clock` — see the `Installer` trait docs.
+        let clock_id = world.ensure_default::<Clock>();
         HistoricalClockPoller {
             clock_id,
             start_nanos: self.start_nanos,
@@ -538,7 +552,8 @@ impl HistoricalClockPoller {
         let elapsed = (self.current_nanos - self.start_nanos).max(0);
         let elapsed_nanos = u64::try_from(elapsed).unwrap_or(u64::MAX);
 
-        // SAFETY: clock_id was returned by register() during install()
+        // SAFETY: clock_id was obtained via ensure_default() during install()
+        // and points at the registered Clock.
         let clock = unsafe { world.get_mut::<Clock>(self.clock_id) };
         clock.instant = self.base_instant + Duration::from_nanos(elapsed_nanos);
         clock.unix_nanos = self.current_nanos;

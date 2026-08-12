@@ -463,6 +463,11 @@ pub struct WorldBuilder {
 /// Without the marker trait, two modules can independently register
 /// `u64` and silently collide. The `Resource` bound forces a newtype,
 /// making collisions a compile error.
+///
+/// When a collision is *intentional* — several drivers sharing one resource
+/// type — register it with [`ensure`](WorldBuilder::ensure) rather than
+/// [`register`](WorldBuilder::register); see the owned-vs-shared guidance on
+/// the [`Installer`](crate::Installer) trait.
 #[diagnostic::on_unimplemented(
     message = "this type cannot be stored as a resource in the World",
     note = "add `#[derive(Resource)]` to your type, or use `new_resource!` for a newtype wrapper"
@@ -498,6 +503,12 @@ impl WorldBuilder {
     /// The value is heap-allocated inside a `ResourceCell<T>` and ownership
     /// is transferred to the container. The pointer is stable for the
     /// lifetime of the resulting [`World`].
+    ///
+    /// Use this when the caller **owns** the resource (its sole writer). For a
+    /// resource multiple drivers may share, use [`ensure`](Self::ensure); to
+    /// detect a duplicate without dropping your value, use
+    /// [`try_register`](Self::try_register). See the
+    /// [`Installer`](crate::Installer) docs for the owned-vs-shared pattern.
     ///
     /// # Panics
     ///
@@ -616,6 +627,26 @@ impl WorldBuilder {
     /// Returns `true` if a resource of type `T` has been registered.
     pub fn contains<T: Resource>(&self) -> bool {
         self.registry.contains::<T>()
+    }
+
+    /// Resolve the [`ResourceId`] for a type registered so far.
+    ///
+    /// Use during install to resolve a **required** dependency another driver
+    /// or plugin must have registered earlier (install order matters). See the
+    /// [`Installer`](crate::Installer) owned-vs-shared guidance.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the resource type has not been registered.
+    pub fn id<T: Resource>(&self) -> ResourceId {
+        self.registry.id::<T>()
+    }
+
+    /// Resolve the [`ResourceId`] for a type, or `None` if it has not been
+    /// registered — the non-panicking form of [`id`](Self::id), for an optional
+    /// dependency.
+    pub fn try_id<T: Resource>(&self) -> Option<ResourceId> {
+        self.registry.try_id::<T>()
     }
 
     /// Install a plugin. The plugin is consumed and registers its
@@ -1496,6 +1527,23 @@ mod tests {
         // Original registration untouched.
         let world = builder.build();
         assert_eq!(*world.resource::<u64>(), 42);
+    }
+
+    #[test]
+    fn builder_id_and_try_id_resolve_during_build() {
+        let mut builder = WorldBuilder::new();
+        assert!(builder.try_id::<Price>().is_none());
+
+        let id = builder.register::<Price>(Price { value: 1.0 });
+        assert_eq!(builder.id::<Price>(), id);
+        assert_eq!(builder.try_id::<Price>(), Some(id));
+    }
+
+    #[test]
+    #[should_panic(expected = "not registered")]
+    fn builder_id_panics_when_absent() {
+        let builder = WorldBuilder::new();
+        builder.id::<Price>();
     }
 
     // -- Sequence tests -----------------------------------------------------------

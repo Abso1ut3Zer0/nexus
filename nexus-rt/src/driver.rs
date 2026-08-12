@@ -13,6 +13,33 @@ use crate::world::WorldBuilder;
 /// different drivers need different parameters (e.g. a timer driver
 /// needs `Instant`, an IO driver does not).
 ///
+/// # Registering resources: owned vs. shared
+///
+/// Choose the [`WorldBuilder`] registration method by **who owns the resource**:
+///
+/// - **Owned** — the installer creates it and is its sole writer (a driver's
+///   wheel, an IO poller's state). Use [`register`](WorldBuilder::register). A
+///   duplicate is a wiring bug, so it panics — and the panic names `ensure` /
+///   `try_register` for anyone who meant to share. This is the default for
+///   driver-private state.
+/// - **Shared** — a common dependency several drivers read (e.g.
+///   [`Clock`](crate::clock::Clock)); the installer may drive its value but does not
+///   exclusively own the slot. Use [`ensure`](WorldBuilder::ensure) /
+///   [`ensure_default`](WorldBuilder::ensure_default). Idempotent: the first
+///   caller creates it, later callers get the same id, so it composes
+///   regardless of install order. (Do not `ensure` a resource you *move* in and
+///   exclusively mutate — the value would be dropped and you'd alias someone
+///   else's; that is what "owned" is for.)
+/// - **Required (provided elsewhere)** — a resource another installer must
+///   register that this one cannot default. Resolve it with
+///   [`id`](WorldBuilder::id) (check [`contains`](WorldBuilder::contains) first
+///   if the dependency is optional). If it is absent, `id` panics with a
+///   message naming how to provide it. Do **not** return `Result` from
+///   `install` for this: a missing dependency is a deterministic composition
+///   error caught at startup, with no runtime recovery — panic, fail fast.
+///   Only *config values* are fallible; validate those to a `Result` (e.g. a
+///   `ConfigError`) in your builder, before `install`.
+///
 /// # Examples
 ///
 /// ```ignore
