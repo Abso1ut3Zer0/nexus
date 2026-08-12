@@ -16,7 +16,7 @@
 //! |---|---|---|
 //! | Timeout per timer | arbitrary | one fixed duration |
 //! | Poll | O(active population) | **O(fired)** |
-//! | `next_deadline` | cached | **O(1) exact** |
+//! | `next_deadline` | lower bound (cached) | **O(1) exact** |
 //! | Clock | any monotone source | monotone, non-decreasing |
 //!
 //! Reach for [`TimeoutList`] on the hot path when it fits — idle timeouts (all

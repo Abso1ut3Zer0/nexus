@@ -26,6 +26,16 @@ pub(crate) struct WheelSlot<T> {
     entry_head: Cell<EntryPtr<T>>,
     /// Tail of the entry DLL (last entry, for O(1) append).
     entry_tail: Cell<EntryPtr<T>>,
+    /// Minimum deadline over this slot's entries, or `u64::MAX` when empty.
+    ///
+    /// Maintained by the **wheel** (in `insert_entry` / `poll_level` / on drain),
+    /// NOT by `push_entry` / `remove_entry` — so `TimeoutList`, which reuses this
+    /// slot type as its whole list, pays nothing for a field it never reads.
+    ///
+    /// **Stale-low after a wheel remove:** an under-estimate only ever causes an
+    /// unnecessary walk, never a skipped fire; `poll_level` recomputes it exactly
+    /// whenever it fully walks the slot. See `wheel::poll_level`.
+    min_deadline: Cell<u64>,
 }
 
 impl<T: 'static> WheelSlot<T> {
@@ -38,6 +48,7 @@ impl<T: 'static> WheelSlot<T> {
         WheelSlot {
             entry_head: Cell::new(null_entry()),
             entry_tail: Cell::new(null_entry()),
+            min_deadline: Cell::new(u64::MAX),
         }
     }
 
@@ -125,6 +136,19 @@ impl<T: 'static> WheelSlot<T> {
     #[inline]
     pub(crate) fn entry_tail(&self) -> EntryPtr<T> {
         self.entry_tail.get()
+    }
+
+    /// The cached minimum deadline over this slot's entries (`u64::MAX` when
+    /// empty). May be stale-low after a wheel remove — see the field docs.
+    #[inline]
+    pub(crate) fn min_deadline(&self) -> u64 {
+        self.min_deadline.get()
+    }
+
+    /// Sets the slot's cached minimum deadline. Wheel-only maintenance.
+    #[inline]
+    pub(crate) fn set_min_deadline(&self, ticks: u64) {
+        self.min_deadline.set(ticks);
     }
 }
 

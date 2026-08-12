@@ -43,3 +43,9 @@ PERF.md
 __pycache__/
 *.py[cod]
 .venv/
+
+# proptest failure seeds — unit-test (`proptest-regressions/`) layout only.
+# Transient WIP failures write here; we don't want those captured on the remote.
+# (Integration-test `tests/*.proptest-regressions` files stay committed by
+# convention — see nexus-decimal / nexus-slab — and are unaffected by this.)
+proptest-regressions/
