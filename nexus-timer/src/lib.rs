@@ -41,10 +41,15 @@ mod entry;
 mod handle;
 mod level;
 pub mod store;
+pub mod timeout_list;
 mod wheel;
 
 pub use entry::WheelEntry;
 pub use handle::TimerHandle;
+pub use timeout_list::{
+    BoundedTimeoutList, BoundedTimeoutListBuilder, TimeoutList, TimeoutListBuilder,
+    UnboundedTimeoutListBuilder,
+};
 pub use wheel::{
     BoundedWheel, BoundedWheelBuilder, TimerWheel, UnboundedWheelBuilder, Wheel, WheelBuilder,
 };

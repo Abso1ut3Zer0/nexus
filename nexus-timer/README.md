@@ -120,6 +120,61 @@ wheel.cancel(handle);
 | `len()` | `usize` | Number of active timers |
 | `is_empty()` | `bool` | Whether the wheel is empty |
 
+## TimeoutList — Fixed-Duration Variant
+
+The wheel's poll is O(active population): it walks every entry of every
+active slot to prove which are due. That is the right trade when deadlines
+are *arbitrary*. But many callers schedule **one fixed timeout for
+everything** — a flat 5 s deadline on every item. For that workload the
+wheel buckets by deadline to solve an ordering problem that does not exist.
+
+`TimeoutList<T>` exploits the single duration. A constant timeout plus a
+monotone clock means deadlines are monotone in insertion order, so a new
+entry is always appended at the tail of one intrusive list, keeping it
+sorted with no comparisons. Poll walks from the head and stops at the first
+not-due entry — **O(fired)**. `next_deadline()` is the head's deadline:
+exact, O(1), no cache.
+
+The timeout is fixed at construction, so there is **no `deadline` parameter**
+anywhere in the API — out-of-order insertion is unrepresentable rather than
+merely discouraged.
+
+```rust
+use std::time::{Duration, Instant};
+use nexus_timer::{TimeoutList, TimeoutListBuilder};
+
+let now = Instant::now();
+
+// Every timer gets the same 5-second timeout.
+let mut list: TimeoutList<u64> = TimeoutListBuilder::new(Duration::from_secs(5))
+    .unbounded(4096)
+    .build(now);
+
+let handle = list.schedule(now, 42);   // fires at now + 5s
+let value = list.cancel(handle);       // O(1) mid-list unlink
+assert_eq!(value, Some(42));
+```
+
+Same `schedule` / `schedule_forget` / `try_schedule` / `cancel` / `free` /
+`poll` / `poll_with_limit` / `next_deadline` surface as the wheel, backed by
+the same slab storage, handle refcount protocol, and DLL splice logic. There
+is no `reschedule` (cancel and re-schedule instead — rescheduling *earlier*
+would break the sort) and no `min_deadline` cache (the head *is* the min).
+
+Nothing-due poll is flat across population — the whole point:
+
+| Live population | wheel poll (0-fire) | `TimeoutList` poll (0-fire) |
+|---|---|---|
+| 100 | 0.2 µs | ~30 cycles |
+| 1,000 | 5.6 µs | ~30 cycles |
+| 10,000 | 454 µs | ~30 cycles |
+| 50,000 | 2.4 ms | ~30 cycles |
+
+```bash
+cargo build --release --bench perf_timeout_list -p nexus-timer
+taskset -c 0 ./target/release/deps/perf_timeout_list-*
+```
+
 ## Design
 
 ### Level Structure

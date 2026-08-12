@@ -29,7 +29,12 @@ pub(crate) struct WheelSlot<T> {
 }
 
 impl<T: 'static> WheelSlot<T> {
-    fn new() -> Self {
+    /// Creates an empty slot (no entries).
+    ///
+    /// `pub(crate)` so both wheel front-ends can hold slots directly:
+    /// the wheel builds an array of them per level, while `TimeoutList`
+    /// holds a single one as its whole sorted list.
+    pub(crate) fn new() -> Self {
         WheelSlot {
             entry_head: Cell::new(null_entry()),
             entry_tail: Cell::new(null_entry()),
@@ -111,6 +116,15 @@ impl<T: 'static> WheelSlot<T> {
     #[inline]
     pub(crate) fn entry_head(&self) -> EntryPtr<T> {
         self.entry_head.get()
+    }
+
+    /// Returns the tail entry pointer (may be null if slot is empty).
+    ///
+    /// Used by `TimeoutList` to peek the last-inserted deadline for the
+    /// monotone-insertion `debug_assert`. Not read on any wheel hot path.
+    #[inline]
+    pub(crate) fn entry_tail(&self) -> EntryPtr<T> {
+        self.entry_tail.get()
     }
 }
 
