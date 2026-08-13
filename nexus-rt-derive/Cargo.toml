@@ -1,6 +1,6 @@
 [package]
 name = "nexus-rt-derive"
-version = "1.2.0"
+version = "1.2.1"
 description = "Derive macros for nexus-rt. Use nexus-rt instead of depending on this directly."
 readme = "README.md"
 keywords = ["derive", "macro", "resource", "ecs"]

@@ -10,6 +10,8 @@ contained.
 
 ## [Unreleased]
 
+## [1.2.1] — 2026-08-13
+
 ### Fixed
 
 - `#[derive(Resource)]` on a **concrete** type no longer emits an explicit
