@@ -314,41 +314,47 @@ all_tuples!(impl_template_dispatch);
 
 use crate::handler::NoEvent;
 
-// Arity 0: fn() with no event and no params
-impl<F: FnMut() + Send + 'static> TemplateDispatch<(), ()> for NoEvent<F> {
-    fn run_fn_ptr() -> unsafe fn(&mut (), &mut World, ()) {
+// Arity 0: fn() with no params, ignoring the event (any `E`).
+//
+// `E` is generic (not `()`) so `no_event(f)` also backs a template whose
+// blueprint has a non-unit `Event` — e.g. a timer callback that ignores the
+// `Instant`. The event type is pinned by the blueprint at the `new` call site,
+// so this does not introduce inference ambiguity the way generalizing the plain
+// `IntoHandler` path would.
+impl<E, F: FnMut() + Send + 'static> TemplateDispatch<(), E> for NoEvent<F> {
+    fn run_fn_ptr() -> unsafe fn(&mut (), &mut World, E) {
         /// # Safety
         ///
         /// `F` must be a ZST (enforced by `HandlerTemplate::new`).
-        unsafe fn run<F: FnMut() + Send>(_state: &mut (), _world: &mut World, _event: ()) {
+        unsafe fn run<E, F: FnMut() + Send>(_state: &mut (), _world: &mut World, _event: E) {
             // SAFETY: F is ZST — zeroed() produces the unique value.
             let mut f: F = unsafe { std::mem::zeroed() };
             f();
         }
-        run::<F>
+        run::<E, F>
     }
 
     fn validate(_state: &(), _registry: &Registry) {}
 }
 
-impl<C: Send + 'static, F: FnMut(&mut C) + Send + 'static> CallbackTemplateDispatch<C, (), ()>
+impl<E, C: Send + 'static, F: FnMut(&mut C) + Send + 'static> CallbackTemplateDispatch<C, (), E>
     for NoEvent<F>
 {
-    fn run_fn_ptr() -> unsafe fn(&mut C, &mut (), &mut World, ()) {
+    fn run_fn_ptr() -> unsafe fn(&mut C, &mut (), &mut World, E) {
         /// # Safety
         ///
         /// `F` must be a ZST (enforced by `CallbackTemplate::stamp`).
-        unsafe fn run<C: Send, F: FnMut(&mut C) + Send>(
+        unsafe fn run<E, C: Send, F: FnMut(&mut C) + Send>(
             ctx: &mut C,
             _state: &mut (),
             _world: &mut World,
-            _event: (),
+            _event: E,
         ) {
             // SAFETY: F is ZST — zeroed() produces the unique value.
             let mut f: F = unsafe { std::mem::zeroed() };
             f(ctx);
         }
-        run::<C, F>
+        run::<E, C, F>
     }
 
     fn validate(_state: &(), _registry: &Registry) {}
@@ -357,22 +363,22 @@ impl<C: Send + 'static, F: FnMut(&mut C) + Send + 'static> CallbackTemplateDispa
 // Arities 1-8: fn(Params...) with no event
 macro_rules! impl_template_dispatch_no_event {
     ($($P:ident),+) => {
-        impl<F: Send + 'static, $($P: Param + 'static),+> TemplateDispatch<($($P,)+), ()>
+        impl<E, F: Send + 'static, $($P: Param + 'static),+> TemplateDispatch<($($P,)+), E>
             for NoEvent<F>
         where
             for<'a> &'a mut F: FnMut($($P,)+) + FnMut($($P::Item<'a>,)+),
         {
-            fn run_fn_ptr() -> unsafe fn(&mut ($($P::State,)+), &mut World, ()) {
+            fn run_fn_ptr() -> unsafe fn(&mut ($($P::State,)+), &mut World, E) {
                 /// # Safety
                 ///
                 /// - `F` must be a ZST (enforced by `HandlerTemplate::new`).
                 /// - `state` must have been produced by `Param::init` on the
                 ///   same registry that built `world`.
                 #[allow(non_snake_case)]
-                unsafe fn run<F: Send + 'static, $($P: Param + 'static),+>(
+                unsafe fn run<E, F: Send + 'static, $($P: Param + 'static),+>(
                     state: &mut ($($P::State,)+),
                     world: &mut World,
-                    _event: (),
+                    _event: E,
                 ) where
                     for<'a> &'a mut F: FnMut($($P,)+) + FnMut($($P::Item<'a>,)+),
                 {
@@ -394,7 +400,7 @@ macro_rules! impl_template_dispatch_no_event {
                     let mut f: F = unsafe { std::mem::zeroed() };
                     call_inner(&mut f, $($P,)+);
                 }
-                run::<F, $($P),+>
+                run::<E, F, $($P),+>
             }
 
             #[allow(non_snake_case)]
@@ -406,20 +412,20 @@ macro_rules! impl_template_dispatch_no_event {
             }
         }
 
-        impl<C: Send + 'static, F: Send + 'static, $($P: Param + 'static),+>
-            CallbackTemplateDispatch<C, ($($P,)+), ()> for NoEvent<F>
+        impl<E, C: Send + 'static, F: Send + 'static, $($P: Param + 'static),+>
+            CallbackTemplateDispatch<C, ($($P,)+), E> for NoEvent<F>
         where
             for<'a> &'a mut F:
                 FnMut(&mut C, $($P,)+) +
                 FnMut(&mut C, $($P::Item<'a>,)+),
         {
-            fn run_fn_ptr() -> unsafe fn(&mut C, &mut ($($P::State,)+), &mut World, ()) {
+            fn run_fn_ptr() -> unsafe fn(&mut C, &mut ($($P::State,)+), &mut World, E) {
                 #[allow(non_snake_case)]
-                unsafe fn run<C: Send, F: Send + 'static, $($P: Param + 'static),+>(
+                unsafe fn run<E, C: Send, F: Send + 'static, $($P: Param + 'static),+>(
                     ctx: &mut C,
                     state: &mut ($($P::State,)+),
                     world: &mut World,
-                    _event: (),
+                    _event: E,
                 ) where
                     for<'a> &'a mut F:
                         FnMut(&mut C, $($P,)+) +
@@ -445,7 +451,7 @@ macro_rules! impl_template_dispatch_no_event {
                     let mut f: F = unsafe { std::mem::zeroed() };
                     call_inner(&mut f, ctx, $($P,)+);
                 }
-                run::<C, F, $($P),+>
+                run::<E, C, F, $($P),+>
             }
 
             #[allow(non_snake_case)]
@@ -546,6 +552,29 @@ where
             name: std::any::type_name::<F>(),
             _key: PhantomData,
         }
+    }
+
+    /// Create a template from a named function that **ignores the event**.
+    ///
+    /// Like [`new`](Self::new), but `f` omits the trailing event parameter — the
+    /// blueprint's `Event` (whatever its type) is dropped. Use it for a handler
+    /// that reads only resources, e.g. a timer handler that ignores the
+    /// `Instant`:
+    ///
+    /// ```ignore
+    /// fn on_tick(mut c: ResMut<Count>) { c.0 += 1; }         // no `_: Instant`
+    /// let t = HandlerTemplate::<OnTick>::new_event_ignored(on_tick, reg);
+    /// ```
+    ///
+    /// # Panics
+    ///
+    /// Same as [`new`](Self::new).
+    #[allow(clippy::needless_pass_by_value)]
+    pub fn new_event_ignored<F>(f: F, registry: &Registry) -> Self
+    where
+        NoEvent<F>: TemplateDispatch<K::Params, K::Event>,
+    {
+        Self::new(NoEvent(f), registry)
     }
 
     /// Stamp out a new handler by copying pre-resolved state.
@@ -747,6 +776,30 @@ where
             name: std::any::type_name::<F>(),
             _key: PhantomData,
         }
+    }
+
+    /// Create a callback template from a named function that **ignores the
+    /// event**.
+    ///
+    /// Like [`new`](Self::new), but `f` omits the trailing event parameter (it
+    /// still takes `&mut Context` and its params) — the blueprint's `Event` is
+    /// dropped. This is the timer / self-rescheduling shape where the callback
+    /// doesn't need the `Instant`:
+    ///
+    /// ```ignore
+    /// fn heartbeat(ctx: &mut HeartbeatCtx, mut wheel: ResMut<TimerWheel>) { /* re-arm */ }
+    /// let cb = CallbackTemplate::<Heartbeat>::new_event_ignored(heartbeat, reg);
+    /// ```
+    ///
+    /// # Panics
+    ///
+    /// Same as [`new`](Self::new).
+    #[allow(clippy::needless_pass_by_value)]
+    pub fn new_event_ignored<F>(f: F, registry: &Registry) -> Self
+    where
+        NoEvent<F>: CallbackTemplateDispatch<K::Context, K::Params, K::Event>,
+    {
+        Self::new(NoEvent(f), registry)
     }
 
     /// Stamp out a new callback with the given context.
@@ -1215,6 +1268,62 @@ mod tests {
         let a = template; // copy
         let b = template; // copy again — only compiles if `Copy`
         let _ = (a, b, template);
+    }
+
+    // -- no_event ignoring a non-unit event (timer shape) ---------------------
+
+    #[test]
+    fn new_event_ignored_drops_a_non_unit_event() {
+        // A blueprint whose Event is `u32`, backed by a function that ignores it
+        // (no trailing `_: u32`). `new_event_ignored` drops the event.
+        struct OnTick;
+        impl Blueprint for OnTick {
+            type Event = u32;
+            type Params = (ResMut<'static, u64>,);
+        }
+
+        fn bump(mut counter: ResMut<u64>) {
+            *counter += 1;
+        }
+
+        let mut builder = WorldBuilder::new();
+        builder.register::<u64>(0);
+        let mut world = builder.build();
+
+        let template = HandlerTemplate::<OnTick>::new_event_ignored(bump, world.registry());
+        let mut h = template.generate();
+        h.run(&mut world, 999u32); // event dropped
+        h.run(&mut world, 7u32);
+        assert_eq!(*world.resource::<u64>(), 2);
+    }
+
+    #[test]
+    fn callback_new_event_ignored_drops_a_non_unit_event() {
+        // The timer shape: a callback template whose Event is non-unit (`u32`,
+        // stands in for `Instant`), ignored by the function.
+        struct OnTimer;
+        impl Blueprint for OnTimer {
+            type Event = u32;
+            type Params = (ResMut<'static, u64>,);
+        }
+        impl CallbackBlueprint for OnTimer {
+            type Context = u64; // per-instance fire count
+        }
+
+        fn fire(fires: &mut u64, mut total: ResMut<u64>) {
+            *fires += 1;
+            *total += 10;
+        }
+
+        let mut builder = WorldBuilder::new();
+        builder.register::<u64>(0);
+        let mut world = builder.build();
+
+        let template = CallbackTemplate::<OnTimer>::new_event_ignored(fire, world.registry());
+        let mut cb = template.generate(0u64);
+        cb.run(&mut world, 42u32); // Instant-like event dropped
+        assert_eq!(*cb.ctx(), 1);
+        assert_eq!(*world.resource::<u64>(), 10);
     }
 
     // -- Convenience macros ---------------------------------------------------

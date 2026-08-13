@@ -769,6 +769,150 @@ macro_rules! impl_into_handler_no_event {
 all_tuples!(impl_into_handler_no_event);
 
 // =============================================================================
+// IntoHandlerIgnoringEvent — build a handler that drops the event (any E)
+// =============================================================================
+
+/// Handler produced by
+/// [`into_handler_event_ignored`](IntoHandlerIgnoringEvent::into_handler_event_ignored).
+///
+/// Implements [`Handler<E>`] for **every** `E`: it fetches its [`Param`]s,
+/// calls the function, and drops the event. It stores no `E`, so it carries no
+/// event lifetime — borrowed / non-`'static` events (e.g. wire buffers) work.
+pub struct IgnoreEventHandler<F, P: Param> {
+    f: F,
+    state: P::State,
+    name: &'static str,
+}
+
+/// Convert a function that omits the event parameter into a [`Handler<E>`] that
+/// drops the event — for **any** event type `E`.
+///
+/// The event-ignoring counterpart of [`IntoHandler`]. Use it when a handler
+/// reads only resources and doesn't need the event (e.g. a timer handler that
+/// ignores the `Instant`):
+///
+/// ```
+/// use nexus_rt::{Handler, IntoHandlerIgnoringEvent, ResMut, Resource, WorldBuilder};
+///
+/// #[derive(Resource)]
+/// struct Count(u64);
+///
+/// fn on_tick(mut c: ResMut<Count>) {
+///     c.0 += 1;
+/// } // no `_: Event` parameter
+///
+/// let mut wb = WorldBuilder::new();
+/// wb.register(Count(0));
+/// let mut world = wb.build();
+///
+/// // `E` (here `u32`) is inferred from the storage type; the event is dropped.
+/// let mut h: Box<dyn Handler<u32>> =
+///     Box::new(on_tick.into_handler_event_ignored(world.registry()));
+/// h.run(&mut world, 42);
+/// assert_eq!(world.resource::<Count>().0, 1);
+/// ```
+///
+/// This trait is deliberately **not** generic over the event type — that is
+/// what lets the produced handler support non-`'static` events. The method name
+/// is what disambiguates it from the event-taking
+/// [`into_handler`](IntoHandler::into_handler); no wrapper is needed.
+pub trait IntoHandlerIgnoringEvent<Params> {
+    /// The concrete handler type produced.
+    type Handler: Send + 'static;
+
+    /// Build the event-ignoring handler, resolving params from the registry.
+    #[must_use = "the handler must be stored or dispatched — discarding it does nothing"]
+    fn into_handler_event_ignored(self, registry: &Registry) -> Self::Handler;
+}
+
+// Arity 0: fn() with no params — ignores the event (any E). `all_tuples!` starts
+// at one param, so this arity is hand-written (mirrors the arity-0 no-event path).
+impl<F: FnMut() + Send + 'static> IntoHandlerIgnoringEvent<()> for F {
+    type Handler = IgnoreEventHandler<F, ()>;
+
+    fn into_handler_event_ignored(self, _registry: &Registry) -> Self::Handler {
+        IgnoreEventHandler {
+            f: self,
+            state: <() as Param>::init(_registry),
+            name: std::any::type_name::<F>(),
+        }
+    }
+}
+
+impl<E, F: FnMut() + Send + 'static> Handler<E> for IgnoreEventHandler<F, ()> {
+    fn run(&mut self, _world: &mut World, _event: E) {
+        (self.f)();
+    }
+
+    fn name(&self) -> &'static str {
+        self.name
+    }
+}
+
+macro_rules! impl_into_handler_ignoring_event {
+    ($($P:ident),+) => {
+        impl<F: Send + 'static, $($P: Param + 'static),+>
+            IntoHandlerIgnoringEvent<($($P,)+)> for F
+        where
+            for<'a> &'a mut F: FnMut($($P,)+) + FnMut($($P::Item<'a>,)+),
+        {
+            type Handler = IgnoreEventHandler<F, ($($P,)+)>;
+
+            fn into_handler_event_ignored(self, registry: &Registry) -> Self::Handler {
+                let state = <($($P,)+) as Param>::init(registry);
+                {
+                    #[allow(non_snake_case)]
+                    let ($($P,)+) = &state;
+                    registry.check_access(&[
+                        $(
+                            (<$P as Param>::resource_id($P),
+                             std::any::type_name::<$P>()),
+                        )+
+                    ]);
+                }
+                IgnoreEventHandler {
+                    f: self,
+                    state,
+                    name: std::any::type_name::<F>(),
+                }
+            }
+        }
+
+        impl<E, F: Send + 'static, $($P: Param + 'static),+> Handler<E>
+            for IgnoreEventHandler<F, ($($P,)+)>
+        where
+            for<'a> &'a mut F: FnMut($($P,)+) + FnMut($($P::Item<'a>,)+),
+        {
+            #[allow(non_snake_case)]
+            fn run(&mut self, world: &mut World, _event: E) {
+                fn call_inner<$($P),+>(
+                    mut f: impl FnMut($($P),+),
+                    $($P: $P,)+
+                ) {
+                    f($($P),+)
+                }
+
+                #[cfg(debug_assertions)]
+                world.clear_borrows();
+                // SAFETY: state was produced by init() on the same registry that
+                // built this world. Single-threaded sequential dispatch ensures
+                // no mutable aliasing across params.
+                let ($($P,)+) = unsafe {
+                    <($($P,)+) as Param>::fetch(world, &mut self.state)
+                };
+                call_inner(&mut self.f, $($P,)+);
+            }
+
+            fn name(&self) -> &'static str {
+                self.name
+            }
+        }
+    };
+}
+
+all_tuples!(impl_into_handler_ignoring_event);
+
+// =============================================================================
 // Opaque — marker for closures with unresolved dependencies
 // =============================================================================
 

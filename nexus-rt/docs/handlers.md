@@ -125,6 +125,40 @@ let mut handler = no_event(check_risk).into_handler(world.registry());
 handler.run(&mut world, ());
 ```
 
+## Ignoring the Event
+
+A handler that only reads resources and doesn't need the event can omit the
+trailing `_: Event` parameter entirely. Build it with
+`into_handler_event_ignored` instead of `into_handler` — the method name says
+"drop the event," so no wrapper or `_` placeholder is needed:
+
+```rust
+use nexus_rt::{Handler, IntoHandlerIgnoringEvent, ResMut, Resource, WorldBuilder};
+use std::time::Instant;
+
+#[derive(Resource)]
+struct Ticks(u64);
+
+fn on_tick(mut t: ResMut<Ticks>) {   // no `_: Instant`
+    t.0 += 1;
+}
+
+let mut wb = WorldBuilder::new();
+wb.register(Ticks(0));
+let mut world = wb.build();
+
+// The event type (here `Instant`) is inferred from where the handler is stored.
+let mut h: Box<dyn Handler<Instant>> =
+    Box::new(on_tick.into_handler_event_ignored(world.registry()));
+h.run(&mut world, Instant::now());   // the Instant is dropped
+assert_eq!(world.resource::<Ticks>().0, 1);
+```
+
+This works for **any** event type, including borrowed / non-`'static` events
+(e.g. a `&[u8]` wire buffer), because the produced handler stores no event. The
+`no_event(f)` wrapper shown above is the shorthand for the special `E = ()` case;
+`into_handler_event_ignored` is the general form.
+
 ## Optional Resources
 
 Handlers can declare optional dependencies that resolve to `None` if the
