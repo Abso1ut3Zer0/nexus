@@ -1,6 +1,6 @@
 [package]
 name = "nexus-rt"
-version = "2.5.0"
+version = "2.5.1"
 description = "Single-threaded, event-driven runtime primitives with pre-resolved dispatch"
 edition.workspace = true
 rust-version.workspace = true

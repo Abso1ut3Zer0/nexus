@@ -16,7 +16,7 @@ tokio-compat = ["dep:tokio"]
 [dependencies]
 libc = "0.2"
 mio = { version = "1", features = ["os-poll", "net"] }
-nexus-rt = { version = "2.5.0", path = "../nexus-rt" }
+nexus-rt = { version = "2.5.1", path = "../nexus-rt" }
 slab = "0.4"
 nexus-logbuf = { version = "2.2.0", path = "../nexus-logbuf" }
 nexus-queue = { version = "1.2.0", path = "../nexus-queue" }
