@@ -10,6 +10,8 @@ contained.
 
 ## [Unreleased]
 
+## [1.1.0] — 2026-08-13
+
 ### Added
 
 - `Events::drain()`, a cursor-based draining iterator that removes

@@ -1,6 +1,6 @@
 [package]
 name = "nexus-notify"
-version = "1.0.2"
+version = "1.1.0"
 description = "Cross-thread event queue with conflation and FIFO delivery"
 edition.workspace = true
 rust-version.workspace = true
