@@ -10,6 +10,8 @@ contained.
 
 ## [Unreleased]
 
+## [2.5.0] — 2026-08-13
+
 ### Added
 
 - **Ignore the event without naming it.** A handler or callback that doesn't use
