@@ -267,12 +267,22 @@ impl Drop for Mapping {
     }
 }
 
-// SAFETY: the mapping is a raw pointer plus its backing fd. The bytes
-// live in kernel-managed memory (file-backed or shared), not thread-local
-// state. Concurrent access to the mapped contents must be synchronized
-// by the caller — the handle itself is safe to move across threads.
+// SAFETY: a Mapping is a raw pointer plus its backing fd. Moving the handle to
+// another thread is safe because the mapped bytes live in kernel-managed memory,
+// not thread-local storage.
+//
+// Sync is NOT implemented. as_ptr, as_slice, read_at, and write_at all take
+// &self and touch the mapped bytes directly. Shared cross-thread access through
+// an Arc<Mapping> would therefore be a data race in safe code. Callers that
+// genuinely need to read or write the mapping from a second thread (e.g.
+// conductor.rs prefault) are already unsafe fn with their own exclusivity
+// invariants; they do not rely on Mapping: Sync.
+//
+// Note: as_ptr returns *mut u8 from &self. Splitting that into a const getter
+// (&self -> *const u8) and a mut getter (&mut self -> *mut u8) would make the
+// surface stricter, but conductor.rs holds &Mapping (not &mut), so that change
+// needs its own design decision. Tracked in #664.
 unsafe impl Send for Mapping {}
-unsafe impl Sync for Mapping {}
 
 // ── POSIX shared memory (forwarded to platform backend) ──────────
 
@@ -294,4 +304,19 @@ pub(crate) fn fd_size(fd: &OwnedFd) -> Result<u64, MapError> {
 
 pub(crate) fn ftruncate(fd: &OwnedFd, len: u64) -> Result<(), MapError> {
     imp::ftruncate(fd, len)
+}
+
+#[cfg(test)]
+mod trait_bounds {
+    use super::Mapping;
+
+    // Mapping must be Send (ownership transfer across threads is safe).
+    // Mapping must NOT be Sync (as_ptr/as_slice/read_at/write_at all take &self
+    // and touch the mapped bytes, so shared cross-thread access is a data race).
+    // Asserting !Sync requires trybuild compile-fail coverage; the crate has no
+    // trybuild setup, so only the positive Send bound is asserted here.
+    fn _assert_mapping_is_send() {
+        fn check<T: Send>() {}
+        check::<Mapping>();
+    }
 }
