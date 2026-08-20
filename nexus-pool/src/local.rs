@@ -662,3 +662,162 @@ mod tests {
         assert_eq!(pool.available(), 3);
     }
 }
+
+// =============================================================================
+// Proptests
+// =============================================================================
+
+#[cfg(test)]
+mod proptests {
+    use super::*;
+    use proptest::prelude::*;
+    use std::cell::Cell;
+    use std::rc::Rc;
+
+    /// Operation against a growable `Pool<u64>`.
+    #[derive(Debug, Clone)]
+    enum Op {
+        /// `take()` — always succeeds, reusing or creating.
+        Take,
+        /// `try_take()` — succeeds only if the pool has an available object.
+        TryTake,
+        /// `acquire()` — RAII guard, always succeeds.
+        Acquire,
+        /// Return a manually-held value (from `Take`/`TryTake`) at `idx`.
+        Put { idx: usize },
+        /// Drop an RAII guard (from `Acquire`) at `idx`.
+        DropGuard { idx: usize },
+    }
+
+    fn op_strategy() -> impl Strategy<Value = Op> {
+        prop_oneof![
+            Just(Op::Take),
+            Just(Op::TryTake),
+            Just(Op::Acquire),
+            any::<usize>().prop_map(|idx| Op::Put { idx }),
+            any::<usize>().prop_map(|idx| Op::DropGuard { idx }),
+        ]
+    }
+
+    proptest! {
+        #![proptest_config(ProptestConfig::with_cases(1000))]
+
+        /// Fuzz take/try_take/acquire/put/drop interleaving.
+        ///
+        /// Every object ever created by the factory is, at all times, either
+        /// sitting in the pool's available stack or checked out by the test
+        /// (as a manual value or an RAII guard). Invariant:
+        /// `pool.available() + outstanding == n_created` after every
+        /// operation — catches leaks, double-returns, and phantom creation.
+        #[test]
+        fn fuzz_take_put_acquire_drop(ops in proptest::collection::vec(op_strategy(), 1..300)) {
+            let created = Rc::new(Cell::new(0u64));
+            let created_clone = Rc::clone(&created);
+
+            let pool: Pool<u64> = Pool::new(
+                move || {
+                    let id = created_clone.get();
+                    created_clone.set(id + 1);
+                    id
+                },
+                |_| {},
+            );
+
+            let mut manual: Vec<u64> = Vec::new();
+            let mut guards: Vec<Pooled<u64>> = Vec::new();
+
+            for op in &ops {
+                match op {
+                    Op::Take => manual.push(pool.take()),
+                    Op::TryTake => {
+                        if let Some(v) = pool.try_take() {
+                            manual.push(v);
+                        }
+                    }
+                    Op::Acquire => guards.push(pool.acquire()),
+                    Op::Put { idx } => {
+                        if !manual.is_empty() {
+                            let i = idx % manual.len();
+                            let v = manual.swap_remove(i);
+                            pool.put(v);
+                        }
+                    }
+                    Op::DropGuard { idx } => {
+                        if !guards.is_empty() {
+                            let i = idx % guards.len();
+                            let guard = guards.swap_remove(i);
+                            drop(guard);
+                        }
+                    }
+                }
+
+                let outstanding = (manual.len() + guards.len()) as u64;
+                prop_assert_eq!(
+                    pool.available() as u64 + outstanding,
+                    created.get(),
+                    "accounting broken after {:?}",
+                    op
+                );
+            }
+
+            // Return everything outstanding and verify full accounting.
+            for v in manual {
+                pool.put(v);
+            }
+            drop(guards);
+
+            prop_assert_eq!(pool.available() as u64, created.get());
+        }
+
+        /// Fuzz try_acquire/drop interleaving on a `BoundedPool`.
+        ///
+        /// Capacity is fixed at construction — no factory creates new
+        /// objects on demand — so `available() + outstanding` must equal
+        /// `capacity` after every operation. Catches over-acquisition
+        /// (handing out more than `capacity` live guards) and leaks.
+        #[test]
+        fn fuzz_bounded_try_acquire_drop(
+            capacity in 1usize..20,
+            ops in proptest::collection::vec(bounded_op_strategy(), 1..300),
+        ) {
+            let pool: BoundedPool<u64> = BoundedPool::new(capacity, || 0u64, |_| {});
+
+            let mut guards: Vec<Pooled<u64>> = Vec::new();
+
+            for op in &ops {
+                match op {
+                    BoundedOp::TryAcquire => {
+                        if let Some(g) = pool.try_acquire() {
+                            guards.push(g);
+                        }
+                    }
+                    BoundedOp::DropGuard { idx } => {
+                        if !guards.is_empty() {
+                            let i = idx % guards.len();
+                            let guard = guards.swap_remove(i);
+                            drop(guard);
+                        }
+                    }
+                }
+
+                prop_assert_eq!(pool.available() + guards.len(), capacity);
+            }
+        }
+    }
+
+    /// Operation against a `BoundedPool<u64>`.
+    #[derive(Debug, Clone)]
+    enum BoundedOp {
+        /// `try_acquire()` — succeeds unless the pool is exhausted.
+        TryAcquire,
+        /// Drop an RAII guard (from `TryAcquire`) at `idx`.
+        DropGuard { idx: usize },
+    }
+
+    fn bounded_op_strategy() -> impl Strategy<Value = BoundedOp> {
+        prop_oneof![
+            Just(BoundedOp::TryAcquire),
+            any::<usize>().prop_map(|idx| BoundedOp::DropGuard { idx }),
+        ]
+    }
+}
