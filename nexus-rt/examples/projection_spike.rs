@@ -55,6 +55,8 @@ struct MarketUpdate {
 /// Marker type selecting the OrderView projection.
 struct AsOrderView;
 
+// SAFETY: ViewType<'a> and StaticViewType are the same struct with different
+// lifetime parameters; layout is identical. `view` borrows correctly from source.
 unsafe impl View<AdminCommand> for AsOrderView {
     type ViewType<'a> = OrderView<'a>;
     type StaticViewType = OrderView<'static>;
@@ -67,6 +69,7 @@ unsafe impl View<AdminCommand> for AsOrderView {
     }
 }
 
+// SAFETY: as above; same struct, different source type.
 unsafe impl View<MarketUpdate> for AsOrderView {
     type ViewType<'a> = OrderView<'a>;
     type StaticViewType = OrderView<'static>;

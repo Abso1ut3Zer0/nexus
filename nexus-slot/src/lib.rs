@@ -130,18 +130,31 @@ pub unsafe trait Pod: Sized {}
 // SAFETY: All primitive integer and float types: no Drop, no heap pointers,
 // no padding, and every bit pattern within the type's width is a valid value.
 unsafe impl Pod for u8 {}
+// SAFETY: as above.
 unsafe impl Pod for u16 {}
+// SAFETY: as above.
 unsafe impl Pod for u32 {}
+// SAFETY: as above.
 unsafe impl Pod for u64 {}
+// SAFETY: as above.
 unsafe impl Pod for u128 {}
+// SAFETY: as above.
 unsafe impl Pod for usize {}
+// SAFETY: as above.
 unsafe impl Pod for i8 {}
+// SAFETY: as above.
 unsafe impl Pod for i16 {}
+// SAFETY: as above.
 unsafe impl Pod for i32 {}
+// SAFETY: as above.
 unsafe impl Pod for i64 {}
+// SAFETY: as above.
 unsafe impl Pod for i128 {}
+// SAFETY: as above.
 unsafe impl Pod for isize {}
+// SAFETY: as above.
 unsafe impl Pod for f32 {}
+// SAFETY: as above.
 unsafe impl Pod for f64 {}
 // SAFETY: [T; N] inherits T's properties; its layout is N contiguous copies
 // of T with no padding added by the compiler, so every bit pattern is valid.
