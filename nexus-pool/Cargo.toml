@@ -19,6 +19,7 @@ loom = "0.7"
 [dev-dependencies]
 hdrhistogram = "7.5"
 loom = "0.7"
+proptest = "1.4"
 
 [[bench]]
 name = "perf_local_pool"
