@@ -446,6 +446,8 @@ mod tests {
 
     struct AsOrderView;
 
+    // SAFETY: ViewType<'a> and StaticViewType are the same struct with different
+    // lifetime parameters; layout is identical. `view` borrows correctly from source.
     unsafe impl View<NewOrderCommand> for AsOrderView {
         type ViewType<'a> = OrderView<'a>;
         type StaticViewType = OrderView<'static>;
@@ -457,6 +459,7 @@ mod tests {
         }
     }
 
+    // SAFETY: as above; same struct, different source type.
     unsafe impl View<AmendOrderCommand> for AsOrderView {
         type ViewType<'a> = OrderView<'a>;
         type StaticViewType = OrderView<'static>;
@@ -669,6 +672,8 @@ mod tests {
         }
 
         struct AsSymbolView;
+        // SAFETY: ViewType<'a> and StaticViewType are the same struct with different
+        // lifetime parameters; layout is identical. `view` borrows correctly from source.
         unsafe impl View<NewOrderCommand> for AsSymbolView {
             type ViewType<'a> = SymbolView<'a>;
             type StaticViewType = SymbolView<'static>;
@@ -680,6 +685,8 @@ mod tests {
         }
 
         struct AsQtyView;
+        // SAFETY: ViewType<'a> and StaticViewType are the same struct; QtyView is
+        // Copy with no lifetime, so the layout-identity requirement is trivially met.
         unsafe impl View<NewOrderCommand> for AsQtyView {
             type ViewType<'a> = QtyView;
             type StaticViewType = QtyView;
@@ -930,6 +937,8 @@ mod tests {
     }
 
     struct AsFullOrderView;
+    // SAFETY: ViewType<'a> and StaticViewType are the same struct with different
+    // lifetime parameters; layout is identical. `view` borrows correctly from source.
     unsafe impl View<NewOrderCommand> for AsFullOrderView {
         type ViewType<'a> = FullOrderView<'a>;
         type StaticViewType = FullOrderView<'static>;
@@ -992,6 +1001,8 @@ mod tests {
     }
 
     struct AsPayloadView;
+    // SAFETY: ViewType<'a> and StaticViewType are the same struct with different
+    // lifetime parameters; layout is identical. `view` borrows correctly from source.
     unsafe impl View<Payload> for AsPayloadView {
         type ViewType<'a> = PayloadView<'a>;
         type StaticViewType = PayloadView<'static>;
