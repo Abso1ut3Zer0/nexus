@@ -1089,6 +1089,7 @@ mod tests {
     // same pattern as production dispatch code.
     #[allow(clippy::mut_from_ref)]
     fn notify_mut(world: &World, id: ResourceId) -> &mut ReactorNotify {
+        // SAFETY: id is a ResourceId for a ReactorNotify registered in this World; no concurrent alias at this call site.
         unsafe { world.get_mut::<ReactorNotify>(id) }
     }
 
