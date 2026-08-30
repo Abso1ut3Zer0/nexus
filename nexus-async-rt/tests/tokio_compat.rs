@@ -1144,6 +1144,7 @@ fn executor_drop_during_unwind_does_not_uaf_slab() {
     use nexus_async_rt::spawn_slab;
 
     let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        // SAFETY: single-threaded test; slab outlives all slots allocated within this closure.
         let slab = unsafe { nexus_slab::byte::unbounded::Slab::<256>::with_chunk_capacity(8) };
         let wb = WorldBuilder::new();
         let mut world = wb.build();
