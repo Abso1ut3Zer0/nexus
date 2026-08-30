@@ -126,6 +126,7 @@ pub(crate) fn layer_norm(
 #[inline(always)]
 pub(crate) unsafe fn hsum256(v: core::arch::x86_64::__m256) -> f32 {
     use core::arch::x86_64::*;
+    // SAFETY: caller guarantees AVX2 (safety contract on this fn).
     unsafe {
         let hi = _mm256_extractf128_ps(v, 1);
         let lo = _mm256_castps256_ps128(v);
