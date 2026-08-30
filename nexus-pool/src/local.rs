@@ -699,6 +699,22 @@ mod proptests {
         ]
     }
 
+    /// Operation against a `BoundedPool<u64>`.
+    #[derive(Debug, Clone)]
+    enum BoundedOp {
+        /// `try_acquire()` — succeeds unless the pool is exhausted.
+        TryAcquire,
+        /// Drop an RAII guard (from `TryAcquire`) at `idx`.
+        DropGuard { idx: usize },
+    }
+
+    fn bounded_op_strategy() -> impl Strategy<Value = BoundedOp> {
+        prop_oneof![
+            Just(BoundedOp::TryAcquire),
+            any::<usize>().prop_map(|idx| BoundedOp::DropGuard { idx }),
+        ]
+    }
+
     proptest! {
         #![proptest_config(ProptestConfig::with_cases(1000))]
 
@@ -708,7 +724,10 @@ mod proptests {
         /// sitting in the pool's available stack or checked out by the test
         /// (as a manual value or an RAII guard). Invariant:
         /// `pool.available() + outstanding == n_created` after every
-        /// operation — catches leaks, double-returns, and phantom creation.
+        /// operation — catches leaks and double-returns. (Over-acquisition
+        /// isn't meaningful here: the growable pool may legitimately create
+        /// a fresh object instead of reusing one, and the invariant holds
+        /// either way — that case is `BoundedPool`'s job, below.)
         #[test]
         fn fuzz_take_put_acquire_drop(ops in proptest::collection::vec(op_strategy(), 1..300)) {
             let created = Rc::new(Cell::new(0u64));
@@ -803,21 +822,5 @@ mod proptests {
                 prop_assert_eq!(pool.available() + guards.len(), capacity);
             }
         }
-    }
-
-    /// Operation against a `BoundedPool<u64>`.
-    #[derive(Debug, Clone)]
-    enum BoundedOp {
-        /// `try_acquire()` — succeeds unless the pool is exhausted.
-        TryAcquire,
-        /// Drop an RAII guard (from `TryAcquire`) at `idx`.
-        DropGuard { idx: usize },
-    }
-
-    fn bounded_op_strategy() -> impl Strategy<Value = BoundedOp> {
-        prop_oneof![
-            Just(BoundedOp::TryAcquire),
-            any::<usize>().prop_map(|idx| BoundedOp::DropGuard { idx }),
-        ]
     }
 }
