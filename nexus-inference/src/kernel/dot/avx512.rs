@@ -10,6 +10,7 @@ use super::scalar;
 #[inline]
 #[cfg(target_arch = "x86_64")]
 unsafe fn hsum_f32(v: __m512) -> f32 {
+    // SAFETY: caller guarantees AVX-512F (safety contract on this fn).
     unsafe {
         let lo = _mm512_castps512_ps256(v);
         let hi = _mm256_castpd_ps(_mm512_extractf64x4_pd(_mm512_castps_pd(v), 1));
