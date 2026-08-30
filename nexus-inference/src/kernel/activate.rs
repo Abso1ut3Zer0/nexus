@@ -126,6 +126,7 @@ pub(crate) mod simd {
     /// Caller must run on a target with AVX2 and FMA enabled.
     #[inline(always)]
     pub(crate) unsafe fn tanh_8wide(x: __m256) -> __m256 {
+        // SAFETY: caller guarantees AVX2 and FMA (safety contract on this fn).
         unsafe {
             let nan_mask = _mm256_cmp_ps(x, x, _CMP_UNORD_Q);
 
@@ -155,6 +156,7 @@ pub(crate) mod simd {
     /// Caller must run on a target with AVX2 and FMA enabled.
     #[inline(always)]
     pub(crate) unsafe fn sigmoid_8wide(x: __m256) -> __m256 {
+        // SAFETY: caller guarantees AVX2 and FMA (safety contract on this fn).
         unsafe {
             let half = _mm256_set1_ps(0.5);
             let t = tanh_8wide(_mm256_mul_ps(x, half));
@@ -168,6 +170,7 @@ pub(crate) mod simd {
     /// Caller must run on a target with AVX2 and FMA enabled.
     #[inline(always)]
     pub(crate) unsafe fn swish_8wide(x: __m256) -> __m256 {
+        // SAFETY: caller guarantees AVX2 and FMA (safety contract on this fn).
         unsafe { _mm256_mul_ps(x, sigmoid_8wide(x)) }
     }
 
@@ -177,6 +180,7 @@ pub(crate) mod simd {
     /// Caller must run on a target with AVX2 and FMA enabled.
     #[inline(always)]
     pub(crate) unsafe fn gelu_8wide(x: __m256) -> __m256 {
+        // SAFETY: caller guarantees AVX2 and FMA (safety contract on this fn).
         unsafe {
             let half = _mm256_set1_ps(0.5);
             let coeff = _mm256_set1_ps(0.044_715);
@@ -205,6 +209,7 @@ pub(crate) mod simd {
         v: __m256,
         activation: crate::Activation,
     ) -> Option<__m256> {
+        // SAFETY: caller guarantees AVX2 and FMA (safety contract on this fn).
         unsafe {
             Some(match activation {
                 crate::Activation::Relu => _mm256_max_ps(v, _mm256_setzero_ps()),
@@ -233,6 +238,7 @@ pub(crate) mod simd {
         v: __m128,
         activation: crate::Activation,
     ) -> Option<__m128> {
+        // SAFETY: caller guarantees AVX2 and FMA (safety contract on this fn).
         unsafe {
             Some(match activation {
                 crate::Activation::Relu => _mm_max_ps(v, _mm_setzero_ps()),
@@ -263,6 +269,7 @@ pub(crate) mod simd512 {
     /// Caller must run on a target with AVX-512F enabled.
     #[inline(always)]
     pub(crate) unsafe fn tanh_16wide(x: __m512) -> __m512 {
+        // SAFETY: caller guarantees AVX-512F (safety contract on this fn).
         unsafe {
             let nan_mask = _mm512_cmp_ps_mask::<_CMP_UNORD_Q>(x, x);
 
@@ -292,6 +299,7 @@ pub(crate) mod simd512 {
     /// Caller must run on a target with AVX-512F enabled.
     #[inline(always)]
     pub(crate) unsafe fn sigmoid_16wide(x: __m512) -> __m512 {
+        // SAFETY: caller guarantees AVX-512F (safety contract on this fn).
         unsafe {
             let half = _mm512_set1_ps(0.5);
             let t = tanh_16wide(_mm512_mul_ps(x, half));

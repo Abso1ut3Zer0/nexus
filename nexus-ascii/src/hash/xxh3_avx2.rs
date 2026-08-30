@@ -28,7 +28,7 @@ pub fn hash_bounded_with_seed<const CAP: usize>(data: &[u8], seed: u64) -> u64 {
     // Large input - use AVX2
     #[cfg(target_arch = "x86_64")]
     {
-        // Safety: This module only compiles when target_feature = "avx2"
+        // SAFETY: This module only compiles when target_feature = "avx2"
         unsafe { hash_long_avx2(data, seed) }
     }
 
@@ -41,6 +41,7 @@ pub fn hash_bounded_with_seed<const CAP: usize>(data: &[u8], seed: u64) -> u64 {
 #[cfg(target_arch = "x86_64")]
 #[target_feature(enable = "avx2")]
 unsafe fn hash_long_avx2(data: &[u8], seed: u64) -> u64 {
+    // SAFETY: #[target_feature(enable = "avx2")] on this function guarantees AVX2 is available.
     unsafe {
         let len = data.len();
 
@@ -114,6 +115,7 @@ unsafe fn accumulate_stripe_avx2(
     stripe: *const u8,
     secret_offset: usize,
 ) {
+    // SAFETY: #[target_feature(enable = "avx2")] on this function guarantees AVX2 is available.
     unsafe {
         let secret_ptr = SECRET.as_ptr().add(secret_offset);
 
@@ -150,6 +152,7 @@ unsafe fn accumulate_stripe_avx2(
 #[inline]
 #[target_feature(enable = "avx2")]
 unsafe fn scramble_acc_avx2(acc0: &mut __m256i, acc1: &mut __m256i) {
+    // SAFETY: #[target_feature(enable = "avx2")] on this function guarantees AVX2 is available.
     unsafe {
         let prime = _mm256_set1_epi32(PRIME32_1 as i32);
         let secret_ptr = SECRET.as_ptr().add(128);

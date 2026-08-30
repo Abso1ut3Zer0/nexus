@@ -57,6 +57,7 @@ pub(crate) fn matvec_i8_i32(
     /// Caller must run on a target with AVX2 enabled.
     #[inline(always)]
     unsafe fn hsum_i32(acc: core::arch::x86_64::__m256i) -> i32 {
+        // SAFETY: caller guarantees AVX2 (safety contract on this fn).
         unsafe {
             let hi128 = _mm256_extracti128_si256(acc, 1);
             let lo128 = _mm256_castsi256_si128(acc);
