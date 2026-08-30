@@ -27,7 +27,7 @@ pub fn hash_bounded_with_seed<const CAP: usize>(data: &[u8], seed: u64) -> u64 {
     // Large input - use SSE2
     #[cfg(target_arch = "x86_64")]
     {
-        // Safety: SSE2 is always available on x86_64
+        // SAFETY: SSE2 is always available on x86_64
         unsafe { hash_long_sse2(data, seed) }
     }
 
