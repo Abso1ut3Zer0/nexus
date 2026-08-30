@@ -33,7 +33,7 @@ pub fn hash_bounded_with_seed<const CAP: usize>(data: &[u8], seed: u64) -> u64 {
     // Large input - use AVX-512
     #[cfg(target_arch = "x86_64")]
     {
-        // Safety: This module only compiles when target_feature = "avx512f"
+        // SAFETY: This module only compiles when target_feature = "avx512f"
         unsafe { hash_long_avx512(data, seed) }
     }
 
@@ -46,6 +46,7 @@ pub fn hash_bounded_with_seed<const CAP: usize>(data: &[u8], seed: u64) -> u64 {
 #[cfg(target_arch = "x86_64")]
 #[target_feature(enable = "avx512f")]
 unsafe fn hash_long_avx512(data: &[u8], seed: u64) -> u64 {
+    // SAFETY: #[target_feature(enable = "avx512f")] on this function guarantees AVX-512 is available.
     unsafe {
         let len = data.len();
 
@@ -123,6 +124,7 @@ unsafe fn accumulate_stripe_avx512(
     stripe: *const u8,
     secret_offset: usize,
 ) -> __m512i {
+    // SAFETY: #[target_feature(enable = "avx512f")] on this function guarantees AVX-512 is available.
     unsafe {
         let secret_ptr = SECRET.as_ptr().add(secret_offset);
 
@@ -152,6 +154,7 @@ unsafe fn accumulate_stripe_avx512(
 #[inline]
 #[target_feature(enable = "avx512f")]
 unsafe fn scramble_acc_avx512(acc: __m512i) -> __m512i {
+    // SAFETY: #[target_feature(enable = "avx512f")] on this function guarantees AVX-512 is available.
     unsafe {
         let prime = _mm512_set1_epi32(PRIME32_1 as i32);
         let secret_ptr = SECRET.as_ptr().add(128);
