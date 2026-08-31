@@ -24,6 +24,7 @@ use nexus_web::ws::{FrameReader, FrameWriter, Role};
 
 #[inline(always)]
 fn rdtsc_start() -> u64 {
+    // SAFETY: x86_64 intrinsics; this benchmark requires x86_64.
     unsafe {
         core::arch::x86_64::_mm_lfence();
         core::arch::x86_64::_rdtsc()
@@ -32,6 +33,7 @@ fn rdtsc_start() -> u64 {
 
 #[inline(always)]
 fn rdtsc_end() -> u64 {
+    // SAFETY: x86_64 intrinsics; this benchmark requires x86_64.
     unsafe {
         let tsc = core::arch::x86_64::__rdtscp(&mut 0u32 as *mut _);
         core::arch::x86_64::_mm_lfence();
@@ -75,6 +77,7 @@ fn noop_waker() -> Waker {
         RawWaker::new(p, &VTABLE)
     }
     const VTABLE: RawWakerVTable = RawWakerVTable::new(clone, noop, noop, noop);
+    // SAFETY: null data is valid; all vtable functions are noop and accept a null data pointer.
     unsafe { Waker::from_raw(RawWaker::new(std::ptr::null(), &VTABLE)) }
 }
 
