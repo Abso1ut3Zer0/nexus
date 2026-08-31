@@ -330,6 +330,8 @@ impl Inner {
                 // this race window to make the regression test deterministic
                 // — see `cancel_race_regression`. In production builds the
                 // hook is compiled out.
+                // SAFETY: list_lock held; cur is non-null and points to a live WaiterNode
+                // (in_list not yet cleared); next field read before the Release store below.
                 let next = unsafe { *(*cur).next.get() };
                 // SAFETY: list_lock held; waker field accessed under lock while cur node is still alive.
                 let waker = unsafe { (*(*cur).waker.get()).take() };
