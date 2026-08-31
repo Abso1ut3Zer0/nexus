@@ -665,11 +665,11 @@ macro_rules! impl_into_reactor {
                     f(ctx, $($P,)+);
                 }
 
+                #[cfg(debug_assertions)]
+                world.clear_borrows();
                 // SAFETY: state was produced by Param::init() on the same
                 // Registry that built this World. Single-threaded sequential
                 // dispatch ensures no mutable aliasing across params.
-                #[cfg(debug_assertions)]
-                world.clear_borrows();
                 let ($($P,)+) = unsafe {
                     <($($P,)+) as Param>::fetch(world, &mut self.state)
                 };
@@ -905,6 +905,8 @@ impl ReactorSystem {
 
         // Poll — scoped &mut, dropped before reactor dispatch.
         {
+            // SAFETY: notify_ptr is valid for World's lifetime. Scoped &mut
+            // is dropped before reactor dispatch begins.
             let notify = unsafe { &mut *notify_ptr };
             notify.poll(&mut self.events);
         }
@@ -914,9 +916,9 @@ impl ReactorSystem {
         // &mut ReactorNotify is scoped tightly to avoid aliasing during run().
         for token in self.events.drain() {
             let idx = token.index();
-            // SAFETY: notify_ptr is valid for World's lifetime. Scoped &mut
-            // is dropped before reactor.run() to avoid aliasing.
             let reactor = {
+                // SAFETY: notify_ptr is valid for World's lifetime. Scoped &mut
+                // is dropped before reactor.run() to avoid aliasing.
                 let notify = unsafe { &mut *notify_ptr };
                 notify.take_reactor(idx)
             };
@@ -942,6 +944,7 @@ impl ReactorSystem {
             }
         }
         // Put the (now empty) Vec back for reuse.
+        // SAFETY: removals_id from same WorldBuilder. All dispatch and cleanup complete.
         let removals = unsafe { world.get_mut::<DeferredRemovals>(self.removals_id) };
         removals.put(pending);
 
@@ -1089,6 +1092,8 @@ mod tests {
     // same pattern as production dispatch code.
     #[allow(clippy::mut_from_ref)]
     fn notify_mut(world: &World, id: ResourceId) -> &mut ReactorNotify {
+        // SAFETY: id is a ResourceId for a ReactorNotify registered in this World;
+        // single-threaded sequential dispatch ensures no mutable aliasing.
         unsafe { world.get_mut::<ReactorNotify>(id) }
     }
 
