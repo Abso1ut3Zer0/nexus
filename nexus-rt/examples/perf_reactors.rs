@@ -32,6 +32,7 @@ nexus_rt::new_resource!(Out(u64));
 #[inline(always)]
 #[cfg(target_arch = "x86_64")]
 fn rdtsc_start() -> u64 {
+    // SAFETY: x86_64 intrinsics; guarded by #[cfg(target_arch = "x86_64")].
     unsafe {
         core::arch::x86_64::_mm_lfence();
         core::arch::x86_64::_rdtsc()
@@ -41,6 +42,7 @@ fn rdtsc_start() -> u64 {
 #[inline(always)]
 #[cfg(target_arch = "x86_64")]
 fn rdtsc_end() -> u64 {
+    // SAFETY: x86_64 intrinsics; guarded by #[cfg(target_arch = "x86_64")].
     unsafe {
         let mut aux = 0u32;
         let tsc = core::arch::x86_64::__rdtscp(&raw mut aux);

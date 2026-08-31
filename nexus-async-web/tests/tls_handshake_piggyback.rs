@@ -59,10 +59,12 @@ unsafe impl GlobalAlloc for CountingAllocator {
         if self.counting_active.load(Ordering::Relaxed) {
             self.allocs.fetch_add(1, Ordering::Relaxed);
         }
+        // SAFETY: delegates to System; layout is valid per GlobalAlloc safety contract.
         unsafe { System.alloc(layout) }
     }
 
     unsafe fn dealloc(&self, ptr: *mut u8, layout: Layout) {
+        // SAFETY: delegates to System; ptr and layout are valid per GlobalAlloc safety contract.
         unsafe { System.dealloc(ptr, layout) };
     }
 }

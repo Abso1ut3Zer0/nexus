@@ -45,6 +45,7 @@ const EP5: f64 = 4.138_136_797_057_238_5e-08;
 #[cfg(target_arch = "x86_64")]
 #[allow(clippy::many_single_char_names)]
 unsafe fn ln_f64x4(x: __m256d) -> __m256d {
+    // SAFETY: caller guarantees AVX2+FMA (safety contract on this fn).
     unsafe {
         let one = _mm256_set1_pd(1.0);
         let half = _mm256_set1_pd(0.5);
@@ -113,6 +114,7 @@ unsafe fn ln_f64x4(x: __m256d) -> __m256d {
 #[inline]
 #[cfg(target_arch = "x86_64")]
 unsafe fn exp_f64x4(x: __m256d) -> __m256d {
+    // SAFETY: caller guarantees AVX2+FMA (safety contract on this fn).
     unsafe {
         let ln2_inv = _mm256_set1_pd(LN2_INV);
         let c1 = _mm256_set1_pd(EXP_C1);
