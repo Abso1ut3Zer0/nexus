@@ -225,10 +225,8 @@ fn make_cross_task_waker(
     // SAFETY: caller (make_cross_waker -> task_ptr_from_local_waker)
     // returned task_ptr from a live local waker, refcount >= 1.
     // TaskRef::acquire increments the task's refcount.
-    let inner = std::sync::Arc::new(CrossTaskWakerInner {
-        task_ref: unsafe { crate::task::TaskRef::acquire(task_ptr) },
-        ctx,
-    });
+    let task_ref = unsafe { crate::task::TaskRef::acquire(task_ptr) };
+    let inner = std::sync::Arc::new(CrossTaskWakerInner { task_ref, ctx });
     let raw = RawWaker::new(
         std::sync::Arc::into_raw(inner).cast::<()>(),
         &CROSS_TASK_VTABLE,
@@ -508,8 +506,8 @@ mod arc_tests {
         // Construct the cross-task waker. ONE task-level ref_inc fires
         // here (TaskRef::acquire inside make_cross_task_waker).
         let waker0 = make_cross_task_waker(task_ptr, StdArc::clone(&ctx));
-        // SAFETY: task_ptr valid; reading refcount for assertion.
         assert_eq!(
+            // SAFETY: task_ptr valid; reading refcount for assertion.
             unsafe { task::ref_count(task_ptr) },
             2,
             "make_cross_task_waker must take exactly one task-level ref"
@@ -522,8 +520,8 @@ mod arc_tests {
         let waker2 = waker0.clone();
         let waker3 = waker0.clone();
         let waker4 = waker0.clone();
-        // SAFETY: task_ptr valid; reading refcount for assertion.
         assert_eq!(
+            // SAFETY: task_ptr valid; reading refcount for assertion.
             unsafe { task::ref_count(task_ptr) },
             2,
             "Arc::clone must NOT bump task-level refcount"
@@ -535,8 +533,8 @@ mod arc_tests {
         drop(waker4);
         drop(waker0);
         drop(waker1);
-        // SAFETY: task_ptr valid; reading refcount for assertion.
         assert_eq!(
+            // SAFETY: task_ptr valid; reading refcount for assertion.
             unsafe { task::ref_count(task_ptr) },
             2,
             "intermediate Arc drops must NOT decrement task-level refcount"
@@ -546,8 +544,8 @@ mod arc_tests {
         // → if terminal, dispose_terminal (here: not terminal because
         // the original executor-style ref still exists, so rc 2 → 1).
         drop(waker3);
-        // SAFETY: task_ptr valid; reading refcount for assertion.
         assert_eq!(
+            // SAFETY: task_ptr valid; reading refcount for assertion.
             unsafe { task::ref_count(task_ptr) },
             1,
             "last Arc drop must produce exactly ONE task-level ref_dec"
@@ -586,8 +584,8 @@ mod arc_tests {
         // wake_task_cross_thread + Arc drop. Since waker1 still holds
         // an Arc, Inner::drop does NOT run; task ref_count unchanged.
         waker0.wake();
-        // SAFETY: task_ptr valid; reading refcount for assertion.
         assert_eq!(
+            // SAFETY: task_ptr valid; reading refcount for assertion.
             unsafe { task::ref_count(task_ptr) },
             2,
             "wake-by-value with surviving sibling Arc must not ref_dec the task"
@@ -604,6 +602,7 @@ mod arc_tests {
         // Clear queued so cleanup works.
         // SAFETY: task_ptr valid; reading and clearing atomic flag.
         if unsafe { task::is_queued(task_ptr) } {
+            // SAFETY: task_ptr valid; clearing queued flag after is_queued check.
             unsafe { task::clear_queued(task_ptr) };
         }
 
