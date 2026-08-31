@@ -206,6 +206,7 @@ struct CrossTaskWakerInner {
 // + Sync. Sync is required because tokio's RawWaker passes &Self to
 // `wake_by_ref` and may share clones across threads.
 unsafe impl Send for CrossTaskWakerInner {}
+// SAFETY: TaskRef is Send + Sync; Arc<CrossWakeContext> is Send + Sync.
 unsafe impl Sync for CrossTaskWakerInner {}
 
 use std::task::RawWaker;
