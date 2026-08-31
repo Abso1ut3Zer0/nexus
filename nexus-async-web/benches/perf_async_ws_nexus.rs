@@ -120,6 +120,7 @@ fn noop_waker() -> Waker {
         RawWaker::new(p, &VTABLE)
     }
     const VTABLE: RawWakerVTable = RawWakerVTable::new(clone, noop, noop, noop);
+    // SAFETY: null data is valid; all vtable functions are noop and accept a null data pointer.
     unsafe { Waker::from_raw(RawWaker::new(std::ptr::null(), &VTABLE)) }
 }
 

@@ -47,6 +47,7 @@ pub(crate) fn matvec_bias_binarize(
     debug_assert_eq!(out_size, wpr * 64);
     debug_assert_eq!(bits.len(), wpr);
 
+    // SAFETY: cfg guarantees AVX2+FMA or AVX-512F; all pointer offsets stay within weight/input/bias slice bounds.
     unsafe {
         for word_idx in 0..wpr {
             let base = word_idx * 64;
@@ -123,6 +124,7 @@ pub(crate) fn output_from_bits(
 #[inline(never)]
 pub(crate) fn output_from_bits_simd(weights: &[f32], bits: &[u64], row_sum: f32, bias: f32) -> f32 {
     use core::arch::x86_64::*;
+    // SAFETY: cfg guarantees AVX2+FMA or AVX-512F; all pointer offsets stay within weights slice bounds.
     unsafe {
         let bit_positions = _mm256_setr_epi32(1, 2, 4, 8, 16, 32, 64, 128);
         let mut acc = _mm256_setzero_ps();
