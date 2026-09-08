@@ -131,13 +131,13 @@ impl UuidV7 {
 
         // Handle sequence
         if ts_ms == self.last_ts_ms {
-            self.sequence = self.sequence.wrapping_add(1);
-            if self.sequence > SEQUENCE_MAX {
+            if self.sequence >= SEQUENCE_MAX {
                 return Err(SequenceExhausted {
                     tick: ts_ms,
                     max_sequence: SEQUENCE_MAX as u64,
                 });
             }
+            self.sequence += 1;
         } else {
             self.last_ts_ms = ts_ms;
             self.sequence = 0;
@@ -398,5 +398,23 @@ mod tests {
 
         let uuid = generator.next(epoch).unwrap();
         assert_eq!(uuid.len(), 36);
+    }
+
+    #[test]
+    fn sequence_exhausted_state_is_permanent() {
+        // After all 4096 sequence slots are used, every further call for the same
+        // timestamp must return Err. With wrapping_add the counter eventually returns
+        // to 0 and the call succeeds again, reusing sequence 0.
+        let epoch = Instant::now();
+        let mut v7 = UuidV7::new(epoch, 1_700_000_000_000, 42);
+        for _ in 0..=SEQUENCE_MAX {
+            v7.next_raw(epoch).unwrap();
+        }
+        // Drive the u16 counter through its remaining values (4096..=65535 = 61440 steps)
+        for _ in 0..(u16::MAX as usize - SEQUENCE_MAX as usize) {
+            let _ = v7.next_raw(epoch);
+        }
+        // wrapping_add would return the counter to 0; the call must still fail
+        assert!(v7.next_raw(epoch).is_err());
     }
 }
