@@ -133,7 +133,7 @@ impl UuidV7 {
         if ts_ms == self.last_ts_ms {
             self.sequence = self.sequence.wrapping_add(1);
             if self.sequence > SEQUENCE_MAX {
-                return Err(SequenceExhausted {
+                return Err(SequenceExhausted::Exhausted {
                     tick: ts_ms,
                     max_sequence: SEQUENCE_MAX as u64,
                 });
@@ -323,8 +323,10 @@ mod tests {
         let result = generator.next(epoch);
         assert!(result.is_err());
 
-        let err = result.unwrap_err();
-        assert_eq!(err.max_sequence, SEQUENCE_MAX as u64);
+        let SequenceExhausted::Exhausted { max_sequence, .. } = result.unwrap_err() else {
+            panic!("expected Exhausted");
+        };
+        assert_eq!(max_sequence, SEQUENCE_MAX as u64);
     }
 
     #[test]
