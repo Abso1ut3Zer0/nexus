@@ -160,7 +160,7 @@ impl UlidGenerator {
             let new_hi = if carry {
                 let (hi, hi_carry) = self.last_rand_hi.overflowing_add(1);
                 if hi_carry {
-                    return Err(SequenceExhausted::Exhausted {
+                    return Err(SequenceExhausted {
                         tick: ts_ms,
                         max_sequence: u64::MAX,
                     });

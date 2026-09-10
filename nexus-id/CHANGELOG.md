@@ -10,6 +10,30 @@ contained.
 
 ## [Unreleased]
 
+### Changed (breaking)
+
+- `SequenceExhausted` is restored as a standalone struct with fields `tick: u64`
+  and `max_sequence: u64`. It is no longer a type alias for `SnowflakeError`.
+  ULID `try_next` and UUID v7 `next*` continue to return `SequenceExhausted`.
+  Migration: replace any `SequenceExhausted::Exhausted { tick, max_sequence }`
+  construction or pattern with `SequenceExhausted { tick, max_sequence }`.
+
+- `SnowflakeError` is now a separate `#[non_exhaustive]` enum returned only by
+  the six Snowflake methods (`next`, `mixed`, `next_id`, `mixed_id`,
+  `next_signed`, `mixed_signed`). Variants: `Exhausted(SequenceExhausted)` and
+  `TimestampOverflow { tick: u64, max: u64 }`. A `From<SequenceExhausted> for
+  SnowflakeError` impl is provided for composition.
+  Migration: change `SnowflakeError::Exhausted { max_sequence, .. }` patterns
+  to `SnowflakeError::Exhausted(err)` and read `err.max_sequence`.
+
+### Added
+
+- `Snowflake::next()` now returns `Err(SnowflakeError::TimestampOverflow)`
+  when the caller supplies a tick value that exceeds `TIMESTAMP_MAX` for the
+  generator's bit layout. Previously the tick was silently truncated, producing
+  IDs with the wrong timestamp and potentially colliding with earlier IDs at
+  tick 0.
+
 ## [1.1.5] — 2026-05-10
 
 Doc + bench infra release. No public API change.

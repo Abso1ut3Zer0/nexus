@@ -112,16 +112,35 @@ impl_id_int!(
     i64 => 64,
 );
 
-/// Error returned by Snowflake generators and the ID generators that share the same error type.
+/// Error returned when a sequence counter is exhausted within a single tick.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SequenceExhausted {
+    /// Tick value when exhaustion occurred.
+    pub tick: u64,
+    /// Maximum sequence value for this generator's layout.
+    pub max_sequence: u64,
+}
+
+impl fmt::Display for SequenceExhausted {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            f,
+            "sequence exhausted at tick {}: generated {} IDs in one tick",
+            self.tick,
+            self.max_sequence + 1
+        )
+    }
+}
+
+#[cfg(feature = "std")]
+impl std::error::Error for SequenceExhausted {}
+
+/// Error returned by [`Snowflake`] generators.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum SnowflakeError {
     /// Sequence counter exhausted for this tick value.
-    Exhausted {
-        /// Tick value when exhaustion occurred.
-        tick: u64,
-        /// Maximum sequence value for this generator's layout.
-        max_sequence: u64,
-    },
+    Exhausted(SequenceExhausted),
     /// Tick exceeds the timestamp field width.
     TimestampOverflow {
         /// The tick value that caused the overflow.
@@ -134,11 +153,7 @@ pub enum SnowflakeError {
 impl fmt::Display for SnowflakeError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            SnowflakeError::Exhausted { tick, max_sequence } => write!(
-                f,
-                "sequence exhausted at tick {tick}: generated {} IDs in one tick",
-                max_sequence + 1
-            ),
+            SnowflakeError::Exhausted(e) => e.fmt(f),
             SnowflakeError::TimestampOverflow { tick, max } => {
                 write!(f, "tick {tick} exceeds timestamp maximum {max}")
             }
@@ -149,12 +164,11 @@ impl fmt::Display for SnowflakeError {
 #[cfg(feature = "std")]
 impl std::error::Error for SnowflakeError {}
 
-/// Backward-compatible alias for [`SnowflakeError`].
-///
-/// Previously a struct; now an alias so callers that name the type continue to compile.
-/// Struct-literal construction and struct-pattern destructuring against the old field
-/// names no longer work. Use [`SnowflakeError::Exhausted`] instead.
-pub type SequenceExhausted = SnowflakeError;
+impl From<SequenceExhausted> for SnowflakeError {
+    fn from(e: SequenceExhausted) -> Self {
+        SnowflakeError::Exhausted(e)
+    }
+}
 
 /// Snowflake ID generator.
 ///
@@ -310,10 +324,10 @@ impl<T: IdInt, const TS: u8, const WK: u8, const SQ: u8> Snowflake<T, TS, WK, SQ
         if tick == self.last_tick {
             self.sequence += 1;
             if self.sequence > Self::SEQUENCE_MAX {
-                return Err(SnowflakeError::Exhausted {
+                return Err(SnowflakeError::Exhausted(SequenceExhausted {
                     tick,
                     max_sequence: Self::SEQUENCE_MAX,
-                });
+                }));
             }
         } else {
             self.last_tick = tick;
@@ -555,10 +569,10 @@ mod tests {
         let result = id_gen.next(0);
         assert!(result.is_err());
 
-        let SnowflakeError::Exhausted { max_sequence, .. } = result.unwrap_err() else {
+        let SnowflakeError::Exhausted(err) = result.unwrap_err() else {
             panic!("expected Exhausted");
         };
-        assert_eq!(max_sequence, 15);
+        assert_eq!(err.max_sequence, 15);
     }
 
     #[test]
