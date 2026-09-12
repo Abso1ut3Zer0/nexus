@@ -923,3 +923,151 @@ mod tests {
         }
     }
 }
+
+// =============================================================================
+// Proptests
+// =============================================================================
+
+#[cfg(test)]
+mod proptests {
+    use super::*;
+    use proptest::prelude::*;
+    use std::collections::VecDeque;
+
+    /// Operation against an SPSC ring buffer under test.
+    #[derive(Debug, Clone)]
+    enum Op {
+        /// Claim `len` bytes, write a recognizable payload, and commit.
+        Write { len: usize },
+        /// Claim `len` bytes and drop without committing (skip-marker path).
+        Abort { len: usize },
+        /// Attempt to read and release the next record.
+        Read,
+    }
+
+    fn op_strategy() -> impl Strategy<Value = Op> {
+        prop_oneof![
+            (1usize..48).prop_map(|len| Op::Write { len }),
+            (1usize..48).prop_map(|len| Op::Abort { len }),
+            Just(Op::Read),
+        ]
+    }
+
+    proptest! {
+        #![proptest_config(ProptestConfig::with_cases(500))]
+
+        /// Fuzz write/abort/read interleaving.
+        ///
+        /// Drives the SPSC queue from a single thread with random
+        /// commit/abort/read sequences against small power-of-two
+        /// capacities, so records routinely straddle the ring boundary
+        /// (exercising the skip-marker/wraparound path). Tracks every
+        /// committed payload in an oracle queue:
+        ///
+        /// - a successful `Read` must match the oldest committed payload
+        ///   exactly (byte-for-byte, correct length, correct order) --
+        ///   the "record-length stamping" invariant
+        /// - `Read` returning nothing is only valid when the oracle is
+        ///   also empty -- with a single thread and no concurrent writer,
+        ///   any committed-but-unread record must be immediately visible,
+        ///   so this cross-checks the head/tail occupancy bookkeeping
+        /// - after draining, the oracle must be fully empty -- nothing
+        ///   committed is ever lost or duplicated
+        #[test]
+        fn fuzz_write_abort_read_roundtrip(
+            capacity_pow in 4u32..9,
+            ops in proptest::collection::vec(op_strategy(), 1..300),
+        ) {
+            let capacity = 1usize << capacity_pow;
+            let (mut producer, mut consumer) = new(capacity);
+
+            let mut expected: VecDeque<Vec<u8>> = VecDeque::new();
+            let mut tag: u8 = 0;
+
+            for op in &ops {
+                match op {
+                    Op::Write { len } => {
+                        if let Ok(mut claim) = producer.try_claim(*len) {
+                            tag = tag.wrapping_add(1);
+                            let payload = vec![tag; *len];
+                            claim.copy_from_slice(&payload);
+                            claim.commit();
+                            expected.push_back(payload);
+                        }
+                    }
+                    Op::Abort { len } => {
+                        if let Ok(_claim) = producer.try_claim(*len) {
+                            // Dropped without commit: writes a skip marker.
+                        }
+                    }
+                    Op::Read => match consumer.try_claim() {
+                        Some(record) => {
+                            let want = expected.pop_front();
+                            prop_assert_eq!(
+                                want.as_deref(),
+                                Some(&*record),
+                                "read returned unexpected payload"
+                            );
+                        }
+                        None => {
+                            prop_assert!(
+                                expected.is_empty(),
+                                "read found nothing but {} committed record(s) are still pending",
+                                expected.len()
+                            );
+                        }
+                    },
+                }
+            }
+
+            // Drain everything and confirm nothing was lost or duplicated.
+            while let Some(want) = expected.pop_front() {
+                let record = consumer
+                    .try_claim()
+                    .unwrap_or_else(|| panic!("expected record of len {} missing at drain", want.len()));
+                prop_assert_eq!(&*record, want.as_slice());
+            }
+            prop_assert!(consumer.try_claim().is_none());
+        }
+
+        /// Fuzz capacity recovery.
+        ///
+        /// Fills the buffer to `BufferFull` with same-size records, frees
+        /// exactly one via `Read`, and asserts a same-size `Write`
+        /// immediately succeeds. This is the "occupancy" invariant: a
+        /// record's footprint must be fully reclaimed once read, with no
+        /// permanent bookkeeping leak.
+        #[test]
+        fn fuzz_capacity_recovery(
+            (capacity, len) in (4u32..9).prop_flat_map(|capacity_pow| {
+                let capacity = 1usize << capacity_pow;
+                let max_len = (capacity / 4).max(2);
+                (Just(capacity), 1usize..max_len)
+            }),
+        ) {
+            let (mut producer, mut consumer) = new(capacity);
+
+            // Fill to BufferFull with same-size records.
+            let mut written = 0usize;
+            while let Ok(claim) = producer.try_claim(len) {
+                claim.commit();
+                written += 1;
+            }
+            prop_assert!(
+                written > 0,
+                "first write of len {len} did not fit in capacity {capacity}"
+            );
+
+            // Free exactly one record.
+            consumer
+                .try_claim()
+                .expect("at least one record was committed");
+
+            // The same-size write must now succeed -- space was reclaimed.
+            prop_assert!(
+                producer.try_claim(len).is_ok(),
+                "write of len {len} did not recover after freeing one record (capacity {capacity})"
+            );
+        }
+    }
+}
