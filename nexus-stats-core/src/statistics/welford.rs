@@ -362,3 +362,95 @@ mod tests {
         assert_eq!(w.count(), 0);
     }
 }
+
+// =============================================================================
+// Proptests
+// =============================================================================
+
+#[cfg(test)]
+mod proptests {
+    use super::*;
+    use proptest::prelude::*;
+
+    proptest! {
+        #![proptest_config(ProptestConfig::with_cases(500))]
+
+        /// Variance must never go negative, and must match an independent
+        /// two-pass reference computation within a tight tolerance -- the
+        /// numerical-stability invariant Welford's algorithm exists for
+        /// (avoiding the catastrophic cancellation of the naive
+        /// sum-of-squares-minus-square-of-sum approach).
+        #[test]
+        fn fuzz_variance_matches_two_pass_reference(
+            samples in proptest::collection::vec(-1e6f64..1e6, 2..200),
+        ) {
+            let mut w = WelfordF64::new();
+            for &s in &samples {
+                w.update(s).unwrap();
+            }
+
+            prop_assert_eq!(w.count(), samples.len() as u64);
+
+            let var = w.variance().unwrap();
+            prop_assert!(var >= 0.0, "variance went negative: {var}");
+
+            // Independent two-pass reference: mean, then sum of squared
+            // deviations from that mean, then divide by (n-1).
+            let n = samples.len() as f64;
+            let ref_mean = samples.iter().sum::<f64>() / n;
+            let ref_var =
+                samples.iter().map(|s| (s - ref_mean).powi(2)).sum::<f64>() / (n - 1.0);
+
+            let mean = w.mean().unwrap();
+            let mean_scale = ref_mean.abs().max(1.0);
+            prop_assert!(
+                (mean - ref_mean).abs() <= 1e-6 * mean_scale,
+                "mean diverged from reference: welford={mean}, reference={ref_mean}"
+            );
+
+            let var_scale = ref_var.abs().max(1.0);
+            prop_assert!(
+                (var - ref_var).abs() <= 1e-6 * var_scale,
+                "variance diverged from reference: welford={var}, reference={ref_var}"
+            );
+        }
+
+        /// Splitting a sequence across two accumulators and merging them
+        /// (Chan's algorithm) must match feeding the whole sequence into a
+        /// single accumulator.
+        #[test]
+        fn fuzz_merge_matches_single_pass(
+            samples in proptest::collection::vec(-1e6f64..1e6, 2..200),
+            split in 1usize..199,
+        ) {
+            let split = split.min(samples.len() - 1).max(1);
+
+            let mut whole = WelfordF64::new();
+            for &s in &samples {
+                whole.update(s).unwrap();
+            }
+
+            let mut left = WelfordF64::new();
+            for &s in &samples[..split] {
+                left.update(s).unwrap();
+            }
+            let mut right = WelfordF64::new();
+            for &s in &samples[split..] {
+                right.update(s).unwrap();
+            }
+            left.merge(&right);
+
+            prop_assert_eq!(left.count(), whole.count());
+
+            let mean_scale = whole.mean().unwrap().abs().max(1.0);
+            prop_assert!(
+                (left.mean().unwrap() - whole.mean().unwrap()).abs() <= 1e-6 * mean_scale
+            );
+
+            let whole_var = whole.variance().unwrap();
+            let merged_var = left.variance().unwrap();
+            let var_scale = whole_var.abs().max(1.0);
+            prop_assert!((merged_var - whole_var).abs() <= 1e-6 * var_scale);
+        }
+    }
+}
