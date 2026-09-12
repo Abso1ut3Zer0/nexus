@@ -112,17 +112,7 @@ impl_id_int!(
     i64 => 64,
 );
 
-/// Sequence exhausted within the current tick.
-///
-/// This is a backpressure signal — the caller generated more IDs
-/// within a single tick value than the sequence bits allow.
-///
-/// # Handling
-///
-/// When this error occurs, the caller should either:
-/// - Reject the request (backpressure)
-/// - Wait for the next tick (next millisecond, next block, etc.)
-/// - Log and investigate (misconfigured sequence bits?)
+/// Error returned when a sequence counter is exhausted within a single tick.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct SequenceExhausted {
     /// Tick value when exhaustion occurred.
@@ -144,6 +134,41 @@ impl fmt::Display for SequenceExhausted {
 
 #[cfg(feature = "std")]
 impl std::error::Error for SequenceExhausted {}
+
+/// Error returned by [`Snowflake`] generators.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum SnowflakeError {
+    /// Sequence counter exhausted for this tick value.
+    Exhausted(SequenceExhausted),
+    /// Tick exceeds the timestamp field width.
+    TimestampOverflow {
+        /// The tick value that caused the overflow.
+        tick: u64,
+        /// Maximum valid tick for this generator's timestamp bit width.
+        max: u64,
+    },
+}
+
+impl fmt::Display for SnowflakeError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            SnowflakeError::Exhausted(e) => e.fmt(f),
+            SnowflakeError::TimestampOverflow { tick, max } => {
+                write!(f, "tick {tick} exceeds timestamp maximum {max}")
+            }
+        }
+    }
+}
+
+#[cfg(feature = "std")]
+impl std::error::Error for SnowflakeError {}
+
+impl From<SequenceExhausted> for SnowflakeError {
+    fn from(e: SequenceExhausted) -> Self {
+        SnowflakeError::Exhausted(e)
+    }
+}
 
 /// Snowflake ID generator.
 ///
@@ -289,14 +314,20 @@ impl<T: IdInt, const TS: u8, const WK: u8, const SQ: u8> Snowflake<T, TS, WK, SQ
     /// let id1 = id_gen.next(tick).unwrap();
     /// let id2 = id_gen.next(tick).unwrap();
     /// ```
-    pub fn next(&mut self, tick: u64) -> Result<T, SequenceExhausted> {
+    pub fn next(&mut self, tick: u64) -> Result<T, SnowflakeError> {
+        if tick > Self::TIMESTAMP_MAX {
+            return Err(SnowflakeError::TimestampOverflow {
+                tick,
+                max: Self::TIMESTAMP_MAX,
+            });
+        }
         if tick == self.last_tick {
             self.sequence += 1;
             if self.sequence > Self::SEQUENCE_MAX {
-                return Err(SequenceExhausted {
+                return Err(SnowflakeError::Exhausted(SequenceExhausted {
                     tick,
                     max_sequence: Self::SEQUENCE_MAX,
-                });
+                }));
             }
         } else {
             self.last_tick = tick;
@@ -329,7 +360,7 @@ impl<T: IdInt, const TS: u8, const WK: u8, const SQ: u8> Snowflake<T, TS, WK, SQ
     ///
     /// let id = id_gen.mixed(42).unwrap();
     /// ```
-    pub fn mixed(&mut self, tick: u64) -> Result<T, SequenceExhausted> {
+    pub fn mixed(&mut self, tick: u64) -> Result<T, SnowflakeError> {
         let raw = self.next(tick)?;
         Ok(T::from_raw(fibonacci_mix_64(raw.to_raw())))
     }
@@ -412,7 +443,7 @@ impl<const TS: u8, const WK: u8, const SQ: u8> Snowflake<u64, TS, WK, SQ> {
     /// Same as [`next()`](Self::next) but returns the newtype wrapper with
     /// field extraction and mixing methods.
     #[inline]
-    pub fn next_id(&mut self, tick: u64) -> Result<SnowflakeId64<TS, WK, SQ>, SequenceExhausted> {
+    pub fn next_id(&mut self, tick: u64) -> Result<SnowflakeId64<TS, WK, SQ>, SnowflakeError> {
         self.next(tick).map(SnowflakeId64::from_raw)
     }
 
@@ -420,7 +451,7 @@ impl<const TS: u8, const WK: u8, const SQ: u8> Snowflake<u64, TS, WK, SQ> {
     ///
     /// The mixed ID can be unmixed back to the original via [`MixedId64::unmix()`].
     #[inline]
-    pub fn next_mixed(&mut self, tick: u64) -> Result<MixedId64<TS, WK, SQ>, SequenceExhausted> {
+    pub fn next_mixed(&mut self, tick: u64) -> Result<MixedId64<TS, WK, SQ>, SnowflakeError> {
         self.next_id(tick).map(|id| id.mixed())
     }
 }
@@ -432,13 +463,13 @@ impl<const TS: u8, const WK: u8, const SQ: u8> Snowflake<u64, TS, WK, SQ> {
 impl<const TS: u8, const WK: u8, const SQ: u8> Snowflake<u32, TS, WK, SQ> {
     /// Generate the next ID as a typed [`SnowflakeId32`].
     #[inline]
-    pub fn next_id(&mut self, tick: u64) -> Result<SnowflakeId32<TS, WK, SQ>, SequenceExhausted> {
+    pub fn next_id(&mut self, tick: u64) -> Result<SnowflakeId32<TS, WK, SQ>, SnowflakeError> {
         self.next(tick).map(SnowflakeId32::from_raw)
     }
 
     /// Generate a Fibonacci-mixed ID as a typed [`MixedId32`].
     #[inline]
-    pub fn next_mixed(&mut self, tick: u64) -> Result<MixedId32<TS, WK, SQ>, SequenceExhausted> {
+    pub fn next_mixed(&mut self, tick: u64) -> Result<MixedId32<TS, WK, SQ>, SnowflakeError> {
         self.next_id(tick).map(|id| id.mixed())
     }
 }
@@ -538,7 +569,9 @@ mod tests {
         let result = id_gen.next(0);
         assert!(result.is_err());
 
-        let err = result.unwrap_err();
+        let SnowflakeError::Exhausted(err) = result.unwrap_err() else {
+            panic!("expected Exhausted");
+        };
         assert_eq!(err.max_sequence, 15);
     }
 
@@ -613,5 +646,19 @@ mod tests {
         assert_eq!(seq2, 1);
         assert_eq!(ts3, 1001);
         assert_eq!(seq3, 0);
+    }
+
+    #[test]
+    fn timestamp_overflow_is_rejected() {
+        // Snowflake64<2,0,62>: TIMESTAMP_MAX = 3 (2 TS bits).
+        // tick=4 silently truncates to 0 without the check, producing the same
+        // raw ID as tick=0.
+        type Tiny = Snowflake64<2, 0, 62>;
+        let mut g = Tiny::new(0);
+        assert!(g.next(3).is_ok());
+        assert!(matches!(
+            g.next(4),
+            Err(SnowflakeError::TimestampOverflow { tick: 4, max: 3 })
+        ));
     }
 }
