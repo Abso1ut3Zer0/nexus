@@ -399,3 +399,83 @@ fn non_empty_drop_panics_in_debug() {
         "dropping non-empty rbtree should panic in debug"
     );
 }
+
+// =============================================================================
+// Proptests
+// =============================================================================
+
+mod proptests {
+    use super::*;
+    use proptest::prelude::*;
+    use std::collections::BTreeMap as StdMap;
+
+    /// Operation against an `RbTree<u16, u64>` under test.
+    #[derive(Debug, Clone)]
+    enum Op {
+        Insert { key: u16, value: u64 },
+        Remove { key: u16 },
+    }
+
+    fn op_strategy() -> impl Strategy<Value = Op> {
+        prop_oneof![
+            (0u16..64, any::<u64>()).prop_map(|(key, value)| Op::Insert { key, value }),
+            (0u16..64).prop_map(|key| Op::Remove { key }),
+        ]
+    }
+
+    proptest! {
+        #![proptest_config(ProptestConfig::with_cases(200))]
+
+        /// Fuzz insert/remove against a `std::collections::BTreeMap` oracle.
+        ///
+        /// Key range is deliberately small (0..64) relative to the op
+        /// count (up to 300) so keys collide often, exercising
+        /// replace-existing-key, remove-then-reinsert, and
+        /// remove-of-absent-key paths. After every operation:
+        ///
+        /// - the returned old value (from insert/remove) must match the
+        ///   oracle's -- the "record" is correct, not just present
+        /// - `tree.len()` must match the oracle's length
+        /// - `tree.verify_invariants()` must hold -- no red-red
+        ///   violations, uniform black-height, BST ordering, correct
+        ///   leftmost/rightmost caches (the tree's own color-invariant
+        ///   checker)
+        ///
+        /// At the end, a full in-order content comparison against the
+        /// oracle catches anything the per-step checks missed.
+        #[test]
+        fn fuzz_insert_remove_matches_std_btreemap(
+            ops in proptest::collection::vec(op_strategy(), 1..300),
+        ) {
+            // SAFETY: single-threaded test; slab outlives all allocated slots.
+            let slab: UnboundedSlab<RbNode<u16, u64>> =
+                unsafe { UnboundedSlab::with_chunk_capacity(64) };
+            let mut tree: RbTree<u16, u64> = RbTree::new();
+            let mut oracle: StdMap<u16, u64> = StdMap::new();
+
+            for op in &ops {
+                match op {
+                    Op::Insert { key, value } => {
+                        let got = tree.insert(&slab, *key, *value);
+                        let want = oracle.insert(*key, *value);
+                        prop_assert_eq!(got, want, "insert mismatch after {:?}", op);
+                    }
+                    Op::Remove { key } => {
+                        let got = tree.remove(&slab, key);
+                        let want = oracle.remove(key);
+                        prop_assert_eq!(got, want, "remove mismatch after {:?}", op);
+                    }
+                }
+
+                prop_assert_eq!(tree.len(), oracle.len());
+                tree.verify_invariants();
+            }
+
+            let tree_pairs: Vec<(u16, u64)> = tree.iter().map(|(k, v)| (*k, *v)).collect();
+            let oracle_pairs: Vec<(u16, u64)> = oracle.into_iter().collect();
+            prop_assert_eq!(tree_pairs, oracle_pairs);
+
+            tree.clear(&slab);
+        }
+    }
+}

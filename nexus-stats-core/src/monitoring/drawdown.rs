@@ -338,3 +338,52 @@ mod tests {
         ));
     }
 }
+
+// =============================================================================
+// Proptests
+// =============================================================================
+
+#[cfg(test)]
+mod proptests {
+    use super::*;
+    use proptest::prelude::*;
+
+    proptest! {
+        #![proptest_config(ProptestConfig::with_cases(500))]
+
+        /// `peak()` and `max_drawdown()` must be monotonically
+        /// non-decreasing across updates, and `drawdown()` must never go
+        /// negative -- the monotonicity invariant a drawdown/circuit-breaker
+        /// monitor depends on.
+        #[test]
+        fn fuzz_peak_and_max_drawdown_are_monotonic(
+            samples in proptest::collection::vec(-1e6f64..1e6, 1..300),
+        ) {
+            let mut dd = DrawdownF64::new();
+            let mut prev_peak = f64::NEG_INFINITY;
+            let mut prev_max_dd = 0.0f64;
+            let mut running_max_dd = 0.0f64;
+
+            for &s in &samples {
+                let current_dd = dd.update(s).unwrap();
+                prop_assert!(current_dd >= 0.0, "drawdown went negative: {current_dd}");
+
+                let peak = dd.peak().unwrap();
+                prop_assert!(peak >= prev_peak, "peak decreased: {prev_peak} -> {peak}");
+                prev_peak = peak;
+
+                let max_dd = dd.max_drawdown();
+                prop_assert!(
+                    max_dd >= prev_max_dd,
+                    "max_drawdown decreased: {prev_max_dd} -> {max_dd}"
+                );
+                prev_max_dd = max_dd;
+
+                running_max_dd = running_max_dd.max(current_dd);
+            }
+
+            // max_drawdown must equal the largest drawdown() ever observed.
+            prop_assert_eq!(dd.max_drawdown(), running_max_dd);
+        }
+    }
+}
