@@ -80,38 +80,59 @@ macro_rules! impl_decimal_financial {
                 if remainder == 0 {
                     return Some(self);
                 }
-                let half_tick = tick.value / 2;
                 let base = self.value - remainder;
 
-                if remainder > half_tick {
-                    match base.checked_add(tick.value) {
-                        Some(v) => Some(Self { value: v }),
-                        None => None,
-                    }
-                } else if remainder < -half_tick {
-                    match base.checked_sub(tick.value) {
-                        Some(v) => Some(Self { value: v }),
-                        None => None,
-                    }
-                } else if remainder == half_tick || remainder == -half_tick {
-                    let quotient = self.value / tick.value;
-                    if quotient % 2 != 0 {
-                        if remainder > 0 {
+                // Compare 2*|remainder| against tick without dividing.
+                // Division truncates for odd ticks (e.g. tick=3, tick/2=1 not 1.5),
+                // causing remainder==1 to trigger the midpoint branch incorrectly.
+                // complement = tick - |remainder|; the three cases are:
+                //   |remainder| > complement  -> past midpoint, round away from zero
+                //   |remainder| == complement -> true midpoint, banker's rounding
+                //   |remainder| < complement  -> before midpoint, truncate
+                // Safe: |remainder| < tick, so complement is in (0, tick), no overflow.
+                if remainder > 0 {
+                    let complement = tick.value - remainder;
+                    if remainder > complement {
+                        match base.checked_add(tick.value) {
+                            Some(v) => Some(Self { value: v }),
+                            None => None,
+                        }
+                    } else if remainder == complement {
+                        let quotient = self.value / tick.value;
+                        if quotient % 2 != 0 {
                             match base.checked_add(tick.value) {
                                 Some(v) => Some(Self { value: v }),
                                 None => None,
                             }
                         } else {
-                            match base.checked_sub(tick.value) {
-                                Some(v) => Some(Self { value: v }),
-                                None => None,
-                            }
+                            Some(Self { value: base })
                         }
                     } else {
                         Some(Self { value: base })
                     }
                 } else {
-                    Some(Self { value: base })
+                    // remainder < 0; Rust % carries the dividend sign.
+                    // neg_rem = |remainder|; safe since |remainder| < tick <= $backing::MAX.
+                    let neg_rem = -remainder;
+                    let complement = tick.value - neg_rem;
+                    if neg_rem > complement {
+                        match base.checked_sub(tick.value) {
+                            Some(v) => Some(Self { value: v }),
+                            None => None,
+                        }
+                    } else if neg_rem == complement {
+                        let quotient = self.value / tick.value;
+                        if quotient % 2 != 0 {
+                            match base.checked_sub(tick.value) {
+                                Some(v) => Some(Self { value: v }),
+                                None => None,
+                            }
+                        } else {
+                            Some(Self { value: base })
+                        }
+                    } else {
+                        Some(Self { value: base })
+                    }
                 }
             }
 

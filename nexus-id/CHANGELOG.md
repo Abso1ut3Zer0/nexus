@@ -10,6 +10,18 @@ contained.
 
 ## [Unreleased]
 
+### Fixed
+
+- `UuidV7` sequence counter wrapped through `u16::MAX` after exhaustion.
+  `wrapping_add` incremented the counter past `SEQUENCE_MAX` (4095) on
+  every error-returning call. After 61440 further calls the counter
+  cycled back to `0`, and the next call succeeded with sequence `0`,
+  reusing a value within the same millisecond. This produced duplicate
+  and non-monotonic UUIDs. Fixed by checking `sequence >= SEQUENCE_MAX`
+  before incrementing: once exhausted the counter stays at `4095`
+  permanently and every subsequent call returns `SequenceExhausted`.
+
+
 ## [1.1.5] — 2026-05-10
 
 Doc + bench infra release. No public API change.

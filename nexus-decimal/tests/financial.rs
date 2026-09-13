@@ -60,6 +60,39 @@ fn round_to_tick() {
 }
 
 #[test]
+fn round_to_tick_odd_tick() {
+    // tick=3: no true midpoint exists (2*remainder is always even, tick is odd).
+    // The truncated half_tick=1 is not the midpoint; value=4 must round to 3 not 6.
+    let tick = D64::from_raw(3);
+    assert_eq!(D64::from_raw(4).round_to_tick(tick), Some(D64::from_raw(3)));
+    assert_eq!(D64::from_raw(5).round_to_tick(tick), Some(D64::from_raw(6)));
+    assert_eq!(
+        D64::from_raw(-4).round_to_tick(tick),
+        Some(D64::from_raw(-3))
+    );
+    assert_eq!(
+        D64::from_raw(-5).round_to_tick(tick),
+        Some(D64::from_raw(-6))
+    );
+}
+
+#[test]
+fn round_to_tick_even_tick_bankers() {
+    // tick=4: true midpoint at remainder==2; banker's rounds to the even multiple.
+    let tick = D64::from_raw(4);
+    assert_eq!(D64::from_raw(6).round_to_tick(tick), Some(D64::from_raw(8))); // quotient 1 odd -> up
+    assert_eq!(D64::from_raw(2).round_to_tick(tick), Some(D64::from_raw(0))); // quotient 0 even -> down
+    assert_eq!(
+        D64::from_raw(-6).round_to_tick(tick),
+        Some(D64::from_raw(-8))
+    ); // quotient -1 odd -> down
+    assert_eq!(
+        D64::from_raw(-2).round_to_tick(tick),
+        Some(D64::from_raw(0))
+    ); // quotient 0 even -> base
+}
+
+#[test]
 fn floor_to_tick() {
     let price = D64::new(1, 23_700_000); // 1.237
     let tick = D64::new(0, 5_000_000); // 0.05
