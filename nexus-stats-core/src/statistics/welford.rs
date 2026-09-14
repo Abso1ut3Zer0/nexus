@@ -420,11 +420,12 @@ mod proptests {
         /// single accumulator.
         #[test]
         fn fuzz_merge_matches_single_pass(
-            samples in proptest::collection::vec(-1e6f64..1e6, 2..200),
-            split in 1usize..199,
+            (samples, split) in proptest::collection::vec(-1e6f64..1e6, 2..200)
+                .prop_flat_map(|samples| {
+                    let max_split = samples.len() - 1;
+                    (Just(samples), 1usize..=max_split)
+                }),
         ) {
-            let split = split.min(samples.len() - 1).max(1);
-
             let mut whole = WelfordF64::new();
             for &s in &samples {
                 whole.update(s).unwrap();
