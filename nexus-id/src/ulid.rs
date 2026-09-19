@@ -17,7 +17,8 @@
 //!
 //! Within the same millisecond, the random component is incremented to ensure
 //! monotonicity. If the random component would overflow (extremely unlikely),
-//! generation returns an error.
+//! generation returns an error. This mirrors the `ulid` crate's
+//! `Generator::generate() -> Result`.
 
 use std::time::Instant;
 
@@ -50,7 +51,7 @@ use crate::types::Ulid;
 ///     .as_millis() as u64;
 ///
 /// let mut generator = UlidGenerator::new(epoch, unix_base, 42);
-/// let id = generator.next(Instant::now());
+/// let id = generator.next(Instant::now()).unwrap();
 /// assert_eq!(id.len(), 26);
 /// ```
 #[derive(Debug, Clone)]
@@ -105,7 +106,8 @@ impl UlidGenerator {
 
     /// Generate a ULID.
     ///
-    /// Returns a 26-character Crockford Base32 string.
+    /// Returns a [`Ulid`] (26-character Crockford Base32 string), or
+    /// [`SequenceExhausted`] if the 80-bit random component would overflow.
     ///
     /// # Monotonicity
     ///
@@ -115,42 +117,11 @@ impl UlidGenerator {
     ///
     /// In the theoretical case where the 80-bit random component overflows
     /// (requires ~2^80 generations in one millisecond — physically impossible),
-    /// the value wraps and monotonicity is violated. Use [`try_next()`](Self::try_next)
-    /// if you need overflow detection.
+    /// this returns [`SequenceExhausted`] rather than wrapping and violating
+    /// monotonicity. This mirrors the `ulid` crate's
+    /// `Generator::generate() -> Result`.
     #[inline]
-    pub fn next(&mut self, now: Instant) -> Ulid {
-        let offset_ms = now.saturating_duration_since(self.epoch).as_millis() as u64;
-        let ts_ms = self.unix_base_ms.wrapping_add(offset_ms);
-
-        let (rand_hi, rand_lo) = if ts_ms == self.last_ts_ms {
-            // Same millisecond: increment random for monotonicity
-            let (new_lo, carry) = self.last_rand_lo.overflowing_add(1);
-            let new_hi = if carry {
-                self.last_rand_hi.wrapping_add(1)
-            } else {
-                self.last_rand_hi
-            };
-            self.last_rand_hi = new_hi;
-            self.last_rand_lo = new_lo;
-            (new_hi, new_lo)
-        } else {
-            // New millisecond: generate fresh random
-            self.last_ts_ms = ts_ms;
-            let rand_hi = (self.rng.next_u64() & 0xFFFF) as u16;
-            let rand_lo = self.rng.next_u64();
-            self.last_rand_hi = rand_hi;
-            self.last_rand_lo = rand_lo;
-            (rand_hi, rand_lo)
-        };
-
-        Ulid::from_raw(ts_ms, rand_hi, rand_lo)
-    }
-
-    /// Generate a ULID, returning an error if random component would overflow.
-    ///
-    /// This is extremely unlikely (would require 2^80 generations in one ms).
-    #[inline]
-    pub fn try_next(&mut self, now: Instant) -> Result<Ulid, SequenceExhausted> {
+    pub fn next(&mut self, now: Instant) -> Result<Ulid, SequenceExhausted> {
         let offset_ms = now.saturating_duration_since(self.epoch).as_millis() as u64;
         let ts_ms = self.unix_base_ms.wrapping_add(offset_ms);
 
@@ -215,7 +186,7 @@ mod tests {
         let unix_base = 1_700_000_000_000u64;
         let mut generator = UlidGenerator::new(epoch, unix_base, 42);
 
-        let ulid = generator.next(epoch);
+        let ulid = generator.next(epoch).unwrap();
         assert_eq!(ulid.len(), 26);
 
         // All chars should be valid Crockford Base32
@@ -237,7 +208,10 @@ mod tests {
         let mut gen2 = UlidGenerator::new(epoch, unix_base, 42);
 
         // First ULID at same timestamp should be identical
-        assert_eq!(gen1.next(epoch).as_str(), gen2.next(epoch).as_str());
+        assert_eq!(
+            gen1.next(epoch).unwrap().as_str(),
+            gen2.next(epoch).unwrap().as_str()
+        );
     }
 
     #[test]
@@ -246,14 +220,14 @@ mod tests {
         let unix_base = 1_700_000_000_000u64;
         let mut generator = UlidGenerator::new(epoch, unix_base, 42);
 
-        let ulid = generator.next(epoch);
-        assert_eq!(ulid.timestamp_ms(), unix_base);
+        let ulid = generator.next(epoch).unwrap();
+        assert_eq!(ulid.timestamp_millis(), unix_base);
 
         // 100ms later
         let later = epoch + Duration::from_millis(100);
         let mut gen2 = UlidGenerator::new(epoch, unix_base, 42);
-        let ulid2 = gen2.next(later);
-        assert_eq!(ulid2.timestamp_ms(), unix_base + 100);
+        let ulid2 = gen2.next(later).unwrap();
+        assert_eq!(ulid2.timestamp_millis(), unix_base + 100);
     }
 
     #[test]
@@ -261,9 +235,9 @@ mod tests {
         let mut generator = test_generator();
         let epoch = generator.epoch();
 
-        let ulid1 = generator.next(epoch);
-        let ulid2 = generator.next(epoch);
-        let ulid3 = generator.next(epoch);
+        let ulid1 = generator.next(epoch).unwrap();
+        let ulid2 = generator.next(epoch).unwrap();
+        let ulid3 = generator.next(epoch).unwrap();
 
         // Should be lexicographically ordered
         assert!(ulid1.as_str() < ulid2.as_str());
@@ -276,7 +250,7 @@ mod tests {
         let unix_base = 1_700_000_000_000u64;
         let mut generator = UlidGenerator::new(epoch, unix_base, 42);
 
-        let ulid = generator.next(epoch);
+        let ulid = generator.next(epoch).unwrap();
         let (rand_hi, rand_lo) = ulid.random();
 
         // Verify we can reconstruct
@@ -292,7 +266,7 @@ mod tests {
         let mut ulids = Vec::new();
         for i in 0..100 {
             let now = epoch + Duration::from_millis(i);
-            ulids.push(generator.next(now));
+            ulids.push(generator.next(now).unwrap());
         }
 
         // ULIDs should be lexicographically ordered
@@ -307,7 +281,7 @@ mod tests {
         let unix_base = 1_700_000_000_000u64;
         let mut generator = UlidGenerator::from_entropy(epoch, unix_base);
 
-        let ulid = generator.next(epoch);
+        let ulid = generator.next(epoch).unwrap();
         assert_eq!(ulid.len(), 26);
     }
 }

@@ -33,7 +33,7 @@ let mut gen: Snowflake64<42, 6, 16> = Snowflake64::new(5);
 let id: SnowflakeId64<42, 6, 16> = gen.next_id(now_millis()).unwrap();
 
 assert_eq!(id.worker(), 5);
-// id.timestamp(), id.sequence(), id.to_u64() all available
+// id.tick(), id.sequence(), id.raw() all available
 ```
 
 `next_id` returns `Result<_, SequenceExhausted>`. Exhaustion means you've

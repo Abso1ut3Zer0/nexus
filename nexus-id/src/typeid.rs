@@ -45,13 +45,13 @@ use crate::types::Ulid;
 ///     .as_millis() as u64;
 /// let mut generator = UlidGenerator::new(epoch, unix_base, 42);
 ///
-/// let ulid = generator.next(Instant::now());
+/// let ulid = generator.next(Instant::now()).unwrap();
 /// let id: TypeId<32> = TypeId::new("user", ulid).unwrap();
 /// assert!(id.as_str().starts_with("user_"));
 /// assert_eq!(id.prefix(), "user");
 /// ```
 #[derive(Clone, Copy, PartialEq, Eq)]
-pub struct TypeId<const CAP: usize> {
+pub struct TypeId<const CAP: usize = 32> {
     inner: AsciiString<CAP>,
     prefix_len: u8,
 }
@@ -207,7 +207,7 @@ impl<const CAP: usize> TypeId<CAP> {
     /// Decodes the first 10 Crockford Base32 characters directly without
     /// constructing an intermediate `Ulid`.
     #[inline]
-    pub fn timestamp_ms(&self) -> u64 {
+    pub fn timestamp_millis(&self) -> u64 {
         let bytes = self.suffix_str().as_bytes();
         let mut ts: u64 = CROCKFORD32_DECODE[bytes[0] as usize] as u64;
         let mut i = 1;
@@ -290,7 +290,7 @@ mod tests {
             .unwrap()
             .as_millis() as u64;
         let mut generator = UlidGenerator::new(epoch, unix_base, 42);
-        generator.next(epoch)
+        generator.next(epoch).unwrap()
     }
 
     #[test]
@@ -344,8 +344,8 @@ mod tests {
             .as_millis() as u64;
         let mut generator = UlidGenerator::new(epoch, unix_base, 42);
 
-        let ulid1 = generator.next(epoch);
-        let ulid2 = generator.next(epoch);
+        let ulid1 = generator.next(epoch).unwrap();
+        let ulid2 = generator.next(epoch).unwrap();
 
         let id1: TypeId<32> = TypeId::new("user", ulid1).unwrap();
         let id2: TypeId<32> = TypeId::new("user", ulid2).unwrap();
@@ -359,7 +359,7 @@ mod tests {
         let ulid = test_ulid();
         let id: TypeId<32> = TypeId::new("user", ulid).unwrap();
 
-        assert_eq!(id.timestamp_ms(), ulid.timestamp_ms());
+        assert_eq!(id.timestamp_millis(), ulid.timestamp_millis());
     }
 
     #[test]

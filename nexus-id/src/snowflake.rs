@@ -127,7 +127,7 @@ impl fmt::Display for SequenceExhausted {
             f,
             "sequence exhausted at tick {}: generated {} IDs in one tick",
             self.tick,
-            self.max_sequence + 1
+            self.max_sequence.saturating_add(1)
         )
     }
 }
@@ -169,6 +169,27 @@ impl From<SequenceExhausted> for SnowflakeError {
         SnowflakeError::Exhausted(e)
     }
 }
+
+/// Error returned when a worker ID exceeds the maximum for a generator's layout.
+///
+/// Produced by [`Snowflake::try_new`]. The panicking [`Snowflake::new`]
+/// constructor turns this into a panic instead.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct WorkerIdError {
+    /// The worker ID that was supplied.
+    pub worker: u64,
+    /// Maximum valid worker ID for this generator's `WK` bit width.
+    pub max: u64,
+}
+
+impl fmt::Display for WorkerIdError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "worker {} exceeds max {}", self.worker, self.max)
+    }
+}
+
+#[cfg(feature = "std")]
+impl std::error::Error for WorkerIdError {}
 
 /// Snowflake ID generator.
 ///
@@ -212,6 +233,7 @@ impl From<SequenceExhausted> for SnowflakeError {
 /// let tick = (Instant::now() - epoch).as_millis() as u64;
 /// let id: u64 = id_gen.next(tick).unwrap();
 /// ```
+#[derive(Debug, Clone)]
 pub struct Snowflake<T: IdInt, const TS: u8, const WK: u8, const SQ: u8> {
     worker_shifted: u64,
     last_tick: u64,
@@ -251,7 +273,8 @@ impl<T: IdInt, const TS: u8, const WK: u8, const SQ: u8> Snowflake<T, TS, WK, SQ
     /// * `worker` - Worker ID, must fit in WK bits
     ///
     /// # Panics
-    /// Panics if `worker > WORKER_MAX`.
+    /// Panics if `worker > WORKER_MAX`. Use [`try_new`](Self::try_new) for a
+    /// non-panicking constructor.
     ///
     /// # Example
     /// ```rust
@@ -262,22 +285,46 @@ impl<T: IdInt, const TS: u8, const WK: u8, const SQ: u8> Snowflake<T, TS, WK, SQ
     /// let mut id_gen = MyId::new(5);
     /// ```
     pub fn new(worker: u64) -> Self {
+        match Self::try_new(worker) {
+            Ok(generator) => generator,
+            Err(e) => panic!("{e}"),
+        }
+    }
+
+    /// Create a new generator, returning an error if `worker` exceeds the
+    /// maximum for this generator's `WK` bit width.
+    ///
+    /// This is the non-panicking counterpart to [`new`](Self::new).
+    ///
+    /// # Errors
+    /// Returns [`WorkerIdError`] if `worker > WORKER_MAX`.
+    ///
+    /// # Example
+    /// ```rust
+    /// use nexus_id::Snowflake64;
+    ///
+    /// type MyId = Snowflake64<42, 6, 16>;
+    ///
+    /// let id_gen = MyId::try_new(5).unwrap();
+    /// assert!(MyId::try_new(64).is_err()); // 6 bits = max 63
+    /// ```
+    pub fn try_new(worker: u64) -> Result<Self, WorkerIdError> {
         // Trigger compile-time validation
         let () = Self::_VALIDATE;
 
-        assert!(
-            worker <= Self::WORKER_MAX,
-            "worker {} exceeds max {}",
-            worker,
-            Self::WORKER_MAX
-        );
+        if worker > Self::WORKER_MAX {
+            return Err(WorkerIdError {
+                worker,
+                max: Self::WORKER_MAX,
+            });
+        }
 
-        Self {
+        Ok(Self {
             worker_shifted: worker << Self::WK_SHIFT,
             last_tick: u64::MAX, // Ensures first call takes "new tick" branch
             sequence: 0,
             _marker: PhantomData,
-        }
+        })
     }
 
     /// Generate the next ID.
@@ -579,6 +626,19 @@ mod tests {
     #[should_panic(expected = "worker 100 exceeds max 63")]
     fn worker_overflow_panics() {
         let _id_gen = TestId::new(100); // 6 bits = max 63
+    }
+
+    #[test]
+    fn try_new_rejects_out_of_range_worker() {
+        // 6 worker bits => max 63.
+        assert!(TestId::try_new(63).is_ok());
+        assert_eq!(
+            TestId::try_new(64).unwrap_err(),
+            WorkerIdError {
+                worker: 64,
+                max: 63
+            }
+        );
     }
 
     #[test]

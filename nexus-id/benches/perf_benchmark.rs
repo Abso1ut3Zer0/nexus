@@ -404,7 +404,7 @@ fn bench_typeid_new() -> Histogram<u64> {
     let ulids: Vec<Ulid> = (0..WARMUP + OPERATIONS)
         .map(|i| {
             let now = epoch + Duration::from_millis(i as u64);
-            generator.next(now)
+            generator.next(now).unwrap()
         })
         .collect();
 
@@ -431,7 +431,7 @@ fn bench_typeid_parse() -> Histogram<u64> {
         .unwrap()
         .as_millis() as u64;
     let mut generator = UlidGenerator::new(epoch, unix_base, 42);
-    let ulid = generator.next(epoch);
+    let ulid = generator.next(epoch).unwrap();
     let id = TypeId::<32>::new("user", ulid).unwrap();
     let input = id.as_str();
     let mut hist = Histogram::new(3).unwrap();
@@ -458,7 +458,7 @@ fn bench_typeid_prefix() -> Histogram<u64> {
         .unwrap()
         .as_millis() as u64;
     let mut generator = UlidGenerator::new(epoch, unix_base, 42);
-    let ulid = generator.next(epoch);
+    let ulid = generator.next(epoch).unwrap();
     let id = TypeId::<32>::new("user", ulid).unwrap();
     let mut hist = Histogram::new(3).unwrap();
 

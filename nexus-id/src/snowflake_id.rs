@@ -70,9 +70,10 @@ impl<const TS: u8, const WK: u8, const SQ: u8> SnowflakeId64<TS, WK, SQ> {
         self.0
     }
 
-    /// Extract the timestamp field.
+    /// Extract the tick field (the generic ordering value, not necessarily
+    /// milliseconds — see [`Snowflake`](crate::Snowflake)).
     #[inline]
-    pub const fn timestamp(&self) -> u64 {
+    pub const fn tick(&self) -> u64 {
         self.0 >> Self::TS_SHIFT
     }
 
@@ -88,10 +89,10 @@ impl<const TS: u8, const WK: u8, const SQ: u8> SnowflakeId64<TS, WK, SQ> {
         self.0 & Self::SEQUENCE_MASK
     }
 
-    /// Unpack into (timestamp, worker, sequence).
+    /// Unpack into (tick, worker, sequence).
     #[inline]
     pub const fn unpack(&self) -> (u64, u64, u64) {
-        (self.timestamp(), self.worker(), self.sequence())
+        (self.tick(), self.worker(), self.sequence())
     }
 
     /// Mix bits for uniform hash distribution via Fibonacci multiply.
@@ -152,7 +153,7 @@ impl<const TS: u8, const WK: u8, const SQ: u8> fmt::Debug for SnowflakeId64<TS, 
             f,
             "SnowflakeId64({}, ts={}, w={}, s={})",
             self.0,
-            self.timestamp(),
+            self.tick(),
             self.worker(),
             self.sequence()
         )
@@ -252,9 +253,10 @@ impl<const TS: u8, const WK: u8, const SQ: u8> SnowflakeId32<TS, WK, SQ> {
         self.0
     }
 
-    /// Extract the timestamp field.
+    /// Extract the tick field (the generic ordering value, not necessarily
+    /// milliseconds — see [`Snowflake`](crate::Snowflake)).
     #[inline]
-    pub const fn timestamp(&self) -> u32 {
+    pub const fn tick(&self) -> u32 {
         self.0 >> Self::TS_SHIFT
     }
 
@@ -270,10 +272,10 @@ impl<const TS: u8, const WK: u8, const SQ: u8> SnowflakeId32<TS, WK, SQ> {
         self.0 & Self::SEQUENCE_MASK
     }
 
-    /// Unpack into (timestamp, worker, sequence).
+    /// Unpack into (tick, worker, sequence).
     #[inline]
     pub const fn unpack(&self) -> (u32, u32, u32) {
-        (self.timestamp(), self.worker(), self.sequence())
+        (self.tick(), self.worker(), self.sequence())
     }
 
     /// Mix bits for uniform hash distribution via Fibonacci multiply (32-bit).
@@ -328,7 +330,7 @@ impl<const TS: u8, const WK: u8, const SQ: u8> fmt::Debug for SnowflakeId32<TS, 
             f,
             "SnowflakeId32({}, ts={}, w={}, s={})",
             self.0,
-            self.timestamp(),
+            self.tick(),
             self.worker(),
             self.sequence()
         )
@@ -448,7 +450,7 @@ mod tests {
         let raw = (100u64 << 22) | (5u64 << 16) | 0x2A_u64;
         let id = Id64::from_raw(raw);
 
-        assert_eq!(id.timestamp(), 100);
+        assert_eq!(id.tick(), 100);
         assert_eq!(id.worker(), 5);
         assert_eq!(id.sequence(), 42);
         assert_eq!(id.unpack(), (100, 5, 42));
@@ -460,7 +462,7 @@ mod tests {
         let raw = (50u32 << 12) | (7u32 << 8) | 0xC8_u32;
         let id = Id32::from_raw(raw);
 
-        assert_eq!(id.timestamp(), 50);
+        assert_eq!(id.tick(), 50);
         assert_eq!(id.worker(), 7);
         assert_eq!(id.sequence(), 200);
     }

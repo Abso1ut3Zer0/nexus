@@ -24,7 +24,7 @@ fn snowflake64_lifecycle() {
     let id: Id = id_gen.next_id(100).unwrap();
 
     // Extract fields
-    assert_eq!(id.timestamp(), 100);
+    assert_eq!(id.tick(), 100);
     assert_eq!(id.worker(), 7);
     assert_eq!(id.sequence(), 0);
     let (ts, wk, sq) = id.unpack();
@@ -100,18 +100,18 @@ fn uuid_v4_lifecycle() {
     assert_eq!(parsed, id);
 
     // Bytes round-trip
-    let bytes = id.to_bytes();
+    let bytes = id.to_be_bytes();
     assert_eq!(bytes.len(), 16);
-    let from_bytes = Uuid::from_bytes(&bytes).unwrap();
+    let from_bytes = Uuid::from_be_bytes(&bytes).unwrap();
     assert_eq!(from_bytes, id);
 
     // Unsafe bytes round-trip
-    // SAFETY: bytes came from id.to_bytes(), so it encodes a valid Uuid.
-    let from_unchecked = unsafe { Uuid::from_bytes_unchecked(&bytes) };
+    // SAFETY: bytes came from id.to_be_bytes(), so it encodes a valid Uuid.
+    let from_unchecked = unsafe { Uuid::from_be_bytes_unchecked(&bytes) };
     assert_eq!(from_unchecked, id);
 
     // Raw round-trip
-    let (hi, lo) = id.decode();
+    let (hi, lo) = id.to_raw();
     let from_raw = Uuid::from_raw(hi, lo);
     assert_eq!(from_raw, id);
 
@@ -145,15 +145,15 @@ fn uuid_v7_lifecycle() {
     let id: Uuid = id_gen.next(epoch).unwrap();
 
     assert_eq!(id.version(), 7);
-    assert!(id.timestamp_ms().is_some());
+    assert!(id.timestamp_millis().is_some());
 
     // Ordering (time-ordered)
     let id2: Uuid = id_gen.next(epoch).unwrap();
     assert!(id2 > id);
 
     // Bytes round-trip
-    let bytes = id.to_bytes();
-    let recovered = Uuid::from_bytes(&bytes).unwrap();
+    let bytes = id.to_be_bytes();
+    let recovered = Uuid::from_be_bytes(&bytes).unwrap();
     assert_eq!(recovered, id);
 }
 
@@ -178,8 +178,8 @@ fn uuid_compact_lifecycle() {
     assert_eq!(parsed, compact);
 
     // Bytes round-trip
-    let bytes = compact.to_bytes();
-    let from_bytes = UuidCompact::from_bytes(&bytes).unwrap();
+    let bytes = compact.to_be_bytes();
+    let from_bytes = UuidCompact::from_be_bytes(&bytes).unwrap();
     assert_eq!(from_bytes, compact);
 
     // Back to dashed
@@ -187,7 +187,7 @@ fn uuid_compact_lifecycle() {
     assert_eq!(back, uuid);
 
     // Raw round-trip
-    let (hi, lo) = compact.decode();
+    let (hi, lo) = compact.to_raw();
     let from_raw = UuidCompact::from_raw(hi, lo);
     assert_eq!(from_raw, compact);
 }
@@ -208,13 +208,13 @@ fn ulid_lifecycle() {
     let mut id_gen = UlidGenerator::new(epoch, unix_base, 42);
 
     // Generate
-    let id: Ulid = id_gen.next(epoch);
+    let id: Ulid = id_gen.next(epoch).unwrap();
 
     // String access
     assert_eq!(id.as_str().len(), 26);
 
     // Timestamp extraction
-    let ts = id.timestamp_ms();
+    let ts = id.timestamp_millis();
     assert!(ts >= unix_base); // should be at or after base
 
     // Random extraction
@@ -227,14 +227,14 @@ fn ulid_lifecycle() {
     assert_eq!(parsed, id);
 
     // Bytes round-trip
-    let bytes = id.to_bytes();
+    let bytes = id.to_be_bytes();
     assert_eq!(bytes.len(), 16);
-    let from_bytes = Ulid::from_bytes(&bytes).unwrap();
+    let from_bytes = Ulid::from_be_bytes(&bytes).unwrap();
     assert_eq!(from_bytes, id);
 
     // Unsafe bytes round-trip
-    // SAFETY: bytes came from id.to_bytes(), so it encodes a valid Ulid.
-    let from_unchecked = unsafe { Ulid::from_bytes_unchecked(&bytes) };
+    // SAFETY: bytes came from id.to_be_bytes(), so it encodes a valid Ulid.
+    let from_unchecked = unsafe { Ulid::from_be_bytes_unchecked(&bytes) };
     assert_eq!(from_unchecked, id);
 
     // Raw round-trip
@@ -246,7 +246,7 @@ fn ulid_lifecycle() {
     assert_eq!(uuid.version(), 7);
 
     // Ordering (time-ordered)
-    let id2 = id_gen.next(epoch);
+    let id2 = id_gen.next(epoch).unwrap();
     assert!(id2 > id);
 
     // Use as HashMap key
@@ -354,7 +354,7 @@ fn typeid_lifecycle() {
         .as_millis() as u64;
     let mut id_gen = UlidGenerator::new(epoch, unix_base, 42);
 
-    let ulid = id_gen.next(epoch);
+    let ulid = id_gen.next(epoch).unwrap();
 
     // Construct
     let id: TypeId<40> = TypeId::new("order", ulid).unwrap();
@@ -363,14 +363,14 @@ fn typeid_lifecycle() {
     assert!(id.as_str().starts_with("order_"));
 
     // Timestamp extraction
-    assert_eq!(id.timestamp_ms(), ulid.timestamp_ms());
+    assert_eq!(id.timestamp_millis(), ulid.timestamp_millis());
 
     // Parse round-trip
     let parsed: TypeId<40> = id.as_str().parse().unwrap();
     assert_eq!(parsed, id);
 
     // Ordering (same prefix → ordered by suffix)
-    let ulid2 = id_gen.next(epoch);
+    let ulid2 = id_gen.next(epoch).unwrap();
     let id2: TypeId<40> = TypeId::new("order", ulid2).unwrap();
     assert!(id2 > id);
 
@@ -401,8 +401,8 @@ fn cross_type_conversions() {
     assert_eq!(back, uuid);
 
     // Uuid ↔ UuidCompact decode to same raw values
-    assert_eq!(uuid.decode(), compact.decode());
-    assert_eq!(uuid.to_bytes(), compact.to_bytes());
+    assert_eq!(uuid.to_raw(), compact.to_raw());
+    assert_eq!(uuid.to_be_bytes(), compact.to_be_bytes());
 }
 
 #[test]
@@ -416,14 +416,14 @@ fn ulid_to_uuid_conversion() {
         .as_millis() as u64;
     let mut id_gen = UlidGenerator::new(epoch, unix_base, 42);
 
-    let ulid = id_gen.next(epoch);
+    let ulid = id_gen.next(epoch).unwrap();
     let uuid: Uuid = ulid.into();
 
     // Version and variant set correctly
     assert_eq!(uuid.version(), 7);
 
     // Timestamp preserved
-    assert_eq!(uuid.timestamp_ms(), Some(ulid.timestamp_ms()));
+    assert_eq!(uuid.timestamp_millis(), Some(ulid.timestamp_millis()));
 }
 
 #[test]

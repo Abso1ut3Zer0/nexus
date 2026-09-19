@@ -25,7 +25,7 @@ impl From<uuid::Uuid> for Uuid {
 impl From<Uuid> for uuid::Uuid {
     #[inline]
     fn from(u: Uuid) -> Self {
-        uuid::Uuid::from_bytes(u.to_bytes())
+        uuid::Uuid::from_bytes(u.to_be_bytes())
     }
 }
 
@@ -50,7 +50,7 @@ impl From<uuid::Uuid> for UuidCompact {
 impl From<UuidCompact> for uuid::Uuid {
     #[inline]
     fn from(u: UuidCompact) -> Self {
-        uuid::Uuid::from_bytes(u.to_bytes())
+        uuid::Uuid::from_bytes(u.to_be_bytes())
     }
 }
 

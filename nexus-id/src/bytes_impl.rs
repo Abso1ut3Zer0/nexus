@@ -15,11 +15,11 @@ use crate::types::{Ulid, Uuid, UuidCompact};
 impl Uuid {
     /// Write the 16-byte big-endian binary representation into a buffer.
     ///
-    /// Equivalent to `buf.put_slice(&self.to_bytes())` but avoids the
+    /// Equivalent to `buf.put_slice(&self.to_be_bytes())` but avoids the
     /// intermediate `[u8; 16]` stack allocation.
     #[inline]
     pub fn put_to<B: BufMut>(&self, buf: &mut B) {
-        let (hi, lo) = self.decode();
+        let (hi, lo) = self.to_raw();
         buf.put_u64(hi);
         buf.put_u64(lo);
     }
@@ -29,7 +29,7 @@ impl UuidCompact {
     /// Write the 16-byte big-endian binary representation into a buffer.
     #[inline]
     pub fn put_to<B: BufMut>(&self, buf: &mut B) {
-        let (hi, lo) = self.decode();
+        let (hi, lo) = self.to_raw();
         buf.put_u64(hi);
         buf.put_u64(lo);
     }
@@ -41,7 +41,7 @@ impl Ulid {
     /// Layout: `[timestamp: 6 bytes][rand_hi: 2 bytes][rand_lo: 8 bytes]`
     #[inline]
     pub fn put_to<B: BufMut>(&self, buf: &mut B) {
-        let ts = self.timestamp_ms();
+        let ts = self.timestamp_millis();
         let (rand_hi, rand_lo) = self.random();
         // Timestamp: 48 bits (6 bytes), big-endian
         let ts_bytes = ts.to_be_bytes();
@@ -83,7 +83,7 @@ mod tests {
         let mut buf = BytesMut::with_capacity(16);
         uuid.put_to(&mut buf);
 
-        assert_eq!(&buf[..], &uuid.to_bytes());
+        assert_eq!(&buf[..], &uuid.to_be_bytes());
     }
 
     #[test]
@@ -93,7 +93,7 @@ mod tests {
         let mut buf = BytesMut::with_capacity(16);
         uuid.put_to(&mut buf);
 
-        assert_eq!(&buf[..], &uuid.to_bytes());
+        assert_eq!(&buf[..], &uuid.to_be_bytes());
     }
 
     #[test]
@@ -103,7 +103,7 @@ mod tests {
         let mut buf = BytesMut::with_capacity(16);
         ulid.put_to(&mut buf);
 
-        assert_eq!(&buf[..], &ulid.to_bytes());
+        assert_eq!(&buf[..], &ulid.to_be_bytes());
     }
 
     #[test]
