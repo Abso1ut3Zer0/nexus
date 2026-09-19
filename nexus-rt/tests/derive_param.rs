@@ -12,10 +12,11 @@
 
 use nexus_rt::{Handler, IntoHandler, Local, Param, Res, ResMut, Resource, WorldBuilder, no_event};
 
-// Building a handler runs the always-on static conflict check
+// The conflict-detection tests below run the always-on static check
 // (`Registry::check_access`) at construction time — before any dispatch — so
-// these tests never call `run()`. Any panic therefore comes from the static
-// check, not the debug-only runtime borrow tracker. See issue #719.
+// they never call `run()`. Any panic they observe therefore comes from the
+// static check, not the debug-only runtime borrow tracker. See issue #719.
+// (Other tests in this file do dispatch via `run()` to exercise fetch.)
 
 // =========================================================================
 // Test types

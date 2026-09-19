@@ -328,13 +328,15 @@ impl Registry {
     /// Validate that a set of parameter accesses don't conflict.
     ///
     /// Two accesses conflict when they target the same ResourceId (same
-    /// pointer). O(n²) pairwise comparison — handler arity is 1-8, so
-    /// this is trivially fast at build time.
+    /// pointer). O(n²) pairwise comparison over the leaf access list —
+    /// typically a handful of entries, so it is trivially fast at build time.
     ///
-    /// The access list is produced by [`Param::collect_access`], which
-    /// recurses into tuples and `#[derive(Param)]` bundles — so every leaf
-    /// access is present here regardless of nesting. Params that touch no
-    /// resource simply contribute no entry.
+    /// The list is produced by [`Param::collect_access`], which recurses into
+    /// tuples and `#[derive(Param)]` bundles, so it holds one entry per *leaf*
+    /// access regardless of nesting. That count can exceed the 1-8 top-level
+    /// param arity — a bundle contributes all of its nested accesses — but
+    /// stays small in practice. Params that touch no resource contribute no
+    /// entry.
     ///
     /// # Panics
     ///
