@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Fixed
+
+- `round_to_tick` misrounded values for odd tick sizes. The old code computed
+  `half_tick = tick / 2` (integer division), which truncates for odd ticks:
+  with `tick=3`, `half_tick=1`, so a remainder of `1` landed in the
+  banker's-rounding branch even though the true midpoint is `1.5`. The fix
+  replaces the division with a complement: `complement = tick - |remainder|`.
+  Comparing `|remainder|` against `complement` is exact and needs no
+  division — for odd ticks `2 * |remainder|` can never equal an odd tick, so
+  the midpoint branch is unreachable. This subsumes the `1.2.2` `tick=1` case
+  (where `half_tick=0` made every non-zero remainder hit the branch) and the
+  general odd-tick class.
+
 ## [1.2.2] — 2026-05-23
 
 ### Fixed

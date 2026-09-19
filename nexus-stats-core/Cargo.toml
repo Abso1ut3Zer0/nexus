@@ -19,5 +19,8 @@ libm = ["dep:libm"]
 [dependencies]
 libm = { version = "0.2", optional = true }
 
+[dev-dependencies]
+proptest = "1.4"
+
 [lints]
 workspace = true

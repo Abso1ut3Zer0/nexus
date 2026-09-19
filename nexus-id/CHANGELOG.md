@@ -10,6 +10,14 @@ contained.
 
 ## [Unreleased]
 
+### Added
+
+- `Snowflake::next()` now returns `Err(SnowflakeError::TimestampOverflow)`
+  when the caller supplies a tick value that exceeds `TIMESTAMP_MAX` for the
+  generator's bit layout. Previously the tick was silently truncated, producing
+  IDs with the wrong timestamp and potentially colliding with earlier IDs at
+  tick 0.
+
 ### Changed (breaking)
 
 - `SequenceExhausted` is restored as a standalone struct with fields `tick: u64`
@@ -26,13 +34,16 @@ contained.
   Migration: change `SnowflakeError::Exhausted { max_sequence, .. }` patterns
   to `SnowflakeError::Exhausted(err)` and read `err.max_sequence`.
 
-### Added
+### Fixed
 
-- `Snowflake::next()` now returns `Err(SnowflakeError::TimestampOverflow)`
-  when the caller supplies a tick value that exceeds `TIMESTAMP_MAX` for the
-  generator's bit layout. Previously the tick was silently truncated, producing
-  IDs with the wrong timestamp and potentially colliding with earlier IDs at
-  tick 0.
+- `UuidV7` sequence counter wrapped through `u16::MAX` after exhaustion.
+  `wrapping_add` incremented the counter past `SEQUENCE_MAX` (4095) on
+  every error-returning call. After 61440 further calls the counter
+  cycled back to `0`, and the next call succeeded with sequence `0`,
+  reusing a value within the same millisecond. This produced duplicate
+  and non-monotonic UUIDs. Fixed by checking `sequence >= SEQUENCE_MAX`
+  before incrementing: once exhausted the counter stays at `4095`
+  permanently and every subsequent call returns `SequenceExhausted`.
 
 ## [1.1.5] — 2026-05-10
 
