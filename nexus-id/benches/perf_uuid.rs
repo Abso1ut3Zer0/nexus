@@ -232,7 +232,7 @@ fn bench_ulid_same_ms() -> Histogram<u64> {
     // Warmup
     for i in 0..WARMUP {
         let now = epoch + Duration::from_micros((i / 100) as u64 * 1000);
-        let _ = black_box(generator.next(now));
+        let _ = black_box(generator.next(now).unwrap());
     }
 
     // Reset
@@ -242,7 +242,7 @@ fn bench_ulid_same_ms() -> Histogram<u64> {
     let now = epoch + Duration::from_millis(1000);
     for _ in 0..OPERATIONS {
         let start = rdtscp();
-        let id = generator.next(now);
+        let id = generator.next(now).unwrap();
         let end = rdtscp();
 
         black_box(id);
@@ -265,7 +265,7 @@ fn bench_ulid_new_ms() -> Histogram<u64> {
     // Warmup
     for i in 0..WARMUP {
         let now = epoch + Duration::from_millis(i as u64);
-        let _ = black_box(generator.next(now));
+        let _ = black_box(generator.next(now).unwrap());
     }
 
     // Reset
@@ -276,7 +276,7 @@ fn bench_ulid_new_ms() -> Histogram<u64> {
         let now = epoch + Duration::from_millis(WARMUP as u64 + i as u64);
 
         let start = rdtscp();
-        let id = generator.next(now);
+        let id = generator.next(now).unwrap();
         let end = rdtscp();
 
         black_box(id);

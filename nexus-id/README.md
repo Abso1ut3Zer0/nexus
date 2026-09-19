@@ -62,7 +62,7 @@ use std::time::Instant;
 let epoch = Instant::now();
 let mut generator = UuidV7::new(epoch, 1_700_000_000_000, 42);
 
-let uuid: Uuid = generator.next(Instant::now());
+let uuid: Uuid = generator.next(Instant::now()).unwrap();
 let compact: UuidCompact = uuid.to_compact();
 
 // Parse from string
@@ -83,10 +83,10 @@ let unix_base = SystemTime::now()
     .as_millis() as u64;
 
 let mut generator = UlidGenerator::new(epoch, unix_base, 42);
-let ulid: Ulid = generator.next(Instant::now());
+let ulid: Ulid = generator.next(Instant::now()).unwrap();
 
 assert_eq!(ulid.len(), 26);
-assert!(ulid.timestamp_ms() >= unix_base);
+assert!(ulid.timestamp_millis() >= unix_base);
 ```
 
 ### TypeIDs

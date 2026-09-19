@@ -21,6 +21,7 @@ use core::fmt;
 /// Returned by [`HexId64`](crate::HexId64), [`UuidCompact`](crate::UuidCompact),
 /// and [`Ulid`](crate::Ulid).
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum ParseError {
     /// Input length doesn't match expected format length.
     InvalidLength {
@@ -66,6 +67,7 @@ impl std::error::Error for ParseError {}
 ///
 /// Returned by [`Uuid`](crate::Uuid).
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum UuidParseError {
     /// Input length doesn't match expected format length.
     InvalidLength {
@@ -124,6 +126,7 @@ impl From<ParseError> for UuidParseError {
 ///
 /// Returned by [`Base62Id`](crate::Base62Id) and [`Base36Id`](crate::Base36Id).
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum DecodeError {
     /// Input length doesn't match expected format length.
     InvalidLength {
@@ -182,6 +185,7 @@ impl From<ParseError> for DecodeError {
 ///
 /// Returned by [`TypeId`](crate::TypeId).
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum TypeIdParseError {
     /// Input length doesn't match expected capacity or format.
     InvalidLength {

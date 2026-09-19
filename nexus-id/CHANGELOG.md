@@ -17,12 +17,70 @@ contained.
   generator's bit layout. Previously the tick was silently truncated, producing
   IDs with the wrong timestamp and potentially colliding with earlier IDs at
   tick 0.
+- `Snowflake::try_new(worker) -> Result<Self, WorkerIdError>` — a non-panicking
+  constructor that returns `Err(WorkerIdError { worker, max })` when
+  `worker > WORKER_MAX`. `Snowflake::new` still panics (it now delegates to
+  `try_new`). The new `WorkerIdError` type is exported from the crate root and
+  implements `std::error::Error` under the `std` feature.
+- `TryFrom<&[u8]>` for `Uuid`, `UuidCompact`, and `Ulid`, delegating to
+  `from_be_bytes` (error type matches `from_be_bytes`).
+- `nil()` const constructors and `Default` impls (the all-zero value) for
+  `Uuid`, `UuidCompact`, and `Ulid`.
+- `PartialOrd` + `Ord` for `HexId64`, `Base62Id`, and `Base36Id`, ordering by
+  the underlying decoded `u64`.
+- `Debug` and `Clone` for the `Snowflake` generator, matching the other
+  generators.
+- `TypeId` now defaults its capacity parameter to `TypeId<32>`, so the const
+  generic can be omitted for prefixes up to 5 characters.
+- Little-endian byte output for the 128-bit ID types: `to_le_bytes()`,
+  `from_le_bytes()`, and `from_le_bytes_unchecked()` on `Uuid`, `UuidCompact`,
+  and `Ulid`. These are the byte-reverse of the canonical big-endian form
+  (same semantics as `u128::to_le_bytes`) and are provided for little-endian
+  wire protocols such as SBE / CME MDP. Big-endian remains canonical:
+  `TryFrom<&[u8]>` is unchanged (still big-endian).
+- `put_to_le` on all five `bytes`-crate integration types (`Uuid`,
+  `UuidCompact`, `Ulid`, `SnowflakeId64`, `SnowflakeId32`), writing the
+  little-endian representation into a `BufMut`. For the 128-bit types the
+  output is exactly `to_le_bytes()`.
 
 ### Changed (breaking)
 
+- `UlidGenerator::next(now)` is now fallible: it returns
+  `Result<Ulid, SequenceExhausted>` (previously infallible, silently wrapping
+  the 80-bit random field on overflow). The separate `try_next` method is
+  removed — there is now a single `next` that errors, mirroring the `ulid`
+  crate's `Generator::generate() -> Result`. Migration: add `?` or `.unwrap()`
+  to `next` calls.
+- Timestamp accessors renamed for clarity and consistency:
+  `timestamp_ms()` → `timestamp_millis()` on `Ulid`, `Uuid`, and `TypeId`;
+  `timestamp()` → `tick()` on the Snowflake typed IDs (`SnowflakeId64`,
+  `SnowflakeId32`), since that field is a generic tick, not necessarily
+  milliseconds. `Uuid::timestamp_millis()` still returns `Option<u64>`.
+- Binary-bytes methods renamed on `Uuid`, `UuidCompact`, and `Ulid`:
+  `to_bytes()` → `to_be_bytes()`, `from_bytes()` → `from_be_bytes()`,
+  `from_bytes_unchecked()` → `from_be_bytes_unchecked()`. The `as_bytes()`
+  method (which returns the ASCII *text* bytes) is unchanged.
+- `decode()` → `to_raw()` on the value types `Uuid` and `UuidCompact` (returns
+  the raw 128-bit `(hi, lo)` value, the inverse of `from_raw`). The encoded ID
+  types `HexId64`, `Base62Id`, and `Base36Id` keep their `encode`/`decode`
+  pair.
+- The parse-error enums `ParseError`, `UuidParseError`, `DecodeError`, and
+  `TypeIdParseError` are now `#[non_exhaustive]`. Downstream `match` expressions
+  over these types must add a wildcard (`_`) arm.
+
+- The `bytes`-crate `put_to` method is renamed to `put_to_be` on all five
+  integration types (`Uuid`, `UuidCompact`, `Ulid`, `SnowflakeId64`,
+  `SnowflakeId32`), pairing with the new `put_to_le`. Migration: rename
+  `.put_to(buf)` calls to `.put_to_be(buf)`.
+
+- The `Debug` output of the Snowflake typed IDs (`SnowflakeId64`,
+  `SnowflakeId32`) now labels the ordering field `tick=` instead of `ts=`,
+  matching the renamed `tick()` accessor. Migration: update any code or tests
+  that pin the `ts=` substring.
+
 - `SequenceExhausted` is restored as a standalone struct with fields `tick: u64`
   and `max_sequence: u64`. It is no longer a type alias for `SnowflakeError`.
-  ULID `try_next` and UUID v7 `next*` continue to return `SequenceExhausted`.
+  ULID `next` and UUID v7 `next*` continue to return `SequenceExhausted`.
   Migration: replace any `SequenceExhausted::Exhausted { tick, max_sequence }`
   construction or pattern with `SequenceExhausted { tick, max_sequence }`.
 
@@ -36,6 +94,12 @@ contained.
 
 ### Fixed
 
+- `Ulid::from_raw` no longer silently truncates a `timestamp_ms` that exceeds
+  48 bits. Debug builds now `debug_assert!` the value fits in 48 bits, release
+  builds mask explicitly to the low 48 bits, and the behavior is documented.
+- `SequenceExhausted`'s `Display` impl no longer panics in debug builds when
+  `max_sequence == u64::MAX` (as passed by the ULID generator): it now uses
+  `saturating_add(1)` instead of `+ 1`.
 - `UuidV7` sequence counter wrapped through `u16::MAX` after exhaustion.
   `wrapping_add` incremented the counter past `SEQUENCE_MAX` (4095) on
   every error-returning call. After 61440 further calls the counter

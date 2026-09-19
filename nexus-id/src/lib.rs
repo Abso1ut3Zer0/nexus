@@ -102,7 +102,7 @@ pub mod uuid;
 
 pub use snowflake::{
     IdInt, SequenceExhausted, Snowflake, Snowflake32, Snowflake64, SnowflakeError,
-    SnowflakeSigned32, SnowflakeSigned64,
+    SnowflakeSigned32, SnowflakeSigned64, WorkerIdError,
 };
 
 pub use parse::{DecodeError, ParseError, TypeIdParseError, UuidParseError};

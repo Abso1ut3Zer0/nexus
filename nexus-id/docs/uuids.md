@@ -59,12 +59,26 @@ an exposed resource ID), use V4.
 
 ```rust
 use nexus_id::{UlidGenerator, Ulid};
+use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
-let mut gen = UlidGenerator::from_entropy();
-let id: Ulid = gen.next();
+// Snap both clocks once at startup: an `Instant` epoch for the syscall-free
+// hot path, and the matching Unix time (ms) it corresponds to.
+let epoch = Instant::now();
+let unix_base = SystemTime::now()
+    .duration_since(UNIX_EPOCH)
+    .unwrap()
+    .as_millis() as u64;
+
+let mut generator = UlidGenerator::from_entropy(epoch, unix_base);
+let id: Ulid = generator.next(Instant::now()).unwrap();
 
 println!("{}", id);  // "01HKXB7VHN6FV2T7W8P9K3M4R5"
 ```
+
+`next` returns `Result<Ulid, SequenceExhausted>` — matching the `ulid`
+crate's `Generator::generate()`. Exhaustion requires overflowing the 80-bit
+random field within a single millisecond (physically impossible), so callers
+typically `.unwrap()`.
 
 26 characters, Crockford Base32 (no ambiguous `0/O`, `1/I/L`). Case-insensitive
 on parse. Time-sortable like UuidV7, but the monotonic guarantee is *stronger*:
