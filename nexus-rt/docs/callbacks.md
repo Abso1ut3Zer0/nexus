@@ -680,3 +680,67 @@ resolution and the emitted closure takes `&mut C` as its first parameter.
 
 See [pipelines.md — Dispatching by Discriminant](pipelines.md#dispatching-by-discriminant--select)
 for the full tier 1/2/3 guide.
+
+### Terminal fork — arms that are whole callback pipelines
+
+The canonical case: a FIX-style session decodes an inbound message, then
+fans the message type out to one sub-flow per variant. Each sub-flow is a
+built `CtxPipeline` threading `&mut SessionCtx`, terminal (`Out = ()`), and
+the `select!` is the last step — a **terminal-divergent** fork (the matched
+arm carries through, nothing reconverges).
+
+A built `CtxPipeline` can be a `select!` (ctx-mode) arm **directly** — it
+is already a resolved step, so no wrapper closure is needed:
+
+```rust
+let new_order = CtxPipelineBuilder::<SessionCtx, Decoded>::new()
+    .then(validate, reg)
+    .then(book, reg)
+    .build();
+
+let cancel = CtxPipelineBuilder::<SessionCtx, Decoded>::new()
+    .then(locate, reg)
+    .then(pull, reg)
+    .build();
+
+// Bare pipelines as arms — no `|ctx, w, m| pipe.run(ctx, w, m)` wrapper.
+let mut dispatch = CtxPipelineBuilder::<SessionCtx, Decoded>::new()
+    .then(
+        select! {
+            reg,
+            ctx: SessionCtx,
+            key: |m: &Decoded| m.kind,
+            MsgKind::NewOrder => new_order,
+            MsgKind::Cancel   => cancel,
+        },
+        reg,
+    )
+    .build();
+```
+
+`select!` expands to a real `match` — a jump table, not an if-else chain.
+The same passthrough lets a built `CtxPipeline` be a nested `.then()` step:
+`builder.then(sub_pipe, reg)`. A built `CtxPipeline` implements
+`IntoCtxStep` (and `CtxStepCall`), so no adapter is needed. Keep
+sub-pipelines **terminal** (`Out = ()`) — that is the step-callable shape.
+
+#### When an arm needs raw `&mut World`
+
+If an arm needs raw `&mut World` (for example to run a sub-pipeline it
+built inline, or to touch a resource the step API does not expose), use the
+`Opaque` closure form directly as the arm — an
+`FnMut(&mut C, &mut World, In) -> ()` closure:
+
+```rust
+select! {
+    reg,
+    ctx: SessionCtx,
+    key: |m: &Decoded| m.kind,
+    MsgKind::NewOrder => |ctx: &mut SessionCtx, w: &mut World, m: Decoded| new_order_pipe.run(ctx, w, m),
+    MsgKind::Cancel   => |ctx, w, m| cancel_pipe.run(ctx, w, m),
+}
+```
+
+This is the escape hatch that predates the direct-pipeline support above;
+prefer the bare-pipeline form unless the arm genuinely needs the raw
+world handle.

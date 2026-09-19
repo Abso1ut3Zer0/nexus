@@ -3713,6 +3713,11 @@ impl<In, Out: PipelineOutput, Chain: ChainCall<In, Out = Out>> PipelineChain<In,
 /// Implements [`Handler<E>`](crate::Handler) for any event type `E`
 /// that the chain accepts — including borrowed types like `&'a [u8]`.
 /// Supports `for<'a> Handler<&'a T>` for zero-copy event dispatch.
+///
+/// Also implements [`StepCall`] and [`IntoStep`], so a built pipeline can
+/// be used *directly* as a [`select!`](crate::select) arm or a nested
+/// [`.then()`](PipelineChain::then) step — no hand-written `Opaque` wrapper
+/// closure required.
 pub struct Pipeline<F> {
     chain: F,
 }
@@ -3720,6 +3725,43 @@ pub struct Pipeline<F> {
 impl<E, F: ChainCall<E, Out = ()> + Send> crate::Handler<E> for Pipeline<F> {
     fn run(&mut self, world: &mut World, event: E) {
         self.chain.call(world, event);
+    }
+}
+
+// A built Pipeline is also a resolved step: its chain accepts `In` and
+// produces `()`, exactly what StepCall<In> requires. This mirrors the ctx
+// side (`CtxStepCall for CtxPipeline`) and is what lets a bare built
+// pipeline be a select! arm or a nested .then() step without an Opaque
+// wrapper closure. Generic over `In` (not pinned by the struct) to match
+// the Handler impl — the concrete `In` is fixed by the .then()/select!
+// call site.
+impl<In, F: ChainCall<In, Out = ()>> StepCall<In> for Pipeline<F> {
+    type Out = ();
+    #[inline(always)]
+    fn call(&mut self, world: &mut World, input: In) {
+        self.chain.call(world, input);
+    }
+}
+
+/// Marker for the [`IntoStep`] impl on a built [`Pipeline`].
+///
+/// A dedicated marker keeps this passthrough impl from overlapping the
+/// closure impls of [`IntoStep`] (which use `()`, tuples, `NoEvent`, and
+/// [`Opaque`] as their `Params`). `Pipeline` does not implement `FnMut`,
+/// but coherence reasons conservatively about `Fn`-family traits, so a
+/// distinct marker is required rather than reusing `()`.
+#[doc(hidden)]
+pub struct PipelineStep;
+
+// A built Pipeline is already a resolved StepCall — its steps hold Param
+// state resolved against the Registry at build time. So into_step just
+// hands `self` back; the `registry` argument is unused (no re-resolution).
+impl<In, F: ChainCall<In, Out = ()>> IntoStep<In, (), PipelineStep> for Pipeline<F> {
+    type Step = Self;
+
+    #[inline]
+    fn into_step(self, _registry: &Registry) -> Self::Step {
+        self
     }
 }
 

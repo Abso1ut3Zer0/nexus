@@ -10,6 +10,19 @@ contained.
 
 ## [Unreleased]
 
+### Added
+
+- **A built pipeline can be a `select!` arm / `.then()` step directly.** A built
+  `CtxPipeline` now implements `IntoCtxStep` (and a built plain `Pipeline` now
+  implements `StepCall` + `IntoStep`), so a terminal (`Out = ()`) sub-pipeline
+  can be used as a `select!` arm or a nested `.then()` step **without** a
+  hand-written `Opaque` wrapper closure (`|ctx, w, m| pipe.run(ctx, w, m)`). This
+  is a passthrough — a built pipeline is already a resolved step — with no
+  coherence conflict (pipelines don't implement `FnMut`) and no `select!` codegen
+  change. See the "Terminal fork" sections in `docs/callbacks.md` and
+  `docs/pipelines.md`. The `Opaque`-closure arm form remains for arms that need
+  raw `&mut World`.
+
 ## [2.5.1] — 2026-08-13
 
 ## [2.5.0] — 2026-08-13
