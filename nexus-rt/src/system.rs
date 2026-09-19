@@ -243,12 +243,11 @@ macro_rules! impl_into_system {
                 {
                     #[allow(non_snake_case)]
                     let ($($P,)+) = &state;
-                    registry.check_access(&[
-                        $(
-                            (<$P as Param>::resource_id($P),
-                             std::any::type_name::<$P>()),
-                        )+
-                    ]);
+                    let mut accesses = Vec::new();
+                    $(
+                        <$P as Param>::collect_access($P, &mut accesses);
+                    )+
+                    registry.check_access(&accesses);
                 }
                 SystemFn {
                     f: self,
@@ -312,12 +311,11 @@ macro_rules! impl_into_system_void {
                 {
                     #[allow(non_snake_case)]
                     let ($($P,)+) = &state;
-                    registry.check_access(&[
-                        $(
-                            (<$P as Param>::resource_id($P),
-                             std::any::type_name::<$P>()),
-                        )+
-                    ]);
+                    let mut accesses = Vec::new();
+                    $(
+                        <$P as Param>::collect_access($P, &mut accesses);
+                    )+
+                    registry.check_access(&accesses);
                 }
                 SystemFn {
                     f: self,

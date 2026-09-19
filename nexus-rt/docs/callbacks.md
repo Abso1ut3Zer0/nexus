@@ -59,6 +59,21 @@ assert_eq!(cb.ctx.bytes_received, 5);
 assert_eq!(world.resource::<TotalBytes>().0, 5);
 ```
 
+### Allocation
+
+Building a callback with `into_callback` runs a one-time parameter conflict
+check that allocates a small `Vec`. This happens on the **construction** path
+only — never on dispatch. `run` (and the `Param::fetch` behind it) are
+allocation-free, so a callback wired once at setup pays this cost a single time
+and the hot path stays zero-allocation.
+
+If you construct callbacks repeatedly or on a hot path, do not call
+`into_callback` each time — stamp them from a
+[`CallbackTemplate`](#callbacktemplate-stamping-many-callbacks) instead: the
+template runs the check (and its single allocation) once at creation, and every
+callback it generates afterward is allocation-free. Handlers work the same way
+via `HandlerTemplate`.
+
 ## Accessing Context Outside Dispatch
 
 The `ctx` field on `Callback` is `pub`. Drivers can read or mutate it

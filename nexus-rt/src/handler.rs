@@ -70,14 +70,40 @@ pub trait Param {
     /// - Caller ensures no aliasing violations.
     unsafe fn fetch<'w>(world: &'w World, state: &'w mut Self::State) -> Self::Item<'w>;
 
-    /// The ResourceId this param accesses, if any.
+    /// The single [`ResourceId`] this *leaf* param accesses, if any.
     ///
     /// Returns `None` for params that don't access World resources
-    /// (e.g. `Local<T>`). Used by [`Registry::check_access`] to enforce
-    /// one borrow per resource per handler.
+    /// (e.g. `Local<T>`) and for composite params (tuples,
+    /// `#[derive(Param)]` bundles) — composites report their nested
+    /// accesses through [`collect_access`](Self::collect_access), not here.
+    ///
+    /// This is the per-leaf building block; the conflict check consumes
+    /// [`collect_access`](Self::collect_access), which recurses.
     fn resource_id(state: &Self::State) -> Option<ResourceId> {
         let _ = state;
         None
+    }
+
+    /// Collect every [`ResourceId`] this param accesses into `out`, each
+    /// paired with a human-readable name for conflict diagnostics.
+    ///
+    /// Unlike [`resource_id`](Self::resource_id), which reports only a
+    /// single leaf, this method **recurses** into composite params so
+    /// [`Registry::check_access`] sees resources nested inside tuples and
+    /// `#[derive(Param)]` bundles — closing the hole where a conflicting
+    /// borrow hidden in a bundle bypassed the always-on static check.
+    ///
+    /// The default reports this param's own
+    /// [`resource_id`](Self::resource_id), if any. Composite params (the
+    /// tuple impl, derived bundles) override it to forward each child's
+    /// `collect_access`.
+    ///
+    /// Called once per handler construction (build time, `#[cold]`), so the
+    /// `Vec` push is never on a dispatch (`fetch`) path.
+    fn collect_access(state: &Self::State, out: &mut Vec<(ResourceId, &'static str)>) {
+        if let Some(id) = Self::resource_id(state) {
+            out.push((id, std::any::type_name::<Self>()));
+        }
     }
 }
 
@@ -261,6 +287,14 @@ macro_rules! impl_param_tuple {
                 let ($($P,)+) = state;
                 // SAFETY: caller upholds aliasing invariants for all params.
                 unsafe { ($($P::fetch(world, $P),)+) }
+            }
+
+            // Forward each child so a conflict nested in a tuple (or a
+            // tuple nested in a bundle) is visible to `check_access`.
+            #[allow(non_snake_case)]
+            fn collect_access(state: &Self::State, out: &mut Vec<(ResourceId, &'static str)>) {
+                let ($($P,)+) = state;
+                $($P::collect_access($P, out);)+
             }
         }
     };
@@ -561,6 +595,21 @@ pub type HandlerFn<F, Params> = Callback<(), CtxFree<F>, Params>;
 ///
 /// let mut handler = tick.into_handler(builder.registry());
 /// ```
+///
+/// # Allocation
+///
+/// Converting a function into a handler runs a one-time [`Param`] conflict
+/// check that allocates a small `Vec` — on the **construction** path only.
+/// Dispatch never allocates: `run` and the `Param::fetch` it drives are
+/// allocation-free. For a handler wired once at world build this cost is
+/// irrelevant.
+///
+/// If you build handlers repeatedly or on a hot path, do not call
+/// `into_handler` each time — stamp them from a
+/// [`HandlerTemplate`](crate::HandlerTemplate) instead. A template runs the
+/// conflict check (and pays its single allocation) once at creation, then
+/// [`generate`](crate::HandlerTemplate::generate) produces each handler
+/// allocation-free.
 #[diagnostic::on_unimplemented(
     message = "this function cannot be converted into a handler",
     note = "handler signature: `fn(Res<A>, ResMut<B>, ..., Event)` — resources first, event last",
@@ -624,12 +673,11 @@ macro_rules! impl_into_handler {
                 {
                     #[allow(non_snake_case)]
                     let ($($P,)+) = &state;
-                    registry.check_access(&[
-                        $(
-                            (<$P as Param>::resource_id($P),
-                             std::any::type_name::<$P>()),
-                        )+
-                    ]);
+                    let mut accesses = Vec::new();
+                    $(
+                        <$P as Param>::collect_access($P, &mut accesses);
+                    )+
+                    registry.check_access(&accesses);
                 }
                 Callback {
                     ctx: (),
@@ -718,12 +766,11 @@ macro_rules! impl_into_handler_no_event {
                 {
                     #[allow(non_snake_case)]
                     let ($($P,)+) = &state;
-                    registry.check_access(&[
-                        $(
-                            (<$P as Param>::resource_id($P),
-                             std::any::type_name::<$P>()),
-                        )+
-                    ]);
+                    let mut accesses = Vec::new();
+                    $(
+                        <$P as Param>::collect_access($P, &mut accesses);
+                    )+
+                    registry.check_access(&accesses);
                 }
                 Callback {
                     ctx: (),
@@ -863,12 +910,11 @@ macro_rules! impl_into_handler_ignoring_event {
                 {
                     #[allow(non_snake_case)]
                     let ($($P,)+) = &state;
-                    registry.check_access(&[
-                        $(
-                            (<$P as Param>::resource_id($P),
-                             std::any::type_name::<$P>()),
-                        )+
-                    ]);
+                    let mut accesses = Vec::new();
+                    $(
+                        <$P as Param>::collect_access($P, &mut accesses);
+                    )+
+                    registry.check_access(&accesses);
                 }
                 IgnoreEventHandler {
                     f: self,

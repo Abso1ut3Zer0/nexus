@@ -297,10 +297,11 @@ macro_rules! impl_merge2_step {
                 {
                     #[allow(non_snake_case)]
                     let ($($P,)+) = &state;
-                    registry.check_access(&[
-                        $((<$P as crate::handler::Param>::resource_id($P),
-                           std::any::type_name::<$P>()),)+
-                    ]);
+                    let mut accesses = Vec::new();
+                    $(
+                        <$P as crate::handler::Param>::collect_access($P, &mut accesses);
+                    )+
+                    registry.check_access(&accesses);
                 }
                 MergeStep { f: self, state, name: std::any::type_name::<F>() }
             }
@@ -380,10 +381,11 @@ macro_rules! impl_merge3_step {
                 {
                     #[allow(non_snake_case)]
                     let ($($P,)+) = &state;
-                    registry.check_access(&[
-                        $((<$P as crate::handler::Param>::resource_id($P),
-                           std::any::type_name::<$P>()),)+
-                    ]);
+                    let mut accesses = Vec::new();
+                    $(
+                        <$P as crate::handler::Param>::collect_access($P, &mut accesses);
+                    )+
+                    registry.check_access(&accesses);
                 }
                 MergeStep { f: self, state, name: std::any::type_name::<F>() }
             }
@@ -453,7 +455,9 @@ macro_rules! impl_merge4_step {
             fn into_merge_step(self, registry: &Registry) -> Self::Step {
                 let state = <($($P,)+) as crate::handler::Param>::init(registry);
                 { #[allow(non_snake_case)] let ($($P,)+) = &state;
-                  registry.check_access(&[$((<$P as crate::handler::Param>::resource_id($P), std::any::type_name::<$P>()),)+]); }
+                  let mut accesses = Vec::new();
+                  $( <$P as crate::handler::Param>::collect_access($P, &mut accesses); )+
+                  registry.check_access(&accesses); }
                 MergeStep { f: self, state, name: std::any::type_name::<F>() }
             }
         }
@@ -522,7 +526,9 @@ macro_rules! impl_merge5_step {
             fn into_merge_step(self, registry: &Registry) -> Self::Step {
                 let state = <($($P,)+) as crate::handler::Param>::init(registry);
                 { #[allow(non_snake_case)] let ($($P,)+) = &state;
-                  registry.check_access(&[$((<$P as crate::handler::Param>::resource_id($P), std::any::type_name::<$P>()),)+]); }
+                  let mut accesses = Vec::new();
+                  $( <$P as crate::handler::Param>::collect_access($P, &mut accesses); )+
+                  registry.check_access(&accesses); }
                 MergeStep { f: self, state, name: std::any::type_name::<F>() }
             }
         }

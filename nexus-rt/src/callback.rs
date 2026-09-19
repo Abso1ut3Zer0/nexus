@@ -155,6 +155,20 @@ pub struct Callback<C, F, Params: Param> {
 ///
 /// Panics if any [`Param`] resource is not registered in the
 /// [`Registry`](crate::Registry).
+///
+/// # Allocation
+///
+/// Converting a function into a callback runs a one-time [`Param`] conflict
+/// check that allocates a small `Vec` — on the **construction** path only.
+/// Dispatch is unaffected: `run` and the `Param::fetch` it drives never
+/// allocate. For a callback wired once at setup this cost is irrelevant.
+///
+/// If you build callbacks repeatedly or on a hot path, do not call
+/// `into_callback` each time — stamp them from a
+/// [`CallbackTemplate`](crate::CallbackTemplate) instead. A template runs the
+/// conflict check (and pays its single allocation) once at creation, then
+/// [`generate`](crate::CallbackTemplate::generate) produces each callback
+/// allocation-free.
 #[diagnostic::on_unimplemented(
     message = "this function cannot be converted into a callback",
     note = "callback signature: `fn(&mut Context, Res<A>, ..., Event)` — context first, then resources, event last",
@@ -217,12 +231,11 @@ macro_rules! impl_into_callback {
                 {
                     #[allow(non_snake_case)]
                     let ($($P,)+) = &state;
-                    registry.check_access(&[
-                        $(
-                            (<$P as Param>::resource_id($P),
-                             std::any::type_name::<$P>()),
-                        )+
-                    ]);
+                    let mut accesses = Vec::new();
+                    $(
+                        <$P as Param>::collect_access($P, &mut accesses);
+                    )+
+                    registry.check_access(&accesses);
                 }
                 Callback { ctx, f: self, state, name: std::any::type_name::<F>() }
             }
@@ -314,12 +327,11 @@ macro_rules! impl_into_callback_no_event {
                 {
                     #[allow(non_snake_case)]
                     let ($($P,)+) = &state;
-                    registry.check_access(&[
-                        $(
-                            (<$P as Param>::resource_id($P),
-                             std::any::type_name::<$P>()),
-                        )+
-                    ]);
+                    let mut accesses = Vec::new();
+                    $(
+                        <$P as Param>::collect_access($P, &mut accesses);
+                    )+
+                    registry.check_access(&accesses);
                 }
                 Callback { ctx, f: self, state, name: std::any::type_name::<F>() }
             }

@@ -331,15 +331,22 @@ impl Registry {
     /// pointer). O(n²) pairwise comparison — handler arity is 1-8, so
     /// this is trivially fast at build time.
     ///
+    /// The access list is produced by [`Param::collect_access`], which
+    /// recurses into tuples and `#[derive(Param)]` bundles — so every leaf
+    /// access is present here regardless of nesting. Params that touch no
+    /// resource simply contribute no entry.
+    ///
     /// # Panics
     ///
     /// Panics if any resource is accessed by more than one parameter.
+    ///
+    /// [`Param::collect_access`]: crate::handler::Param::collect_access
     #[cold]
-    pub fn check_access(&self, accesses: &[(Option<ResourceId>, &str)]) {
+    pub fn check_access(&self, accesses: &[(ResourceId, &str)]) {
         for i in 0..accesses.len() {
-            let Some(id_i) = accesses[i].0 else { continue };
+            let id_i = accesses[i].0;
             for j in (i + 1)..accesses.len() {
-                let Some(id_j) = accesses[j].0 else { continue };
+                let id_j = accesses[j].0;
                 assert!(
                     id_i != id_j,
                     "conflicting access: resource borrowed by `{}` conflicts with \
@@ -1664,9 +1671,7 @@ mod tests {
         let mut builder = WorldBuilder::new();
         let id_a = builder.register::<u64>(0);
         let id_b = builder.register::<u32>(0);
-        builder
-            .registry()
-            .check_access(&[(Some(id_a), "a"), (Some(id_b), "b")]);
+        builder.registry().check_access(&[(id_a, "a"), (id_b, "b")]);
     }
 
     #[test]
@@ -1674,9 +1679,7 @@ mod tests {
     fn check_access_detects_conflict() {
         let mut builder = WorldBuilder::new();
         let id = builder.register::<u64>(0);
-        builder
-            .registry()
-            .check_access(&[(Some(id), "a"), (Some(id), "b")]);
+        builder.registry().check_access(&[(id, "a"), (id, "b")]);
     }
 
     #[test]
