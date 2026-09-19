@@ -1,9 +1,0 @@
-# Pin the local toolchain to the workspace MSRV so maintainer builds match CI exactly.
-# CI runs every job on rustc 1.94.0 (`dtolnay/rust-toolchain@1.94.0`); rustup reads
-# this file and auto-selects (and installs) 1.94.0 for all cargo commands in the repo.
-# Building against the MSRV locally prevents drift — e.g. newer rustc flags clippy
-# lints CI does not, and trybuild `.stderr` snapshots are rustc-version-specific.
-# Keep in sync with `rust-version` in Cargo.toml and the CI toolchain refs when bumping.
-[toolchain]
-channel = "1.94.0"
-components = ["clippy", "rustfmt"]
