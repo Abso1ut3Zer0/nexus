@@ -23,6 +23,30 @@ contained.
   `docs/pipelines.md`. The `Opaque`-closure arm form remains for arms that need
   raw `&mut World`.
 
+### Fixed
+
+- **The static conflict check now sees resources nested inside
+  `#[derive(Param)]` bundles and tuples.** `Registry::check_access` previously
+  only inspected top-level params, so a conflicting borrow hidden in a bundle
+  (or a nested tuple) — the very escape hatch used to exceed the 8-param arity
+  ceiling — silently bypassed the always-on aliasing guard; only the
+  debug-only runtime borrow tracker could catch it, and only on dispatch. Access
+  reporting is now recursive, so bundle-vs-top-level, two-bundle, bundle-in-bundle,
+  and tuple-in-bundle conflicts are all caught at handler construction time. The
+  hot path (`Param::fetch`) is unchanged — this is build-time only.
+
+### Changed
+
+- **`Param` gains a defaulted `collect_access` method** (the recursive access
+  collector behind the fix above). The default reports the param's own
+  `resource_id`, so all leaf impls (`Res`, `ResMut`, `Local`, …) and any existing
+  hand-written impls keep working unchanged; the tuple impl and `#[derive(Param)]`
+  override it to forward each child. `resource_id` is retained as the per-leaf
+  building block. `Registry::check_access` now takes `&[(ResourceId, &str)]`
+  instead of `&[(Option<ResourceId>, &str)]` (the collector never yields empty
+  entries). Both are extension-point / low-level surfaces; the derive and
+  built-ins are unaffected.
+
 ## [2.5.1] — 2026-08-13
 
 ## [2.5.0] — 2026-08-13

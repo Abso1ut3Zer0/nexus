@@ -397,6 +397,16 @@ fn derive_param_impl(input: &DeriveInput) -> Result<proc_macro2::TokenStream, sy
         }
     });
 
+    // collect_access() body — forward each participating field so a resource
+    // borrowed inside the bundle (or a bundle/tuple nested within it) is
+    // visible to `Registry::check_access`. Ignored fields touch no resource,
+    // so they contribute nothing.
+    let collect_access_fields = param_fields.iter().map(|(field_name, _, static_ty)| {
+        quote! {
+            <#static_ty as ::nexus_rt::Param>::collect_access(&state.#field_name, out);
+        }
+    });
+
     Ok(quote! {
         #[doc(hidden)]
         #[allow(non_camel_case_types)]
@@ -424,6 +434,13 @@ fn derive_param_impl(input: &DeriveInput) -> Result<proc_macro2::TokenStream, sy
                     #(#fetch_fields,)*
                     #(#fetch_ignored,)*
                 }
+            }
+
+            fn collect_access(
+                state: &Self::State,
+                out: &mut ::std::vec::Vec<(::nexus_rt::ResourceId, &'static str)>,
+            ) {
+                #(#collect_access_fields)*
             }
         }
     })

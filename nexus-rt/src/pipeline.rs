@@ -255,12 +255,11 @@ macro_rules! impl_into_step {
                 {
                     #[allow(non_snake_case)]
                     let ($($P,)+) = &state;
-                    registry.check_access(&[
-                        $(
-                            (<$P as Param>::resource_id($P),
-                             std::any::type_name::<$P>()),
-                        )+
-                    ]);
+                    let mut accesses = Vec::new();
+                    $(
+                        <$P as Param>::collect_access($P, &mut accesses);
+                    )+
+                    registry.check_access(&accesses);
                 }
                 Step { f: self, state, name: std::any::type_name::<F>() }
             }
@@ -343,12 +342,11 @@ macro_rules! impl_into_step_no_event {
                 {
                     #[allow(non_snake_case)]
                     let ($($P,)+) = &state;
-                    registry.check_access(&[
-                        $(
-                            (<$P as Param>::resource_id($P),
-                             std::any::type_name::<$P>()),
-                        )+
-                    ]);
+                    let mut accesses = Vec::new();
+                    $(
+                        <$P as Param>::collect_access($P, &mut accesses);
+                    )+
+                    registry.check_access(&accesses);
                 }
                 Step { f: self, state, name: std::any::type_name::<F>() }
             }
@@ -503,12 +501,11 @@ macro_rules! impl_into_ref_step {
                 {
                     #[allow(non_snake_case)]
                     let ($($P,)+) = &state;
-                    registry.check_access(&[
-                        $(
-                            (<$P as Param>::resource_id($P),
-                             std::any::type_name::<$P>()),
-                        )+
-                    ]);
+                    let mut accesses = Vec::new();
+                    $(
+                        <$P as Param>::collect_access($P, &mut accesses);
+                    )+
+                    registry.check_access(&accesses);
                 }
                 Step { f: self, state, name: std::any::type_name::<F>() }
             }
@@ -589,12 +586,11 @@ macro_rules! impl_into_ref_step_no_event {
                 {
                     #[allow(non_snake_case)]
                     let ($($P,)+) = &state;
-                    registry.check_access(&[
-                        $(
-                            (<$P as Param>::resource_id($P),
-                             std::any::type_name::<$P>()),
-                        )+
-                    ]);
+                    let mut accesses = Vec::new();
+                    $(
+                        <$P as Param>::collect_access($P, &mut accesses);
+                    )+
+                    registry.check_access(&accesses);
                 }
                 Step { f: self, state, name: std::any::type_name::<F>() }
             }
@@ -759,12 +755,11 @@ macro_rules! impl_into_producer {
                 {
                     #[allow(non_snake_case)]
                     let ($($P,)+) = &state;
-                    registry.check_access(&[
-                        $(
-                            (<$P as Param>::resource_id($P),
-                             std::any::type_name::<$P>()),
-                        )+
-                    ]);
+                    let mut accesses = Vec::new();
+                    $(
+                        <$P as Param>::collect_access($P, &mut accesses);
+                    )+
+                    registry.check_access(&accesses);
                 }
                 Step { f: self, state, name: std::any::type_name::<F>() }
             }
@@ -930,12 +925,11 @@ macro_rules! impl_into_scan_step {
                 {
                     #[allow(non_snake_case)]
                     let ($($P,)+) = &state;
-                    registry.check_access(&[
-                        $(
-                            (<$P as Param>::resource_id($P),
-                             std::any::type_name::<$P>()),
-                        )+
-                    ]);
+                    let mut accesses = Vec::new();
+                    $(
+                        <$P as Param>::collect_access($P, &mut accesses);
+                    )+
+                    registry.check_access(&accesses);
                 }
                 Step { f: self, state, name: std::any::type_name::<F>() }
             }
@@ -1017,12 +1011,11 @@ macro_rules! impl_into_scan_step_no_event {
                 {
                     #[allow(non_snake_case)]
                     let ($($P,)+) = &state;
-                    registry.check_access(&[
-                        $(
-                            (<$P as Param>::resource_id($P),
-                             std::any::type_name::<$P>()),
-                        )+
-                    ]);
+                    let mut accesses = Vec::new();
+                    $(
+                        <$P as Param>::collect_access($P, &mut accesses);
+                    )+
+                    registry.check_access(&accesses);
                 }
                 Step { f: self, state, name: std::any::type_name::<F>() }
             }
@@ -1195,12 +1188,11 @@ macro_rules! impl_into_ref_scan_step {
                 {
                     #[allow(non_snake_case)]
                     let ($($P,)+) = &state;
-                    registry.check_access(&[
-                        $(
-                            (<$P as Param>::resource_id($P),
-                             std::any::type_name::<$P>()),
-                        )+
-                    ]);
+                    let mut accesses = Vec::new();
+                    $(
+                        <$P as Param>::collect_access($P, &mut accesses);
+                    )+
+                    registry.check_access(&accesses);
                 }
                 Step { f: self, state, name: std::any::type_name::<F>() }
             }
@@ -1286,12 +1278,11 @@ macro_rules! impl_into_ref_scan_step_no_event {
                 {
                     #[allow(non_snake_case)]
                     let ($($P,)+) = &state;
-                    registry.check_access(&[
-                        $(
-                            (<$P as Param>::resource_id($P),
-                             std::any::type_name::<$P>()),
-                        )+
-                    ]);
+                    let mut accesses = Vec::new();
+                    $(
+                        <$P as Param>::collect_access($P, &mut accesses);
+                    )+
+                    registry.check_access(&accesses);
                 }
                 Step { f: self, state, name: std::any::type_name::<F>() }
             }
@@ -1443,12 +1434,11 @@ macro_rules! impl_splat2_step {
                 {
                     #[allow(non_snake_case)]
                     let ($($P,)+) = &state;
-                    registry.check_access(&[
-                        $(
-                            (<$P as Param>::resource_id($P),
-                             std::any::type_name::<$P>()),
-                        )+
-                    ]);
+                    let mut accesses = Vec::new();
+                    $(
+                        <$P as Param>::collect_access($P, &mut accesses);
+                    )+
+                    registry.check_access(&accesses);
                 }
                 Step { f: self, state, name: std::any::type_name::<F>() }
             }
@@ -1538,12 +1528,11 @@ macro_rules! impl_splat3_step {
                 {
                     #[allow(non_snake_case)]
                     let ($($P,)+) = &state;
-                    registry.check_access(&[
-                        $(
-                            (<$P as Param>::resource_id($P),
-                             std::any::type_name::<$P>()),
-                        )+
-                    ]);
+                    let mut accesses = Vec::new();
+                    $(
+                        <$P as Param>::collect_access($P, &mut accesses);
+                    )+
+                    registry.check_access(&accesses);
                 }
                 Step { f: self, state, name: std::any::type_name::<F>() }
             }
@@ -1628,7 +1617,9 @@ macro_rules! impl_splat4_step {
             fn into_splat_step(self, registry: &Registry) -> Self::Step {
                 let state = <($($P,)+) as Param>::init(registry);
                 { #[allow(non_snake_case)] let ($($P,)+) = &state;
-                  registry.check_access(&[$((<$P as Param>::resource_id($P), std::any::type_name::<$P>()),)+]); }
+                  let mut accesses = Vec::new();
+                  $( <$P as Param>::collect_access($P, &mut accesses); )+
+                  registry.check_access(&accesses); }
                 Step { f: self, state, name: std::any::type_name::<F>() }
             }
         }
@@ -1714,7 +1705,9 @@ macro_rules! impl_splat5_step {
             fn into_splat_step(self, registry: &Registry) -> Self::Step {
                 let state = <($($P,)+) as Param>::init(registry);
                 { #[allow(non_snake_case)] let ($($P,)+) = &state;
-                  registry.check_access(&[$((<$P as Param>::resource_id($P), std::any::type_name::<$P>()),)+]); }
+                  let mut accesses = Vec::new();
+                  $( <$P as Param>::collect_access($P, &mut accesses); )+
+                  registry.check_access(&accesses); }
                 Step { f: self, state, name: std::any::type_name::<F>() }
             }
         }

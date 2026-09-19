@@ -208,12 +208,11 @@ macro_rules! impl_into_ctx_step {
                 {
                     #[allow(non_snake_case)]
                     let ($($P,)+) = &state;
-                    registry.check_access(&[
-                        $(
-                            (<$P as Param>::resource_id($P),
-                             std::any::type_name::<$P>()),
-                        )+
-                    ]);
+                    let mut accesses = Vec::new();
+                    $(
+                        <$P as Param>::collect_access($P, &mut accesses);
+                    )+
+                    registry.check_access(&accesses);
                 }
                 CtxStep { f: self, state, name: std::any::type_name::<F>() }
             }
@@ -298,12 +297,11 @@ macro_rules! impl_into_ctx_step_no_event {
                 {
                     #[allow(non_snake_case)]
                     let ($($P,)+) = &state;
-                    registry.check_access(&[
-                        $(
-                            (<$P as Param>::resource_id($P),
-                             std::any::type_name::<$P>()),
-                        )+
-                    ]);
+                    let mut accesses = Vec::new();
+                    $(
+                        <$P as Param>::collect_access($P, &mut accesses);
+                    )+
+                    registry.check_access(&accesses);
                 }
                 CtxStep { f: self, state, name: std::any::type_name::<F>() }
             }
@@ -462,12 +460,11 @@ macro_rules! impl_into_ctx_ref_step {
                 {
                     #[allow(non_snake_case)]
                     let ($($P,)+) = &state;
-                    registry.check_access(&[
-                        $(
-                            (<$P as Param>::resource_id($P),
-                             std::any::type_name::<$P>()),
-                        )+
-                    ]);
+                    let mut accesses = Vec::new();
+                    $(
+                        <$P as Param>::collect_access($P, &mut accesses);
+                    )+
+                    registry.check_access(&accesses);
                 }
                 CtxStep { f: self, state, name: std::any::type_name::<F>() }
             }
@@ -620,12 +617,11 @@ macro_rules! impl_into_ctx_producer {
                 {
                     #[allow(non_snake_case)]
                     let ($($P,)+) = &state;
-                    registry.check_access(&[
-                        $(
-                            (<$P as Param>::resource_id($P),
-                             std::any::type_name::<$P>()),
-                        )+
-                    ]);
+                    let mut accesses = Vec::new();
+                    $(
+                        <$P as Param>::collect_access($P, &mut accesses);
+                    )+
+                    registry.check_access(&accesses);
                 }
                 CtxStep { f: self, state, name: std::any::type_name::<F>() }
             }

@@ -695,12 +695,11 @@ macro_rules! impl_into_reactor {
                 {
                     #[allow(non_snake_case)]
                     let ($($P,)+) = &state;
-                    registry.check_access(&[
-                        $(
-                            (<$P as Param>::resource_id($P),
-                             std::any::type_name::<$P>()),
-                        )+
-                    ]);
+                    let mut accesses = Vec::new();
+                    $(
+                        <$P as Param>::collect_access($P, &mut accesses);
+                    )+
+                    registry.check_access(&accesses);
                 }
                 ReactorFn {
                     ctx,
