@@ -822,8 +822,8 @@ tier-3 `Opaque` closure form directly as the arm — an
 select! {
     reg,
     key: |m: &Decoded| m.kind,
-    MsgKind::NewOrder => |w: &mut World, m: Decoded| new_order_pipe.run(w, m),
-    MsgKind::Cancel   => |w: &mut World, m: Decoded| cancel_pipe.run(w, m),
+    MsgKind::NewOrder => move |w: &mut World, m: Decoded| new_order.run(w, m),
+    MsgKind::Cancel   => move |w: &mut World, m: Decoded| cancel.run(w, m),
 }
 ```
 

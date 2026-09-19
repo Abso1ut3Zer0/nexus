@@ -736,8 +736,8 @@ select! {
     reg,
     ctx: SessionCtx,
     key: |m: &Decoded| m.kind,
-    MsgKind::NewOrder => |ctx: &mut SessionCtx, w: &mut World, m: Decoded| new_order_pipe.run(ctx, w, m),
-    MsgKind::Cancel   => |ctx, w, m| cancel_pipe.run(ctx, w, m),
+    MsgKind::NewOrder => move |ctx: &mut SessionCtx, w: &mut World, m: Decoded| new_order.run(ctx, w, m),
+    MsgKind::Cancel   => move |ctx, w, m| cancel.run(ctx, w, m),
 }
 ```
 

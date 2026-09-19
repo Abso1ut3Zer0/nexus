@@ -18,6 +18,7 @@ error[E0277]: this function cannot be used as a pipeline step for this input typ
              `NoEvent<F>` implements `IntoStep<(), Out, (P0, P1, P2, P3, P4, P5, P6)>`
              `NoEvent<F>` implements `IntoStep<(), Out, (P0, P1, P2, P3, P4, P5, P6, P7)>`
              `NoEvent<F>` implements `IntoStep<(), Out, (P0,)>`
+             `Pipeline<F>` implements `IntoStep<In, (), PipelineStep>`
 note: required by a bound in `PipelineChain::<In, Out, Chain>::then`
   --> src/pipeline.rs
    |

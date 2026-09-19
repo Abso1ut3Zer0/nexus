@@ -485,6 +485,9 @@ fn plain_pipeline_as_select_arm_no_wrapper() {
 
     static NEW_ORDERS: AtomicU32 = AtomicU32::new(0);
     static CANCELS: AtomicU32 = AtomicU32::new(0);
+    // Reset so the test is deterministic regardless of harness reuse.
+    NEW_ORDERS.store(0, Ordering::SeqCst);
+    CANCELS.store(0, Ordering::SeqCst);
 
     let mut world = WorldBuilder::new().build();
     let reg = world.registry();
@@ -551,6 +554,8 @@ fn plain_pipeline_as_then_step_no_wrapper() {
     use std::sync::atomic::{AtomicU32, Ordering};
 
     static SEEN: AtomicU32 = AtomicU32::new(0);
+    // Reset so the test is deterministic regardless of harness reuse.
+    SEEN.store(0, Ordering::SeqCst);
 
     let mut world = WorldBuilder::new().build();
     let reg = world.registry();
