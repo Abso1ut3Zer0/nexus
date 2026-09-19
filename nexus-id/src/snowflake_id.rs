@@ -151,7 +151,7 @@ impl<const TS: u8, const WK: u8, const SQ: u8> fmt::Debug for SnowflakeId64<TS, 
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(
             f,
-            "SnowflakeId64({}, ts={}, w={}, s={})",
+            "SnowflakeId64({}, tick={}, w={}, s={})",
             self.0,
             self.tick(),
             self.worker(),
@@ -328,7 +328,7 @@ impl<const TS: u8, const WK: u8, const SQ: u8> fmt::Debug for SnowflakeId32<TS, 
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(
             f,
-            "SnowflakeId32({}, ts={}, w={}, s={})",
+            "SnowflakeId32({}, tick={}, w={}, s={})",
             self.0,
             self.tick(),
             self.worker(),
@@ -559,7 +559,7 @@ mod tests {
         let raw = (100u64 << 22) | (5u64 << 16) | 7u64;
         let id = Id64::from_raw(raw);
         let dbg = format!("{:?}", id);
-        assert!(dbg.contains("ts=100"));
+        assert!(dbg.contains("tick=100"));
         assert!(dbg.contains("w=5"));
         assert!(dbg.contains("s=7"));
     }

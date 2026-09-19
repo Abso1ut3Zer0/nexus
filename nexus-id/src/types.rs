@@ -83,9 +83,11 @@ impl<const CAP: usize> Uuid<CAP> {
         Self::from_raw(0, 0)
     }
 
-    /// Construct from a 16-byte big-endian binary representation.
+    /// Construct from the **canonical** 16-byte big-endian representation.
     ///
-    /// This is the inverse of [`to_be_bytes()`](Self::to_be_bytes).
+    /// Big-endian is RFC 9562 network byte order — the form databases (e.g.
+    /// Postgres `uuid`) and wire protocols store and transmit. This is the
+    /// inverse of [`to_be_bytes()`](Self::to_be_bytes).
     ///
     /// # Errors
     ///
@@ -102,12 +104,12 @@ impl<const CAP: usize> Uuid<CAP> {
         Ok(Self::from_raw(hi, lo))
     }
 
-    /// Construct from a byte slice without length validation.
+    /// Construct from a canonical big-endian byte slice without length validation.
     ///
     /// # Safety
     ///
     /// The caller must guarantee that `bytes.len() >= 16`. Reads the first
-    /// 16 bytes as a big-endian UUID.
+    /// 16 bytes as a big-endian (RFC 9562 network byte order) UUID.
     #[inline]
     pub unsafe fn from_be_bytes_unchecked(bytes: &[u8]) -> Self {
         debug_assert!(bytes.len() >= 16);
@@ -117,6 +119,50 @@ impl<const CAP: usize> Uuid<CAP> {
             let lo = u64::from_be_bytes(bytes.get_unchecked(8..16).try_into().unwrap_unchecked());
             Self::from_raw(hi, lo)
         }
+    }
+
+    /// Construct from a 16-byte little-endian binary representation.
+    ///
+    /// This is **not** the canonical UUID byte order (see
+    /// [`from_be_bytes()`](Self::from_be_bytes)). It is provided for
+    /// little-endian wire protocols such as SBE (e.g. CME MDP) and the many
+    /// custom binary formats that are little-endian. Inverse of
+    /// [`to_le_bytes()`](Self::to_le_bytes).
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ParseError::InvalidLength`] if `bytes.len() != 16`.
+    pub fn from_le_bytes(bytes: &[u8]) -> Result<Self, ParseError> {
+        if bytes.len() != 16 {
+            return Err(ParseError::InvalidLength {
+                expected: 16,
+                got: bytes.len(),
+            });
+        }
+        let mut be = [0u8; 16];
+        be.copy_from_slice(bytes);
+        be.reverse();
+        Self::from_be_bytes(&be)
+    }
+
+    /// Construct from a little-endian byte slice without length validation.
+    ///
+    /// This is **not** the canonical UUID byte order; see
+    /// [`from_le_bytes()`](Self::from_le_bytes).
+    ///
+    /// # Safety
+    ///
+    /// The caller must guarantee that `bytes.len() >= 16`. Reads the first
+    /// 16 bytes as a little-endian UUID.
+    #[inline]
+    pub unsafe fn from_le_bytes_unchecked(bytes: &[u8]) -> Self {
+        debug_assert!(bytes.len() >= 16);
+        let mut be = [0u8; 16];
+        // SAFETY: caller guarantees bytes.len() >= 16
+        be.copy_from_slice(unsafe { bytes.get_unchecked(..16) });
+        be.reverse();
+        // SAFETY: `be` is exactly 16 bytes.
+        unsafe { Self::from_be_bytes_unchecked(&be) }
     }
 
     /// Returns the UUID as a string slice.
@@ -224,7 +270,10 @@ impl<const CAP: usize> Uuid<CAP> {
         Some(hi >> 16)
     }
 
-    /// Get the raw 128-bit value as big-endian bytes.
+    /// Get the raw 128-bit value as **canonical** big-endian bytes.
+    ///
+    /// Big-endian is RFC 9562 network byte order — the form databases (e.g.
+    /// Postgres `uuid`) and wire protocols expect.
     pub fn to_be_bytes(&self) -> [u8; 16] {
         let (hi, lo) = self.to_raw();
         let mut out = [0u8; 16];
@@ -232,14 +281,27 @@ impl<const CAP: usize> Uuid<CAP> {
         out[8..].copy_from_slice(&lo.to_be_bytes());
         out
     }
+
+    /// Get the raw 128-bit value as little-endian bytes.
+    ///
+    /// This is the byte-reverse of [`to_be_bytes()`](Self::to_be_bytes), with
+    /// the same semantics as [`u128::to_le_bytes`]. It is **not** the canonical
+    /// UUID byte order — use it for little-endian wire protocols such as SBE
+    /// (e.g. CME MDP) and custom little-endian binary formats.
+    pub fn to_le_bytes(&self) -> [u8; 16] {
+        let mut bytes = self.to_be_bytes();
+        bytes.reverse();
+        bytes
+    }
 }
 
 impl<const CAP: usize> TryFrom<&[u8]> for Uuid<CAP> {
     type Error = ParseError;
 
-    /// Construct from a 16-byte big-endian binary representation.
+    /// Construct from the canonical 16-byte big-endian binary representation.
     ///
-    /// Delegates to [`from_be_bytes()`](Self::from_be_bytes).
+    /// Delegates to [`from_be_bytes()`](Self::from_be_bytes). For little-endian
+    /// input use [`from_le_bytes()`](Self::from_le_bytes) directly.
     #[inline]
     fn try_from(bytes: &[u8]) -> Result<Self, Self::Error> {
         Self::from_be_bytes(bytes)
@@ -347,9 +409,11 @@ impl<const CAP: usize> UuidCompact<CAP> {
         Self::from_raw(0, 0)
     }
 
-    /// Construct from a 16-byte big-endian binary representation.
+    /// Construct from the **canonical** 16-byte big-endian representation.
     ///
-    /// This is the inverse of [`to_be_bytes()`](Self::to_be_bytes).
+    /// Big-endian is RFC 9562 network byte order — the form databases (e.g.
+    /// Postgres `uuid`) and wire protocols store and transmit. This is the
+    /// inverse of [`to_be_bytes()`](Self::to_be_bytes).
     ///
     /// # Errors
     ///
@@ -366,11 +430,12 @@ impl<const CAP: usize> UuidCompact<CAP> {
         Ok(Self::from_raw(hi, lo))
     }
 
-    /// Construct from a byte slice without length validation.
+    /// Construct from a canonical big-endian byte slice without length validation.
     ///
     /// # Safety
     ///
-    /// The caller must guarantee that `bytes.len() >= 16`.
+    /// The caller must guarantee that `bytes.len() >= 16`. Reads the first
+    /// 16 bytes as a big-endian (RFC 9562 network byte order) UUID.
     #[inline]
     pub unsafe fn from_be_bytes_unchecked(bytes: &[u8]) -> Self {
         debug_assert!(bytes.len() >= 16);
@@ -380,6 +445,50 @@ impl<const CAP: usize> UuidCompact<CAP> {
             let lo = u64::from_be_bytes(bytes.get_unchecked(8..16).try_into().unwrap_unchecked());
             Self::from_raw(hi, lo)
         }
+    }
+
+    /// Construct from a 16-byte little-endian binary representation.
+    ///
+    /// This is **not** the canonical UUID byte order (see
+    /// [`from_be_bytes()`](Self::from_be_bytes)). It is provided for
+    /// little-endian wire protocols such as SBE (e.g. CME MDP) and the many
+    /// custom binary formats that are little-endian. Inverse of
+    /// [`to_le_bytes()`](Self::to_le_bytes).
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ParseError::InvalidLength`] if `bytes.len() != 16`.
+    pub fn from_le_bytes(bytes: &[u8]) -> Result<Self, ParseError> {
+        if bytes.len() != 16 {
+            return Err(ParseError::InvalidLength {
+                expected: 16,
+                got: bytes.len(),
+            });
+        }
+        let mut be = [0u8; 16];
+        be.copy_from_slice(bytes);
+        be.reverse();
+        Self::from_be_bytes(&be)
+    }
+
+    /// Construct from a little-endian byte slice without length validation.
+    ///
+    /// This is **not** the canonical UUID byte order; see
+    /// [`from_le_bytes()`](Self::from_le_bytes).
+    ///
+    /// # Safety
+    ///
+    /// The caller must guarantee that `bytes.len() >= 16`. Reads the first
+    /// 16 bytes as a little-endian UUID.
+    #[inline]
+    pub unsafe fn from_le_bytes_unchecked(bytes: &[u8]) -> Self {
+        debug_assert!(bytes.len() >= 16);
+        let mut be = [0u8; 16];
+        // SAFETY: caller guarantees bytes.len() >= 16
+        be.copy_from_slice(unsafe { bytes.get_unchecked(..16) });
+        be.reverse();
+        // SAFETY: `be` is exactly 16 bytes.
+        unsafe { Self::from_be_bytes_unchecked(&be) }
     }
 
     /// Returns the UUID (no-dash hex) as a string slice.
@@ -443,7 +552,10 @@ impl<const CAP: usize> UuidCompact<CAP> {
         self.0.as_bytes() == b"00000000000000000000000000000000"
     }
 
-    /// Get the raw 128-bit value as big-endian bytes.
+    /// Get the raw 128-bit value as **canonical** big-endian bytes.
+    ///
+    /// Big-endian is RFC 9562 network byte order — the form databases (e.g.
+    /// Postgres `uuid`) and wire protocols expect.
     pub fn to_be_bytes(&self) -> [u8; 16] {
         let (hi, lo) = self.to_raw();
         let mut out = [0u8; 16];
@@ -451,14 +563,27 @@ impl<const CAP: usize> UuidCompact<CAP> {
         out[8..].copy_from_slice(&lo.to_be_bytes());
         out
     }
+
+    /// Get the raw 128-bit value as little-endian bytes.
+    ///
+    /// This is the byte-reverse of [`to_be_bytes()`](Self::to_be_bytes), with
+    /// the same semantics as [`u128::to_le_bytes`]. It is **not** the canonical
+    /// UUID byte order — use it for little-endian wire protocols such as SBE
+    /// (e.g. CME MDP) and custom little-endian binary formats.
+    pub fn to_le_bytes(&self) -> [u8; 16] {
+        let mut bytes = self.to_be_bytes();
+        bytes.reverse();
+        bytes
+    }
 }
 
 impl<const CAP: usize> TryFrom<&[u8]> for UuidCompact<CAP> {
     type Error = ParseError;
 
-    /// Construct from a 16-byte big-endian binary representation.
+    /// Construct from the canonical 16-byte big-endian binary representation.
     ///
-    /// Delegates to [`from_be_bytes()`](Self::from_be_bytes).
+    /// Delegates to [`from_be_bytes()`](Self::from_be_bytes). For little-endian
+    /// input use [`from_le_bytes()`](Self::from_le_bytes) directly.
     #[inline]
     fn try_from(bytes: &[u8]) -> Result<Self, Self::Error> {
         Self::from_be_bytes(bytes)
@@ -980,11 +1105,13 @@ impl<const CAP: usize> Ulid<CAP> {
         Self::from_raw(0, 0, 0)
     }
 
-    /// Construct from a 16-byte big-endian binary representation.
+    /// Construct from the **canonical** 16-byte big-endian representation.
     ///
     /// Layout: `[timestamp: 6 bytes][rand_hi: 2 bytes][rand_lo: 8 bytes]`
     ///
-    /// This is the inverse of [`to_be_bytes()`](Self::to_be_bytes).
+    /// Big-endian (MSB-first) is the canonical ULID binary form per the ULID
+    /// spec: byte-wise ordering of this form equals numeric (and therefore time)
+    /// ordering. This is the inverse of [`to_be_bytes()`](Self::to_be_bytes).
     ///
     /// # Errors
     ///
@@ -1007,11 +1134,12 @@ impl<const CAP: usize> Ulid<CAP> {
         Ok(Self::from_raw(timestamp_ms, rand_hi, rand_lo))
     }
 
-    /// Construct from a byte slice without length validation.
+    /// Construct from a canonical big-endian byte slice without length validation.
     ///
     /// # Safety
     ///
-    /// The caller must guarantee that `bytes.len() >= 16`.
+    /// The caller must guarantee that `bytes.len() >= 16`. Reads the first
+    /// 16 bytes as a big-endian (canonical, MSB-first) ULID.
     #[inline]
     pub unsafe fn from_be_bytes_unchecked(bytes: &[u8]) -> Self {
         debug_assert!(bytes.len() >= 16);
@@ -1028,6 +1156,50 @@ impl<const CAP: usize> Ulid<CAP> {
 
             Self::from_raw(timestamp_ms, rand_hi, rand_lo)
         }
+    }
+
+    /// Construct from a 16-byte little-endian binary representation.
+    ///
+    /// This is **not** the canonical ULID byte order (see
+    /// [`from_be_bytes()`](Self::from_be_bytes)) and does **not** preserve the
+    /// byte-wise sort property. It is provided for little-endian wire protocols
+    /// such as SBE (e.g. CME MDP) and custom little-endian binary formats.
+    /// Inverse of [`to_le_bytes()`](Self::to_le_bytes).
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ParseError::InvalidLength`] if `bytes.len() != 16`.
+    pub fn from_le_bytes(bytes: &[u8]) -> Result<Self, ParseError> {
+        if bytes.len() != 16 {
+            return Err(ParseError::InvalidLength {
+                expected: 16,
+                got: bytes.len(),
+            });
+        }
+        let mut be = [0u8; 16];
+        be.copy_from_slice(bytes);
+        be.reverse();
+        Self::from_be_bytes(&be)
+    }
+
+    /// Construct from a little-endian byte slice without length validation.
+    ///
+    /// This is **not** the canonical ULID byte order; see
+    /// [`from_le_bytes()`](Self::from_le_bytes).
+    ///
+    /// # Safety
+    ///
+    /// The caller must guarantee that `bytes.len() >= 16`. Reads the first
+    /// 16 bytes as a little-endian ULID.
+    #[inline]
+    pub unsafe fn from_le_bytes_unchecked(bytes: &[u8]) -> Self {
+        debug_assert!(bytes.len() >= 16);
+        let mut be = [0u8; 16];
+        // SAFETY: caller guarantees bytes.len() >= 16
+        be.copy_from_slice(unsafe { bytes.get_unchecked(..16) });
+        be.reverse();
+        // SAFETY: `be` is exactly 16 bytes.
+        unsafe { Self::from_be_bytes_unchecked(&be) }
     }
 
     /// Returns the encoded ULID (Crockford Base32) string.
@@ -1144,7 +1316,11 @@ impl<const CAP: usize> Ulid<CAP> {
         Uuid::from_raw(hi, lo)
     }
 
-    /// Get the raw 128-bit value as big-endian bytes.
+    /// Get the raw 128-bit value as **canonical** big-endian bytes.
+    ///
+    /// Big-endian (MSB-first) is the canonical ULID binary form per the ULID
+    /// spec: byte-wise ordering of this form equals numeric (and therefore time)
+    /// ordering.
     pub fn to_be_bytes(&self) -> [u8; 16] {
         let ts = self.timestamp_millis();
         let (rand_hi, rand_lo) = self.random();
@@ -1158,6 +1334,19 @@ impl<const CAP: usize> Ulid<CAP> {
         // Random lo in bytes 8-15 (64 bits)
         out[8..16].copy_from_slice(&rand_lo.to_be_bytes());
         out
+    }
+
+    /// Get the raw 128-bit value as little-endian bytes.
+    ///
+    /// This is the byte-reverse of [`to_be_bytes()`](Self::to_be_bytes), with
+    /// the same semantics as [`u128::to_le_bytes`]. It is **not** the canonical
+    /// ULID byte order and does **not** preserve the byte-wise sort property —
+    /// use it for little-endian wire protocols such as SBE (e.g. CME MDP) and
+    /// custom little-endian binary formats.
+    pub fn to_le_bytes(&self) -> [u8; 16] {
+        let mut bytes = self.to_be_bytes();
+        bytes.reverse();
+        bytes
     }
 
     /// Decode the random portion as (hi: u16, lo: u64).
@@ -1191,9 +1380,10 @@ impl<const CAP: usize> Ulid<CAP> {
 impl<const CAP: usize> TryFrom<&[u8]> for Ulid<CAP> {
     type Error = ParseError;
 
-    /// Construct from a 16-byte big-endian binary representation.
+    /// Construct from the canonical 16-byte big-endian binary representation.
     ///
-    /// Delegates to [`from_be_bytes()`](Self::from_be_bytes).
+    /// Delegates to [`from_be_bytes()`](Self::from_be_bytes). For little-endian
+    /// input use [`from_le_bytes()`](Self::from_le_bytes) directly.
     #[inline]
     fn try_from(bytes: &[u8]) -> Result<Self, Self::Error> {
         Self::from_be_bytes(bytes)
@@ -1533,6 +1723,61 @@ mod tests {
         // SAFETY: bytes came from original.to_be_bytes(), so it encodes a valid Ulid.
         let recovered: Ulid = unsafe { Ulid::from_be_bytes_unchecked(&bytes) };
         assert_eq!(original, recovered);
+    }
+
+    #[test]
+    fn uuid_le_bytes_roundtrip() {
+        let original: Uuid = Uuid::from_raw(0x0123_4567_89AB_CDEF, 0xFEDC_BA98_7654_3210);
+
+        // LE is the byte-reverse of BE.
+        let mut reversed_be = original.to_be_bytes();
+        reversed_be.reverse();
+        assert_eq!(original.to_le_bytes(), reversed_be);
+
+        // Round-trip through the LE constructors.
+        let le = original.to_le_bytes();
+        assert_eq!(Uuid::<40>::from_le_bytes(&le).unwrap(), original);
+        // SAFETY: `le` is a 16-byte little-endian encoding of a valid Uuid.
+        let unchecked = unsafe { Uuid::<40>::from_le_bytes_unchecked(&le) };
+        assert_eq!(unchecked, original);
+
+        // Wrong length rejected.
+        assert!(Uuid::<40>::from_le_bytes(&[0u8; 15]).is_err());
+    }
+
+    #[test]
+    fn uuid_compact_le_bytes_roundtrip() {
+        let original: UuidCompact =
+            UuidCompact::from_raw(0xDEAD_BEEF_CAFE_BABE, 0x0123_4567_89AB_CDEF);
+
+        let mut reversed_be = original.to_be_bytes();
+        reversed_be.reverse();
+        assert_eq!(original.to_le_bytes(), reversed_be);
+
+        let le = original.to_le_bytes();
+        assert_eq!(UuidCompact::<32>::from_le_bytes(&le).unwrap(), original);
+        // SAFETY: `le` is a 16-byte little-endian encoding of a valid UuidCompact.
+        let unchecked = unsafe { UuidCompact::<32>::from_le_bytes_unchecked(&le) };
+        assert_eq!(unchecked, original);
+
+        assert!(UuidCompact::<32>::from_le_bytes(&[0u8; 17]).is_err());
+    }
+
+    #[test]
+    fn ulid_le_bytes_roundtrip() {
+        let original: Ulid = Ulid::from_raw(1_700_000_000_000, 0xABCD, 0xDEAD_BEEF_CAFE_BABE);
+
+        let mut reversed_be = original.to_be_bytes();
+        reversed_be.reverse();
+        assert_eq!(original.to_le_bytes(), reversed_be);
+
+        let le = original.to_le_bytes();
+        assert_eq!(Ulid::<32>::from_le_bytes(&le).unwrap(), original);
+        // SAFETY: `le` is a 16-byte little-endian encoding of a valid Ulid.
+        let unchecked = unsafe { Ulid::<32>::from_le_bytes_unchecked(&le) };
+        assert_eq!(unchecked, original);
+
+        assert!(Ulid::<32>::from_le_bytes(&[0u8; 15]).is_err());
     }
 
     #[test]

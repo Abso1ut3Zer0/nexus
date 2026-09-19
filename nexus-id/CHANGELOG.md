@@ -32,6 +32,16 @@ contained.
   generators.
 - `TypeId` now defaults its capacity parameter to `TypeId<32>`, so the const
   generic can be omitted for prefixes up to 5 characters.
+- Little-endian byte output for the 128-bit ID types: `to_le_bytes()`,
+  `from_le_bytes()`, and `from_le_bytes_unchecked()` on `Uuid`, `UuidCompact`,
+  and `Ulid`. These are the byte-reverse of the canonical big-endian form
+  (same semantics as `u128::to_le_bytes`) and are provided for little-endian
+  wire protocols such as SBE / CME MDP. Big-endian remains canonical:
+  `TryFrom<&[u8]>` is unchanged (still big-endian).
+- `put_to_le` on all five `bytes`-crate integration types (`Uuid`,
+  `UuidCompact`, `Ulid`, `SnowflakeId64`, `SnowflakeId32`), writing the
+  little-endian representation into a `BufMut`. For the 128-bit types the
+  output is exactly `to_le_bytes()`.
 
 ### Changed (breaking)
 
@@ -57,6 +67,16 @@ contained.
 - The parse-error enums `ParseError`, `UuidParseError`, `DecodeError`, and
   `TypeIdParseError` are now `#[non_exhaustive]`. Downstream `match` expressions
   over these types must add a wildcard (`_`) arm.
+
+- The `bytes`-crate `put_to` method is renamed to `put_to_be` on all five
+  integration types (`Uuid`, `UuidCompact`, `Ulid`, `SnowflakeId64`,
+  `SnowflakeId32`), pairing with the new `put_to_le`. Migration: rename
+  `.put_to(buf)` calls to `.put_to_be(buf)`.
+
+- The `Debug` output of the Snowflake typed IDs (`SnowflakeId64`,
+  `SnowflakeId32`) now labels the ordering field `tick=` instead of `ts=`,
+  matching the renamed `tick()` accessor. Migration: update any code or tests
+  that pin the `ts=` substring.
 
 - `SequenceExhausted` is restored as a standalone struct with fields `tick: u64`
   and `max_sequence: u64`. It is no longer a type alias for `SnowflakeError`.

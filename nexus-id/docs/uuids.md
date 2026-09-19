@@ -59,7 +59,15 @@ an exposed resource ID), use V4.
 
 ```rust
 use nexus_id::{UlidGenerator, Ulid};
-use std::time::Instant;
+use std::time::{Instant, SystemTime, UNIX_EPOCH};
+
+// Snap both clocks once at startup: an `Instant` epoch for the syscall-free
+// hot path, and the matching Unix time (ms) it corresponds to.
+let epoch = Instant::now();
+let unix_base = SystemTime::now()
+    .duration_since(UNIX_EPOCH)
+    .unwrap()
+    .as_millis() as u64;
 
 let mut generator = UlidGenerator::from_entropy(epoch, unix_base);
 let id: Ulid = generator.next(Instant::now()).unwrap();
