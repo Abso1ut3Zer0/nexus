@@ -1543,7 +1543,10 @@ impl<C, In, Chain: CtxChainCall<C, In, Out = Option<()>>>
 /// Built context-aware pipeline.
 ///
 /// Created by [`CtxPipelineChain::build`]. Implements [`CtxStepCall`]
-/// for use inside [`Callback`](crate::Callback) dispatch.
+/// for use inside [`Callback`](crate::Callback) dispatch, and
+/// [`IntoCtxStep`] so a built pipeline can be used *directly* as a
+/// [`select!`](crate::select) arm or a nested [`.then()`](CtxPipelineChain::then)
+/// step — no hand-written `Opaque` wrapper closure required.
 pub struct CtxPipeline<C, In, Chain> {
     chain: Chain,
     _marker: PhantomData<fn(&mut C, In)>,
@@ -1553,6 +1556,32 @@ impl<C, In, Chain: CtxChainCall<C, In, Out = ()>> CtxStepCall<C, In> for CtxPipe
     type Out = ();
     fn call(&mut self, ctx: &mut C, world: &mut World, input: In) {
         self.chain.call(ctx, world, input);
+    }
+}
+
+/// Marker for the [`IntoCtxStep`] impl on a built [`CtxPipeline`].
+///
+/// A dedicated marker keeps this passthrough impl from overlapping the
+/// closure impls of [`IntoCtxStep`] (which use `()`, tuples, `NoEvent`,
+/// and [`Opaque`] as their `Params`). `CtxPipeline` does not implement
+/// `FnMut`, but coherence reasons conservatively about `Fn`-family
+/// traits, so a distinct marker is required rather than reusing `()`.
+#[doc(hidden)]
+pub struct CtxPipelineStep;
+
+// A built CtxPipeline is already a resolved CtxStepCall — its steps hold
+// Param state resolved against the Registry at build time. So into_ctx_step
+// just hands `self` back; the `registry` argument is unused (no
+// re-resolution). This is what lets a bare pipeline be a select! arm or a
+// nested .then() step without an Opaque wrapper closure.
+impl<C, In, Chain: CtxChainCall<C, In, Out = ()>> IntoCtxStep<C, In, (), CtxPipelineStep>
+    for CtxPipeline<C, In, Chain>
+{
+    type Step = Self;
+
+    #[inline]
+    fn into_ctx_step(self, _registry: &Registry) -> Self::Step {
+        self
     }
 }
 

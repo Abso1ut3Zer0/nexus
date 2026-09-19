@@ -10,6 +10,7 @@ error[E0277]: this function cannot be used as a context-aware pipeline step
    = note: for raw World access: `fn(&mut C, &mut World, In) -> Out`
    = note: closures with resource parameters are not supported — use a named `fn`
    = help: the following other types implement trait `IntoCtxStep<C, In, Out, Params>`:
+             `CtxPipeline<C, In, Chain>` implements `IntoCtxStep<C, In, (), CtxPipelineStep>`
              `NoEvent<F>` implements `IntoCtxStep<C, (), Out, (P0, P1)>`
              `NoEvent<F>` implements `IntoCtxStep<C, (), Out, (P0, P1, P2)>`
              `NoEvent<F>` implements `IntoCtxStep<C, (), Out, (P0, P1, P2, P3)>`

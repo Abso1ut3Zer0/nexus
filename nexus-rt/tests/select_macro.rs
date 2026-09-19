@@ -324,3 +324,262 @@ fn select_callback_mutates_ctx() {
     pipeline.run(&mut ctx, &mut world, Kind::C);
     assert_eq!(ctx.count, 4);
 }
+
+// =============================================================================
+// Built pipeline used directly as a select! arm / .then() step (#693)
+//
+// A built pipeline is already a resolved step. These tests exercise the
+// `IntoCtxStep` / `IntoStep` impls that let a bare built pipeline be a
+// select! arm or a nested .then() step with no `Opaque` wrapper closure.
+// =============================================================================
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum MsgKind {
+    NewOrder,
+    Cancel,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct Decoded {
+    kind: MsgKind,
+    qty: u32,
+}
+
+struct SessionCtx {
+    new_orders: u32,
+    cancels: u32,
+    last_qty: u32,
+}
+
+// Ctx side — the primary use case from #693: FIX session decode fanned out
+// to per-message-type sub-pipelines. Each arm is a *bare* built pipeline.
+#[test]
+fn ctx_pipeline_as_select_arm_no_wrapper() {
+    use nexus_rt::CtxPipelineBuilder;
+
+    let mut world = WorldBuilder::new().build();
+    let reg = world.registry();
+
+    // Per-message-type sub-pipelines, each terminal (Out = ()).
+    let new_order_pipe = CtxPipelineBuilder::<SessionCtx, Decoded>::new()
+        .then(
+            |ctx: &mut SessionCtx, m: Decoded| {
+                ctx.new_orders += 1;
+                ctx.last_qty = m.qty;
+            },
+            reg,
+        )
+        .build();
+
+    let cancel_pipe = CtxPipelineBuilder::<SessionCtx, Decoded>::new()
+        .then(
+            |ctx: &mut SessionCtx, _m: Decoded| {
+                ctx.cancels += 1;
+            },
+            reg,
+        )
+        .build();
+
+    // The two built pipelines are select! arms directly — no
+    // `|ctx, w, m| pipe.run(ctx, w, m)` Opaque wrapper.
+    let mut dispatch = CtxPipelineBuilder::<SessionCtx, Decoded>::new()
+        .then(
+            select! {
+                reg,
+                ctx: SessionCtx,
+                key: |m: &Decoded| m.kind,
+                MsgKind::NewOrder => new_order_pipe,
+                MsgKind::Cancel   => cancel_pipe,
+            },
+            reg,
+        )
+        .build();
+
+    let mut ctx = SessionCtx {
+        new_orders: 0,
+        cancels: 0,
+        last_qty: 0,
+    };
+    dispatch.run(
+        &mut ctx,
+        &mut world,
+        Decoded {
+            kind: MsgKind::NewOrder,
+            qty: 7,
+        },
+    );
+    dispatch.run(
+        &mut ctx,
+        &mut world,
+        Decoded {
+            kind: MsgKind::Cancel,
+            qty: 0,
+        },
+    );
+    dispatch.run(
+        &mut ctx,
+        &mut world,
+        Decoded {
+            kind: MsgKind::NewOrder,
+            qty: 3,
+        },
+    );
+
+    assert_eq!(ctx.new_orders, 2);
+    assert_eq!(ctx.cancels, 1);
+    assert_eq!(ctx.last_qty, 3);
+}
+
+// Ctx side — a built pipeline used directly as a nested .then() step.
+#[test]
+fn ctx_pipeline_as_then_step_no_wrapper() {
+    use nexus_rt::CtxPipelineBuilder;
+
+    let mut world = WorldBuilder::new().build();
+    let reg = world.registry();
+
+    // Terminal sub-pipeline consuming Decoded, producing ().
+    let inner = CtxPipelineBuilder::<SessionCtx, Decoded>::new()
+        .then(
+            |ctx: &mut SessionCtx, m: Decoded| {
+                ctx.last_qty = m.qty;
+            },
+            reg,
+        )
+        .build();
+
+    // `inner` is a .then() step directly — it produces (), so `outer` is
+    // terminal and can be built.
+    let mut outer = CtxPipelineBuilder::<SessionCtx, Decoded>::new()
+        .then(
+            |ctx: &mut SessionCtx, m: Decoded| {
+                ctx.new_orders += 1;
+                m
+            },
+            reg,
+        )
+        .then(inner, reg)
+        .build();
+
+    let mut ctx = SessionCtx {
+        new_orders: 0,
+        cancels: 0,
+        last_qty: 0,
+    };
+    outer.run(
+        &mut ctx,
+        &mut world,
+        Decoded {
+            kind: MsgKind::NewOrder,
+            qty: 42,
+        },
+    );
+    assert_eq!(ctx.new_orders, 1);
+    assert_eq!(ctx.last_qty, 42);
+}
+
+// Plain side — a built plain pipeline used directly as a select! arm.
+#[test]
+fn plain_pipeline_as_select_arm_no_wrapper() {
+    use std::sync::atomic::{AtomicU32, Ordering};
+
+    static NEW_ORDERS: AtomicU32 = AtomicU32::new(0);
+    static CANCELS: AtomicU32 = AtomicU32::new(0);
+    // Reset so the test is deterministic regardless of harness reuse.
+    NEW_ORDERS.store(0, Ordering::SeqCst);
+    CANCELS.store(0, Ordering::SeqCst);
+
+    let mut world = WorldBuilder::new().build();
+    let reg = world.registry();
+
+    let new_order_pipe = PipelineBuilder::<Decoded>::new()
+        .then(
+            |m: Decoded| {
+                NEW_ORDERS.fetch_add(m.qty, Ordering::SeqCst);
+            },
+            reg,
+        )
+        .build();
+
+    let cancel_pipe = PipelineBuilder::<Decoded>::new()
+        .then(
+            |_m: Decoded| {
+                CANCELS.fetch_add(1, Ordering::SeqCst);
+            },
+            reg,
+        )
+        .build();
+
+    let mut dispatch = PipelineBuilder::<Decoded>::new()
+        .then(
+            select! {
+                reg,
+                key: |m: &Decoded| m.kind,
+                MsgKind::NewOrder => new_order_pipe,
+                MsgKind::Cancel   => cancel_pipe,
+            },
+            reg,
+        )
+        .build();
+
+    dispatch.run(
+        &mut world,
+        Decoded {
+            kind: MsgKind::NewOrder,
+            qty: 5,
+        },
+    );
+    dispatch.run(
+        &mut world,
+        Decoded {
+            kind: MsgKind::Cancel,
+            qty: 0,
+        },
+    );
+    dispatch.run(
+        &mut world,
+        Decoded {
+            kind: MsgKind::NewOrder,
+            qty: 2,
+        },
+    );
+
+    assert_eq!(NEW_ORDERS.load(Ordering::SeqCst), 7);
+    assert_eq!(CANCELS.load(Ordering::SeqCst), 1);
+}
+
+// Plain side — a built plain pipeline used directly as a nested .then() step.
+#[test]
+fn plain_pipeline_as_then_step_no_wrapper() {
+    use std::sync::atomic::{AtomicU32, Ordering};
+
+    static SEEN: AtomicU32 = AtomicU32::new(0);
+    // Reset so the test is deterministic regardless of harness reuse.
+    SEEN.store(0, Ordering::SeqCst);
+
+    let mut world = WorldBuilder::new().build();
+    let reg = world.registry();
+
+    let inner = PipelineBuilder::<Decoded>::new()
+        .then(
+            |m: Decoded| {
+                SEEN.store(m.qty, Ordering::SeqCst);
+            },
+            reg,
+        )
+        .build();
+
+    let mut outer = PipelineBuilder::<Decoded>::new()
+        .then(|m: Decoded| m, reg)
+        .then(inner, reg)
+        .build();
+
+    outer.run(
+        &mut world,
+        Decoded {
+            kind: MsgKind::NewOrder,
+            qty: 99,
+        },
+    );
+    assert_eq!(SEEN.load(Ordering::SeqCst), 99);
+}

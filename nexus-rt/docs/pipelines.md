@@ -768,3 +768,65 @@ jump table as a hand-written `match` on the discriminant. To verify
 yourself for a given enum, see `examples/select_asm_check.rs` and
 inspect with `cargo asm -p nexus-rt --release --example
 select_asm_check 'select_asm_check::dispatch_select'`.
+
+### Terminal fork — arms that are whole pipelines
+
+Each `select!` arm is a pipeline step, so an arm can be a *whole built
+sub-pipeline*. This is the terminal-fork shape: a discriminant fans out
+to one sub-flow per variant, each sub-flow terminal (`Out = ()`), and the
+`select!` is the last step so nothing chains after the fork.
+
+A built `Pipeline` (from `PipelineBuilder::build`) can be used as an arm
+**directly** — it is already a resolved step:
+
+```rust
+let new_order = PipelineBuilder::<Decoded>::new()
+    .then(validate, reg)
+    .then(book, reg)
+    .build();
+
+let cancel = PipelineBuilder::<Decoded>::new()
+    .then(locate, reg)
+    .then(pull, reg)
+    .build();
+
+// Bare pipelines as arms — no wrapper closure.
+let mut dispatch = PipelineBuilder::<Decoded>::new()
+    .then(
+        select! {
+            reg,
+            key: |m: &Decoded| m.kind,
+            MsgKind::NewOrder => new_order,
+            MsgKind::Cancel   => cancel,
+        },
+        reg,
+    )
+    .build();
+```
+
+Dispatch is still a real `match` — a jump table, not an if-else chain.
+The same passthrough lets a built pipeline be a nested `.then()` step:
+`builder.then(sub_pipe, reg)`. A built `Pipeline` implements `IntoStep`
+(and `StepCall`), so no adapter is needed. Keep sub-pipelines **terminal**
+(`Out = ()`) — that is what is step-callable; a reconverging nested
+pipeline with `Out != ()` is a separate concern.
+
+#### When an arm needs raw `&mut World`
+
+If an arm needs raw `&mut World` (e.g. to run a sub-pipeline it built
+inline, or to touch a resource the step API does not expose), use the
+tier-3 `Opaque` closure form directly as the arm — an
+`FnMut(&mut World, In) -> ()` closure:
+
+```rust
+select! {
+    reg,
+    key: |m: &Decoded| m.kind,
+    MsgKind::NewOrder => move |w: &mut World, m: Decoded| new_order.run(w, m),
+    MsgKind::Cancel   => move |w: &mut World, m: Decoded| cancel.run(w, m),
+}
+```
+
+This is the escape hatch that predates the direct-pipeline support above;
+prefer the bare-pipeline form unless the arm genuinely needs the raw
+world handle.
