@@ -53,6 +53,31 @@ if [ -n "$(git status --porcelain)" ]; then
     exit 1
 fi
 
+# Pre-flight: guard against the double-bump that shipped nexus-id as 3.0.0
+# instead of 2.0.0. In steady state the current Cargo.toml version is the last
+# released one, so it is already on crates.io; release.sh then bumps UP from it.
+# If the current version is NOT published, a previous run bumped without
+# publishing (e.g. an invalid token) — refuse rather than bump a second time.
+# Membership test (not max-version), so yanked versions don't affect it; fails
+# open if crates.io is unreachable or the crate is brand new (404).
+cur_version=$(grep -m1 '^version' "$crate/Cargo.toml" | cut -d'"' -f2)
+crate_json=$(curl -sf --max-time 10 "https://crates.io/api/v1/crates/$crate" || true)
+if [ -n "$crate_json" ] && ! printf '%s' "$crate_json" | grep -qF "\"num\":\"$cur_version\""; then
+    echo "Error: current version $cur_version of $crate is not published on" >&2
+    echo "crates.io — a previous release likely bumped without publishing." >&2
+    echo "Reconcile (reset the version, or publish/yank the pending one) before" >&2
+    echo "releasing again." >&2
+    exit 1
+fi
+
+# Pre-flight: fail before bumping if no crates.io credentials are present, rather
+# than leaving a half-completed release behind.
+if [ -z "${CARGO_REGISTRY_TOKEN:-}" ] && [ ! -f "${CARGO_HOME:-$HOME/.cargo}/credentials.toml" ]; then
+    echo "Error: no crates.io credentials found (set CARGO_REGISTRY_TOKEN or run" >&2
+    echo "cargo login) before releasing." >&2
+    exit 1
+fi
+
 echo "==> cargo release $bump --execute -p $crate"
 cargo release "$bump" --execute -p "$crate"
 
