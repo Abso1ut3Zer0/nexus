@@ -850,6 +850,16 @@ fn derive_dispatchable_impl(input: &DeriveInput) -> Result<proc_macro2::TokenStr
         ));
     }
 
+    // A zero-variant enum is uninhabited: `ordinal()` would be `match self {}`
+    // and there is nothing to dispatch on. Reject it with a clear message
+    // rather than emitting an empty match.
+    if data_enum.variants.is_empty() {
+        return Err(syn::Error::new_spanned(
+            name,
+            "Dispatchable requires an enum with at least one variant",
+        ));
+    }
+
     let vis = &input.vis;
     let variants = &data_enum.variants;
     let variant_count = variants.len();

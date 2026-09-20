@@ -1,0 +1,5 @@
+error: Dispatchable requires an enum with at least one variant
+ --> tests/ui/dispatchable_empty.rs:7:6
+  |
+7 | enum Empty {}
+  |      ^^^^^

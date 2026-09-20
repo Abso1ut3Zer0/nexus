@@ -2083,6 +2083,144 @@ impl<In: Dispatchable + 'static> PipelineBuilder<In> {
     }
 }
 
+// -- dispatch_on nodes -------------------------------------------------------
+
+/// Chain node for `.dispatch_on()` — terminal keyed dispatch on a projected
+/// key.
+///
+/// Unlike [`DispatchVariantNode`], the dispatch key is a *projection* of the
+/// value (via `key_fn`), not the value's own discriminant. The projection
+/// carries no variant guarantee, so there is no unchecked unwrap: every arm
+/// receives the whole value.
+#[doc(hidden)]
+pub struct DispatchOnNode<Prev, V, F> {
+    pub(crate) prev: Prev,
+    pub(crate) key_fn: F,
+    pub(crate) table: Vec<Option<Box<dyn StepCall<V, Out = ()> + Send>>>, // len == K::VARIANTS
+    pub(crate) default: Box<dyn StepCall<V, Out = ()> + Send>, // NoopArm unless overridden
+}
+impl<In, Prev, V, K, F> ChainCall<In> for DispatchOnNode<Prev, V, F>
+where
+    Prev: ChainCall<In, Out = V>,
+    F: Fn(&V) -> K,
+    K: Dispatchable,
+{
+    type Out = ();
+    #[inline(always)]
+    fn call(&mut self, world: &mut World, input: In) {
+        let value = self.prev.call(world, input);
+        let idx = (self.key_fn)(&value).ordinal();
+        match &mut self.table[idx] {
+            Some(arm) => arm.call(world, value),
+            None => self.default.call(world, value),
+        }
+    }
+}
+
+/// Builder for [`dispatch_on`](PipelineChain::dispatch_on) arms.
+/// Unset keys fall through to a no-op (override with `.default`).
+#[must_use = "dispatch arms do nothing unless the builder is returned"]
+pub struct DispatchOnBuilder<'r, V, K> {
+    table: Vec<Option<Box<dyn StepCall<V, Out = ()> + Send>>>,
+    default: Box<dyn StepCall<V, Out = ()> + Send>,
+    registry: &'r Registry,
+    _key: PhantomData<fn(K)>,
+}
+impl<'r, V: 'static, K: Dispatchable + 'static> DispatchOnBuilder<'r, V, K> {
+    fn new(registry: &'r Registry) -> Self {
+        let mut table = Vec::with_capacity(K::VARIANTS);
+        table.resize_with(K::VARIANTS, || None);
+        Self {
+            table,
+            default: Box::new(NoopArm),
+            registry,
+            _key: PhantomData,
+        }
+    }
+
+    /// Wire the arm that runs when the key equals `k`. The step receives the
+    /// whole value.
+    pub fn arm<S, Params>(mut self, k: K, step: S) -> Self
+    where
+        S: IntoStep<V, (), Params>,
+        S::Step: Send + 'static,
+    {
+        self.table[k.ordinal()] = Some(Box::new(step.into_step(self.registry)));
+        self
+    }
+
+    /// Override the no-op fallback for keys with no arm. Receives the whole
+    /// value.
+    pub fn default<S, Params>(mut self, step: S) -> Self
+    where
+        S: IntoStep<V, (), Params>,
+        S::Step: Send + 'static,
+    {
+        self.default = Box::new(step.into_step(self.registry));
+        self
+    }
+}
+
+impl<In, V, Chain> PipelineChain<In, V, Chain>
+where
+    Chain: ChainCall<In, Out = V>,
+    V: 'static,
+{
+    /// Terminal keyed dispatch on a *projected* key. `key_fn` maps the value to
+    /// a [`Dispatchable`] key; each arm receives the **whole** value (unlike
+    /// [`dispatch_variant`](Self::dispatch_variant), where arms get the
+    /// unwrapped payload). Unlisted keys run a no-op (or the `.default`). See
+    /// issue #723.
+    pub fn dispatch_on<K, F>(
+        self,
+        key_fn: F,
+        registry: &Registry,
+        build: impl FnOnce(DispatchOnBuilder<'_, V, K>) -> DispatchOnBuilder<'_, V, K>,
+    ) -> PipelineChain<In, (), DispatchOnNode<Chain, V, F>>
+    where
+        K: Dispatchable + 'static,
+        F: Fn(&V) -> K + Send + 'static,
+    {
+        let b = build(DispatchOnBuilder::<V, K>::new(registry));
+        PipelineChain {
+            chain: DispatchOnNode {
+                prev: self.chain,
+                key_fn,
+                table: b.table,
+                default: b.default,
+            },
+            _marker: PhantomData,
+        }
+    }
+}
+
+impl<In: 'static> PipelineBuilder<In> {
+    /// Terminal keyed dispatch on a *projected* key as the pipeline's first
+    /// step. Mirrors the entry-point form of [`then`](PipelineBuilder::then);
+    /// see [`PipelineChain::dispatch_on`] for the continuation form. Issue #723.
+    pub fn dispatch_on<K, F>(
+        self,
+        key_fn: F,
+        registry: &Registry,
+        build: impl FnOnce(DispatchOnBuilder<'_, In, K>) -> DispatchOnBuilder<'_, In, K>,
+    ) -> PipelineChain<In, (), DispatchOnNode<IdentityNode, In, F>>
+    where
+        K: Dispatchable + 'static,
+        F: Fn(&In) -> K + Send + 'static,
+    {
+        let b = build(DispatchOnBuilder::<In, K>::new(registry));
+        PipelineChain {
+            chain: DispatchOnNode {
+                prev: IdentityNode,
+                key_fn,
+                table: b.table,
+                default: b.default,
+            },
+            _marker: PhantomData,
+        }
+    }
+}
+
 // -- Option<T> nodes ---------------------------------------------------------
 
 /// Chain node for `.map()` on `Option<T>`.

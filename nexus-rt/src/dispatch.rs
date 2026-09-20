@@ -69,3 +69,20 @@ pub trait VariantOf<E>: Sized {
     /// behavior; debug builds trip a `debug_assert!` first.
     unsafe fn unwrap(e: E) -> Self::Payload;
 }
+
+/// Cartesian-product key: a pair of [`Dispatchable`] enums is itself
+/// `Dispatchable`, forming a single dense composite key **without hashing**.
+///
+/// The pair packs the two dense spaces row-major into one contiguous
+/// `0..(A::VARIANTS * B::VARIANTS)` range:
+/// `ordinal = a.ordinal() * B::VARIANTS + b.ordinal()`. Distinct pairs map to
+/// distinct ordinals, so a flat dispatch table stays exact.
+///
+/// Only pairs are provided for this phase; larger composite keys can be nested
+/// today (`(A, (B, C))` is `Dispatchable`) or given direct impls later.
+impl<A: Dispatchable, B: Dispatchable> Dispatchable for (A, B) {
+    const VARIANTS: usize = A::VARIANTS * B::VARIANTS;
+    fn ordinal(&self) -> usize {
+        self.0.ordinal() * B::VARIANTS + self.1.ordinal()
+    }
+}
