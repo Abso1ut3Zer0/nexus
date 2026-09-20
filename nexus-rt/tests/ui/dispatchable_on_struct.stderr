@@ -1,0 +1,5 @@
+error: Dispatchable can only be derived for enums
+ --> tests/ui/dispatchable_on_struct.rs:7:8
+  |
+7 | struct NotAnEnum {
+  |        ^^^^^^^^^

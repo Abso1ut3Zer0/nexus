@@ -162,6 +162,7 @@ mod combinator;
 pub mod ctx_dag;
 pub mod ctx_pipeline;
 pub mod dag;
+mod dispatch;
 mod driver;
 mod handler;
 #[cfg(feature = "mio")]
@@ -204,6 +205,8 @@ pub use reactor::{
 // namespace is separate from the type namespace.
 // Note: `View` derive macro and `View` trait coexist — Rust's macro
 // namespace is separate from the type namespace (same as `Param`).
+// Note: `Dispatchable` derive macro and `Dispatchable` trait coexist for
+// the same reason.
 pub use ctx_dag::{
     CtxDag, CtxDagArm, CtxDagArmFork, CtxDagArmSeed, CtxDagBuilder, CtxDagChain, CtxDagChainFork,
     CtxMergeStepCall, IntoCtxMergeStep,
@@ -212,7 +215,8 @@ pub use ctx_pipeline::{
     CtxChainCall, CtxPipeline, CtxPipelineBuilder, CtxPipelineChain, CtxStepCall, IntoCtxProducer,
     IntoCtxRefStep, IntoCtxStep, resolve_ctx_step,
 };
-pub use nexus_rt_derive::{Deref, DerefMut, Param, Resource, View, select};
+pub use dispatch::{Dispatchable, VariantOf};
+pub use nexus_rt_derive::{Deref, DerefMut, Dispatchable, Param, Resource, View, select};
 pub use pipeline::{
     BatchPipeline, ChainCall, IntoProducer, IntoRefScanStep, IntoRefStep, IntoScanStep, Pipeline,
     PipelineBuilder, PipelineChain, PipelineOutput, resolve_producer, resolve_ref_scan_step,

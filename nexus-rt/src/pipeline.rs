@@ -111,6 +111,7 @@ use std::marker::PhantomData;
 
 use crate::Handler;
 use crate::dag::DagArm;
+use crate::dispatch::{Dispatchable, VariantOf};
 use crate::handler::{Opaque, Param};
 use crate::world::{Registry, World};
 
@@ -1930,6 +1931,154 @@ where
             self.on_true.call(world, val)
         } else {
             self.on_false.call(world, val)
+        }
+    }
+}
+
+// -- dispatch_variant nodes --------------------------------------------------
+
+/// Terminal arm ignoring the value — the fallback for unset variants.
+struct NoopArm;
+impl<E> StepCall<E> for NoopArm {
+    type Out = ();
+    #[inline(always)]
+    fn call(&mut self, _world: &mut World, _input: E) {}
+}
+
+/// Wraps a variant-typed terminal step: unpacks the enum to the variant's
+/// payload (sound — this slot is only reached when the value IS variant V)
+/// and calls the typed step.
+struct VariantArm<V, S> {
+    step: S,
+    _variant: PhantomData<fn(V)>, // Send regardless of V
+}
+impl<E, V, S> StepCall<E> for VariantArm<V, S>
+where
+    V: VariantOf<E>,
+    S: StepCall<V::Payload, Out = ()>,
+{
+    type Out = ();
+    #[inline(always)]
+    fn call(&mut self, world: &mut World, input: E) {
+        // SAFETY: this slot is indexed by input.ordinal(), so input is variant V.
+        let payload = unsafe { V::unwrap(input) };
+        self.step.call(world, payload);
+    }
+}
+
+/// Chain node for `.dispatch_variant()` — terminal keyed dispatch on the
+/// input enum's own discriminant.
+#[doc(hidden)]
+pub struct DispatchVariantNode<Prev, E> {
+    pub(crate) prev: Prev,
+    pub(crate) table: Vec<Option<Box<dyn StepCall<E, Out = ()> + Send>>>, // len == E::VARIANTS
+    pub(crate) default: Box<dyn StepCall<E, Out = ()> + Send>, // NoopArm unless overridden
+}
+impl<In, Prev, E> ChainCall<In> for DispatchVariantNode<Prev, E>
+where
+    Prev: ChainCall<In, Out = E>,
+    E: Dispatchable,
+{
+    type Out = ();
+    #[inline(always)]
+    fn call(&mut self, world: &mut World, input: In) {
+        let value = self.prev.call(world, input);
+        let idx = value.ordinal();
+        match &mut self.table[idx] {
+            Some(arm) => arm.call(world, value),
+            None => self.default.call(world, value),
+        }
+    }
+}
+
+/// Builder for [`dispatch_variant`](PipelineChain::dispatch_variant) arms.
+/// Unset variants fall through to a no-op (override with `.default`).
+#[must_use = "dispatch arms do nothing unless the builder is returned"]
+pub struct DispatchVariantBuilder<'r, E> {
+    table: Vec<Option<Box<dyn StepCall<E, Out = ()> + Send>>>,
+    default: Box<dyn StepCall<E, Out = ()> + Send>,
+    registry: &'r Registry,
+}
+impl<'r, E: Dispatchable + 'static> DispatchVariantBuilder<'r, E> {
+    fn new(registry: &'r Registry) -> Self {
+        let mut table = Vec::with_capacity(E::VARIANTS);
+        table.resize_with(E::VARIANTS, || None);
+        Self {
+            table,
+            default: Box::new(NoopArm),
+            registry,
+        }
+    }
+
+    /// Wire a variant to a typed terminal step receiving the variant's payload.
+    pub fn arm<V, S, Params>(mut self, _variant: V, step: S) -> Self
+    where
+        V: VariantOf<E> + 'static,
+        S: IntoStep<V::Payload, (), Params>,
+        S::Step: Send + 'static,
+    {
+        let resolved = step.into_step(self.registry);
+        self.table[V::ORDINAL] = Some(Box::new(VariantArm::<V, _> {
+            step: resolved,
+            _variant: PhantomData,
+        }));
+        self
+    }
+
+    /// Override the no-op fallback for every unset variant. Receives the whole enum.
+    pub fn default<S, Params>(mut self, step: S) -> Self
+    where
+        S: IntoStep<E, (), Params>,
+        S::Step: Send + 'static,
+    {
+        self.default = Box::new(step.into_step(self.registry));
+        self
+    }
+}
+
+impl<In, E, Chain> PipelineChain<In, E, Chain>
+where
+    Chain: ChainCall<In, Out = E>,
+    E: Dispatchable + 'static,
+{
+    /// Terminal keyed dispatch on the input enum's own discriminant. Each arm
+    /// receives its variant's payload; unlisted variants run a no-op (or the
+    /// `.default`). See issue #723.
+    pub fn dispatch_variant(
+        self,
+        registry: &Registry,
+        build: impl FnOnce(DispatchVariantBuilder<'_, E>) -> DispatchVariantBuilder<'_, E>,
+    ) -> PipelineChain<In, (), DispatchVariantNode<Chain, E>> {
+        let b = build(DispatchVariantBuilder::new(registry));
+        PipelineChain {
+            chain: DispatchVariantNode {
+                prev: self.chain,
+                table: b.table,
+                default: b.default,
+            },
+            _marker: PhantomData,
+        }
+    }
+}
+
+impl<In: Dispatchable + 'static> PipelineBuilder<In> {
+    /// Terminal keyed dispatch as the pipeline's first step, when the input is
+    /// itself a [`Dispatchable`] enum. Mirrors the entry-point form of
+    /// [`then`](PipelineBuilder::then)/[`scan`](PipelineBuilder::scan) — see
+    /// [`PipelineChain::dispatch_variant`] for the continuation form. Issue #723.
+    pub fn dispatch_variant(
+        self,
+        registry: &Registry,
+        build: impl FnOnce(DispatchVariantBuilder<'_, In>) -> DispatchVariantBuilder<'_, In>,
+    ) -> PipelineChain<In, (), DispatchVariantNode<IdentityNode, In>> {
+        let b = build(DispatchVariantBuilder::new(registry));
+        PipelineChain {
+            chain: DispatchVariantNode {
+                prev: IdentityNode,
+                table: b.table,
+                default: b.default,
+            },
+            _marker: PhantomData,
         }
     }
 }
