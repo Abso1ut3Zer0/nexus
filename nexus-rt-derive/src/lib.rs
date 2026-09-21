@@ -818,7 +818,7 @@ fn path_matches(a: &syn::Path, b: &syn::Path) -> bool {
 /// // Generates: pub mod cmd_variants { pub struct RouteAway; pub struct Halt; }
 /// assert_eq!(Cmd::VARIANTS, 2);
 /// assert_eq!(Cmd::RouteAway(7).ordinal(), 0);
-/// let p = unsafe { cmd_variants::RouteAway::unwrap(Cmd::RouteAway(7)) };
+/// let p = unsafe { cmd_variants::RouteAway::unwrap_unchecked(Cmd::RouteAway(7)) };
 /// assert_eq!(p, 7);
 /// ```
 #[proc_macro_derive(Dispatchable)]
@@ -922,20 +922,28 @@ fn derive_dispatchable_impl(input: &DeriveInput) -> Result<proc_macro2::TokenStr
         // the generated module's boundary; the module's own visibility
         // (`#vis`, matching the enum) gates how far that reaches.
         marker_structs.push(quote! {
+            #[derive(Clone, Copy, Debug)]
             pub struct #variant_name;
         });
 
-        // VariantOf impl for the marker.
+        // VariantOf impl for the marker. `unsafe impl`: the derive is the
+        // trusted party that upholds `VariantOf`'s safety contract (ORDINAL
+        // matches the enum's `ordinal()`, and `unwrap_unchecked` extracts the
+        // right payload) by generating both from the same enum definition.
         variant_impls.push(quote! {
-            impl ::nexus_rt::VariantOf<#name> for #mod_ident::#variant_name {
+            unsafe impl ::nexus_rt::VariantOf<#name> for #mod_ident::#variant_name {
                 type Payload = #payload_ty;
                 const ORDINAL: usize = #idx;
 
-                unsafe fn unwrap(e: #name) -> Self::Payload {
+                unsafe fn unwrap_unchecked(e: #name) -> Self::Payload {
                     match e {
                         #pattern => #payload_expr,
                         #[allow(unreachable_patterns)]
                         _ => {
+                            // SAFETY: unreachable. Per `VariantOf`'s contract the
+                            // caller passes a value of this variant, so only the
+                            // `#pattern` arm is ever taken; the `debug_assert!`
+                            // turns a contract violation into a panic in debug.
                             ::core::debug_assert!(
                                 false,
                                 "Dispatchable unwrap on wrong variant"
@@ -949,7 +957,7 @@ fn derive_dispatchable_impl(input: &DeriveInput) -> Result<proc_macro2::TokenStr
     }
 
     Ok(quote! {
-        impl ::nexus_rt::Dispatchable for #name {
+        unsafe impl ::nexus_rt::Dispatchable for #name {
             const VARIANTS: usize = #variant_count;
 
             fn ordinal(&self) -> usize {

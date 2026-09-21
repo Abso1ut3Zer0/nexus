@@ -25,7 +25,7 @@
 //! assert_eq!(Cmd::Halt.ordinal(), 1);
 //!
 //! // The caller knows the value is `RouteAway`, so the unwrap is sound.
-//! let payload = unsafe { cmd_variants::RouteAway::unwrap(Cmd::RouteAway(7)) };
+//! let payload = unsafe { cmd_variants::RouteAway::unwrap_unchecked(Cmd::RouteAway(7)) };
 //! assert_eq!(payload, 7);
 //! ```
 
@@ -43,8 +43,24 @@ use crate::world::World;
 /// spelled `as usize` (`as usize` breaks on sparse reprs and does not exist
 /// for data-carrying variants).
 ///
+/// # Safety
+///
+/// `dispatch_variant` indexes an erased arm table by [`ordinal`] and then
+/// unwraps the value at that slot to the arm's variant type *without*
+/// re-checking the discriminant, so a wrong ordinal is undefined behavior, not
+/// just a mis-route. Implementors must guarantee that [`ordinal`]:
+///
+/// - returns a value in `0..VARIANTS`;
+/// - is a pure function of the discriminant (same variant, same ordinal, every
+///   call);
+/// - is injective (distinct variants return distinct ordinals); and
+/// - agrees with each variant's [`VariantOf::ORDINAL`].
+///
+/// `#[derive(Dispatchable)]` upholds all of these; a hand implementation takes
+/// on the obligation.
+///
 /// [`ordinal`]: Dispatchable::ordinal
-pub trait Dispatchable {
+pub unsafe trait Dispatchable {
     /// Number of variants (dense).
     const VARIANTS: usize;
 
@@ -57,7 +73,25 @@ pub trait Dispatchable {
 ///
 /// Ties a variant to its payload type and ordinal, and provides the unchecked
 /// unwrap that bridges an erased dispatch slot back to the typed arm.
-pub trait VariantOf<E>: Sized {
+///
+/// # Safety
+///
+/// This trait is `unsafe` because [`unwrap_unchecked`] skips the discriminant
+/// check, and `dispatch_variant` relies on [`ORDINAL`] agreeing with
+/// [`Dispatchable::ordinal`] to decide when that skip is sound. For a value
+/// `e` of enum `E`, implementors must guarantee that whenever `e` is this
+/// variant:
+///
+/// - [`ORDINAL`] equals `e.ordinal()`; and
+/// - `unwrap_unchecked(e)` soundly produces the [`Payload`].
+///
+/// `#[derive(Dispatchable)]` generates the markers and upholds this; a hand
+/// implementation takes on the obligation.
+///
+/// [`unwrap_unchecked`]: VariantOf::unwrap_unchecked
+/// [`ORDINAL`]: VariantOf::ORDINAL
+/// [`Payload`]: VariantOf::Payload
+pub unsafe trait VariantOf<E>: Sized {
     /// The variant's payload: `()` for a unit variant, the field type for a
     /// single-field variant, or a tuple of the field types for a multi-field
     /// tuple variant.
@@ -73,7 +107,7 @@ pub trait VariantOf<E>: Sized {
     /// Caller guarantees `e` is this variant (upheld by dispatching on `e`'s
     /// own discriminant). If `e` is a different variant this is undefined
     /// behavior; debug builds trip a `debug_assert!` first.
-    unsafe fn unwrap(e: E) -> Self::Payload;
+    unsafe fn unwrap_unchecked(e: E) -> Self::Payload;
 }
 
 /// Cartesian-product key: a pair of [`Dispatchable`] enums is itself
@@ -86,7 +120,12 @@ pub trait VariantOf<E>: Sized {
 ///
 /// Only pairs are provided for this phase; larger composite keys can be nested
 /// today (`(A, (B, C))` is `Dispatchable`) or given direct impls later.
-impl<A: Dispatchable, B: Dispatchable> Dispatchable for (A, B) {
+// SAFETY: `A` and `B` are `Dispatchable`, so `a.ordinal() < A::VARIANTS` and
+// `b.ordinal() < B::VARIANTS`, both injective and pure. The row-major pack
+// `a * B::VARIANTS + b` is therefore in `0..A::VARIANTS * B::VARIANTS`, pure,
+// and injective (distinct pairs map to distinct ordinals). Composite keys carry
+// no `VariantOf` markers, so the ORDINAL-agreement clause is vacuous here.
+unsafe impl<A: Dispatchable, B: Dispatchable> Dispatchable for (A, B) {
     const VARIANTS: usize = A::VARIANTS * B::VARIANTS;
     fn ordinal(&self) -> usize {
         self.0.ordinal() * B::VARIANTS + self.1.ordinal()
@@ -108,6 +147,10 @@ impl<A: Dispatchable, B: Dispatchable> Dispatchable for (A, B) {
 // (resp. `impl<C, In>`): the erased `for<'a> StepCall<&'a V>` /
 // `for<'a> CtxStepCall<C, &'a V>` arm slot is covered because the impl is
 // generic over the input.
+//
+// Every arm here is invoked only through the erased `Box<dyn ...>` dispatch
+// slot, so their `call` methods carry no `#[inline]`: it would be a no-op at an
+// indirect call.
 
 /// Terminal arm ignoring the value — the `Out = ()` no-op fallback wired by
 /// `.default_noop()` for unset variants/keys.
@@ -119,13 +162,11 @@ pub(crate) struct NoopArm;
 
 impl<In> StepCall<In> for NoopArm {
     type Out = ();
-    #[inline(always)]
     fn call(&mut self, _world: &mut World, _input: In) {}
 }
 
 impl<C, In> CtxStepCall<C, In> for NoopArm {
     type Out = ();
-    #[inline(always)]
     fn call(&mut self, _ctx: &mut C, _world: &mut World, _input: In) {}
 }
 
@@ -140,7 +181,6 @@ pub(crate) struct PanicArm<Out>(pub(crate) PhantomData<fn() -> Out>);
 
 impl<In, Out> StepCall<In> for PanicArm<Out> {
     type Out = Out;
-    #[inline(always)]
     fn call(&mut self, _world: &mut World, _input: In) -> Out {
         unreachable!("dispatch: default arm on an exhaustive table")
     }
@@ -148,7 +188,6 @@ impl<In, Out> StepCall<In> for PanicArm<Out> {
 
 impl<C, In, Out> CtxStepCall<C, In> for PanicArm<Out> {
     type Out = Out;
-    #[inline(always)]
     fn call(&mut self, _ctx: &mut C, _world: &mut World, _input: In) -> Out {
         unreachable!("dispatch: default arm on an exhaustive table")
     }
@@ -171,10 +210,9 @@ where
     S: StepCall<V::Payload, Out = Out>,
 {
     type Out = Out;
-    #[inline(always)]
     fn call(&mut self, world: &mut World, input: E) -> Out {
         // SAFETY: this slot is indexed by input.ordinal(), so input is variant V.
-        let payload = unsafe { V::unwrap(input) };
+        let payload = unsafe { V::unwrap_unchecked(input) };
         self.step.call(world, payload)
     }
 }
@@ -185,10 +223,9 @@ where
     S: CtxStepCall<C, V::Payload, Out = Out>,
 {
     type Out = Out;
-    #[inline(always)]
     fn call(&mut self, ctx: &mut C, world: &mut World, input: E) -> Out {
         // SAFETY: this slot is indexed by input.ordinal(), so input is variant V.
-        let payload = unsafe { V::unwrap(input) };
+        let payload = unsafe { V::unwrap_unchecked(input) };
         self.step.call(ctx, world, payload)
     }
 }
@@ -218,5 +255,51 @@ pub(crate) fn resolve_dispatch_default<Arm>(
             "{method} on `{type_name}`: {armed}/{total} keys armed and no \
              `.default` — arm every key or add `.default`/`.default_noop()`"
         ),
+    }
+}
+
+/// Finalize an ordinal `Vec` dispatch table: resolve the default slot
+/// (exhaustive-or-`.default`, see [`resolve_dispatch_default`]) and hand back the
+/// table together with its resolved default. Shared by the pipeline
+/// `dispatch_variant` / `dispatch_on` builders' `finish` and the DAG
+/// `dispatch_on` node builders, which differ only in the arm box type `Arm` and
+/// how they wrap the result.
+pub(crate) fn finalize_ordinal_table<Arm>(
+    table: Vec<Option<Arm>>,
+    user_default: Option<Arm>,
+    total: usize,
+    make_panic: impl FnOnce() -> Arm,
+    method: &str,
+    type_name: &str,
+) -> (Vec<Option<Arm>>, Arm) {
+    let armed = table.iter().filter(|s| s.is_some()).count();
+    let default =
+        resolve_dispatch_default(user_default, armed, total, make_panic, method, type_name);
+    (table, default)
+}
+
+/// Enforce "arm each key at most once" at construction, called by every `.arm()`
+/// before it writes its slot. A duplicate key is a wiring bug (the silent
+/// last-wins overwrite that `select!` would flag as `unreachable_patterns`), so
+/// it panics deterministically at build time rather than mis-routing at 3am.
+/// `ordinal` is `Some` for the bounded ordinal tables and `None` for the
+/// open-keyed `dispatch_map`.
+pub(crate) fn assert_first_arm(
+    occupied: bool,
+    method: &str,
+    type_name: &str,
+    ordinal: Option<usize>,
+) {
+    if occupied {
+        match ordinal {
+            Some(o) => panic!(
+                "{method} on `{type_name}`: the key at ordinal {o} is armed \
+                 more than once. Arm each key at most once."
+            ),
+            None => panic!(
+                "{method} on `{type_name}`: a key is armed more than once. \
+                 Arm each key at most once."
+            ),
+        }
     }
 }

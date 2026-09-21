@@ -16,13 +16,16 @@ contained.
   `.dispatch_on` / `.dispatch_map`.** Flat-array dispatch tables indexed by a
   dense variant ordinal, complementing the compile-time `select!` for when arms
   are chosen at runtime from a value — and now the recommended default (see
-  `docs/dispatch.md`), since the cost over `select!` is ~1 cycle at p50.
+  `docs/dispatch.md`), since the cost over `select!` is a few cycles at p50.
   `#[derive(Dispatchable)]` gives an enum a dense `ordinal()` (`0..VARIANTS`,
   declaration order — normalizing sparse/explicit discriminants, and defined for
   data-carrying variants where `as usize` is not) plus, per variant, a
   zero-sized `VariantOf` marker (in a generated `<enum_snake_case>_variants`
-  module) tying the variant to its payload type, its ordinal, and an unchecked
-  unwrap. A pair of `Dispatchable` enums is itself `Dispatchable` (row-major
+  module) tying the variant to its payload type, its ordinal, and an
+  `unwrap_unchecked`. `Dispatchable` and `VariantOf` are `unsafe` traits (the
+  derive is the safe, supported way to implement them; a hand `unsafe impl`
+  takes on the ordinal/payload correspondence obligation). A pair of
+  `Dispatchable` enums is itself `Dispatchable` (row-major
   tuple-product key, no hashing). Three pipeline combinators consume it:
   - `.dispatch_variant` (on `Pipeline` + `CtxPipeline`) — keyed dispatch on the
     input enum's own discriminant; each arm receives its variant's **typed
@@ -32,7 +35,9 @@ contained.
   - `.dispatch_on` (on `Pipeline` / `CtxPipeline` / `DagChain` / `CtxDagChain`)
     — keyed dispatch on a **projected** key (`Fn(&V) -> K` for any
     `Dispatchable` K); the projection carries no variant guarantee, so every arm
-    receives the **whole value** (no unchecked unwrap). DAG arms borrow `&V`.
+    receives the **whole value** (no unchecked unwrap). DAG arms borrow `&V`,
+    and `.dispatch_on` is available inside a fork arm (`DagArm` / `CtxDagArm`),
+    not just on the chain.
   - `.dispatch_map` (on `Pipeline` + `CtxPipeline`) — keyed dispatch on an
     arbitrary `Hash + Eq` (non-enum) key via an `FxHashMap`, for keys that aren't
     `Dispatchable`. Whole-value arms; the open key space **always** requires a
@@ -43,7 +48,9 @@ contained.
   `()` the dispatch is terminal. Each table must be **exhaustive or carry a
   `.default`** (which receives the whole value/enum) — enforced by a
   **construction-time panic** (deterministic, before any dispatch), the runtime
-  analog of `select!` requiring a `_`. `.default_noop()` is sugar for "ignore
+  analog of `select!` requiring a `_`; arming the same key twice is likewise a
+  construction-time panic (a duplicate arm is a wiring bug, the analog of
+  `select!`'s `unreachable_patterns`). `.default_noop()` is sugar for "ignore
   unset keys" on terminal (`Out = ()`) tables. An arm can itself be a **pre-built
   pipeline** (a terminal `Pipeline`/`CtxPipeline` is a resolved step — see the
   next entry). `CtxPipeline`/`CtxDag` arms thread `&mut C`. Every form exists as

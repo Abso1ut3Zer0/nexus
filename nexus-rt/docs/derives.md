@@ -197,12 +197,30 @@ The derive emits:
   not).
 - A module `<enum_snake_case>_variants` (here `cmd_variants`) of zero-sized
   per-variant marker types, each implementing `VariantOf<Cmd>` — exposing the
-  variant's `Payload` type, its `ORDINAL`, and an unchecked `unwrap`. These are
+  variant's `Payload` type, its `ORDINAL`, and an `unwrap_unchecked`. These are
   what you pass to `.dispatch_variant`'s `.arm(...)`.
 
 A pair of `Dispatchable` enums is itself `Dispatchable` (`(A, B)`, a row-major
 tuple-product key — no hashing). Only unit and tuple variants are supported;
-named-field struct variants are rejected.
+named-field struct variants and generic enums (including lifetime-generic, so no
+borrowed/zero-copy enums) are rejected by the derive.
+
+`Dispatchable` and `VariantOf` are **`unsafe` traits**: the payload unwrap skips
+the discriminant check and relies on `ordinal()` and `ORDINAL` being consistent.
+`#[derive(Dispatchable)]` is the supported, safe way to implement them and cannot
+get the correspondence wrong; a hand-written `unsafe impl` takes on that
+obligation (see
+[UNSAFE_AND_SOUNDNESS.md](UNSAFE_AND_SOUNDNESS.md#7-dispatch-payload-unwrap-dispatchrs--2-unsafe-blocks)).
+
+Two derive errors worth knowing:
+
+- **A payload that names `Self`** (e.g. `Node(Box<Self>)`) resolves against the
+  generated marker impl and produces a confusing type error. Name the concrete
+  enum in the field type instead of `Self`.
+- **An enum that implements `Drop`** with a non-`Copy` payload fails to compile
+  with `E0509` ("cannot move out of a type which implements `Drop`"): the
+  generated `unwrap_unchecked` moves the payload out. Do not implement `Drop` on
+  a `Dispatchable` enum.
 
 See [dispatch.md](dispatch.md) for the full cookbook — the combinators, the
 payload-vs-whole-value distinction, and the soundness argument for the unwrap.

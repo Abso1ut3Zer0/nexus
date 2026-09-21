@@ -74,7 +74,7 @@ use crate::ctx_pipeline::{
     CtxOkOrNode, CtxOnNoneNode, CtxStepCall, CtxTapNode, CtxThenNode, CtxUnwrapOrElseOptionNode,
     CtxUnwrapOrOptionNode, CtxUnwrapOrResultNode, IntoCtxProducer, IntoCtxRefStep, IntoCtxStep,
 };
-use crate::dispatch::{Dispatchable, NoopArm, PanicArm, resolve_dispatch_default};
+use crate::dispatch::{Dispatchable, NoopArm, PanicArm, assert_first_arm, finalize_ordinal_table};
 use crate::handler::Param;
 use crate::world::{Registry, World};
 
@@ -1315,8 +1315,8 @@ impl_ctx_dag_combinators!(builder: CtxDagArm, upstream: In);
 // arm sees the whole `&V`. `Out` bubbles up so the DAG can `.then(...)` the
 // result (or `.build()` when `Out = ()`).
 
-// The terminal arm types (`NoopArm`, `PanicArm`) and the default-slot resolver
-// (`resolve_dispatch_default`) are shared across all four dispatch surfaces —
+// The terminal arm types (`NoopArm`, `PanicArm`) and the ordinal table finalizer
+// (`finalize_ordinal_table`) are shared across all four dispatch surfaces —
 // see `crate::dispatch`. Both arms carry a `CtxStepCall` impl generic over their
 // input, so they coerce to this surface's erased
 // `for<'a> CtxStepCall<C, &'a V, Out = _>` arm slot.
@@ -1384,7 +1384,14 @@ impl<'r, C: 'static, V: 'static, K: Dispatchable + 'static, Out: 'static>
         S: IntoCtxStep<C, &'static V, Out, Params>,
         S::Step: for<'a> CtxStepCall<C, &'a V, Out = Out> + Send + 'static,
     {
-        self.table[k.ordinal()] = Some(Box::new(step.into_ctx_step(self.registry)));
+        let idx = k.ordinal();
+        assert_first_arm(
+            self.table[idx].is_some(),
+            "dispatch_on",
+            std::any::type_name::<K>(),
+            Some(idx),
+        );
+        self.table[idx] = Some(Box::new(step.into_ctx_step(self.registry)));
         self
     }
 
@@ -1410,13 +1417,51 @@ impl<C, V, K> CtxDagDispatchOnBuilder<'_, C, V, K, ()> {
     }
 }
 
+/// Shared body of the three ctx `dispatch_on` forms (chain, fork arm, entry):
+/// run the arm builder, enforce exhaustive-or-`.default`, and assemble the node.
+/// Each caller only wraps the returned node in its own builder type.
+fn ctx_dag_dispatch_on_node<C, Prev, V, K, F, Out, Bf>(
+    prev: Prev,
+    key_fn: F,
+    registry: &Registry,
+    build: Bf,
+) -> CtxDagDispatchOnNode<C, Prev, V, F, Out>
+where
+    C: 'static,
+    V: 'static,
+    K: Dispatchable + 'static,
+    Out: 'static,
+    Bf: FnOnce(
+        CtxDagDispatchOnBuilder<'_, C, V, K, Out>,
+    ) -> CtxDagDispatchOnBuilder<'_, C, V, K, Out>,
+{
+    let b = build(CtxDagDispatchOnBuilder::<C, V, K, Out>::new(registry));
+    let (table, default) = finalize_ordinal_table(
+        b.table,
+        b.default,
+        K::VARIANTS,
+        || {
+            Box::new(PanicArm(PhantomData))
+                as Box<dyn for<'a> CtxStepCall<C, &'a V, Out = Out> + Send>
+        },
+        "dispatch_on",
+        std::any::type_name::<K>(),
+    );
+    CtxDagDispatchOnNode {
+        prev,
+        key_fn,
+        table,
+        default,
+    }
+}
+
 impl<C, In, V, Chain> CtxDagChain<C, In, V, Chain>
 where
     Chain: CtxChainCall<C, In, Out = V>,
     V: 'static,
     C: 'static,
 {
-    /// Terminal keyed dispatch on a *projected* key. `key_fn` maps the value to
+    /// Keyed dispatch on a *projected* key. `key_fn` maps the value to
     /// a [`Dispatchable`] key; each arm receives `&mut C` and **borrows** the
     /// whole value (`&V`), because DAG steps take their value by reference, and
     /// returns `Out`, which bubbles up. Context-aware mirror of
@@ -1444,33 +1489,15 @@ where
             CtxDagDispatchOnBuilder<'_, C, V, K, Out>,
         ) -> CtxDagDispatchOnBuilder<'_, C, V, K, Out>,
     {
-        let b = build(CtxDagDispatchOnBuilder::<C, V, K, Out>::new(registry));
-        let armed = b.table.iter().filter(|s| s.is_some()).count();
-        let default = resolve_dispatch_default(
-            b.default,
-            armed,
-            K::VARIANTS,
-            || {
-                Box::new(PanicArm(PhantomData))
-                    as Box<dyn for<'a> CtxStepCall<C, &'a V, Out = Out> + Send>
-            },
-            "dispatch_on",
-            std::any::type_name::<K>(),
-        );
         CtxDagChain {
-            chain: CtxDagDispatchOnNode {
-                prev: self.chain,
-                key_fn,
-                table: b.table,
-                default,
-            },
+            chain: ctx_dag_dispatch_on_node(self.chain, key_fn, registry, build),
             _marker: PhantomData,
         }
     }
 }
 
 impl<C: 'static, E: 'static> CtxDagBuilder<C, E> {
-    /// Terminal keyed dispatch on a *projected* key as the ctx DAG's first
+    /// Keyed dispatch on a *projected* key as the ctx DAG's first
     /// step. Mirrors the entry-point form of [`root`](CtxDagBuilder::root); see
     /// [`CtxDagChain::dispatch_on`] for the continuation form and the note on
     /// why `dispatch_variant` stays pipeline-only. Issue #723.
@@ -1488,26 +1515,38 @@ impl<C: 'static, E: 'static> CtxDagBuilder<C, E> {
             CtxDagDispatchOnBuilder<'_, C, E, K, Out>,
         ) -> CtxDagDispatchOnBuilder<'_, C, E, K, Out>,
     {
-        let b = build(CtxDagDispatchOnBuilder::<C, E, K, Out>::new(registry));
-        let armed = b.table.iter().filter(|s| s.is_some()).count();
-        let default = resolve_dispatch_default(
-            b.default,
-            armed,
-            K::VARIANTS,
-            || {
-                Box::new(PanicArm(PhantomData))
-                    as Box<dyn for<'a> CtxStepCall<C, &'a E, Out = Out> + Send>
-            },
-            "dispatch_on",
-            std::any::type_name::<K>(),
-        );
         CtxDagChain {
-            chain: CtxDagDispatchOnNode {
-                prev: CtxIdentityNode,
-                key_fn,
-                table: b.table,
-                default,
-            },
+            chain: ctx_dag_dispatch_on_node(CtxIdentityNode, key_fn, registry, build),
+            _marker: PhantomData,
+        }
+    }
+}
+
+impl<C, In, V: 'static, Chain> CtxDagArm<C, In, V, Chain> {
+    /// Keyed dispatch on a *projected* key, inside a fork arm. The
+    /// fork-arm counterpart of [`CtxDagChain::dispatch_on`] — every DAG
+    /// combinator is available on both the chain and a fork arm — so a fork arm
+    /// can itself route to sub-handlers. Each arm receives `&mut C`, **borrows**
+    /// the whole value (`&V`), and returns `Out`, which bubbles up. The table
+    /// must be exhaustive or carry a `.default` / `.default_noop()`, else this
+    /// panics at construction.
+    pub fn dispatch_on<K, F, Out, Bf>(
+        self,
+        key_fn: F,
+        registry: &Registry,
+        build: Bf,
+    ) -> CtxDagArm<C, In, Out, CtxDagDispatchOnNode<C, Chain, V, F, Out>>
+    where
+        C: 'static,
+        K: Dispatchable + 'static,
+        F: Fn(&V) -> K + Send + 'static,
+        Out: 'static,
+        Bf: FnOnce(
+            CtxDagDispatchOnBuilder<'_, C, V, K, Out>,
+        ) -> CtxDagDispatchOnBuilder<'_, C, V, K, Out>,
+    {
+        CtxDagArm {
+            chain: ctx_dag_dispatch_on_node(self.chain, key_fn, registry, build),
             _marker: PhantomData,
         }
     }

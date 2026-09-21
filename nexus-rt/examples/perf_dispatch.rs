@@ -3,9 +3,12 @@
 //! Compares the two dispatch-table combinators against the two things they sit
 //! between: the compile-time `select!` jump table (faster, arms fixed at compile
 //! time) and an `FxHashMap` keyed-dispatch table (the usual runtime-composable
-//! alternative, which hashes). For an N-variant enum all arms do identical work
-//! (accumulate a payload into a `World` resource) so only the dispatch mechanism
-//! differs:
+//! alternative, which hashes). For an N-variant enum every arm does the same
+//! *shape* of minimal work (fold the payload into a `World` resource) but each
+//! arm is a **distinct function**, and keys arrive in a **precomputed random
+//! order** rather than a round robin, so the indirect-call target genuinely
+//! varies per dispatch and the branch/indirect predictor cannot learn the
+//! sequence. Only the dispatch mechanism differs between rows:
 //!
 //! - `.dispatch_variant` — input IS the enum, arms get the typed payload; the
 //!   table is a flat array indexed by the value's own `ordinal()`, one indirect
@@ -52,6 +55,9 @@ new_resource!(Acc(u64));
 const ITERATIONS: usize = 100_000;
 const WARMUP: usize = 10_000;
 const BATCH: u64 = 100;
+/// Length of the precomputed random key sequence (power of two so `& (LEN - 1)`
+/// masks). Long enough that the key order does not repeat within a batch.
+const RAND_LEN: usize = 4096;
 
 #[inline(always)]
 #[cfg(target_arch = "x86_64")]
@@ -112,6 +118,23 @@ fn print_header(title: &str) {
         "Operation", "p50", "p90", "p99", "p999", "p9999"
     );
     println!("{}", "-".repeat(84));
+}
+
+/// A fixed, precomputed pseudo-random sequence of key indices in `0..modulo`.
+/// Feeding keys in this order (rather than a period-`modulo` round robin) keeps
+/// the branch/indirect predictor from learning the sequence, so the measured
+/// cost reflects a realistic mispredict rate instead of a perfectly-predicted
+/// loop. Deterministic (fixed seed) so runs are comparable.
+fn random_indices(len: usize, modulo: usize) -> Vec<usize> {
+    let mut x: u64 = 0x9E37_79B9_7F4A_7C15;
+    (0..len)
+        .map(|_| {
+            x ^= x << 13;
+            x ^= x >> 7;
+            x ^= x << 17;
+            (x as usize) % modulo
+        })
+        .collect()
 }
 
 // =============================================================================
@@ -179,20 +202,17 @@ pub struct Grid {
 }
 
 // =============================================================================
-// Arms — identical work (accumulate the payload) so only dispatch cost differs
+// Arms — every arm is a DISTINCT function doing the same *shape* of minimal work
+// (fold the payload plus a per-arm constant into the accumulator). Same shape
+// keeps the per-arm cost equal across keys; distinct bodies keep the branch /
+// indirect predictor honest (identical-code-folding cannot collapse them to one
+// call target).
 // =============================================================================
 
-/// `.dispatch_variant` arm: receives the unwrapped `u64` payload directly.
-#[allow(clippy::needless_pass_by_value)]
-fn add_payload(mut acc: ResMut<Acc>, payload: u64) {
-    acc.0 = acc.0.wrapping_add(payload);
-}
-
-/// `select!` / `FxHashMap` arm: receives the whole `Cmd`, matches out the
-/// payload (every variant carries a `u64`).
-#[allow(clippy::needless_pass_by_value)]
-fn add_cmd(mut acc: ResMut<Acc>, cmd: Cmd) {
-    let payload = match cmd {
+/// Extract the `u64` payload carried by every `Cmd` variant.
+#[inline(always)]
+fn cmd_payload(cmd: &Cmd) -> u64 {
+    match cmd {
         Cmd::V0(p)
         | Cmd::V1(p)
         | Cmd::V2(p)
@@ -200,21 +220,43 @@ fn add_cmd(mut acc: ResMut<Acc>, cmd: Cmd) {
         | Cmd::V4(p)
         | Cmd::V5(p)
         | Cmd::V6(p)
-        | Cmd::V7(p) => p,
+        | Cmd::V7(p) => *p,
+    }
+}
+
+/// Generate distinct arm functions, one per entry. Each folds a distinct
+/// constant, so no two share an implementation and ICF cannot merge them.
+macro_rules! bench_arms {
+    ($( $name:ident($v:ident: $ty:ty) = $body:expr ; )*) => {
+        $(
+            #[allow(clippy::needless_pass_by_value)]
+            fn $name(mut acc: ResMut<Acc>, $v: $ty) {
+                acc.0 = acc.0.wrapping_add($body);
+            }
+        )*
     };
-    acc.0 = acc.0.wrapping_add(payload);
 }
 
-/// `.dispatch_on` arm: receives the whole `Msg` value.
-#[allow(clippy::needless_pass_by_value)]
-fn add_msg(mut acc: ResMut<Acc>, msg: Msg) {
-    acc.0 = acc.0.wrapping_add(msg.payload);
-}
-
-/// Tuple-product `.dispatch_on` arm: receives the whole `Grid` value.
-#[allow(clippy::needless_pass_by_value)]
-fn add_grid(mut acc: ResMut<Acc>, grid: Grid) {
-    acc.0 = acc.0.wrapping_add(grid.payload);
+bench_arms! {
+    // .dispatch_variant arms: receive the unwrapped u64 payload.
+    pv0(p: u64) = p ^ 0xA1; pv1(p: u64) = p ^ 0xB2; pv2(p: u64) = p ^ 0xC3;
+    pv3(p: u64) = p ^ 0xD4; pv4(p: u64) = p ^ 0xE5; pv5(p: u64) = p ^ 0xF6;
+    pv6(p: u64) = p ^ 0x17; pv7(p: u64) = p ^ 0x28;
+    // .dispatch_on arms: receive the whole Msg.
+    mv0(m: Msg) = m.payload ^ 0xA1; mv1(m: Msg) = m.payload ^ 0xB2;
+    mv2(m: Msg) = m.payload ^ 0xC3; mv3(m: Msg) = m.payload ^ 0xD4;
+    mv4(m: Msg) = m.payload ^ 0xE5; mv5(m: Msg) = m.payload ^ 0xF6;
+    mv6(m: Msg) = m.payload ^ 0x17; mv7(m: Msg) = m.payload ^ 0x28;
+    // tuple-product .dispatch_on arms: receive the whole Grid.
+    gv0(g: Grid) = g.payload ^ 0xA1; gv1(g: Grid) = g.payload ^ 0xB2;
+    gv2(g: Grid) = g.payload ^ 0xC3; gv3(g: Grid) = g.payload ^ 0xD4;
+    gv4(g: Grid) = g.payload ^ 0xE5; gv5(g: Grid) = g.payload ^ 0xF6;
+    gv6(g: Grid) = g.payload ^ 0x17; gv7(g: Grid) = g.payload ^ 0x28;
+    // select! / FxHashMap / .dispatch_map arms: receive the whole Cmd.
+    cv0(c: Cmd) = cmd_payload(&c) ^ 0xA1; cv1(c: Cmd) = cmd_payload(&c) ^ 0xB2;
+    cv2(c: Cmd) = cmd_payload(&c) ^ 0xC3; cv3(c: Cmd) = cmd_payload(&c) ^ 0xD4;
+    cv4(c: Cmd) = cmd_payload(&c) ^ 0xE5; cv5(c: Cmd) = cmd_payload(&c) ^ 0xF6;
+    cv6(c: Cmd) = cmd_payload(&c) ^ 0x17; cv7(c: Cmd) = cmd_payload(&c) ^ 0x28;
 }
 
 // =============================================================================
@@ -286,14 +328,14 @@ fn main() {
 
     let mut dv = PipelineBuilder::<Cmd>::new()
         .dispatch_variant(r, |d| {
-            d.arm(cmd_variants::V0, add_payload)
-                .arm(cmd_variants::V1, add_payload)
-                .arm(cmd_variants::V2, add_payload)
-                .arm(cmd_variants::V3, add_payload)
-                .arm(cmd_variants::V4, add_payload)
-                .arm(cmd_variants::V5, add_payload)
-                .arm(cmd_variants::V6, add_payload)
-                .arm(cmd_variants::V7, add_payload)
+            d.arm(cmd_variants::V0, pv0)
+                .arm(cmd_variants::V1, pv1)
+                .arm(cmd_variants::V2, pv2)
+                .arm(cmd_variants::V3, pv3)
+                .arm(cmd_variants::V4, pv4)
+                .arm(cmd_variants::V5, pv5)
+                .arm(cmd_variants::V6, pv6)
+                .arm(cmd_variants::V7, pv7)
         })
         .build();
 
@@ -304,14 +346,14 @@ fn main() {
             |m: &Msg| m.kind,
             r,
             |d| {
-                d.arm(Kind::K0, add_msg)
-                    .arm(Kind::K1, add_msg)
-                    .arm(Kind::K2, add_msg)
-                    .arm(Kind::K3, add_msg)
-                    .arm(Kind::K4, add_msg)
-                    .arm(Kind::K5, add_msg)
-                    .arm(Kind::K6, add_msg)
-                    .arm(Kind::K7, add_msg)
+                d.arm(Kind::K0, mv0)
+                    .arm(Kind::K1, mv1)
+                    .arm(Kind::K2, mv2)
+                    .arm(Kind::K3, mv3)
+                    .arm(Kind::K4, mv4)
+                    .arm(Kind::K5, mv5)
+                    .arm(Kind::K6, mv6)
+                    .arm(Kind::K7, mv7)
             },
         )
         .build();
@@ -323,14 +365,14 @@ fn main() {
             |g: &Grid| (g.a, g.b),
             r,
             |d| {
-                d.arm((Coarse::X, Fine::P), add_grid)
-                    .arm((Coarse::X, Fine::Q), add_grid)
-                    .arm((Coarse::X, Fine::R), add_grid)
-                    .arm((Coarse::X, Fine::S), add_grid)
-                    .arm((Coarse::Y, Fine::P), add_grid)
-                    .arm((Coarse::Y, Fine::Q), add_grid)
-                    .arm((Coarse::Y, Fine::R), add_grid)
-                    .arm((Coarse::Y, Fine::S), add_grid)
+                d.arm((Coarse::X, Fine::P), gv0)
+                    .arm((Coarse::X, Fine::Q), gv1)
+                    .arm((Coarse::X, Fine::R), gv2)
+                    .arm((Coarse::X, Fine::S), gv3)
+                    .arm((Coarse::Y, Fine::P), gv4)
+                    .arm((Coarse::Y, Fine::Q), gv5)
+                    .arm((Coarse::Y, Fine::R), gv6)
+                    .arm((Coarse::Y, Fine::S), gv7)
             },
         )
         .build();
@@ -341,14 +383,14 @@ fn main() {
         .then(
             select! {
                 r,
-                Cmd::V0(..) => add_cmd,
-                Cmd::V1(..) => add_cmd,
-                Cmd::V2(..) => add_cmd,
-                Cmd::V3(..) => add_cmd,
-                Cmd::V4(..) => add_cmd,
-                Cmd::V5(..) => add_cmd,
-                Cmd::V6(..) => add_cmd,
-                Cmd::V7(..) => add_cmd,
+                Cmd::V0(..) => cv0,
+                Cmd::V1(..) => cv1,
+                Cmd::V2(..) => cv2,
+                Cmd::V3(..) => cv3,
+                Cmd::V4(..) => cv4,
+                Cmd::V5(..) => cv5,
+                Cmd::V6(..) => cv6,
+                Cmd::V7(..) => cv7,
             },
             r,
         )
@@ -356,10 +398,16 @@ fn main() {
 
     // --- FxHashMap baseline (runtime table via hashing) ---
 
+    // Distinct boxed handler per key, so the vtable call target varies per key.
     let mut map: FxHashMap<usize, Box<dyn Handler<Cmd>>> = FxHashMap::default();
-    for k in 0..Cmd::VARIANTS {
-        map.insert(k, Box::new(add_cmd.into_handler(r)));
-    }
+    map.insert(0, Box::new(cv0.into_handler(r)));
+    map.insert(1, Box::new(cv1.into_handler(r)));
+    map.insert(2, Box::new(cv2.into_handler(r)));
+    map.insert(3, Box::new(cv3.into_handler(r)));
+    map.insert(4, Box::new(cv4.into_handler(r)));
+    map.insert(5, Box::new(cv5.into_handler(r)));
+    map.insert(6, Box::new(cv6.into_handler(r)));
+    map.insert(7, Box::new(cv7.into_handler(r)));
 
     // --- .dispatch_map table (Hash+Eq key via FxHashMap; whole-value arms) ---
 
@@ -368,20 +416,20 @@ fn main() {
             |c: &Cmd| c.ordinal(),
             r,
             |d| {
-                d.arm(0usize, add_cmd)
-                    .arm(1usize, add_cmd)
-                    .arm(2usize, add_cmd)
-                    .arm(3usize, add_cmd)
-                    .arm(4usize, add_cmd)
-                    .arm(5usize, add_cmd)
-                    .arm(6usize, add_cmd)
-                    .arm(7usize, add_cmd)
+                d.arm(0usize, cv0)
+                    .arm(1usize, cv1)
+                    .arm(2usize, cv2)
+                    .arm(3usize, cv3)
+                    .arm(4usize, cv4)
+                    .arm(5usize, cv5)
+                    .arm(6usize, cv6)
+                    .arm(7usize, cv7)
                     .default_noop()
             },
         )
         .build();
 
-    // --- Inputs (round-robin over all keys each call) ---
+    // --- Inputs, indexed by a precomputed random key order (see `idxs`) ---
 
     let cmds: [Cmd; 8] = [
         Cmd::V0(10),
@@ -470,6 +518,11 @@ fn main() {
         },
     ];
 
+    // Precomputed random key order: each bench indexes its input array by
+    // `idxs[i & (RAND_LEN - 1)]`, so successive dispatches hit unpredictable
+    // keys (and thus unpredictable arm targets), not a learnable round robin.
+    let idxs = random_indices(RAND_LEN, 8);
+
     // --- Discriminant dispatch: table vs jump table vs hashmap (same key) ---
 
     print_header("Keyed Dispatch on Discriminant (cycles, 8 variants)");
@@ -477,25 +530,25 @@ fn main() {
     let mut i = 0usize;
 
     bench_batched(".dispatch_variant (array index)", || {
-        let c = cmds[i & 7];
+        let c = cmds[idxs[i & (RAND_LEN - 1)]];
         i = i.wrapping_add(1);
         probe_dispatch_variant(&mut dv, &mut world, black_box(c));
     });
 
     bench_batched("select! (jump table, inlined)", || {
-        let c = cmds[i & 7];
+        let c = cmds[idxs[i & (RAND_LEN - 1)]];
         i = i.wrapping_add(1);
         probe_select(&mut sel, &mut world, black_box(c));
     });
 
     bench_batched("FxHashMap (raw, hash + vtable)", || {
-        let c = cmds[i & 7];
+        let c = cmds[idxs[i & (RAND_LEN - 1)]];
         i = i.wrapping_add(1);
         probe_hashmap(&mut map, &mut world, black_box(c));
     });
 
     bench_batched(".dispatch_map (FxHashMap combinator)", || {
-        let c = cmds[i & 7];
+        let c = cmds[idxs[i & (RAND_LEN - 1)]];
         i = i.wrapping_add(1);
         probe_dispatch_map(&mut dm, &mut world, black_box(c));
     });
@@ -506,13 +559,13 @@ fn main() {
     print_header("Projected-Key Dispatch (cycles, 8 keys)");
 
     bench_batched(".dispatch_on (projected key)", || {
-        let m = msgs[i & 7];
+        let m = msgs[idxs[i & (RAND_LEN - 1)]];
         i = i.wrapping_add(1);
         probe_dispatch_on(&mut don, &mut world, black_box(m));
     });
 
     bench_batched(".dispatch_on (tuple-product key)", || {
-        let g = grids[i & 7];
+        let g = grids[idxs[i & (RAND_LEN - 1)]];
         i = i.wrapping_add(1);
         probe_dispatch_on_pair(&mut dpair, &mut world, black_box(g));
     });

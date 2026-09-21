@@ -16,9 +16,12 @@ you two ways to build that fan-out:
 **Reach for the tables first.** They are the recommended default: easier to
 assemble, runtime-composable, and — because the table is a flat array indexed by
 a dense ordinal, never a hash — the cost over the compile-time `select!` is *one
-indirect call*, roughly a cycle at p50 (see [Performance](#performance)).
+indirect call*, a few cycles at p50, and still comfortably under a hashmap (see
+[Performance](#performance)).
 `select!` is the power-user tool: reach for it when the arms are fixed at compile
-time and you are chasing the last cycle on the very hottest path (see
+time and you are chasing the last cycle on the very hottest path, or when the
+value is a borrowed, zero-copy enum the tables cannot take (see
+[Limitations](#limitations) and
 [pipelines.md — Dispatching by Discriminant](pipelines.md#dispatching-by-discriminant--select)).
 
 ---
@@ -35,13 +38,28 @@ time and you are chasing the last cycle on the very hottest path (see
 Rules of thumb:
 
 - The value **is** the enum → `dispatch_variant`. It is the only form that hands
-  each arm the typed payload for free, and the fastest of the tables (nearly
+  each arm the typed payload for free, and the fastest of the tables (closest to
   `select!`).
 - The value **carries** the routing key (a `source` field, a `msg_type`) →
   `dispatch_on`. Also the DAG's routing primitive.
 - The key is not a `Dispatchable` enum → `dispatch_map`. It is the slowest
   (hash + wrapping), so prefer `dispatch_on` whenever the key can be an enum.
 - Arms compile-time-fixed and you need the last cycle → `select!`.
+
+---
+
+## Limitations
+
+- **Owned / `'static` dispatched values.** The tables erase each arm behind a
+  `Box<dyn ...>`, so the dispatched value must be `'static`, and
+  `#[derive(Dispatchable)]` does not accept lifetime-generic enums. A borrowed,
+  zero-copy enum such as `enum Msg<'a> { Text(&'a str) }` therefore cannot drive
+  a table; use `select!` (it matches by value with no `'static` bound). This is
+  the one case where `select!` is not merely the last-cycle option but the only
+  one.
+- **`.dispatch_variant` is not on the DAG surfaces.** DAG steps take their value
+  by reference, and a by-reference unwrap of a moved-out payload does not fit the
+  model; use `.dispatch_on` for DAG routing (it is the DAG's dispatch primitive).
 
 ---
 
@@ -78,16 +96,16 @@ What you get:
   generated module named `<enum_snake_case>_variants` — here `cmd_variants`.
   Each marker ties a variant to its **payload type** (`()` for a unit variant,
   the field type for a single-field variant, a tuple of field types for a
-  multi-field variant), its ordinal, and an unchecked `unwrap`. This is the
+  multi-field variant), its ordinal, and an `unwrap_unchecked`. This is the
   bridge `.dispatch_variant` uses to hand each arm its typed payload:
 
   ```rust
   // (Cmd as above.) The caller knows the value is `RouteAway`, so it is sound.
-  let payload: u32 = unsafe { cmd_variants::RouteAway::unwrap(Cmd::RouteAway(7)) };
+  let payload: u32 = unsafe { cmd_variants::RouteAway::unwrap_unchecked(Cmd::RouteAway(7)) };
   assert_eq!(payload, 7);
   ```
 
-  You rarely call `unwrap` yourself — you pass the marker to `.arm()` and the
+  You rarely call `unwrap_unchecked` yourself — you pass the marker to `.arm()` and the
   combinator does it for you. (Only unit and tuple variants are supported;
   named-field struct variants are rejected by the derive.)
 
@@ -243,7 +261,8 @@ pipeline.run(&mut world, Tick { source: Source::Kraken, px: 300 }); // default n
 - Same exhaustive-or-`.default` rule as `.dispatch_variant`; the default also
   receives the whole value.
 - Available on **all four surfaces**: `Pipeline`, `CtxPipeline`, `DagChain`, and
-  `CtxDagChain`, each as an entry point and a continuation. On the ctx surfaces
+  `CtxDagChain`, each as an entry point, a continuation, and (on the DAG surfaces)
+  inside a fork arm. On the ctx surfaces
   every arm (and the default) threads `&mut C` first. On the **DAG** surfaces the
   arms take the value **by reference** (`fn(Params.., &V)`), matching how DAG
   steps borrow — this is why `.dispatch_on` is the DAG's dispatch primitive:
@@ -414,8 +433,11 @@ when the unhandled key finally shows up in production at 3am.
   terminal (`Out = ()`) tables**. Use it when you deliberately want unlisted
   keys to fall through and do nothing. This is the explicit opt-out of the
   exhaustiveness requirement.
-- **Fully armed, no `.default`** — fine, and the fastest shape: the fallback slot
-  is a never-taken panic arm the compiler can see is unreachable.
+- **Fully armed, no `.default`** — fine, and the fastest shape: the default slot
+  holds a never-taken panic arm. The dispatch table is populated at runtime, so
+  the branch that would select the default is a real (well-predicted) runtime
+  check, not one the compiler proves away; on a fully-armed table it simply never
+  selects the panic arm.
 
 Key-space differences:
 
@@ -490,41 +512,51 @@ arms are fixed and you want context threading on the jump table.
 
 ## Performance
 
-Cycles per dispatch, 8 keys, all arms doing identical work (accumulate a payload
-into a `World` resource) so only the dispatch mechanism differs. Reproduce with
-`examples/perf_dispatch.rs`.
+Cycles per dispatch, 8 keys. Every arm does the same *shape* of minimal work
+(fold the payload into a `World` resource) but is a **distinct function**, and
+keys arrive in a **precomputed random order**, so the indirect-call target
+varies per dispatch: the numbers reflect a realistic mispredict rate, not a
+perfectly-predicted loop. Only the dispatch mechanism differs between rows.
+Reproduce with `examples/perf_dispatch.rs`.
 
 | Dispatch | p50 | p90 | p99 | p999 | p9999 |
 |---|---|---|---|---|---|
-| `select!` (compile-time, inlined) | 4 | 5 | 7 | ~10 | ~70 |
-| `.dispatch_variant` (ordinal array, typed) | 5 | 6 | ~8 | ~15 | ~85 |
-| `.dispatch_on` (ordinal array, whole value) | 7 | 10 | ~13 | ~18 | ~85 |
-| `.dispatch_on` (tuple-product key) | 8 | 9 | ~13 | ~21 | ~75 |
-| raw `FxHashMap` (hand-rolled) | 7 | 8 | ~14 | ~22 | ~85 |
-| `.dispatch_map` (FxHashMap combinator) | 9 | 9 | ~17 | ~28 | ~90 |
+| `select!` (compile-time, inlined) | 28 | 29 | ~32 | ~78 | ~110 |
+| `.dispatch_variant` (ordinal array, typed) | 31 | 33 | ~37 | ~85 | ~130 |
+| `.dispatch_on` (ordinal array, whole value) | 38 | 40 | ~45 | ~93 | ~125 |
+| `.dispatch_on` (tuple-product key) | 38 | 40 | ~44 | ~97 | ~130 |
+| raw `FxHashMap` (hand-rolled) | 45 | 48 | ~52 | ~106 | ~145 |
+| `.dispatch_map` (FxHashMap combinator) | 50 | 53 | ~57 | ~110 | ~150 |
 
 > **Measurement caveat — read the p50/p90, not the tail.** These were taken
-> pinned to physical core 0 (`taskset -c 0`), best-of-5, but with **turbo boost
-> left ON** (it could not be disabled on the measurement box), timed with
-> `rdtsc` (raw TSC ticks), and reported as **percentiles of per-batch means**.
-> So **p50 and p90 are the reliable per-op signal**; the p99/p999/p9999 columns
-> are dominated by system noise (scheduler tick, IRQ, frequency throttling), not
-> the dispatch mechanism. Re-run `examples/perf_dispatch.rs` under `taskset -c 0`
-> **with turbo disabled** on a quiescent machine for publication-grade numbers.
+> pinned to physical core 0 (`taskset -c 0`), best of 3 runs, with distinct arm
+> functions driven by a random key order (so the predictor cannot collapse the
+> arms to a single call target), but with **turbo boost left ON** (it could not
+> be disabled on the measurement box), timed with `rdtsc` (raw TSC ticks), and
+> reported as **percentiles of per-batch means**. So **p50 and p90 are the
+> reliable per-op signal**; the p99/p999/p9999 columns are dominated by system
+> noise (scheduler tick, IRQ, frequency throttling), not the dispatch mechanism.
+> Re-run `examples/perf_dispatch.rs` under `taskset -c 0` **with turbo disabled**
+> on a quiescent machine for publication-grade numbers.
 
 What the numbers say:
 
-- **`.dispatch_variant` costs ~+1 cycle over inlined `select!`** (5 vs 4 at
-  p50). That is a runtime-composable, typed-payload dispatch table for basically
-  nothing — the reason the tables are the recommended default.
-- **Ordinal tables match or beat a hashmap at small N and pull ahead as N
-  grows.** `.dispatch_on` (7 p50) sits right on the raw `FxHashMap` (7 p50) at 8
-  keys, with no hashing and no rehash cliff as the key count rises.
-- **`.dispatch_map` is the slowest** (9 p50 — hash + wrapping over the ordinal
-  index), so prefer `.dispatch_on` whenever the key is a `Dispatchable` enum and
-  keep `.dispatch_map` for genuinely non-enum keys.
-- **Beyond p99 everything — including `select!` — converges** to the same
-  ~70–100-cycle band. That tail is machine noise, not the mechanism: no dispatch
+- **`.dispatch_variant` costs a few cycles over inlined `select!`** (31 vs 28 at
+  p50 here, roughly +3 to +6 across runs, about 10-20%). That buys a
+  runtime-composable, typed-payload dispatch table; `select!` keeps its edge by
+  inlining the arm and skipping the indirect call, which is why it stays the tool
+  for the last cycle on the hottest path.
+- **The ordinal tables beat a hashmap at 8 keys.** `.dispatch_variant` (31 p50)
+  and `.dispatch_on` (38 p50) both come in well under the raw `FxHashMap` (45
+  p50) and the `.dispatch_map` combinator (50 p50): an array index is cheaper
+  than hashing. This is measured **only at N=8**. An array index is O(1) with no
+  hashing or rehash regardless of N, but no scaling claim beyond N=8 is measured
+  here.
+- **`.dispatch_map` is the slowest** (50 p50, hash + probe), so prefer
+  `.dispatch_on` whenever the key is a `Dispatchable` enum and keep
+  `.dispatch_map` for genuinely non-enum keys.
+- **Beyond p99 everything — including `select!` — converges** to the same noisy
+  ~80-160-cycle band. That tail is machine noise, not the mechanism: no dispatch
   strategy escapes a scheduler tick or an IRQ.
 
 See [BENCHMARKS.md](../BENCHMARKS.md) for the workspace benchmark index.
@@ -533,14 +565,19 @@ See [BENCHMARKS.md](../BENCHMARKS.md) for the workspace benchmark index.
 
 ## Soundness
 
-`.dispatch_variant`'s typed payload comes from `VariantOf::unwrap`, the feature's
-**only** `unsafe`. It is sound because the arm is reached **only** via the
+`.dispatch_variant`'s typed payload comes from `VariantOf::unwrap_unchecked`, the
+feature's **only** `unsafe`. It is sound because the arm is reached **only** via the
 value's own `ordinal()` — the table slot for ordinal *i* holds the arm for
 variant *i*, and we only enter it when `value.ordinal() == i`, so the value
 provably **is** that variant. Debug builds carry a `debug_assert!` that trips
 before the `unreachable_unchecked` if that invariant were ever violated, and the
 path is covered by miri. `.dispatch_on` and `.dispatch_map` have **no** unsafe at
-all — they hand over the whole value, so there is nothing to unwrap. See
+all — they hand over the whole value, so there is nothing to unwrap.
+
+`Dispatchable` and `VariantOf` are **`unsafe` traits** because this
+ordinal/payload correspondence is the implementor's to uphold. `#[derive(Dispatchable)]`
+(the supported path) generates it and cannot get it wrong, so no *safe* code can
+misroute; a hand-written `unsafe impl` takes on the obligation. See
 [UNSAFE_AND_SOUNDNESS.md](UNSAFE_AND_SOUNDNESS.md#7-dispatch-payload-unwrap-dispatchrs--2-unsafe-blocks)
 for the full argument and the miri coverage.
 

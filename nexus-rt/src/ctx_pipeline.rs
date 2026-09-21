@@ -60,7 +60,8 @@
 use std::marker::PhantomData;
 
 use crate::dispatch::{
-    Dispatchable, NoopArm, PanicArm, VariantArm, VariantOf, resolve_dispatch_default,
+    Dispatchable, NoopArm, PanicArm, VariantArm, VariantOf, assert_first_arm,
+    finalize_ordinal_table,
 };
 use crate::handler::{Opaque, Param};
 use crate::world::{Registry, World};
@@ -1508,7 +1509,7 @@ where
 }
 
 // =============================================================================
-// dispatch_variant — terminal keyed dispatch on the input enum's discriminant
+// dispatch_variant — keyed dispatch on the input enum's discriminant
 // =============================================================================
 //
 // Context-aware mirror of pipeline's `dispatch_variant` (issue #723): the
@@ -1519,13 +1520,13 @@ where
 // builder structs. That is the one structural deviation from the pipeline
 // version, forced by erasure, not a redesign.
 
-// The terminal arm types (`NoopArm`, `PanicArm`, `VariantArm`) and the
-// default-slot resolver (`resolve_dispatch_default`) are shared across all four
+// The terminal arm types (`NoopArm`, `PanicArm`, `VariantArm`) and the ordinal
+// table finalizer (`finalize_ordinal_table`) are shared across all four
 // dispatch surfaces — see `crate::dispatch`. `VariantArm`/`NoopArm`/`PanicArm`
 // each carry a `CtxStepCall` impl alongside their `StepCall` one, so the same
 // type serves the context-threading surfaces here.
 
-/// Chain node for `.dispatch_variant()` — terminal keyed dispatch on the
+/// Chain node for `.dispatch_variant()` — keyed dispatch on the
 /// input enum's own discriminant, threading `&mut C`. Bubbles up the arms'
 /// `Out`.
 #[doc(hidden)]
@@ -1583,6 +1584,12 @@ impl<'r, C: 'static, E: Dispatchable + 'static, Out: 'static>
         S: IntoCtxStep<C, V::Payload, Out, Params>,
         S::Step: Send + 'static,
     {
+        assert_first_arm(
+            self.table[V::ORDINAL].is_some(),
+            "dispatch_variant",
+            std::any::type_name::<E>(),
+            Some(V::ORDINAL),
+        );
         let resolved = step.into_ctx_step(self.registry);
         self.table[V::ORDINAL] = Some(Box::new(VariantArm::<V, _> {
             step: resolved,
@@ -1619,7 +1626,7 @@ where
     E: Dispatchable + 'static,
     C: 'static,
 {
-    /// Terminal keyed dispatch on the input enum's own discriminant. Each arm
+    /// Keyed dispatch on the input enum's own discriminant. Each arm
     /// receives `&mut C` and its variant's payload and returns `Out`, which
     /// bubbles up so the pipeline can `.then(...)` the result (or `.build()`
     /// when `Out = ()`). Context-aware mirror of
@@ -1640,10 +1647,9 @@ where
         ) -> CtxDispatchVariantBuilder<'_, C, E, Out>,
     {
         let b = build(CtxDispatchVariantBuilder::new(registry));
-        let armed = b.table.iter().filter(|s| s.is_some()).count();
-        let default = resolve_dispatch_default(
+        let (table, default) = finalize_ordinal_table(
+            b.table,
             b.default,
-            armed,
             E::VARIANTS,
             || Box::new(PanicArm(PhantomData)) as Box<dyn CtxStepCall<C, E, Out = Out> + Send>,
             "dispatch_variant",
@@ -1652,7 +1658,7 @@ where
         CtxPipelineChain {
             chain: CtxDispatchVariantNode {
                 prev: self.chain,
-                table: b.table,
+                table,
                 default,
             },
             _marker: PhantomData,
@@ -1661,7 +1667,7 @@ where
 }
 
 impl<C: 'static, In: Dispatchable + 'static> CtxPipelineBuilder<C, In> {
-    /// Terminal keyed dispatch as the pipeline's first step, when the input is
+    /// Keyed dispatch as the pipeline's first step, when the input is
     /// itself a [`Dispatchable`] enum. Mirrors the entry-point form of
     /// [`then`](CtxPipelineBuilder::then); see
     /// [`CtxPipelineChain::dispatch_variant`] for the continuation form. Issue
@@ -1678,10 +1684,9 @@ impl<C: 'static, In: Dispatchable + 'static> CtxPipelineBuilder<C, In> {
         ) -> CtxDispatchVariantBuilder<'_, C, In, Out>,
     {
         let b = build(CtxDispatchVariantBuilder::new(registry));
-        let armed = b.table.iter().filter(|s| s.is_some()).count();
-        let default = resolve_dispatch_default(
+        let (table, default) = finalize_ordinal_table(
+            b.table,
             b.default,
-            armed,
             In::VARIANTS,
             || Box::new(PanicArm(PhantomData)) as Box<dyn CtxStepCall<C, In, Out = Out> + Send>,
             "dispatch_variant",
@@ -1690,7 +1695,7 @@ impl<C: 'static, In: Dispatchable + 'static> CtxPipelineBuilder<C, In> {
         CtxPipelineChain {
             chain: CtxDispatchVariantNode {
                 prev: CtxIdentityNode,
-                table: b.table,
+                table,
                 default,
             },
             _marker: PhantomData,
@@ -1699,7 +1704,7 @@ impl<C: 'static, In: Dispatchable + 'static> CtxPipelineBuilder<C, In> {
 }
 
 // =============================================================================
-// dispatch_on — terminal keyed dispatch on a projected key
+// dispatch_on — keyed dispatch on a projected key
 // =============================================================================
 //
 // Context-aware mirror of pipeline's `dispatch_on` (issue #723). The key is a
@@ -1708,7 +1713,7 @@ impl<C: 'static, In: Dispatchable + 'static> CtxPipelineBuilder<C, In> {
 // `&mut C` and the whole value. As with `dispatch_variant`, `C` is a node/
 // builder type parameter because the arm table is an erased trait object.
 
-/// Chain node for `.dispatch_on()` — terminal keyed dispatch on a projected
+/// Chain node for `.dispatch_on()` — keyed dispatch on a projected
 /// key, threading `&mut C`. Bubbles up the arms' `Out`.
 #[doc(hidden)]
 pub struct CtxDispatchOnNode<C, Prev, V, F, Out> {
@@ -1768,7 +1773,14 @@ impl<'r, C: 'static, V: 'static, K: Dispatchable + 'static, Out: 'static>
         S: IntoCtxStep<C, V, Out, Params>,
         S::Step: Send + 'static,
     {
-        self.table[k.ordinal()] = Some(Box::new(step.into_ctx_step(self.registry)));
+        let idx = k.ordinal();
+        assert_first_arm(
+            self.table[idx].is_some(),
+            "dispatch_on",
+            std::any::type_name::<K>(),
+            Some(idx),
+        );
+        self.table[idx] = Some(Box::new(step.into_ctx_step(self.registry)));
         self
     }
 
@@ -1800,7 +1812,7 @@ where
     V: 'static,
     C: 'static,
 {
-    /// Terminal keyed dispatch on a *projected* key. `key_fn` maps the value to
+    /// Keyed dispatch on a *projected* key. `key_fn` maps the value to
     /// a [`Dispatchable`] key; each arm receives `&mut C` and the **whole**
     /// value (unlike [`dispatch_variant`](Self::dispatch_variant), where arms
     /// get the unwrapped payload) and returns `Out`, which bubbles up. Context-
@@ -1825,10 +1837,9 @@ where
         ) -> CtxDispatchOnBuilder<'_, C, V, K, Out>,
     {
         let b = build(CtxDispatchOnBuilder::<C, V, K, Out>::new(registry));
-        let armed = b.table.iter().filter(|s| s.is_some()).count();
-        let default = resolve_dispatch_default(
+        let (table, default) = finalize_ordinal_table(
+            b.table,
             b.default,
-            armed,
             K::VARIANTS,
             || Box::new(PanicArm(PhantomData)) as Box<dyn CtxStepCall<C, V, Out = Out> + Send>,
             "dispatch_on",
@@ -1838,7 +1849,7 @@ where
             chain: CtxDispatchOnNode {
                 prev: self.chain,
                 key_fn,
-                table: b.table,
+                table,
                 default,
             },
             _marker: PhantomData,
@@ -1847,7 +1858,7 @@ where
 }
 
 impl<C: 'static, In: 'static> CtxPipelineBuilder<C, In> {
-    /// Terminal keyed dispatch on a *projected* key as the pipeline's first
+    /// Keyed dispatch on a *projected* key as the pipeline's first
     /// step. Mirrors the entry-point form of [`then`](CtxPipelineBuilder::then);
     /// see [`CtxPipelineChain::dispatch_on`] for the continuation form. Issue
     /// #723.
@@ -1866,10 +1877,9 @@ impl<C: 'static, In: 'static> CtxPipelineBuilder<C, In> {
         ) -> CtxDispatchOnBuilder<'_, C, In, K, Out>,
     {
         let b = build(CtxDispatchOnBuilder::<C, In, K, Out>::new(registry));
-        let armed = b.table.iter().filter(|s| s.is_some()).count();
-        let default = resolve_dispatch_default(
+        let (table, default) = finalize_ordinal_table(
+            b.table,
             b.default,
-            armed,
             K::VARIANTS,
             || Box::new(PanicArm(PhantomData)) as Box<dyn CtxStepCall<C, In, Out = Out> + Send>,
             "dispatch_on",
@@ -1879,7 +1889,7 @@ impl<C: 'static, In: 'static> CtxPipelineBuilder<C, In> {
             chain: CtxDispatchOnNode {
                 prev: CtxIdentityNode,
                 key_fn,
-                table: b.table,
+                table,
                 default,
             },
             _marker: PhantomData,
@@ -1888,7 +1898,7 @@ impl<C: 'static, In: 'static> CtxPipelineBuilder<C, In> {
 }
 
 // =============================================================================
-// dispatch_map — terminal keyed dispatch on an arbitrary Hash + Eq key
+// dispatch_map — keyed dispatch on an arbitrary Hash + Eq key
 // =============================================================================
 //
 // Context-aware mirror of pipeline's `dispatch_map` (issue #723). The escape
@@ -1899,7 +1909,7 @@ impl<C: 'static, In: 'static> CtxPipelineBuilder<C, In> {
 // dispatch nodes, `C` is a node/builder type parameter because the arm table is
 // an erased trait object that names `C`.
 
-/// Chain node for `.dispatch_map()` — terminal keyed dispatch on an arbitrary
+/// Chain node for `.dispatch_map()` — keyed dispatch on an arbitrary
 /// `Hash + Eq` key, threading `&mut C`. Bubbles up the arms' `Out`.
 #[doc(hidden)]
 pub struct CtxDispatchMapNode<C, Prev, V, K, F, Out> {
@@ -1955,8 +1965,15 @@ impl<'r, C: 'static, V: 'static, K: core::hash::Hash + Eq, Out: 'static>
         S: IntoCtxStep<C, V, Out, Params>,
         S::Step: Send + 'static,
     {
-        self.table
+        let prev = self
+            .table
             .insert(k, Box::new(step.into_ctx_step(self.registry)));
+        assert_first_arm(
+            prev.is_some(),
+            "dispatch_map",
+            std::any::type_name::<K>(),
+            None,
+        );
         self
     }
 
@@ -1988,7 +2005,7 @@ where
     V: 'static,
     C: 'static,
 {
-    /// Terminal keyed dispatch on an arbitrary `Hash + Eq` key. The escape hatch
+    /// Keyed dispatch on an arbitrary `Hash + Eq` key. The escape hatch
     /// from [`dispatch_on`](Self::dispatch_on) for keys that aren't
     /// [`Dispatchable`] enums — a non-enum/composite key, or a discriminant
     /// derived from a resource lookup upstream. `key_fn` maps the value to the
@@ -2033,7 +2050,7 @@ where
 }
 
 impl<C: 'static, In: 'static> CtxPipelineBuilder<C, In> {
-    /// Terminal keyed dispatch on an arbitrary `Hash + Eq` key as the pipeline's
+    /// Keyed dispatch on an arbitrary `Hash + Eq` key as the pipeline's
     /// first step. Mirrors the entry-point form of [`then`](CtxPipelineBuilder::then);
     /// see [`CtxPipelineChain::dispatch_map`] for the continuation form. Issue
     /// #723.

@@ -112,7 +112,8 @@ use std::marker::PhantomData;
 use crate::Handler;
 use crate::dag::DagArm;
 use crate::dispatch::{
-    Dispatchable, NoopArm, PanicArm, VariantArm, VariantOf, resolve_dispatch_default,
+    Dispatchable, NoopArm, PanicArm, VariantArm, VariantOf, assert_first_arm,
+    finalize_ordinal_table,
 };
 use crate::handler::{Opaque, Param};
 use crate::world::{Registry, World};
@@ -1939,11 +1940,11 @@ where
 
 // -- dispatch_variant nodes --------------------------------------------------
 //
-// The terminal arm types (`NoopArm`, `PanicArm`, `VariantArm`) and the
-// default-slot resolver (`resolve_dispatch_default`) are shared across all four
+// The terminal arm types (`NoopArm`, `PanicArm`, `VariantArm`) and the ordinal
+// table finalizer (`finalize_ordinal_table`) are shared across all four
 // dispatch surfaces — see `crate::dispatch`.
 
-/// Chain node for `.dispatch_variant()` — terminal keyed dispatch on the
+/// Chain node for `.dispatch_variant()` — keyed dispatch on the
 /// input enum's own discriminant. Bubbles up the arms' `Out`.
 #[doc(hidden)]
 pub struct DispatchVariantNode<Prev, E, Out> {
@@ -1998,6 +1999,12 @@ impl<'r, E: Dispatchable + 'static, Out: 'static> DispatchVariantBuilder<'r, E, 
         S: IntoStep<V::Payload, Out, Params>,
         S::Step: Send + 'static,
     {
+        assert_first_arm(
+            self.table[V::ORDINAL].is_some(),
+            "dispatch_variant",
+            std::any::type_name::<E>(),
+            Some(V::ORDINAL),
+        );
         let resolved = step.into_step(self.registry);
         self.table[V::ORDINAL] = Some(Box::new(VariantArm::<V, _> {
             step: resolved,
@@ -2033,7 +2040,7 @@ where
     Chain: ChainCall<In, Out = E>,
     E: Dispatchable + 'static,
 {
-    /// Terminal keyed dispatch on the input enum's own discriminant. Each arm
+    /// Keyed dispatch on the input enum's own discriminant. Each arm
     /// receives its variant's payload and returns `Out`, which bubbles up so the
     /// pipeline can `.then(...)` the result (or `.build()` when `Out = ()`).
     ///
@@ -2050,10 +2057,9 @@ where
         Bf: FnOnce(DispatchVariantBuilder<'_, E, Out>) -> DispatchVariantBuilder<'_, E, Out>,
     {
         let b = build(DispatchVariantBuilder::new(registry));
-        let armed = b.table.iter().filter(|s| s.is_some()).count();
-        let default = resolve_dispatch_default(
+        let (table, default) = finalize_ordinal_table(
+            b.table,
             b.default,
-            armed,
             E::VARIANTS,
             || Box::new(PanicArm(PhantomData)) as Box<dyn StepCall<E, Out = Out> + Send>,
             "dispatch_variant",
@@ -2062,7 +2068,7 @@ where
         PipelineChain {
             chain: DispatchVariantNode {
                 prev: self.chain,
-                table: b.table,
+                table,
                 default,
             },
             _marker: PhantomData,
@@ -2071,7 +2077,7 @@ where
 }
 
 impl<In: Dispatchable + 'static> PipelineBuilder<In> {
-    /// Terminal keyed dispatch as the pipeline's first step, when the input is
+    /// Keyed dispatch as the pipeline's first step, when the input is
     /// itself a [`Dispatchable`] enum. Mirrors the entry-point form of
     /// [`then`](PipelineBuilder::then)/[`scan`](PipelineBuilder::scan) — see
     /// [`PipelineChain::dispatch_variant`] for the continuation form. Issue #723.
@@ -2085,10 +2091,9 @@ impl<In: Dispatchable + 'static> PipelineBuilder<In> {
         Bf: FnOnce(DispatchVariantBuilder<'_, In, Out>) -> DispatchVariantBuilder<'_, In, Out>,
     {
         let b = build(DispatchVariantBuilder::new(registry));
-        let armed = b.table.iter().filter(|s| s.is_some()).count();
-        let default = resolve_dispatch_default(
+        let (table, default) = finalize_ordinal_table(
+            b.table,
             b.default,
-            armed,
             In::VARIANTS,
             || Box::new(PanicArm(PhantomData)) as Box<dyn StepCall<In, Out = Out> + Send>,
             "dispatch_variant",
@@ -2097,7 +2102,7 @@ impl<In: Dispatchable + 'static> PipelineBuilder<In> {
         PipelineChain {
             chain: DispatchVariantNode {
                 prev: IdentityNode,
-                table: b.table,
+                table,
                 default,
             },
             _marker: PhantomData,
@@ -2107,7 +2112,7 @@ impl<In: Dispatchable + 'static> PipelineBuilder<In> {
 
 // -- dispatch_on nodes -------------------------------------------------------
 
-/// Chain node for `.dispatch_on()` — terminal keyed dispatch on a projected
+/// Chain node for `.dispatch_on()` — keyed dispatch on a projected
 /// key.
 ///
 /// Unlike [`DispatchVariantNode`], the dispatch key is a *projection* of the
@@ -2170,7 +2175,14 @@ impl<'r, V: 'static, K: Dispatchable + 'static, Out: 'static> DispatchOnBuilder<
         S: IntoStep<V, Out, Params>,
         S::Step: Send + 'static,
     {
-        self.table[k.ordinal()] = Some(Box::new(step.into_step(self.registry)));
+        let idx = k.ordinal();
+        assert_first_arm(
+            self.table[idx].is_some(),
+            "dispatch_on",
+            std::any::type_name::<K>(),
+            Some(idx),
+        );
+        self.table[idx] = Some(Box::new(step.into_step(self.registry)));
         self
     }
 
@@ -2201,7 +2213,7 @@ where
     Chain: ChainCall<In, Out = V>,
     V: 'static,
 {
-    /// Terminal keyed dispatch on a *projected* key. `key_fn` maps the value to
+    /// Keyed dispatch on a *projected* key. `key_fn` maps the value to
     /// a [`Dispatchable`] key; each arm receives the **whole** value (unlike
     /// [`dispatch_variant`](Self::dispatch_variant), where arms get the
     /// unwrapped payload) and returns `Out`, which bubbles up.
@@ -2222,10 +2234,9 @@ where
         Bf: FnOnce(DispatchOnBuilder<'_, V, K, Out>) -> DispatchOnBuilder<'_, V, K, Out>,
     {
         let b = build(DispatchOnBuilder::<V, K, Out>::new(registry));
-        let armed = b.table.iter().filter(|s| s.is_some()).count();
-        let default = resolve_dispatch_default(
+        let (table, default) = finalize_ordinal_table(
+            b.table,
             b.default,
-            armed,
             K::VARIANTS,
             || Box::new(PanicArm(PhantomData)) as Box<dyn StepCall<V, Out = Out> + Send>,
             "dispatch_on",
@@ -2235,7 +2246,7 @@ where
             chain: DispatchOnNode {
                 prev: self.chain,
                 key_fn,
-                table: b.table,
+                table,
                 default,
             },
             _marker: PhantomData,
@@ -2244,7 +2255,7 @@ where
 }
 
 impl<In: 'static> PipelineBuilder<In> {
-    /// Terminal keyed dispatch on a *projected* key as the pipeline's first
+    /// Keyed dispatch on a *projected* key as the pipeline's first
     /// step. Mirrors the entry-point form of [`then`](PipelineBuilder::then);
     /// see [`PipelineChain::dispatch_on`] for the continuation form. Issue #723.
     pub fn dispatch_on<K, F, Out, Bf>(
@@ -2260,10 +2271,9 @@ impl<In: 'static> PipelineBuilder<In> {
         Bf: FnOnce(DispatchOnBuilder<'_, In, K, Out>) -> DispatchOnBuilder<'_, In, K, Out>,
     {
         let b = build(DispatchOnBuilder::<In, K, Out>::new(registry));
-        let armed = b.table.iter().filter(|s| s.is_some()).count();
-        let default = resolve_dispatch_default(
+        let (table, default) = finalize_ordinal_table(
+            b.table,
             b.default,
-            armed,
             K::VARIANTS,
             || Box::new(PanicArm(PhantomData)) as Box<dyn StepCall<In, Out = Out> + Send>,
             "dispatch_on",
@@ -2273,7 +2283,7 @@ impl<In: 'static> PipelineBuilder<In> {
             chain: DispatchOnNode {
                 prev: IdentityNode,
                 key_fn,
-                table: b.table,
+                table,
                 default,
             },
             _marker: PhantomData,
@@ -2283,7 +2293,7 @@ impl<In: 'static> PipelineBuilder<In> {
 
 // -- dispatch_map nodes ------------------------------------------------------
 
-/// Chain node for `.dispatch_map()` — terminal keyed dispatch on an arbitrary
+/// Chain node for `.dispatch_map()` — keyed dispatch on an arbitrary
 /// `Hash + Eq` key.
 ///
 /// The escape hatch from [`DispatchOnNode`]'s ordinal `Vec` table for keys that
@@ -2343,8 +2353,15 @@ impl<'r, V: 'static, K: core::hash::Hash + Eq, Out: 'static> DispatchMapBuilder<
         S: IntoStep<V, Out, Params>,
         S::Step: Send + 'static,
     {
-        self.table
+        let prev = self
+            .table
             .insert(k, Box::new(step.into_step(self.registry)));
+        assert_first_arm(
+            prev.is_some(),
+            "dispatch_map",
+            std::any::type_name::<K>(),
+            None,
+        );
         self
     }
 
@@ -2375,7 +2392,7 @@ where
     Chain: ChainCall<In, Out = V>,
     V: 'static,
 {
-    /// Terminal keyed dispatch on an arbitrary `Hash + Eq` key. The escape hatch
+    /// Keyed dispatch on an arbitrary `Hash + Eq` key. The escape hatch
     /// from [`dispatch_on`](Self::dispatch_on) for keys that aren't
     /// [`Dispatchable`] enums — a non-enum/composite key, or a discriminant
     /// derived from a resource lookup upstream. `key_fn` maps the value to the
@@ -2417,7 +2434,7 @@ where
 }
 
 impl<In: 'static> PipelineBuilder<In> {
-    /// Terminal keyed dispatch on an arbitrary `Hash + Eq` key as the pipeline's
+    /// Keyed dispatch on an arbitrary `Hash + Eq` key as the pipeline's
     /// first step. Mirrors the entry-point form of [`then`](PipelineBuilder::then);
     /// see [`PipelineChain::dispatch_map`] for the continuation form. Issue #723.
     pub fn dispatch_map<K, F, Out, Bf>(

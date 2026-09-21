@@ -2,8 +2,8 @@
 //! `VariantOf` traits.
 //!
 //! Run in the default (debug) profile so the `debug_assert!` inside the
-//! generated `unwrap` is active — every unwrap here targets the matching
-//! variant, so the happy path must not trip it.
+//! generated `unwrap_unchecked` is active — every unwrap here targets the
+//! matching variant, so the happy path must not trip it.
 
 use nexus_rt::{Dispatchable, VariantOf};
 
@@ -37,14 +37,14 @@ fn ordinal_constants_match_ordinal_method() {
 #[test]
 fn unwrap_single_field_returns_payload() {
     // SAFETY: the value is the `RouteAway` variant.
-    let payload = unsafe { cmd_variants::RouteAway::unwrap(Cmd::RouteAway(7)) };
+    let payload = unsafe { cmd_variants::RouteAway::unwrap_unchecked(Cmd::RouteAway(7)) };
     assert_eq!(payload, 7u32);
 }
 
 #[test]
 fn unwrap_tuple_field_returns_payload_tuple() {
     // SAFETY: the value is the `Reprice` variant.
-    let payload = unsafe { cmd_variants::Reprice::unwrap(Cmd::Reprice(3, -9)) };
+    let payload = unsafe { cmd_variants::Reprice::unwrap_unchecked(Cmd::Reprice(3, -9)) };
     assert_eq!(payload, (3u32, -9i64));
 }
 
@@ -53,7 +53,7 @@ fn unit_variant_payload_is_unit() {
     // The `let ()` pattern type-checks only if `Halt`'s Payload is exactly
     // `()`, so this is a compile-time proof plus a happy-path unwrap.
     // SAFETY: the value is the `Halt` variant.
-    let () = unsafe { cmd_variants::Halt::unwrap(Cmd::Halt) };
+    let () = unsafe { cmd_variants::Halt::unwrap_unchecked(Cmd::Halt) };
 }
 
 // Explicit/sparse discriminants: `ordinal()` must normalize to a dense
@@ -90,12 +90,13 @@ fn snake_case_module_name_and_variant_markers() {
     assert_eq!(route_decision_variants::KeepLocal::ORDINAL, 0);
     assert_eq!(route_decision_variants::SendAway::ORDINAL, 1);
     // SAFETY: the value is the `SendAway` variant.
-    let payload = unsafe { route_decision_variants::SendAway::unwrap(RouteDecision::SendAway(42)) };
+    let payload =
+        unsafe { route_decision_variants::SendAway::unwrap_unchecked(RouteDecision::SendAway(42)) };
     assert_eq!(payload, 42u8);
 }
 
 // Single-variant enum exercises the `#[allow(unreachable_patterns)]` on the
-// generated unwrap's fallthrough arm (the `_` arm is unreachable when the
+// generated unwrap_unchecked's fallthrough arm (the `_` arm is unreachable when the
 // enum has exactly one variant).
 #[derive(Dispatchable)]
 enum Solo {
@@ -107,6 +108,6 @@ fn single_variant_enum() {
     assert_eq!(Solo::VARIANTS, 1);
     assert_eq!(Solo::Only(123).ordinal(), 0);
     // SAFETY: the value is the `Only` variant.
-    let payload = unsafe { solo_variants::Only::unwrap(Solo::Only(123)) };
+    let payload = unsafe { solo_variants::Only::unwrap_unchecked(Solo::Only(123)) };
     assert_eq!(payload, 123u64);
 }

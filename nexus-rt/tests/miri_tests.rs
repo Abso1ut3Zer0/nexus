@@ -251,7 +251,7 @@ fn world_stress_register_mutate_drop() {
 // dispatch — VariantOf::unwrap unchecked-unwrap path (issue #723)
 // =============================================================================
 //
-// The only unsafe in the dispatch feature is `VariantOf::unwrap` →
+// The only unsafe in the dispatch feature is `VariantOf::unwrap_unchecked` →
 // `core::hint::unreachable_unchecked()` (guarded by a `debug_assert!`), reached
 // through the shared `VariantArm` thunk (both plain and ctx) that `.dispatch_variant`
 // installs. Miri runs with `debug_assertions` on, so the happy path keeps the
@@ -263,9 +263,10 @@ fn world_stress_register_mutate_drop() {
 // and provenance.
 //
 // The invariant-violation path (which would reach `unreachable_unchecked`) is
-// unreachable without breaking the dispatch invariant — each arm is indexed by
-// the value's own `ordinal()`, so the value always IS variant `V` — so it is
-// not (and cannot soundly be) tested here.
+// unreachable given the dispatch invariant: each arm is indexed by the value's
+// own `ordinal()`, so the value always IS variant `V`. These tests use
+// `#[derive(Dispatchable)]`, the safe path, which upholds that invariant by
+// construction, so the violation path is not (and cannot soundly be) tested here.
 
 #[derive(Dispatchable)]
 enum Shape {
