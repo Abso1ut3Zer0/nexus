@@ -291,10 +291,11 @@ pub fn probe_select(p: &mut impl Handler<Cmd>, world: &mut nexus_rt::World, cmd:
     p.run(world, cmd);
 }
 
-/// Baseline: a single `.then` step, **no dispatch at all**. Isolates the shared
-/// per-call floor every row pays — the `#[inline(never)]` probe call,
-/// `Pipeline::run`, resolving `ResMut<Acc>` from the `World`, and the add — so a
-/// dispatch row's cost *over this* is the dispatch mechanism itself.
+/// Baseline: a single `.then` step, **no dispatch at all**.
+///
+/// Isolates the shared per-call floor every row pays — the `#[inline(never)]`
+/// probe call, `Pipeline::run`, resolving `ResMut<Acc>` from the `World`, and the
+/// add — so a dispatch row's cost *over this* is the dispatch mechanism itself.
 #[inline(never)]
 pub fn probe_baseline(p: &mut impl Handler<Cmd>, world: &mut nexus_rt::World, cmd: Cmd) {
     p.run(world, cmd);
