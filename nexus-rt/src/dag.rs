@@ -166,6 +166,7 @@
 use std::marker::PhantomData;
 
 use crate::Handler;
+use crate::dispatch::{Dispatchable, NoopArm, PanicArm, assert_first_arm, finalize_ordinal_table};
 use crate::pipeline::{
     AndBoolNode, ChainCall, ClonedNode, ClonedOptionNode, ClonedResultNode, DagAndThenOptionNode,
     DagAndThenResultNode, DagCatchNode, DagMapOptionNode, DagMapResultNode, DagRouteNode,
@@ -1360,6 +1361,240 @@ macro_rules! impl_dag_combinators {
 
 impl_dag_combinators!(builder: DagChain, upstream: E);
 impl_dag_combinators!(builder: DagArm, upstream: In);
+
+// =============================================================================
+// dispatch_on — terminal keyed dispatch on a projected key (issue #723)
+// =============================================================================
+//
+// DAG mirror of pipeline's `dispatch_on`. The twist versus the pipeline
+// version: DAG steps take their value **by reference** (see `.then`/`.route`,
+// whose arms satisfy `for<'a> StepCall<&'a Out>`), so the erased arm table
+// stores reference-taking steps —
+// `Box<dyn for<'a> StepCall<&'a V, Out = Out> + Send>` — and each arm receives
+// `&V`, not the owned value. The HRTB trait object (associated type bound
+// under `for<'a>`) is what makes this a single erased slot per key. The key is
+// a *projection* of the value (via `key_fn`), not the value's own
+// discriminant, so there is no unchecked unwrap; every arm sees the whole
+// `&V`. `Out` bubbles up so the DAG can `.then(...)` the result (or `.build()`
+// when `Out = ()`).
+
+// The terminal arm types (`NoopArm`, `PanicArm`) and the ordinal table finalizer
+// (`finalize_ordinal_table`) are shared across all four dispatch surfaces —
+// see `crate::dispatch`. Both arms are generic over their input, so they coerce
+// to this surface's erased `for<'a> StepCall<&'a V, Out = _>` arm slot.
+
+/// Chain node for `.dispatch_on()` on a DAG — terminal keyed dispatch on a
+/// projected key. Arms borrow `&V`, mirroring [`DagRouteNode`]'s reference
+/// arms rather than pipeline's owned-value ones. Bubbles up the arms' `Out`.
+#[doc(hidden)]
+pub struct DagDispatchOnNode<Prev, V, F, Out> {
+    pub(crate) prev: Prev,
+    pub(crate) key_fn: F,
+    pub(crate) table: Vec<Option<Box<dyn for<'a> StepCall<&'a V, Out = Out> + Send>>>, // len == K::VARIANTS
+    pub(crate) default: Box<dyn for<'a> StepCall<&'a V, Out = Out> + Send>, // PanicArm when exhaustive
+}
+impl<In, Prev, V, K, F, Out> ChainCall<In> for DagDispatchOnNode<Prev, V, F, Out>
+where
+    Prev: ChainCall<In, Out = V>,
+    V: 'static,
+    F: Fn(&V) -> K,
+    K: Dispatchable,
+{
+    type Out = Out;
+    #[inline(always)]
+    fn call(&mut self, world: &mut World, input: In) -> Out {
+        let value = self.prev.call(world, input);
+        let idx = (self.key_fn)(&value).ordinal();
+        match &mut self.table[idx] {
+            Some(arm) => arm.call(world, &value),
+            None => self.default.call(world, &value),
+        }
+    }
+}
+
+/// Builder for [`dispatch_on`](DagChain::dispatch_on) arms on a DAG.
+///
+/// The table must be exhaustive (every key armed) or carry a `.default`
+/// (or `.default_noop()`) — enforced when the combinator is finalized. Every
+/// arm borrows the whole value (`&V`) and returns `Out`, inferred from the arm
+/// bodies.
+#[must_use = "dispatch arms do nothing unless the builder is returned"]
+pub struct DagDispatchOnBuilder<'r, V, K, Out> {
+    table: Vec<Option<Box<dyn for<'a> StepCall<&'a V, Out = Out> + Send>>>,
+    default: Option<Box<dyn for<'a> StepCall<&'a V, Out = Out> + Send>>,
+    registry: &'r Registry,
+    _key: PhantomData<fn(K)>,
+}
+impl<'r, V: 'static, K: Dispatchable + 'static, Out: 'static> DagDispatchOnBuilder<'r, V, K, Out> {
+    fn new(registry: &'r Registry) -> Self {
+        let mut table = Vec::with_capacity(K::VARIANTS);
+        table.resize_with(K::VARIANTS, || None);
+        Self {
+            table,
+            default: None,
+            registry,
+            _key: PhantomData,
+        }
+    }
+
+    /// Wire the arm that runs when the key equals `k`. The step borrows the
+    /// whole value (`&V`) and returns `Out`.
+    pub fn arm<S, Params>(mut self, k: K, step: S) -> Self
+    where
+        S: IntoStep<&'static V, Out, Params>,
+        S::Step: for<'a> StepCall<&'a V, Out = Out> + Send + 'static,
+    {
+        let idx = k.ordinal();
+        assert_first_arm(
+            self.table[idx].is_some(),
+            "dispatch_on",
+            std::any::type_name::<K>(),
+            Some(idx),
+        );
+        self.table[idx] = Some(Box::new(step.into_step(self.registry)));
+        self
+    }
+
+    /// Set the fallback for keys with no arm. Borrows the whole value (`&V`)
+    /// and returns `Out`.
+    pub fn default<S, Params>(mut self, step: S) -> Self
+    where
+        S: IntoStep<&'static V, Out, Params>,
+        S::Step: for<'a> StepCall<&'a V, Out = Out> + Send + 'static,
+    {
+        self.default = Some(Box::new(step.into_step(self.registry)));
+        self
+    }
+}
+
+impl<V, K> DagDispatchOnBuilder<'_, V, K, ()> {
+    /// Set the fallback to a no-op (only when arms return `Out = ()`). Sugar for
+    /// a `.default` that ignores the value — the way to opt out of the
+    /// exhaustive-table requirement when you don't need a real fallback.
+    pub fn default_noop(mut self) -> Self {
+        self.default = Some(Box::new(NoopArm));
+        self
+    }
+}
+
+/// Shared body of the three `dispatch_on` forms (chain, fork arm, entry): run
+/// the arm builder, enforce exhaustive-or-`.default`, and assemble the node.
+/// Each caller only wraps the returned node in its own builder type.
+fn dag_dispatch_on_node<Prev, V, K, F, Out, Bf>(
+    prev: Prev,
+    key_fn: F,
+    registry: &Registry,
+    build: Bf,
+) -> DagDispatchOnNode<Prev, V, F, Out>
+where
+    V: 'static,
+    K: Dispatchable + 'static,
+    Out: 'static,
+    Bf: FnOnce(DagDispatchOnBuilder<'_, V, K, Out>) -> DagDispatchOnBuilder<'_, V, K, Out>,
+{
+    let b = build(DagDispatchOnBuilder::<V, K, Out>::new(registry));
+    let (table, default) = finalize_ordinal_table(
+        b.table,
+        b.default,
+        K::VARIANTS,
+        || Box::new(PanicArm(PhantomData)) as Box<dyn for<'a> StepCall<&'a V, Out = Out> + Send>,
+        "dispatch_on",
+        std::any::type_name::<K>(),
+    );
+    DagDispatchOnNode {
+        prev,
+        key_fn,
+        table,
+        default,
+    }
+}
+
+impl<E, V, Chain> DagChain<E, V, Chain>
+where
+    Chain: ChainCall<E, Out = V>,
+    V: 'static,
+{
+    /// Keyed dispatch on a *projected* key. `key_fn` maps the value to
+    /// a [`Dispatchable`] key; each arm **borrows** the whole value (`&V`),
+    /// because DAG steps take their value by reference (unlike the pipeline,
+    /// where arms own it), and returns `Out`, which bubbles up.
+    ///
+    /// The table must be exhaustive (every key armed) or carry a `.default`
+    /// / `.default_noop()`; otherwise this panics at construction (deterministic,
+    /// before any dispatch).
+    ///
+    /// `dispatch_variant` is intentionally **pipeline-only** for now: DAG arms
+    /// take `&value`, so unwrapping a variant payload would hand each arm
+    /// `&Payload`, which is awkward for multi-field variants and has no caller
+    /// yet. `dispatch_on` covers the DAG route-to-sub-DAG case. See issue #723.
+    pub fn dispatch_on<K, F, Out, Bf>(
+        self,
+        key_fn: F,
+        registry: &Registry,
+        build: Bf,
+    ) -> DagChain<E, Out, DagDispatchOnNode<Chain, V, F, Out>>
+    where
+        K: Dispatchable + 'static,
+        F: Fn(&V) -> K + Send + 'static,
+        Out: 'static,
+        Bf: FnOnce(DagDispatchOnBuilder<'_, V, K, Out>) -> DagDispatchOnBuilder<'_, V, K, Out>,
+    {
+        DagChain {
+            chain: dag_dispatch_on_node(self.chain, key_fn, registry, build),
+            _marker: PhantomData,
+        }
+    }
+}
+
+impl<E: 'static> DagBuilder<E> {
+    /// Keyed dispatch on a *projected* key as the DAG's first step.
+    /// Mirrors the entry-point form of [`root`](DagBuilder::root); see
+    /// [`DagChain::dispatch_on`] for the continuation form and the note on why
+    /// `dispatch_variant` stays pipeline-only. Issue #723.
+    pub fn dispatch_on<K, F, Out, Bf>(
+        self,
+        key_fn: F,
+        registry: &Registry,
+        build: Bf,
+    ) -> DagChain<E, Out, DagDispatchOnNode<IdentityNode, E, F, Out>>
+    where
+        K: Dispatchable + 'static,
+        F: Fn(&E) -> K + Send + 'static,
+        Out: 'static,
+        Bf: FnOnce(DagDispatchOnBuilder<'_, E, K, Out>) -> DagDispatchOnBuilder<'_, E, K, Out>,
+    {
+        DagChain {
+            chain: dag_dispatch_on_node(IdentityNode, key_fn, registry, build),
+            _marker: PhantomData,
+        }
+    }
+}
+
+impl<In, V: 'static, Chain> DagArm<In, V, Chain> {
+    /// Keyed dispatch on a *projected* key, inside a fork arm. The
+    /// fork-arm counterpart of [`DagChain::dispatch_on`] — every DAG combinator
+    /// is available on both the chain and a fork arm — so a fork arm can itself
+    /// route to sub-handlers. Each arm **borrows** the whole value (`&V`) and
+    /// returns `Out`, which bubbles up. The table must be exhaustive or carry a
+    /// `.default` / `.default_noop()`, else this panics at construction.
+    pub fn dispatch_on<K, F, Out, Bf>(
+        self,
+        key_fn: F,
+        registry: &Registry,
+        build: Bf,
+    ) -> DagArm<In, Out, DagDispatchOnNode<Chain, V, F, Out>>
+    where
+        K: Dispatchable + 'static,
+        F: Fn(&V) -> K + Send + 'static,
+        Out: 'static,
+        Bf: FnOnce(DagDispatchOnBuilder<'_, V, K, Out>) -> DagDispatchOnBuilder<'_, V, K, Out>,
+    {
+        DagArm {
+            chain: dag_dispatch_on_node(self.chain, key_fn, registry, build),
+            _marker: PhantomData,
+        }
+    }
+}
 
 // =============================================================================
 // Merge / Join named nodes — fork terminal nodes

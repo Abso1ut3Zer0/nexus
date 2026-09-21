@@ -111,6 +111,10 @@ use std::marker::PhantomData;
 
 use crate::Handler;
 use crate::dag::DagArm;
+use crate::dispatch::{
+    Dispatchable, NoopArm, PanicArm, VariantArm, VariantOf, assert_first_arm,
+    finalize_ordinal_table,
+};
 use crate::handler::{Opaque, Param};
 use crate::world::{Registry, World};
 
@@ -1930,6 +1934,536 @@ where
             self.on_true.call(world, val)
         } else {
             self.on_false.call(world, val)
+        }
+    }
+}
+
+// -- dispatch_variant nodes --------------------------------------------------
+//
+// The terminal arm types (`NoopArm`, `PanicArm`, `VariantArm`) and the ordinal
+// table finalizer (`finalize_ordinal_table`) are shared across all four
+// dispatch surfaces — see `crate::dispatch`.
+
+/// Chain node for `.dispatch_variant()` — keyed dispatch on the
+/// input enum's own discriminant. Bubbles up the arms' `Out`.
+#[doc(hidden)]
+pub struct DispatchVariantNode<Prev, E, Out> {
+    pub(crate) prev: Prev,
+    pub(crate) table: Vec<Option<Box<dyn StepCall<E, Out = Out> + Send>>>, // len == E::VARIANTS
+    pub(crate) default: Box<dyn StepCall<E, Out = Out> + Send>, // PanicArm when exhaustive
+}
+impl<In, Prev, E, Out> ChainCall<In> for DispatchVariantNode<Prev, E, Out>
+where
+    Prev: ChainCall<In, Out = E>,
+    E: Dispatchable,
+{
+    type Out = Out;
+    #[inline(always)]
+    fn call(&mut self, world: &mut World, input: In) -> Out {
+        let value = self.prev.call(world, input);
+        let idx = value.ordinal();
+        match &mut self.table[idx] {
+            Some(arm) => arm.call(world, value),
+            None => self.default.call(world, value),
+        }
+    }
+}
+
+/// Builder for [`dispatch_variant`](PipelineChain::dispatch_variant) arms.
+///
+/// The table must be exhaustive (every variant armed) or carry a `.default`
+/// (or `.default_noop()`) — enforced when the combinator is finalized. `Out`
+/// is the value each arm returns, inferred from the arm bodies.
+#[must_use = "dispatch arms do nothing unless the builder is returned"]
+pub struct DispatchVariantBuilder<'r, E, Out> {
+    table: Vec<Option<Box<dyn StepCall<E, Out = Out> + Send>>>,
+    default: Option<Box<dyn StepCall<E, Out = Out> + Send>>,
+    registry: &'r Registry,
+}
+impl<'r, E: Dispatchable + 'static, Out: 'static> DispatchVariantBuilder<'r, E, Out> {
+    fn new(registry: &'r Registry) -> Self {
+        let mut table = Vec::with_capacity(E::VARIANTS);
+        table.resize_with(E::VARIANTS, || None);
+        Self {
+            table,
+            default: None,
+            registry,
+        }
+    }
+
+    /// Wire a variant to a typed terminal step receiving the variant's payload
+    /// and returning `Out`.
+    pub fn arm<V, S, Params>(mut self, _variant: V, step: S) -> Self
+    where
+        V: VariantOf<E> + 'static,
+        S: IntoStep<V::Payload, Out, Params>,
+        S::Step: Send + 'static,
+    {
+        assert_first_arm(
+            self.table[V::ORDINAL].is_some(),
+            "dispatch_variant",
+            std::any::type_name::<E>(),
+            Some(V::ORDINAL),
+        );
+        let resolved = step.into_step(self.registry);
+        self.table[V::ORDINAL] = Some(Box::new(VariantArm::<V, _> {
+            step: resolved,
+            _variant: PhantomData,
+        }));
+        self
+    }
+
+    /// Set the fallback for every unset variant. Receives the whole enum and
+    /// returns `Out`.
+    pub fn default<S, Params>(mut self, step: S) -> Self
+    where
+        S: IntoStep<E, Out, Params>,
+        S::Step: Send + 'static,
+    {
+        self.default = Some(Box::new(step.into_step(self.registry)));
+        self
+    }
+}
+
+impl<E> DispatchVariantBuilder<'_, E, ()> {
+    /// Set the fallback to a no-op (only when arms return `Out = ()`). Sugar for
+    /// a `.default` that ignores the value — the way to opt out of the
+    /// exhaustive-table requirement when you don't need a real fallback.
+    pub fn default_noop(mut self) -> Self {
+        self.default = Some(Box::new(NoopArm));
+        self
+    }
+}
+
+impl<In, E, Chain> PipelineChain<In, E, Chain>
+where
+    Chain: ChainCall<In, Out = E>,
+    E: Dispatchable + 'static,
+{
+    /// Keyed dispatch on the input enum's own discriminant. Each arm
+    /// receives its variant's payload and returns `Out`, which bubbles up so the
+    /// pipeline can `.then(...)` the result (or `.build()` when `Out = ()`).
+    ///
+    /// The table must be exhaustive (every variant armed) or carry a `.default`
+    /// / `.default_noop()`; otherwise this panics at construction (deterministic,
+    /// before any dispatch). See issue #723.
+    pub fn dispatch_variant<Out, Bf>(
+        self,
+        registry: &Registry,
+        build: Bf,
+    ) -> PipelineChain<In, Out, DispatchVariantNode<Chain, E, Out>>
+    where
+        Out: 'static,
+        Bf: FnOnce(DispatchVariantBuilder<'_, E, Out>) -> DispatchVariantBuilder<'_, E, Out>,
+    {
+        let b = build(DispatchVariantBuilder::new(registry));
+        let (table, default) = finalize_ordinal_table(
+            b.table,
+            b.default,
+            E::VARIANTS,
+            || Box::new(PanicArm(PhantomData)) as Box<dyn StepCall<E, Out = Out> + Send>,
+            "dispatch_variant",
+            std::any::type_name::<E>(),
+        );
+        PipelineChain {
+            chain: DispatchVariantNode {
+                prev: self.chain,
+                table,
+                default,
+            },
+            _marker: PhantomData,
+        }
+    }
+}
+
+impl<In: Dispatchable + 'static> PipelineBuilder<In> {
+    /// Keyed dispatch as the pipeline's first step, when the input is
+    /// itself a [`Dispatchable`] enum. Mirrors the entry-point form of
+    /// [`then`](PipelineBuilder::then)/[`scan`](PipelineBuilder::scan) — see
+    /// [`PipelineChain::dispatch_variant`] for the continuation form. Issue #723.
+    pub fn dispatch_variant<Out, Bf>(
+        self,
+        registry: &Registry,
+        build: Bf,
+    ) -> PipelineChain<In, Out, DispatchVariantNode<IdentityNode, In, Out>>
+    where
+        Out: 'static,
+        Bf: FnOnce(DispatchVariantBuilder<'_, In, Out>) -> DispatchVariantBuilder<'_, In, Out>,
+    {
+        let b = build(DispatchVariantBuilder::new(registry));
+        let (table, default) = finalize_ordinal_table(
+            b.table,
+            b.default,
+            In::VARIANTS,
+            || Box::new(PanicArm(PhantomData)) as Box<dyn StepCall<In, Out = Out> + Send>,
+            "dispatch_variant",
+            std::any::type_name::<In>(),
+        );
+        PipelineChain {
+            chain: DispatchVariantNode {
+                prev: IdentityNode,
+                table,
+                default,
+            },
+            _marker: PhantomData,
+        }
+    }
+}
+
+// -- dispatch_on nodes -------------------------------------------------------
+
+/// Chain node for `.dispatch_on()` — keyed dispatch on a projected
+/// key.
+///
+/// Unlike [`DispatchVariantNode`], the dispatch key is a *projection* of the
+/// value (via `key_fn`), not the value's own discriminant. The projection
+/// carries no variant guarantee, so there is no unchecked unwrap: every arm
+/// receives the whole value.
+#[doc(hidden)]
+pub struct DispatchOnNode<Prev, V, F, Out> {
+    pub(crate) prev: Prev,
+    pub(crate) key_fn: F,
+    pub(crate) table: Vec<Option<Box<dyn StepCall<V, Out = Out> + Send>>>, // len == K::VARIANTS
+    pub(crate) default: Box<dyn StepCall<V, Out = Out> + Send>, // PanicArm when exhaustive
+}
+impl<In, Prev, V, K, F, Out> ChainCall<In> for DispatchOnNode<Prev, V, F, Out>
+where
+    Prev: ChainCall<In, Out = V>,
+    F: Fn(&V) -> K,
+    K: Dispatchable,
+{
+    type Out = Out;
+    #[inline(always)]
+    fn call(&mut self, world: &mut World, input: In) -> Out {
+        let value = self.prev.call(world, input);
+        let idx = (self.key_fn)(&value).ordinal();
+        match &mut self.table[idx] {
+            Some(arm) => arm.call(world, value),
+            None => self.default.call(world, value),
+        }
+    }
+}
+
+/// Builder for [`dispatch_on`](PipelineChain::dispatch_on) arms.
+///
+/// The table must be exhaustive (every key armed) or carry a `.default`
+/// (or `.default_noop()`) — enforced when the combinator is finalized. `Out`
+/// is the value each arm returns, inferred from the arm bodies.
+#[must_use = "dispatch arms do nothing unless the builder is returned"]
+pub struct DispatchOnBuilder<'r, V, K, Out> {
+    table: Vec<Option<Box<dyn StepCall<V, Out = Out> + Send>>>,
+    default: Option<Box<dyn StepCall<V, Out = Out> + Send>>,
+    registry: &'r Registry,
+    _key: PhantomData<fn(K)>,
+}
+impl<'r, V: 'static, K: Dispatchable + 'static, Out: 'static> DispatchOnBuilder<'r, V, K, Out> {
+    fn new(registry: &'r Registry) -> Self {
+        let mut table = Vec::with_capacity(K::VARIANTS);
+        table.resize_with(K::VARIANTS, || None);
+        Self {
+            table,
+            default: None,
+            registry,
+            _key: PhantomData,
+        }
+    }
+
+    /// Wire the arm that runs when the key equals `k`. The step receives the
+    /// whole value and returns `Out`.
+    pub fn arm<S, Params>(mut self, k: K, step: S) -> Self
+    where
+        S: IntoStep<V, Out, Params>,
+        S::Step: Send + 'static,
+    {
+        let idx = k.ordinal();
+        assert_first_arm(
+            self.table[idx].is_some(),
+            "dispatch_on",
+            std::any::type_name::<K>(),
+            Some(idx),
+        );
+        self.table[idx] = Some(Box::new(step.into_step(self.registry)));
+        self
+    }
+
+    /// Set the fallback for keys with no arm. Receives the whole value and
+    /// returns `Out`.
+    pub fn default<S, Params>(mut self, step: S) -> Self
+    where
+        S: IntoStep<V, Out, Params>,
+        S::Step: Send + 'static,
+    {
+        self.default = Some(Box::new(step.into_step(self.registry)));
+        self
+    }
+}
+
+impl<V, K> DispatchOnBuilder<'_, V, K, ()> {
+    /// Set the fallback to a no-op (only when arms return `Out = ()`). Sugar for
+    /// a `.default` that ignores the value — the way to opt out of the
+    /// exhaustive-table requirement when you don't need a real fallback.
+    pub fn default_noop(mut self) -> Self {
+        self.default = Some(Box::new(NoopArm));
+        self
+    }
+}
+
+impl<In, V, Chain> PipelineChain<In, V, Chain>
+where
+    Chain: ChainCall<In, Out = V>,
+    V: 'static,
+{
+    /// Keyed dispatch on a *projected* key. `key_fn` maps the value to
+    /// a [`Dispatchable`] key; each arm receives the **whole** value (unlike
+    /// [`dispatch_variant`](Self::dispatch_variant), where arms get the
+    /// unwrapped payload) and returns `Out`, which bubbles up.
+    ///
+    /// The table must be exhaustive (every key armed) or carry a `.default`
+    /// / `.default_noop()`; otherwise this panics at construction (deterministic,
+    /// before any dispatch). See issue #723.
+    pub fn dispatch_on<K, F, Out, Bf>(
+        self,
+        key_fn: F,
+        registry: &Registry,
+        build: Bf,
+    ) -> PipelineChain<In, Out, DispatchOnNode<Chain, V, F, Out>>
+    where
+        K: Dispatchable + 'static,
+        F: Fn(&V) -> K + Send + 'static,
+        Out: 'static,
+        Bf: FnOnce(DispatchOnBuilder<'_, V, K, Out>) -> DispatchOnBuilder<'_, V, K, Out>,
+    {
+        let b = build(DispatchOnBuilder::<V, K, Out>::new(registry));
+        let (table, default) = finalize_ordinal_table(
+            b.table,
+            b.default,
+            K::VARIANTS,
+            || Box::new(PanicArm(PhantomData)) as Box<dyn StepCall<V, Out = Out> + Send>,
+            "dispatch_on",
+            std::any::type_name::<K>(),
+        );
+        PipelineChain {
+            chain: DispatchOnNode {
+                prev: self.chain,
+                key_fn,
+                table,
+                default,
+            },
+            _marker: PhantomData,
+        }
+    }
+}
+
+impl<In: 'static> PipelineBuilder<In> {
+    /// Keyed dispatch on a *projected* key as the pipeline's first
+    /// step. Mirrors the entry-point form of [`then`](PipelineBuilder::then);
+    /// see [`PipelineChain::dispatch_on`] for the continuation form. Issue #723.
+    pub fn dispatch_on<K, F, Out, Bf>(
+        self,
+        key_fn: F,
+        registry: &Registry,
+        build: Bf,
+    ) -> PipelineChain<In, Out, DispatchOnNode<IdentityNode, In, F, Out>>
+    where
+        K: Dispatchable + 'static,
+        F: Fn(&In) -> K + Send + 'static,
+        Out: 'static,
+        Bf: FnOnce(DispatchOnBuilder<'_, In, K, Out>) -> DispatchOnBuilder<'_, In, K, Out>,
+    {
+        let b = build(DispatchOnBuilder::<In, K, Out>::new(registry));
+        let (table, default) = finalize_ordinal_table(
+            b.table,
+            b.default,
+            K::VARIANTS,
+            || Box::new(PanicArm(PhantomData)) as Box<dyn StepCall<In, Out = Out> + Send>,
+            "dispatch_on",
+            std::any::type_name::<K>(),
+        );
+        PipelineChain {
+            chain: DispatchOnNode {
+                prev: IdentityNode,
+                key_fn,
+                table,
+                default,
+            },
+            _marker: PhantomData,
+        }
+    }
+}
+
+// -- dispatch_map nodes ------------------------------------------------------
+
+/// Chain node for `.dispatch_map()` — keyed dispatch on an arbitrary
+/// `Hash + Eq` key.
+///
+/// The escape hatch from [`DispatchOnNode`]'s ordinal `Vec` table for keys that
+/// aren't [`Dispatchable`] enums: an arbitrary/non-enum key, or a discriminant
+/// produced by a resource lookup upstream. Swaps the ordinal-indexed `Vec` for
+/// an [`FxHashMap`](rustc_hash::FxHashMap) lookup; every arm receives the whole
+/// value.
+#[doc(hidden)]
+pub struct DispatchMapNode<Prev, V, K, F, Out> {
+    pub(crate) prev: Prev,
+    pub(crate) key_fn: F,
+    pub(crate) table: rustc_hash::FxHashMap<K, Box<dyn StepCall<V, Out = Out> + Send>>,
+    pub(crate) default: Box<dyn StepCall<V, Out = Out> + Send>, // required (.default / .default_noop)
+}
+impl<In, Prev, V, K, F, Out> ChainCall<In> for DispatchMapNode<Prev, V, K, F, Out>
+where
+    Prev: ChainCall<In, Out = V>,
+    K: core::hash::Hash + Eq,
+    F: Fn(&V) -> K,
+{
+    type Out = Out;
+    #[inline(always)]
+    fn call(&mut self, world: &mut World, input: In) -> Out {
+        let value = self.prev.call(world, input);
+        let k = (self.key_fn)(&value);
+        match self.table.get_mut(&k) {
+            Some(arm) => arm.call(world, value),
+            None => self.default.call(world, value),
+        }
+    }
+}
+
+/// Builder for [`dispatch_map`](PipelineChain::dispatch_map) arms.
+///
+/// The key space is open, so a `.default` (or `.default_noop()`) is required
+/// — enforced when the combinator is finalized. `Out` is the value each arm
+/// returns, inferred from the arm bodies.
+#[must_use = "dispatch arms do nothing unless the builder is returned"]
+pub struct DispatchMapBuilder<'r, V, K, Out> {
+    table: rustc_hash::FxHashMap<K, Box<dyn StepCall<V, Out = Out> + Send>>,
+    default: Option<Box<dyn StepCall<V, Out = Out> + Send>>,
+    registry: &'r Registry,
+}
+impl<'r, V: 'static, K: core::hash::Hash + Eq, Out: 'static> DispatchMapBuilder<'r, V, K, Out> {
+    fn new(registry: &'r Registry) -> Self {
+        Self {
+            table: rustc_hash::FxHashMap::default(),
+            default: None,
+            registry,
+        }
+    }
+
+    /// Wire the arm that runs when the key equals `k`. The step receives the
+    /// whole value and returns `Out`.
+    pub fn arm<S, Params>(mut self, k: K, step: S) -> Self
+    where
+        S: IntoStep<V, Out, Params>,
+        S::Step: Send + 'static,
+    {
+        let prev = self
+            .table
+            .insert(k, Box::new(step.into_step(self.registry)));
+        assert_first_arm(
+            prev.is_some(),
+            "dispatch_map",
+            std::any::type_name::<K>(),
+            None,
+        );
+        self
+    }
+
+    /// Set the fallback for keys with no arm. Receives the whole value and
+    /// returns `Out`.
+    pub fn default<S, Params>(mut self, step: S) -> Self
+    where
+        S: IntoStep<V, Out, Params>,
+        S::Step: Send + 'static,
+    {
+        self.default = Some(Box::new(step.into_step(self.registry)));
+        self
+    }
+}
+
+impl<V, K> DispatchMapBuilder<'_, V, K, ()> {
+    /// Set the fallback to a no-op (only when arms return `Out = ()`). Sugar for
+    /// a `.default` that ignores the value — satisfies the required-default rule
+    /// for an open key space when you don't need a real fallback.
+    pub fn default_noop(mut self) -> Self {
+        self.default = Some(Box::new(NoopArm));
+        self
+    }
+}
+
+impl<In, V, Chain> PipelineChain<In, V, Chain>
+where
+    Chain: ChainCall<In, Out = V>,
+    V: 'static,
+{
+    /// Keyed dispatch on an arbitrary `Hash + Eq` key. The escape hatch
+    /// from [`dispatch_on`](Self::dispatch_on) for keys that aren't
+    /// [`Dispatchable`] enums — a non-enum/composite key, or a discriminant
+    /// derived from a resource lookup upstream. `key_fn` maps the value to the
+    /// key; each arm receives the **whole** value and returns `Out`, which
+    /// bubbles up.
+    ///
+    /// The key space is open, so a `.default` (or `.default_noop()`) is
+    /// required; otherwise this panics at construction (deterministic, before
+    /// any dispatch). See issue #723.
+    pub fn dispatch_map<K, F, Out, Bf>(
+        self,
+        key_fn: F,
+        registry: &Registry,
+        build: Bf,
+    ) -> PipelineChain<In, Out, DispatchMapNode<Chain, V, K, F, Out>>
+    where
+        K: core::hash::Hash + Eq + 'static,
+        F: Fn(&V) -> K + Send + 'static,
+        Out: 'static,
+        Bf: FnOnce(DispatchMapBuilder<'_, V, K, Out>) -> DispatchMapBuilder<'_, V, K, Out>,
+    {
+        let b = build(DispatchMapBuilder::<V, K, Out>::new(registry));
+        let Some(default) = b.default else {
+            panic!(
+                "dispatch_map requires a `.default` (or `.default_noop()`) — \
+                 the key space is open"
+            )
+        };
+        PipelineChain {
+            chain: DispatchMapNode {
+                prev: self.chain,
+                key_fn,
+                table: b.table,
+                default,
+            },
+            _marker: PhantomData,
+        }
+    }
+}
+
+impl<In: 'static> PipelineBuilder<In> {
+    /// Keyed dispatch on an arbitrary `Hash + Eq` key as the pipeline's
+    /// first step. Mirrors the entry-point form of [`then`](PipelineBuilder::then);
+    /// see [`PipelineChain::dispatch_map`] for the continuation form. Issue #723.
+    pub fn dispatch_map<K, F, Out, Bf>(
+        self,
+        key_fn: F,
+        registry: &Registry,
+        build: Bf,
+    ) -> PipelineChain<In, Out, DispatchMapNode<IdentityNode, In, K, F, Out>>
+    where
+        K: core::hash::Hash + Eq + 'static,
+        F: Fn(&In) -> K + Send + 'static,
+        Out: 'static,
+        Bf: FnOnce(DispatchMapBuilder<'_, In, K, Out>) -> DispatchMapBuilder<'_, In, K, Out>,
+    {
+        let b = build(DispatchMapBuilder::<In, K, Out>::new(registry));
+        let Some(default) = b.default else {
+            panic!(
+                "dispatch_map requires a `.default` (or `.default_noop()`) — \
+                 the key space is open"
+            )
+        };
+        PipelineChain {
+            chain: DispatchMapNode {
+                prev: IdentityNode,
+                key_fn,
+                table: b.table,
+                default,
+            },
+            _marker: PhantomData,
         }
     }
 }

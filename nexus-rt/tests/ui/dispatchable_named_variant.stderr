@@ -1,0 +1,5 @@
+error: Dispatchable does not yet support named-field (struct) variants — only unit and tuple variants are supported
+ --> tests/ui/dispatchable_named_variant.rs:9:5
+  |
+9 |     Bad { field: u32 },
+  |     ^^^^^^^^^^^^^^^^^^

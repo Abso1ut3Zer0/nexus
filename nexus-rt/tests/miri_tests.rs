@@ -5,17 +5,22 @@
     clippy::used_underscore_binding,
     clippy::items_after_statements
 )]
-//! Miri tests for World/ResourceId unsafe paths.
+//! Miri tests for nexus-rt's unsafe paths.
 //!
-//! Exercises type-erased resource storage via NonNull<u8>, Box reconstitution
-//! on drop, and ResourceCell change detection — the only unsafe code in
-//! nexus-rt.
+//! Two unsafe surfaces are covered:
+//! - World/ResourceId: type-erased resource storage via NonNull<u8>, Box
+//!   reconstitution on drop, and ResourceCell change detection.
+//! - dispatch (issue #723): the `VariantOf::unwrap` unchecked unwrap reached
+//!   through `.dispatch_variant`'s per-variant thunks (see the dispatch section
+//!   at the bottom of this file).
 //!
 //! Run: `cargo +nightly miri test -p nexus-rt --test miri_tests`
 
 use std::cell::Cell;
 
-use nexus_rt::{Resource, WorldBuilder};
+use nexus_rt::{
+    CtxPipelineBuilder, Dispatchable, Handler, PipelineBuilder, ResMut, Resource, WorldBuilder,
+};
 
 // =============================================================================
 // Helper types
@@ -240,4 +245,127 @@ fn world_stress_register_mutate_drop() {
     }
 
     assert_eq!(get_drop_count(), 10); // 10 DT1 instances
+}
+
+// =============================================================================
+// dispatch — VariantOf::unwrap unchecked-unwrap path (issue #723)
+// =============================================================================
+//
+// The only unsafe in the dispatch feature is `VariantOf::unwrap_unchecked` →
+// `core::hint::unreachable_unchecked()` (guarded by a `debug_assert!`), reached
+// through the shared `VariantArm` thunk (both plain and ctx) that `.dispatch_variant`
+// installs. Miri runs with `debug_assertions` on, so the happy path keeps the
+// guard active and never reaches `unreachable_unchecked`. What these tests
+// prove is that the unwrap's match / move-out-of-enum and the subsequent typed
+// dispatch are UB-free (no aliasing or provenance violation) for a mix of
+// variant shapes — including a heap-carrying (`String`) payload, so the
+// move-out is a genuine non-`Copy` ownership transfer miri can check for leaks
+// and provenance.
+//
+// The invariant-violation path (which would reach `unreachable_unchecked`) is
+// unreachable given the dispatch invariant: each arm is indexed by the value's
+// own `ordinal()`, so the value always IS variant `V`. These tests use
+// `#[derive(Dispatchable)]`, the safe path, which upholds that invariant by
+// construction, so the violation path is not (and cannot soundly be) tested here.
+
+#[derive(Dispatchable)]
+enum Shape {
+    Unit,              // ordinal 0 — unit payload `()`
+    Single(u64),       // ordinal 1 — single-field payload
+    Pair(u32, String), // ordinal 2 — multi-field tuple payload (heap-carrying)
+}
+
+// -- Pipeline (`.dispatch_variant`) -----------------------------------------
+
+#[derive(Resource, Default)]
+struct DispatchLog {
+    unit_hits: u32,
+    single: Option<u64>,
+    pair: Option<(u32, String)>,
+}
+
+fn dv_on_unit(mut log: ResMut<DispatchLog>, _payload: ()) {
+    log.unit_hits += 1;
+}
+
+fn dv_on_single(mut log: ResMut<DispatchLog>, payload: u64) {
+    log.single = Some(payload);
+}
+
+fn dv_on_pair(mut log: ResMut<DispatchLog>, payload: (u32, String)) {
+    log.pair = Some(payload);
+}
+
+/// Dispatch a value of EACH variant shape through a built pipeline and assert
+/// the correct typed payload came out — the unchecked unwrap runs once per
+/// variant with no UB.
+#[test]
+fn dispatch_variant_unwraps_each_variant_shape() {
+    let mut wb = WorldBuilder::new();
+    wb.register(DispatchLog::default());
+    let mut world = wb.build();
+    let reg = world.registry();
+
+    let mut pipeline = PipelineBuilder::<Shape>::new()
+        .dispatch_variant(reg, |d| {
+            d.arm(shape_variants::Unit, dv_on_unit)
+                .arm(shape_variants::Single, dv_on_single)
+                .arm(shape_variants::Pair, dv_on_pair)
+        })
+        .build();
+
+    pipeline.run(&mut world, Shape::Unit);
+    pipeline.run(&mut world, Shape::Single(42));
+    pipeline.run(&mut world, Shape::Pair(7, "heap".into()));
+
+    let log = world.resource::<DispatchLog>();
+    assert_eq!(log.unit_hits, 1);
+    assert_eq!(log.single, Some(42));
+    assert_eq!(log.pair, Some((7, "heap".to_string())));
+}
+
+// -- CtxPipeline (`.dispatch_variant`) --------------------------------------
+
+#[derive(Default)]
+struct DispatchCtx {
+    unit_hits: u32,
+    single: Option<u64>,
+    pair: Option<(u32, String)>,
+}
+
+fn ctx_dv_on_unit(ctx: &mut DispatchCtx, _payload: ()) {
+    ctx.unit_hits += 1;
+}
+
+fn ctx_dv_on_single(ctx: &mut DispatchCtx, payload: u64) {
+    ctx.single = Some(payload);
+}
+
+fn ctx_dv_on_pair(ctx: &mut DispatchCtx, payload: (u32, String)) {
+    ctx.pair = Some(payload);
+}
+
+/// Same coverage as above but for the context-aware `CtxPipeline` thunk (the
+/// shared `VariantArm`'s `CtxStepCall` impl), threading `&mut C` through each arm.
+#[test]
+fn ctx_dispatch_variant_unwraps_each_variant_shape() {
+    let mut world = WorldBuilder::new().build();
+    let reg = world.registry();
+
+    let mut pipeline = CtxPipelineBuilder::<DispatchCtx, Shape>::new()
+        .dispatch_variant(reg, |d| {
+            d.arm(shape_variants::Unit, ctx_dv_on_unit)
+                .arm(shape_variants::Single, ctx_dv_on_single)
+                .arm(shape_variants::Pair, ctx_dv_on_pair)
+        })
+        .build();
+
+    let mut ctx = DispatchCtx::default();
+    pipeline.run(&mut ctx, &mut world, Shape::Unit);
+    pipeline.run(&mut ctx, &mut world, Shape::Single(42));
+    pipeline.run(&mut ctx, &mut world, Shape::Pair(7, "heap".into()));
+
+    assert_eq!(ctx.unit_hits, 1);
+    assert_eq!(ctx.single, Some(42));
+    assert_eq!(ctx.pair, Some((7, "heap".to_string())));
 }

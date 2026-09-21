@@ -15,6 +15,7 @@ Event-driven runtime with zero-cost dispatch.
 - [Callbacks](callbacks.md) — Handlers with owned mutable state
 - [Pipelines](pipelines.md) — Linear processing chains with combinators
 - [DAGs](dag.md) — Data-flow graphs with fan-out and merge
+- [Dispatch](dispatch.md) — Runtime keyed dispatch: `#[derive(Dispatchable)]`, `.dispatch_variant`, `.dispatch_on`
 - [Reactors](reactors.md) — Interest-based dynamic dispatch (feature: reactors)
 - [Templates](templates.md) — Stamping handlers from blueprints
 - [Drivers](drivers.md) — The installer/poller pattern for IO and timers

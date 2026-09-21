@@ -321,6 +321,11 @@ to exclude the registry borrow.
 | Is one branch just a side effect (log, metric)? | Pipeline with `.tap()` |
 | Do you need to route based on a condition (if/else)? | Pipeline with `.route()` |
 | Do you need fan-out to multiple distinct handlers? | Pipeline with `.dispatch()` or DAG |
+| Do you need to route to one arm by a runtime key? | `.dispatch_on` — see [dispatch.md](dispatch.md) |
+
+To route a DAG to one of N arms by a discriminant or projected key, use
+`.dispatch_on` (the DAG's keyed-dispatch primitive; arms take the value by
+reference). See [dispatch.md](dispatch.md).
 
 ---
 
@@ -342,6 +347,7 @@ Same fork/arm/join structure, same builder pattern, same monomorphization
 ## See Also
 
 - [pipelines.md](pipelines.md) — Linear processing chains
+- [dispatch.md](dispatch.md) — Runtime keyed dispatch (`.dispatch_on` is the DAG routing primitive)
 - [handlers.md](handlers.md) — Writing the functions used as arms and merges
 - [callbacks.md](callbacks.md) — When you need per-instance state, including
   CtxPipeline and CtxDag (the callback parallels of Pipeline and Dag)

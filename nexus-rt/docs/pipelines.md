@@ -634,6 +634,11 @@ just with a context parameter threaded through.
 
 ## Dispatching by Discriminant — `select!`
 
+> Arms fixed at compile time? `select!` (below) inlines to a jump table. Need
+> the arms assembled at runtime, or a payload-typed / DAG-friendly dispatch as a
+> builder step? See [dispatch.md](dispatch.md) — `#[derive(Dispatchable)]` with
+> `.dispatch_variant` / `.dispatch_on`.
+
 When a pipeline step needs to route to one of N handlers based on a
 runtime enum discriminant, the manual pattern requires `resolve_step`
 per arm plus a match closure:

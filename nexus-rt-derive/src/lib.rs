@@ -790,6 +790,223 @@ fn path_matches(a: &syn::Path, b: &syn::Path) -> bool {
 }
 
 // =============================================================================
+// #[derive(Dispatchable)]
+// =============================================================================
+
+/// Derive dense variant indexing for keyed dispatch.
+///
+/// Generates, for a non-generic enum:
+/// - `impl Dispatchable`, with `const VARIANTS` (variant count) and
+///   `fn ordinal(&self)` returning the declaration-order index `0..VARIANTS`.
+/// - a module `<enum_snake_case>_variants` containing one zero-sized marker
+///   unit struct per variant (named with the PascalCase variant name).
+/// - `impl VariantOf<Enum>` for each marker, exposing the variant's `Payload`
+///   (`()` for unit, the field type for a single field, a tuple for multiple),
+///   its `ORDINAL`, and an unchecked `unwrap`.
+///
+/// Named-field (struct) variants and generic enums are not yet supported.
+///
+/// ```ignore
+/// use nexus_rt::{Dispatchable, VariantOf};
+///
+/// #[derive(Dispatchable)]
+/// enum Cmd {
+///     RouteAway(u32),
+///     Halt,
+/// }
+///
+/// // Generates: pub mod cmd_variants { pub struct RouteAway; pub struct Halt; }
+/// assert_eq!(Cmd::VARIANTS, 2);
+/// assert_eq!(Cmd::RouteAway(7).ordinal(), 0);
+/// let p = unsafe { cmd_variants::RouteAway::unwrap_unchecked(Cmd::RouteAway(7)) };
+/// assert_eq!(p, 7);
+/// ```
+#[proc_macro_derive(Dispatchable)]
+pub fn derive_dispatchable(input: TokenStream) -> TokenStream {
+    let input = parse_macro_input!(input as DeriveInput);
+    match derive_dispatchable_impl(&input) {
+        Ok(tokens) => tokens.into(),
+        Err(e) => e.to_compile_error().into(),
+    }
+}
+
+fn derive_dispatchable_impl(input: &DeriveInput) -> Result<proc_macro2::TokenStream, syn::Error> {
+    let name = &input.ident;
+
+    // Must be an enum.
+    let Data::Enum(data_enum) = &input.data else {
+        return Err(syn::Error::new_spanned(
+            name,
+            "Dispatchable can only be derived for enums",
+        ));
+    };
+
+    // Generic enums are out of scope for this phase.
+    if !input.generics.params.is_empty() {
+        return Err(syn::Error::new_spanned(
+            &input.generics,
+            "Dispatchable does not yet support generic enums — \
+             only non-generic enums are supported",
+        ));
+    }
+
+    // A zero-variant enum is uninhabited: `ordinal()` would be `match self {}`
+    // and there is nothing to dispatch on. Reject it with a clear message
+    // rather than emitting an empty match.
+    if data_enum.variants.is_empty() {
+        return Err(syn::Error::new_spanned(
+            name,
+            "Dispatchable requires an enum with at least one variant",
+        ));
+    }
+
+    let vis = &input.vis;
+    let variants = &data_enum.variants;
+    let variant_count = variants.len();
+    let mod_ident = format_ident!("{}_variants", to_snake_case(&name.to_string()));
+
+    // `ordinal()` match arms and per-variant marker/impl pieces.
+    let mut ordinal_arms = Vec::with_capacity(variant_count);
+    let mut marker_structs = Vec::with_capacity(variant_count);
+    let mut variant_impls = Vec::with_capacity(variant_count);
+
+    for (idx, variant) in variants.iter().enumerate() {
+        let variant_name = &variant.ident;
+
+        // Payload type, the pattern binding the payload, and the value it
+        // reconstructs — one per field shape. Named-field variants are out
+        // of scope for this phase.
+        let (pattern, payload_ty, payload_expr) = match &variant.fields {
+            Fields::Unit => (
+                quote! { #name::#variant_name },
+                quote! { () },
+                quote! { () },
+            ),
+            Fields::Unnamed(f) if f.unnamed.len() == 1 => {
+                let ty = &f.unnamed.first().unwrap().ty;
+                (
+                    quote! { #name::#variant_name(__f0) },
+                    quote! { #ty },
+                    quote! { __f0 },
+                )
+            }
+            Fields::Unnamed(f) => {
+                let bindings: Vec<syn::Ident> = (0..f.unnamed.len())
+                    .map(|i| format_ident!("__f{}", i))
+                    .collect();
+                let tys = f.unnamed.iter().map(|field| &field.ty);
+                (
+                    quote! { #name::#variant_name( #(#bindings),* ) },
+                    quote! { ( #(#tys),* ) },
+                    quote! { ( #(#bindings),* ) },
+                )
+            }
+            Fields::Named(_) => {
+                return Err(syn::Error::new_spanned(
+                    variant,
+                    "Dispatchable does not yet support named-field (struct) \
+                     variants — only unit and tuple variants are supported",
+                ));
+            }
+        };
+
+        // ordinal(): declaration order.
+        let ordinal_pattern = match &variant.fields {
+            Fields::Unit => quote! { #name::#variant_name },
+            Fields::Unnamed(_) => quote! { #name::#variant_name(..) },
+            Fields::Named(_) => unreachable!("named variants rejected above"),
+        };
+        ordinal_arms.push(quote! { #ordinal_pattern => #idx });
+
+        // Zero-sized marker for this variant. `pub` so it is reachable up to
+        // the generated module's boundary; the module's own visibility
+        // (`#vis`, matching the enum) gates how far that reaches.
+        marker_structs.push(quote! {
+            #[derive(Clone, Copy, Debug)]
+            pub struct #variant_name;
+        });
+
+        // VariantOf impl for the marker. `unsafe impl`: the derive is the
+        // trusted party that upholds `VariantOf`'s safety contract (ORDINAL
+        // matches the enum's `ordinal()`, and `unwrap_unchecked` extracts the
+        // right payload) by generating both from the same enum definition.
+        variant_impls.push(quote! {
+            unsafe impl ::nexus_rt::VariantOf<#name> for #mod_ident::#variant_name {
+                type Payload = #payload_ty;
+                const ORDINAL: usize = #idx;
+
+                unsafe fn unwrap_unchecked(e: #name) -> Self::Payload {
+                    match e {
+                        #pattern => #payload_expr,
+                        #[allow(unreachable_patterns)]
+                        _ => {
+                            // SAFETY: unreachable. Per `VariantOf`'s contract the
+                            // caller passes a value of this variant, so only the
+                            // `#pattern` arm is ever taken; the `debug_assert!`
+                            // turns a contract violation into a panic in debug.
+                            ::core::debug_assert!(
+                                false,
+                                "Dispatchable unwrap on wrong variant"
+                            );
+                            unsafe { ::core::hint::unreachable_unchecked() }
+                        }
+                    }
+                }
+            }
+        });
+    }
+
+    Ok(quote! {
+        unsafe impl ::nexus_rt::Dispatchable for #name {
+            const VARIANTS: usize = #variant_count;
+
+            fn ordinal(&self) -> usize {
+                match self {
+                    #(#ordinal_arms,)*
+                }
+            }
+        }
+
+        /// Per-variant marker types generated by `#[derive(Dispatchable)]`.
+        #[allow(dead_code)]
+        #vis mod #mod_ident {
+            #(#marker_structs)*
+        }
+
+        #(#variant_impls)*
+    })
+}
+
+/// Convert a PascalCase identifier to snake_case for the marker module name.
+///
+/// Inserts an underscore before an uppercase letter that follows a
+/// lowercase letter or digit, or that begins a new word after an acronym
+/// (uppercase followed by lowercase). `Cmd` → `cmd`, `RouteAway` →
+/// `route_away`, `HTTPServer` → `http_server`.
+fn to_snake_case(s: &str) -> String {
+    let chars: Vec<char> = s.chars().collect();
+    let mut out = String::with_capacity(s.len() + 4);
+    for (i, &c) in chars.iter().enumerate() {
+        if c.is_uppercase() {
+            if i > 0 {
+                let prev = chars[i - 1];
+                let next_is_lower = chars.get(i + 1).is_some_and(|n| n.is_lowercase());
+                if prev.is_lowercase()
+                    || prev.is_ascii_digit()
+                    || (prev.is_uppercase() && next_is_lower)
+                {
+                    out.push('_');
+                }
+            }
+            out.extend(c.to_lowercase());
+        } else {
+            out.push(c);
+        }
+    }
+    out
+}
+
+// =============================================================================
 // select! — compile-time dispatch table
 // =============================================================================
 

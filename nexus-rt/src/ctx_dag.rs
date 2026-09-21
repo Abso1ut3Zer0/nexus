@@ -74,6 +74,7 @@ use crate::ctx_pipeline::{
     CtxOkOrNode, CtxOnNoneNode, CtxStepCall, CtxTapNode, CtxThenNode, CtxUnwrapOrElseOptionNode,
     CtxUnwrapOrOptionNode, CtxUnwrapOrResultNode, IntoCtxProducer, IntoCtxRefStep, IntoCtxStep,
 };
+use crate::dispatch::{Dispatchable, NoopArm, PanicArm, assert_first_arm, finalize_ordinal_table};
 use crate::handler::Param;
 use crate::world::{Registry, World};
 
@@ -1298,6 +1299,258 @@ macro_rules! impl_ctx_dag_combinators {
 
 impl_ctx_dag_combinators!(builder: CtxDagChain, upstream: In);
 impl_ctx_dag_combinators!(builder: CtxDagArm, upstream: In);
+
+// =============================================================================
+// dispatch_on — terminal keyed dispatch on a projected key (issue #723)
+// =============================================================================
+//
+// Context-aware DAG mirror of pipeline's `dispatch_on`. Two things combine
+// here: DAG steps take their value **by reference** (arms are
+// `for<'a> CtxStepCall<C, &'a V>`, see `.then`) and the arms thread `&mut C`.
+// So the erased arm table is
+// `Box<dyn for<'a> CtxStepCall<C, &'a V, Out = Out> + Send>` — an HRTB trait
+// object whose associated type is bound under `for<'a>` — and each arm
+// receives `&mut C` and `&V`. The key is a *projection* of the value (via
+// `key_fn`), not its own discriminant, so there is no unchecked unwrap; every
+// arm sees the whole `&V`. `Out` bubbles up so the DAG can `.then(...)` the
+// result (or `.build()` when `Out = ()`).
+
+// The terminal arm types (`NoopArm`, `PanicArm`) and the ordinal table finalizer
+// (`finalize_ordinal_table`) are shared across all four dispatch surfaces —
+// see `crate::dispatch`. Both arms carry a `CtxStepCall` impl generic over their
+// input, so they coerce to this surface's erased
+// `for<'a> CtxStepCall<C, &'a V, Out = _>` arm slot.
+
+/// Chain node for ctx `.dispatch_on()` on a DAG — terminal keyed dispatch on a
+/// projected key. Arms borrow `&V` and thread `&mut C`. Bubbles up the arms'
+/// `Out`.
+#[doc(hidden)]
+pub struct CtxDagDispatchOnNode<C, Prev, V, F, Out> {
+    pub(crate) prev: Prev,
+    pub(crate) key_fn: F,
+    pub(crate) table: Vec<Option<Box<dyn for<'a> CtxStepCall<C, &'a V, Out = Out> + Send>>>, // len == K::VARIANTS
+    pub(crate) default: Box<dyn for<'a> CtxStepCall<C, &'a V, Out = Out> + Send>, // PanicArm when exhaustive
+}
+impl<C, In, Prev, V, K, F, Out> CtxChainCall<C, In> for CtxDagDispatchOnNode<C, Prev, V, F, Out>
+where
+    Prev: CtxChainCall<C, In, Out = V>,
+    V: 'static,
+    F: Fn(&V) -> K,
+    K: Dispatchable,
+{
+    type Out = Out;
+    #[inline(always)]
+    fn call(&mut self, ctx: &mut C, world: &mut World, input: In) -> Out {
+        let value = self.prev.call(ctx, world, input);
+        let idx = (self.key_fn)(&value).ordinal();
+        match &mut self.table[idx] {
+            Some(arm) => arm.call(ctx, world, &value),
+            None => self.default.call(ctx, world, &value),
+        }
+    }
+}
+
+/// Builder for [`dispatch_on`](CtxDagChain::dispatch_on) arms on a ctx DAG.
+///
+/// The table must be exhaustive (every key armed) or carry a `.default`
+/// (or `.default_noop()`) — enforced when the combinator is finalized. Every
+/// arm receives `&mut C`, borrows the whole value (`&V`), and returns `Out`,
+/// inferred from the arm bodies.
+#[must_use = "dispatch arms do nothing unless the builder is returned"]
+pub struct CtxDagDispatchOnBuilder<'r, C, V, K, Out> {
+    table: Vec<Option<Box<dyn for<'a> CtxStepCall<C, &'a V, Out = Out> + Send>>>,
+    default: Option<Box<dyn for<'a> CtxStepCall<C, &'a V, Out = Out> + Send>>,
+    registry: &'r Registry,
+    _key: PhantomData<fn(K)>,
+}
+impl<'r, C: 'static, V: 'static, K: Dispatchable + 'static, Out: 'static>
+    CtxDagDispatchOnBuilder<'r, C, V, K, Out>
+{
+    fn new(registry: &'r Registry) -> Self {
+        let mut table = Vec::with_capacity(K::VARIANTS);
+        table.resize_with(K::VARIANTS, || None);
+        Self {
+            table,
+            default: None,
+            registry,
+            _key: PhantomData,
+        }
+    }
+
+    /// Wire the arm that runs when the key equals `k`. The step receives
+    /// `&mut C`, borrows the whole value (`&V`), and returns `Out`.
+    pub fn arm<S, Params>(mut self, k: K, step: S) -> Self
+    where
+        S: IntoCtxStep<C, &'static V, Out, Params>,
+        S::Step: for<'a> CtxStepCall<C, &'a V, Out = Out> + Send + 'static,
+    {
+        let idx = k.ordinal();
+        assert_first_arm(
+            self.table[idx].is_some(),
+            "dispatch_on",
+            std::any::type_name::<K>(),
+            Some(idx),
+        );
+        self.table[idx] = Some(Box::new(step.into_ctx_step(self.registry)));
+        self
+    }
+
+    /// Set the fallback for keys with no arm. Receives `&mut C`, borrows the
+    /// whole value (`&V`), and returns `Out`.
+    pub fn default<S, Params>(mut self, step: S) -> Self
+    where
+        S: IntoCtxStep<C, &'static V, Out, Params>,
+        S::Step: for<'a> CtxStepCall<C, &'a V, Out = Out> + Send + 'static,
+    {
+        self.default = Some(Box::new(step.into_ctx_step(self.registry)));
+        self
+    }
+}
+
+impl<C, V, K> CtxDagDispatchOnBuilder<'_, C, V, K, ()> {
+    /// Set the fallback to a no-op (only when arms return `Out = ()`). Sugar for
+    /// a `.default` that ignores the value — the way to opt out of the
+    /// exhaustive-table requirement when you don't need a real fallback.
+    pub fn default_noop(mut self) -> Self {
+        self.default = Some(Box::new(NoopArm));
+        self
+    }
+}
+
+/// Shared body of the three ctx `dispatch_on` forms (chain, fork arm, entry):
+/// run the arm builder, enforce exhaustive-or-`.default`, and assemble the node.
+/// Each caller only wraps the returned node in its own builder type.
+fn ctx_dag_dispatch_on_node<C, Prev, V, K, F, Out, Bf>(
+    prev: Prev,
+    key_fn: F,
+    registry: &Registry,
+    build: Bf,
+) -> CtxDagDispatchOnNode<C, Prev, V, F, Out>
+where
+    C: 'static,
+    V: 'static,
+    K: Dispatchable + 'static,
+    Out: 'static,
+    Bf: FnOnce(
+        CtxDagDispatchOnBuilder<'_, C, V, K, Out>,
+    ) -> CtxDagDispatchOnBuilder<'_, C, V, K, Out>,
+{
+    let b = build(CtxDagDispatchOnBuilder::<C, V, K, Out>::new(registry));
+    let (table, default) = finalize_ordinal_table(
+        b.table,
+        b.default,
+        K::VARIANTS,
+        || {
+            Box::new(PanicArm(PhantomData))
+                as Box<dyn for<'a> CtxStepCall<C, &'a V, Out = Out> + Send>
+        },
+        "dispatch_on",
+        std::any::type_name::<K>(),
+    );
+    CtxDagDispatchOnNode {
+        prev,
+        key_fn,
+        table,
+        default,
+    }
+}
+
+impl<C, In, V, Chain> CtxDagChain<C, In, V, Chain>
+where
+    Chain: CtxChainCall<C, In, Out = V>,
+    V: 'static,
+    C: 'static,
+{
+    /// Keyed dispatch on a *projected* key. `key_fn` maps the value to
+    /// a [`Dispatchable`] key; each arm receives `&mut C` and **borrows** the
+    /// whole value (`&V`), because DAG steps take their value by reference, and
+    /// returns `Out`, which bubbles up. Context-aware mirror of
+    /// [`DagChain::dispatch_on`](crate::dag::DagChain::dispatch_on).
+    ///
+    /// The table must be exhaustive (every key armed) or carry a `.default`
+    /// / `.default_noop()`; otherwise this panics at construction (deterministic,
+    /// before any dispatch).
+    ///
+    /// `dispatch_variant` is intentionally **pipeline-only** for now: DAG arms
+    /// take `&value`, so unwrapping a variant payload would hand each arm
+    /// `&Payload`, which is awkward for multi-field variants and has no caller
+    /// yet. `dispatch_on` covers the DAG route-to-sub-DAG case. See issue #723.
+    pub fn dispatch_on<K, F, Out, Bf>(
+        self,
+        key_fn: F,
+        registry: &Registry,
+        build: Bf,
+    ) -> CtxDagChain<C, In, Out, CtxDagDispatchOnNode<C, Chain, V, F, Out>>
+    where
+        K: Dispatchable + 'static,
+        F: Fn(&V) -> K + Send + 'static,
+        Out: 'static,
+        Bf: FnOnce(
+            CtxDagDispatchOnBuilder<'_, C, V, K, Out>,
+        ) -> CtxDagDispatchOnBuilder<'_, C, V, K, Out>,
+    {
+        CtxDagChain {
+            chain: ctx_dag_dispatch_on_node(self.chain, key_fn, registry, build),
+            _marker: PhantomData,
+        }
+    }
+}
+
+impl<C: 'static, E: 'static> CtxDagBuilder<C, E> {
+    /// Keyed dispatch on a *projected* key as the ctx DAG's first
+    /// step. Mirrors the entry-point form of [`root`](CtxDagBuilder::root); see
+    /// [`CtxDagChain::dispatch_on`] for the continuation form and the note on
+    /// why `dispatch_variant` stays pipeline-only. Issue #723.
+    pub fn dispatch_on<K, F, Out, Bf>(
+        self,
+        key_fn: F,
+        registry: &Registry,
+        build: Bf,
+    ) -> CtxDagChain<C, E, Out, CtxDagDispatchOnNode<C, CtxIdentityNode, E, F, Out>>
+    where
+        K: Dispatchable + 'static,
+        F: Fn(&E) -> K + Send + 'static,
+        Out: 'static,
+        Bf: FnOnce(
+            CtxDagDispatchOnBuilder<'_, C, E, K, Out>,
+        ) -> CtxDagDispatchOnBuilder<'_, C, E, K, Out>,
+    {
+        CtxDagChain {
+            chain: ctx_dag_dispatch_on_node(CtxIdentityNode, key_fn, registry, build),
+            _marker: PhantomData,
+        }
+    }
+}
+
+impl<C, In, V: 'static, Chain> CtxDagArm<C, In, V, Chain> {
+    /// Keyed dispatch on a *projected* key, inside a fork arm. The
+    /// fork-arm counterpart of [`CtxDagChain::dispatch_on`] — every DAG
+    /// combinator is available on both the chain and a fork arm — so a fork arm
+    /// can itself route to sub-handlers. Each arm receives `&mut C`, **borrows**
+    /// the whole value (`&V`), and returns `Out`, which bubbles up. The table
+    /// must be exhaustive or carry a `.default` / `.default_noop()`, else this
+    /// panics at construction.
+    pub fn dispatch_on<K, F, Out, Bf>(
+        self,
+        key_fn: F,
+        registry: &Registry,
+        build: Bf,
+    ) -> CtxDagArm<C, In, Out, CtxDagDispatchOnNode<C, Chain, V, F, Out>>
+    where
+        C: 'static,
+        K: Dispatchable + 'static,
+        F: Fn(&V) -> K + Send + 'static,
+        Out: 'static,
+        Bf: FnOnce(
+            CtxDagDispatchOnBuilder<'_, C, V, K, Out>,
+        ) -> CtxDagDispatchOnBuilder<'_, C, V, K, Out>,
+    {
+        CtxDagArm {
+            chain: ctx_dag_dispatch_on_node(self.chain, key_fn, registry, build),
+            _marker: PhantomData,
+        }
+    }
+}
 
 // =============================================================================
 // Fork arity macro — arm accumulation, merge, join

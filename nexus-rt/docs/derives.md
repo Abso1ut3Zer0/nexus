@@ -167,3 +167,60 @@ struct PriceCache(Vec<f64>);
 
 This is equivalent to what `new_resource!` generates, but gives you
 control over additional derives and visibility.
+
+## `#[derive(Dispatchable)]`
+
+Turns an enum into a dense ordinal space (`0..VARIANTS`) for runtime keyed
+dispatch — the substrate the `.dispatch_variant` / `.dispatch_on` combinators
+build a flat-array dispatch table on. It is also a useful `enum-map`-style
+primitive on its own.
+
+```rust
+use nexus_rt::{Dispatchable, VariantOf};
+
+#[derive(Dispatchable)]
+enum Cmd {
+    RouteAway(u32), // ordinal 0
+    Reprice(u32, i64), // ordinal 1
+    Halt, // ordinal 2
+}
+
+assert_eq!(Cmd::VARIANTS, 3);
+assert_eq!(Cmd::RouteAway(7).ordinal(), 0);
+```
+
+The derive emits:
+
+- `impl Dispatchable` — `const VARIANTS` and `ordinal(&self) -> usize`, a dense
+  index in declaration order. Dense on purpose: it normalizes sparse/explicit
+  discriminants and is defined for data-carrying variants (where `as usize` is
+  not).
+- A module `<enum_snake_case>_variants` (here `cmd_variants`) of zero-sized
+  per-variant marker types, each implementing `VariantOf<Cmd>` — exposing the
+  variant's `Payload` type, its `ORDINAL`, and an `unwrap_unchecked`. These are
+  what you pass to `.dispatch_variant`'s `.arm(...)`.
+
+A pair of `Dispatchable` enums is itself `Dispatchable` (`(A, B)`, a row-major
+tuple-product key — no hashing). Only unit and tuple variants are supported;
+named-field struct variants and generic enums (including lifetime-generic, so no
+borrowed/zero-copy enums) are rejected by the derive.
+
+`Dispatchable` and `VariantOf` are **`unsafe` traits**: the payload unwrap skips
+the discriminant check and relies on `ordinal()` and `ORDINAL` being consistent.
+`#[derive(Dispatchable)]` is the supported, safe way to implement them and cannot
+get the correspondence wrong; a hand-written `unsafe impl` takes on that
+obligation (see
+[UNSAFE_AND_SOUNDNESS.md](UNSAFE_AND_SOUNDNESS.md#7-dispatch-payload-unwrap-dispatchrs--2-unsafe-blocks)).
+
+Two derive errors worth knowing:
+
+- **A payload that names `Self`** (e.g. `Node(Box<Self>)`) resolves against the
+  generated marker impl and produces a confusing type error. Name the concrete
+  enum in the field type instead of `Self`.
+- **An enum that implements `Drop`** with a non-`Copy` payload fails to compile
+  with `E0509` ("cannot move out of a type which implements `Drop`"): the
+  generated `unwrap_unchecked` moves the payload out. Do not implement `Drop` on
+  a `Dispatchable` enum.
+
+See [dispatch.md](dispatch.md) for the full cookbook — the combinators, the
+payload-vs-whole-value distinction, and the soundness argument for the unwrap.
