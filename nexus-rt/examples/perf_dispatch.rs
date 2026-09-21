@@ -291,6 +291,15 @@ pub fn probe_select(p: &mut impl Handler<Cmd>, world: &mut nexus_rt::World, cmd:
     p.run(world, cmd);
 }
 
+/// Baseline: a single `.then` step, **no dispatch at all**. Isolates the shared
+/// per-call floor every row pays — the `#[inline(never)]` probe call,
+/// `Pipeline::run`, resolving `ResMut<Acc>` from the `World`, and the add — so a
+/// dispatch row's cost *over this* is the dispatch mechanism itself.
+#[inline(never)]
+pub fn probe_baseline(p: &mut impl Handler<Cmd>, world: &mut nexus_rt::World, cmd: Cmd) {
+    p.run(world, cmd);
+}
+
 /// `FxHashMap` baseline: hash the key, probe the bucket, one indirect (vtable)
 /// call. The alternative the flat-array table replaces.
 #[inline(never)]
@@ -395,6 +404,10 @@ fn main() {
             r,
         )
         .build();
+
+    // --- baseline: a single `.then(cv0)`, no dispatch (the shared floor) ---
+
+    let mut base = PipelineBuilder::<Cmd>::new().then(cv0, r).build();
 
     // --- FxHashMap baseline (runtime table via hashing) ---
 
@@ -528,6 +541,12 @@ fn main() {
     print_header("Keyed Dispatch on Discriminant (cycles, 8 variants)");
 
     let mut i = 0usize;
+
+    bench_batched("baseline: single .then (no dispatch)", || {
+        let c = cmds[idxs[i & (RAND_LEN - 1)]];
+        i = i.wrapping_add(1);
+        probe_baseline(&mut base, &mut world, black_box(c));
+    });
 
     bench_batched(".dispatch_variant (array index)", || {
         let c = cmds[idxs[i & (RAND_LEN - 1)]];
