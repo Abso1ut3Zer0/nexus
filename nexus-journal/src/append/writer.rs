@@ -5,7 +5,8 @@ use nexus_platform::Mapping;
 
 use super::error::AppendOnlyJournalError;
 use super::frame::{
-    FRAME_HEADER, TYPE_DATA, TYPE_PAD, footprint, write_commit_len, write_frame_kind, write_val,
+    FRAME_HEADER, TYPE_DATA, TYPE_PAD, footprint, footprint_saturating, write_commit_len,
+    write_frame_kind, write_val,
 };
 use super::header::RecordHeader;
 
@@ -28,12 +29,18 @@ impl<H: RecordHeader> Writer<H> {
         header: H,
         payload_len: usize,
     ) -> Result<WriteClaim<'_, H>, AppendOnlyJournalError> {
+        if payload_len > u32::MAX as usize - size_of::<H>() {
+            return Err(AppendOnlyJournalError::RecordTooLarge {
+                frame: footprint_saturating(size_of::<H>().saturating_add(payload_len)),
+                capacity: self.segment_size,
+            });
+        }
         let body = size_of::<H>() + payload_len;
         if body == 0 {
             return Err(AppendOnlyJournalError::EmptyRecord);
         }
         let foot = footprint(body);
-        if body > u32::MAX as usize || foot > self.segment_size {
+        if foot > self.segment_size {
             return Err(AppendOnlyJournalError::RecordTooLarge {
                 frame: foot,
                 capacity: self.segment_size,

@@ -10,6 +10,12 @@ contained.
 
 ## [Unreleased]
 
+### Fixed
+
+- `try_claim` could accept a payload length that overflowed the frame size
+  computation, handing back a claim whose slice was larger than the segment
+  ([#742](https://github.com/Abso1ut3Zer0/nexus/issues/742)).
+
 ### Internal
 
 - `src/append/tests.rs` scratch segments are now removed on drop. `base_path`

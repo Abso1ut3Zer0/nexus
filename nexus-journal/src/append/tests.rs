@@ -272,3 +272,35 @@ fn read_range_by_seq() {
 
     drop((w, r));
 }
+
+#[test]
+fn claim_overflow_payload_len_rejected() {
+    let base = base_path("overflow-payload");
+    let (mut w, _r) = AppendOnlyJournal::<FixHeader>::open(base.path(), cfg(1 << 16)).unwrap();
+    assert!(matches!(
+        w.try_claim(fix(1), usize::MAX),
+        Err(AppendOnlyJournalError::RecordTooLarge { .. })
+    ));
+}
+
+#[test]
+fn claim_body_usize_max_rejected() {
+    let base = base_path("overflow-body");
+    let (mut w, _r) = AppendOnlyJournal::<FixHeader>::open(base.path(), cfg(1 << 16)).unwrap();
+    assert!(matches!(
+        w.try_claim(fix(1), usize::MAX - std::mem::size_of::<FixHeader>()),
+        Err(AppendOnlyJournalError::RecordTooLarge { .. })
+    ));
+}
+
+#[test]
+fn oversize_record_reports_true_footprint() {
+    let base = base_path("oversize-foot");
+    let (mut w, _r) = AppendOnlyJournal::<()>::open(base.path(), cfg(256)).unwrap();
+    let body = u32::MAX as usize + 1;
+    let expected_frame = 8 + body;
+    assert!(matches!(
+        w.try_claim((), body),
+        Err(AppendOnlyJournalError::RecordTooLarge { frame, .. }) if frame == expected_frame
+    ));
+}

@@ -14,6 +14,11 @@ pub(crate) const fn footprint(body: usize) -> usize {
     FRAME_HEADER + align_up(body)
 }
 
+pub(crate) const fn footprint_saturating(body: usize) -> usize {
+    let aligned = (body.saturating_add(ALIGN - 1)) & !(ALIGN - 1);
+    FRAME_HEADER.saturating_add(aligned)
+}
+
 /// # Safety
 /// `base.add(offset)` must be 4-byte-aligned and within the mapping.
 #[inline]
@@ -66,4 +71,20 @@ pub(crate) unsafe fn write_val<T: Pod>(base: *mut u8, offset: usize, val: T) {
 pub(crate) unsafe fn read_val<T: Pod>(base: *const u8, offset: usize) -> T {
     // SAFETY: caller guarantees the offset range is within the mapping and the data is published.
     unsafe { std::ptr::read_unaligned(base.add(offset).cast()) }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn footprint_saturating_matches_footprint() {
+        let body = 100usize;
+        assert_eq!(footprint_saturating(body), footprint(body));
+    }
+
+    #[test]
+    fn footprint_saturating_at_usize_max() {
+        assert_eq!(footprint_saturating(usize::MAX), usize::MAX);
+    }
 }
