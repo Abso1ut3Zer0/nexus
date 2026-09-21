@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Fixed
+
+- A response or request whose head and body arrived in a single read was
+  rejected with `HeadTooLarge` even when the head fit within the limit
+  ([#708](https://github.com/Abso1ut3Zer0/nexus/issues/708)).
+
 ## [0.8.0] — 2026-06-02
 
 Initial release. WebSocket, HTTP/1.1, and REST protocol implementations
