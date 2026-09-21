@@ -56,6 +56,7 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use nexus_fix_codec::{
     AsciiTextStr, FieldView, FixAdminMsg, FixDictionary, FixHeader, FixTimestamp, find_tag,
 };
+use nexus_fix_engine::policy::{LivenessAction, PeerLiveness};
 use nexus_fix_engine::{
     CompId, FixJournal, FixParts, FixSession, Message, MessageReader, MessageWriter, SessionConfig,
     SessionState, State, TransportError,
@@ -135,15 +136,6 @@ fn wire_now() -> i128 {
 // The three timers
 // ─────────────────────────────────────────────────────────────────────────────
 
-/// Peer-liveness phase (timer 2). *Any* inbound message returns it to `Healthy`.
-enum Liveness {
-    /// Phase 0: the peer has spoken recently; nothing to do.
-    Healthy,
-    /// Phase 1: inbound went quiet, we sent a `TestRequest`, and now wait for
-    /// *any* inbound before `deadline`. Miss it → the peer is dead.
-    Probed { deadline: Instant },
-}
-
 /// What [`Timers::evaluate`] concluded this wakeup.
 enum Verdict {
     /// Keep going.
@@ -158,21 +150,10 @@ enum Verdict {
 /// [`Instant`] clock. Re-[`evaluate`](Self::evaluate) them on **every** loop
 /// wakeup — whether `recv` returned a message or just a bare timeout.
 struct Timers {
-    /// Negotiated `HeartBtInt`. Timer 1's period and timer 2's phase-0 threshold.
     hbi: Duration,
-    /// Slack added before inbound silence is treated as suspicious (timer 2).
-    grace: Duration,
-    /// How long we wait for the peer to answer our `TestRequest` (timer 2 phase 1).
-    probe_timeout: Duration,
-    /// How long a handshake/logout transition may stall before we give up (timer 3).
     handshake_timeout: Duration,
-    /// Last time *we* sent anything — resets timer 1.
     last_outbound: Instant,
-    /// Last time *any* inbound message arrived — resets timer 2.
-    last_inbound: Instant,
-    /// Timer 2's phase.
-    liveness: Liveness,
-    /// Timer 3's deadline, armed only while a transition is pending.
+    peer: PeerLiveness,
     handshake_deadline: Option<Instant>,
 }
 
@@ -182,17 +163,9 @@ impl Timers {
     fn new(hbi: Duration, now: Instant) -> Self {
         Self {
             hbi,
-            // A well-behaved peer heartbeats every HBI; wait half an interval more
-            // before suspecting silence, so ordinary jitter never trips the probe.
-            grace: hbi / 2,
-            // The probe is urgent: give the peer only a fraction of an HBI to prove
-            // it is alive before declaring it dead.
-            probe_timeout: hbi / 2,
-            // Handshakes are one round-trip; a few intervals is plenty of slack.
             handshake_timeout: hbi * 3,
             last_outbound: now,
-            last_inbound: now,
-            liveness: Liveness::Healthy,
+            peer: PeerLiveness::new(hbi, now),
             handshake_deadline: None,
         }
     }
@@ -204,12 +177,8 @@ impl Timers {
         self.last_outbound = now;
     }
 
-    /// Record that an inbound message arrived. Resets timer 2 to phase 0 — *any*
-    /// message proves the peer is alive, so this is the whole of "reset on any
-    /// inbound." Never call it for a bare timeout wakeup.
     fn record_inbound(&mut self, now: Instant) {
-        self.last_inbound = now;
-        self.liveness = Liveness::Healthy;
+        self.peer.record_inbound(now);
     }
 
     /// Evaluate all three timers and act on the ones that fired. Sends flow
@@ -251,29 +220,14 @@ impl Timers {
             self.record_send(now);
         }
 
-        // ── Timer 2: peer liveness (two-phase) ───────────────────────────────
-        match self.liveness {
-            Liveness::Healthy => {
-                // Phase 0 → 1: inbound has been silent past HBI + grace. Prod the
-                // peer with a TestRequest and start the shorter countdown. (The
-                // TestReqID is not tracked — *any* inbound resets us, so there is
-                // nothing to match.)
-                if now.duration_since(self.last_inbound) >= self.hbi + self.grace {
-                    session.test_request(writer, conn, wire)?;
-                    self.record_send(now); // a probe is outbound too
-                    self.liveness = Liveness::Probed {
-                        deadline: now + self.probe_timeout,
-                    };
-                }
+        // Timer 2: peer liveness (two-phase).
+        match self.peer.poll(now) {
+            LivenessAction::Live => {}
+            LivenessAction::Probe => {
+                session.test_request(writer, conn, wire)?;
+                self.record_send(now); // probe is outbound: update timer 1
             }
-            Liveness::Probed { deadline } => {
-                // Phase 1 → dead: the probe went unanswered. `record_inbound`
-                // would have snapped us back to `Healthy` had anything arrived, so
-                // reaching the deadline here means the peer is gone.
-                if now >= deadline {
-                    return Ok(Verdict::PeerDead);
-                }
-            }
+            LivenessAction::Dead => return Ok(Verdict::PeerDead),
         }
 
         Ok(Verdict::Live)

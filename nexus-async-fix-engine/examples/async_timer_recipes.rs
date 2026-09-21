@@ -67,6 +67,7 @@ use nexus_async_fix_engine::{AsyncReadAdapter, FixParts, FixSession};
 use nexus_fix_codec::{
     AsciiTextStr, FieldView, FixAdminMsg, FixDictionary, FixHeader, FixTimestamp, find_tag,
 };
+use nexus_fix_engine::policy::{LivenessAction, PeerLiveness};
 use nexus_fix_engine::{
     CompId, FixJournal, LogonDecision, Message, MessageWriter, SessionConfig, SessionState, State,
     TransportError,
@@ -147,29 +148,12 @@ fn wire_now() -> i128 {
 // The three timers
 // ─────────────────────────────────────────────────────────────────────────────
 
-/// Peer-liveness phase (timer 2). *Any* inbound message returns it to `Healthy`.
-#[derive(Clone, Copy)]
-enum Liveness {
-    /// Phase 0: the peer has spoken recently.
-    Healthy,
-    /// Phase 1: we sent a `TestRequest` and wait for *any* inbound before
-    /// `deadline`. Miss it → the peer is dead.
-    Probed { deadline: Instant },
-}
-
-/// The three user-owned timers over tokio's monotonic clock. The loop reads the
-/// three deadlines each iteration and `sleep_until`s them in the `select!`.
+/// The three user-owned timers. Timer 2 is delegated to [`PeerLiveness`].
 struct Timers {
     hbi: Duration,
-    grace: Duration,
-    probe_timeout: Duration,
     handshake_timeout: Duration,
-    /// Last time *we* sent anything — timer 1's zero.
     last_outbound: Instant,
-    /// Last time *any* inbound arrived — timer 2's zero.
-    last_inbound: Instant,
-    liveness: Liveness,
-    /// Timer 3's deadline, armed lazily on entry to a pending transition.
+    peer: PeerLiveness,
     handshake_armed: Option<Instant>,
 }
 
@@ -177,12 +161,9 @@ impl Timers {
     fn new(hbi: Duration, now: Instant) -> Self {
         Self {
             hbi,
-            grace: hbi / 2,
-            probe_timeout: hbi / 2,
             handshake_timeout: hbi * 3,
             last_outbound: now,
-            last_inbound: now,
-            liveness: Liveness::Healthy,
+            peer: PeerLiveness::new(hbi, now.into_std()),
             handshake_armed: None,
         }
     }
@@ -193,15 +174,6 @@ impl Timers {
     /// outbound sends and would emit a redundant heartbeat right after one.)
     fn heartbeat_deadline(&self) -> Instant {
         self.last_outbound + self.hbi
-    }
-
-    /// Timer 2's deadline: in phase 0 the inbound-silence threshold; in phase 1
-    /// the probe's shorter countdown.
-    fn liveness_deadline(&self) -> Instant {
-        match self.liveness {
-            Liveness::Healthy => self.last_inbound + self.hbi + self.grace,
-            Liveness::Probed { deadline } => deadline,
-        }
     }
 
     /// Timer 3's deadline: `Some` only while a handshake/logout transition is
@@ -229,10 +201,8 @@ impl Timers {
         self.last_outbound = now;
     }
 
-    /// Any inbound resets timer 2 to phase 0.
     fn record_inbound(&mut self, now: Instant) {
-        self.last_inbound = now;
-        self.liveness = Liveness::Healthy;
+        self.peer.record_inbound(now.into_std());
     }
 }
 
@@ -315,7 +285,10 @@ async fn run_session(
         // the `select!` futures own their `Instant`s and borrow nothing that a
         // reply might need.
         let hb_at = timers.heartbeat_deadline();
-        let live_at = timers.liveness_deadline();
+        let live_at = timers
+            .peer
+            .next_deadline()
+            .map_or(hard_cap, Instant::from_std);
         let hs_at = timers.handshake_deadline(session.state().state(), Instant::now());
         // A conditional branch cannot be omitted, so point the disarmed handshake
         // sleep at the far-off safety cap and gate it with an `if` guard.
@@ -387,32 +360,30 @@ async fn run_session(
                 }
                 timers.record_send(Instant::now());
             }
-            Wake::Liveness => match timers.liveness {
-                // Phase 0 → 1: prod the peer and start the shorter countdown.
-                Liveness::Healthy => {
-                    if let Err(e) = session
-                        .test_request(&mut writer, &mut conn, wire_now())
-                        .await
-                    {
-                        eprintln!("{role}: test_request failed: {e}");
+            Wake::Liveness => {
+                let now = Instant::now();
+                match timers.peer.poll(now.into_std()) {
+                    LivenessAction::Probe => {
+                        if let Err(e) = session
+                            .test_request(&mut writer, &mut conn, wire_now())
+                            .await
+                        {
+                            eprintln!("{role}: test_request failed: {e}");
+                            break;
+                        }
+                        timers.record_send(Instant::now()); // probe is outbound: update timer 1
+                    }
+                    LivenessAction::Dead => {
+                        eprintln!("{role}: peer unresponsive, disconnecting");
+                        let why = AsciiTextStr::try_from_str("no heartbeat").ok();
+                        let _ = session
+                            .logout(&mut writer, &mut conn, wire_now(), why)
+                            .await;
                         break;
                     }
-                    let sent = Instant::now();
-                    timers.record_send(sent);
-                    timers.liveness = Liveness::Probed {
-                        deadline: sent + timers.probe_timeout,
-                    };
+                    LivenessAction::Live => {}
                 }
-                // Phase 1 → dead: the probe went unanswered.
-                Liveness::Probed { .. } => {
-                    eprintln!("{role}: peer unresponsive — disconnecting");
-                    let why = AsciiTextStr::try_from_str("no heartbeat").ok();
-                    let _ = session
-                        .logout(&mut writer, &mut conn, wire_now(), why)
-                        .await;
-                    break;
-                }
-            },
+            }
             Wake::Handshake => {
                 eprintln!("{role}: handshake/logout stalled — giving up");
                 break;

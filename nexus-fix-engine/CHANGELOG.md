@@ -43,6 +43,13 @@ contained.
 
 ### Added
 
+- **`policy` module with `PeerLiveness`**: sans-IO two-phase peer-liveness
+  primitive (timer 2 from the FIX timer recipes). Inbound silence past
+  `HBI + grace` returns `LivenessAction::Probe` once; no reply before
+  `probe_timeout` returns `LivenessAction::Dead`. `HeartBtInt=0` disables
+  monitoring: `poll` always returns `Live` and `next_deadline` returns `None`
+  ([#665](https://github.com/Abso1ut3Zer0/nexus/issues/665)).
+
 - **Socket-setup batteries**, in the primary/secondary split `nexus-web` uses for
   WebSocket (`WsStreamBuilder` → raw parts, `WsStream` → owns-everything).
   - **Primary — `FixConnectionBuilder` → raw parts.** `connect(addr, state, config,
