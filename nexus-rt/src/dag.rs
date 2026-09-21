@@ -166,7 +166,7 @@
 use std::marker::PhantomData;
 
 use crate::Handler;
-use crate::dispatch::Dispatchable;
+use crate::dispatch::{Dispatchable, NoopArm, PanicArm, resolve_dispatch_default};
 use crate::pipeline::{
     AndBoolNode, ChainCall, ClonedNode, ClonedOptionNode, ClonedResultNode, DagAndThenOptionNode,
     DagAndThenResultNode, DagCatchNode, DagMapOptionNode, DagMapResultNode, DagRouteNode,
@@ -1378,57 +1378,10 @@ impl_dag_combinators!(builder: DagArm, upstream: In);
 // `&V`. `Out` bubbles up so the DAG can `.then(...)` the result (or `.build()`
 // when `Out = ()`).
 
-/// Terminal arm that ignores the value — the `Out = ()` no-op fallback wired
-/// by `.default_noop()` for unset keys.
-///
-/// Generic over the input so `Box::new(DagNoopArm)` coerces to the
-/// `for<'a> StepCall<&'a V, Out = ()>` arm slot.
-struct DagNoopArm;
-impl<In> StepCall<In> for DagNoopArm {
-    type Out = ();
-    #[inline(always)]
-    fn call(&mut self, _world: &mut World, _input: In) {}
-}
-
-/// Never-called fallback for an *exhaustive* table (every key armed, no user
-/// `.default`). The `None` branch of the node's match is then unreachable —
-/// this arm exists only to give the erased `default` slot a concrete type of
-/// the right `Out`. Generic over the input (so it coerces to the
-/// `for<'a> StepCall<&'a V, Out = Out>` slot) and over `Out` (the
-/// `unreachable!` coerces to any output type). `PhantomData<fn() -> Out>` keeps
-/// it `Send` for any `Out`.
-struct DagPanicArm<Out>(PhantomData<fn() -> Out>);
-impl<In, Out> StepCall<In> for DagPanicArm<Out> {
-    type Out = Out;
-    #[inline(always)]
-    fn call(&mut self, _world: &mut World, _input: In) -> Out {
-        unreachable!("dispatch: default arm on an exhaustive table")
-    }
-}
-
-/// Finalize a DAG `dispatch_on` `default` slot, enforcing the exhaustive-or-
-/// `.default` rule at construction (deterministic, before any dispatch).
-///
-/// - user `.default` present → use it (wins even when the table is exhaustive)
-/// - exhaustive (`armed == total`), no user default → [`DagPanicArm`] (the
-///   `None` branch of the node's match is then unreachable)
-/// - non-exhaustive, no user default → panic
-fn resolve_dag_dispatch_default<V: 'static, Out: 'static>(
-    user_default: Option<Box<dyn for<'a> StepCall<&'a V, Out = Out> + Send>>,
-    armed: usize,
-    total: usize,
-    method: &str,
-    type_name: &str,
-) -> Box<dyn for<'a> StepCall<&'a V, Out = Out> + Send> {
-    match user_default {
-        Some(d) => d,
-        None if armed == total => Box::new(DagPanicArm(PhantomData)),
-        None => panic!(
-            "{method} on `{type_name}`: {armed}/{total} keys armed and no \
-             `.default` — arm every key or add `.default`/`.default_noop()`"
-        ),
-    }
-}
+// The terminal arm types (`NoopArm`, `PanicArm`) and the default-slot resolver
+// (`resolve_dispatch_default`) are shared across all four dispatch surfaces —
+// see `crate::dispatch`. Both arms are generic over their input, so they coerce
+// to this surface's erased `for<'a> StepCall<&'a V, Out = _>` arm slot.
 
 /// Chain node for `.dispatch_on()` on a DAG — terminal keyed dispatch on a
 /// projected key. Arms borrow `&V`, mirroring [`DagRouteNode`]'s reference
@@ -1438,7 +1391,7 @@ pub struct DagDispatchOnNode<Prev, V, F, Out> {
     pub(crate) prev: Prev,
     pub(crate) key_fn: F,
     pub(crate) table: Vec<Option<Box<dyn for<'a> StepCall<&'a V, Out = Out> + Send>>>, // len == K::VARIANTS
-    pub(crate) default: Box<dyn for<'a> StepCall<&'a V, Out = Out> + Send>, // DagPanicArm when exhaustive
+    pub(crate) default: Box<dyn for<'a> StepCall<&'a V, Out = Out> + Send>, // PanicArm when exhaustive
 }
 impl<In, Prev, V, K, F, Out> ChainCall<In> for DagDispatchOnNode<Prev, V, F, Out>
 where
@@ -1512,7 +1465,7 @@ impl<V, K> DagDispatchOnBuilder<'_, V, K, ()> {
     /// a `.default` that ignores the value — the way to opt out of the
     /// exhaustive-table requirement when you don't need a real fallback.
     pub fn default_noop(mut self) -> Self {
-        self.default = Some(Box::new(DagNoopArm));
+        self.default = Some(Box::new(NoopArm));
         self
     }
 }
@@ -1549,10 +1502,14 @@ where
     {
         let b = build(DagDispatchOnBuilder::<V, K, Out>::new(registry));
         let armed = b.table.iter().filter(|s| s.is_some()).count();
-        let default = resolve_dag_dispatch_default::<V, Out>(
+        let default = resolve_dispatch_default(
             b.default,
             armed,
             K::VARIANTS,
+            || {
+                Box::new(PanicArm(PhantomData))
+                    as Box<dyn for<'a> StepCall<&'a V, Out = Out> + Send>
+            },
             "dispatch_on",
             std::any::type_name::<K>(),
         );
@@ -1587,10 +1544,14 @@ impl<E: 'static> DagBuilder<E> {
     {
         let b = build(DagDispatchOnBuilder::<E, K, Out>::new(registry));
         let armed = b.table.iter().filter(|s| s.is_some()).count();
-        let default = resolve_dag_dispatch_default::<E, Out>(
+        let default = resolve_dispatch_default(
             b.default,
             armed,
             K::VARIANTS,
+            || {
+                Box::new(PanicArm(PhantomData))
+                    as Box<dyn for<'a> StepCall<&'a E, Out = Out> + Send>
+            },
             "dispatch_on",
             std::any::type_name::<K>(),
         );

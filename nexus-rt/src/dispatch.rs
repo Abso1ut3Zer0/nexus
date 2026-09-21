@@ -29,6 +29,12 @@
 //! assert_eq!(payload, 7);
 //! ```
 
+use std::marker::PhantomData;
+
+use crate::ctx_pipeline::CtxStepCall;
+use crate::pipeline::StepCall;
+use crate::world::World;
+
 /// Dense variant indexing for keyed dispatch.
 ///
 /// Derive with `#[derive(Dispatchable)]`. The derived [`ordinal`] normalizes
@@ -84,5 +90,133 @@ impl<A: Dispatchable, B: Dispatchable> Dispatchable for (A, B) {
     const VARIANTS: usize = A::VARIANTS * B::VARIANTS;
     fn ordinal(&self) -> usize {
         self.0.ordinal() * B::VARIANTS + self.1.ordinal()
+    }
+}
+
+// =============================================================================
+// Shared dispatch internals (pub(crate))
+// =============================================================================
+//
+// The keyed-dispatch combinators on the four builder surfaces — pipeline,
+// ctx-pipeline, dag, and ctx-dag — share the same handful of terminal arm types
+// and the same default-slot resolution logic. They live here once and carry
+// impls for both dispatch traits ([`StepCall`] for the plain/DAG surfaces,
+// [`CtxStepCall`] for the context-threading surfaces) so a single type serves
+// every surface.
+//
+// The DAG surfaces reuse `NoopArm`/`PanicArm` through their blanket `impl<In>`
+// (resp. `impl<C, In>`): the erased `for<'a> StepCall<&'a V>` /
+// `for<'a> CtxStepCall<C, &'a V>` arm slot is covered because the impl is
+// generic over the input.
+
+/// Terminal arm ignoring the value — the `Out = ()` no-op fallback wired by
+/// `.default_noop()` for unset variants/keys.
+///
+/// Generic over the input so `Box::new(NoopArm)` coerces to any arm slot,
+/// including the DAG surfaces' erased `for<'a> StepCall<&'a V, Out = ()>` /
+/// `for<'a> CtxStepCall<C, &'a V, Out = ()>`.
+pub(crate) struct NoopArm;
+
+impl<In> StepCall<In> for NoopArm {
+    type Out = ();
+    #[inline(always)]
+    fn call(&mut self, _world: &mut World, _input: In) {}
+}
+
+impl<C, In> CtxStepCall<C, In> for NoopArm {
+    type Out = ();
+    #[inline(always)]
+    fn call(&mut self, _ctx: &mut C, _world: &mut World, _input: In) {}
+}
+
+/// Never-called fallback for an *exhaustive* table (every key armed, no user
+/// `.default`). The `None` branch of the dispatch match is then unreachable —
+/// this arm exists only to give the erased `default` slot a concrete type of
+/// the right `Out`. Generic over the input (so it coerces to the DAG surfaces'
+/// `for<'a> ...<&'a V, Out = Out>` slot too) and over `Out` (the `unreachable!`
+/// coerces to any output type). `PhantomData<fn() -> Out>` keeps it `Send` for
+/// any `Out`.
+pub(crate) struct PanicArm<Out>(pub(crate) PhantomData<fn() -> Out>);
+
+impl<In, Out> StepCall<In> for PanicArm<Out> {
+    type Out = Out;
+    #[inline(always)]
+    fn call(&mut self, _world: &mut World, _input: In) -> Out {
+        unreachable!("dispatch: default arm on an exhaustive table")
+    }
+}
+
+impl<C, In, Out> CtxStepCall<C, In> for PanicArm<Out> {
+    type Out = Out;
+    #[inline(always)]
+    fn call(&mut self, _ctx: &mut C, _world: &mut World, _input: In) -> Out {
+        unreachable!("dispatch: default arm on an exhaustive table")
+    }
+}
+
+/// Wraps a variant-typed terminal step: unpacks the enum to the variant's
+/// payload (sound — this slot is only reached when the value IS variant `V`)
+/// and calls the typed step, bubbling up its `Out`. Used only by the
+/// `dispatch_variant` combinators (pipeline and ctx-pipeline); the DAG surfaces
+/// keep `dispatch_variant` unimplemented (arms take `&value`, so unwrapping a
+/// payload has no caller yet).
+pub(crate) struct VariantArm<V, S> {
+    pub(crate) step: S,
+    pub(crate) _variant: PhantomData<fn(V)>, // Send regardless of V
+}
+
+impl<E, V, S, Out> StepCall<E> for VariantArm<V, S>
+where
+    V: VariantOf<E>,
+    S: StepCall<V::Payload, Out = Out>,
+{
+    type Out = Out;
+    #[inline(always)]
+    fn call(&mut self, world: &mut World, input: E) -> Out {
+        // SAFETY: this slot is indexed by input.ordinal(), so input is variant V.
+        let payload = unsafe { V::unwrap(input) };
+        self.step.call(world, payload)
+    }
+}
+
+impl<C, E, V, S, Out> CtxStepCall<C, E> for VariantArm<V, S>
+where
+    V: VariantOf<E>,
+    S: CtxStepCall<C, V::Payload, Out = Out>,
+{
+    type Out = Out;
+    #[inline(always)]
+    fn call(&mut self, ctx: &mut C, world: &mut World, input: E) -> Out {
+        // SAFETY: this slot is indexed by input.ordinal(), so input is variant V.
+        let payload = unsafe { V::unwrap(input) };
+        self.step.call(ctx, world, payload)
+    }
+}
+
+/// Finalize a `Vec`-table dispatch's `default` slot, enforcing the
+/// exhaustive-or-`.default` rule at construction (deterministic, before any
+/// dispatch). Shared by every surface's `.dispatch_variant()` / `.dispatch_on()`
+/// — `Arm` is that surface's erased arm box type, and `make_panic` builds the
+/// [`PanicArm`] fallback in that box.
+///
+/// - user `.default` present → use it (wins even when the table is exhaustive)
+/// - exhaustive (`armed == total`), no user default → `make_panic()` (the
+///   `None` branch of the node's match is then unreachable)
+/// - non-exhaustive, no user default → panic
+pub(crate) fn resolve_dispatch_default<Arm>(
+    user: Option<Arm>,
+    armed: usize,
+    total: usize,
+    make_panic: impl FnOnce() -> Arm,
+    method: &str,
+    type_name: &str,
+) -> Arm {
+    match user {
+        Some(u) => u,
+        None if armed == total => make_panic(),
+        None => panic!(
+            "{method} on `{type_name}`: {armed}/{total} keys armed and no \
+             `.default` — arm every key or add `.default`/`.default_noop()`"
+        ),
     }
 }

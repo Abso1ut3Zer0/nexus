@@ -59,7 +59,9 @@
 
 use std::marker::PhantomData;
 
-use crate::dispatch::{Dispatchable, VariantOf};
+use crate::dispatch::{
+    Dispatchable, NoopArm, PanicArm, VariantArm, VariantOf, resolve_dispatch_default,
+};
 use crate::handler::{Opaque, Param};
 use crate::world::{Registry, World};
 
@@ -1517,74 +1519,11 @@ where
 // builder structs. That is the one structural deviation from the pipeline
 // version, forced by erasure, not a redesign.
 
-/// Terminal arm ignoring the value — the `Out = ()` no-op fallback wired by
-/// `.default_noop()` for unset variants/keys.
-struct CtxNoopArm;
-impl<C, E> CtxStepCall<C, E> for CtxNoopArm {
-    type Out = ();
-    #[inline(always)]
-    fn call(&mut self, _ctx: &mut C, _world: &mut World, _input: E) {}
-}
-
-/// Never-called fallback for an *exhaustive* table (every key armed, no user
-/// `.default`). The `None` branch of the dispatch match is then unreachable —
-/// this arm exists only to give the erased `default` slot a concrete type of
-/// the right `Out`. Generic over `Out`: the `unreachable!` coerces to any
-/// output type. `PhantomData<fn() -> Out>` keeps it `Send` for any `Out`.
-struct CtxPanicArm<Out>(PhantomData<fn() -> Out>);
-impl<C, In, Out> CtxStepCall<C, In> for CtxPanicArm<Out> {
-    type Out = Out;
-    #[inline(always)]
-    fn call(&mut self, _ctx: &mut C, _world: &mut World, _input: In) -> Out {
-        unreachable!("dispatch: default arm on an exhaustive table")
-    }
-}
-
-/// Finalize a `Vec`-table ctx dispatch's `default` slot, enforcing the
-/// exhaustive-or-`.default` rule at construction (deterministic, before any
-/// dispatch). Shared by `.dispatch_variant()` and `.dispatch_on()`.
-///
-/// - user `.default` present → use it (wins even when the table is exhaustive)
-/// - exhaustive (`armed == total`), no user default → [`CtxPanicArm`] (the
-///   `None` branch of the node's match is then unreachable)
-/// - non-exhaustive, no user default → panic
-fn resolve_ctx_dispatch_default<C: 'static, T: 'static, Out: 'static>(
-    user_default: Option<Box<dyn CtxStepCall<C, T, Out = Out> + Send>>,
-    armed: usize,
-    total: usize,
-    method: &str,
-    type_name: &str,
-) -> Box<dyn CtxStepCall<C, T, Out = Out> + Send> {
-    match user_default {
-        Some(d) => d,
-        None if armed == total => Box::new(CtxPanicArm(PhantomData)),
-        None => panic!(
-            "{method} on `{type_name}`: {armed}/{total} keys armed and no \
-             `.default` — arm every key or add `.default`/`.default_noop()`"
-        ),
-    }
-}
-
-/// Wraps a variant-typed terminal step: unpacks the enum to the variant's
-/// payload (sound — this slot is only reached when the value IS variant V)
-/// and calls the typed step with `&mut C`, bubbling up its `Out`.
-struct CtxVariantArm<V, S> {
-    step: S,
-    _variant: PhantomData<fn(V)>, // Send regardless of V
-}
-impl<C, E, V, S, Out> CtxStepCall<C, E> for CtxVariantArm<V, S>
-where
-    V: VariantOf<E>,
-    S: CtxStepCall<C, V::Payload, Out = Out>,
-{
-    type Out = Out;
-    #[inline(always)]
-    fn call(&mut self, ctx: &mut C, world: &mut World, input: E) -> Out {
-        // SAFETY: this slot is indexed by input.ordinal(), so input is variant V.
-        let payload = unsafe { V::unwrap(input) };
-        self.step.call(ctx, world, payload)
-    }
-}
+// The terminal arm types (`NoopArm`, `PanicArm`, `VariantArm`) and the
+// default-slot resolver (`resolve_dispatch_default`) are shared across all four
+// dispatch surfaces — see `crate::dispatch`. `VariantArm`/`NoopArm`/`PanicArm`
+// each carry a `CtxStepCall` impl alongside their `StepCall` one, so the same
+// type serves the context-threading surfaces here.
 
 /// Chain node for `.dispatch_variant()` — terminal keyed dispatch on the
 /// input enum's own discriminant, threading `&mut C`. Bubbles up the arms'
@@ -1593,7 +1532,7 @@ where
 pub struct CtxDispatchVariantNode<C, Prev, E, Out> {
     pub(crate) prev: Prev,
     pub(crate) table: Vec<Option<Box<dyn CtxStepCall<C, E, Out = Out> + Send>>>, // len == E::VARIANTS
-    pub(crate) default: Box<dyn CtxStepCall<C, E, Out = Out> + Send>, // CtxPanicArm when exhaustive
+    pub(crate) default: Box<dyn CtxStepCall<C, E, Out = Out> + Send>, // PanicArm when exhaustive
 }
 impl<C, In, Prev, E, Out> CtxChainCall<C, In> for CtxDispatchVariantNode<C, Prev, E, Out>
 where
@@ -1645,7 +1584,7 @@ impl<'r, C: 'static, E: Dispatchable + 'static, Out: 'static>
         S::Step: Send + 'static,
     {
         let resolved = step.into_ctx_step(self.registry);
-        self.table[V::ORDINAL] = Some(Box::new(CtxVariantArm::<V, _> {
+        self.table[V::ORDINAL] = Some(Box::new(VariantArm::<V, _> {
             step: resolved,
             _variant: PhantomData,
         }));
@@ -1669,7 +1608,7 @@ impl<C, E> CtxDispatchVariantBuilder<'_, C, E, ()> {
     /// a `.default` that ignores the value — the way to opt out of the
     /// exhaustive-table requirement when you don't need a real fallback.
     pub fn default_noop(mut self) -> Self {
-        self.default = Some(Box::new(CtxNoopArm));
+        self.default = Some(Box::new(NoopArm));
         self
     }
 }
@@ -1702,10 +1641,11 @@ where
     {
         let b = build(CtxDispatchVariantBuilder::new(registry));
         let armed = b.table.iter().filter(|s| s.is_some()).count();
-        let default = resolve_ctx_dispatch_default::<C, E, Out>(
+        let default = resolve_dispatch_default(
             b.default,
             armed,
             E::VARIANTS,
+            || Box::new(PanicArm(PhantomData)) as Box<dyn CtxStepCall<C, E, Out = Out> + Send>,
             "dispatch_variant",
             std::any::type_name::<E>(),
         );
@@ -1739,10 +1679,11 @@ impl<C: 'static, In: Dispatchable + 'static> CtxPipelineBuilder<C, In> {
     {
         let b = build(CtxDispatchVariantBuilder::new(registry));
         let armed = b.table.iter().filter(|s| s.is_some()).count();
-        let default = resolve_ctx_dispatch_default::<C, In, Out>(
+        let default = resolve_dispatch_default(
             b.default,
             armed,
             In::VARIANTS,
+            || Box::new(PanicArm(PhantomData)) as Box<dyn CtxStepCall<C, In, Out = Out> + Send>,
             "dispatch_variant",
             std::any::type_name::<In>(),
         );
@@ -1774,7 +1715,7 @@ pub struct CtxDispatchOnNode<C, Prev, V, F, Out> {
     pub(crate) prev: Prev,
     pub(crate) key_fn: F,
     pub(crate) table: Vec<Option<Box<dyn CtxStepCall<C, V, Out = Out> + Send>>>, // len == K::VARIANTS
-    pub(crate) default: Box<dyn CtxStepCall<C, V, Out = Out> + Send>, // CtxPanicArm when exhaustive
+    pub(crate) default: Box<dyn CtxStepCall<C, V, Out = Out> + Send>, // PanicArm when exhaustive
 }
 impl<C, In, Prev, V, K, F, Out> CtxChainCall<C, In> for CtxDispatchOnNode<C, Prev, V, F, Out>
 where
@@ -1848,7 +1789,7 @@ impl<C, V, K> CtxDispatchOnBuilder<'_, C, V, K, ()> {
     /// a `.default` that ignores the value — the way to opt out of the
     /// exhaustive-table requirement when you don't need a real fallback.
     pub fn default_noop(mut self) -> Self {
-        self.default = Some(Box::new(CtxNoopArm));
+        self.default = Some(Box::new(NoopArm));
         self
     }
 }
@@ -1885,10 +1826,11 @@ where
     {
         let b = build(CtxDispatchOnBuilder::<C, V, K, Out>::new(registry));
         let armed = b.table.iter().filter(|s| s.is_some()).count();
-        let default = resolve_ctx_dispatch_default::<C, V, Out>(
+        let default = resolve_dispatch_default(
             b.default,
             armed,
             K::VARIANTS,
+            || Box::new(PanicArm(PhantomData)) as Box<dyn CtxStepCall<C, V, Out = Out> + Send>,
             "dispatch_on",
             std::any::type_name::<K>(),
         );
@@ -1925,10 +1867,11 @@ impl<C: 'static, In: 'static> CtxPipelineBuilder<C, In> {
     {
         let b = build(CtxDispatchOnBuilder::<C, In, K, Out>::new(registry));
         let armed = b.table.iter().filter(|s| s.is_some()).count();
-        let default = resolve_ctx_dispatch_default::<C, In, Out>(
+        let default = resolve_dispatch_default(
             b.default,
             armed,
             K::VARIANTS,
+            || Box::new(PanicArm(PhantomData)) as Box<dyn CtxStepCall<C, In, Out = Out> + Send>,
             "dispatch_on",
             std::any::type_name::<K>(),
         );
@@ -2034,7 +1977,7 @@ impl<C, V, K> CtxDispatchMapBuilder<'_, C, V, K, ()> {
     /// a `.default` that ignores the value — satisfies the required-default rule
     /// for an open key space when you don't need a real fallback.
     pub fn default_noop(mut self) -> Self {
-        self.default = Some(Box::new(CtxNoopArm));
+        self.default = Some(Box::new(NoopArm));
         self
     }
 }

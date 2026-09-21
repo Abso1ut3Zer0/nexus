@@ -74,7 +74,7 @@ use crate::ctx_pipeline::{
     CtxOkOrNode, CtxOnNoneNode, CtxStepCall, CtxTapNode, CtxThenNode, CtxUnwrapOrElseOptionNode,
     CtxUnwrapOrOptionNode, CtxUnwrapOrResultNode, IntoCtxProducer, IntoCtxRefStep, IntoCtxStep,
 };
-use crate::dispatch::Dispatchable;
+use crate::dispatch::{Dispatchable, NoopArm, PanicArm, resolve_dispatch_default};
 use crate::handler::Param;
 use crate::world::{Registry, World};
 
@@ -1315,57 +1315,11 @@ impl_ctx_dag_combinators!(builder: CtxDagArm, upstream: In);
 // arm sees the whole `&V`. `Out` bubbles up so the DAG can `.then(...)` the
 // result (or `.build()` when `Out = ()`).
 
-/// Terminal arm that ignores the value — the `Out = ()` no-op fallback wired
-/// by `.default_noop()` for unset keys.
-///
-/// Generic over the input so `Box::new(CtxDagNoopArm)` coerces to the
-/// `for<'a> CtxStepCall<C, &'a V, Out = ()>` arm slot.
-struct CtxDagNoopArm;
-impl<C, In> CtxStepCall<C, In> for CtxDagNoopArm {
-    type Out = ();
-    #[inline(always)]
-    fn call(&mut self, _ctx: &mut C, _world: &mut World, _input: In) {}
-}
-
-/// Never-called fallback for an *exhaustive* table (every key armed, no user
-/// `.default`). The `None` branch of the node's match is then unreachable —
-/// this arm exists only to give the erased `default` slot a concrete type of
-/// the right `Out`. Generic over the input (so it coerces to the
-/// `for<'a> CtxStepCall<C, &'a V, Out = Out>` slot) and over `Out` (the
-/// `unreachable!` coerces to any output type). `PhantomData<fn() -> Out>` keeps
-/// it `Send` for any `Out`.
-struct CtxDagPanicArm<Out>(PhantomData<fn() -> Out>);
-impl<C, In, Out> CtxStepCall<C, In> for CtxDagPanicArm<Out> {
-    type Out = Out;
-    #[inline(always)]
-    fn call(&mut self, _ctx: &mut C, _world: &mut World, _input: In) -> Out {
-        unreachable!("dispatch: default arm on an exhaustive table")
-    }
-}
-
-/// Finalize a ctx DAG `dispatch_on` `default` slot, enforcing the exhaustive-
-/// or-`.default` rule at construction (deterministic, before any dispatch).
-///
-/// - user `.default` present → use it (wins even when the table is exhaustive)
-/// - exhaustive (`armed == total`), no user default → [`CtxDagPanicArm`] (the
-///   `None` branch of the node's match is then unreachable)
-/// - non-exhaustive, no user default → panic
-fn resolve_ctx_dag_dispatch_default<C: 'static, V: 'static, Out: 'static>(
-    user_default: Option<Box<dyn for<'a> CtxStepCall<C, &'a V, Out = Out> + Send>>,
-    armed: usize,
-    total: usize,
-    method: &str,
-    type_name: &str,
-) -> Box<dyn for<'a> CtxStepCall<C, &'a V, Out = Out> + Send> {
-    match user_default {
-        Some(d) => d,
-        None if armed == total => Box::new(CtxDagPanicArm(PhantomData)),
-        None => panic!(
-            "{method} on `{type_name}`: {armed}/{total} keys armed and no \
-             `.default` — arm every key or add `.default`/`.default_noop()`"
-        ),
-    }
-}
+// The terminal arm types (`NoopArm`, `PanicArm`) and the default-slot resolver
+// (`resolve_dispatch_default`) are shared across all four dispatch surfaces —
+// see `crate::dispatch`. Both arms carry a `CtxStepCall` impl generic over their
+// input, so they coerce to this surface's erased
+// `for<'a> CtxStepCall<C, &'a V, Out = _>` arm slot.
 
 /// Chain node for ctx `.dispatch_on()` on a DAG — terminal keyed dispatch on a
 /// projected key. Arms borrow `&V` and thread `&mut C`. Bubbles up the arms'
@@ -1375,7 +1329,7 @@ pub struct CtxDagDispatchOnNode<C, Prev, V, F, Out> {
     pub(crate) prev: Prev,
     pub(crate) key_fn: F,
     pub(crate) table: Vec<Option<Box<dyn for<'a> CtxStepCall<C, &'a V, Out = Out> + Send>>>, // len == K::VARIANTS
-    pub(crate) default: Box<dyn for<'a> CtxStepCall<C, &'a V, Out = Out> + Send>, // CtxDagPanicArm when exhaustive
+    pub(crate) default: Box<dyn for<'a> CtxStepCall<C, &'a V, Out = Out> + Send>, // PanicArm when exhaustive
 }
 impl<C, In, Prev, V, K, F, Out> CtxChainCall<C, In> for CtxDagDispatchOnNode<C, Prev, V, F, Out>
 where
@@ -1451,7 +1405,7 @@ impl<C, V, K> CtxDagDispatchOnBuilder<'_, C, V, K, ()> {
     /// a `.default` that ignores the value — the way to opt out of the
     /// exhaustive-table requirement when you don't need a real fallback.
     pub fn default_noop(mut self) -> Self {
-        self.default = Some(Box::new(CtxDagNoopArm));
+        self.default = Some(Box::new(NoopArm));
         self
     }
 }
@@ -1492,10 +1446,14 @@ where
     {
         let b = build(CtxDagDispatchOnBuilder::<C, V, K, Out>::new(registry));
         let armed = b.table.iter().filter(|s| s.is_some()).count();
-        let default = resolve_ctx_dag_dispatch_default::<C, V, Out>(
+        let default = resolve_dispatch_default(
             b.default,
             armed,
             K::VARIANTS,
+            || {
+                Box::new(PanicArm(PhantomData))
+                    as Box<dyn for<'a> CtxStepCall<C, &'a V, Out = Out> + Send>
+            },
             "dispatch_on",
             std::any::type_name::<K>(),
         );
@@ -1532,10 +1490,14 @@ impl<C: 'static, E: 'static> CtxDagBuilder<C, E> {
     {
         let b = build(CtxDagDispatchOnBuilder::<C, E, K, Out>::new(registry));
         let armed = b.table.iter().filter(|s| s.is_some()).count();
-        let default = resolve_ctx_dag_dispatch_default::<C, E, Out>(
+        let default = resolve_dispatch_default(
             b.default,
             armed,
             K::VARIANTS,
+            || {
+                Box::new(PanicArm(PhantomData))
+                    as Box<dyn for<'a> CtxStepCall<C, &'a E, Out = Out> + Send>
+            },
             "dispatch_on",
             std::any::type_name::<K>(),
         );

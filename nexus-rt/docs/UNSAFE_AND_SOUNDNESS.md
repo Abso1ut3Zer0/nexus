@@ -190,8 +190,9 @@ unsafe fn unwrap(e: Cmd) -> Self::Payload {
 }
 ```
 
-It is called from exactly two hand-written unsafe blocks — the `VariantArm`
-thunk (`pipeline.rs`) and the `CtxVariantArm` thunk (`ctx_pipeline.rs`):
+It is called from exactly one hand-written unsafe block — inside the shared
+`VariantArm` thunk (`dispatch.rs`), reached by both its `StepCall` impl (plain
+pipeline) and its `CtxStepCall` impl (ctx pipeline, threading `&mut C`):
 
 ```rust
 // SAFETY: this slot is indexed by input.ordinal(), so input is variant V.
@@ -270,7 +271,7 @@ is harmless but not strictly required for nexus-rt alone.
 | `world_many_resources` | 8 resource types — HashMap<TypeId> pressure |
 | `world_stress_register_mutate_drop` | 10 cycles of register/mutate/drop with DropTracker |
 | `dispatch_variant_unwraps_each_variant_shape` | `VariantOf::unwrap` over every variant shape (unit/single/heap tuple) via a Pipeline |
-| `ctx_dispatch_variant_unwraps_each_variant_shape` | Same, through the `CtxVariantArm` thunk (threads `&mut C`) |
+| `ctx_dispatch_variant_unwraps_each_variant_shape` | Same, through the shared `VariantArm`'s `CtxStepCall` impl (threads `&mut C`) |
 
 ---
 

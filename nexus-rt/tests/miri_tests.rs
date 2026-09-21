@@ -253,7 +253,7 @@ fn world_stress_register_mutate_drop() {
 //
 // The only unsafe in the dispatch feature is `VariantOf::unwrap` →
 // `core::hint::unreachable_unchecked()` (guarded by a `debug_assert!`), reached
-// through the `VariantArm` / `CtxVariantArm` thunks that `.dispatch_variant`
+// through the shared `VariantArm` thunk (both plain and ctx) that `.dispatch_variant`
 // installs. Miri runs with `debug_assertions` on, so the happy path keeps the
 // guard active and never reaches `unreachable_unchecked`. What these tests
 // prove is that the unwrap's match / move-out-of-enum and the subsequent typed
@@ -344,8 +344,8 @@ fn ctx_dv_on_pair(ctx: &mut DispatchCtx, payload: (u32, String)) {
     ctx.pair = Some(payload);
 }
 
-/// Same coverage as above but for the context-aware `CtxPipeline` thunk
-/// (`CtxVariantArm`), threading `&mut C` through each arm.
+/// Same coverage as above but for the context-aware `CtxPipeline` thunk (the
+/// shared `VariantArm`'s `CtxStepCall` impl), threading `&mut C` through each arm.
 #[test]
 fn ctx_dispatch_variant_unwraps_each_variant_shape() {
     let mut world = WorldBuilder::new().build();

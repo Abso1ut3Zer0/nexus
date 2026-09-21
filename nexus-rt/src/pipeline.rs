@@ -111,7 +111,9 @@ use std::marker::PhantomData;
 
 use crate::Handler;
 use crate::dag::DagArm;
-use crate::dispatch::{Dispatchable, VariantOf};
+use crate::dispatch::{
+    Dispatchable, NoopArm, PanicArm, VariantArm, VariantOf, resolve_dispatch_default,
+};
 use crate::handler::{Opaque, Param};
 use crate::world::{Registry, World};
 
@@ -1936,75 +1938,10 @@ where
 }
 
 // -- dispatch_variant nodes --------------------------------------------------
-
-/// Terminal arm ignoring the value — the `Out = ()` no-op fallback wired by
-/// `.default_noop()` for unset variants/keys.
-struct NoopArm;
-impl<E> StepCall<E> for NoopArm {
-    type Out = ();
-    #[inline(always)]
-    fn call(&mut self, _world: &mut World, _input: E) {}
-}
-
-/// Never-called fallback for an *exhaustive* table (every key armed, no user
-/// `.default`). The `None` branch of the dispatch match is then unreachable —
-/// this arm exists only to give the erased `default` slot a concrete type of
-/// the right `Out`. Generic over `Out`: the `unreachable!` coerces to any
-/// output type. `PhantomData<fn() -> Out>` keeps it `Send` for any `Out`.
-struct PanicArm<Out>(PhantomData<fn() -> Out>);
-impl<In, Out> StepCall<In> for PanicArm<Out> {
-    type Out = Out;
-    #[inline(always)]
-    fn call(&mut self, _world: &mut World, _input: In) -> Out {
-        unreachable!("dispatch: default arm on an exhaustive table")
-    }
-}
-
-/// Finalize a `Vec`-table dispatch's `default` slot, enforcing the
-/// exhaustive-or-`.default` rule at construction (deterministic, before any
-/// dispatch). Shared by `.dispatch_variant()` and `.dispatch_on()`.
-///
-/// - user `.default` present → use it (wins even when the table is exhaustive)
-/// - exhaustive (`armed == total`), no user default → [`PanicArm`] (the `None`
-///   branch of the node's match is then unreachable)
-/// - non-exhaustive, no user default → panic
-fn resolve_dispatch_default<T: 'static, Out: 'static>(
-    user_default: Option<Box<dyn StepCall<T, Out = Out> + Send>>,
-    armed: usize,
-    total: usize,
-    method: &str,
-    type_name: &str,
-) -> Box<dyn StepCall<T, Out = Out> + Send> {
-    match user_default {
-        Some(d) => d,
-        None if armed == total => Box::new(PanicArm(PhantomData)),
-        None => panic!(
-            "{method} on `{type_name}`: {armed}/{total} keys armed and no \
-             `.default` — arm every key or add `.default`/`.default_noop()`"
-        ),
-    }
-}
-
-/// Wraps a variant-typed terminal step: unpacks the enum to the variant's
-/// payload (sound — this slot is only reached when the value IS variant V)
-/// and calls the typed step, bubbling up its `Out`.
-struct VariantArm<V, S> {
-    step: S,
-    _variant: PhantomData<fn(V)>, // Send regardless of V
-}
-impl<E, V, S, Out> StepCall<E> for VariantArm<V, S>
-where
-    V: VariantOf<E>,
-    S: StepCall<V::Payload, Out = Out>,
-{
-    type Out = Out;
-    #[inline(always)]
-    fn call(&mut self, world: &mut World, input: E) -> Out {
-        // SAFETY: this slot is indexed by input.ordinal(), so input is variant V.
-        let payload = unsafe { V::unwrap(input) };
-        self.step.call(world, payload)
-    }
-}
+//
+// The terminal arm types (`NoopArm`, `PanicArm`, `VariantArm`) and the
+// default-slot resolver (`resolve_dispatch_default`) are shared across all four
+// dispatch surfaces — see `crate::dispatch`.
 
 /// Chain node for `.dispatch_variant()` — terminal keyed dispatch on the
 /// input enum's own discriminant. Bubbles up the arms' `Out`.
@@ -2114,10 +2051,11 @@ where
     {
         let b = build(DispatchVariantBuilder::new(registry));
         let armed = b.table.iter().filter(|s| s.is_some()).count();
-        let default = resolve_dispatch_default::<E, Out>(
+        let default = resolve_dispatch_default(
             b.default,
             armed,
             E::VARIANTS,
+            || Box::new(PanicArm(PhantomData)) as Box<dyn StepCall<E, Out = Out> + Send>,
             "dispatch_variant",
             std::any::type_name::<E>(),
         );
@@ -2148,10 +2086,11 @@ impl<In: Dispatchable + 'static> PipelineBuilder<In> {
     {
         let b = build(DispatchVariantBuilder::new(registry));
         let armed = b.table.iter().filter(|s| s.is_some()).count();
-        let default = resolve_dispatch_default::<In, Out>(
+        let default = resolve_dispatch_default(
             b.default,
             armed,
             In::VARIANTS,
+            || Box::new(PanicArm(PhantomData)) as Box<dyn StepCall<In, Out = Out> + Send>,
             "dispatch_variant",
             std::any::type_name::<In>(),
         );
@@ -2284,10 +2223,11 @@ where
     {
         let b = build(DispatchOnBuilder::<V, K, Out>::new(registry));
         let armed = b.table.iter().filter(|s| s.is_some()).count();
-        let default = resolve_dispatch_default::<V, Out>(
+        let default = resolve_dispatch_default(
             b.default,
             armed,
             K::VARIANTS,
+            || Box::new(PanicArm(PhantomData)) as Box<dyn StepCall<V, Out = Out> + Send>,
             "dispatch_on",
             std::any::type_name::<K>(),
         );
@@ -2321,10 +2261,11 @@ impl<In: 'static> PipelineBuilder<In> {
     {
         let b = build(DispatchOnBuilder::<In, K, Out>::new(registry));
         let armed = b.table.iter().filter(|s| s.is_some()).count();
-        let default = resolve_dispatch_default::<In, Out>(
+        let default = resolve_dispatch_default(
             b.default,
             armed,
             K::VARIANTS,
+            || Box::new(PanicArm(PhantomData)) as Box<dyn StepCall<In, Out = Out> + Send>,
             "dispatch_on",
             std::any::type_name::<K>(),
         );
