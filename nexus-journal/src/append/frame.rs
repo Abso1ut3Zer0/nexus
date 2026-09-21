@@ -17,7 +17,7 @@ pub(crate) const fn footprint(body: usize) -> usize {
 /// # Safety
 /// `base.add(offset)` must be 4-byte-aligned and within the mapping.
 #[inline]
-pub(crate) unsafe fn read_commit_len(base: *mut u8, offset: usize) -> u32 {
+pub(crate) unsafe fn read_commit_len(base: *const u8, offset: usize) -> u32 {
     // SAFETY: caller guarantees base.add(offset) is 4-byte-aligned and within the mapping.
     unsafe { base.add(offset).cast::<u32>().read() }
 }
@@ -33,7 +33,7 @@ pub(crate) unsafe fn write_commit_len(base: *mut u8, offset: usize, val: u32) {
 /// # Safety
 /// The frame header at `offset` must be published and within the mapping.
 #[inline]
-pub(crate) unsafe fn frame_kind(base: *mut u8, offset: usize) -> u16 {
+pub(crate) unsafe fn frame_kind(base: *const u8, offset: usize) -> u16 {
     // SAFETY: caller guarantees the frame header at offset is published and within the mapping.
     unsafe { std::ptr::read_unaligned(base.add(offset + 4).cast()) }
 }
@@ -63,7 +63,7 @@ pub(crate) unsafe fn write_val<T: Pod>(base: *mut u8, offset: usize, val: T) {
 /// `[offset, offset + size_of::<T>())` must be within the mapping and
 /// the data must be published.
 #[inline]
-pub(crate) unsafe fn read_val<T: Pod>(base: *mut u8, offset: usize) -> T {
+pub(crate) unsafe fn read_val<T: Pod>(base: *const u8, offset: usize) -> T {
     // SAFETY: caller guarantees the offset range is within the mapping and the data is published.
     unsafe { std::ptr::read_unaligned(base.add(offset).cast()) }
 }

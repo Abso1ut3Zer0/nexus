@@ -55,7 +55,7 @@ impl<H: RecordHeader> Writer<H> {
     fn roll(&mut self) -> Result<(), AppendOnlyJournalError> {
         let remaining = self.segment_size - self.tail;
         if remaining >= FRAME_HEADER {
-            let base = self.active.as_ptr();
+            let base = self.active.as_mut_ptr();
             // SAFETY: tail is an 8-aligned offset within the mapped data region.
             unsafe {
                 write_frame_kind(base, self.tail, TYPE_PAD);
@@ -87,7 +87,7 @@ impl<H: RecordHeader> WriteClaim<'_, H> {
     /// The payload region to fill before committing.
     pub fn as_mut_slice(&mut self) -> &mut [u8] {
         let start = self.off + FRAME_HEADER + size_of::<H>();
-        let base = self.writer.active.as_ptr();
+        let base = self.writer.active.as_mut_ptr();
         // SAFETY: the region is reserved for this claim, lies within the mapped
         // data, and is exclusively borrowed through `&mut self`.
         unsafe { std::slice::from_raw_parts_mut(base.add(start), self.payload_len) }
@@ -96,7 +96,7 @@ impl<H: RecordHeader> WriteClaim<'_, H> {
     /// Publish the record: write the header and frame kind, then the
     /// commit length so readers observe a fully-written record.
     pub fn commit(self) {
-        let base = self.writer.active.as_ptr();
+        let base = self.writer.active.as_mut_ptr();
         // SAFETY: the header slot is reserved for this claim and within the
         // mapped data; `H: Pod`, so an unaligned byte write is valid.
         unsafe {

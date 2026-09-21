@@ -572,8 +572,8 @@ impl RotatingJournal {
         let mk = |i: u8| -> Result<Slot, OpenError> {
             let path = seg_path(dir, i);
             let mf = file_create(&path, total, hints)?;
-            let mapping: Mapping = mf.into();
-            let data = mapping.as_ptr();
+            let mut mapping: Mapping = mf.into();
+            let data = mapping.as_mut_ptr();
             // SAFETY: freshly mapped, sole owner.
             unsafe { write_commit_len(data, 0) };
             Ok(Slot {
@@ -587,9 +587,9 @@ impl RotatingJournal {
         // Standby mapping lives exclusively in the swap; slots[1] starts empty.
         let standby_path = seg_path(dir, 1);
         let standby_mf = file_create(&standby_path, total, hints)?;
-        let standby_mapping: Mapping = standby_mf.into();
+        let mut standby_mapping: Mapping = standby_mf.into();
         // SAFETY: freshly mapped, sole owner.
-        unsafe { write_commit_len(standby_mapping.as_ptr(), 0) };
+        unsafe { write_commit_len(standby_mapping.as_mut_ptr(), 0) };
         let swap = Arc::new(SegmentSwap::new_clean(standby_mapping));
         let s1 = Slot {
             mapping: None,
@@ -674,12 +674,12 @@ impl RotatingJournal {
 
         let mk = |i: u8| -> Result<Slot, OpenError> {
             let path = seg_path(dir, i);
-            let mapping: Mapping = if path.exists() {
+            let mut mapping: Mapping = if path.exists() {
                 file_open(&path, hints)?.into()
             } else {
                 file_create(&path, total, hints)?.into()
             };
-            let data = mapping.as_ptr();
+            let data = mapping.as_mut_ptr();
             Ok(Slot {
                 mapping: Some(mapping),
                 path,
@@ -692,9 +692,9 @@ impl RotatingJournal {
         let cursor = recover_tail(slots[current].data, size);
 
         // Move the standby mapping into the swap; its slot becomes empty.
-        let standby_mapping = slots[standby].mapping.take().expect("just created");
+        let mut standby_mapping = slots[standby].mapping.take().expect("just created");
         // SAFETY: sole owner; zeroing commit_len hides stale frames from previous session.
-        unsafe { write_commit_len(standby_mapping.as_ptr(), 0) };
+        unsafe { write_commit_len(standby_mapping.as_mut_ptr(), 0) };
         slots[standby].data = std::ptr::null_mut();
         let swap = Arc::new(SegmentSwap::new_clean(standby_mapping));
 
@@ -732,8 +732,8 @@ impl RotatingJournal {
 
         // Take the replacement mapping the conductor prepared.
         // SAFETY: state == Clean guarantees payload is initialized.
-        let new_mapping = unsafe { self.swap.take() };
-        let new_data = new_mapping.as_ptr();
+        let mut new_mapping = unsafe { self.swap.take() };
+        let new_data = new_mapping.as_mut_ptr();
 
         // Install replacement in standby slot (becomes new current).
         self.slots[self.standby].mapping = Some(new_mapping);

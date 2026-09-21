@@ -85,8 +85,8 @@ mod imp {
         let path = dir.join(format!("nexus-mmap-probe-{}", std::process::id()));
         let _ = std::fs::remove_file(&path);
 
-        let mf = MappedFile::create(&path, NonZeroUsize::new(size).unwrap()).unwrap();
-        let base = mf.as_ptr();
+        let mut mf = MappedFile::create(&path, NonZeroUsize::new(size).unwrap()).unwrap();
+        let base = mf.as_mut_ptr();
 
         if prefault {
             // Simulate the conductor prefault: write-touch every page up front.

@@ -88,11 +88,11 @@ impl Manifest {
         name: &[u8],
     ) -> Result<Self, OpenError> {
         let len = NonZeroUsize::new(MANIFEST_FILE_SIZE).unwrap();
-        let mapping = MappedFile::create(path, len)?;
+        let mut mapping = MappedFile::create(path, len)?;
 
         // SAFETY: the mapping covers at least MANIFEST_FILE_SIZE bytes and is
         // page-aligned. We hold exclusive access (just created the file).
-        let hdr = unsafe { &mut *mapping.as_ptr().cast::<ManifestHeader>() };
+        let hdr = unsafe { &mut *mapping.as_mut_ptr().cast::<ManifestHeader>() };
         let n = name.len().min(SESSION_NAME_LEN);
         hdr.name = [0; SESSION_NAME_LEN];
         hdr.name[..n].copy_from_slice(&name[..n]);

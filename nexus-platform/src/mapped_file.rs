@@ -251,6 +251,12 @@ impl std::ops::Deref for MappedFile {
     }
 }
 
+impl std::ops::DerefMut for MappedFile {
+    fn deref_mut(&mut self) -> &mut Mapping {
+        &mut self.mapping
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -264,7 +270,7 @@ mod tests {
         let path = temp_path("rw");
         let _ = std::fs::remove_file(&path);
 
-        let m = MappedFile::create(&path, NonZeroUsize::new(4096).unwrap()).unwrap();
+        let mut m = MappedFile::create(&path, NonZeroUsize::new(4096).unwrap()).unwrap();
         assert_eq!(m.len(), 4096);
         assert!(m.is_writable());
 
@@ -281,7 +287,7 @@ mod tests {
         let path = temp_path("open");
         let _ = std::fs::remove_file(&path);
 
-        let m = MappedFile::create(&path, NonZeroUsize::new(256).unwrap()).unwrap();
+        let mut m = MappedFile::create(&path, NonZeroUsize::new(256).unwrap()).unwrap();
         m.write_at(b"hello", 10).unwrap();
         drop(m);
 
@@ -298,7 +304,7 @@ mod tests {
         let path = temp_path("readonly");
         let _ = std::fs::remove_file(&path);
 
-        let m = MappedFile::create(&path, NonZeroUsize::new(128).unwrap()).unwrap();
+        let mut m = MappedFile::create(&path, NonZeroUsize::new(128).unwrap()).unwrap();
         m.write_at(b"data", 0).unwrap();
         drop(m);
 
@@ -314,7 +320,7 @@ mod tests {
         let path = temp_path("slice");
         let _ = std::fs::remove_file(&path);
 
-        let m = MappedFile::create(&path, NonZeroUsize::new(64).unwrap()).unwrap();
+        let mut m = MappedFile::create(&path, NonZeroUsize::new(64).unwrap()).unwrap();
         m.write_at(&[1, 2, 3, 4], 0).unwrap();
         assert_eq!(&m.as_slice()[..4], &[1, 2, 3, 4]);
 
@@ -339,7 +345,7 @@ mod tests {
         let path = temp_path("wpartial");
         let _ = std::fs::remove_file(&path);
 
-        let m = MappedFile::create(&path, NonZeroUsize::new(8).unwrap()).unwrap();
+        let mut m = MappedFile::create(&path, NonZeroUsize::new(8).unwrap()).unwrap();
         let n = m.write_at(&[1, 2, 3, 4], 6).unwrap();
         assert_eq!(n, 2);
         assert_eq!(&m.as_slice()[6..8], &[1, 2]);
@@ -373,7 +379,7 @@ mod tests {
         let path = temp_path("sync");
         let _ = std::fs::remove_file(&path);
 
-        let m = MappedFile::create(&path, NonZeroUsize::new(4096).unwrap()).unwrap();
+        let mut m = MappedFile::create(&path, NonZeroUsize::new(4096).unwrap()).unwrap();
         m.write_at(b"durable", 0).unwrap();
         m.sync().unwrap();
 
@@ -408,7 +414,7 @@ mod tests {
             .unwrap();
         file.set_len(8192).unwrap();
 
-        let full = MappedFile::options()
+        let mut full = MappedFile::options()
             .from_file(file, NonZeroUsize::new(8192).unwrap())
             .unwrap();
         full.write_at(b"offset-test", 4096).unwrap();
@@ -433,11 +439,11 @@ mod tests {
         let path = temp_path("write-ro");
         let _ = std::fs::remove_file(&path);
 
-        let m = MappedFile::create(&path, NonZeroUsize::new(128).unwrap()).unwrap();
+        let mut m = MappedFile::create(&path, NonZeroUsize::new(128).unwrap()).unwrap();
         m.write_at(b"setup", 0).unwrap();
         drop(m);
 
-        let m2 = MappedFile::open_readonly(&path).unwrap();
+        let mut m2 = MappedFile::open_readonly(&path).unwrap();
         let err = m2.write_at(b"nope", 0).unwrap_err();
         assert_eq!(err.kind(), std::io::ErrorKind::PermissionDenied);
 
@@ -479,7 +485,7 @@ mod tests {
         let path = temp_path("shared");
         let _ = std::fs::remove_file(&path);
 
-        let m1 = MappedFile::create(&path, NonZeroUsize::new(4096).unwrap()).unwrap();
+        let mut m1 = MappedFile::create(&path, NonZeroUsize::new(4096).unwrap()).unwrap();
         let m2 = MappedFile::open(&path).unwrap();
 
         m1.write_at(b"visible", 0).unwrap();
@@ -527,7 +533,7 @@ mod tests {
         let path = temp_path("opts-offset");
         let _ = std::fs::remove_file(&path);
 
-        let m = MappedFile::options()
+        let mut m = MappedFile::options()
             .offset(4096)
             .create(&path, NonZeroUsize::new(4096).unwrap())
             .unwrap();
