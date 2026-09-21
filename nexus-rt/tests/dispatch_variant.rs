@@ -67,7 +67,9 @@ fn routes_to_matching_arm_and_unwraps_payload() {
             d.arm(cmd_variants::RouteAway, on_route_away)
                 .arm(cmd_variants::Reprice, on_reprice)
                 .arm(cmd_variants::Halt, on_halt)
-            // `Cancel` intentionally unset — must fall through to the no-op.
+                // `Cancel` intentionally unset — the `.default_noop()` fallback
+                // opts out of the exhaustive-table requirement and no-ops it.
+                .default_noop()
         })
         .build();
 
@@ -128,6 +130,8 @@ fn closure_arm_receives_payload() {
             d.arm(cmd_variants::RouteAway, move |p: u32| {
                 sink.store(p, Ordering::Relaxed);
             })
+            // Remaining variants unset — no-op fallback.
+            .default_noop()
         })
         .build();
 

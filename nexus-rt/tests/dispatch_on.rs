@@ -62,8 +62,9 @@ fn routes_on_projected_key_and_passes_whole_value() {
         .dispatch_on(
             |t: &Tick| t.source,
             reg,
-            |d| d.arm(Source::A, on_a).arm(Source::B, on_b),
-            // `Source::C` intentionally unset — falls through to the no-op.
+            // `Source::C` intentionally unset — `.default_noop()` opts out of
+            // the exhaustive-table requirement and no-ops it.
+            |d| d.arm(Source::A, on_a).arm(Source::B, on_b).default_noop(),
         )
         .build();
 
@@ -160,6 +161,8 @@ fn closure_arm_receives_whole_value() {
                 d.arm(Source::A, move |t: Tick| {
                     sink.store(t.px, Ordering::Relaxed);
                 })
+                // B, C unset — no-op fallback.
+                .default_noop()
             },
         )
         .build();
@@ -258,6 +261,8 @@ fn dispatch_on_tuple_product_key() {
                 d.arm((Coarse::X, Fine::P), on_xp)
                     .arm((Coarse::Y, Fine::Q), on_yq)
                     .arm((Coarse::Y, Fine::R), on_yr)
+                    // The other three composite slots are unset — no-op fallback.
+                    .default_noop()
             },
         )
         .build();

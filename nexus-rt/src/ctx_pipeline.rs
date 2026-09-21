@@ -59,6 +59,7 @@
 
 use std::marker::PhantomData;
 
+use crate::dispatch::{Dispatchable, VariantOf};
 use crate::handler::{Opaque, Param};
 use crate::world::{Registry, World};
 
@@ -1500,6 +1501,628 @@ where
         match self.prev.call(ctx, world, input) {
             Ok(val) => val,
             Err(_) => self.default.clone(),
+        }
+    }
+}
+
+// =============================================================================
+// dispatch_variant — terminal keyed dispatch on the input enum's discriminant
+// =============================================================================
+//
+// Context-aware mirror of pipeline's `dispatch_variant` (issue #723): the
+// arms and thunks thread `&mut C`. Unlike the other ctx chain nodes (which
+// store their step as a concrete `S` and let `C` fall out of the trait impl),
+// the dispatch table is a `Vec<Box<dyn CtxStepCall<C, E, ..>>>` — an erased
+// trait object that names `C` — so `C` is a type parameter on the node and
+// builder structs. That is the one structural deviation from the pipeline
+// version, forced by erasure, not a redesign.
+
+/// Terminal arm ignoring the value — the `Out = ()` no-op fallback wired by
+/// `.default_noop()` for unset variants/keys.
+struct CtxNoopArm;
+impl<C, E> CtxStepCall<C, E> for CtxNoopArm {
+    type Out = ();
+    #[inline(always)]
+    fn call(&mut self, _ctx: &mut C, _world: &mut World, _input: E) {}
+}
+
+/// Never-called fallback for an *exhaustive* table (every key armed, no user
+/// `.default`). The `None` branch of the dispatch match is then unreachable —
+/// this arm exists only to give the erased `default` slot a concrete type of
+/// the right `Out`. Generic over `Out`: the `unreachable!` coerces to any
+/// output type. `PhantomData<fn() -> Out>` keeps it `Send` for any `Out`.
+struct CtxPanicArm<Out>(PhantomData<fn() -> Out>);
+impl<C, In, Out> CtxStepCall<C, In> for CtxPanicArm<Out> {
+    type Out = Out;
+    #[inline(always)]
+    fn call(&mut self, _ctx: &mut C, _world: &mut World, _input: In) -> Out {
+        unreachable!("dispatch: default arm on an exhaustive table")
+    }
+}
+
+/// Finalize a `Vec`-table ctx dispatch's `default` slot, enforcing the
+/// exhaustive-or-`.default` rule at construction (deterministic, before any
+/// dispatch). Shared by `.dispatch_variant()` and `.dispatch_on()`.
+///
+/// - user `.default` present → use it (wins even when the table is exhaustive)
+/// - exhaustive (`armed == total`), no user default → [`CtxPanicArm`] (the
+///   `None` branch of the node's match is then unreachable)
+/// - non-exhaustive, no user default → panic
+fn resolve_ctx_dispatch_default<C: 'static, T: 'static, Out: 'static>(
+    user_default: Option<Box<dyn CtxStepCall<C, T, Out = Out> + Send>>,
+    armed: usize,
+    total: usize,
+    method: &str,
+    type_name: &str,
+) -> Box<dyn CtxStepCall<C, T, Out = Out> + Send> {
+    match user_default {
+        Some(d) => d,
+        None if armed == total => Box::new(CtxPanicArm(PhantomData)),
+        None => panic!(
+            "{method} on `{type_name}`: {armed}/{total} keys armed and no \
+             `.default` — arm every key or add `.default`/`.default_noop()`"
+        ),
+    }
+}
+
+/// Wraps a variant-typed terminal step: unpacks the enum to the variant's
+/// payload (sound — this slot is only reached when the value IS variant V)
+/// and calls the typed step with `&mut C`, bubbling up its `Out`.
+struct CtxVariantArm<V, S> {
+    step: S,
+    _variant: PhantomData<fn(V)>, // Send regardless of V
+}
+impl<C, E, V, S, Out> CtxStepCall<C, E> for CtxVariantArm<V, S>
+where
+    V: VariantOf<E>,
+    S: CtxStepCall<C, V::Payload, Out = Out>,
+{
+    type Out = Out;
+    #[inline(always)]
+    fn call(&mut self, ctx: &mut C, world: &mut World, input: E) -> Out {
+        // SAFETY: this slot is indexed by input.ordinal(), so input is variant V.
+        let payload = unsafe { V::unwrap(input) };
+        self.step.call(ctx, world, payload)
+    }
+}
+
+/// Chain node for `.dispatch_variant()` — terminal keyed dispatch on the
+/// input enum's own discriminant, threading `&mut C`. Bubbles up the arms'
+/// `Out`.
+#[doc(hidden)]
+pub struct CtxDispatchVariantNode<C, Prev, E, Out> {
+    pub(crate) prev: Prev,
+    pub(crate) table: Vec<Option<Box<dyn CtxStepCall<C, E, Out = Out> + Send>>>, // len == E::VARIANTS
+    pub(crate) default: Box<dyn CtxStepCall<C, E, Out = Out> + Send>, // CtxPanicArm when exhaustive
+}
+impl<C, In, Prev, E, Out> CtxChainCall<C, In> for CtxDispatchVariantNode<C, Prev, E, Out>
+where
+    Prev: CtxChainCall<C, In, Out = E>,
+    E: Dispatchable,
+{
+    type Out = Out;
+    #[inline(always)]
+    fn call(&mut self, ctx: &mut C, world: &mut World, input: In) -> Out {
+        let value = self.prev.call(ctx, world, input);
+        let idx = value.ordinal();
+        match &mut self.table[idx] {
+            Some(arm) => arm.call(ctx, world, value),
+            None => self.default.call(ctx, world, value),
+        }
+    }
+}
+
+/// Builder for [`dispatch_variant`](CtxPipelineChain::dispatch_variant) arms.
+///
+/// The table must be exhaustive (every variant armed) or carry a `.default`
+/// (or `.default_noop()`) — enforced when the combinator is finalized. `Out`
+/// is the value each arm returns, inferred from the arm bodies.
+#[must_use = "dispatch arms do nothing unless the builder is returned"]
+pub struct CtxDispatchVariantBuilder<'r, C, E, Out> {
+    table: Vec<Option<Box<dyn CtxStepCall<C, E, Out = Out> + Send>>>,
+    default: Option<Box<dyn CtxStepCall<C, E, Out = Out> + Send>>,
+    registry: &'r Registry,
+}
+impl<'r, C: 'static, E: Dispatchable + 'static, Out: 'static>
+    CtxDispatchVariantBuilder<'r, C, E, Out>
+{
+    fn new(registry: &'r Registry) -> Self {
+        let mut table = Vec::with_capacity(E::VARIANTS);
+        table.resize_with(E::VARIANTS, || None);
+        Self {
+            table,
+            default: None,
+            registry,
+        }
+    }
+
+    /// Wire a variant to a typed terminal step receiving `&mut C` and the
+    /// variant's payload, returning `Out`.
+    pub fn arm<V, S, Params>(mut self, _variant: V, step: S) -> Self
+    where
+        V: VariantOf<E> + 'static,
+        S: IntoCtxStep<C, V::Payload, Out, Params>,
+        S::Step: Send + 'static,
+    {
+        let resolved = step.into_ctx_step(self.registry);
+        self.table[V::ORDINAL] = Some(Box::new(CtxVariantArm::<V, _> {
+            step: resolved,
+            _variant: PhantomData,
+        }));
+        self
+    }
+
+    /// Set the fallback for every unset variant. Receives `&mut C` and the whole
+    /// enum, returning `Out`.
+    pub fn default<S, Params>(mut self, step: S) -> Self
+    where
+        S: IntoCtxStep<C, E, Out, Params>,
+        S::Step: Send + 'static,
+    {
+        self.default = Some(Box::new(step.into_ctx_step(self.registry)));
+        self
+    }
+}
+
+impl<C, E> CtxDispatchVariantBuilder<'_, C, E, ()> {
+    /// Set the fallback to a no-op (only when arms return `Out = ()`). Sugar for
+    /// a `.default` that ignores the value — the way to opt out of the
+    /// exhaustive-table requirement when you don't need a real fallback.
+    pub fn default_noop(mut self) -> Self {
+        self.default = Some(Box::new(CtxNoopArm));
+        self
+    }
+}
+
+impl<C, In, E, Chain> CtxPipelineChain<C, In, E, Chain>
+where
+    Chain: CtxChainCall<C, In, Out = E>,
+    E: Dispatchable + 'static,
+    C: 'static,
+{
+    /// Terminal keyed dispatch on the input enum's own discriminant. Each arm
+    /// receives `&mut C` and its variant's payload and returns `Out`, which
+    /// bubbles up so the pipeline can `.then(...)` the result (or `.build()`
+    /// when `Out = ()`). Context-aware mirror of
+    /// [`PipelineChain::dispatch_variant`](crate::PipelineChain::dispatch_variant).
+    ///
+    /// The table must be exhaustive (every variant armed) or carry a `.default`
+    /// / `.default_noop()`; otherwise this panics at construction (deterministic,
+    /// before any dispatch). See issue #723.
+    pub fn dispatch_variant<Out, Bf>(
+        self,
+        registry: &Registry,
+        build: Bf,
+    ) -> CtxPipelineChain<C, In, Out, CtxDispatchVariantNode<C, Chain, E, Out>>
+    where
+        Out: 'static,
+        Bf: FnOnce(
+            CtxDispatchVariantBuilder<'_, C, E, Out>,
+        ) -> CtxDispatchVariantBuilder<'_, C, E, Out>,
+    {
+        let b = build(CtxDispatchVariantBuilder::new(registry));
+        let armed = b.table.iter().filter(|s| s.is_some()).count();
+        let default = resolve_ctx_dispatch_default::<C, E, Out>(
+            b.default,
+            armed,
+            E::VARIANTS,
+            "dispatch_variant",
+            std::any::type_name::<E>(),
+        );
+        CtxPipelineChain {
+            chain: CtxDispatchVariantNode {
+                prev: self.chain,
+                table: b.table,
+                default,
+            },
+            _marker: PhantomData,
+        }
+    }
+}
+
+impl<C: 'static, In: Dispatchable + 'static> CtxPipelineBuilder<C, In> {
+    /// Terminal keyed dispatch as the pipeline's first step, when the input is
+    /// itself a [`Dispatchable`] enum. Mirrors the entry-point form of
+    /// [`then`](CtxPipelineBuilder::then); see
+    /// [`CtxPipelineChain::dispatch_variant`] for the continuation form. Issue
+    /// #723.
+    pub fn dispatch_variant<Out, Bf>(
+        self,
+        registry: &Registry,
+        build: Bf,
+    ) -> CtxPipelineChain<C, In, Out, CtxDispatchVariantNode<C, CtxIdentityNode, In, Out>>
+    where
+        Out: 'static,
+        Bf: FnOnce(
+            CtxDispatchVariantBuilder<'_, C, In, Out>,
+        ) -> CtxDispatchVariantBuilder<'_, C, In, Out>,
+    {
+        let b = build(CtxDispatchVariantBuilder::new(registry));
+        let armed = b.table.iter().filter(|s| s.is_some()).count();
+        let default = resolve_ctx_dispatch_default::<C, In, Out>(
+            b.default,
+            armed,
+            In::VARIANTS,
+            "dispatch_variant",
+            std::any::type_name::<In>(),
+        );
+        CtxPipelineChain {
+            chain: CtxDispatchVariantNode {
+                prev: CtxIdentityNode,
+                table: b.table,
+                default,
+            },
+            _marker: PhantomData,
+        }
+    }
+}
+
+// =============================================================================
+// dispatch_on — terminal keyed dispatch on a projected key
+// =============================================================================
+//
+// Context-aware mirror of pipeline's `dispatch_on` (issue #723). The key is a
+// *projection* of the value (via `key_fn`), not the value's own discriminant,
+// so it carries no variant guarantee — no unchecked unwrap; every arm receives
+// `&mut C` and the whole value. As with `dispatch_variant`, `C` is a node/
+// builder type parameter because the arm table is an erased trait object.
+
+/// Chain node for `.dispatch_on()` — terminal keyed dispatch on a projected
+/// key, threading `&mut C`. Bubbles up the arms' `Out`.
+#[doc(hidden)]
+pub struct CtxDispatchOnNode<C, Prev, V, F, Out> {
+    pub(crate) prev: Prev,
+    pub(crate) key_fn: F,
+    pub(crate) table: Vec<Option<Box<dyn CtxStepCall<C, V, Out = Out> + Send>>>, // len == K::VARIANTS
+    pub(crate) default: Box<dyn CtxStepCall<C, V, Out = Out> + Send>, // CtxPanicArm when exhaustive
+}
+impl<C, In, Prev, V, K, F, Out> CtxChainCall<C, In> for CtxDispatchOnNode<C, Prev, V, F, Out>
+where
+    Prev: CtxChainCall<C, In, Out = V>,
+    F: Fn(&V) -> K,
+    K: Dispatchable,
+{
+    type Out = Out;
+    #[inline(always)]
+    fn call(&mut self, ctx: &mut C, world: &mut World, input: In) -> Out {
+        let value = self.prev.call(ctx, world, input);
+        let idx = (self.key_fn)(&value).ordinal();
+        match &mut self.table[idx] {
+            Some(arm) => arm.call(ctx, world, value),
+            None => self.default.call(ctx, world, value),
+        }
+    }
+}
+
+/// Builder for [`dispatch_on`](CtxPipelineChain::dispatch_on) arms.
+///
+/// The table must be exhaustive (every key armed) or carry a `.default`
+/// (or `.default_noop()`) — enforced when the combinator is finalized. `Out`
+/// is the value each arm returns, inferred from the arm bodies.
+#[must_use = "dispatch arms do nothing unless the builder is returned"]
+pub struct CtxDispatchOnBuilder<'r, C, V, K, Out> {
+    table: Vec<Option<Box<dyn CtxStepCall<C, V, Out = Out> + Send>>>,
+    default: Option<Box<dyn CtxStepCall<C, V, Out = Out> + Send>>,
+    registry: &'r Registry,
+    _key: PhantomData<fn(K)>,
+}
+impl<'r, C: 'static, V: 'static, K: Dispatchable + 'static, Out: 'static>
+    CtxDispatchOnBuilder<'r, C, V, K, Out>
+{
+    fn new(registry: &'r Registry) -> Self {
+        let mut table = Vec::with_capacity(K::VARIANTS);
+        table.resize_with(K::VARIANTS, || None);
+        Self {
+            table,
+            default: None,
+            registry,
+            _key: PhantomData,
+        }
+    }
+
+    /// Wire the arm that runs when the key equals `k`. The step receives
+    /// `&mut C` and the whole value, returning `Out`.
+    pub fn arm<S, Params>(mut self, k: K, step: S) -> Self
+    where
+        S: IntoCtxStep<C, V, Out, Params>,
+        S::Step: Send + 'static,
+    {
+        self.table[k.ordinal()] = Some(Box::new(step.into_ctx_step(self.registry)));
+        self
+    }
+
+    /// Set the fallback for keys with no arm. Receives `&mut C` and the whole
+    /// value, returning `Out`.
+    pub fn default<S, Params>(mut self, step: S) -> Self
+    where
+        S: IntoCtxStep<C, V, Out, Params>,
+        S::Step: Send + 'static,
+    {
+        self.default = Some(Box::new(step.into_ctx_step(self.registry)));
+        self
+    }
+}
+
+impl<C, V, K> CtxDispatchOnBuilder<'_, C, V, K, ()> {
+    /// Set the fallback to a no-op (only when arms return `Out = ()`). Sugar for
+    /// a `.default` that ignores the value — the way to opt out of the
+    /// exhaustive-table requirement when you don't need a real fallback.
+    pub fn default_noop(mut self) -> Self {
+        self.default = Some(Box::new(CtxNoopArm));
+        self
+    }
+}
+
+impl<C, In, V, Chain> CtxPipelineChain<C, In, V, Chain>
+where
+    Chain: CtxChainCall<C, In, Out = V>,
+    V: 'static,
+    C: 'static,
+{
+    /// Terminal keyed dispatch on a *projected* key. `key_fn` maps the value to
+    /// a [`Dispatchable`] key; each arm receives `&mut C` and the **whole**
+    /// value (unlike [`dispatch_variant`](Self::dispatch_variant), where arms
+    /// get the unwrapped payload) and returns `Out`, which bubbles up. Context-
+    /// aware mirror of
+    /// [`PipelineChain::dispatch_on`](crate::PipelineChain::dispatch_on).
+    ///
+    /// The table must be exhaustive (every key armed) or carry a `.default`
+    /// / `.default_noop()`; otherwise this panics at construction (deterministic,
+    /// before any dispatch). See issue #723.
+    pub fn dispatch_on<K, F, Out, Bf>(
+        self,
+        key_fn: F,
+        registry: &Registry,
+        build: Bf,
+    ) -> CtxPipelineChain<C, In, Out, CtxDispatchOnNode<C, Chain, V, F, Out>>
+    where
+        K: Dispatchable + 'static,
+        F: Fn(&V) -> K + Send + 'static,
+        Out: 'static,
+        Bf: FnOnce(
+            CtxDispatchOnBuilder<'_, C, V, K, Out>,
+        ) -> CtxDispatchOnBuilder<'_, C, V, K, Out>,
+    {
+        let b = build(CtxDispatchOnBuilder::<C, V, K, Out>::new(registry));
+        let armed = b.table.iter().filter(|s| s.is_some()).count();
+        let default = resolve_ctx_dispatch_default::<C, V, Out>(
+            b.default,
+            armed,
+            K::VARIANTS,
+            "dispatch_on",
+            std::any::type_name::<K>(),
+        );
+        CtxPipelineChain {
+            chain: CtxDispatchOnNode {
+                prev: self.chain,
+                key_fn,
+                table: b.table,
+                default,
+            },
+            _marker: PhantomData,
+        }
+    }
+}
+
+impl<C: 'static, In: 'static> CtxPipelineBuilder<C, In> {
+    /// Terminal keyed dispatch on a *projected* key as the pipeline's first
+    /// step. Mirrors the entry-point form of [`then`](CtxPipelineBuilder::then);
+    /// see [`CtxPipelineChain::dispatch_on`] for the continuation form. Issue
+    /// #723.
+    pub fn dispatch_on<K, F, Out, Bf>(
+        self,
+        key_fn: F,
+        registry: &Registry,
+        build: Bf,
+    ) -> CtxPipelineChain<C, In, Out, CtxDispatchOnNode<C, CtxIdentityNode, In, F, Out>>
+    where
+        K: Dispatchable + 'static,
+        F: Fn(&In) -> K + Send + 'static,
+        Out: 'static,
+        Bf: FnOnce(
+            CtxDispatchOnBuilder<'_, C, In, K, Out>,
+        ) -> CtxDispatchOnBuilder<'_, C, In, K, Out>,
+    {
+        let b = build(CtxDispatchOnBuilder::<C, In, K, Out>::new(registry));
+        let armed = b.table.iter().filter(|s| s.is_some()).count();
+        let default = resolve_ctx_dispatch_default::<C, In, Out>(
+            b.default,
+            armed,
+            K::VARIANTS,
+            "dispatch_on",
+            std::any::type_name::<K>(),
+        );
+        CtxPipelineChain {
+            chain: CtxDispatchOnNode {
+                prev: CtxIdentityNode,
+                key_fn,
+                table: b.table,
+                default,
+            },
+            _marker: PhantomData,
+        }
+    }
+}
+
+// =============================================================================
+// dispatch_map — terminal keyed dispatch on an arbitrary Hash + Eq key
+// =============================================================================
+//
+// Context-aware mirror of pipeline's `dispatch_map` (issue #723). The escape
+// hatch from `dispatch_on`'s ordinal `Vec` table for keys that aren't
+// `Dispatchable` enums — an arbitrary/non-enum key, or a discriminant derived
+// from a resource lookup upstream. Swaps the ordinal `Vec` for an `FxHashMap`;
+// every arm receives `&mut C` and the whole value. As with the other ctx
+// dispatch nodes, `C` is a node/builder type parameter because the arm table is
+// an erased trait object that names `C`.
+
+/// Chain node for `.dispatch_map()` — terminal keyed dispatch on an arbitrary
+/// `Hash + Eq` key, threading `&mut C`. Bubbles up the arms' `Out`.
+#[doc(hidden)]
+pub struct CtxDispatchMapNode<C, Prev, V, K, F, Out> {
+    pub(crate) prev: Prev,
+    pub(crate) key_fn: F,
+    pub(crate) table: rustc_hash::FxHashMap<K, Box<dyn CtxStepCall<C, V, Out = Out> + Send>>,
+    pub(crate) default: Box<dyn CtxStepCall<C, V, Out = Out> + Send>, // required (.default / .default_noop)
+}
+impl<C, In, Prev, V, K, F, Out> CtxChainCall<C, In> for CtxDispatchMapNode<C, Prev, V, K, F, Out>
+where
+    Prev: CtxChainCall<C, In, Out = V>,
+    K: core::hash::Hash + Eq,
+    F: Fn(&V) -> K,
+{
+    type Out = Out;
+    #[inline(always)]
+    fn call(&mut self, ctx: &mut C, world: &mut World, input: In) -> Out {
+        let value = self.prev.call(ctx, world, input);
+        let k = (self.key_fn)(&value);
+        match self.table.get_mut(&k) {
+            Some(arm) => arm.call(ctx, world, value),
+            None => self.default.call(ctx, world, value),
+        }
+    }
+}
+
+/// Builder for [`dispatch_map`](CtxPipelineChain::dispatch_map) arms.
+///
+/// The key space is open, so a `.default` (or `.default_noop()`) is required
+/// — enforced when the combinator is finalized. `Out` is the value each arm
+/// returns, inferred from the arm bodies.
+#[must_use = "dispatch arms do nothing unless the builder is returned"]
+pub struct CtxDispatchMapBuilder<'r, C, V, K, Out> {
+    table: rustc_hash::FxHashMap<K, Box<dyn CtxStepCall<C, V, Out = Out> + Send>>,
+    default: Option<Box<dyn CtxStepCall<C, V, Out = Out> + Send>>,
+    registry: &'r Registry,
+}
+impl<'r, C: 'static, V: 'static, K: core::hash::Hash + Eq, Out: 'static>
+    CtxDispatchMapBuilder<'r, C, V, K, Out>
+{
+    fn new(registry: &'r Registry) -> Self {
+        Self {
+            table: rustc_hash::FxHashMap::default(),
+            default: None,
+            registry,
+        }
+    }
+
+    /// Wire the arm that runs when the key equals `k`. The step receives
+    /// `&mut C` and the whole value, returning `Out`.
+    pub fn arm<S, Params>(mut self, k: K, step: S) -> Self
+    where
+        S: IntoCtxStep<C, V, Out, Params>,
+        S::Step: Send + 'static,
+    {
+        self.table
+            .insert(k, Box::new(step.into_ctx_step(self.registry)));
+        self
+    }
+
+    /// Set the fallback for keys with no arm. Receives `&mut C` and the whole
+    /// value, returning `Out`.
+    pub fn default<S, Params>(mut self, step: S) -> Self
+    where
+        S: IntoCtxStep<C, V, Out, Params>,
+        S::Step: Send + 'static,
+    {
+        self.default = Some(Box::new(step.into_ctx_step(self.registry)));
+        self
+    }
+}
+
+impl<C, V, K> CtxDispatchMapBuilder<'_, C, V, K, ()> {
+    /// Set the fallback to a no-op (only when arms return `Out = ()`). Sugar for
+    /// a `.default` that ignores the value — satisfies the required-default rule
+    /// for an open key space when you don't need a real fallback.
+    pub fn default_noop(mut self) -> Self {
+        self.default = Some(Box::new(CtxNoopArm));
+        self
+    }
+}
+
+impl<C, In, V, Chain> CtxPipelineChain<C, In, V, Chain>
+where
+    Chain: CtxChainCall<C, In, Out = V>,
+    V: 'static,
+    C: 'static,
+{
+    /// Terminal keyed dispatch on an arbitrary `Hash + Eq` key. The escape hatch
+    /// from [`dispatch_on`](Self::dispatch_on) for keys that aren't
+    /// [`Dispatchable`] enums — a non-enum/composite key, or a discriminant
+    /// derived from a resource lookup upstream. `key_fn` maps the value to the
+    /// key; each arm receives `&mut C` and the **whole** value and returns `Out`,
+    /// which bubbles up. Context-aware mirror of
+    /// [`PipelineChain::dispatch_map`](crate::PipelineChain::dispatch_map).
+    ///
+    /// The key space is open, so a `.default` (or `.default_noop()`) is
+    /// required; otherwise this panics at construction (deterministic, before
+    /// any dispatch). See issue #723.
+    pub fn dispatch_map<K, F, Out, Bf>(
+        self,
+        key_fn: F,
+        registry: &Registry,
+        build: Bf,
+    ) -> CtxPipelineChain<C, In, Out, CtxDispatchMapNode<C, Chain, V, K, F, Out>>
+    where
+        K: core::hash::Hash + Eq + 'static,
+        F: Fn(&V) -> K + Send + 'static,
+        Out: 'static,
+        Bf: FnOnce(
+            CtxDispatchMapBuilder<'_, C, V, K, Out>,
+        ) -> CtxDispatchMapBuilder<'_, C, V, K, Out>,
+    {
+        let b = build(CtxDispatchMapBuilder::<C, V, K, Out>::new(registry));
+        let Some(default) = b.default else {
+            panic!(
+                "dispatch_map requires a `.default` (or `.default_noop()`) — \
+                 the key space is open"
+            )
+        };
+        CtxPipelineChain {
+            chain: CtxDispatchMapNode {
+                prev: self.chain,
+                key_fn,
+                table: b.table,
+                default,
+            },
+            _marker: PhantomData,
+        }
+    }
+}
+
+impl<C: 'static, In: 'static> CtxPipelineBuilder<C, In> {
+    /// Terminal keyed dispatch on an arbitrary `Hash + Eq` key as the pipeline's
+    /// first step. Mirrors the entry-point form of [`then`](CtxPipelineBuilder::then);
+    /// see [`CtxPipelineChain::dispatch_map`] for the continuation form. Issue
+    /// #723.
+    pub fn dispatch_map<K, F, Out, Bf>(
+        self,
+        key_fn: F,
+        registry: &Registry,
+        build: Bf,
+    ) -> CtxPipelineChain<C, In, Out, CtxDispatchMapNode<C, CtxIdentityNode, In, K, F, Out>>
+    where
+        K: core::hash::Hash + Eq + 'static,
+        F: Fn(&In) -> K + Send + 'static,
+        Out: 'static,
+        Bf: FnOnce(
+            CtxDispatchMapBuilder<'_, C, In, K, Out>,
+        ) -> CtxDispatchMapBuilder<'_, C, In, K, Out>,
+    {
+        let b = build(CtxDispatchMapBuilder::<C, In, K, Out>::new(registry));
+        let Some(default) = b.default else {
+            panic!(
+                "dispatch_map requires a `.default` (or `.default_noop()`) — \
+                 the key space is open"
+            )
+        };
+        CtxPipelineChain {
+            chain: CtxDispatchMapNode {
+                prev: CtxIdentityNode,
+                key_fn,
+                table: b.table,
+                default,
+            },
+            _marker: PhantomData,
         }
     }
 }

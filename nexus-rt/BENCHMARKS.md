@@ -39,6 +39,38 @@ guard does `match Some(val) => Some(f(val)), None => None`. With
 Assembly inspection confirms the codegen is optimal — no unnecessary
 wrapping/unwrapping.
 
+## Runtime Keyed Dispatch
+
+Flat-array dispatch tables (`#[derive(Dispatchable)]` + `.dispatch_variant` /
+`.dispatch_on` / `.dispatch_map`), benchmarked against the compile-time
+`select!` jump table and a hand-rolled `FxHashMap`. Cycles per dispatch, 8 keys,
+all arms doing identical work so only the dispatch mechanism differs. See
+`examples/perf_dispatch.rs`.
+
+| Dispatch | p50 | p90 | p99 | p999 | p9999 |
+|---|---|---|---|---|---|
+| `select!` (compile-time, inlined) | 4 | 5 | 7 | ~10 | ~70 |
+| `.dispatch_variant` (ordinal array, typed) | 5 | 6 | ~8 | ~15 | ~85 |
+| `.dispatch_on` (ordinal array, whole value) | 7 | 10 | ~13 | ~18 | ~85 |
+| `.dispatch_on` (tuple-product key) | 8 | 9 | ~13 | ~21 | ~75 |
+| raw `FxHashMap` (hand-rolled) | 7 | 8 | ~14 | ~22 | ~85 |
+| `.dispatch_map` (FxHashMap combinator) | 9 | 9 | ~17 | ~28 | ~90 |
+
+**Caveat:** unlike the other tables here, these were taken with **turbo boost
+ON** (could not be disabled on the measurement box), timed with `rdtsc` (raw TSC
+ticks) and reported as percentiles of per-batch means. **p50/p90 are the
+reliable per-op signal; p99+ is system noise** (scheduler tick, IRQ,
+throttling), not the mechanism — beyond p99 every method including `select!`
+converges to the same ~70-100-cycle band. Re-run `examples/perf_dispatch.rs`
+under `taskset -c 0` with turbo disabled for publication-grade numbers.
+
+Takeaways: `.dispatch_variant` costs ~+1 cycle over inlined `select!` — a
+runtime-composable typed table for basically nothing; the ordinal tables match
+or beat a hashmap at small N (no hashing, no rehash cliff as N grows);
+`.dispatch_map` is the slowest (hash + wrapping), so prefer `.dispatch_on` when
+the key is a `Dispatchable` enum. Full discussion in
+[docs/dispatch.md](docs/dispatch.md#performance).
+
 ## System Dispatch
 
 Boolean-returning reconciliation systems for scheduler DAG propagation.
@@ -105,6 +137,7 @@ taskset -c 0 cargo bench -p nexus-rt --bench dispatch --all-features
 
 # rdtsc cycle-level (manual, finer granularity)
 taskset -c 0 cargo run --release -p nexus-rt --example perf_pipeline
+taskset -c 0 cargo run --release -p nexus-rt --example perf_dispatch
 taskset -c 0 cargo run --release -p nexus-rt --example perf_fetch
 taskset -c 0 cargo run --release -p nexus-rt --features reactors --example perf_reactors
 taskset -c 0 cargo run --release -p nexus-notify --example perf_local_notify

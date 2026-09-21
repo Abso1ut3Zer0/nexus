@@ -167,3 +167,42 @@ struct PriceCache(Vec<f64>);
 
 This is equivalent to what `new_resource!` generates, but gives you
 control over additional derives and visibility.
+
+## `#[derive(Dispatchable)]`
+
+Turns an enum into a dense ordinal space (`0..VARIANTS`) for runtime keyed
+dispatch — the substrate the `.dispatch_variant` / `.dispatch_on` combinators
+build a flat-array dispatch table on. It is also a useful `enum-map`-style
+primitive on its own.
+
+```rust
+use nexus_rt::{Dispatchable, VariantOf};
+
+#[derive(Dispatchable)]
+enum Cmd {
+    RouteAway(u32), // ordinal 0
+    Reprice(u32, i64), // ordinal 1
+    Halt, // ordinal 2
+}
+
+assert_eq!(Cmd::VARIANTS, 3);
+assert_eq!(Cmd::RouteAway(7).ordinal(), 0);
+```
+
+The derive emits:
+
+- `impl Dispatchable` — `const VARIANTS` and `ordinal(&self) -> usize`, a dense
+  index in declaration order. Dense on purpose: it normalizes sparse/explicit
+  discriminants and is defined for data-carrying variants (where `as usize` is
+  not).
+- A module `<enum_snake_case>_variants` (here `cmd_variants`) of zero-sized
+  per-variant marker types, each implementing `VariantOf<Cmd>` — exposing the
+  variant's `Payload` type, its `ORDINAL`, and an unchecked `unwrap`. These are
+  what you pass to `.dispatch_variant`'s `.arm(...)`.
+
+A pair of `Dispatchable` enums is itself `Dispatchable` (`(A, B)`, a row-major
+tuple-product key — no hashing). Only unit and tuple variants are supported;
+named-field struct variants are rejected.
+
+See [dispatch.md](dispatch.md) for the full cookbook — the combinators, the
+payload-vs-whole-value distinction, and the soundness argument for the unwrap.
