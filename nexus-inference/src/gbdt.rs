@@ -1,3 +1,5 @@
+use crate::error::LoadError;
+
 /// Marks a leaf in [`RawNode`] (intermediate format during loading).
 pub(crate) const LEAF_SENTINEL: u16 = u16::MAX;
 
@@ -55,19 +57,26 @@ const _: () = assert!(core::mem::size_of::<Node>() == 8);
 /// DFS right-first traversal: the right (false) child is always placed at
 /// `idx + 1`, so `walk_tree` uses `idx + 1` instead of loading a stored
 /// index. Only the left child index is stored.
-fn reorder_and_compact(raw: &[RawNode]) -> Vec<Node> {
+fn reorder_and_compact(raw: &[RawNode]) -> Result<Vec<Node>, LoadError> {
     let n = raw.len();
     if n == 0 {
-        return Vec::new();
+        return Ok(Vec::new());
     }
     debug_assert!(n <= u16::MAX as usize + 1);
 
     let mut nodes = Vec::with_capacity(n);
     let mut old_to_new = vec![0u16; n];
+    let mut visited = vec![false; n];
     let mut stack = Vec::with_capacity(32);
     stack.push(0usize);
 
     while let Some(old_idx) = stack.pop() {
+        if visited[old_idx] {
+            return Err(LoadError::Validation(
+                "cycle or shared child in tree structure",
+            ));
+        }
+        visited[old_idx] = true;
         old_to_new[old_idx] = nodes.len() as u16;
         let r = &raw[old_idx];
 
@@ -93,13 +102,17 @@ fn reorder_and_compact(raw: &[RawNode]) -> Vec<Node> {
         }
     }
 
+    if visited.iter().filter(|&&v| v).count() < n {
+        return Err(LoadError::Validation("unreachable node in tree structure"));
+    }
+
     for node in &mut nodes {
         if node.feature_idx & LEAF_BIT == 0 {
             node.left = old_to_new[node.left as usize];
         }
     }
 
-    nodes
+    Ok(nodes)
 }
 
 /// Gradient-boosted decision tree ensemble.
@@ -289,7 +302,11 @@ impl Gbdt {
     }
 
     #[allow(dead_code)]
-    pub(crate) fn from_parts(trees: Vec<Vec<RawNode>>, n_features: usize, base_score: f32) -> Self {
+    pub(crate) fn from_parts(
+        trees: Vec<Vec<RawNode>>,
+        n_features: usize,
+        base_score: f32,
+    ) -> Result<Self, LoadError> {
         let total: usize = trees.iter().map(Vec::len).sum();
         let mut nodes = Vec::with_capacity(total);
         let mut tree_offsets = Vec::with_capacity(trees.len());
@@ -305,14 +322,14 @@ impl Gbdt {
         }
         for tree in trees {
             tree_offsets.push(nodes.len() as u32);
-            nodes.extend_from_slice(&reorder_and_compact(&tree));
+            nodes.extend_from_slice(&reorder_and_compact(&tree)?);
         }
-        Self {
+        Ok(Self {
             nodes: nodes.into_boxed_slice(),
             tree_offsets: tree_offsets.into_boxed_slice(),
             n_features,
             base_score,
-        }
+        })
     }
 }
 
@@ -344,7 +361,7 @@ mod tests {
 
     fn single_stump(base_score: f32) -> Gbdt {
         let nodes = vec![split(0, 1, 2, 0.5), leaf(-1.0), leaf(1.0)];
-        Gbdt::from_parts(vec![nodes], 1, base_score)
+        Gbdt::from_parts(vec![nodes], 1, base_score).unwrap()
     }
 
     #[test]
@@ -375,7 +392,8 @@ mod tests {
     #[test]
     fn multi_tree_sums() {
         let stump = vec![split(0, 1, 2, 0.5), leaf(-1.0), leaf(1.0)];
-        let model = Gbdt::from_parts(vec![stump.clone(), stump.clone(), stump], 1, 0.0_f32);
+        let model =
+            Gbdt::from_parts(vec![stump.clone(), stump.clone(), stump], 1, 0.0_f32).unwrap();
         assert_eq!(model.predict(&[0.3_f32]), -3.0_f32);
         assert_eq!(model.predict(&[0.8_f32]), 3.0_f32);
     }
@@ -383,14 +401,16 @@ mod tests {
     #[test]
     fn predict_n_partial() {
         let stump = vec![split(0, 1, 2, 0.5), leaf(-1.0), leaf(1.0)];
-        let model = Gbdt::from_parts(vec![stump.clone(), stump.clone(), stump], 1, 5.0_f32);
+        let model =
+            Gbdt::from_parts(vec![stump.clone(), stump.clone(), stump], 1, 5.0_f32).unwrap();
         assert_eq!(model.predict_n(&[0.3_f32], 2), 5.0_f32 + -2.0_f32);
     }
 
     #[test]
     fn predict_n_exceeds_count() {
         let stump = vec![split(0, 1, 2, 0.5), leaf(-1.0), leaf(1.0)];
-        let model = Gbdt::from_parts(vec![stump.clone(), stump.clone(), stump], 1, 0.0_f32);
+        let model =
+            Gbdt::from_parts(vec![stump.clone(), stump.clone(), stump], 1, 0.0_f32).unwrap();
         assert_eq!(model.predict_n(&[0.3_f32], 100), model.predict(&[0.3_f32]));
     }
 
@@ -405,7 +425,7 @@ mod tests {
             leaf(2.0),
             leaf(4.0),
         ];
-        let model = Gbdt::from_parts(vec![nodes], 2, 0.0_f32);
+        let model = Gbdt::from_parts(vec![nodes], 2, 0.0_f32).unwrap();
         assert_eq!(model.predict(&[3.0_f32, 1.0]), -4.0_f32);
         assert_eq!(model.predict(&[3.0_f32, 3.0]), -2.0_f32);
         assert_eq!(model.predict(&[7.0_f32, 5.0]), 2.0_f32);
@@ -425,14 +445,14 @@ mod tests {
             leaf(-1.0),
             leaf(1.0),
         ];
-        let model = Gbdt::from_parts(vec![nodes], 1, 0.0_f32);
+        let model = Gbdt::from_parts(vec![nodes], 1, 0.0_f32).unwrap();
         assert_eq!(model.predict_nan_aware(&[f32::NAN]), -1.0_f32);
     }
 
     #[test]
     fn nan_routing_default_right() {
         let nodes = vec![split(0, 1, 2, 0.5), leaf(-1.0), leaf(1.0)];
-        let model = Gbdt::from_parts(vec![nodes], 1, 0.0_f32);
+        let model = Gbdt::from_parts(vec![nodes], 1, 0.0_f32).unwrap();
         assert_eq!(model.predict_nan_aware(&[f32::NAN]), 1.0_f32);
     }
 
@@ -449,7 +469,7 @@ mod tests {
             leaf(-1.0),
             leaf(1.0),
         ];
-        let model = Gbdt::from_parts(vec![nodes], 1, 0.0_f32);
+        let model = Gbdt::from_parts(vec![nodes], 1, 0.0_f32).unwrap();
         assert_eq!(model.predict(&[f32::NAN]), 1.0_f32);
     }
 
