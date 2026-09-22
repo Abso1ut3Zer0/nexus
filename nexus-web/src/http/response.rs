@@ -131,6 +131,10 @@ impl ResponseReader {
     }
 
     /// Set maximum head size. Default: 8KB.
+    ///
+    /// Once the head terminator is seen, the head must fit in `n` bytes.
+    /// Until then, every buffered byte counts against `n`, bounding a peer
+    /// that never sends one.
     #[must_use]
     pub fn max_head_size(mut self, n: usize) -> Self {
         self.max_head_size = n;
@@ -328,11 +332,6 @@ impl ResponseReader {
         if data.is_empty() {
             return Ok(());
         }
-        if data.len() > self.max_head_size {
-            return Err(HttpError::HeadTooLarge {
-                max: self.max_head_size,
-            });
-        }
 
         let mut stack_headers = [httparse::EMPTY_HEADER; 64];
         let mut heap_headers;
@@ -346,6 +345,11 @@ impl ResponseReader {
 
         match resp.parse(data) {
             Ok(httparse::Status::Complete(head_len)) => {
+                if head_len > self.max_head_size {
+                    return Err(HttpError::HeadTooLarge {
+                        max: self.max_head_size,
+                    });
+                }
                 let status = resp
                     .code
                     .ok_or(HttpError::Malformed("missing status code"))?;
@@ -399,7 +403,14 @@ impl ResponseReader {
                 self.head_len = Some(head_len);
                 Ok(())
             }
-            Ok(httparse::Status::Partial) => Ok(()),
+            Ok(httparse::Status::Partial) => {
+                if data.len() > self.max_head_size {
+                    return Err(HttpError::HeadTooLarge {
+                        max: self.max_head_size,
+                    });
+                }
+                Ok(())
+            }
             Err(httparse::Error::TooManyHeaders) => Err(HttpError::TooManyHeaders),
             Err(_) => Err(HttpError::Malformed("httparse rejected response")),
         }
@@ -626,5 +637,85 @@ mod tests {
         r.read(b"HTTP/1.1 404 Not Found\r\n\r\n").unwrap();
         let resp = r.next().unwrap().unwrap();
         assert_eq!(resp.status, 404);
+    }
+
+    // 38-byte head, max_head_size=80.  head(38) fits; head+body(138) previously did not.
+    const RESP_HEAD: &[u8] = b"HTTP/1.1 200 OK\r\nContent-Length: 5\r\n\r\n";
+
+    #[test]
+    fn split_read_one_chunk() {
+        let body = vec![b'x'; 100];
+        let mut buf = RESP_HEAD.to_vec();
+        buf.extend_from_slice(&body);
+        let mut r = ResponseReader::new(4096).max_head_size(80);
+        r.read(&buf).unwrap();
+        let resp = r.next().unwrap().unwrap();
+        assert_eq!(resp.status, 200);
+        assert_eq!(r.remainder(), body.as_slice());
+    }
+
+    #[test]
+    fn split_read_two_chunks() {
+        let body = vec![b'x'; 100];
+        let mut r = ResponseReader::new(4096).max_head_size(80);
+        r.read(RESP_HEAD).unwrap();
+        r.read(&body).unwrap();
+        let resp = r.next().unwrap().unwrap();
+        assert_eq!(resp.status, 200);
+        assert_eq!(r.remainder(), body.as_slice());
+    }
+
+    #[test]
+    fn split_read_byte_by_byte() {
+        let body = vec![b'x'; 100];
+        let mut r = ResponseReader::new(4096).max_head_size(80);
+        for &b in RESP_HEAD.iter().chain(body.iter()) {
+            r.read(&[b]).unwrap();
+        }
+        let resp = r.next().unwrap().unwrap();
+        assert_eq!(resp.status, 200);
+        assert_eq!(r.remainder(), body.as_slice());
+    }
+
+    #[test]
+    fn complete_head_over_limit() {
+        let mut r = ResponseReader::new(4096).max_head_size(40);
+        r.read(b"HTTP/1.1 200 OK\r\nServer: a-very-long-server-name.example.com\r\n\r\n")
+            .unwrap();
+        assert!(matches!(r.next(), Err(HttpError::HeadTooLarge { .. })));
+    }
+
+    #[test]
+    fn partial_head_over_limit() {
+        const MAX: usize = 40;
+        let mut partial = b"HTTP/1.1 200 OK\r\nServer: ".to_vec();
+        let fill = MAX + 1 - partial.len();
+        partial.extend_from_slice(&vec![b'a'; fill]);
+        assert_eq!(partial.len(), MAX + 1);
+        let mut r = ResponseReader::new(4096).max_head_size(MAX);
+        r.read(&partial).unwrap();
+        assert!(matches!(r.next(), Err(HttpError::HeadTooLarge { .. })));
+    }
+
+    #[test]
+    fn exact_head_size_boundary() {
+        // "HTTP/1.1 200 OK\r\nA: " = 20 bytes, "\r\n\r\n" = 4 bytes -> pad = MAX - 24
+        const MAX: usize = 50;
+        let pad = MAX - 24;
+        let mut exact = b"HTTP/1.1 200 OK\r\nA: ".to_vec();
+        exact.extend_from_slice(&vec![b'a'; pad]);
+        exact.extend_from_slice(b"\r\n\r\n");
+        assert_eq!(exact.len(), MAX);
+        let mut r = ResponseReader::new(4096).max_head_size(MAX);
+        r.read(&exact).unwrap();
+        assert!(r.next().unwrap().is_some());
+
+        let mut over = b"HTTP/1.1 200 OK\r\nA: ".to_vec();
+        over.extend_from_slice(&vec![b'a'; pad + 1]);
+        over.extend_from_slice(b"\r\n\r\n");
+        assert_eq!(over.len(), MAX + 1);
+        let mut r2 = ResponseReader::new(4096).max_head_size(MAX);
+        r2.read(&over).unwrap();
+        assert!(matches!(r2.next(), Err(HttpError::HeadTooLarge { .. })));
     }
 }
