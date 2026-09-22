@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Fixed
+
+- A LightGBM model whose tree contains a cycle or a shared child made loading
+  hang instead of returning an error
+  ([#707](https://github.com/Abso1ut3Zer0/nexus/issues/707)).
+
 ## [0.9.0] — 2026-05-26
 
 ### Added

@@ -348,7 +348,7 @@ impl Gbdt {
     /// features (categorical splits, multi-class).
     pub fn from_lightgbm(bytes: &[u8]) -> Result<Self, LoadError> {
         let (trees, n_features, base_score) = parse_model(bytes)?;
-        Ok(Self::from_parts(trees, n_features, base_score as f32))
+        Self::from_parts(trees, n_features, base_score as f32)
     }
 }
 
@@ -625,5 +625,150 @@ end of trees
 ";
         let err = Gbdt::from_lightgbm(model_text.as_bytes()).unwrap_err();
         assert_eq!(err, LoadError::Validation("linear trees not supported"));
+    }
+
+    fn assert_err_fast(bytes: Vec<u8>, expected: &LoadError) {
+        use std::sync::mpsc;
+        use std::time::Duration;
+        let (tx, rx) = mpsc::channel();
+        std::thread::spawn(move || {
+            tx.send(Gbdt::from_lightgbm(&bytes)).ok();
+        });
+        match rx.recv_timeout(Duration::from_millis(200)) {
+            Ok(result) => assert_eq!(&result.unwrap_err(), expected),
+            Err(e) => panic!("validation did not complete within 200ms: {e}"),
+        }
+    }
+
+    #[test]
+    fn rejects_self_loop() {
+        // node 0 left_child=0 -> remap(0, 1, 2) = internal node 0 (self-reference)
+        let model_text = "\
+tree
+version=v4
+num_class=1
+max_feature_idx=0
+average_output=0.0
+
+Tree=0
+num_leaves=2
+num_cat=0
+split_feature=0
+threshold=5.0
+decision_type=0
+left_child=0
+right_child=-2
+leaf_value=-1.0 1.0
+
+end of trees
+";
+        assert_err_fast(
+            model_text.as_bytes().to_vec(),
+            &LoadError::Validation("cycle or shared child in tree structure"),
+        );
+    }
+
+    #[test]
+    fn rejects_two_cycle() {
+        // node 0 -> node 1, node 1 -> node 0 (left_child=[1,0])
+        let model_text = "\
+tree
+version=v4
+num_class=1
+max_feature_idx=0
+average_output=0.0
+
+Tree=0
+num_leaves=3
+num_cat=0
+split_feature=0 0
+threshold=5.0 3.0
+decision_type=0 0
+left_child=1 0
+right_child=-1 -2
+leaf_value=-1.0 0.0 1.0
+
+end of trees
+";
+        assert_err_fast(
+            model_text.as_bytes().to_vec(),
+            &LoadError::Validation("cycle or shared child in tree structure"),
+        );
+    }
+
+    #[test]
+    fn rejects_shared_child_chain() {
+        // k=20 internal nodes; node i has left==right==i+1 for i<19, node 19 has leaves.
+        // Three-colour DFS accepts this (no back-edge). Visited-bitset catches the second
+        // visit to node 19 (pushed twice by node 18). Without the fix, reorder_and_compact
+        // visits node i 2^i times: k=10 180us, k=14 1.5ms, k=18 23.7ms (main, rustc 1.94.0).
+        const K: usize = 20;
+        let num_leaves = K + 1;
+        let sf = vec!["0"; K].join(" ");
+        let th = vec!["1.0"; K].join(" ");
+        let dt = vec!["0"; K].join(" ");
+        let lc: Vec<String> = (1..K)
+            .map(|i| i.to_string())
+            .chain(std::iter::once("-1".to_string()))
+            .collect();
+        let rc: Vec<String> = (1..K)
+            .map(|i| i.to_string())
+            .chain(std::iter::once("-2".to_string()))
+            .collect();
+        let lv: Vec<String> = (0..num_leaves).map(|i| format!("{i}.0")).collect();
+        let model_text = format!(
+            "tree\nversion=v4\nnum_class=1\nmax_feature_idx=0\naverage_output=0.0\n\n\
+             Tree=0\nnum_leaves={num_leaves}\nnum_cat=0\n\
+             split_feature={sf}\nthreshold={th}\ndecision_type={dt}\n\
+             left_child={}\nright_child={}\nleaf_value={}\n\nend of trees\n",
+            lc.join(" "),
+            rc.join(" "),
+            lv.join(" "),
+        );
+        assert_err_fast(
+            model_text.into_bytes(),
+            &LoadError::Validation("cycle or shared child in tree structure"),
+        );
+    }
+
+    #[test]
+    fn rejects_unreachable_node() {
+        // 4 leaves, 3 internal nodes. node 2 is never pointed to by node 0 or node 1.
+        // node 0: left=node1, right=leaf3 (-4)
+        // node 1: left=leaf0 (-1), right=leaf1 (-2)
+        // node 2: left=leaf2 (-3), right=leaf3 (-4)  <- orphan
+        let model_text = "\
+tree
+version=v4
+num_class=1
+max_feature_idx=0
+average_output=0.0
+
+Tree=0
+num_leaves=4
+num_cat=0
+split_feature=0 0 0
+threshold=5.0 3.0 7.0
+decision_type=0 0 0
+left_child=1 -1 -3
+right_child=-4 -2 -4
+leaf_value=-1.0 0.0 1.0 2.0
+
+end of trees
+";
+        let err = Gbdt::from_lightgbm(model_text.as_bytes()).unwrap_err();
+        assert_eq!(
+            err,
+            LoadError::Validation("unreachable node in tree structure")
+        );
+    }
+
+    #[test]
+    fn valid_tree_survives_validation() {
+        let model = Gbdt::from_lightgbm(ROUND_TRIP_MODEL.as_bytes()).unwrap();
+        let p1 = model.predict(&[1.0_f32, 2.0, 4.0]);
+        assert!((p1 - 2.78_f32).abs() < 1e-4, "expected 2.78, got {p1}");
+        let p2 = model.predict(&[5.0_f32, 7.0, 2.0]);
+        assert!((p2 - 6.48_f32).abs() < 1e-4, "expected 6.48, got {p2}");
     }
 }
