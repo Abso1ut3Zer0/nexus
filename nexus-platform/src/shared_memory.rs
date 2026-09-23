@@ -175,7 +175,7 @@ impl SharedMemoryOptions {
 /// use nexus_platform::SharedMemory;
 /// use std::num::NonZeroUsize;
 ///
-/// let shm = SharedMemory::create("/nexus-seg", NonZeroUsize::new(4096).unwrap())?;
+/// let mut shm = SharedMemory::create("/nexus-seg", NonZeroUsize::new(4096).unwrap())?;
 /// shm.write_at(b"hello", 0)?;
 ///
 /// let peer = SharedMemory::open("/nexus-seg")?;
@@ -269,6 +269,12 @@ impl std::ops::Deref for SharedMemory {
     }
 }
 
+impl std::ops::DerefMut for SharedMemory {
+    fn deref_mut(&mut self) -> &mut Mapping {
+        &mut self.mapping
+    }
+}
+
 impl Drop for SharedMemory {
     fn drop(&mut self) {
         if self.unlink_on_drop {
@@ -321,7 +327,7 @@ mod tests {
         let name = shm_name("rw");
         let _ = SharedMemory::unlink(&name);
 
-        let shm = SharedMemory::create(&name, NonZeroUsize::new(4096).unwrap()).unwrap();
+        let mut shm = SharedMemory::create(&name, NonZeroUsize::new(4096).unwrap()).unwrap();
         assert_eq!(shm.len(), 4096);
         assert!(shm.is_writable());
 
@@ -339,7 +345,7 @@ mod tests {
         let name = shm_name("open");
         let _ = SharedMemory::unlink(&name);
 
-        let shm = SharedMemory::create(&name, NonZeroUsize::new(256).unwrap()).unwrap();
+        let mut shm = SharedMemory::create(&name, NonZeroUsize::new(256).unwrap()).unwrap();
         shm.write_at(b"hello", 10).unwrap();
         drop(shm);
 
@@ -357,7 +363,7 @@ mod tests {
         let name = shm_name("readonly");
         let _ = SharedMemory::unlink(&name);
 
-        let shm = SharedMemory::create(&name, NonZeroUsize::new(128).unwrap()).unwrap();
+        let mut shm = SharedMemory::create(&name, NonZeroUsize::new(128).unwrap()).unwrap();
         shm.write_at(b"data", 0).unwrap();
         drop(shm);
 
@@ -374,7 +380,7 @@ mod tests {
         let name = shm_name("shared");
         let _ = SharedMemory::unlink(&name);
 
-        let shm1 = SharedMemory::create(&name, NonZeroUsize::new(4096).unwrap()).unwrap();
+        let mut shm1 = SharedMemory::create(&name, NonZeroUsize::new(4096).unwrap()).unwrap();
         let shm2 = SharedMemory::open(&name).unwrap();
 
         shm1.write_at(b"visible", 0).unwrap();
@@ -459,7 +465,7 @@ mod tests {
         let shm = SharedMemory::create(&name, NonZeroUsize::new(128).unwrap()).unwrap();
         drop(shm);
 
-        let shm2 = SharedMemory::open_readonly(&name).unwrap();
+        let mut shm2 = SharedMemory::open_readonly(&name).unwrap();
         let err = shm2.write_at(b"nope", 0).unwrap_err();
         assert_eq!(err.kind(), std::io::ErrorKind::PermissionDenied);
 
@@ -488,7 +494,7 @@ mod tests {
         let name = shm_name("no-truncate");
         let _ = SharedMemory::unlink(&name);
 
-        let shm = SharedMemory::create(&name, NonZeroUsize::new(256).unwrap()).unwrap();
+        let mut shm = SharedMemory::create(&name, NonZeroUsize::new(256).unwrap()).unwrap();
         shm.write_at(b"preserve", 200).unwrap();
         drop(shm);
 

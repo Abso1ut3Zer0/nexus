@@ -68,7 +68,7 @@ impl Segment {
         if data_len == 0 {
             return Err(ShmError::EmptySegment);
         }
-        let mapping = mapping.into();
+        let mut mapping = mapping.into();
         let required = HEADER.get() + data_len;
         if mapping.len() < required {
             return Err(ShmError::MappingTooSmall {
@@ -84,7 +84,7 @@ impl Segment {
         // SAFETY: we hold the OFD owner lock acquired above, so no other process
         // is writing the control block; mmap returns page-aligned memory (hence
         // ControlBlock-aligned) covering at least the header.
-        let cb = unsafe { &mut *mapping.as_ptr().cast::<ControlBlock>() };
+        let cb = unsafe { &mut *mapping.as_mut_ptr().cast::<ControlBlock>() };
         let generation = cb.generation().wrapping_add(1);
         cb.write_header(
             flags(hints),
@@ -138,8 +138,11 @@ impl Segment {
     }
 
     pub fn data(&self) -> *mut u8 {
-        // SAFETY: the mapping is HEADER + data_len bytes, so HEADER is in bounds.
-        unsafe { self.mapping.as_ptr().add(HEADER.get()) }
+        // SAFETY: the mapping is at least HEADER + data_len bytes (guaranteed at
+        // construction), so adding HEADER bytes to the base pointer stays in bounds.
+        // Callers go through nexus-shm's unsafe write methods (write_at,
+        // write_frame_kind_at, etc.), which carry the exclusivity contract.
+        unsafe { self.mapping.as_ptr().cast_mut().add(HEADER.get()) }
     }
 
     /// `AtomicU32` at `offset` within the payload (commit-length field).

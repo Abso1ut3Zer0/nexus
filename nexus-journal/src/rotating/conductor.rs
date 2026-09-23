@@ -294,10 +294,10 @@ fn conductor_main(rx: &mpsc::Consumer<CleanRequest>, closing: &AtomicBool, alive
             let Some(mf) = file_create(&p.seg_path, total, p.hints).ok() else {
                 return true;
             };
-            let mapping: Mapping = mf.into();
-            // SAFETY: conductor sole owner; state is Pending (inner uninit).
+            let mut mapping: Mapping = mf.into();
+            prefault(&mut mapping);
+            // SAFETY: state is Pending (inner uninit); conductor solely owns the mapping.
             unsafe {
-                prefault(&mapping);
                 p.swap.publish_clean(mapping);
             }
             false
@@ -338,13 +338,11 @@ fn conductor_main(rx: &mpsc::Consumer<CleanRequest>, closing: &AtomicBool, alive
 /// re-protect them re-faults on first touch. Zeroing also clears stale frames
 /// from the previous epoch.
 ///
-/// # Safety
-/// `mapping` must be a live, writable mapping the conductor solely owns (swap is
-/// `Pending`, so no other thread touches it).
-unsafe fn prefault(mapping: &Mapping) {
-    // SAFETY: caller guarantees `mapping` covers `len()` writable bytes owned by
-    // this thread for the duration of the write.
-    unsafe { std::ptr::write_bytes(mapping.as_ptr(), 0, mapping.len()) };
+fn prefault(mapping: &mut Mapping) {
+    // SAFETY: write_bytes requires a valid, writable pointer covering the range.
+    // mapping.as_mut_ptr() satisfies both: the mapping is alive and &mut guarantees
+    // exclusive access, so no aliased reads or writes can race.
+    unsafe { std::ptr::write_bytes(mapping.as_mut_ptr(), 0, mapping.len()) };
 }
 
 fn process_request(req: CleanRequest, pending: &mut Vec<PendingCreate>) {
@@ -355,11 +353,10 @@ fn process_request(req: CleanRequest, pending: &mut Vec<PendingCreate>) {
     // it. No munmap, no open, no ftruncate, no mmap: zero syscalls, so the
     // fs-metadata stall that delays provisioning simply cannot occur.
     if req.archive_dir.is_none() {
-        if let Some(mapping) = req.mapping {
-            // SAFETY: swap is Pending (inner uninit) until publish_clean; the
-            // conductor solely owns the mapping here.
+        if let Some(mut mapping) = req.mapping {
+            prefault(&mut mapping);
+            // SAFETY: state is Pending (inner uninit); conductor solely owns the mapping.
             unsafe {
-                prefault(&mapping);
                 req.swap.publish_clean(mapping);
             }
         }
@@ -397,10 +394,10 @@ fn process_request(req: CleanRequest, pending: &mut Vec<PendingCreate>) {
         .ok()
         .map(Mapping::from)
     {
-        Some(mapping) => {
-            // SAFETY: state is Pending (inner uninit); conductor solely owns it.
+        Some(mut mapping) => {
+            prefault(&mut mapping);
+            // SAFETY: state is Pending (inner uninit); conductor solely owns the mapping.
             unsafe {
-                prefault(&mapping);
                 req.swap.publish_clean(mapping);
             }
         }

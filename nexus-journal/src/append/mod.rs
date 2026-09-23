@@ -91,7 +91,7 @@ impl<H: RecordHeader> AppendOnlyJournal<H> {
     }
 }
 
-fn recover_tail<H: RecordHeader>(base: *mut u8, segment_size: usize) -> usize {
+fn recover_tail<H: RecordHeader>(base: *const u8, segment_size: usize) -> usize {
     let hsize = size_of::<H>();
     let mut cur = 0;
     while cur + FRAME_HEADER <= segment_size {
