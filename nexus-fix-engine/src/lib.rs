@@ -124,6 +124,7 @@ mod frame;
 mod framework;
 #[cfg(unix)]
 pub mod persist;
+pub mod policy;
 mod session;
 #[cfg(unix)]
 mod timestamp;
