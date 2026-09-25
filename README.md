@@ -4,24 +4,21 @@ Low-latency primitives and runtime for building high-performance systems.
 
 ## Philosophy
 
-These crates are born from years of building trading infrastructure, where
-certain patterns become clear: most systems don't need unbounded queues,
-dynamic allocation, or multi-producer flexibility. They need **predictable,
-bounded, specialized primitives** that do one thing well and never surprise
-you at runtime.
+Most systems do not need unbounded queues, dynamic allocation, or
+multi-producer flexibility. They need bounded, specialized primitives that do
+one thing well and behave the same way every time. These crates are built for
+that, and the guiding principle is predictability over generality:
 
-The core philosophy is **predictability over generality**:
+- **SPSC over MPMC.** One producer and one consumer means no synchronization to pay for.
+- **Pre-allocation over dynamic growth.** Allocate at startup, never on the hot path.
+- **Bounded over unbounded.** Know your capacity, reject rather than allocate.
+- **Specialization over abstraction.** A conflation slot is not a queue of size 1. It is a different thing.
 
-- **SPSC over MPMC** — When you have one producer and one consumer, don't pay for synchronization you don't need
-- **Pre-allocation over dynamic growth** — Allocate at startup, never on the hot path
-- **Bounded over unbounded** — Know your capacity, reject rather than allocate
-- **Specialization over abstraction** — A conflation slot isn't a queue of size 1, it's a different thing entirely
+What matters here is consistent latency under real workloads: a tight tail, no
+syscalls where you do not expect them, no allocation jitter. Microbenchmark
+peaks are easy and not the point.
 
-The goal isn't "fastest in microbenchmarks." It's **consistent, low-latency
-behavior** under real workloads — minimizing tail latency, avoiding syscalls,
-eliminating allocation jitter.
-
-Each crate is small, focused, and honest about its constraints. No kitchen sinks.
+Each crate is small, focused, and states its constraints plainly.
 
 ## Architecture
 
@@ -52,7 +49,7 @@ Each crate is small, focused, and honest about its constraints. No kitchen sinks
 │               bits · ascii · id · decimal               │
 └─────────────────────────────────────────────────────────┘
 
-* async-rt is experimental — use tokio for production async workloads
+* async-rt is experimental, use tokio for production async workloads
 ```
 
 ## Crates
@@ -63,7 +60,7 @@ Each crate is small, focused, and honest about its constraints. No kitchen sinks
 |-------|-------------|
 | [**nexus-bits**](./nexus-bits) | Bit-packed integer newtypes via derive macros. Structs, tagged enums, `IntEnum` for discriminants. Zero-cost `#[repr(transparent)]` with compile-time validation. |
 | [**nexus-ascii**](./nexus-ascii) | Fixed-capacity ASCII strings. Stack-allocated, immutable, with precomputed 48-bit XXH3 hash. Identity-hashable via `nohash` feature for zero-cost lookups. |
-| [**nexus-id**](./nexus-id) | High-performance ID generators: Snowflake, UUID v4/v7, ULID. SIMD-accelerated hex encode/decode. Fibonacci mixing for identity hashers. |
+| [**nexus-id**](./nexus-id) | ID generators: Snowflake, UUID v4/v7, ULID. SIMD-accelerated hex encode/decode. Fibonacci mixing for identity hashers. |
 | [**nexus-decimal**](./nexus-decimal) | Fixed-point decimal arithmetic with compile-time precision. `Decimal<i64, 8>` for prices, `Decimal<i128, 12>` for DeFi. Const fn, `no_std`, zero allocation. Financial methods: midpoint, tick rounding, basis points. Chunked magic division avoids `__divti3`. |
 
 ### Storage & Allocation
@@ -79,7 +76,7 @@ Each crate is small, focused, and honest about its constraints. No kitchen sinks
 
 | Crate | Description |
 |-------|-------------|
-| [**nexus-collections**](./nexus-collections) | Slab-backed intrusive collections. O(1) linked lists, O(log n) heaps, red-black trees, B-trees. External allocation via `nexus-slab` — user owns the slab, collection wires pointers. 2-3 cycle list operations, 15 cycle tree lookups ([benchmarks](./nexus-collections/BENCHMARKS.md)). |
+| [**nexus-collections**](./nexus-collections) | Slab-backed intrusive collections. O(1) linked lists, O(log n) heaps, red-black trees, B-trees. External allocation via `nexus-slab`: the user owns the slab, the collection wires pointers. 2-3 cycle list operations, 15 cycle tree lookups ([benchmarks](./nexus-collections/BENCHMARKS.md)). |
 
 ### Flow Control
 
@@ -92,9 +89,9 @@ Each crate is small, focused, and honest about its constraints. No kitchen sinks
 | Crate | Description |
 |-------|-------------|
 | [**nexus-queue**](./nexus-queue) | Lock-free SPSC, MPSC, and SPMC ring buffers with per-slot lap counters. Index-based (NUMA-friendly) and slot-based (shared-L3 friendly) implementations. |
-| [**nexus-channel**](./nexus-channel) | Blocking SPSC channel built on nexus-queue. Three-phase backoff (spin → yield → park) minimizes syscalls under load. |
+| [**nexus-channel**](./nexus-channel) | Blocking SPSC channel built on nexus-queue. Three-phase backoff (spin -> yield -> park) minimizes syscalls under load. |
 | [**nexus-slot**](./nexus-slot) | Single-value conflation slot. Writer always overwrites, reader gets latest value exactly once. For "latest wins" patterns like market data snapshots. |
-| [**nexus-notify**](./nexus-notify) | Cross-thread event queue with conflation and FIFO delivery. Non-blocking `event_queue` and blocking `event_channel`. Dedup flags + MPSC ring buffer — O(limit) poll, ~5 cycles/token ([benchmarks](./nexus-notify/BENCHMARKS.md)). |
+| [**nexus-notify**](./nexus-notify) | Cross-thread event queue with conflation and FIFO delivery. Non-blocking `event_queue` and blocking `event_channel`. Dedup flags plus an MPSC ring buffer. O(limit) poll, ~5 cycles/token ([benchmarks](./nexus-notify/BENCHMARKS.md)). |
 | [**nexus-logbuf**](./nexus-logbuf) | Bounded SPSC and MPSC byte ring buffers. Claim-based API for variable-length messages. The hot-path primitive for getting data off the event loop without syscalls. |
 
 ### Networking
@@ -126,8 +123,8 @@ Each crate is small, focused, and honest about its constraints. No kitchen sinks
 
 | Crate | Description |
 |-------|-------------|
-| [**nexus-rt**](./nexus-rt) | Event-driven runtime. World/ECS resource model, handler dispatch, pipelines, DAGs, driver system, clock. No async/await — explicit poll loops with monomorphized zero-cost dispatch. |
-| [**nexus-async-rt**](./nexus-async-rt) | **Experimental.** Single-threaded async executor. Slab-allocated tasks, zero-allocation waker vtable, mio-backed IO driver, timer wheel, signal handling. Not under active development — use tokio for production async workloads. |
+| [**nexus-rt**](./nexus-rt) | Event-driven runtime. World/ECS resource model, handler dispatch, pipelines, DAGs, driver system, clock. No async/await: explicit poll loops with monomorphized zero-cost dispatch. |
+| [**nexus-async-rt**](./nexus-async-rt) | **Experimental.** Single-threaded async executor. Slab-allocated tasks, zero-allocation waker vtable, mio-backed IO driver, timer wheel, signal handling. Not under active development, use tokio for production async workloads. |
 | [**nexus-timer**](./nexus-timer) | Hierarchical timer wheel with O(1) insert and cancel. No-cascade design inspired by the Linux kernel. Slab-backed, zero allocation after init. |
 
 ### Streaming Statistics
@@ -138,7 +135,7 @@ re-exports everything; the subcrates allow fine-grained dependency control.
 
 | Crate | Description |
 |-------|-------------|
-| [**nexus-stats**](./nexus-stats) | Umbrella crate — re-exports all subcrates below under a unified namespace. |
+| [**nexus-stats**](./nexus-stats) | Umbrella crate. Re-exports all subcrates below under a unified namespace. |
 | [**nexus-stats-core**](./nexus-stats-core) | Foundation types and core algorithms. Welford moments, EMA/AsymEMA, covariance, drawdown, min/max, percentile (P²), normalization (ZScore, MinMax, Quantile), microstructure (Amihud, KyleLambda, RollSpread, Bipower, TwoScaleRv), monitoring (CoDel, Jitter, Liveness, EventRate, Hawkes intensity). |
 | [**nexus-stats-smoothing**](./nexus-stats-smoothing) | Advanced smoothing. KAMA, Holt double exponential, Spring (critically damped), Kalman1d, Hampel filter, HuberEMA, ConditionalEMA, WindowedMedian. |
 | [**nexus-stats-detection**](./nexus-stats-detection) | Change detection and signal analysis. CUSUM, MOSUM, BOCPD, Shiryaev-Roberts, ADWIN, Page-Hinkley, distribution shift/drift, adaptive threshold, trend alert, entropy, transfer entropy, predictive information bound, autocorrelation, cross-correlation. |
@@ -184,26 +181,27 @@ Performance numbers are measured on an Intel Core Ultra 7 165U (12C/14T,
 12MB L3) running Arch Linux with `rustc 1.94.0`. Comparative numbers
 (speedup ratios) are measured with turbo boost disabled and cores pinned
 via `taskset`; finalized cycle counts are with turbo boost enabled. Results
-vary by hardware — each crate's `BENCHMARKS.md` records the specific
+vary by hardware; each crate's `BENCHMARKS.md` records the specific
 machine, toolchain, comparison-crate versions, and reproduction steps.
 
 ## Platform Support
 
-- **Linux** — Primary target, fully supported
-- **macOS** — Supported
-- **Windows** — Experimental where noted, typically behind feature flags
+- **Linux.** Primary target, fully supported.
+- **macOS.** Supported.
+- **Windows.** Experimental where noted, typically behind feature flags.
 
 ## Contributing
 
 Please read [CONTRIBUTING.md](./CONTRIBUTING.md) before submitting changes.
 
-The short version: we build specialized primitives, not general-purpose ones.
+The short version: these are specialized primitives, not general-purpose ones.
 Different constraints mean different problems, and different problems deserve
-different solutions. If you're proposing a feature, be ready to justify why
-it belongs in a tuned, minimal implementation.
+different solutions. If you are proposing a feature, be ready to say why it
+belongs in a tuned, minimal implementation.
 
-We also have specific benchmarking standards — cycles not time, turbo boost
-disabled, cores pinned, jitter eliminated. Details in the contributing guide.
+The benchmarking standards are specific too: cycles rather than time, turbo
+boost disabled, cores pinned, jitter eliminated. Details in the contributing
+guide.
 
 ## License
 
