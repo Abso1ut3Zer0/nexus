@@ -5,8 +5,9 @@
 //!
 //! # `no_std` Support
 //!
-//! This crate is `no_std` compatible by default. Enable the `std` feature
-//! for `Error` trait implementations.
+//! This crate is `no_std` compatible. The `std` feature is on by
+//! default; disable default features for `no_std` builds. The `std`
+//! feature adds `Error` trait implementations.
 //!
 //! # Design Principles
 //!
