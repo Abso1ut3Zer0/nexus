@@ -10,6 +10,8 @@ contained.
 
 ## [Unreleased]
 
+## [2.1.4] — 2026-10-01
+
 ### Added
 
 - `try_acquire` now `debug_assert!`s that `cost` does not exceed the limiter's
