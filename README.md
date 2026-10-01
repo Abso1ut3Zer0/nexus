@@ -151,7 +151,7 @@ construction, SIMD-accelerated (SSE2/AVX2/AVX-512).
 
 | Crate | Description |
 |-------|-------------|
-| [**nexus-inference**](./nexus-inference) | 12 model types across stateless and stateful inference. **Stateless:** GBDT (branchless traversal, NaN-aware, LightGBM-compatible), MLP (SIMD-tiled matmul, LayerNorm, 8 activations), LUT (O(1) lookup table), BNN (binary neural network, XNOR+popcount), QuantizedMLP (i8 weights, i32 accumulation). **Stateful:** LSTM, GRU, stacked LSTM/GRU, linear state-space model (S4/S4D), causal 1D convolution, temporal convolutional network (TCN). Stateless models use interior mutability (`&self`) for zero-contention sharing; stateful models carry hidden state between calls. SafeTensors and LightGBM JSON loaders. |
+| [**nexus-inference**](./nexus-inference) | 12 model types across stateless and stateful inference. **Stateless:** GBDT (branchless traversal, NaN-aware, LightGBM-compatible), MLP (SIMD-tiled matmul, LayerNorm, 8 activations), LUT (O(1) lookup table), BNN (binary neural network, XNOR+popcount), QuantizedMLP (i8 weights, i32 accumulation). **Stateful:** LSTM, GRU, stacked LSTM/GRU, linear state-space model (S4/S4D), causal 1D convolution, temporal convolutional network (TCN). Stateless models predict through `&self` with reusable interior scratch for single-threaded, zero-allocation inference; stateful models carry hidden state between calls. SafeTensors and LightGBM JSON loaders. |
 
 ## Design Principles
 
