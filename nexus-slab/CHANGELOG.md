@@ -10,6 +10,8 @@ contained.
 
 ## [Unreleased]
 
+## [2.3.5] — 2026-10-01
+
 ### Deprecated
 
 - `Slot::pin` / `pin_mut`, `byte::Slot::pin` / `pin_mut` and `RcSlot::pin` /
