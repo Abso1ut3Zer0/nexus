@@ -83,6 +83,15 @@ impl<T> Slab<T> {
     pub fn capacity(&self) -> usize {
         self.inner.capacity()
     }
+
+    /// Returns `true` if `ptr` falls within this slab's slot array.
+    ///
+    /// O(1) range check. Used in `debug_assert!` to validate provenance.
+    #[doc(hidden)]
+    #[inline]
+    pub fn contains_ptr(&self, ptr: *const ()) -> bool {
+        self.inner.contains_ptr(ptr)
+    }
 }
 
 impl<T> core::fmt::Debug for Slab<T> {
@@ -332,5 +341,25 @@ mod tests {
             let _h = slab.alloc(42u64);
         }));
         assert!(result.is_err());
+    }
+
+    // Parity guard (#702 follow-up): `contains_ptr` matches `bounded::Slab`.
+    #[test]
+    fn contains_ptr_matches_plain_bounded() {
+        // SAFETY: test slabs; single-threaded, all handles/slots freed before drop.
+        let (rc, plain) = unsafe {
+            (
+                Slab::<u64>::with_capacity(4),
+                crate::bounded::Slab::<u64>::with_capacity(4),
+            )
+        };
+        let h = rc.alloc(1u64);
+        let s = plain.alloc(1u64);
+        assert!(rc.contains_ptr(h.as_ptr().cast::<()>().cast_const()));
+        assert!(plain.contains_ptr(s.as_ptr().cast::<()>().cast_const()));
+        let local = 0u64;
+        assert!(!rc.contains_ptr(core::ptr::from_ref(&local).cast::<()>()));
+        rc.free(h);
+        plain.free(s);
     }
 }

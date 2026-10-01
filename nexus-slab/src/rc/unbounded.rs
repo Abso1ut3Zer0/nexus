@@ -6,6 +6,22 @@ use super::{RcCell, RcSlot};
 ///
 /// Wraps [`crate::unbounded::Slab`] with `RcCell<T>` storage.
 /// Never fails — grows via chunks when full.
+///
+/// # Surface
+///
+/// Mirrors [`crate::unbounded::Slab`]: [`Builder`],
+/// [`capacity`](Self::capacity), [`chunk_capacity`](Self::chunk_capacity),
+/// [`chunk_count`](Self::chunk_count), [`reserve_chunks`](Self::reserve_chunks),
+/// [`alloc`](Self::alloc), [`free`](Self::free). Two deliberate differences:
+///
+/// - **No `take()`.** Taking the value out while other `RcSlot` handles are
+///   live (refcount > 0) would leave them pointing at a vacated slot. Rc
+///   slabs free by refcount only; the value is dropped when the last handle
+///   is freed.
+/// - **No `try_alloc()`.** Unbounded slabs grow and can never be `Full`.
+///
+/// `claim()` (allocate now, write later) is not offered yet: it needs a claim
+/// type that resolves to an `RcSlot<T>`, and is parked until a caller exists.
 pub struct Slab<T> {
     inner: crate::unbounded::Slab<RcCell<T>>,
 }
@@ -52,11 +68,136 @@ impl<T> Slab<T> {
             core::mem::forget(handle);
         }
     }
+
+    /// Returns the total capacity across all chunks.
+    #[inline]
+    pub fn capacity(&self) -> usize {
+        self.inner.capacity()
+    }
+
+    /// Returns the chunk capacity.
+    #[inline]
+    pub fn chunk_capacity(&self) -> usize {
+        self.inner.chunk_capacity()
+    }
+
+    /// Returns the number of allocated chunks.
+    #[inline]
+    pub fn chunk_count(&self) -> usize {
+        self.inner.chunk_count()
+    }
+
+    /// Ensures at least `count` chunks are allocated.
+    ///
+    /// No-op if the slab already has `count` or more chunks. Only allocates
+    /// the difference.
+    #[inline]
+    pub fn reserve_chunks(&self, count: usize) {
+        self.inner.reserve_chunks(count);
+    }
+
+    /// Returns `true` if `ptr` falls within this slab's slot storage.
+    ///
+    /// O(chunks) scan. Typically 1–5 chunks. Used in `debug_assert!`
+    /// to validate provenance.
+    #[doc(hidden)]
+    #[inline]
+    pub fn contains_ptr(&self, ptr: *const ()) -> bool {
+        self.inner.contains_ptr(ptr)
+    }
 }
 
 impl<T> core::fmt::Debug for Slab<T> {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        f.debug_struct("rc::unbounded::Slab").finish()
+        f.debug_struct("rc::unbounded::Slab")
+            .field("capacity", &self.capacity())
+            .finish()
+    }
+}
+
+// =============================================================================
+// Builder
+// =============================================================================
+
+/// Builder for [`Slab`].
+///
+/// Same surface as [`crate::unbounded::Builder`]; the type parameter only
+/// appears at the terminal [`build()`](Self::build) call.
+///
+/// # Example
+///
+/// ```
+/// use nexus_slab::rc::unbounded::Builder;
+///
+/// // SAFETY: caller guarantees slab contract (see Slab docs)
+/// let slab = unsafe {
+///     Builder::new()
+///         .chunk_capacity(64)
+///         .initial_chunks(2)
+///         .build::<u64>()
+/// };
+/// assert_eq!(slab.chunk_count(), 2);
+/// let h = slab.alloc(42);
+/// assert_eq!(*h.borrow(), 42);
+/// slab.free(h);
+/// ```
+#[derive(Debug, Clone)]
+pub struct Builder {
+    inner: crate::unbounded::Builder,
+}
+
+impl Builder {
+    /// Creates a new builder with the same defaults as
+    /// [`crate::unbounded::Builder::new`]: `chunk_capacity = 256`,
+    /// `initial_chunks = 0` (lazy growth).
+    #[inline]
+    pub fn new() -> Self {
+        Self {
+            inner: crate::unbounded::Builder::new(),
+        }
+    }
+
+    /// Sets the capacity of each chunk.
+    ///
+    /// # Panics
+    ///
+    /// Panics at [`build()`](Self::build) if zero.
+    #[inline]
+    pub fn chunk_capacity(mut self, cap: usize) -> Self {
+        self.inner = self.inner.chunk_capacity(cap);
+        self
+    }
+
+    /// Sets the number of chunks to pre-allocate.
+    ///
+    /// Default is 0 (lazy growth — chunks allocated on first use).
+    #[inline]
+    pub fn initial_chunks(mut self, n: usize) -> Self {
+        self.inner = self.inner.initial_chunks(n);
+        self
+    }
+
+    /// Builds the Rc slab.
+    ///
+    /// # Safety
+    ///
+    /// See [`crate::unbounded::Slab`] safety contract.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `chunk_capacity` is zero.
+    #[inline]
+    pub unsafe fn build<T>(self) -> Slab<T> {
+        Slab {
+            // SAFETY: caller upholds the slab contract.
+            inner: unsafe { self.inner.build::<RcCell<T>>() },
+        }
+    }
+}
+
+impl Default for Builder {
+    fn default() -> Self {
+        Self::new()
     }
 }
 
@@ -96,5 +237,86 @@ mod tests {
         for h in handles {
             slab.free(h);
         }
+    }
+
+    // Parity guard (#702): every introspection method on `unbounded::Slab`
+    // exists here with the same meaning. If a method is added to the plain
+    // slab, add it here and extend this test.
+    #[test]
+    fn builder_and_introspection_match_plain_unbounded() {
+        // SAFETY: test slabs; single-threaded, all handles/slots freed before drop.
+        let (rc, plain) = unsafe {
+            (
+                Builder::new()
+                    .chunk_capacity(8)
+                    .initial_chunks(2)
+                    .build::<u64>(),
+                crate::unbounded::Builder::new()
+                    .chunk_capacity(8)
+                    .initial_chunks(2)
+                    .build::<u64>(),
+            )
+        };
+        assert_eq!(rc.chunk_capacity(), plain.chunk_capacity());
+        assert_eq!(rc.chunk_count(), plain.chunk_count());
+        assert_eq!(rc.capacity(), plain.capacity());
+        assert_eq!(rc.capacity(), 16);
+
+        rc.reserve_chunks(4);
+        plain.reserve_chunks(4);
+        assert_eq!(rc.chunk_count(), 4);
+        assert_eq!(rc.chunk_count(), plain.chunk_count());
+        assert_eq!(rc.capacity(), plain.capacity());
+        rc.reserve_chunks(1); // no-op when already larger
+        assert_eq!(rc.chunk_count(), 4);
+
+        let h = rc.alloc(1u64);
+        let s = plain.alloc(1u64);
+        assert!(rc.contains_ptr(h.as_ptr().cast::<()>().cast_const()));
+        assert!(plain.contains_ptr(s.as_ptr().cast::<()>().cast_const()));
+        let local = 0u64;
+        assert!(!rc.contains_ptr(core::ptr::from_ref(&local).cast::<()>()));
+        rc.free(h);
+        plain.free(s);
+    }
+
+    #[test]
+    fn builder_defaults_match_plain() {
+        // SAFETY: test slabs; nothing allocated.
+        let (rc, plain) = unsafe {
+            (
+                Builder::default().build::<u8>(),
+                crate::unbounded::Builder::default().build::<u8>(),
+            )
+        };
+        assert_eq!(rc.chunk_capacity(), plain.chunk_capacity());
+        assert_eq!(rc.chunk_count(), plain.chunk_count());
+        assert_eq!(
+            rc.chunk_count(),
+            0,
+            "lazy growth: no chunks until first alloc"
+        );
+    }
+
+    #[test]
+    #[should_panic(expected = "chunk_capacity must be non-zero")]
+    fn builder_rejects_zero_chunk_capacity() {
+        // SAFETY: test slab; panics before any handle can be allocated.
+        let _slab = unsafe { Builder::new().chunk_capacity(0).build::<u64>() };
+    }
+
+    #[test]
+    fn capacity_tracks_growth() {
+        // SAFETY: test slab; single-threaded, all handles freed before drop.
+        let slab = unsafe { Slab::with_chunk_capacity(2) };
+        assert_eq!(slab.capacity(), 0);
+        let a = slab.alloc(1u64);
+        assert_eq!((slab.chunk_count(), slab.capacity()), (1, 2));
+        let b = slab.alloc(2u64);
+        let c = slab.alloc(3u64);
+        assert_eq!((slab.chunk_count(), slab.capacity()), (2, 4));
+        slab.free(a);
+        slab.free(b);
+        slab.free(c);
     }
 }

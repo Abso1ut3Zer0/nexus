@@ -10,6 +10,17 @@ contained.
 
 ## [Unreleased]
 
+### Added
+
+- `rc::unbounded::Slab` reaches parity with `unbounded::Slab`: `Builder`
+  (`chunk_capacity`, `initial_chunks`, `unsafe build`, `Default`),
+  `capacity`, `chunk_capacity`, `chunk_count`, `reserve_chunks`,
+  `contains_ptr`. `rc::bounded::Slab` gains `contains_ptr`. `take` stays
+  absent by design (unsound while other handles are live) and the struct
+  docs now say so; `claim` is parked. Parity tests guard against the drift
+  recurring ([#702](https://github.com/Abso1ut3Zer0/nexus/issues/702)).
+- `unbounded::Builder` and `byte::unbounded::Builder` are now `Clone`.
+
 ## [2.3.5] — 2026-10-01
 
 ### Deprecated

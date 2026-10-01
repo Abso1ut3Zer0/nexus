@@ -494,6 +494,7 @@ impl<T> Slab<T> {
 /// assert_eq!(*slot, 42);
 /// slab.free(slot);
 /// ```
+#[derive(Clone)]
 pub struct Builder {
     chunk_capacity: usize,
     initial_chunks: usize,
