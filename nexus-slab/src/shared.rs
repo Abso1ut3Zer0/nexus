@@ -47,8 +47,9 @@ impl<T> std::error::Error for Full<T> {}
 /// When occupied: `value` is active — contains the user's `T`.
 ///
 /// These fields occupy the SAME bytes. Writing `value` overwrites `next_free`
-/// and vice versa. There is no header, no tag, no sentinel — the Slot RAII
-/// handle (`Slot`) is the proof of occupancy.
+/// and vice versa. There is no header, no tag, no sentinel: a live [`Slot`]
+/// handle is the proof of occupancy. (`Slot` is a raw handle, not RAII; the
+/// caller frees it explicitly.)
 ///
 /// Size: `max(8, size_of::<T>())`.
 #[repr(C)]
@@ -262,23 +263,42 @@ impl<T> Slot<T> {
 
     /// Returns a pinned reference to the value.
     ///
-    /// Slab-backed memory never moves (no reallocation), so `Pin` is
-    /// sound without requiring `T: Unpin`. Useful for async code that
-    /// needs `Pin<&mut T>` for polling futures stored in a slab.
+    /// # Unsound: deprecated
+    ///
+    /// This method is unsound for `!Unpin` types and will be removed in 2.4.0.
+    /// A stable address is only half of `Pin`'s contract; the value must also
+    /// never be moved out until it is dropped, and safe code can move it:
+    /// [`Slab::take`](crate::bounded::Slab::take) moves it out by value, and
+    /// `mem::swap` through `DerefMut` moves two of them. A `!Unpin` value that
+    /// relied on this `Pin` is unsafe to use after either. For `T: Unpin`, use
+    /// `Pin::new(&*slot)` instead. A sound pinned handle that consumes the
+    /// `Slot` ships in 2.4.0 (issue #751).
+    #[deprecated(
+        since = "2.3.5",
+        note = "unsound for !Unpin types: the value can be moved through safe take()/DerefMut; use Pin::new for Unpin types, or the PinnedSlot handle in 2.4.0"
+    )]
     #[inline]
     pub fn pin(&self) -> core::pin::Pin<&T> {
-        // SAFETY: The slab never moves its slot storage after init.
-        // The value at this pointer is stable for the slot's lifetime.
+        // SAFETY: the address is stable (slab storage never moves), but the
+        // second half of Pin's contract, that the value is never moved out,
+        // cannot be guaranteed from a handle that also offers safe `take()`
+        // and `DerefMut`. That is why this method is deprecated; see its docs.
         unsafe { core::pin::Pin::new_unchecked(&**self) }
     }
 
     /// Returns a pinned mutable reference to the value.
     ///
-    /// See [`pin()`](Self::pin) for the safety rationale.
+    /// # Unsound: deprecated
+    ///
+    /// See [`pin()`](Self::pin). Same defect, same removal in 2.4.0. For
+    /// `T: Unpin`, use `Pin::new(&mut *slot)` instead.
+    #[deprecated(
+        since = "2.3.5",
+        note = "unsound for !Unpin types: the value can be moved through safe take()/DerefMut; use Pin::new for Unpin types, or the PinnedSlot handle in 2.4.0"
+    )]
     #[inline]
     pub fn pin_mut(&mut self) -> core::pin::Pin<&mut T> {
-        // SAFETY: Same as pin() — slab memory never moves.
-        // We have &mut self, guaranteeing exclusive access.
+        // SAFETY: not fully upheld; see `pin()`. Deprecated for that reason.
         unsafe { core::pin::Pin::new_unchecked(&mut **self) }
     }
 }

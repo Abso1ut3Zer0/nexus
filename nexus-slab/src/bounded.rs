@@ -110,6 +110,10 @@ impl<T> Drop for Claim<'_, T> {
 ///   In debug builds, this is caught by `debug_assert!`.
 /// - **Free everything you allocate.** Dropping the slab does NOT drop
 ///   values in occupied slots. Unfreed slots leak silently.
+/// - **Slots must not outlive the slab.** Dropping the slab frees its
+///   storage, and a [`Slot`] carries no lifetime tying it to the slab. A
+///   `Slot` used after its slab is dropped dereferences freed memory
+///   through safe code.
 /// - **Single-threaded.** The slab is `!Send` and `!Sync`.
 ///
 /// ## Why `free()` is safe
@@ -118,8 +122,9 @@ impl<T> Drop for Claim<'_, T> {
 /// - [`Slot`] is move-only (no `Copy`, no `Clone`) — double-free is
 ///   prevented by the type system.
 /// - `free()` consumes the `Slot` — the handle cannot be used after.
-/// - Cross-slab misuse is the only remaining hazard, and it was
-///   accepted as the caller's responsibility at construction time.
+/// - The remaining hazards (cross-slab misuse, a `Slot` outliving its
+///   slab) were accepted as the caller's responsibility at construction
+///   time.
 pub struct Slab<T> {
     /// Slot storage. Wrapped in UnsafeCell for interior mutability.
     slots: core::cell::UnsafeCell<Vec<SlotCell<T>>>,
