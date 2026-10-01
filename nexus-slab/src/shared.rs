@@ -4,6 +4,7 @@ use core::borrow::{Borrow, BorrowMut};
 use core::fmt;
 use core::mem::{ManuallyDrop, MaybeUninit};
 use core::ops::{Deref, DerefMut};
+use core::pin::Pin;
 
 // =============================================================================
 // Full<T>
@@ -261,45 +262,32 @@ impl<T> Slot<T> {
         Slot(self.0)
     }
 
-    /// Returns a pinned reference to the value.
+    /// Pins the value for the rest of its life, consuming this handle.
     ///
-    /// # Unsound: deprecated
+    /// The returned [`PinnedSlot`] hands out `Pin<&T>` and `Pin<&mut T>` and
+    /// nothing that could move the value: no `DerefMut`, no `BorrowMut`, no
+    /// `take`. The only way out is
+    /// [`Slab::free_pinned`](crate::bounded::Slab::free_pinned), which drops
+    /// the value in place. This is the sound way to keep a `!Unpin` value (a
+    /// future, a self-referential struct) in a slab.
     ///
-    /// This method is unsound for `!Unpin` types and will be removed in 2.4.0.
-    /// A stable address is only half of `Pin`'s contract; the value must also
-    /// never be moved out until it is dropped, and safe code can move it:
-    /// [`Slab::take`](crate::bounded::Slab::take) moves it out by value, and
-    /// `mem::swap` through `DerefMut` moves two of them. A `!Unpin` value that
-    /// relied on this `Pin` is unsafe to use after either. For `T: Unpin`, use
-    /// `Pin::new(&*slot)` instead. A sound pinned handle that consumes the
-    /// `Slot` ships in 2.4.0 (issue #751).
-    #[deprecated(
-        since = "2.3.5",
-        note = "unsound for !Unpin types: the value can be moved through safe take()/DerefMut; use Pin::new for Unpin types, or the PinnedSlot handle in 2.4.0"
-    )]
+    /// For `T: Unpin` no helper is needed; `Pin::new(&mut *slot)` is correct.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use nexus_slab::bounded::Slab;
+    ///
+    /// // SAFETY: caller guarantees slab contract (see struct docs)
+    /// let slab = unsafe { Slab::with_capacity(4) };
+    /// let mut pinned = slab.alloc(41u64).into_pinned();
+    /// *pinned.as_mut() += 1;
+    /// assert_eq!(*pinned, 42);
+    /// slab.free_pinned(pinned);
+    /// ```
     #[inline]
-    pub fn pin(&self) -> core::pin::Pin<&T> {
-        // SAFETY: the address is stable (slab storage never moves), but the
-        // second half of Pin's contract, that the value is never moved out,
-        // cannot be guaranteed from a handle that also offers safe `take()`
-        // and `DerefMut`. That is why this method is deprecated; see its docs.
-        unsafe { core::pin::Pin::new_unchecked(&**self) }
-    }
-
-    /// Returns a pinned mutable reference to the value.
-    ///
-    /// # Unsound: deprecated
-    ///
-    /// See [`pin()`](Self::pin). Same defect, same removal in 2.4.0. For
-    /// `T: Unpin`, use `Pin::new(&mut *slot)` instead.
-    #[deprecated(
-        since = "2.3.5",
-        note = "unsound for !Unpin types: the value can be moved through safe take()/DerefMut; use Pin::new for Unpin types, or the PinnedSlot handle in 2.4.0"
-    )]
-    #[inline]
-    pub fn pin_mut(&mut self) -> core::pin::Pin<&mut T> {
-        // SAFETY: not fully upheld; see `pin()`. Deprecated for that reason.
-        unsafe { core::pin::Pin::new_unchecked(&mut **self) }
+    pub fn into_pinned(self) -> PinnedSlot<T> {
+        PinnedSlot(self.into_raw())
     }
 }
 
@@ -367,6 +355,145 @@ impl<T> Drop for Slot<T> {
         }
         panic!(
             "Slot<{}> dropped without being freed — call slab.free(slot) or slab.take(slot)",
+            core::any::type_name::<T>()
+        );
+    }
+}
+
+// =============================================================================
+// PinnedSlot<T> — pinned raw slot handle
+// =============================================================================
+
+/// A slot whose value is pinned for the rest of its life.
+///
+/// Made from a [`Slot`] by [`Slot::into_pinned`], which consumes the only
+/// handle that could move the value. From then on nothing can move it out:
+/// there is no `DerefMut`, no `BorrowMut`, no `take`. The slab drops it in
+/// place via [`Slab::free_pinned`](crate::bounded::Slab::free_pinned). This
+/// is the `Box::into_pin` analogue for slab storage.
+///
+/// # Guarantees
+///
+/// - The address is stable: slab storage never moves.
+/// - The value is never moved out before `free_pinned` drops it in place.
+/// - Debug-mode leak detection, same as [`Slot`].
+///
+/// # Access
+///
+/// [`as_ref`](Self::as_ref) and [`as_mut`](Self::as_mut) mirror the methods
+/// on `Pin<Box<T>>`. `Deref` gives a plain `&T` for reads. There is
+/// deliberately no `DerefMut`, `AsMut`, or `BorrowMut`:
+///
+/// ```compile_fail,E0594
+/// # use nexus_slab::bounded::Slab;
+/// # let slab = unsafe { Slab::with_capacity(1) };
+/// let mut p = slab.alloc(1u64).into_pinned();
+/// *p = 2; // no DerefMut: the value cannot be replaced through the handle
+/// # slab.free_pinned(p);
+/// ```
+///
+/// and no way back to a movable handle:
+///
+/// ```compile_fail,E0308
+/// # use nexus_slab::bounded::Slab;
+/// # let slab = unsafe { Slab::with_capacity(1) };
+/// let p = slab.alloc(1u64).into_pinned();
+/// let moved = slab.take(p); // take() needs a Slot; a PinnedSlot cannot be moved out
+/// ```
+///
+/// # Thread Safety
+///
+/// `!Send` and `!Sync`, same as [`Slot`].
+#[repr(transparent)]
+pub struct PinnedSlot<T>(*mut SlotCell<T>);
+
+impl<T> PinnedSlot<T> {
+    /// Returns a pinned shared reference to the value.
+    #[inline]
+    pub fn as_ref(&self) -> Pin<&T> {
+        // SAFETY: the address is stable (slab storage never moves) and this
+        // handle offers no way to move the value out: no DerefMut, no
+        // BorrowMut, no take. `free_pinned` drops it in place. Both halves
+        // of Pin's contract hold for the value's whole lifetime.
+        unsafe { Pin::new_unchecked((*self.0).value_ref()) }
+    }
+
+    /// Returns a pinned mutable reference to the value.
+    #[inline]
+    pub fn as_mut(&mut self) -> Pin<&mut T> {
+        // SAFETY: as `as_ref`, and `&mut self` guarantees exclusive access.
+        unsafe { Pin::new_unchecked((*self.0).value_mut()) }
+    }
+
+    /// Returns the raw pointer to the slot cell.
+    #[inline]
+    pub fn as_ptr(&self) -> *mut SlotCell<T> {
+        self.0
+    }
+
+    /// Consumes the handle, returning the raw pointer without running Drop.
+    ///
+    /// Disarms the debug-mode leak detector. The value stays pinned: do not
+    /// move it out through the pointer. Reconstruct with
+    /// [`from_raw()`](Self::from_raw) or free it in place.
+    #[inline]
+    pub fn into_raw(self) -> *mut SlotCell<T> {
+        let ptr = self.0;
+        core::mem::forget(self);
+        ptr
+    }
+
+    /// Reconstructs a `PinnedSlot` from a raw pointer previously obtained
+    /// via [`into_raw()`](Self::into_raw).
+    ///
+    /// # Safety
+    ///
+    /// `ptr` must have come from `into_raw()` on a `PinnedSlot<T>` for an
+    /// occupied slot in a live slab, and the value must not have been moved
+    /// out or dropped in between.
+    #[inline]
+    pub unsafe fn from_raw(ptr: *mut SlotCell<T>) -> Self {
+        PinnedSlot(ptr)
+    }
+}
+
+impl<T> Deref for PinnedSlot<T> {
+    type Target = T;
+
+    #[inline]
+    fn deref(&self) -> &T {
+        // SAFETY: PinnedSlot was created from a valid, occupied SlotCell.
+        unsafe { (*self.0).value_ref() }
+    }
+}
+
+impl<T> Borrow<T> for PinnedSlot<T> {
+    #[inline]
+    fn borrow(&self) -> &T {
+        self
+    }
+}
+
+// PinnedSlot is intentionally NOT Clone/Copy, and has no DerefMut, AsMut, or
+// BorrowMut: any of those would let safe code move the pinned value.
+
+impl<T: fmt::Debug> fmt::Debug for PinnedSlot<T> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("PinnedSlot")
+            .field("value", &**self)
+            .finish()
+    }
+}
+
+#[cfg(debug_assertions)]
+impl<T> Drop for PinnedSlot<T> {
+    fn drop(&mut self) {
+        #[cfg(feature = "std")]
+        if std::thread::panicking() {
+            return; // Don't double-panic during unwind
+        }
+        panic!(
+            "PinnedSlot<{}> dropped without being freed: call slab.free_pinned(slot)",
             core::any::type_name::<T>()
         );
     }

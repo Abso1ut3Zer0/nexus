@@ -5,7 +5,7 @@ use core::mem;
 
 use crate::shared::{Full, SlotCell};
 
-use super::{AlignedBytes, Slot, validate_type};
+use super::{AlignedBytes, PinnedSlot, Slot, validate_type};
 
 /// Fixed-capacity byte slab. Mirrors [`crate::bounded::Slab`] but stores
 /// heterogeneous types in fixed-size byte slots.
@@ -195,6 +195,28 @@ impl<const N: usize> Slab<N> {
             self.inner
                 .free_ptr(data_ptr.cast::<SlotCell<AlignedBytes<N>>>());
             value
+        }
+    }
+
+    /// Frees a pinned value, dropping it in place and returning the slot to
+    /// the freelist.
+    ///
+    /// The only way out of a [`PinnedSlot`]: the value is never moved, which
+    /// is what keeps the pin sound. Consumes the handle.
+    #[inline]
+    pub fn free_pinned<T>(&self, ptr: PinnedSlot<T>) {
+        let data_ptr = ptr.into_raw();
+        debug_assert!(
+            self.inner.contains_ptr(data_ptr as *const ()),
+            "slot was not allocated from this slab"
+        );
+        // SAFETY: PinnedSlot guarantees data_ptr is valid and occupied with a T;
+        // into_raw disarmed the leak detector. Dropping in place (never moving)
+        // upholds the pin contract; free_ptr then returns the slot to the freelist.
+        unsafe {
+            core::ptr::drop_in_place(data_ptr.cast::<T>());
+            self.inner
+                .free_ptr(data_ptr.cast::<SlotCell<AlignedBytes<N>>>());
         }
     }
 
@@ -394,5 +416,36 @@ mod tests {
         assert!(claim2.is_some());
         let slot = claim2.unwrap().write(42u64);
         slab.free(slot);
+    }
+
+    #[test]
+    fn pinned_slot_roundtrip_and_free_in_place() {
+        let drops = core::cell::Cell::new(0usize);
+        struct Tracked<'a>(u64, &'a core::cell::Cell<usize>);
+        impl Drop for Tracked<'_> {
+            fn drop(&mut self) {
+                self.1.set(self.1.get() + 1);
+            }
+        }
+        // SAFETY: test slab; single-threaded, all slots freed before drop.
+        let slab: Slab<64> = unsafe { Slab::with_capacity(4) };
+        let mut p = slab.alloc(Tracked(1, &drops)).into_pinned();
+        p.as_mut().0 = 2;
+        assert_eq!(p.as_ref().0, 2);
+        let raw = p.into_raw();
+        // SAFETY: raw came from into_raw on a live pinned slot; value untouched.
+        let p = unsafe { PinnedSlot::<Tracked<'_>>::from_raw(raw) };
+        assert_eq!(drops.get(), 0);
+        slab.free_pinned(p);
+        assert_eq!(drops.get(), 1, "free_pinned drops in place exactly once");
+    }
+
+    #[test]
+    #[cfg(debug_assertions)]
+    #[should_panic(expected = "byte::PinnedSlot<u64> dropped without being freed")]
+    fn pinned_slot_leak_detector() {
+        // SAFETY: test slab; single-threaded; the leaked slot is the point.
+        let slab: Slab<16> = unsafe { Slab::with_capacity(1) };
+        let _p = slab.alloc(1u64).into_pinned();
     }
 }

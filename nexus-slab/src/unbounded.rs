@@ -23,7 +23,7 @@ use alloc::boxed::Box;
 use alloc::vec::Vec;
 
 use crate::bounded::Slab as BoundedSlab;
-use crate::shared::{Slot, SlotCell};
+use crate::shared::{PinnedSlot, Slot, SlotCell};
 
 // =============================================================================
 // Claim
@@ -397,6 +397,29 @@ impl<T> Slab<T> {
         }
     }
 
+    /// Frees a pinned slot, dropping the value in place and returning
+    /// storage to the freelist.
+    ///
+    /// The only way out of a [`PinnedSlot`]: the value is never moved, which
+    /// is what keeps the pin sound. Consumes the handle. O(n) in chunk
+    /// count, like [`free`](Self::free).
+    #[inline]
+    // Consumes the slot handle by design — the slot cannot be used after free.
+    #[allow(clippy::needless_pass_by_value)]
+    pub fn free_pinned(&self, slot: PinnedSlot<T>) {
+        let slot_ptr = slot.into_raw();
+        debug_assert!(
+            self.contains_ptr(slot_ptr as *const ()),
+            "slot was not allocated from this slab"
+        );
+        // SAFETY: PinnedSlot guarantees the slot is valid and occupied.
+        // Dropping in place (never moving) upholds the pin contract.
+        unsafe {
+            (*slot_ptr).drop_value_in_place();
+            self.free_ptr(slot_ptr);
+        }
+    }
+
     /// Returns a slot to the freelist by pointer, given the chunk index.
     ///
     /// O(1) — goes directly to the correct chunk's freelist.
@@ -725,5 +748,25 @@ mod tests {
     fn builder_zero_chunk_capacity_panics() {
         // SAFETY: test slab; single-threaded; panics before any slot can be allocated.
         let _slab = unsafe { Builder::new().chunk_capacity(0).build::<u64>() };
+    }
+
+    #[test]
+    fn pinned_slot_survives_growth() {
+        // SAFETY: test slab; single-threaded, all slots freed before drop.
+        let slab = unsafe { Slab::with_chunk_capacity(2) };
+        let mut p = slab.alloc(10u64).into_pinned();
+        let addr = core::ptr::from_ref::<u64>(&p);
+        let others: alloc::vec::Vec<_> = (0..16u64).map(|i| slab.alloc(i)).collect();
+        *p.as_mut() += 1;
+        assert_eq!(*p, 11);
+        assert_eq!(
+            core::ptr::from_ref::<u64>(&p),
+            addr,
+            "growth must not move a pinned slot"
+        );
+        for o in others {
+            slab.free(o);
+        }
+        slab.free_pinned(p);
     }
 }

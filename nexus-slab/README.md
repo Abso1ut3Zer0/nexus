@@ -102,11 +102,18 @@ slab.free(ptr);
 **Debug mode:** dropping a `Slot` without calling `free()` or `take()`
 panics (leak detection). Release mode: silent leak.
 
-**Pinning:** `pin()` / `pin_mut()` are deprecated in 2.3.5 and removed in
-2.4.0. They were unsound for `!Unpin` types: the address is stable, but
-`take()` and `DerefMut` can still move the value out from under the `Pin`.
-For `T: Unpin`, `Pin::new(&mut *ptr)` is correct and needs no helper. A
-sound pinned handle that consumes the `Slot` ships in 2.4.0.
+**Pinning:** `ptr.into_pinned()` consumes the `Slot` and returns a
+`PinnedSlot<T>`, which hands out `Pin<&T>` / `Pin<&mut T>` and nothing that
+could move the value (no `DerefMut`, no `take()`). Free it with
+`slab.free_pinned(pinned)`, which drops in place. This is the sound way to
+keep a `!Unpin` value (a future, a self-referential struct) in a slab. For
+`T: Unpin`, `Pin::new(&mut *ptr)` on a plain `Slot` is enough.
+
+```rust
+let mut pinned = slab.alloc(fut).into_pinned();
+// fut.poll(pinned.as_mut(), cx) ...
+slab.free_pinned(pinned);
+```
 
 ### Rc Slabs (Shared Ownership)
 
@@ -153,10 +160,11 @@ let _g1 = h1.borrow();
 let _g2 = h2.borrow();  // PANICS — already borrowed (even though both are shared)
 ```
 
-**Pinning:** `pin()` / `pin_mut()` on `RcSlot` are deprecated in 2.3.5 and
-removed in 2.4.0 for the same reason as on `Slot`: once the guard drops,
-`borrow_mut()` plus `mem::replace` can move the value out from under the
-`Pin`. For `T: Unpin`, `Pin::new(handle.borrow_mut())` is correct.
+**Pinning:** `RcSlot` has no pinned form. Pinned-ness would be a whole-slot
+property across clones (every handle's `borrow_mut()` would have to yield
+`Pin<RefMut>`), and std's own `Rc::pin` only offers shared `Pin<&T>`. For
+`T: Unpin`, `Pin::new(handle.borrow_mut())` is correct. For `!Unpin` values
+use a plain slab and `PinnedSlot`.
 
 ## Performance
 
