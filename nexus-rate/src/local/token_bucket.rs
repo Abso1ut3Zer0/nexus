@@ -84,10 +84,16 @@ impl TokenBucket {
     #[must_use]
     pub fn try_acquire(&mut self, cost: u64, now: Instant) -> bool {
         let now = self.nanos_since_base(now);
-        let available = self.compute_available(now);
+        // An idle gap longer than one burst must not bank credit. `min(.., burst)`
+        // only clamps what is reported; consuming from a `zero_time` far behind
+        // `now` would hand out a full burst on every call until it caught up.
+        // Clamp it to "now minus one burst" first (the Folly bucket does the same).
+        let floor = now.saturating_sub(self.burst.saturating_mul(self.nanos_per_token));
+        let zero_time = self.zero_time.max(floor);
+        let available = (now.saturating_sub(zero_time) / self.nanos_per_token).min(self.burst);
         if available >= cost {
             let consume_ticks = cost.saturating_mul(self.nanos_per_token);
-            self.zero_time = self.zero_time.saturating_add(consume_ticks);
+            self.zero_time = zero_time.saturating_add(consume_ticks);
             true
         } else {
             false
@@ -427,5 +433,32 @@ mod tests {
         assert_eq!(tb.available(t), 10);
         tb.release(5, t);
         assert_eq!(tb.available(t), 10); // still capped
+    }
+
+    #[test]
+    fn idle_gap_does_not_bank_credit() {
+        let start = Instant::now();
+        let mut tb = make_bucket(start); // 10 per 1000ns, burst 20
+        // Idle for 1ms: 10,000 token intervals elapse, but only `burst` may be banked.
+        let now = start + Duration::from_millis(1);
+        let mut granted = 0u64;
+        while tb.try_acquire(1, now) {
+            granted += 1;
+            assert!(granted <= 20, "over-admitted after idle gap");
+        }
+        assert_eq!(granted, 20);
+    }
+
+    #[test]
+    fn refill_after_idle_drain_is_at_rate() {
+        let start = Instant::now();
+        let mut tb = make_bucket(start);
+        let now = start + Duration::from_millis(1);
+        while tb.try_acquire(1, now) {}
+        // Drained at `now`: no double credit, one token per 100ns from here.
+        assert_eq!(tb.available(now + Duration::from_nanos(99)), 0);
+        assert_eq!(tb.available(now + Duration::from_nanos(100)), 1);
+        assert_eq!(tb.available(now + Duration::from_nanos(1000)), 10);
+        assert_eq!(tb.available(now + Duration::from_nanos(5000)), 20); // capped at burst
     }
 }
