@@ -54,12 +54,21 @@ impl TokenBucket {
     /// Attempts to consume `cost` tokens (thread-safe).
     ///
     /// Uses a CAS loop on `zero_time`.
+    ///
+    /// A `cost` greater than `burst` (the bucket capacity) can never be admitted
+    /// and always returns `false`; debug builds trip a `debug_assert!` to surface
+    /// that misconfiguration.
     #[inline]
     #[must_use]
     pub fn try_acquire(&self, cost: u64, now: Instant) -> bool {
         let now = self.nanos_since_base(now);
         let nanos_per_token = self.nanos_per_token.load(Ordering::Relaxed);
         let burst = self.burst.load(Ordering::Relaxed);
+        debug_assert!(
+            cost <= burst,
+            "try_acquire: cost {cost} exceeds burst capacity {burst}; a request \
+             larger than the bucket can never be admitted"
+        );
         // See `local::TokenBucket::try_acquire`: an idle gap longer than one
         // burst must not bank credit, so the stored `zero_time` is clamped to
         // "now minus one burst" before consuming. The CAS still compares
@@ -447,6 +456,21 @@ mod tests {
             assert!(granted <= 20, "over-admitted after idle gap");
         }
         assert_eq!(granted, 20);
+    }
+
+    #[test]
+    #[cfg(debug_assertions)]
+    #[should_panic(expected = "can never be admitted")]
+    fn oversized_cost_panics_in_debug() {
+        let start = Instant::now();
+        let tb = TokenBucket::builder()
+            .rate(10)
+            .period(Duration::from_nanos(1000))
+            .burst(20)
+            .now(start)
+            .build()
+            .unwrap();
+        let _ = tb.try_acquire(21, start); // 21 > burst: can never be admitted
     }
 
     #[test]

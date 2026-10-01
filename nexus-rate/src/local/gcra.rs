@@ -63,9 +63,20 @@ impl Gcra {
     ///
     /// Returns `true` if allowed, `false` if rate limited.
     /// `cost = 1` for a standard request. Higher for weighted operations.
+    ///
+    /// A `cost` whose `cost * emission_interval` exceeds the burst tolerance
+    /// `tau` can never be admitted (even from an empty limiter) and always
+    /// returns `false`; debug builds trip a `debug_assert!` to surface that
+    /// misconfiguration.
     #[inline]
     #[must_use]
     pub fn try_acquire(&mut self, cost: u64, now: Instant) -> bool {
+        debug_assert!(
+            cost.saturating_mul(self.emission_interval) <= self.tau,
+            "try_acquire: cost {cost} exceeds GCRA burst capacity {}; a request \
+             larger than the burst can never be admitted",
+            self.tau / self.emission_interval.max(1)
+        );
         let now = self.nanos_since_base(now);
         let new_tat = self
             .tat
@@ -81,9 +92,21 @@ impl Gcra {
 
     /// Duration until a request of the given cost would be allowed.
     /// Returns `Duration::ZERO` if allowed now.
+    ///
+    /// Informational: call this to learn when to retry, not instead of
+    /// [`try_acquire`](Self::try_acquire). The same oversized-`cost` rule
+    /// applies: a `cost` whose `cost * emission_interval` exceeds `tau` can
+    /// never be admitted, so no finite wait is correct; debug builds trip a
+    /// `debug_assert!` rather than report one.
     #[inline]
     #[must_use]
     pub fn time_until_allowed(&self, cost: u64, now: Instant) -> Duration {
+        debug_assert!(
+            cost.saturating_mul(self.emission_interval) <= self.tau,
+            "time_until_allowed: cost {cost} exceeds GCRA burst capacity {}; a request \
+             larger than the burst can never be admitted",
+            self.tau / self.emission_interval.max(1)
+        );
         let now = self.nanos_since_base(now);
         let new_tat = self
             .tat
@@ -368,6 +391,9 @@ mod tests {
     }
 
     #[test]
+    // Debug builds guard oversized cost with a `debug_assert!`; this validates the
+    // release-mode saturation safety-net (huge `cost * ei` saturates, not wraps).
+    #[cfg(not(debug_assertions))]
     fn overflow_saturates() {
         let start = Instant::now();
         let mut g = Gcra::builder()
@@ -435,8 +461,26 @@ mod tests {
             .unwrap();
         // Release without consuming — should be no-op (TAT already <= now)
         g.release(100, base);
-        // Still limited by burst
-        assert!(!g.try_acquire(7, base)); // burst is 5
+        // Still limited by burst: the burst+1 max (6) is admissible, then the
+        // limiter is exhausted. If release had banked the 100, this would not hold.
+        assert!(g.try_acquire(6, base));
+        assert!(!g.try_acquire(1, base));
+    }
+
+    #[test]
+    #[cfg(debug_assertions)]
+    #[should_panic(expected = "can never be admitted")]
+    fn oversized_cost_panics_in_debug() {
+        let base = Instant::now();
+        let mut g = Gcra::builder()
+            .rate(10)
+            .period(Duration::from_nanos(1000))
+            .burst(5)
+            .now(base)
+            .build()
+            .unwrap();
+        // capacity = burst + 1 = 6; 7 can never be admitted.
+        let _ = g.try_acquire(7, base);
     }
 
     #[test]
@@ -475,5 +519,20 @@ mod tests {
             .unwrap();
         let result = gcra.reconfigure(1, Duration::from_secs(u64::MAX), 0);
         assert!(matches!(result, Err(crate::ConfigError::Invalid(_))));
+    }
+    #[test]
+    #[cfg(debug_assertions)]
+    #[should_panic(expected = "can never be admitted")]
+    fn time_until_allowed_oversized_cost_panics_in_debug() {
+        let base = Instant::now();
+        let g = Gcra::builder()
+            .rate(10)
+            .period(Duration::from_nanos(1000))
+            .burst(5)
+            .now(base)
+            .build()
+            .unwrap();
+        // capacity = burst + 1 = 6; 7 can never be admitted, so no wait is correct.
+        let _ = g.time_until_allowed(7, base);
     }
 }

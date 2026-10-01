@@ -80,9 +80,20 @@ impl TokenBucket {
     /// Returns `true` if enough tokens are available. Tokens accumulate in
     /// whole units only — a token becomes available after `period / rate`
     /// ticks, not fractionally. This is standard for integer rate limiting.
+    ///
+    /// A `cost` greater than `burst` (the bucket capacity) can never be admitted
+    /// and always returns `false`; debug builds trip a `debug_assert!` to surface
+    /// that misconfiguration (an oversized request would otherwise starve
+    /// silently in a retry loop).
     #[inline]
     #[must_use]
     pub fn try_acquire(&mut self, cost: u64, now: Instant) -> bool {
+        debug_assert!(
+            cost <= self.burst,
+            "try_acquire: cost {cost} exceeds burst capacity {}; a request larger \
+             than the bucket can never be admitted",
+            self.burst
+        );
         let now = self.nanos_since_base(now);
         // An idle gap longer than one burst must not bank credit. `min(.., burst)`
         // only clamps what is reported; consuming from a `zero_time` far behind
@@ -247,6 +258,15 @@ mod tests {
             .now(start)
             .build()
             .unwrap()
+    }
+
+    #[test]
+    #[cfg(debug_assertions)]
+    #[should_panic(expected = "can never be admitted")]
+    fn oversized_cost_panics_in_debug() {
+        let start = Instant::now();
+        let mut tb = make_bucket(start); // burst 20
+        let _ = tb.try_acquire(21, start); // 21 > burst: can never be admitted
     }
 
     #[test]

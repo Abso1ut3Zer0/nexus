@@ -10,6 +10,19 @@ contained.
 
 ## [Unreleased]
 
+### Added
+
+- `try_acquire` now `debug_assert!`s that `cost` does not exceed the limiter's
+  capacity — `burst` for the token bucket, the `burst + 1` tolerance for GCRA,
+  the window `limit` for the sliding window. A request larger than capacity can
+  never be admitted and would otherwise starve silently in a caller's retry
+  loop; the assert surfaces that misconfiguration in dev. Release builds are
+  unchanged: the oversized request still returns `false` via saturating
+  arithmetic (the graceful safety-net). Applies to the `local` and `sync`
+  variants of every limiter. GCRA's `time_until_allowed` carries the same
+  assert: for such a request no finite wait is correct, so it must not
+  report one.
+
 ### Fixed
 
 - Token bucket (`local` and `sync`) admitted unbounded requests after an

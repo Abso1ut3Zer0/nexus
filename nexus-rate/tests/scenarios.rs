@@ -247,6 +247,9 @@ fn token_bucket_large_timestamp() {
 }
 
 #[test]
+// Debug builds guard oversized cost with a `debug_assert!`; this validates the
+// release-mode safety-net (huge cost is rejected, not wrapped).
+#[cfg(not(debug_assertions))]
 fn sliding_window_huge_cost_rejected() {
     let start = Instant::now();
     let mut sw = local::SlidingWindow::builder()
