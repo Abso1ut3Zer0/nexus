@@ -92,7 +92,6 @@ let mut ptr = slab.alloc(Order { id: 1, price: 100.5 });
 
 // Safe access
 ptr.price = 105.0;
-let p: Pin<&mut Order> = ptr.pin_mut();  // stable address, no Unpin needed
 
 // Raw pointer escape hatch
 let raw = ptr.into_raw();               // disarms debug leak detector
@@ -102,6 +101,12 @@ slab.free(ptr);
 
 **Debug mode:** dropping a `Slot` without calling `free()` or `take()`
 panics (leak detection). Release mode: silent leak.
+
+**Pinning:** `pin()` / `pin_mut()` are deprecated in 2.3.5 and removed in
+2.4.0. They were unsound for `!Unpin` types: the address is stable, but
+`take()` and `DerefMut` can still move the value out from under the `Pin`.
+For `T: Unpin`, `Pin::new(&mut *ptr)` is correct and needs no helper. A
+sound pinned handle that consumes the `Slot` ships in 2.4.0.
 
 ### Rc Slabs (Shared Ownership)
 
@@ -148,12 +153,10 @@ let _g1 = h1.borrow();
 let _g2 = h2.borrow();  // PANICS — already borrowed (even though both are shared)
 ```
 
-**Pin support:** Slab memory never moves, so `Pin` is sound without
-`T: Unpin`:
-
-```rust
-let mut pinned = handle.pin_mut();  // Pin<RefMut<'_, T>>
-```
+**Pinning:** `pin()` / `pin_mut()` on `RcSlot` are deprecated in 2.3.5 and
+removed in 2.4.0 for the same reason as on `Slot`: once the guard drops,
+`borrow_mut()` plus `mem::replace` can move the value out from under the
+`Pin`. For `T: Unpin`, `Pin::new(handle.borrow_mut())` is correct.
 
 ## Performance
 

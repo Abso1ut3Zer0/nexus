@@ -242,6 +242,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(deprecated)] // exercises the deprecated methods until 2.4.0 removes them
     fn pin_and_pin_mut() {
         // SAFETY: test slab; single-threaded, all handles freed before drop.
         let slab = unsafe { Slab::with_capacity(10) };

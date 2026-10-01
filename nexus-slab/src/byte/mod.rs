@@ -115,17 +115,41 @@ impl<T> Slot<T> {
 
     /// Returns a pinned reference to the value.
     ///
-    /// Byte slab memory never moves, so `Pin` is sound without `T: Unpin`.
+    /// # Unsound: deprecated
+    ///
+    /// This method is unsound for `!Unpin` types and will be removed in 2.4.0.
+    /// A stable address is only half of `Pin`'s contract; the value must also
+    /// never be moved out until it is dropped, and safe code can move it:
+    /// [`Slab::take`](crate::byte::bounded::Slab::take) moves it out by value,
+    /// and `mem::swap` through `DerefMut` moves two of them. For `T: Unpin`,
+    /// use `Pin::new(&*slot)` instead. A sound pinned handle that consumes the
+    /// `Slot` ships in 2.4.0 (issue #751).
+    #[deprecated(
+        since = "2.3.5",
+        note = "unsound for !Unpin types: the value can be moved through safe take()/DerefMut; use Pin::new for Unpin types, or the PinnedSlot handle in 2.4.0"
+    )]
     #[inline]
     pub fn pin(&self) -> core::pin::Pin<&T> {
-        // SAFETY: Byte slab memory never moves after init — Pin is sound.
+        // SAFETY: the address is stable (byte slab storage never moves), but
+        // the second half of Pin's contract, that the value is never moved
+        // out, cannot be guaranteed from a handle that also offers safe
+        // `take()` and `DerefMut`. Deprecated for that reason; see its docs.
         unsafe { core::pin::Pin::new_unchecked(&**self) }
     }
 
     /// Returns a pinned mutable reference to the value.
+    ///
+    /// # Unsound: deprecated
+    ///
+    /// See [`pin()`](Self::pin). Same defect, same removal in 2.4.0. For
+    /// `T: Unpin`, use `Pin::new(&mut *slot)` instead.
+    #[deprecated(
+        since = "2.3.5",
+        note = "unsound for !Unpin types: the value can be moved through safe take()/DerefMut; use Pin::new for Unpin types, or the PinnedSlot handle in 2.4.0"
+    )]
     #[inline]
     pub fn pin_mut(&mut self) -> core::pin::Pin<&mut T> {
-        // SAFETY: Byte slab memory never moves. &mut self guarantees exclusive access.
+        // SAFETY: not fully upheld; see `pin()`. Deprecated for that reason.
         unsafe { core::pin::Pin::new_unchecked(&mut **self) }
     }
 }
