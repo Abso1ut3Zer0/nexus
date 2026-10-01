@@ -54,32 +54,42 @@ impl TokenBucket {
     /// Attempts to consume `cost` tokens (thread-safe).
     ///
     /// Uses a CAS loop on `zero_time`.
+    ///
+    /// A `cost` greater than `burst` (the bucket capacity) can never be admitted
+    /// and always returns `false`; debug builds trip a `debug_assert!` to surface
+    /// that misconfiguration.
     #[inline]
     #[must_use]
     pub fn try_acquire(&self, cost: u64, now: Instant) -> bool {
         let now = self.nanos_since_base(now);
         let nanos_per_token = self.nanos_per_token.load(Ordering::Relaxed);
         let burst = self.burst.load(Ordering::Relaxed);
+        debug_assert!(
+            cost <= burst,
+            "try_acquire: cost {cost} exceeds burst capacity {burst}; a request \
+             larger than the bucket can never be admitted"
+        );
+        // See `local::TokenBucket::try_acquire`: an idle gap longer than one
+        // burst must not bank credit, so the stored `zero_time` is clamped to
+        // "now minus one burst" before consuming. The CAS still compares
+        // against the value actually loaded; comparing against the clamped
+        // value could never succeed while the stored value sits below the floor.
+        let floor = now.saturating_sub(burst.saturating_mul(nanos_per_token));
+        let consume_ticks = cost.saturating_mul(nanos_per_token);
         loop {
-            let zero_time = self.zero_time.load(Ordering::Relaxed);
-            let elapsed = now.saturating_sub(zero_time);
-            let available = (elapsed / nanos_per_token).min(burst);
+            let loaded = self.zero_time.load(Ordering::Relaxed);
+            let zero_time = loaded.max(floor);
+            let available = (now.saturating_sub(zero_time) / nanos_per_token).min(burst);
 
             if available < cost {
                 return false;
             }
 
-            let consume_ticks = cost.saturating_mul(nanos_per_token);
             let new_zero_time = zero_time.saturating_add(consume_ticks);
 
             if self
                 .zero_time
-                .compare_exchange_weak(
-                    zero_time,
-                    new_zero_time,
-                    Ordering::AcqRel,
-                    Ordering::Relaxed,
-                )
+                .compare_exchange_weak(loaded, new_zero_time, Ordering::AcqRel, Ordering::Relaxed)
                 .is_ok()
             {
                 return true;
@@ -426,5 +436,59 @@ mod tests {
         let t = base + Duration::from_nanos(1000);
         tb.release(100, t);
         assert_eq!(tb.available(t), 10);
+    }
+
+    #[test]
+    fn idle_gap_does_not_bank_credit() {
+        let start = Instant::now();
+        let tb = TokenBucket::builder()
+            .rate(10)
+            .period(Duration::from_nanos(1000))
+            .burst(20)
+            .now(start)
+            .build()
+            .unwrap();
+        // Idle for 1ms: 10,000 token intervals elapse, but only `burst` may be banked.
+        let now = start + Duration::from_millis(1);
+        let mut granted = 0u64;
+        while tb.try_acquire(1, now) {
+            granted += 1;
+            assert!(granted <= 20, "over-admitted after idle gap");
+        }
+        assert_eq!(granted, 20);
+    }
+
+    #[test]
+    #[cfg(debug_assertions)]
+    #[should_panic(expected = "can never be admitted")]
+    fn oversized_cost_panics_in_debug() {
+        let start = Instant::now();
+        let tb = TokenBucket::builder()
+            .rate(10)
+            .period(Duration::from_nanos(1000))
+            .burst(20)
+            .now(start)
+            .build()
+            .unwrap();
+        let _ = tb.try_acquire(21, start); // 21 > burst: can never be admitted
+    }
+
+    #[test]
+    fn refill_after_idle_drain_is_at_rate() {
+        let start = Instant::now();
+        let tb = TokenBucket::builder()
+            .rate(10)
+            .period(Duration::from_nanos(1000))
+            .burst(20)
+            .now(start)
+            .build()
+            .unwrap();
+        let now = start + Duration::from_millis(1);
+        while tb.try_acquire(1, now) {}
+        // Drained at `now`: no double credit, one token per 100ns from here.
+        assert_eq!(tb.available(now + Duration::from_nanos(99)), 0);
+        assert_eq!(tb.available(now + Duration::from_nanos(100)), 1);
+        assert_eq!(tb.available(now + Duration::from_nanos(1000)), 10);
+        assert_eq!(tb.available(now + Duration::from_nanos(5000)), 20); // capped at burst
     }
 }

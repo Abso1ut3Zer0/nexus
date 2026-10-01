@@ -55,12 +55,23 @@ impl Gcra {
     /// Attempts to acquire with the given cost (thread-safe).
     ///
     /// Uses a CAS loop on the TAT. Retries on contention.
+    ///
+    /// A `cost` whose `cost * emission_interval` exceeds the burst tolerance
+    /// `tau` can never be admitted (even from an empty limiter) and always
+    /// returns `false`; debug builds trip a `debug_assert!` to surface that
+    /// misconfiguration.
     #[inline]
     #[must_use]
     pub fn try_acquire(&self, cost: u64, now: Instant) -> bool {
         let now = self.nanos_since_base(now);
         let emission_interval = self.emission_interval.load(Ordering::Relaxed);
         let tau = self.tau.load(Ordering::Relaxed);
+        debug_assert!(
+            cost.saturating_mul(emission_interval) <= tau,
+            "try_acquire: cost {cost} exceeds GCRA burst capacity {}; a request \
+             larger than the burst can never be admitted",
+            tau / emission_interval.max(1)
+        );
 
         loop {
             let tat = self.tat.load(Ordering::Relaxed);
@@ -83,6 +94,12 @@ impl Gcra {
     }
 
     /// Duration until a request of the given cost would be allowed.
+    ///
+    /// Informational: call this to learn when to retry, not instead of
+    /// [`try_acquire`](Self::try_acquire). The same oversized-`cost` rule
+    /// applies: a `cost` whose `cost * emission_interval` exceeds `tau` can
+    /// never be admitted, so no finite wait is correct; debug builds trip a
+    /// `debug_assert!` rather than report one.
     #[inline]
     #[must_use]
     pub fn time_until_allowed(&self, cost: u64, now: Instant) -> Duration {
@@ -90,6 +107,12 @@ impl Gcra {
         let tat = self.tat.load(Ordering::Relaxed);
         let emission_interval = self.emission_interval.load(Ordering::Relaxed);
         let tau = self.tau.load(Ordering::Relaxed);
+        debug_assert!(
+            cost.saturating_mul(emission_interval) <= tau,
+            "time_until_allowed: cost {cost} exceeds GCRA burst capacity {}; a request \
+             larger than the burst can never be admitted",
+            tau / emission_interval.max(1)
+        );
         let new_tat = tat
             .max(now)
             .saturating_add(cost.saturating_mul(emission_interval));
@@ -453,6 +476,40 @@ mod tests {
             .build()
             .unwrap();
         g.release(100, base);
-        assert!(!g.try_acquire(7, base));
+        // Still limited by burst: the burst+1 max (6) is admissible, then the
+        // limiter is exhausted. If release had banked the 100, this would not hold.
+        assert!(g.try_acquire(6, base));
+        assert!(!g.try_acquire(1, base));
+    }
+
+    #[test]
+    #[cfg(debug_assertions)]
+    #[should_panic(expected = "can never be admitted")]
+    fn oversized_cost_panics_in_debug() {
+        let base = Instant::now();
+        let g = Gcra::builder()
+            .rate(10)
+            .period(Duration::from_nanos(1000))
+            .burst(5)
+            .now(base)
+            .build()
+            .unwrap();
+        // capacity = burst + 1 = 6; 7 can never be admitted.
+        let _ = g.try_acquire(7, base);
+    }
+    #[test]
+    #[cfg(debug_assertions)]
+    #[should_panic(expected = "can never be admitted")]
+    fn time_until_allowed_oversized_cost_panics_in_debug() {
+        let base = Instant::now();
+        let g = Gcra::builder()
+            .rate(10)
+            .period(Duration::from_nanos(1000))
+            .burst(5)
+            .now(base)
+            .build()
+            .unwrap();
+        // capacity = burst + 1 = 6; 7 can never be admitted, so no wait is correct.
+        let _ = g.time_until_allowed(7, base);
     }
 }

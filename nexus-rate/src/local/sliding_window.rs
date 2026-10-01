@@ -90,9 +90,19 @@ impl SlidingWindow {
     }
 
     /// Records an event with the given cost. Returns `true` if under limit.
+    ///
+    /// A `cost` greater than `limit` (the window capacity) can never be under the
+    /// limit and always returns `false`; debug builds trip a `debug_assert!` to
+    /// surface that misconfiguration.
     #[inline]
     #[must_use]
     pub fn try_acquire(&mut self, cost: u64, now: Instant) -> bool {
+        debug_assert!(
+            cost <= self.limit,
+            "try_acquire: cost {cost} exceeds window limit {}; a request larger \
+             than the limit can never be admitted",
+            self.limit
+        );
         let now = self.nanos_since_base(now);
         self.advance_time(now);
 
@@ -457,6 +467,21 @@ mod tests {
         assert_eq!(sw.count(), 10);
         sw.release(3, base);
         assert_eq!(sw.count(), 7);
+    }
+
+    #[test]
+    #[cfg(debug_assertions)]
+    #[should_panic(expected = "can never be admitted")]
+    fn oversized_cost_panics_in_debug() {
+        let base = Instant::now();
+        let mut sw = SlidingWindow::builder()
+            .window(Duration::from_nanos(1000))
+            .sub_windows(4)
+            .limit(100)
+            .now(base)
+            .build()
+            .unwrap();
+        let _ = sw.try_acquire(101, base); // 101 > limit: can never be admitted
     }
 
     #[test]
