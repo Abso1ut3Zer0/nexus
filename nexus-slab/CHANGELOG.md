@@ -12,7 +12,12 @@ contained.
 
 ### Added
 
-<<<<<<< HEAD
+- `PinnedSlot<T>` and `byte::PinnedSlot<T>`: a sound pinned slot handle.
+  `Slot::into_pinned` consumes the movable handle; the pinned handle hands
+  out `Pin<&T>` / `Pin<&mut T>` and nothing that could move the value (no
+  `DerefMut`, no `BorrowMut`, no `take`). `Slab::free_pinned` on all four
+  slab types drops it in place. The `Box::into_pin` analogue for slab
+  storage ([#751](https://github.com/Abso1ut3Zer0/nexus/issues/751)).
 - `rc::unbounded::Slab` reaches parity with `unbounded::Slab`: `Builder`
   (`chunk_capacity`, `initial_chunks`, `unsafe build`, `Default`),
   `capacity`, `chunk_capacity`, `chunk_count`, `reserve_chunks`,
@@ -21,13 +26,6 @@ contained.
   docs now say so; `claim` is parked. Parity tests guard against the drift
   recurring ([#702](https://github.com/Abso1ut3Zer0/nexus/issues/702)).
 - `unbounded::Builder` and `byte::unbounded::Builder` are now `Clone`.
-=======
-- `PinnedSlot<T>` and `byte::PinnedSlot<T>`: a sound pinned slot handle.
-  `Slot::into_pinned` consumes the movable handle; the pinned handle hands
-  out `Pin<&T>` / `Pin<&mut T>` and nothing that could move the value (no
-  `DerefMut`, no `BorrowMut`, no `take`). `Slab::free_pinned` on all four
-  slab types drops it in place. The `Box::into_pin` analogue for slab
-  storage ([#751](https://github.com/Abso1ut3Zer0/nexus/issues/751)).
 
 ### Removed
 
@@ -39,7 +37,6 @@ contained.
   clones and has no caller. Shipped in a minor per this crate's stated
   policy on narrowly scoped breaks with contained blast radius; no workspace
   crate called these methods.
->>>>>>> ebd3c8b2 (establishing new pin api patterns for slab crate)
 
 ## [2.3.5] — 2026-10-01
 
