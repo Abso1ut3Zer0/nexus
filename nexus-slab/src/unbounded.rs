@@ -154,7 +154,13 @@ struct ChunkEntry<T> {
 ///   storage, and a [`Slot`] carries no lifetime tying it to the slab. A
 ///   `Slot` used after its slab is dropped dereferences freed memory
 ///   through safe code.
-/// - **Single-threaded.** The slab is `!Send` and `!Sync`.
+/// - **Single owner.** The slab is `Send` (for `T: Send`) and `!Sync`: it
+///   can move to another thread but never be shared between threads.
+///   Handles ([`Slot`], [`PinnedSlot`], claims, raw pointers from
+///   `into_raw`) are `!Send` and stay on the thread that created them. A
+///   handle left behind when the slab moves can still read and write its
+///   own value, but can no longer be freed, and it dangles if the slab is
+///   dropped on the other thread.
 ///
 /// ## Why `free()` is safe
 ///
@@ -165,11 +171,32 @@ struct ChunkEntry<T> {
 /// - The remaining hazards (cross-slab misuse, a `Slot` outliving its
 ///   slab) were accepted as the caller's responsibility at construction
 ///   time.
+///
+/// # Thread Safety
+///
+/// `Send` for `T: Send`, never `Sync`:
+///
+/// ```
+/// fn assert_send<T: Send>() {}
+/// assert_send::<nexus_slab::unbounded::Slab<u64>>();
+/// ```
+///
+/// ```compile_fail,E0277
+/// fn assert_sync<T: Sync>() {}
+/// assert_sync::<nexus_slab::unbounded::Slab<u64>>();
+/// ```
 pub struct Slab<T> {
     chunks: core::cell::UnsafeCell<Vec<ChunkEntry<T>>>,
     chunk_capacity: Cell<usize>,
     head_with_space: Cell<usize>,
 }
+
+// SAFETY: every chunk is a `bounded::Slab<T>` behind a `Box`, which is `Send`
+// for `T: Send` by the argument on that type; the chunk list and the
+// `head_with_space` cursor are reached only through `&self`, and the slab is
+// `!Sync`. Handles are `!Send`, so moving the slab moves the only access path
+// to every freelist. See `bounded::Slab` for the stranded-handle argument.
+unsafe impl<T: Send> Send for Slab<T> {}
 
 impl<T> Slab<T> {
     /// Creates a new slab with the given chunk capacity.

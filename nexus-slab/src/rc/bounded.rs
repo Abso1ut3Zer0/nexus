@@ -1,5 +1,7 @@
 //! Fixed-capacity reference-counted slab.
 
+use core::marker::PhantomData;
+
 use super::{RcCell, RcSlot};
 use crate::shared::Full;
 
@@ -14,8 +16,21 @@ use crate::shared::Full;
 /// caller accepts manual memory management. Every `RcSlot` must be
 /// freed via [`free()`](Self::free). The slot is deallocated when the
 /// last handle is freed.
+/// # Thread Safety
+///
+/// `!Send` and `!Sync`. The refcount is a non-atomic `Cell`, so the slab and
+/// every `RcSlot` it hands out stay on one thread:
+///
+/// ```compile_fail,E0277
+/// fn assert_send<T: Send>() {}
+/// assert_send::<nexus_slab::rc::bounded::Slab<u64>>();
+/// ```
 pub struct Slab<T> {
     inner: crate::bounded::Slab<RcCell<T>>,
+    /// Pins the slab to one thread. The inner typed slab is `Send`, but the
+    /// refcount in every `RcCell` is a non-atomic `Cell`, so an Rc slab and
+    /// its handles must stay together on the thread that created them.
+    _not_send: PhantomData<*const ()>,
 }
 
 impl<T> Slab<T> {
@@ -29,6 +44,7 @@ impl<T> Slab<T> {
         Self {
             // SAFETY: Caller upholds the slab contract.
             inner: unsafe { crate::bounded::Slab::with_capacity(capacity) },
+            _not_send: PhantomData,
         }
     }
 

@@ -1,5 +1,7 @@
 //! Growable reference-counted slab.
 
+use core::marker::PhantomData;
+
 use super::{RcCell, RcSlot};
 
 /// Growable slab with reference-counted handles.
@@ -22,8 +24,21 @@ use super::{RcCell, RcSlot};
 ///
 /// `claim()` (allocate now, write later) is not offered yet: it needs a claim
 /// type that resolves to an `RcSlot<T>`, and is parked until a caller exists.
+/// # Thread Safety
+///
+/// `!Send` and `!Sync`. The refcount is a non-atomic `Cell`, so the slab and
+/// every `RcSlot` it hands out stay on one thread:
+///
+/// ```compile_fail,E0277
+/// fn assert_send<T: Send>() {}
+/// assert_send::<nexus_slab::rc::unbounded::Slab<u64>>();
+/// ```
 pub struct Slab<T> {
     inner: crate::unbounded::Slab<RcCell<T>>,
+    /// Pins the slab to one thread. The inner typed slab is `Send`, but the
+    /// refcount in every `RcCell` is a non-atomic `Cell`, so an Rc slab and
+    /// its handles must stay together on the thread that created them.
+    _not_send: PhantomData<*const ()>,
 }
 
 impl<T> Slab<T> {
@@ -37,6 +52,7 @@ impl<T> Slab<T> {
         Self {
             // SAFETY: Caller upholds the slab contract.
             inner: unsafe { crate::unbounded::Slab::with_chunk_capacity(chunk_capacity) },
+            _not_send: PhantomData,
         }
     }
 
@@ -191,6 +207,7 @@ impl Builder {
         Slab {
             // SAFETY: caller upholds the slab contract.
             inner: unsafe { self.inner.build::<RcCell<T>>() },
+            _not_send: PhantomData,
         }
     }
 }

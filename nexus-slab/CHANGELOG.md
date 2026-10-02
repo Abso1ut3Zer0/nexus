@@ -33,6 +33,15 @@ contained.
   docs now say so; `claim` is parked. Parity tests guard against the drift
   recurring ([#702](https://github.com/Abso1ut3Zer0/nexus/issues/702)).
 - `unbounded::Builder` and `byte::unbounded::Builder` are now `Clone`.
+- `bounded::Slab`, `unbounded::Slab`, `byte::bounded::Slab` and
+  `byte::unbounded::Slab` are now `Send` (`T: Send` for the typed slabs) and
+  stay `!Sync`. Handles (`Slot`, `PinnedSlot`, claims) stay `!Send`, so a slab
+  moves between threads whole and nothing can race on its freelist; a handle
+  left behind can only touch its own slot. The `rc` slabs and `RcSlot` stay
+  `!Send` (non-atomic refcount) and now carry a marker and `compile_fail`
+  assertions saying so. Removes the `unsafe impl Send` boilerplate on
+  slab-backed resources in single-threaded runtimes
+  ([#724](https://github.com/Abso1ut3Zer0/nexus/issues/724)).
 
 ### Removed
 

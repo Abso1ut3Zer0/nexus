@@ -223,6 +223,15 @@ impl<T> RcCell<T> {
 /// # Size
 ///
 /// 8 bytes (one pointer).
+///
+/// # Thread Safety
+///
+/// `!Send` and `!Sync` (non-atomic refcount shared with every clone):
+///
+/// ```compile_fail,E0277
+/// fn assert_send<T: Send>() {}
+/// assert_send::<nexus_slab::RcSlot<u64>>();
+/// ```
 pub struct RcSlot<T> {
     /// Points to the `RcCell<T>` inside a `SlotCell<RcCell<T>>`.
     ptr: *mut RcCell<T>,
