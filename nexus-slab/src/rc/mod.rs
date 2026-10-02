@@ -31,6 +31,15 @@
 //! slab.free(h2);  // refcount 2 → 1
 //! slab.free(h1);  // refcount 1 → 0, deallocated
 //! ```
+//!
+//! # Pinning
+//!
+//! `RcSlot` has no pinned form. Pinned-ness would be a whole-slot property
+//! across clones (every handle's `borrow_mut()` would have to yield
+//! `Pin<RefMut>`), and std's own `Rc::pin` only offers shared `Pin<&T>`.
+//! Parked until a caller exists. For `T: Unpin`,
+//! `Pin::new(handle.borrow_mut())` is correct. For `!Unpin` values in a
+//! slab, use the plain slab's [`PinnedSlot`](crate::PinnedSlot).
 
 pub mod bounded;
 pub mod unbounded;
@@ -333,47 +342,6 @@ impl<T> RcSlot<T> {
             cell: self.ptr,
             _marker: PhantomData,
         }
-    }
-
-    /// Returns a pinned reference guard.
-    ///
-    /// # Unsound: deprecated
-    ///
-    /// This method is unsound for `!Unpin` types and will be removed in 2.4.0.
-    /// A stable address is only half of `Pin`'s contract; the value must also
-    /// never be moved out until it is dropped, and safe code can move it: once
-    /// this guard drops, [`borrow_mut()`](Self::borrow_mut) plus
-    /// `mem::replace` moves the value out from under the `Pin`, from this
-    /// handle or any clone. For `T: Unpin`, use `Pin::new(handle.borrow())`
-    /// instead. No pinned `RcSlot` replacement is planned: pinned-ness would
-    /// be a whole-slot property across clones and has no caller (issue #751).
-    #[deprecated(
-        since = "2.3.5",
-        note = "unsound for !Unpin types: the value can be moved through borrow_mut() + mem::replace once the guard drops; use Pin::new for Unpin types"
-    )]
-    #[inline]
-    pub fn pin(&self) -> core::pin::Pin<Ref<'_, T>> {
-        // SAFETY: the address is stable (slab storage never moves), but the
-        // second half of Pin's contract, that the value is never moved out,
-        // cannot be guaranteed while any handle can `borrow_mut()` after this
-        // guard drops. Deprecated for that reason; see its docs.
-        unsafe { core::pin::Pin::new_unchecked(self.borrow()) }
-    }
-
-    /// Returns a pinned mutable reference guard.
-    ///
-    /// # Unsound: deprecated
-    ///
-    /// See [`pin()`](Self::pin). Same defect, same removal in 2.4.0. For
-    /// `T: Unpin`, use `Pin::new(handle.borrow_mut())` instead.
-    #[deprecated(
-        since = "2.3.5",
-        note = "unsound for !Unpin types: the value can be moved through borrow_mut() + mem::replace once the guard drops; use Pin::new for Unpin types"
-    )]
-    #[inline]
-    pub fn pin_mut(&self) -> core::pin::Pin<RefMut<'_, T>> {
-        // SAFETY: not fully upheld; see `pin()`. Deprecated for that reason.
-        unsafe { core::pin::Pin::new_unchecked(self.borrow_mut()) }
     }
 
     /// Increments the refcount (used by Clone).

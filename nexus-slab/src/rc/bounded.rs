@@ -251,28 +251,6 @@ mod tests {
     }
 
     #[test]
-    #[allow(deprecated)] // exercises the deprecated methods until 2.4.0 removes them
-    fn pin_and_pin_mut() {
-        // SAFETY: test slab; single-threaded, all handles freed before drop.
-        let slab = unsafe { Slab::with_capacity(10) };
-        let handle = slab.alloc(42u64);
-
-        {
-            let pinned = handle.pin();
-            assert_eq!(*pinned, 42);
-        }
-        {
-            let mut pinned = handle.pin_mut();
-            *pinned = 99;
-        }
-        {
-            let g = handle.borrow();
-            assert_eq!(*g, 99);
-        }
-        slab.free(handle);
-    }
-
-    #[test]
     fn into_raw_from_raw_roundtrip() {
         // SAFETY: test slab; single-threaded, all handles freed before drop.
         let slab = unsafe { Slab::with_capacity(10) };

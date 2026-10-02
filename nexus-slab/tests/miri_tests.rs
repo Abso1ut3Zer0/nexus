@@ -14,6 +14,7 @@
 //! - Correct drop ordering
 
 use nexus_slab::bounded::Slab as BoundedSlab;
+use nexus_slab::byte::bounded::Slab as ByteBoundedSlab;
 use nexus_slab::unbounded::Slab as UnboundedSlab;
 use std::cell::Cell;
 
@@ -197,6 +198,10 @@ fn miri_no_drop_after_leak() {
     let _ = slot.into_raw();
 
     assert_eq!(get_drop_count(), 0);
+
+    // The slot is still occupied, so dropping the slab would trip the debug
+    // check; forgetting the slab is the documented way to leak deliberately.
+    core::mem::forget(slab);
 }
 
 // =============================================================================
@@ -902,4 +907,90 @@ fn miri_unbounded_stored_pointer_cross_chunk() {
     slab_ref.free(s4);
     slab_ref.free(s5);
     slab_ref.free(s6);
+}
+
+// =============================================================================
+// PinnedSlot
+// =============================================================================
+
+/// A self-referential value: `ptr` points at its own `data` field once
+/// pinned. Its unsafe is sound under Pin's contract (never moved after `init`),
+/// which is exactly what `PinnedSlot` must guarantee.
+struct SelfRef {
+    data: u64,
+    ptr: *const u64,
+    _pin: std::marker::PhantomPinned,
+}
+
+impl SelfRef {
+    fn new(data: u64) -> Self {
+        SelfRef {
+            data,
+            ptr: std::ptr::null(),
+            _pin: std::marker::PhantomPinned,
+        }
+    }
+
+    fn init(self: std::pin::Pin<&mut Self>) {
+        // SAFETY: we never move out of the pinned value.
+        let this = unsafe { self.get_unchecked_mut() };
+        this.ptr = std::ptr::from_ref(&this.data);
+    }
+
+    fn read(self: std::pin::Pin<&Self>) -> u64 {
+        // SAFETY: ptr was set while pinned and the value has not moved since.
+        unsafe { *self.ptr }
+    }
+}
+
+#[test]
+fn miri_pinned_self_referential_bounded() {
+    // SAFETY: test slab; single-threaded, all slots freed before drop.
+    let slab = unsafe { BoundedSlab::<SelfRef>::with_capacity(4) };
+    let mut p = slab.alloc(SelfRef::new(0xA5)).into_pinned();
+    p.as_mut().init();
+
+    // Churn the slab around the pinned slot; its address must not change.
+    let a = slab.alloc(SelfRef::new(1));
+    let b = slab.alloc(SelfRef::new(2));
+    slab.free(a);
+    let c = slab.alloc(SelfRef::new(3));
+
+    assert_eq!(p.as_ref().read(), 0xA5);
+    assert_eq!(p.ptr, std::ptr::from_ref(&p.data));
+
+    slab.free(b);
+    slab.free(c);
+    slab.free_pinned(p);
+}
+
+#[test]
+fn miri_pinned_self_referential_byte() {
+    // SAFETY: test slab; single-threaded, all slots freed before drop.
+    let slab: ByteBoundedSlab<32> = unsafe { ByteBoundedSlab::with_capacity(4) };
+    let mut p = slab.alloc(SelfRef::new(0x5A)).into_pinned();
+    p.as_mut().init();
+
+    let a = slab.alloc(SelfRef::new(1));
+    let b = slab.alloc(7u64); // different type, same slab
+    slab.free(a);
+    let c = slab.alloc(SelfRef::new(3));
+
+    assert_eq!(p.as_ref().read(), 0x5A);
+    assert_eq!(p.ptr, std::ptr::from_ref(&p.data));
+
+    slab.free(b);
+    slab.free(c);
+    slab.free_pinned(p);
+}
+
+#[test]
+fn miri_pinned_free_drops_in_place() {
+    reset_drop_count();
+    // SAFETY: test slab; single-threaded, all slots freed before drop.
+    let slab = unsafe { BoundedSlab::<DropTracker>::with_capacity(2) };
+    let p = slab.alloc(DropTracker(1)).into_pinned();
+    assert_eq!(get_drop_count(), 0);
+    slab.free_pinned(p);
+    assert_eq!(get_drop_count(), 1);
 }

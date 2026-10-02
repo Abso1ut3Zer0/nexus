@@ -343,6 +343,10 @@ fn drop_not_called_on_leak() {
     let _ = slot.into_raw();
 
     assert_eq!(get_drop_count(), 0); // Leaked, not dropped
+
+    // The slot is still occupied, so dropping the slab would trip the debug
+    // check; forgetting the slab is the documented way to leak deliberately.
+    core::mem::forget(slab);
 }
 
 // =============================================================================

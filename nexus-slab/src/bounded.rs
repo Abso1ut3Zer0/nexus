@@ -21,7 +21,7 @@ use core::ptr;
 
 use alloc::vec::Vec;
 
-use crate::shared::{Full, Slot, SlotCell};
+use crate::shared::{Full, PinnedSlot, Slot, SlotCell};
 
 // =============================================================================
 // Claim
@@ -109,7 +109,14 @@ impl<T> Drop for Claim<'_, T> {
 ///   slab's `free()` is undefined behavior — it corrupts the freelist.
 ///   In debug builds, this is caught by `debug_assert!`.
 /// - **Free everything you allocate.** Dropping the slab does NOT drop
-///   values in occupied slots. Unfreed slots leak silently.
+///   values in occupied slots, and debug builds panic on drop while any
+///   slot is still occupied. In release, a plain `Slot` left occupied is a
+///   leak. A [`PinnedSlot`] left occupied, or a raw pointer taken from
+///   `PinnedSlot::into_raw`, is undefined behavior: the storage is freed
+///   without the destructor running, which breaks `Pin`'s drop guarantee
+///   (`mem::forget(pinned)` followed by dropping the slab is the trap). To
+///   abandon a slab deliberately, `mem::forget` the slab itself; leaking the
+///   storage is the one outcome that stays sound for a pinned value.
 /// - **Slots must not outlive the slab.** Dropping the slab frees its
 ///   storage, and a [`Slot`] carries no lifetime tying it to the slab. A
 ///   `Slot` used after its slab is dropped dereferences freed memory
@@ -328,6 +335,64 @@ impl<T> Slab<T> {
         }
     }
 
+    /// Frees a pinned slot, dropping the value in place and returning
+    /// storage to the freelist.
+    ///
+    /// The only way out of a [`PinnedSlot`]: the value is never moved, which
+    /// is what keeps the pin sound. Consumes the handle.
+    /// Must be called before the slab is dropped: a pinned value whose slot
+    /// is still occupied at slab drop loses its storage without its
+    /// destructor running (see [`PinnedSlot`]).
+    #[inline]
+    // Consumes the slot handle by design — the slot cannot be used after free.
+    #[allow(clippy::needless_pass_by_value)]
+    pub fn free_pinned(&self, slot: PinnedSlot<T>) {
+        let slot_ptr = slot.into_raw();
+        debug_assert!(
+            self.contains_ptr(slot_ptr as *const ()),
+            "slot was not allocated from this slab"
+        );
+        // SAFETY: PinnedSlot guarantees the slot is valid and occupied.
+        // Dropping in place (never moving) upholds the pin contract.
+        unsafe {
+            (*slot_ptr).drop_value_in_place();
+            self.free_ptr(slot_ptr);
+        }
+    }
+
+    /// Occupied slot count, recovered by walking the freelist: everything
+    /// not on the freelist is occupied. Debug-only teardown check; nothing
+    /// on the hot path keeps a counter.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the freelist is corrupt: more nodes than capacity (a slot
+    /// was freed twice) or a node outside this slab (a slot was freed to the
+    /// wrong slab). Both are contract violations that `free` already
+    /// `debug_assert!`s at the point of the free; this is the backstop.
+    #[cfg(debug_assertions)]
+    fn occupied_slots(&self) -> usize {
+        let mut vacant = 0usize;
+        let mut cur = self.free_head.get();
+        while !cur.is_null() {
+            assert!(
+                self.contains_ptr(cur as *const ()),
+                "Slab<{}> freelist contains a pointer outside this slab (a slot was freed to the wrong slab)",
+                core::any::type_name::<T>()
+            );
+            vacant += 1;
+            assert!(
+                vacant <= self.capacity,
+                "Slab<{}> freelist has more nodes than capacity (a slot was freed twice)",
+                core::any::type_name::<T>()
+            );
+            // SAFETY: cur is non-null and inside this slab (checked above); a
+            // slot on the freelist is vacant, so next_free is the active field.
+            cur = unsafe { (*cur).get_next_free() };
+        }
+        self.capacity - vacant
+    }
+
     /// Returns a slot to the freelist by pointer.
     ///
     /// Does NOT drop the value — caller must drop before calling.
@@ -363,6 +428,29 @@ impl<T> fmt::Debug for Slab<T> {
 // =============================================================================
 // Tests
 // =============================================================================
+
+// The impl is unconditional so the drop checker treats `Slab<T>` the same way
+// in every profile (`T` must outlive the slab); only the check itself is
+// debug-gated, so release builds get an empty destructor.
+impl<T> Drop for Slab<T> {
+    fn drop(&mut self) {
+        #[cfg(debug_assertions)]
+        {
+            #[cfg(feature = "std")]
+            if std::thread::panicking() {
+                return; // Don't double-panic during unwind
+            }
+            let occupied = self.occupied_slots();
+            assert!(
+                occupied == 0,
+                "Slab<{}> dropped with {occupied} occupied slot(s): free every slot \
+                 (free, take, or free_pinned) before dropping the slab, or \
+                 mem::forget the slab to leak it deliberately",
+                core::any::type_name::<T>()
+            );
+        }
+    }
+}
 
 #[cfg(test)]
 mod tests {
@@ -475,5 +563,83 @@ mod tests {
         let slot2 = slab.alloc(100);
         assert_eq!(*slot2, 100);
         slab.free(slot2);
+    }
+
+    #[test]
+    fn pinned_slot_roundtrip_and_free_in_place() {
+        let drops = core::cell::Cell::new(0usize);
+        struct Tracked<'a>(u64, &'a core::cell::Cell<usize>);
+        impl Drop for Tracked<'_> {
+            fn drop(&mut self) {
+                self.1.set(self.1.get() + 1);
+            }
+        }
+        // SAFETY: test slab; single-threaded, all slots freed before drop.
+        let slab = unsafe { Slab::with_capacity(4) };
+        let mut p = slab.alloc(Tracked(1, &drops)).into_pinned();
+        assert_eq!(p.0, 1);
+        p.as_mut().0 = 2; // Pin<&mut T> is DerefMut for an Unpin T
+        assert_eq!(p.as_ref().0, 2);
+        assert_eq!(drops.get(), 0);
+        slab.free_pinned(p);
+        assert_eq!(drops.get(), 1, "free_pinned drops in place exactly once");
+    }
+
+    #[test]
+    fn pinned_slot_into_raw_from_raw() {
+        // SAFETY: test slab; single-threaded, all slots freed before drop.
+        let slab = unsafe { Slab::with_capacity(2) };
+        let p = slab.alloc(7u64).into_pinned();
+        let raw = p.into_raw();
+        // SAFETY: raw came from into_raw on a live pinned slot; value untouched.
+        let p = unsafe { PinnedSlot::from_raw(raw) };
+        assert_eq!(*p, 7);
+        slab.free_pinned(p);
+    }
+
+    #[test]
+    #[cfg(debug_assertions)]
+    #[should_panic(expected = "PinnedSlot<u64> dropped without being freed")]
+    fn pinned_slot_leak_detector() {
+        // SAFETY: test slab; single-threaded; the leaked slot is the point.
+        let slab = unsafe { Slab::with_capacity(1) };
+        let _p = slab.alloc(1u64).into_pinned();
+    }
+
+    #[test]
+    #[cfg(debug_assertions)]
+    #[should_panic(expected = "dropped with 2 occupied slot(s)")]
+    fn drop_with_occupied_slots_panics_in_debug() {
+        // SAFETY: test slab; the leaked slots are the point.
+        let slab = unsafe { Slab::with_capacity(4) };
+        let a = slab.alloc(1u64);
+        let b = slab.alloc(2u64);
+        let _c = slab.alloc(3u64);
+        slab.free(a);
+        core::mem::forget(b); // forgotten handle: still occupied
+        core::mem::forget(_c);
+        drop(slab);
+    }
+
+    #[test]
+    fn drop_after_freeing_everything_is_clean() {
+        // SAFETY: test slab; single-threaded, all slots freed before drop.
+        let slab = unsafe { Slab::with_capacity(3) };
+        let a = slab.alloc(1u64);
+        let b = slab.alloc(2u64).into_pinned();
+        let c = slab.alloc(3u64);
+        let _ = slab.take(c);
+        slab.free_pinned(b);
+        slab.free(a);
+        drop(slab); // no panic: freelist length == capacity
+    }
+
+    #[test]
+    fn forgetting_the_slab_skips_the_check() {
+        // SAFETY: test slab; deliberately leaked.
+        let slab = unsafe { Slab::with_capacity(2) };
+        let p = slab.alloc(7u64).into_pinned();
+        core::mem::forget(p);
+        core::mem::forget(slab); // storage never freed: sound even for the pinned value
     }
 }

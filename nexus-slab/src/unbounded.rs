@@ -23,7 +23,7 @@ use alloc::boxed::Box;
 use alloc::vec::Vec;
 
 use crate::bounded::Slab as BoundedSlab;
-use crate::shared::{Slot, SlotCell};
+use crate::shared::{PinnedSlot, Slot, SlotCell};
 
 // =============================================================================
 // Claim
@@ -142,7 +142,14 @@ struct ChunkEntry<T> {
 ///   slab's `free()` is undefined behavior — it corrupts the freelist.
 ///   In debug builds, this is caught by `debug_assert!`.
 /// - **Free everything you allocate.** Dropping the slab does NOT drop
-///   values in occupied slots. Unfreed slots leak silently.
+///   values in occupied slots, and debug builds panic on drop while any
+///   slot is still occupied. In release, a plain `Slot` left occupied is a
+///   leak. A [`PinnedSlot`] left occupied, or a raw pointer taken from
+///   `PinnedSlot::into_raw`, is undefined behavior: the storage is freed
+///   without the destructor running, which breaks `Pin`'s drop guarantee
+///   (`mem::forget(pinned)` followed by dropping the slab is the trap). To
+///   abandon a slab deliberately, `mem::forget` the slab itself; leaking the
+///   storage is the one outcome that stays sound for a pinned value.
 /// - **Slots must not outlive the slab.** Dropping the slab frees its
 ///   storage, and a [`Slot`] carries no lifetime tying it to the slab. A
 ///   `Slot` used after its slab is dropped dereferences freed memory
@@ -394,6 +401,32 @@ impl<T> Slab<T> {
             let value = (*slot_ptr).read_value();
             self.free_ptr(slot_ptr);
             value
+        }
+    }
+
+    /// Frees a pinned slot, dropping the value in place and returning
+    /// storage to the freelist.
+    ///
+    /// The only way out of a [`PinnedSlot`]: the value is never moved, which
+    /// is what keeps the pin sound. Consumes the handle.
+    /// Must be called before the slab is dropped: a pinned value whose slot
+    /// is still occupied at slab drop loses its storage without its
+    /// destructor running (see [`PinnedSlot`]). O(n) in chunk
+    /// count, like [`free`](Self::free).
+    #[inline]
+    // Consumes the slot handle by design — the slot cannot be used after free.
+    #[allow(clippy::needless_pass_by_value)]
+    pub fn free_pinned(&self, slot: PinnedSlot<T>) {
+        let slot_ptr = slot.into_raw();
+        debug_assert!(
+            self.contains_ptr(slot_ptr as *const ()),
+            "slot was not allocated from this slab"
+        );
+        // SAFETY: PinnedSlot guarantees the slot is valid and occupied.
+        // Dropping in place (never moving) upholds the pin contract.
+        unsafe {
+            (*slot_ptr).drop_value_in_place();
+            self.free_ptr(slot_ptr);
         }
     }
 
@@ -725,5 +758,25 @@ mod tests {
     fn builder_zero_chunk_capacity_panics() {
         // SAFETY: test slab; single-threaded; panics before any slot can be allocated.
         let _slab = unsafe { Builder::new().chunk_capacity(0).build::<u64>() };
+    }
+
+    #[test]
+    fn pinned_slot_survives_growth() {
+        // SAFETY: test slab; single-threaded, all slots freed before drop.
+        let slab = unsafe { Slab::with_chunk_capacity(2) };
+        let mut p = slab.alloc(10u64).into_pinned();
+        let addr = core::ptr::from_ref::<u64>(&p);
+        let others: alloc::vec::Vec<_> = (0..16u64).map(|i| slab.alloc(i)).collect();
+        *p.as_mut() += 1;
+        assert_eq!(*p, 11);
+        assert_eq!(
+            core::ptr::from_ref::<u64>(&p),
+            addr,
+            "growth must not move a pinned slot"
+        );
+        for o in others {
+            slab.free(o);
+        }
+        slab.free_pinned(p);
     }
 }

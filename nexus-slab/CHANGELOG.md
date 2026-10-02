@@ -12,6 +12,19 @@ contained.
 
 ### Added
 
+- `PinnedSlot<T>` and `byte::PinnedSlot<T>`: a sound pinned slot handle.
+  `Slot::into_pinned` consumes the movable handle; the pinned handle hands
+  out `Pin<&T>` / `Pin<&mut T>` and nothing that could move the value (no
+  `DerefMut`, no `BorrowMut`, no `take`). `Slab::free_pinned` on all four
+  slab types drops it in place, and must run before the slab is dropped:
+  a pinned value left occupied at slab drop loses its storage without its
+  destructor running (`Pin`'s drop guarantee). The `Box::into_pin` analogue
+  for slab storage ([#751](https://github.com/Abso1ut3Zer0/nexus/issues/751)).
+- Debug builds panic when a slab is dropped while any slot is still occupied
+  (the freelist is walked on drop; corrupt freelists are reported as a double
+  free or a cross-slab free). Release builds are unchanged. `Slab<T>` now has
+  a `Drop` impl in every profile, so the drop checker requires `T` to outlive
+  the slab.
 - `rc::unbounded::Slab` reaches parity with `unbounded::Slab`: `Builder`
   (`chunk_capacity`, `initial_chunks`, `unsafe build`, `Default`),
   `capacity`, `chunk_capacity`, `chunk_count`, `reserve_chunks`,
@@ -20,6 +33,17 @@ contained.
   docs now say so; `claim` is parked. Parity tests guard against the drift
   recurring ([#702](https://github.com/Abso1ut3Zer0/nexus/issues/702)).
 - `unbounded::Builder` and `byte::unbounded::Builder` are now `Clone`.
+
+### Removed
+
+- `Slot::pin` / `pin_mut`, `byte::Slot::pin` / `pin_mut` and `RcSlot::pin` /
+  `pin_mut`, deprecated in 2.3.5 as unsound
+  ([#750](https://github.com/Abso1ut3Zer0/nexus/issues/750)). Use
+  `PinnedSlot` for `!Unpin` values and `Pin::new` for `Unpin` ones. `RcSlot`
+  gets no pinned form: pinned-ness would be a whole-slot property across
+  clones and has no caller. Shipped in a minor per this crate's stated
+  policy on narrowly scoped breaks with contained blast radius; no workspace
+  crate called these methods.
 
 ## [2.3.5] — 2026-10-01
 

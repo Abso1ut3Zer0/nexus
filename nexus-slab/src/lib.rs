@@ -14,6 +14,7 @@
 //! - **Predictable tail latency** — no reallocation spikes, no allocator contention
 //! - **8-byte handles** — half the size of `Box`
 //! - **O(1) alloc/free** — freelist-based, no search
+//! - **Pinned storage**: [`Slot::into_pinned`] for `!Unpin` values (futures, self-referential structs)
 //!
 //! If you need a general-purpose slab data structure (insert, get by key, iterate),
 //! use the [`slab`](https://crates.io/crates/slab) crate instead.
@@ -70,4 +71,4 @@ pub mod unbounded;
 
 #[cfg(feature = "rc")]
 pub use rc::{RcSlot, Ref, RefMut};
-pub use shared::{Full, Slot, SlotCell};
+pub use shared::{Full, PinnedSlot, Slot, SlotCell};
