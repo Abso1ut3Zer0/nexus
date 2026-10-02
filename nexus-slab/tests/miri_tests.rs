@@ -198,6 +198,10 @@ fn miri_no_drop_after_leak() {
     let _ = slot.into_raw();
 
     assert_eq!(get_drop_count(), 0);
+
+    // The slot is still occupied, so dropping the slab would trip the debug
+    // check; forgetting the slab is the documented way to leak deliberately.
+    core::mem::forget(slab);
 }
 
 // =============================================================================

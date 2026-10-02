@@ -142,7 +142,14 @@ struct ChunkEntry<T> {
 ///   slab's `free()` is undefined behavior — it corrupts the freelist.
 ///   In debug builds, this is caught by `debug_assert!`.
 /// - **Free everything you allocate.** Dropping the slab does NOT drop
-///   values in occupied slots. Unfreed slots leak silently.
+///   values in occupied slots, and debug builds panic on drop while any
+///   slot is still occupied. In release, a plain `Slot` left occupied is a
+///   leak. A [`PinnedSlot`] left occupied, or a raw pointer taken from
+///   `PinnedSlot::into_raw`, is undefined behavior: the storage is freed
+///   without the destructor running, which breaks `Pin`'s drop guarantee
+///   (`mem::forget(pinned)` followed by dropping the slab is the trap). To
+///   abandon a slab deliberately, `mem::forget` the slab itself; leaking the
+///   storage is the one outcome that stays sound for a pinned value.
 /// - **Slots must not outlive the slab.** Dropping the slab frees its
 ///   storage, and a [`Slot`] carries no lifetime tying it to the slab. A
 ///   `Slot` used after its slab is dropped dereferences freed memory
@@ -401,7 +408,10 @@ impl<T> Slab<T> {
     /// storage to the freelist.
     ///
     /// The only way out of a [`PinnedSlot`]: the value is never moved, which
-    /// is what keeps the pin sound. Consumes the handle. O(n) in chunk
+    /// is what keeps the pin sound. Consumes the handle.
+    /// Must be called before the slab is dropped: a pinned value whose slot
+    /// is still occupied at slab drop loses its storage without its
+    /// destructor running (see [`PinnedSlot`]). O(n) in chunk
     /// count, like [`free`](Self::free).
     #[inline]
     // Consumes the slot handle by design — the slot cannot be used after free.

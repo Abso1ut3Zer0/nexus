@@ -100,14 +100,18 @@ slab.free(ptr);
 ```
 
 **Debug mode:** dropping a `Slot` without calling `free()` or `take()`
-panics (leak detection). Release mode: silent leak.
+panics (leak detection), and dropping a slab while any slot is still occupied
+panics too. Release mode: silent leak, except for pinned slots (see below).
 
 **Pinning:** `ptr.into_pinned()` consumes the `Slot` and returns a
 `PinnedSlot<T>`, which hands out `Pin<&T>` / `Pin<&mut T>` and nothing that
 could move the value (no `DerefMut`, no `take()`). Free it with
 `slab.free_pinned(pinned)`, which drops in place. This is the sound way to
 keep a `!Unpin` value (a future, a self-referential struct) in a slab. For
-`T: Unpin`, `Pin::new(&mut *ptr)` on a plain `Slot` is enough.
+`T: Unpin`, `Pin::new(&mut *ptr)` on a plain `Slot` is enough. `free_pinned`
+before the slab drops is a soundness requirement: a pinned value whose slot is
+still occupied at slab drop loses its storage without its destructor running.
+The only sound ways out are `free_pinned` or `mem::forget`-ing the whole slab.
 
 ```rust
 let mut pinned = slab.alloc(fut).into_pinned();

@@ -118,7 +118,8 @@ impl<T> Slot<T> {
     /// See [`PinnedSlot`](crate::PinnedSlot) for the contract; this is the
     /// byte-slab form. Free with
     /// [`Slab::free_pinned`](crate::byte::bounded::Slab::free_pinned), which
-    /// drops the value in place.
+    /// drops the value in place. That call must happen before the slab is
+    /// dropped; see [`PinnedSlot`] for why that is a soundness requirement.
     #[inline]
     pub fn into_pinned(self) -> PinnedSlot<T> {
         PinnedSlot {
@@ -211,6 +212,16 @@ impl<T> Drop for Slot<T> {
 /// # Debug Leak Detection
 ///
 /// Same as [`Slot`]: panics on drop in debug builds if not freed.
+///
+/// # Lifetime
+///
+/// Calling `free_pinned` before the slab drops is a soundness requirement,
+/// not hygiene. Forgetting this handle and dropping the slab frees the
+/// storage without running the destructor, which is exactly what intrusive
+/// structures (a future registered in a waiter list, say) rely on not
+/// happening. Debug builds panic on slab drop while the slot is occupied.
+/// If the slab must be abandoned, `mem::forget` the slab: leaked storage is
+/// never repurposed, so the pin contract holds.
 pub struct PinnedSlot<T> {
     ptr: *mut u8,
     _marker: PhantomData<T>,

@@ -273,6 +273,9 @@ impl<T> Slot<T> {
     ///
     /// For `T: Unpin` no helper is needed; `Pin::new(&mut *slot)` is correct.
     ///
+    /// The pinned slot must be freed with `free_pinned` before the slab is
+    /// dropped; see [`PinnedSlot`] for why that is a soundness requirement.
+    ///
     /// # Example
     ///
     /// ```
@@ -377,6 +380,16 @@ impl<T> Drop for Slot<T> {
 /// - The address is stable: slab storage never moves.
 /// - The value is never moved out before `free_pinned` drops it in place.
 /// - Debug-mode leak detection, same as [`Slot`].
+///
+/// # Lifetime
+///
+/// Calling `free_pinned` before the slab drops is a soundness requirement,
+/// not hygiene. Forgetting this handle and dropping the slab frees the
+/// storage without running the destructor, which is exactly what intrusive
+/// structures (a future registered in a waiter list, say) rely on not
+/// happening. Debug builds panic on slab drop while the slot is occupied.
+/// If the slab must be abandoned, `mem::forget` the slab: leaked storage is
+/// never repurposed, so the pin contract holds.
 ///
 /// # Access
 ///

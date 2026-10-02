@@ -2847,9 +2847,11 @@ mod proptests {
             // Use a far-future time to fire everything
             wheel.poll(now + Duration::from_secs(100_000), &mut buf);
 
-            // Clean up zombie handles (poll fired them, handles still exist)
+            // Release zombie handles (poll fired them, handles still exist).
+            // `free` drops the slab entry; forgetting the handle would leak the
+            // slot and trip nexus-slab's debug check when the wheel drops.
             for h in handles {
-                mem::forget(h);
+                wheel.free(h);
             }
 
             let fired_set: HashSet<u64> = buf.into_iter().collect();
