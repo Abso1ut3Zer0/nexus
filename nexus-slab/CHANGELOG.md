@@ -10,6 +10,8 @@ contained.
 
 ## [Unreleased]
 
+## [2.4.0] — 2026-10-02
+
 ### Added
 
 - `PinnedSlot<T>` and `byte::PinnedSlot<T>`: a sound pinned slot handle.

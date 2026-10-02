@@ -1,6 +1,6 @@
 [package]
 name = "nexus-slab"
-version = "2.3.5"
+version = "2.4.0"
 description = "A high-performance slab allocator optimized for predictable tail latency"
 readme = "README.md"
 edition.workspace = true
