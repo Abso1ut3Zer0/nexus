@@ -33,7 +33,10 @@ slab.free(ptr);             // consumes handle, can't use after
 Construction is `unsafe` — you're opting into:
 - **Free everything you allocate.** Unfree'd slots leak.
 - **Free from the same slab.** Cross-slab free corrupts the freelist.
-- **Don't share across threads.** The slab is `!Send`/`!Sync`.
+- **Don't share across threads.** The slab is `Send` and `!Sync`: move it whole
+  to another thread if you need to, never share it. Handles (`Slot`,
+  `PinnedSlot`) are `!Send` and stay on the thread that created them. Rc slabs
+  and `RcSlot` are `!Send` as well (non-atomic refcount).
 
 Everything after construction is safe. `Slot<T>` is move-only
 (`!Copy`, `!Clone`) — the compiler prevents double-free.

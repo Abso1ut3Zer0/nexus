@@ -16,6 +16,7 @@ use crate::shared::Full;
 /// caller accepts manual memory management. Every `RcSlot` must be
 /// freed via [`free()`](Self::free). The slot is deallocated when the
 /// last handle is freed.
+///
 /// # Thread Safety
 ///
 /// `!Send` and `!Sync`. The refcount is a non-atomic `Cell`, so the slab and

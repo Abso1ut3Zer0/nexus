@@ -24,6 +24,7 @@ use super::{RcCell, RcSlot};
 ///
 /// `claim()` (allocate now, write later) is not offered yet: it needs a claim
 /// type that resolves to an `RcSlot<T>`, and is parked until a caller exists.
+///
 /// # Thread Safety
 ///
 /// `!Send` and `!Sync`. The refcount is a non-atomic `Cell`, so the slab and

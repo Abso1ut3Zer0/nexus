@@ -52,7 +52,12 @@ slot. `claim_ptr` pops the head, `free_ptr` pushes back.
 **Key invariants:**
 - All freelist pointers are derived from `UnsafeCell::get()` at
   construction time — they carry write provenance from the `UnsafeCell`.
-- The freelist is single-threaded (`Cell<*mut SlotCell<T>>`).
+- The freelist is never accessed concurrently: the slab is `!Sync`
+  (`Cell<*mut SlotCell<T>>`). The slab is `Send`, but moving it moves the
+  only access path to the freelist, because every handle is `!Send` and
+  stays behind; a stranded handle can touch only its own occupied slot,
+  which the slab never reads or writes. The full argument is the SAFETY
+  comment on `bounded::Slab`'s `Send` impl.
   No concurrent modification.
 - `free()` consumes the `Slot` (move semantics) — double-free is a
   compile error, not a runtime check.
