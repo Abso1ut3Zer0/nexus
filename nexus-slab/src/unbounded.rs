@@ -160,7 +160,10 @@ struct ChunkEntry<T> {
 ///   `into_raw`) are `!Send` and stay on the thread that created them. A
 ///   handle left behind when the slab moves can still read and write its
 ///   own value, but can no longer be freed, and it dangles if the slab is
-///   dropped on the other thread.
+///   dropped on the other thread. That is the same contract violation as
+///   dropping the slab with a live handle on one thread (see the bullet
+///   above): `Send` adds no new way to break the rule, and debug builds
+///   catch the drop the same way.
 ///
 /// ## Why `free()` is safe
 ///

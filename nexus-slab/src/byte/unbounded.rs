@@ -41,7 +41,10 @@ use super::{AlignedBytes, PinnedSlot, Slot, validate_type};
 ///   a `!Send` value stored in the slab: nothing on the other thread can
 ///   reach it. A handle left behind can still read and write its own value,
 ///   but can no longer be freed, and it dangles if the slab is dropped on
-///   the other thread.
+///   the other thread. That is the same contract violation as dropping the
+///   slab with a live handle on one thread (see the bullet above): `Send`
+///   adds no new way to break the rule, and debug builds catch the drop the
+///   same way.
 ///
 /// ## Why `free()` is safe
 ///
