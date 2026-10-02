@@ -194,7 +194,13 @@ impl<T> SlotCell<T> {
 /// # Thread Safety
 ///
 /// `Slot` is `!Send` and `!Sync`. It must only be used from the thread that
-/// created it.
+/// created it. This is what lets the slab itself be `Send`: a handle can
+/// never follow the slab to another thread.
+///
+/// ```compile_fail,E0277
+/// fn assert_send<T: Send>() {}
+/// assert_send::<nexus_slab::Slot<u64>>();
+/// ```
 ///
 /// # Debug-Mode Leak Detection
 ///
@@ -417,6 +423,11 @@ impl<T> Drop for Slot<T> {
 /// # Thread Safety
 ///
 /// `!Send` and `!Sync`, same as [`Slot`].
+///
+/// ```compile_fail,E0277
+/// fn assert_send<T: Send>() {}
+/// assert_send::<nexus_slab::PinnedSlot<u64>>();
+/// ```
 #[repr(transparent)]
 pub struct PinnedSlot<T>(*mut SlotCell<T>);
 

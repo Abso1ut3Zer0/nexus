@@ -34,7 +34,17 @@ use super::{AlignedBytes, PinnedSlot, Slot, validate_type};
 ///   storage, and a [`Slot`] carries no lifetime tying it to the slab. A
 ///   `Slot` used after its slab is dropped dereferences freed memory
 ///   through safe code.
-/// - **Single-threaded.** The slab is `!Send` and `!Sync`.
+/// - **Single owner.** The slab is `Send` and `!Sync`: it can move to another
+///   thread but never be shared between threads. Handles ([`Slot`],
+///   [`PinnedSlot`], claims, raw pointers) are `!Send` and stay on the
+///   thread that created them, which is what makes the move sound even for
+///   a `!Send` value stored in the slab: nothing on the other thread can
+///   reach it. A handle left behind can still read and write its own value,
+///   but can no longer be freed, and it dangles if the slab is dropped on
+///   the other thread. That is the same contract violation as dropping the
+///   slab with a live handle on one thread (see the bullet above): `Send`
+///   adds no new way to break the rule, and debug builds catch the drop the
+///   same way.
 ///
 /// ## Why `free()` is safe
 ///
@@ -45,9 +55,34 @@ use super::{AlignedBytes, PinnedSlot, Slot, validate_type};
 /// - The remaining hazards (cross-slab misuse, a `Slot` outliving its
 ///   slab) were accepted as the caller's responsibility at construction
 ///   time.
+///
+/// # Thread Safety
+///
+/// `Send`, never `Sync`:
+///
+/// ```
+/// fn assert_send<T: Send>() {}
+/// assert_send::<nexus_slab::byte::unbounded::Slab<64>>();
+/// ```
+///
+/// ```compile_fail,E0277
+/// fn assert_sync<T: Sync>() {}
+/// assert_sync::<nexus_slab::byte::unbounded::Slab<64>>();
+/// ```
 pub struct Slab<const N: usize> {
     inner: crate::unbounded::Slab<AlignedBytes<N>>,
 }
+
+// SAFETY: the backing store is `AlignedBytes<N>` (a `[u8; N]`, unconditionally
+// `Send`), so the inner typed slab is already `Send`; this impl exists to state
+// the argument, because `alloc<T>` accepts `!Send` payloads and the argument
+// cannot rest on `T`. It rests on reachability: a stored value can only be
+// reached through its `!Send` `byte::Slot` / `byte::PinnedSlot` handle (or a
+// raw pointer from `into_raw`, also `!Send`), and the byte slab itself never
+// reconstructs or drops a value (`free`, `take` and `free_pinned` need the
+// handle; drop never touches occupied bytes). A `!Send` value left in a moved
+// slab is therefore never observed on the destination thread.
+unsafe impl<const N: usize> Send for Slab<N> {}
 
 impl<const N: usize> Slab<N> {
     /// Creates a new unbounded byte slab with the given chunk capacity.

@@ -121,7 +121,16 @@ impl<T> Drop for Claim<'_, T> {
 ///   storage, and a [`Slot`] carries no lifetime tying it to the slab. A
 ///   `Slot` used after its slab is dropped dereferences freed memory
 ///   through safe code.
-/// - **Single-threaded.** The slab is `!Send` and `!Sync`.
+/// - **Single owner.** The slab is `Send` (for `T: Send`) and `!Sync`: it
+///   can move to another thread but never be shared between threads.
+///   Handles ([`Slot`], [`PinnedSlot`], claims, raw pointers from
+///   `into_raw`) are `!Send` and stay on the thread that created them. A
+///   handle left behind when the slab moves can still read and write its
+///   own value, but can no longer be freed, and it dangles if the slab is
+///   dropped on the other thread. That is the same contract violation as
+///   dropping the slab with a live handle on one thread (see the bullet
+///   above): `Send` adds no new way to break the rule, and debug builds
+///   catch the drop the same way.
 ///
 /// ## Why `free()` is safe
 ///
@@ -132,6 +141,20 @@ impl<T> Drop for Claim<'_, T> {
 /// - The remaining hazards (cross-slab misuse, a `Slot` outliving its
 ///   slab) were accepted as the caller's responsibility at construction
 ///   time.
+///
+/// # Thread Safety
+///
+/// `Send` for `T: Send`, never `Sync`:
+///
+/// ```
+/// fn assert_send<T: Send>() {}
+/// assert_send::<nexus_slab::bounded::Slab<u64>>();
+/// ```
+///
+/// ```compile_fail,E0277
+/// fn assert_sync<T: Sync>() {}
+/// assert_sync::<nexus_slab::bounded::Slab<u64>>();
+/// ```
 pub struct Slab<T> {
     /// Slot storage. Wrapped in UnsafeCell for interior mutability.
     slots: core::cell::UnsafeCell<Vec<SlotCell<T>>>,
@@ -141,6 +164,28 @@ pub struct Slab<T> {
     /// NULL when the slab is full.
     pub(crate) free_head: Cell<*mut SlotCell<T>>,
 }
+
+// SAFETY: a `Slab` is the sole owner of its slot storage, and every path that
+// touches that storage goes through `&self` on the slab or through a handle
+// (`Slot`, `PinnedSlot`, `Claim`, or a raw pointer from `into_raw`). Handles
+// are `!Send`, so they stay on the thread that created them; the slab is
+// `!Sync` (UnsafeCell and Cell fields), so no second thread can hold `&Slab`
+// while this one does. Moving the slab to another thread therefore moves the
+// only access path to the freelist and to every vacant slot. A handle left
+// behind can touch only its own occupied slot's bytes, which the slab never
+// reads or writes: alloc and free walk the freelist, which links vacant slots
+// only, and the debug drop check walks the same list. The stranded handle and
+// the moved slab operate on disjoint memory and cannot race. Dropping the slab
+// while that handle is live is a contract violation regardless of threads.
+// `T: Send` is the conventional bound for a container whose contents move with
+// it; nothing today reads an occupied slot without its handle, but the bound
+// keeps `T`'s destructor and any future bulk operation sound on the
+// destination thread.
+//
+// `free_head` is a raw pointer, which is what the lint below objects to; the
+// argument above is why that pointer is safe to move with the slab.
+#[allow(clippy::non_send_fields_in_send_ty)]
+unsafe impl<T: Send> Send for Slab<T> {}
 
 impl<T> Slab<T> {
     /// Creates a new slab with the given capacity.

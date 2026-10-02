@@ -994,3 +994,87 @@ fn miri_pinned_free_drops_in_place() {
     slab.free_pinned(p);
     assert_eq!(get_drop_count(), 1);
 }
+
+// =============================================================================
+// Send: the slab moves between threads, handles do not
+// =============================================================================
+
+#[test]
+fn miri_send_bounded_slab_to_another_thread() {
+    // SAFETY: test slab; moved whole to the worker and back, all slots freed.
+    let slab = unsafe { BoundedSlab::<u64>::with_capacity(8) };
+    let a = slab.alloc(1);
+    slab.free(a);
+    let slab = std::thread::spawn(move || {
+        let b = slab.alloc(2);
+        let c = slab.alloc(3);
+        assert_eq!(*b + *c, 5);
+        slab.free(b);
+        slab.free(c);
+        slab
+    })
+    .join()
+    .unwrap();
+    let d = slab.alloc(4);
+    assert_eq!(*d, 4);
+    slab.free(d);
+}
+
+#[test]
+fn miri_send_unbounded_slab_grows_on_another_thread() {
+    // SAFETY: test slab; moved whole to the worker and back, all slots freed.
+    let slab = unsafe { UnboundedSlab::<u64>::with_chunk_capacity(2) };
+    let slab = std::thread::spawn(move || {
+        let slots: Vec<_> = (0..10u64).map(|i| slab.alloc(i)).collect();
+        assert_eq!(slab.chunk_count(), 5);
+        for s in slots {
+            slab.free(s);
+        }
+        slab
+    })
+    .join()
+    .unwrap();
+    drop(slab);
+}
+
+#[test]
+fn miri_send_byte_slab_with_non_send_payload_left_behind() {
+    // SAFETY: test slab; moved whole to the worker and back, all slots freed.
+    let slab: ByteBoundedSlab<32> = unsafe { ByteBoundedSlab::with_capacity(4) };
+    // A !Send value stays in the slab; its !Send handle stays on this thread,
+    // so the worker can never observe it.
+    let rc = slab.alloc(std::rc::Rc::new(7u64));
+    let slab = std::thread::spawn(move || {
+        let x = slab.alloc(1u64);
+        slab.free(x);
+        slab
+    })
+    .join()
+    .unwrap();
+    assert_eq!(**rc, 7);
+    slab.free(rc);
+}
+
+#[test]
+fn miri_send_slab_with_stranded_handle_is_race_free() {
+    // SAFETY: test slab; moved to the worker and back, all slots freed.
+    let slab = unsafe { BoundedSlab::<u64>::with_capacity(8) };
+    let mut mine = slab.alloc(10); // stays on this thread while the slab moves
+    let worker = std::thread::spawn(move || {
+        // Churn the freelist on the other thread: alloc and free touch vacant
+        // slots and free_head only, never the occupied slot `mine` points at.
+        for i in 0..64u64 {
+            let s = slab.alloc(i);
+            let t = slab.alloc(i + 1);
+            slab.free(s);
+            slab.free(t);
+        }
+        slab
+    });
+    // Concurrent access to my own slot: disjoint memory, so Miri's data race
+    // detector must stay quiet.
+    *mine += 1;
+    assert_eq!(*mine, 11);
+    let slab = worker.join().unwrap();
+    slab.free(mine);
+}
