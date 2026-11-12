@@ -7,9 +7,14 @@ use crate::Condition;
 /// The `first_above_time` rule from RFC 8289 section 5.6.
 ///
 /// A sojourn at or below target clears the timer. A sojourn above target
-/// arms it at `now + interval` if it is not armed. Once a sojourn above
-/// target arrives at or after the armed time, the queue is standing.
-/// Returns whether the queue is standing after this sample.
+/// starts it at `now` if it is not running. Once a sojourn above target
+/// arrives a full `interval` or more after it started, the queue is
+/// standing. Returns whether the queue is standing after this sample.
+///
+/// Elapsed time is `now.wrapping_sub(first_above)`, as in the windowed
+/// types and the kernel code they port, so a monotonic tick counter that
+/// wraps is handled; the only requirement is that `interval` and any real
+/// gap between samples fit in half the counter's range.
 #[inline]
 fn standing_queue(
     first_above: &mut Option<u64>,
@@ -21,10 +26,10 @@ fn standing_queue(
         *first_above = None;
         return false;
     }
-    if let Some(deadline) = *first_above {
-        return now >= deadline;
+    if let Some(started) = *first_above {
+        return now.wrapping_sub(started) >= interval;
     }
-    *first_above = Some(now.saturating_add(interval));
+    *first_above = Some(now);
     false
 }
 
@@ -37,17 +42,19 @@ fn standing_queue(
 /// Feed it each item's sojourn time (how long it waited in the queue) with
 /// the dequeue timestamp. It reports `Degraded` only once sojourn has stayed
 /// above `target` for a whole `window` (the RFC's *interval*): the first
-/// sample above target arms a deadline at `now + window`, a sample at or
-/// below target disarms it, and a sample above target at or after the
-/// deadline is a standing queue. A single slow item, or a burst shorter than
-/// the window, is `Normal`.
+/// sample above target starts the clock, a sample at or below target stops
+/// it, and a sample above target a full window or more after the start is a
+/// standing queue. A single slow item, or a burst shorter than the window,
+/// is `Normal`.
 ///
 /// State is one timestamp. `no_std` compatible.
 ///
 /// # Weighting clock
 ///
 /// Caller's timestamps. Any call rate; the interval is measured in ticks,
-/// not samples.
+/// not samples. Ticks must be monotonic; a counter that wraps is fine as
+/// long as the window and any real gap between samples fit in half its
+/// range (elapsed time is computed with wrapping subtraction).
 #[derive(Debug, Clone)]
 pub struct CoDelI64 {
     target: i64,
@@ -400,7 +407,7 @@ mod raw_tests {
     #[test]
     fn above_target_for_full_interval_is_degraded_and_stays() {
         let mut cd = codel(50, 1000);
-        assert_eq!(cd.update(0, 200), Some(Condition::Normal)); // arms deadline at 1000
+        assert_eq!(cd.update(0, 200), Some(Condition::Normal)); // starts the clock at 0
         assert_eq!(cd.update(1000, 200), Some(Condition::Degraded));
         assert!(cd.is_elevated());
         assert_eq!(cd.update(1500, 51), Some(Condition::Degraded)); // still above target
@@ -413,7 +420,7 @@ mod raw_tests {
         assert_eq!(cd.update(1000, 200), Some(Condition::Degraded));
         assert_eq!(cd.update(1100, 50), Some(Condition::Normal)); // at target clears
         assert!(!cd.is_elevated());
-        assert_eq!(cd.update(1200, 200), Some(Condition::Normal)); // re-armed at 2200
+        assert_eq!(cd.update(1200, 200), Some(Condition::Normal)); // restarts at 1200
         assert_eq!(cd.update(2199, 200), Some(Condition::Normal));
         assert_eq!(cd.update(2200, 200), Some(Condition::Degraded));
     }
@@ -465,7 +472,19 @@ mod raw_tests {
         cd.reset();
         assert!(!cd.is_elevated());
         assert_eq!(cd.count(), 0);
-        assert_eq!(cd.update(2000, 200), Some(Condition::Normal)); // arms fresh
+        assert_eq!(cd.update(2000, 200), Some(Condition::Normal)); // starts fresh
+    }
+
+    // A monotonic tick counter that wraps through u64::MAX must still measure
+    // the interval correctly (wrapping subtraction, as in the windowed types).
+    #[test]
+    fn interval_survives_counter_wraparound() {
+        let mut cd = codel(50, 20);
+        let start = u64::MAX - 10;
+        assert_eq!(cd.update(start, 200), Some(Condition::Normal)); // starts at MAX-10
+        assert_eq!(cd.update(5, 200), Some(Condition::Normal)); // elapsed 16 < 20, past the wrap
+        assert_eq!(cd.update(9, 200), Some(Condition::Degraded)); // elapsed 20
+        assert_eq!(cd.update(15, 10), Some(Condition::Normal)); // clears
     }
 
     #[test]
@@ -476,7 +495,7 @@ mod raw_tests {
             .build()
             .unwrap();
         assert_eq!(cd.update(0, 0.1).unwrap(), Some(Condition::Normal));
-        assert_eq!(cd.update(100, 0.9).unwrap(), Some(Condition::Normal)); // arms at 1100
+        assert_eq!(cd.update(100, 0.9).unwrap(), Some(Condition::Normal)); // starts at 100
         assert_eq!(cd.update(1099, 0.9).unwrap(), Some(Condition::Normal));
         assert_eq!(cd.update(1100, 0.9).unwrap(), Some(Condition::Degraded));
         assert_eq!(cd.update(1200, 0.5).unwrap(), Some(Condition::Normal)); // at target clears
