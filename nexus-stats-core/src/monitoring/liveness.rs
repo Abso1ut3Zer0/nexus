@@ -1,11 +1,14 @@
 /// Liveness detector (integer variant) — fixed-point EMA of inter-arrival ticks.
 ///
 /// Uses kernel-style bit-shift arithmetic for the interval smoothing.
-/// Timestamps are integer ticks.
+/// Timestamps are integer ticks and should be non-decreasing. A timestamp at
+/// or behind the previous one carries no interval information: it re-anchors
+/// the last-seen tick, leaves the smoothed interval untouched, and is alive.
 ///
 /// Each gap is judged against the smoothed interval as it stood before the
 /// event, then folded in. With both deadlines configured, a gap is dead if
-/// it exceeds either one.
+/// it exceeds either one. Until a positive gap has been seen, only the
+/// absolute deadline can judge.
 ///
 /// # Weighting clock
 ///
@@ -59,6 +62,14 @@ impl LivenessI64 {
         let dt = timestamp - self.last_timestamp;
         self.last_timestamp = timestamp;
 
+        // A timestamp at or behind the previous one carries no interval
+        // information: re-anchor to it, leave the estimate alone, report
+        // alive. Folding it would pull the estimate toward or below zero and
+        // make the next real gap read dead.
+        if dt <= 0 {
+            return true;
+        }
+
         // Judge this gap against the interval as it stood before this event,
         // then fold the gap in. Folding first makes the test
         // `dt <= m * (old + (dt - old) / 2^k)`, which is always true once
@@ -86,13 +97,14 @@ impl LivenessI64 {
     #[inline]
     #[must_use]
     pub fn check(&self, now: i64) -> bool {
-        if self.count < self.min_samples || !self.initialized {
+        if self.count < self.min_samples {
             return true;
         }
 
         let dt = now - self.last_timestamp;
-        let smoothed = (self.acc >> self.shift) as i64;
-        self.is_alive_with(dt, Some(smoothed))
+        // No positive gap seen yet: only the absolute deadline can judge.
+        let smoothed = self.initialized.then(|| (self.acc >> self.shift) as i64);
+        self.is_alive_with(dt, smoothed)
     }
 
     /// Alive only if the gap is within every configured deadline. A gap of
@@ -226,11 +238,14 @@ impl LivenessI64Builder {
 /// Liveness detector (`u64` ticks) — fixed-point EMA of inter-arrival ticks.
 ///
 /// Uses kernel-style bit-shift arithmetic for the interval smoothing.
-/// Timestamps are integer ticks.
+/// Timestamps are integer ticks and should be non-decreasing. A timestamp at
+/// or behind the previous one carries no interval information: it re-anchors
+/// the last-seen tick, leaves the smoothed interval untouched, and is alive.
 ///
 /// Each gap is judged against the smoothed interval as it stood before the
 /// event, then folded in. With both deadlines configured, a gap is dead if
-/// it exceeds either one.
+/// it exceeds either one. Until a positive gap has been seen, only the
+/// absolute deadline can judge.
 ///
 /// # Weighting clock
 ///
@@ -284,6 +299,12 @@ impl LivenessU64 {
         let dt = timestamp.wrapping_sub(self.last_timestamp) as i64;
         self.last_timestamp = timestamp;
 
+        // Non-positive gap (a step backwards, or one that does not fit in
+        // i64): no interval information. See `LivenessI64::update`.
+        if dt <= 0 {
+            return true;
+        }
+
         // Judge this gap against the interval as it stood before this event,
         // then fold the gap in. See `LivenessI64::update` for why the order
         // matters.
@@ -308,13 +329,14 @@ impl LivenessU64 {
     #[inline]
     #[must_use]
     pub fn check(&self, now: u64) -> bool {
-        if self.count < self.min_samples || !self.initialized {
+        if self.count < self.min_samples {
             return true;
         }
 
         let dt = now.wrapping_sub(self.last_timestamp) as i64;
-        let smoothed = (self.acc >> self.shift) as i64;
-        self.is_alive_with(dt, Some(smoothed))
+        // No positive gap seen yet: only the absolute deadline can judge.
+        let smoothed = self.initialized.then(|| (self.acc >> self.shift) as i64);
+        self.is_alive_with(dt, smoothed)
     }
 
     /// Alive only if the gap is within every configured deadline. A gap of
@@ -808,6 +830,74 @@ mod tests {
             .unwrap();
         assert!(lv.update(0));
         assert!(lv.update(60)); // no absolute deadline: nothing to judge the first gap
+    }
+
+    // Copilot's finding on #769: a backwards step used to be folded into the
+    // EMA, so a large one drove the estimate negative and the next real gap
+    // read dead. The step must leave the estimate untouched.
+    #[test]
+    fn backwards_step_does_not_poison_estimate_u64() {
+        let mut lv = LivenessU64::builder()
+            .span(7)
+            .deadline_multiple(3)
+            .build()
+            .unwrap();
+        let mut t = 1_000_000u64; // headroom for the step back
+        for _ in 0..50 {
+            t += 1_000;
+            assert!(lv.update(t));
+        }
+        t -= 100_000; // clock steps back 100 intervals
+        assert!(lv.update(t));
+        for _ in 0..10 {
+            t += 1_000; // normal gaps in the new clock domain
+            assert!(lv.update(t));
+        }
+        // Estimate is still exactly 1,000: dead at the fourth missed interval.
+        assert!(lv.check(t + 3_000));
+        assert!(!lv.check(t + 3_001));
+    }
+
+    #[test]
+    fn backwards_step_does_not_poison_estimate_i64() {
+        let mut lv = LivenessI64::builder()
+            .span(7)
+            .deadline_multiple(3)
+            .build()
+            .unwrap();
+        let mut t = 0i64;
+        for _ in 0..50 {
+            t += 1_000;
+            assert!(lv.update(t));
+        }
+        t -= 100_000;
+        assert!(lv.update(t));
+        for _ in 0..10 {
+            t += 1_000;
+            assert!(lv.update(t));
+        }
+        assert!(lv.check(t + 3_000));
+        assert!(!lv.check(t + 3_001));
+    }
+
+    // Only backwards gaps so far: no estimate exists, so the multiple cannot
+    // judge, but the absolute deadline still does, from both methods.
+    #[test]
+    fn unseeded_estimate_is_judged_by_absolute_only_u64() {
+        let mut lv = LivenessU64::builder()
+            .span(7)
+            .deadline_multiple(3)
+            .deadline_absolute(50)
+            .build()
+            .unwrap();
+        assert!(lv.update(100));
+        assert!(lv.update(50)); // backwards: re-anchors to 50, no estimate
+        assert!(lv.check(100)); // 50 ticks of silence, at the absolute
+        assert!(!lv.check(101)); // past it
+        assert!(lv.update(60)); // first positive gap (10): seeds the estimate
+        assert!(lv.update(70));
+        assert!(lv.check(100)); // 30 <= 3 * 10
+        assert!(!lv.check(101));
     }
 
     #[test]
