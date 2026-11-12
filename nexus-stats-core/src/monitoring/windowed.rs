@@ -23,71 +23,6 @@ struct Sample<T: Copy> {
     value: T,
 }
 
-/// `minmax_running_max` / `minmax_running_min` from `lib/win_minmax.c`.
-///
-/// `better(a, b)` is `a >= b` for a maximum and `a <= b` for a minimum.
-/// Returns the current extremum, `s[0].value`. Timestamps are expected to be
-/// non-decreasing; subtraction wraps, as in the kernel's `u32` arithmetic.
-#[inline]
-fn running<T: Copy>(
-    s: &mut [Sample<T>; 3],
-    win: u64,
-    timestamp: u64,
-    value: T,
-    better: impl Fn(T, T) -> bool,
-) -> T {
-    let val = Sample { timestamp, value };
-
-    // Found a new extremum, or nothing left in the window: forget earlier
-    // samples (`minmax_reset`).
-    if better(value, s[0].value) || timestamp.wrapping_sub(s[2].timestamp) > win {
-        *s = [val; 3];
-        return value;
-    }
-
-    if better(value, s[1].value) {
-        s[2] = val;
-        s[1] = val;
-    } else if better(value, s[2].value) {
-        s[2] = val;
-    }
-
-    subwin_update(s, win, val)
-}
-
-/// `minmax_subwin_update` from `lib/win_minmax.c`: as time advances, update
-/// the 1st, 2nd and 3rd choices.
-#[inline]
-fn subwin_update<T: Copy>(s: &mut [Sample<T>; 3], win: u64, val: Sample<T>) -> T {
-    let dt = val.timestamp.wrapping_sub(s[0].timestamp);
-
-    if dt > win {
-        // Passed the entire window without a new extremum: the 2nd choice
-        // becomes the best, the 3rd becomes 2nd, the new sample becomes 3rd.
-        // The 2nd choice may also be outside the window (only the 3rd was
-        // checked on entry), so this may have to run twice.
-        s[0] = s[1];
-        s[1] = s[2];
-        s[2] = val;
-        if val.timestamp.wrapping_sub(s[0].timestamp) > win {
-            s[0] = s[1];
-            s[1] = s[2];
-            s[2] = val;
-        }
-    } else if s[1].timestamp == s[0].timestamp && dt > win / 4 {
-        // A quarter of the window passed without a distinct 2nd choice:
-        // take one from the 2nd quarter.
-        s[2] = val;
-        s[1] = val;
-    } else if s[2].timestamp == s[1].timestamp && dt > win / 2 {
-        // Half the window passed without a distinct 3rd choice: take one
-        // from the last half.
-        s[2] = val;
-    }
-
-    s[0].value
-}
-
 /// Streaming windowed maximum over a sliding time window (Nichols' algorithm).
 ///
 /// Tracks the maximum value within a `u64` timestamp window using only
@@ -611,6 +546,71 @@ impl WindowedMinF32 {
         self.samples = [init; 3];
         self.count = 0;
     }
+}
+
+/// `minmax_running_max` / `minmax_running_min` from `lib/win_minmax.c`.
+///
+/// `better(a, b)` is `a >= b` for a maximum and `a <= b` for a minimum.
+/// Returns the current extremum, `s[0].value`. Timestamps are expected to be
+/// non-decreasing; subtraction wraps, as in the kernel's `u32` arithmetic.
+#[inline]
+fn running<T: Copy>(
+    s: &mut [Sample<T>; 3],
+    win: u64,
+    timestamp: u64,
+    value: T,
+    better: impl Fn(T, T) -> bool,
+) -> T {
+    let val = Sample { timestamp, value };
+
+    // Found a new extremum, or nothing left in the window: forget earlier
+    // samples (`minmax_reset`).
+    if better(value, s[0].value) || timestamp.wrapping_sub(s[2].timestamp) > win {
+        *s = [val; 3];
+        return value;
+    }
+
+    if better(value, s[1].value) {
+        s[2] = val;
+        s[1] = val;
+    } else if better(value, s[2].value) {
+        s[2] = val;
+    }
+
+    subwin_update(s, win, val)
+}
+
+/// `minmax_subwin_update` from `lib/win_minmax.c`: as time advances, update
+/// the 1st, 2nd and 3rd choices.
+#[inline]
+fn subwin_update<T: Copy>(s: &mut [Sample<T>; 3], win: u64, val: Sample<T>) -> T {
+    let dt = val.timestamp.wrapping_sub(s[0].timestamp);
+
+    if dt > win {
+        // Passed the entire window without a new extremum: the 2nd choice
+        // becomes the best, the 3rd becomes 2nd, the new sample becomes 3rd.
+        // The 2nd choice may also be outside the window (only the 3rd was
+        // checked on entry), so this may have to run twice.
+        s[0] = s[1];
+        s[1] = s[2];
+        s[2] = val;
+        if val.timestamp.wrapping_sub(s[0].timestamp) > win {
+            s[0] = s[1];
+            s[1] = s[2];
+            s[2] = val;
+        }
+    } else if s[1].timestamp == s[0].timestamp && dt > win / 4 {
+        // A quarter of the window passed without a distinct 2nd choice:
+        // take one from the 2nd quarter.
+        s[2] = val;
+        s[1] = val;
+    } else if s[2].timestamp == s[1].timestamp && dt > win / 2 {
+        // Half the window passed without a distinct 3rd choice: take one
+        // from the last half.
+        s[2] = val;
+    }
+
+    s[0].value
 }
 
 #[cfg(test)]
