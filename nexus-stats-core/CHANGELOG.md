@@ -10,6 +10,19 @@ contained.
 
 ## [Unreleased]
 
+### Fixed
+
+- **`WindowedMin*` / `WindowedMax*`** departed from the kernel `win_minmax`
+  algorithm they cite: a choice was replaced by age before its value was
+  compared, and sub-windows were `window / 3` instead of the kernel's quarter
+  and half with the "no distinct choice yet" guard. On stationary input the
+  reported extremum disagreed with an exact window on 11 to 22% of updates
+  (1 to 2% for the kernel algorithm), always in the direction of a max too
+  low or a min too high. All six variants now share a literal port of
+  `minmax_running_max` / `minmax_running_min` / `minmax_subwin_update`.
+  Affects `CoDel*` through `min_sojourn()` and any delay baseline built on
+  `WindowedMin` ([#758](https://github.com/Abso1ut3Zer0/nexus/issues/758)).
+
 ### Removed
 
 - **`LivenessF64`** — f64 timestamps cause silent precision loss past 2^52; use `LivenessI64` or `LivenessU64`.

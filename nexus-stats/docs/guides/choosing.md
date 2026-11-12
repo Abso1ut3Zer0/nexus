@@ -124,7 +124,10 @@ Start with your problem. Follow the tree to find the right primitive.
 
 - All-time min or max → [**RunningMin / RunningMax**](../algorithms/running-min-max.md)
 - Min/max over a time window → [**WindowedMin / WindowedMax**](../algorithms/windowed-min-max.md)
-  - Nichols' algorithm, 24 bytes, from TCP BBR
+  - Nichols' algorithm (Linux `win_minmax`, from TCP BBR), 64 bytes. Approximate by
+    design: the reported max is never above the truth and the min never below, but
+    about 1 to 2% of updates on stationary input disagree with an exact window.
+    For a per-reporting-interval maximum, prefer `MaxGauge`: exact and simpler.
 - Peak with hold + decay → [**PeakHoldDecay**](../algorithms/peak-hold.md)
   - "Worst recent spike, fading over time." Smooth envelope.
 - Peak-to-trough decline → [**Drawdown**](../algorithms/drawdown.md)
