@@ -1,13 +1,14 @@
 # CoDel — Controlled Delay Queue Monitor
 
-**CoDel-inspired backpressure detection.** Detects standing queues before
-buffers fill by tracking the minimum time items spend waiting.
+**CoDel standing-queue detection (RFC 8289).** Detects standing queues before
+buffers fill by requiring the time items wait to stay above target for a whole
+interval, not just once.
 
 | Property | Value |
 |----------|-------|
-| Update cost | ~7 cycles |
-| Memory | ~80 bytes |
-| Types | `CoDelI64`, `CoDelI32` |
+| Update cost | one compare and one timestamp compare |
+| Memory | 56 bytes |
+| Types | `CoDelI64`, `CoDelF64` |
 | Priming | Configurable via `min_samples` |
 | Output | `Option<Condition>` — `Normal` or `Degraded` |
 
@@ -30,23 +31,19 @@ buffers fill by tracking the minimum time items spend waiting.
                   │  even the MIN is above       │
                   │  target for a full window    │
 
-  Windowed minimum:
-  500 ┤
-  400 ┤
-  300 ┤                 ╱────────────╲
-  200 ┤── ── ── ── ──╱── ── ── ── ──╲── ── ── target
-  100 ┤──────────────╱                ╲─────────
-   50 ┤                                  ╲──────
-      └───────────────────────────────────────── t
-       min below    │ min ABOVE target  │ min below
-       target       │ → Elevated        │ → Normal
+  first_above deadline:
+                     armed ────────────► reached
+      ─────────────────┬──────────────┬───────────────────────
+       no deadline     │ Normal       │ Degraded      │ cleared by a
+       (all ≤ target)  │ (waiting out │ (above target │ sample ≤ target
+                       │  the window) │  for a window)│
 ```
 
-The key insight from CoDel: if even the *minimum* sojourn time in a
-window exceeds your target, the queue has a **standing backlog** — not
-just a temporary burst. A burst causes a few high sojourn times, but
-the minimum stays low (some items still get through quickly). A standing
-queue means *every* item waits too long.
+The key insight from CoDel: a burst puts a few items above target, but
+some item soon gets through quickly, which proves there is no standing
+backlog. A standing queue is one where *no* item gets through quickly for
+a whole interval. So one slow sample never counts; only "above target,
+continuously, for the whole window" does.
 
 ## When to Use It
 
@@ -65,12 +62,16 @@ queue means *every* item waits too long.
 On each dequeue, compute `sojourn = now - enqueue_time` and feed it to
 CoDel along with the current timestamp.
 
-Internally:
-1. **WindowedMin** (Nichols' algorithm) tracks the minimum sojourn
-   time over the observation window
-2. If the windowed minimum exceeds the target for an entire window
-   duration → `Condition::Degraded`
-3. When the minimum drops below target → `Condition::Normal`
+Internally, the `first_above_time` rule from RFC 8289 section 5.6:
+1. A sojourn at or below target **disarms** the deadline → `Condition::Normal`
+2. A sojourn above target with no deadline armed **arms** one at
+   `now + window` → `Condition::Normal` (waiting out the window)
+3. A sojourn above target at or after the deadline → `Condition::Degraded`,
+   and it stays `Degraded` until a sample at or below target disarms it
+
+One timestamp of state. There is no windowed minimum, so the detector is
+exact: it fires at precisely one window of continuous excess, never on a
+transient.
 
 This is the **measurement layer** of CoDel. CoDel itself is a *policy*
 (drop packets when congested). CoDel gives you the signal — you
@@ -91,8 +92,8 @@ let mut qd = CoDelI64::builder()
 | Parameter | What | Default | Guidance |
 |-----------|------|---------|----------|
 | `target` | Max acceptable sojourn time | Required | Set to your latency budget |
-| `window` | Observation window (ticks) | Required | How long min must exceed target |
-| `min_samples` | Warmup | 0 | Set to 10+ for noisy startup |
+| `window` | Interval (ticks) | Required | How long sojourn must stay above target |
+| `min_samples` | Warmup | 1 | Set to 10+ for noisy startup |
 
 **Choosing target:** Your latency budget for queue wait time. If your
 end-to-end budget is 100μs and processing takes 60μs, the queue budget
@@ -191,8 +192,9 @@ when the mean processing time has shifted (e.g., downstream got slower).
 |-----------|-----|-----|
 | `CoDelI64::update` | 7 cycles | 10 cycles |
 
-Internally uses WindowedMin (Nichols' algorithm) — 3 samples, O(1)
-amortized. The integer path avoids float conversion entirely.
+One comparison against the target and one against the armed deadline per
+update; no windowed minimum. The integer path avoids float conversion
+entirely.
 
 ## Background: CoDel
 

@@ -22,9 +22,21 @@ contained.
   `minmax_running_max` / `minmax_running_min` / `minmax_subwin_update`.
   Affects `CoDel*` through `min_sojourn()` and any delay baseline built on
   `WindowedMin` ([#758](https://github.com/Abso1ut3Zer0/nexus/issues/758)).
+- **`CoDelI64` / `CoDelF64`** reported `Degraded` on a single sample above
+  target. RFC 8289 requires sojourn to stay above target for a whole
+  interval. Both now implement the RFC's `first_above_time` rule directly:
+  a sample above target arms a deadline at `now + window`, a sample at or
+  below target disarms it, and only a sample above target at or after the
+  deadline is `Degraded`. One timestamp of state; the windowed minimum the
+  old composition relied on (and its own inaccuracy, #758) is gone.
+  `window` is the RFC's interval. `CoDelF64::build` now rejects a
+  non-finite target ([#759](https://github.com/Abso1ut3Zer0/nexus/issues/759)).
 
 ### Removed
 
+- **`CoDelI64::min_sojourn()` / `CoDelF64::min_sojourn()`** — the detector
+  no longer keeps a windowed minimum. No caller in the workspace; a minor
+  per this crate's policy on narrowly scoped breaks.
 - **`LivenessF64`** — f64 timestamps cause silent precision loss past 2^52; use `LivenessI64` or `LivenessU64`.
 
 ### Added

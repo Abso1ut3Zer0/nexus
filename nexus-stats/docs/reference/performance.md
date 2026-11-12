@@ -39,7 +39,7 @@ pinned to a single core.
 | MaxGaugeF64 | ~5 | ~5 | compare-and-swap |
 | LivenessI64 / LivenessU64 | 6 | 20 | EMA + deadline |
 | EventRateU64 | 6 | 9 | bit-shift EMA + inversion |
-| CoDelI64 | 7 | 10 | WindowedMin + threshold |
+| CoDelI64 | 7 | 10 | first_above deadline (RFC 8289) |
 | SaturationF64 | ~6 | ~8 | EMA + threshold |
 | ErrorRateF64 | ~6 | ~8 | EMA of outcomes |
 | TrendAlertF64 | ~12 | ~18 | Holt + threshold |

@@ -1,19 +1,60 @@
-use super::windowed::{WindowedMinF64, WindowedMinI64};
 use crate::Condition;
+
+// =========================================================================
+// RFC 8289 standing-queue rule, shared by the I64 and F64 variants
+// =========================================================================
+
+/// The `first_above_time` rule from RFC 8289 section 5.6.
+///
+/// A sojourn at or below target clears the timer. A sojourn above target
+/// arms it at `now + interval` if it is not armed. Once a sojourn above
+/// target arrives at or after the armed time, the queue is standing.
+/// Returns whether the queue is standing after this sample.
+#[inline]
+fn standing_queue(
+    first_above: &mut Option<u64>,
+    interval: u64,
+    now: u64,
+    above_target: bool,
+) -> bool {
+    if !above_target {
+        *first_above = None;
+        return false;
+    }
+    if let Some(deadline) = *first_above {
+        return now >= deadline;
+    }
+    *first_above = Some(now.saturating_add(interval));
+    false
+}
 
 // =========================================================================
 // Raw (u64 timestamp) variants — no_std compatible
 // =========================================================================
 
-/// CoDel — Controlled Delay queue monitor (Nichols & Jacobson, 2012).
+/// CoDel standing-queue detector (RFC 8289, Nichols & Jacobson).
 ///
-/// Composes a windowed minimum of sojourn times with a threshold.
-/// Reports `Degraded` when even the minimum sojourn time in the
-/// observation window exceeds the target. `no_std` compatible.
+/// Feed it each item's sojourn time (how long it waited in the queue) with
+/// the dequeue timestamp. It reports `Degraded` only once sojourn has stayed
+/// above `target` for a whole `window` (the RFC's *interval*): the first
+/// sample above target arms a deadline at `now + window`, a sample at or
+/// below target disarms it, and a sample above target at or after the
+/// deadline is a standing queue. A single slow item, or a burst shorter than
+/// the window, is `Normal`.
+///
+/// State is one timestamp. `no_std` compatible.
+///
+/// # Weighting clock
+///
+/// Caller's timestamps. Any call rate; the interval is measured in ticks,
+/// not samples.
 #[derive(Debug, Clone)]
 pub struct CoDelI64 {
-    windowed_min: WindowedMinI64,
     target: i64,
+    interval: u64,
+    first_above: Option<u64>,
+    elevated: bool,
+    count: u64,
     min_samples: u64,
 }
 
@@ -43,23 +84,29 @@ impl CoDelI64 {
     #[inline]
     #[must_use]
     pub fn update(&mut self, timestamp: u64, sojourn: i64) -> Option<Condition> {
-        let min = self.windowed_min.update(timestamp, sojourn);
+        self.count += 1;
+        self.elevated = standing_queue(
+            &mut self.first_above,
+            self.interval,
+            timestamp,
+            sojourn > self.target,
+        );
 
-        if self.windowed_min.count() < self.min_samples {
+        if self.count < self.min_samples {
             return None;
         }
 
-        if min > self.target {
-            Some(Condition::Degraded)
+        Some(if self.elevated {
+            Condition::Degraded
         } else {
-            Some(Condition::Normal)
-        }
+            Condition::Normal
+        })
     }
 
     /// Convenience for `i64` timestamps (e.g., wire protocol epoch nanos).
     ///
     /// Timestamps must be non-negative. Negative values wrap to large
-    /// `u64` values and will produce incorrect window expiration.
+    /// `u64` values and will produce incorrect interval arithmetic.
     #[inline]
     #[must_use]
     pub fn update_i64(&mut self, timestamp: i64, sojourn: i64) -> Option<Condition> {
@@ -67,43 +114,39 @@ impl CoDelI64 {
         self.update(timestamp as u64, sojourn)
     }
 
-    /// Current windowed minimum sojourn time, or `None` if empty.
-    #[inline]
-    #[must_use]
-    pub fn min_sojourn(&self) -> Option<i64> {
-        self.windowed_min.min()
-    }
-
-    /// Whether the queue is currently elevated.
+    /// Whether the last sample found a standing queue (sojourn above target
+    /// for a whole interval).
     #[inline]
     #[must_use]
     pub fn is_elevated(&self) -> bool {
-        self.windowed_min.min().is_some_and(|min| min > self.target)
+        self.elevated
     }
 
     /// Number of samples processed.
     #[inline]
     #[must_use]
     pub fn count(&self) -> u64 {
-        self.windowed_min.count()
+        self.count
     }
 
     /// Whether the monitor has reached `min_samples`.
     #[inline]
     #[must_use]
     pub fn is_primed(&self) -> bool {
-        self.windowed_min.count() >= self.min_samples
+        self.count >= self.min_samples
     }
 
     /// Resets to empty state. Parameters unchanged.
     #[inline]
     pub fn reset(&mut self) {
-        self.windowed_min.reset();
+        self.first_above = None;
+        self.elevated = false;
+        self.count = 0;
     }
 }
 
 impl CoDelI64Builder {
-    /// Target sojourn time. Elevated when minimum exceeds this.
+    /// Target sojourn time. Samples above it count toward a standing queue.
     #[inline]
     #[must_use]
     pub fn target(mut self, target: i64) -> Self {
@@ -111,7 +154,8 @@ impl CoDelI64Builder {
         self
     }
 
-    /// Observation window in raw units (same as timestamps).
+    /// Interval (RFC 8289): how long sojourn must stay above target before
+    /// the queue counts as standing. Same units as the timestamps.
     #[inline]
     #[must_use]
     pub fn window(mut self, window: u64) -> Self {
@@ -142,22 +186,26 @@ impl CoDelI64Builder {
         }
 
         Ok(CoDelI64 {
-            windowed_min: WindowedMinI64::new(window)?,
             target,
+            interval: window,
+            first_above: None,
+            elevated: false,
+            count: 0,
             min_samples: self.min_samples,
         })
     }
 }
 
-/// CoDel — Controlled Delay queue monitor (Nichols & Jacobson, 2012).
+/// CoDel standing-queue detector (RFC 8289, Nichols & Jacobson), `f64` sojourns.
 ///
-/// Composes a windowed minimum of sojourn times with a threshold.
-/// Reports `Degraded` when even the minimum sojourn time in the
-/// observation window exceeds the target. `no_std` compatible.
+/// See [`CoDelI64`] for the rule. Rejects NaN and infinite sojourns.
 #[derive(Debug, Clone)]
 pub struct CoDelF64 {
-    windowed_min: WindowedMinF64,
     target: f64,
+    interval: u64,
+    first_above: Option<u64>,
+    elevated: bool,
+    count: u64,
     min_samples: u64,
 }
 
@@ -196,23 +244,29 @@ impl CoDelF64 {
         sojourn: f64,
     ) -> Result<Option<Condition>, crate::DataError> {
         check_finite!(sojourn);
-        let min = self.windowed_min.update(timestamp, sojourn)?;
+        self.count += 1;
+        self.elevated = standing_queue(
+            &mut self.first_above,
+            self.interval,
+            timestamp,
+            sojourn > self.target,
+        );
 
-        if self.windowed_min.count() < self.min_samples {
+        if self.count < self.min_samples {
             return Ok(None);
         }
 
-        if min > self.target {
-            Ok(Some(Condition::Degraded))
+        Ok(Some(if self.elevated {
+            Condition::Degraded
         } else {
-            Ok(Some(Condition::Normal))
-        }
+            Condition::Normal
+        }))
     }
 
     /// Convenience for `i64` timestamps (e.g., wire protocol epoch nanos).
     ///
     /// Timestamps must be non-negative. Negative values wrap to large
-    /// `u64` values and will produce incorrect window expiration.
+    /// `u64` values and will produce incorrect interval arithmetic.
     #[inline]
     pub fn update_i64(
         &mut self,
@@ -223,43 +277,39 @@ impl CoDelF64 {
         self.update(timestamp as u64, sojourn)
     }
 
-    /// Current windowed minimum sojourn time, or `None` if empty.
-    #[inline]
-    #[must_use]
-    pub fn min_sojourn(&self) -> Option<f64> {
-        self.windowed_min.min()
-    }
-
-    /// Whether the queue is currently elevated.
+    /// Whether the last sample found a standing queue (sojourn above target
+    /// for a whole interval).
     #[inline]
     #[must_use]
     pub fn is_elevated(&self) -> bool {
-        self.windowed_min.min().is_some_and(|min| min > self.target)
+        self.elevated
     }
 
     /// Number of samples processed.
     #[inline]
     #[must_use]
     pub fn count(&self) -> u64 {
-        self.windowed_min.count()
+        self.count
     }
 
     /// Whether the monitor has reached `min_samples`.
     #[inline]
     #[must_use]
     pub fn is_primed(&self) -> bool {
-        self.windowed_min.count() >= self.min_samples
+        self.count >= self.min_samples
     }
 
     /// Resets to empty state. Parameters unchanged.
     #[inline]
     pub fn reset(&mut self) {
-        self.windowed_min.reset();
+        self.first_above = None;
+        self.elevated = false;
+        self.count = 0;
     }
 }
 
 impl CoDelF64Builder {
-    /// Target sojourn time. Elevated when minimum exceeds this.
+    /// Target sojourn time. Samples above it count toward a standing queue.
     #[inline]
     #[must_use]
     pub fn target(mut self, target: f64) -> Self {
@@ -267,7 +317,8 @@ impl CoDelF64Builder {
         self
     }
 
-    /// Observation window in raw units (same as timestamps).
+    /// Interval (RFC 8289): how long sojourn must stay above target before
+    /// the queue counts as standing. Same units as the timestamps.
     #[inline]
     #[must_use]
     pub fn window(mut self, window: u64) -> Self {
@@ -287,19 +338,25 @@ impl CoDelF64Builder {
     ///
     /// # Errors
     ///
-    /// - Target must have been set.
+    /// - Target must have been set and be finite.
     /// - Window must have been set and be positive.
     #[inline]
     pub fn build(self) -> Result<CoDelF64, crate::ConfigError> {
         let target = self.target.ok_or(crate::ConfigError::Missing("target"))?;
+        if !target.is_finite() {
+            return Err(crate::ConfigError::Invalid("CoDel target must be finite"));
+        }
         let window = self.window.ok_or(crate::ConfigError::Missing("window"))?;
         if window == 0 {
             return Err(crate::ConfigError::Invalid("CoDel window must be positive"));
         }
 
         Ok(CoDelF64 {
-            windowed_min: WindowedMinF64::new(window)?,
             target,
+            interval: window,
+            first_above: None,
+            elevated: false,
+            count: 0,
             min_samples: self.min_samples,
         })
     }
@@ -310,23 +367,105 @@ mod raw_tests {
     use super::*;
     use crate::Condition;
 
+    fn codel(target: i64, window: u64) -> CoDelI64 {
+        CoDelI64::builder()
+            .target(target)
+            .window(window)
+            .build()
+            .unwrap()
+    }
+
     #[test]
     fn raw_codel_normal() {
-        let mut cd = CoDelI64::builder()
-            .target(100)
-            .window(1000)
-            .build()
-            .unwrap();
+        let mut cd = codel(100, 1000);
         assert_eq!(cd.update(0, 50), Some(Condition::Normal));
+    }
+
+    // Regression for #759: the previous composition fired on one sample.
+    #[test]
+    fn single_sample_above_target_is_normal() {
+        let mut cd = codel(50, 1_000_000);
+        assert_eq!(cd.update(0, 200), Some(Condition::Normal));
+        assert!(!cd.is_elevated());
+    }
+
+    #[test]
+    fn above_target_shorter_than_interval_is_normal() {
+        let mut cd = codel(50, 1000);
+        assert_eq!(cd.update(0, 200), Some(Condition::Normal));
+        assert_eq!(cd.update(500, 200), Some(Condition::Normal));
+        assert_eq!(cd.update(999, 200), Some(Condition::Normal));
+    }
+
+    #[test]
+    fn above_target_for_full_interval_is_degraded_and_stays() {
+        let mut cd = codel(50, 1000);
+        assert_eq!(cd.update(0, 200), Some(Condition::Normal)); // arms deadline at 1000
+        assert_eq!(cd.update(1000, 200), Some(Condition::Degraded));
+        assert!(cd.is_elevated());
+        assert_eq!(cd.update(1500, 51), Some(Condition::Degraded)); // still above target
+    }
+
+    #[test]
+    fn sample_at_or_below_target_clears_and_rearms() {
+        let mut cd = codel(50, 1000);
+        let _ = cd.update(0, 200);
+        assert_eq!(cd.update(1000, 200), Some(Condition::Degraded));
+        assert_eq!(cd.update(1100, 50), Some(Condition::Normal)); // at target clears
+        assert!(!cd.is_elevated());
+        assert_eq!(cd.update(1200, 200), Some(Condition::Normal)); // re-armed at 2200
+        assert_eq!(cd.update(2199, 200), Some(Condition::Normal));
+        assert_eq!(cd.update(2200, 200), Some(Condition::Degraded));
+    }
+
+    // The second reproduction from #759: a long healthy history and several
+    // quiet windows must not make one slow sample look like a standing queue.
+    #[test]
+    fn long_quiet_history_then_one_slow_sample_is_normal() {
+        let mut cd = codel(50, 100);
+        let mut t = 0u64;
+        for _ in 0..1000 {
+            t += 1;
+            assert_eq!(cd.update(t, 5), Some(Condition::Normal));
+        }
+        t += 5 * 100; // five quiet windows
+        assert_eq!(cd.update(t, 200), Some(Condition::Normal));
     }
 
     #[test]
     fn raw_codel_degraded() {
-        let mut cd = CoDelI64::builder().target(50).window(1000).build().unwrap();
-        for t in 0..10 {
+        let mut cd = codel(50, 1000);
+        for t in 0..=10 {
             let _ = cd.update(t * 100, 200);
         }
         assert!(cd.is_elevated());
+    }
+
+    #[test]
+    fn min_samples_primes() {
+        let mut cd = CoDelI64::builder()
+            .target(50)
+            .window(1000)
+            .min_samples(3)
+            .build()
+            .unwrap();
+        assert_eq!(cd.update(0, 200), None);
+        assert_eq!(cd.update(100, 200), None);
+        assert!(!cd.is_primed());
+        assert_eq!(cd.update(200, 200), Some(Condition::Normal));
+        assert!(cd.is_primed());
+    }
+
+    #[test]
+    fn reset_disarms() {
+        let mut cd = codel(50, 1000);
+        let _ = cd.update(0, 200);
+        let _ = cd.update(1000, 200);
+        assert!(cd.is_elevated());
+        cd.reset();
+        assert!(!cd.is_elevated());
+        assert_eq!(cd.count(), 0);
+        assert_eq!(cd.update(2000, 200), Some(Condition::Normal)); // arms fresh
     }
 
     #[test]
@@ -337,6 +476,10 @@ mod raw_tests {
             .build()
             .unwrap();
         assert_eq!(cd.update(0, 0.1).unwrap(), Some(Condition::Normal));
+        assert_eq!(cd.update(100, 0.9).unwrap(), Some(Condition::Normal)); // arms at 1100
+        assert_eq!(cd.update(1099, 0.9).unwrap(), Some(Condition::Normal));
+        assert_eq!(cd.update(1100, 0.9).unwrap(), Some(Condition::Degraded));
+        assert_eq!(cd.update(1200, 0.5).unwrap(), Some(Condition::Normal)); // at target clears
     }
 
     #[test]
@@ -354,5 +497,12 @@ mod raw_tests {
             cd.update(0, f64::INFINITY),
             Err(crate::DataError::Infinite)
         ));
+        assert!(
+            CoDelF64::builder()
+                .target(f64::NAN)
+                .window(1000)
+                .build()
+                .is_err()
+        );
     }
 }
