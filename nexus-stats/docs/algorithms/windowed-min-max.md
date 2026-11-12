@@ -6,8 +6,9 @@ using only 3 stored samples. From Linux kernel `win_minmax.h` (TCP BBR).
 | Property | Value |
 |----------|-------|
 | Update cost | ~9 cycles (amortized O(1)) |
-| Memory | ~48 bytes |
-| Types | `WindowedMaxF64`, `WindowedMinF64`, and F32/I64/I32 variants |
+| Memory | 64 bytes (3 samples, window, count) |
+| Types | `WindowedMaxF64`, `WindowedMinF64`, `WindowedMaxI64`, `WindowedMinI64` |
+| Accuracy | Approximate by design; see below |
 | Output | Current window extremum |
 | Error handling | Returns `Result<_, DataError>` on NaN/Inf input |
 
@@ -34,9 +35,23 @@ using only 3 stored samples. From Linux kernel `win_minmax.h` (TCP BBR).
                window         → next best promoted
 ```
 
-The algorithm maintains 3 candidates spanning sub-windows of `window/3`
-ticks. When the best candidate expires, the next is promoted. Only
-24-48 bytes of state regardless of window size.
+The algorithm keeps the best, 2nd best and 3rd best samples in the window,
+each at least as recent as the one before it. A new extremum forgets
+everything earlier. By age, a choice is only replaced while no distinct
+choice has been found yet: the 2nd after a quarter of the window, the 3rd
+after half. When the best ages out, the 2nd is promoted. 64 bytes of state
+regardless of window size. This is a literal port of the kernel's
+`lib/win_minmax.c`.
+
+## Accuracy
+
+Constant space and time buys an approximation. The reported value is always
+a real sample from inside the window, so the maximum is never above the true
+windowed maximum and the minimum never below it. On stationary input about
+1 to 2% of updates disagree with an exact window; on trending input (a random
+walk) the rate is higher, which the kernel's own header acknowledges with
+"almost always". For a maximum per reporting interval, `MaxGauge` is exact
+and simpler.
 
 ## When to Use It
 
