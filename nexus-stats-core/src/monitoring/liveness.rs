@@ -1,7 +1,18 @@
 /// Liveness detector (integer variant) — fixed-point EMA of inter-arrival ticks.
 ///
 /// Uses kernel-style bit-shift arithmetic for the interval smoothing.
-/// Timestamps are integer ticks.
+/// Timestamps are integer ticks and should be non-decreasing. A timestamp at
+/// or behind the previous one carries no interval information: it re-anchors
+/// the last-seen tick, leaves the smoothed interval untouched, and is alive.
+///
+/// Each gap is judged against the smoothed interval as it stood before the
+/// event, then folded in. With both deadlines configured, a gap is dead if
+/// it exceeds either one. Until a positive gap has been seen, only the
+/// absolute deadline can judge.
+///
+/// # Weighting clock
+///
+/// Per event, using its timestamp. Each event must carry its own tick.
 #[derive(Debug, Clone)]
 pub struct LivenessI64 {
     acc: i128,
@@ -51,44 +62,67 @@ impl LivenessI64 {
         let dt = timestamp - self.last_timestamp;
         self.last_timestamp = timestamp;
 
-        if self.initialized {
+        // A timestamp at or behind the previous one carries no interval
+        // information: re-anchor to it, leave the estimate alone, report
+        // alive. Folding it would pull the estimate toward or below zero and
+        // make the next real gap read dead.
+        if dt <= 0 {
+            return true;
+        }
+
+        // Judge this gap against the interval as it stood before this event,
+        // then fold the gap in. Folding first makes the test
+        // `dt <= m * (old + (dt - old) / 2^k)`, which is always true once
+        // `m >= 2^k`, so the detector could never report dead.
+        let alive = if self.initialized {
+            let smoothed = (self.acc >> self.shift) as i64;
             let dt_shifted = (dt as i128) << self.shift;
             self.acc += (dt_shifted - self.acc) >> self.shift;
+            self.is_alive_with(dt, Some(smoothed))
         } else {
+            // First gap: no prior interval to compare against. Only the
+            // absolute deadline can judge it.
             self.acc = (dt as i128) << self.shift;
             self.initialized = true;
-        }
+            self.is_alive_with(dt, None)
+        };
 
         if self.count < self.min_samples {
             return true;
         }
-
-        let smoothed = (self.acc >> self.shift) as i64;
-        self.is_alive_with(dt, smoothed)
+        alive
     }
 
     /// Checks liveness at the given tick without recording.
     #[inline]
     #[must_use]
     pub fn check(&self, now: i64) -> bool {
-        if self.count < self.min_samples || !self.initialized {
+        if self.count < self.min_samples {
             return true;
         }
 
         let dt = now - self.last_timestamp;
-        let smoothed = (self.acc >> self.shift) as i64;
+        // No positive gap seen yet: only the absolute deadline can judge.
+        let smoothed = self.initialized.then(|| (self.acc >> self.shift) as i64);
         self.is_alive_with(dt, smoothed)
     }
 
+    /// Alive only if the gap is within every configured deadline. A gap of
+    /// zero or less (an event that just arrived, or a clock that stepped
+    /// backwards) is always alive.
     #[inline]
-    fn is_alive_with(&self, dt: i64, smoothed: i64) -> bool {
-        if let Some(multiple) = self.deadline_multiple {
-            return dt <= smoothed * (multiple as i64);
+    fn is_alive_with(&self, dt: i64, smoothed: Option<i64>) -> bool {
+        if dt <= 0 {
+            return true;
         }
-        if let Some(absolute) = self.deadline_absolute {
-            return dt <= absolute;
-        }
-        true
+        let within_multiple = match (self.deadline_multiple, smoothed) {
+            (Some(multiple), Some(smoothed)) => {
+                dt <= smoothed.saturating_mul(i64::try_from(multiple).unwrap_or(i64::MAX))
+            }
+            _ => true,
+        };
+        let within_absolute = self.deadline_absolute.is_none_or(|absolute| dt <= absolute);
+        within_multiple && within_absolute
     }
 
     /// Current smoothed inter-arrival interval, or `None` if < 2 events.
@@ -142,7 +176,8 @@ impl LivenessI64Builder {
         self
     }
 
-    /// Alert when interval exceeds `n * smoothed_interval`.
+    /// Dead when a gap exceeds `n * smoothed_interval`, the interval as it
+    /// stood before that gap. Combines with `deadline_absolute`: either trips.
     #[inline]
     #[must_use]
     pub fn deadline_multiple(mut self, n: u64) -> Self {
@@ -150,7 +185,8 @@ impl LivenessI64Builder {
         self
     }
 
-    /// Alert when interval exceeds a fixed deadline (in ticks).
+    /// Dead when a gap exceeds a fixed deadline (in ticks). Combines with
+    /// `deadline_multiple`: either trips.
     #[inline]
     #[must_use]
     pub fn deadline_absolute(mut self, t: i64) -> Self {
@@ -199,10 +235,21 @@ impl LivenessI64Builder {
     }
 }
 
-/// Liveness detector (integer variant) — fixed-point EMA of inter-arrival ticks.
+/// Liveness detector (`u64` ticks) — fixed-point EMA of inter-arrival ticks.
 ///
 /// Uses kernel-style bit-shift arithmetic for the interval smoothing.
-/// Timestamps are integer ticks.
+/// Timestamps are integer ticks and should be non-decreasing. A timestamp at
+/// or behind the previous one carries no interval information: it re-anchors
+/// the last-seen tick, leaves the smoothed interval untouched, and is alive.
+///
+/// Each gap is judged against the smoothed interval as it stood before the
+/// event, then folded in. With both deadlines configured, a gap is dead if
+/// it exceeds either one. Until a positive gap has been seen, only the
+/// absolute deadline can judge.
+///
+/// # Weighting clock
+///
+/// Per event, using its timestamp. Each event must carry its own tick.
 #[derive(Debug, Clone)]
 pub struct LivenessU64 {
     acc: i128,
@@ -252,44 +299,64 @@ impl LivenessU64 {
         let dt = timestamp.wrapping_sub(self.last_timestamp) as i64;
         self.last_timestamp = timestamp;
 
-        if self.initialized {
+        // Non-positive gap (a step backwards, or one that does not fit in
+        // i64): no interval information. See `LivenessI64::update`.
+        if dt <= 0 {
+            return true;
+        }
+
+        // Judge this gap against the interval as it stood before this event,
+        // then fold the gap in. See `LivenessI64::update` for why the order
+        // matters.
+        let alive = if self.initialized {
+            let smoothed = (self.acc >> self.shift) as i64;
             let dt_shifted = (dt as i128) << self.shift;
             self.acc += (dt_shifted - self.acc) >> self.shift;
+            self.is_alive_with(dt, Some(smoothed))
         } else {
             self.acc = (dt as i128) << self.shift;
             self.initialized = true;
-        }
+            self.is_alive_with(dt, None)
+        };
 
         if self.count < self.min_samples {
             return true;
         }
-
-        let smoothed = (self.acc >> self.shift) as i64;
-        self.is_alive_with(dt, smoothed)
+        alive
     }
 
     /// Checks liveness at the given tick without recording.
     #[inline]
     #[must_use]
     pub fn check(&self, now: u64) -> bool {
-        if self.count < self.min_samples || !self.initialized {
+        if self.count < self.min_samples {
             return true;
         }
 
         let dt = now.wrapping_sub(self.last_timestamp) as i64;
-        let smoothed = (self.acc >> self.shift) as i64;
+        // No positive gap seen yet: only the absolute deadline can judge.
+        let smoothed = self.initialized.then(|| (self.acc >> self.shift) as i64);
         self.is_alive_with(dt, smoothed)
     }
 
+    /// Alive only if the gap is within every configured deadline. A gap of
+    /// zero or less (an event that just arrived, or a clock that stepped
+    /// backwards) is always alive.
     #[inline]
-    fn is_alive_with(&self, dt: i64, smoothed: i64) -> bool {
-        if let Some(multiple) = self.deadline_multiple {
-            return dt <= smoothed * (multiple as i64);
+    fn is_alive_with(&self, dt: i64, smoothed: Option<i64>) -> bool {
+        if dt <= 0 {
+            return true;
         }
-        if let Some(absolute) = self.deadline_absolute {
-            return dt >= 0 && (dt as u64) <= absolute;
-        }
-        true
+        let within_multiple = match (self.deadline_multiple, smoothed) {
+            (Some(multiple), Some(smoothed)) => {
+                dt <= smoothed.saturating_mul(i64::try_from(multiple).unwrap_or(i64::MAX))
+            }
+            _ => true,
+        };
+        let within_absolute = self
+            .deadline_absolute
+            .is_none_or(|absolute| (dt as u64) <= absolute);
+        within_multiple && within_absolute
     }
 
     /// Current smoothed inter-arrival interval, or `None` if < 2 events.
@@ -343,7 +410,8 @@ impl LivenessU64Builder {
         self
     }
 
-    /// Alert when interval exceeds `n * smoothed_interval`.
+    /// Dead when a gap exceeds `n * smoothed_interval`, the interval as it
+    /// stood before that gap. Combines with `deadline_absolute`: either trips.
     #[inline]
     #[must_use]
     pub fn deadline_multiple(mut self, n: u64) -> Self {
@@ -351,7 +419,8 @@ impl LivenessU64Builder {
         self
     }
 
-    /// Alert when interval exceeds a fixed deadline (in ticks).
+    /// Dead when a gap exceeds a fixed deadline (in ticks). Combines with
+    /// `deadline_multiple`: either trips.
     #[inline]
     #[must_use]
     pub fn deadline_absolute(mut self, t: u64) -> Self {
@@ -644,5 +713,253 @@ mod tests {
     fn errors_without_deadline_i64() {
         let result = LivenessI64::builder().span(7).build();
         assert!(matches!(result, Err(crate::ConfigError::Invalid(_))));
+    }
+
+    // Regression for #760: `update()` folded the gap into the EMA before
+    // testing it, so with shift k any `deadline_multiple >= 2^k` could never
+    // report dead, and even below that it disagreed with `check()` by one
+    // interval. For each (span, multiple) pair, the first dead gap (in
+    // intervals) must be the same from both methods, and equal to the first
+    // k with k * interval > multiple * interval, i.e. multiple + 1.
+    fn first_dead_gap_u64(span: u64, multiple: u64) -> (Option<u64>, Option<u64>) {
+        let mut lv = LivenessU64::builder()
+            .span(span)
+            .deadline_multiple(multiple)
+            .build()
+            .unwrap();
+        let mut t = 0u64;
+        for _ in 0..200 {
+            t += 1_000;
+            assert!(lv.update(t));
+        }
+        let via_check = (1..=1_000u64).find(|&k| !lv.check(t + k * 1_000));
+        let via_update = (1..=1_000u64).find(|&k| {
+            let mut probe = lv.clone();
+            !probe.update(t + k * 1_000)
+        });
+        (via_check, via_update)
+    }
+
+    #[test]
+    fn update_and_check_agree_on_first_dead_gap_u64() {
+        for (span, multiple) in [(7u64, 8u64), (15, 16), (3, 4), (1, 2), (7, 3), (31, 5)] {
+            let (c, u) = first_dead_gap_u64(span, multiple);
+            assert_eq!(
+                c,
+                Some(multiple + 1),
+                "check(): span {span}, multiple {multiple}"
+            );
+            assert_eq!(
+                u,
+                Some(multiple + 1),
+                "update(): span {span}, multiple {multiple}"
+            );
+        }
+    }
+
+    // The ticket's headline case: span 7 (shift 3), multiple 8, a gap of
+    // 100,000 intervals. The old `update()` returned alive forever.
+    #[test]
+    fn huge_gap_is_dead_from_update_u64() {
+        let mut lv = LivenessU64::builder()
+            .span(7)
+            .deadline_multiple(8)
+            .build()
+            .unwrap();
+        let mut t = 0u64;
+        for _ in 0..200 {
+            t += 1_000;
+            let _ = lv.update(t);
+        }
+        let gap = t + 100_000 * 1_000;
+        assert!(!lv.check(gap));
+        assert!(!lv.update(gap));
+    }
+
+    #[test]
+    fn both_deadlines_either_trips_u64() {
+        // Absolute 50 is the binding one: multiple 100 of a 10-tick interval
+        // would allow 1,000 ticks.
+        let mut lv = LivenessU64::builder()
+            .span(3)
+            .deadline_multiple(100)
+            .deadline_absolute(50)
+            .build()
+            .unwrap();
+        let mut t = 0u64;
+        for _ in 0..50 {
+            t += 10;
+            assert!(lv.update(t));
+        }
+        assert!(lv.check(t + 50));
+        assert!(!lv.check(t + 51));
+        assert!(!lv.update(t + 500));
+
+        // Multiple 3 is the binding one: absolute 1,000,000 never trips here.
+        let mut lv = LivenessU64::builder()
+            .span(3)
+            .deadline_multiple(3)
+            .deadline_absolute(1_000_000)
+            .build()
+            .unwrap();
+        let mut t = 0u64;
+        for _ in 0..50 {
+            t += 10;
+            assert!(lv.update(t));
+        }
+        assert!(lv.check(t + 30));
+        assert!(!lv.check(t + 31));
+    }
+
+    #[test]
+    fn first_gap_is_judged_by_absolute_deadline_only_u64() {
+        // Second event: no prior interval exists, so the multiple cannot judge
+        // it, but a configured absolute deadline still does.
+        let mut lv = LivenessU64::builder()
+            .span(7)
+            .deadline_multiple(3)
+            .deadline_absolute(50)
+            .build()
+            .unwrap();
+        assert!(lv.update(0));
+        assert!(!lv.update(60)); // 60 > 50
+        let mut lv = LivenessU64::builder()
+            .span(7)
+            .deadline_multiple(3)
+            .build()
+            .unwrap();
+        assert!(lv.update(0));
+        assert!(lv.update(60)); // no absolute deadline: nothing to judge the first gap
+    }
+
+    // Copilot's finding on #769: a backwards step used to be folded into the
+    // EMA, so a large one drove the estimate negative and the next real gap
+    // read dead. The step must leave the estimate untouched.
+    #[test]
+    fn backwards_step_does_not_poison_estimate_u64() {
+        let mut lv = LivenessU64::builder()
+            .span(7)
+            .deadline_multiple(3)
+            .build()
+            .unwrap();
+        let mut t = 1_000_000u64; // headroom for the step back
+        for _ in 0..50 {
+            t += 1_000;
+            assert!(lv.update(t));
+        }
+        t -= 100_000; // clock steps back 100 intervals
+        assert!(lv.update(t));
+        for _ in 0..10 {
+            t += 1_000; // normal gaps in the new clock domain
+            assert!(lv.update(t));
+        }
+        // Estimate is still exactly 1,000: dead at the fourth missed interval.
+        assert!(lv.check(t + 3_000));
+        assert!(!lv.check(t + 3_001));
+    }
+
+    #[test]
+    fn backwards_step_does_not_poison_estimate_i64() {
+        let mut lv = LivenessI64::builder()
+            .span(7)
+            .deadline_multiple(3)
+            .build()
+            .unwrap();
+        let mut t = 0i64;
+        for _ in 0..50 {
+            t += 1_000;
+            assert!(lv.update(t));
+        }
+        t -= 100_000;
+        assert!(lv.update(t));
+        for _ in 0..10 {
+            t += 1_000;
+            assert!(lv.update(t));
+        }
+        assert!(lv.check(t + 3_000));
+        assert!(!lv.check(t + 3_001));
+    }
+
+    // Only backwards gaps so far: no estimate exists, so the multiple cannot
+    // judge, but the absolute deadline still does, from both methods.
+    #[test]
+    fn unseeded_estimate_is_judged_by_absolute_only_u64() {
+        let mut lv = LivenessU64::builder()
+            .span(7)
+            .deadline_multiple(3)
+            .deadline_absolute(50)
+            .build()
+            .unwrap();
+        assert!(lv.update(100));
+        assert!(lv.update(50)); // backwards: re-anchors to 50, no estimate
+        assert!(lv.check(100)); // 50 ticks of silence, at the absolute
+        assert!(!lv.check(101)); // past it
+        assert!(lv.update(60)); // first positive gap (10): seeds the estimate
+        assert!(lv.update(70));
+        assert!(lv.check(100)); // 30 <= 3 * 10
+        assert!(!lv.check(101));
+    }
+
+    #[test]
+    fn backwards_clock_is_alive_u64() {
+        let mut lv = LivenessU64::builder()
+            .span(7)
+            .deadline_multiple(3)
+            .deadline_absolute(50)
+            .build()
+            .unwrap();
+        for i in 1..=10u64 {
+            let _ = lv.update(i * 10);
+        }
+        assert!(lv.check(95)); // behind the last event: nothing has been missed
+        assert!(lv.update(90));
+    }
+
+    #[test]
+    fn update_and_check_agree_on_first_dead_gap_i64() {
+        for (span, multiple) in [(7u64, 8u64), (15, 16), (3, 4), (1, 2), (7, 3)] {
+            let mut lv = LivenessI64::builder()
+                .span(span)
+                .deadline_multiple(multiple)
+                .build()
+                .unwrap();
+            let mut t = 0i64;
+            for _ in 0..200 {
+                t += 1_000;
+                assert!(lv.update(t));
+            }
+            let via_check = (1..=1_000i64).find(|&k| !lv.check(t + k * 1_000));
+            let via_update = (1..=1_000i64).find(|&k| {
+                let mut probe = lv.clone();
+                !probe.update(t + k * 1_000)
+            });
+            assert_eq!(
+                via_check,
+                Some(multiple as i64 + 1),
+                "check(): {span}/{multiple}"
+            );
+            assert_eq!(
+                via_update,
+                Some(multiple as i64 + 1),
+                "update(): {span}/{multiple}"
+            );
+        }
+    }
+
+    #[test]
+    fn both_deadlines_either_trips_i64() {
+        let mut lv = LivenessI64::builder()
+            .span(3)
+            .deadline_multiple(100)
+            .deadline_absolute(50)
+            .build()
+            .unwrap();
+        let mut t = 0i64;
+        for _ in 0..50 {
+            t += 10;
+            assert!(lv.update(t));
+        }
+        assert!(lv.check(t + 50));
+        assert!(!lv.check(t + 51));
     }
 }

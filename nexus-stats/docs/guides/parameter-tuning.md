@@ -72,6 +72,10 @@ before declaring dead.
 **`deadline_absolute(t)`:** Fixed timeout regardless of rate.
 Use when the expected rate varies too much for a multiple to work.
 
+Both may be set; a gap is dead when it exceeds either. A multiple plus a
+generous absolute is the usual pairing: adaptive in steady state, with a
+hard ceiling if the source slows to a crawl.
+
 ## General Advice
 
 1. **Start with defaults, then tune.** Most builders have sensible defaults.

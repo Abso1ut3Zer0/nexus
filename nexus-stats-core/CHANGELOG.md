@@ -32,6 +32,21 @@ contained.
   `window` is the RFC's interval. `CoDelF64::build` now rejects a
   non-finite target ([#759](https://github.com/Abso1ut3Zer0/nexus/issues/759)).
 
+- **`LivenessI64` / `LivenessU64`**: two defects. `update()` folded the gap
+  into the smoothed interval before testing it, which made the test
+  `dt <= m * (old + (dt - old) / 2^k)`; that is always true once
+  `deadline_multiple >= 2^k` (for example span 7 with multiple 8), so
+  `update()` could never report dead and otherwise disagreed with `check()`
+  by one interval. It now judges each gap against the interval as it stood
+  before the event, then folds. With both deadlines configured the absolute
+  one was ignored; a gap is now dead if it exceeds either. Also: until a
+  positive gap has been seen only the absolute deadline judges (from both
+  `update()` and `check()`); a timestamp at or behind the previous one is
+  alive in both variants and is no longer folded into the estimate, where a
+  large backwards step could drive it negative and make the next real gap
+  read dead; and the multiple product saturates
+  ([#760](https://github.com/Abso1ut3Zer0/nexus/issues/760)).
+
 ### Removed
 
 - **`CoDelI64::min_sojourn()` / `CoDelF64::min_sojourn()`** — the detector

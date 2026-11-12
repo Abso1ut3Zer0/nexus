@@ -28,7 +28,9 @@ data source goes quiet.
 ```
 
 Two methods:
-- **`update(timestamp)`** — call when data arrives. Updates the EMA.
+- **`update(timestamp)`** — call when data arrives. Judges the gap against
+  the smoothed interval as it stood before this event, then folds it in.
+  Returns false if that gap exceeded the deadline.
 - **`check(now)`** — call periodically (e.g., from a timer). Returns false
   if time since last event exceeds the deadline. This is how you detect
   *silence* — `update()` can't fire if nothing arrives.
@@ -55,6 +57,11 @@ if !live.check(now) {
 
 - **`deadline_multiple(n)`** — adaptive: dead when `gap > n × smoothed_interval`
 - **`deadline_absolute(t)`** — fixed: dead when `gap > t`
+
+Both may be set. A gap is dead when it exceeds either one: the multiple
+adapts to the observed rate, the absolute caps how long a slow source may
+stay silent. The first gap has no prior interval, so only the absolute
+deadline can judge it.
 
 ## Examples
 

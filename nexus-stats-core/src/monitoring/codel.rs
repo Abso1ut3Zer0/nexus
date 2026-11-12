@@ -1,39 +1,6 @@
 use crate::Condition;
 
 // =========================================================================
-// RFC 8289 standing-queue rule, shared by the I64 and F64 variants
-// =========================================================================
-
-/// The `first_above_time` rule from RFC 8289 section 5.6.
-///
-/// A sojourn at or below target clears the timer. A sojourn above target
-/// starts it at `now` if it is not running. Once a sojourn above target
-/// arrives a full `interval` or more after it started, the queue is
-/// standing. Returns whether the queue is standing after this sample.
-///
-/// Elapsed time is `now.wrapping_sub(first_above)`, as in the windowed
-/// types and the kernel code they port, so a monotonic tick counter that
-/// wraps is handled; the only requirement is that `interval` and any real
-/// gap between samples fit in half the counter's range.
-#[inline]
-fn standing_queue(
-    first_above: &mut Option<u64>,
-    interval: u64,
-    now: u64,
-    above_target: bool,
-) -> bool {
-    if !above_target {
-        *first_above = None;
-        return false;
-    }
-    if let Some(started) = *first_above {
-        return now.wrapping_sub(started) >= interval;
-    }
-    *first_above = Some(now);
-    false
-}
-
-// =========================================================================
 // Raw (u64 timestamp) variants — no_std compatible
 // =========================================================================
 
@@ -367,6 +334,39 @@ impl CoDelF64Builder {
             min_samples: self.min_samples,
         })
     }
+}
+
+// =========================================================================
+// RFC 8289 standing-queue rule, shared by the I64 and F64 variants
+// =========================================================================
+
+/// The `first_above_time` rule from RFC 8289 section 5.6.
+///
+/// A sojourn at or below target clears the timer. A sojourn above target
+/// starts it at `now` if it is not running. Once a sojourn above target
+/// arrives a full `interval` or more after it started, the queue is
+/// standing. Returns whether the queue is standing after this sample.
+///
+/// Elapsed time is `now.wrapping_sub(first_above)`, as in the windowed
+/// types and the kernel code they port, so a monotonic tick counter that
+/// wraps is handled; the only requirement is that `interval` and any real
+/// gap between samples fit in half the counter's range.
+#[inline]
+fn standing_queue(
+    first_above: &mut Option<u64>,
+    interval: u64,
+    now: u64,
+    above_target: bool,
+) -> bool {
+    if !above_target {
+        *first_above = None;
+        return false;
+    }
+    if let Some(started) = *first_above {
+        return now.wrapping_sub(started) >= interval;
+    }
+    *first_above = Some(now);
+    false
 }
 
 #[cfg(test)]
