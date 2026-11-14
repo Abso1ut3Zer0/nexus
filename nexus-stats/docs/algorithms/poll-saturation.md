@@ -1,0 +1,193 @@
+# PollSaturation — Consumer-Side Saturation from Poll Outcomes
+
+**Bounds how long messages waited for this thread, from what each poll
+returned.** No message timestamps, no queue depth, no producer cooperation,
+no clock read on an idle spin.
+
+| Property | Value |
+|----------|-------|
+| Update cost | `on_idle`: one byte store. `on_work`: 22 instructions on the steady path, four predictable branches, no division, no call |
+| Memory | 88 bytes |
+| Types | `PollSaturation`, `PollWindow` |
+| Output | `on_work` returns `behind` (ticks); `take` returns a `PollWindow` |
+
+## What It Does
+
+Saturation of a consumer thread is work that has arrived for it and is
+waiting because the thread is busy. It has a **count** (how many are
+waiting) and a **duration** (how long each waited). `PollSaturation`
+reports both over a window, from one fact the consumer can always
+establish itself: a poll that returned nothing proves the input empty.
+
+```
+  floor: the latest tick the input was proven empty
+  ─────────────────────────────────────────────────────────────▶ time
+  empty poll     work         work         work        empty poll
+       │          │            │            │              │
+       ▼          ▼            ▼            ▼              ▼
+     floor      behind=0    behind=3     behind=6       floor pending
+                (did not    (arrived     (arrived         again
+                 wait)       while #1     while #1/#2
+                             ran)         ran)
+```
+
+Every message taken arrived after the floor, so `behind = now - floor` at a
+working poll is an upper bound on how long any message in it waited. Zero
+is exact: the previous poll was empty, nothing waited. A short batch poll
+(fewer than its limit) is the other proof. A **full** poll proves nothing:
+under a backlog with a poll limit, every poll comes back full, no proof
+arrives, and `behind` and `max_run` grow until a short poll shows the
+consumer caught up. That growth is the signal.
+
+RFC 8289 states the same observation with timestamps: one packet with zero
+sojourn means no persistent queue. An empty poll is that observation made
+without a timestamp.
+
+Three hot calls and one window read:
+
+| Call | When | Cost |
+|------|------|------|
+| `on_idle()` | the poll returned nothing | one store, no clock |
+| `on_work(now, n)` | `n` messages start processing at `now`; returns `behind` | 22 instructions, ~5 cycles |
+| `on_drained(at)` | a batch poll came back short: the input was empty at `at` | a compare and two stores |
+| `take(now)` | from the owner's timer: the window since the last take | copies 64 bytes |
+
+## Configuration
+
+```rust
+use nexus_stats::monitoring::PollSaturation;
+
+// bound: the `behind`, in your tick unit, above which a message counts
+// toward `over`. 50 µs in nanosecond ticks:
+let mut sat = PollSaturation::new(clock.now(), 50_000);
+```
+
+Two knobs, and only two:
+
+- **`bound`**, the budget. Set it from shadow data: `over / msgs` near zero
+  in a normal hour, clearly above zero in a known busy one.
+- **The `take` cadence**, the window length. Maxima survive any length;
+  the `over / msgs` fraction is diluted by a long one. Take at the alert
+  cadence (a second or less) and merge for publishing: sums add, maxima
+  take the max, flags AND, exactly.
+
+No span, no decay, no sample count. Smoothing, if wanted, goes on the
+outputs once per window (`EmaF64` on `over / msgs`, `CusumF64` on
+`max_behind`), not inside the type.
+
+## Reading the Window
+
+| Field | Meaning | Healthy |
+|-------|---------|---------|
+| `msgs` | messages taken | denominator |
+| `queued` | messages that waited at all (not the first after an empty poll) | low |
+| `over` | messages with `behind > bound` | `over / msgs` near 0 |
+| `max_run` | most messages between two proofs: the longest busy period | small |
+| `max_behind` | largest `behind`: the longest stretch without catching up | under `bound` |
+| `max_batch` | most messages one poll returned: queue length when polls drain | `<= 1` |
+| `never_idle` | no empty poll in the window: utilization was 100% | false |
+| `never_empty` | no proof in the window: the queue stood the whole time | false |
+| `elapsed` | ticks since the last take | |
+
+`max_batch` is the count form of saturation: with polls that drain the
+input it is the queue-length high-water mark. Under a poll limit it pins
+at the limit and means "at least this deep"; `max_run` is the depth
+measure there. Everything is weighted per message, never per loop
+iteration: a detector sampled once per spin reads "fine" through a second
+where most messages were late, because almost every spin is empty.
+
+Read it beside utilization (your sum of service time over `elapsed`), the
+USE method's other column for the same thread:
+
+| Utilization | Saturation | Meaning | Fix |
+|-------------|------------|---------|-----|
+| low | `over == 0`, `max_batch <= 1` | healthy | none |
+| low | `over > 0` | bursts, hidden by averaging | absorb them: batch, defer non-critical work |
+| `never_idle` | `over > 0` | capacity | split the consumer, move work off the thread |
+| not pegged | `never_empty` | service-time spikes keep a queue standing | find the slow path |
+| any | `behind == 0` on a late message | the delay was upstream | not this thread's problem |
+
+## Examples
+
+### Spin loop, one message per poll
+
+```rust
+use nexus_stats::monitoring::PollSaturation;
+
+let mut sat = PollSaturation::new(clock.now(), 50_000);
+
+loop {
+    match rx.try_recv() {
+        Ok(msg) => {
+            let behind = sat.on_work(clock.now(), 1);
+            handle(msg, behind);
+        }
+        Err(TryRecvError::Empty) => sat.on_idle(),
+        Err(TryRecvError::Disconnected) => break,
+    }
+    if timer.fired() {
+        publish(sat.take(clock.now()));
+    }
+}
+```
+
+### Batch poll with a limit, inline handler
+
+Per-message accounting is the tighter form: each message's `behind` is
+measured from its own start. The short-poll proof uses the last handler's
+stamp, which is sound when the transport consumes a message, runs the
+handler, then checks for the next; a stamp taken before the poll is always
+sound and loose by the poll's duration.
+
+```rust
+let t0 = clock.now();
+let mut last = t0;
+let n = input.poll(|msg| {
+    last = clock.now();
+    let behind = sat.on_work(last, 1);
+    handle(msg, behind);
+}, LIMIT);
+
+if n == 0 {
+    sat.on_idle();
+} else if n < LIMIT {
+    sat.on_drained(last);
+}
+```
+
+More loop shapes, including blocking and async consumers, several inputs
+on one thread, and the stamped-message companion, are in the
+[Consumer Saturation](../use-cases/consumer-saturation.md) use case.
+
+## Guarantees and Limits
+
+Every error is in the direction of over-reporting. If `on_work` returns 0,
+nothing in that poll waited behind an earlier poll's work. If it returns
+`b`, nothing waited more than `b` plus one idle iteration. `queued` and
+`over` never under-count. Any split of a call sequence into windows merges
+back to the single-take result.
+
+What it cannot do: `behind` is a bound, not the wait. With one message per
+poll it is the busy period so far, loose under sustained high utilization
+(above roughly 75%); batch polls with `on_drained` tighten it, and an
+enqueue stamp on the same clock makes it exact. It cannot see delay before
+a message became visible to this poll. A false proof under-reports until
+the next true one. Ticks must be monotonic: after a backwards step every
+bound reads 0 and proofs are ignored until the clock passes the floor.
+
+## Performance
+
+Measured pinned (`taskset -c 0`, best of three, `examples/perf_stats.rs`):
+`on_work` 5 cycles p50, `on_idle` 1 cycle, beside `LivenessU64::update` at
+6 and `CoDelI64::update` at 5.
+
+Disassembly of the steady `on_work` path (floor not pending): a byte load
+and test, a saturating subtraction (`sub` + `cmovae`), one `add` for the
+run, one SIMD `paddq` the compiler uses for `msgs` and `queued` together,
+then four `cmp` + forward `ja` to out-of-line updates for `over` and the
+three maxima. 22 instructions, no division, no float, no call. `on_idle`
+is `mov byte ptr [self], 7; ret`. `on_drained` is nine instructions.
+
+The struct is `repr(C)` with the fields every working poll touches in the
+first cache line. All counters are `u64`: at 333k msg/s a `u32` wraps in
+3.6 hours without a `take`.

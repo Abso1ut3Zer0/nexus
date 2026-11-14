@@ -56,6 +56,17 @@ contained.
 
 ### Added
 
+- **`PollSaturation`** / **`PollWindow`** — consumer-side saturation from
+  poll outcomes and the caller's clock: no message timestamps, no queue
+  depth, no clock read on an idle spin. Tracks the arrival floor (the latest
+  tick the input was proven empty, by an empty poll or a short batch poll)
+  and `on_work(now, n)` returns `behind`, an upper bound on how long any
+  message in that poll waited for this thread; zero is exact. `take(now)`
+  returns the window: `max_batch` and `max_run` (the count form of
+  saturation), `queued`, `over` and `max_behind` (the duration form), and
+  the `never_idle` / `never_empty` flags. Windows merge exactly. 88 bytes,
+  `on_idle` is one store
+  ([#764](https://github.com/Abso1ut3Zer0/nexus/issues/764)).
 - **`LivenessU64`** — liveness detector with `u64` timestamps, mirrors `LivenessI64`.
 
 ## [3.0.1] — 2026-06-05

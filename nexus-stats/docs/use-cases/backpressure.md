@@ -43,7 +43,9 @@ match qd.update(now_ns as u64, sojourn_ns) {
 
 ## Recipe: Multi-Signal Pressure Valve
 
-Combine queue delay with resource saturation for comprehensive monitoring:
+Combine queue delay with resource saturation for comprehensive monitoring.
+For a consumer thread measuring its own saturation from poll outcomes, with
+no message timestamps, see [Consumer Saturation](consumer-saturation.md):
 
 ```rust
 use nexus_stats::{Condition, Direction};

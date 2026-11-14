@@ -8,6 +8,8 @@
 
 use std::hint::black_box;
 
+use nexus_stats::monitoring::PollSaturation;
+
 use nexus_stats::{
     control::{BoolWindow, HysteresisF64},
     detection::{CusumF64, MosumF64, MultiGateF64, RobustZScoreF64, ShiryaevRobertsF64},
@@ -257,6 +259,42 @@ fn bench_liveness_u64(samples: &mut [u64]) {
         let end = rdtsc_end();
         *s = (end - start) / BATCH;
     }
+}
+
+/// Steady working polls (the floor is not pending): the full `on_work` path
+/// with a compare against `bound`, the maxima and the counters.
+fn bench_poll_saturation_on_work(samples: &mut [u64]) {
+    let mut sat = PollSaturation::new(0, 50);
+    let mut rng = 12345u64;
+    let mut t = 0u64;
+    for _ in 0..WARMUP {
+        t += 10 + next_val(&mut rng) % 5;
+        let _ = sat.on_work(t, 1);
+    }
+    for s in samples.iter_mut() {
+        let start = rdtsc_start();
+        for _ in 0..BATCH {
+            t += 10 + next_val(&mut rng) % 5;
+            let _ = black_box(sat.on_work(t, 1));
+        }
+        let end = rdtsc_end();
+        *s = (end - start) / BATCH;
+    }
+    black_box(sat.take(t));
+}
+
+/// The idle spin: one flag store, no clock.
+fn bench_poll_saturation_on_idle(samples: &mut [u64]) {
+    let mut sat = PollSaturation::new(0, 50);
+    for s in samples.iter_mut() {
+        let start = rdtsc_start();
+        for _ in 0..BATCH {
+            black_box(&mut sat).on_idle();
+        }
+        let end = rdtsc_end();
+        *s = (end - start) / BATCH;
+    }
+    black_box(sat.take(1));
 }
 
 fn bench_mosum_f64(samples: &mut [u64]) {
@@ -983,6 +1021,10 @@ fn main() {
     print_row("WindowedMaxF64::update", &mut buf);
     bench_windowed_min_f64(&mut buf);
     print_row("WindowedMinF64::update", &mut buf);
+    bench_poll_saturation_on_work(&mut buf);
+    print_row("PollSaturation::on_work", &mut buf);
+    bench_poll_saturation_on_idle(&mut buf);
+    print_row("PollSaturation::on_idle", &mut buf);
     bench_liveness_u64(&mut buf);
     print_row("LivenessU64::update", &mut buf);
     bench_running_min_f64(&mut buf);
