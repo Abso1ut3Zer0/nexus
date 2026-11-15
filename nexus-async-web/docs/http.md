@@ -59,7 +59,7 @@ Note that `RequestWriter`, `Request<'_>`, `ResponseReader`, and
 `RestResponse<'_>` all come from nexus-net. The async layer only
 adds the wire-level `send(...).await`.
 
-See [nexus-net/docs/http.md](../../nexus-net/docs/http.md) for
+See [nexus-web/docs/http.md](../../nexus-web/docs/http.md) for
 `RequestWriter` typestate mechanics, body variants, and chunked
 transfer.
 

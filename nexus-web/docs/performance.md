@@ -96,7 +96,7 @@ Why the gap:
   tungstenite bounces between `Frame`, `Message`, and `Utf8Validator`
   objects, each with its own branch/callback layer.
 - **Prepend WriteBuf.** Encode is one pass — masking and header emit
-  interleave with the payload write. See [buffers.md](./buffers.md).
+  interleave with the payload write. See [nexus-net/docs/buffers.md](../../nexus-net/docs/buffers.md).
 
 ## vs reqwest (REST)
 

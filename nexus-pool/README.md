@@ -4,7 +4,7 @@ High-performance object pools for latency-sensitive applications.
 
 [![Crates.io](https://img.shields.io/crates/v/nexus-pool.svg)](https://crates.io/crates/nexus-pool)
 [![Documentation](https://docs.rs/nexus-pool/badge.svg)](https://docs.rs/nexus-pool)
-[![License](https://img.shields.io/crates/l/nexus-pool.svg)](LICENSE)
+[![License](https://img.shields.io/crates/l/nexus-pool.svg)](LICENSE-MIT)
 
 ## Features
 

@@ -63,4 +63,4 @@ For i128 backing types, multiplication of two `Decimal<i128, D>` values requires
 
 ## License
 
-See [LICENSE](../LICENSE).
+See [LICENSE-APACHE](../LICENSE-APACHE) or [LICENSE-MIT](../LICENSE-MIT).

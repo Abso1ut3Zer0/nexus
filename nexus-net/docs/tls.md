@@ -131,7 +131,7 @@ before passing to the builder.
   aws-lc-rs provides hardware-accelerated AES-GCM and ChaCha20-Poly1305.
 - Steady-state read/write latency: the codec overhead is a few
   hundred cycles on top of the raw IO. See
-  [performance.md](./performance.md#tls).
+  [nexus-web/docs/performance.md](../../nexus-web/docs/performance.md#tls).
 
 ## Errors
 

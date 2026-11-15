@@ -60,7 +60,7 @@ You can think of the stack as:
 Every protocol byte is produced and consumed by nexus-net. This crate
 calls `AsyncReadExt::read` into the `FrameReader::spare()` slice, then
 `reader.filled(n)`, then drains frames — the async version of the
-sans-IO loop in [nexus-net/docs/websocket.md](../../nexus-net/docs/websocket.md).
+sans-IO loop in [nexus-web/docs/websocket.md](../../nexus-web/docs/websocket.md).
 
 Because the codec is shared, numbers for parsing, masking, UTF-8
 validation, and encoding are **identical** to nexus-net. The async

@@ -167,4 +167,4 @@ allocation.
 - `max_message_size`: independently bounded — a small WriteBuf doesn't
   protect you from inbound floods.
 
-See [performance.md](./performance.md) for concrete numbers.
+See [nexus-web/docs/performance.md](../../nexus-web/docs/performance.md) for concrete numbers.
