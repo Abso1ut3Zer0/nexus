@@ -212,8 +212,10 @@ Robust to up to ~50% corruption — unlike AdaptiveThreshold, whose variance est
 ```rust
 impl RobustZScore<f64> {
     pub fn builder() -> RobustZScoreBuilder<f64>;
-    pub fn update(&mut self, sample: f64) -> Result<Option<Condition>, DataError>;
-    // accessors
+    /// The robust z-score of `sample` once primed; samples past
+    /// `reject_threshold` are scored but do not move the estimators.
+    pub fn update(&mut self, sample: f64) -> Result<Option<f64>, DataError>;
+    // accessors: z_score(), baseline(), mad(), count(), is_primed(), reset()
 }
 ```
 
@@ -223,14 +225,16 @@ impl RobustZScore<f64> {
 use nexus_stats_detection::detection::RobustZScore;
 
 let mut rz = RobustZScore::<f64>::builder()
-    .warning_threshold(3.0)
-    .critical_threshold(6.0)
+    .span(50)                 // EMA span for the baseline and the MAD scale
+    .reject_threshold(3.5)    // |z| above this does not move the estimators
     .build()
     .unwrap();
 
 for &price in &prices {
-    if let Some(cond) = rz.update(price).unwrap() {
-        println!("price outlier: {cond:?}");
+    if let Some(z) = rz.update(price).unwrap() {
+        if z.abs() > 3.0 {
+            println!("price outlier: z = {z:.1}");
+        }
     }
 }
 ```

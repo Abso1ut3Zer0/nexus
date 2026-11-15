@@ -7,7 +7,7 @@ from EMA — this is for "how active has this entity been recently?"
 |----------|-------|
 | Update cost | O(1) per event or query |
 | Memory | ~16 bytes |
-| Types | `DecayAccumF64` |
+| Types | `DecayAccum` |
 
 ## What It Does
 
@@ -23,22 +23,22 @@ from EMA — this is for "how active has this entity been recently?"
 ```
 
 **Lazy evaluation:** decay is only computed when you call `score()` or
-`accumulate()`. If nobody queries for 10 seconds, no work is done —
+`update()`. If nobody queries for 10 seconds, no work is done —
 the decay is applied retroactively on the next access.
 
 ## Key Difference from EMA
 
-EMA tracks a continuous signal (one sample per tick). DecayingAccumulator
+EMA tracks a continuous signal (one sample per tick). `DecayAccum`
 tracks discrete events (arrivals, requests, faults) that happen at
 irregular intervals. Between events, the score decays automatically.
 
 ## Configuration
 
 ```rust
-let mut acc = DecayAccumF64::new(1.0);  // half-life of 1.0 time units
+let mut acc = DecayAccum::new(1.0).unwrap();  // half-life of 1.0 time units
 
-acc.accumulate(timestamp, 1.0);   // event with weight 1
-acc.accumulate(timestamp, 5.0);   // event with weight 5 (more significant)
+acc.update(timestamp, 1.0);   // event with weight 1
+acc.update(timestamp, 5.0);   // event with weight 5 (more significant)
 
 let current = acc.score(now);      // decayed score at current time
 ```
