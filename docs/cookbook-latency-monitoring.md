@@ -332,7 +332,7 @@ hides all four.
 ## Further reading
 
 - `nexus-stats/docs/` — full algorithm catalog
-- `nexus-stats/PERF.md` — stats perf methodology
+- `nexus-stats/docs/reference/performance.md` — stats cycle counts and methodology
 - `nexus-logbuf/docs/` — claim API, skip markers
 - [benchmarking.md](./benchmarking.md) — same ideas applied to
   microbenchmarking rather than live monitoring

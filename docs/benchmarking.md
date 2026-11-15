@@ -26,7 +26,7 @@ number as a latency result.
 
 ## 2. Controlled Conditions
 
-Every benchmark that lands in `BENCHMARKS.md` or `PERF.md` must be
+Every benchmark that lands in a `BENCHMARKS.md` or a crate's performance page must be
 run under controlled conditions. Anything else is a research number,
 not a result.
 
@@ -270,7 +270,7 @@ its numbers against the committed reference.
 | `nexus-slab` | `BENCHMARKS.md` (via `examples/bench_isolated.rs`) | cycle example |
 | `nexus-pool` | `README.md` | criterion + examples |
 | `nexus-logbuf` | `README.md` | criterion |
-| `nexus-stats` | `PERF.md` | criterion (`update_bench`) |
+| `nexus-stats` | `docs/reference/performance.md` | cycle example (`perf_stats`) + criterion (`update_bench`) |
 | `nexus-rate` | `README.md` | criterion |
 | `nexus-net` | `README.md` | criterion + TCP loopback harness |
 | `nexus-async-web` | `README.md` | criterion + TCP loopback |

@@ -64,7 +64,7 @@ a specific primitive, go there — not here.
 | `nexus-bits` / `nexus-bits-derive` | `nexus-bits/docs/` |
 | `nexus-id` | `nexus-id/docs/` |
 | `nexus-ascii` | `nexus-ascii/docs/` |
-| `nexus-stats` | `nexus-stats/docs/`, `nexus-stats/PERF.md` |
+| `nexus-stats` | `nexus-stats/docs/` (cycle counts: `nexus-stats/docs/reference/performance.md`) |
 | `nexus-rate` | `nexus-rate/docs/` |
 | `nexus-decimal` | `nexus-decimal/docs/` |
 | `nexus-net` | `nexus-net/docs/` |
@@ -92,10 +92,12 @@ be discussed before code is written.
 
 ## Architecture decisions
 
-- [`../CLAUDE.md`](../CLAUDE.md) — Workspace-level philosophy, crate
-  summaries, design principles, miri/platform notes.
-- [`../ROADMAP.md`](../ROADMAP.md) — Where the workspace is going.
-- [`../README.md`](../README.md) — Public-facing crate table.
+- [`../README.md`](../README.md) — Public-facing crate table and
+  workspace overview.
+- [`../CONTRIBUTING.md`](../CONTRIBUTING.md) — Design philosophy and the
+  benchmarking standards a change is reviewed against.
+- The [issue tracker](https://github.com/Abso1ut3Zer0/nexus/issues) is the
+  roadmap: open issues carry the design discussion for future work.
 - `nexus-rt/docs/ARCHITECTURE.md` — Runtime layer design.
 - `nexus-async-rt/docs/` — Async executor architecture.
 

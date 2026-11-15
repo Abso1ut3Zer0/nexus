@@ -8,8 +8,7 @@ Inline smart pointers for `?Sized` types.
 `B` is a buffer marker type (`B32`, `B64`, etc.) whose name is the total
 size in bytes. `size_of::<Flat<dyn Trait, B32>>() == 32`.
 
-See the [crate documentation](src/lib.rs) for usage and the
-[roadmap](ROADMAP.md) for future plans.
+See the [crate documentation](src/lib.rs) for usage.
 
 ## Acknowledgements
 

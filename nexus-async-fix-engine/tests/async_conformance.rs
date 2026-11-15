@@ -378,8 +378,7 @@ async fn conformance_seq_reset() {
 // ── battle-test scenarios (Tier 1 sequence-number + Tier 3 liveness) ─────────
 //
 // Mirror of the sync `fix_conformance.rs` cases over the tokio transport, so the
-// two drivers stay in lockstep. See `.claude/fix-battletest-findings.md` for the
-// pass/finding disposition and the FIX 4.4 rationale behind each assertion. The
+// two drivers stay in lockstep; each case states its FIX 4.4 rationale inline. The
 // session holds no timers, so `recv` simply awaits a full frame; the caller runs
 // its own liveness timers (not exercised by these scenarios).
 
@@ -566,7 +565,7 @@ async fn conformance_test_request_long_id() {
     assert!(child.wait().unwrap().success());
 }
 
-// Regression for confirmed engine bug Q1 (see .claude/fix-battletest-findings.md):
+// Regression for a confirmed engine bug found by the battle-test sweep:
 // a below-expected SequenceReset-GapFill carrying PossDupFlag=Y must be discarded
 // (the session survives), NOT treated as SeqNumTooLow. `on_sequence_reset` once
 // hard-coded `poss_dup=false` and disconnected; the fix landed (#606), so this

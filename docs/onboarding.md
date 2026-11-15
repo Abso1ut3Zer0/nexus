@@ -211,11 +211,10 @@ Before you write something new, check:
 2. **The crate's `docs/` directory.** Many crates have an `INDEX.md`.
 3. **`cargo doc --workspace --no-deps --open`** — rustdoc is the
    source of truth for the API surface.
-4. **`CLAUDE.md`** — captures design decisions and invariants that
-   don't live in rustdoc.
-5. **`MEMORY.md`** (in `~/.claude/projects/.../memory/`) — running
-   log of decisions from planning sessions. Ask before duplicating
-   something that's already been discussed.
+4. **`CONTRIBUTING.md`** — the philosophy and the standards a change is
+   reviewed against.
+5. **The issue tracker** — open issues carry the design discussion;
+   search it before duplicating something already decided.
 
 ---
 
@@ -224,15 +223,16 @@ Before you write something new, check:
 Different kinds of decisions live in different places. When you need
 to understand **why**, look here before guessing:
 
-- **`CLAUDE.md`** at the workspace root — philosophy, crate-level
-  summaries, forbidden patterns, miri/platform notes.
-- **`ROADMAP.md`** at the workspace root — future work.
+- **`CONTRIBUTING.md`** at the workspace root — philosophy, forbidden
+  patterns, benchmarking standards.
+- **The issue tracker** — future work and the reasoning behind it; there
+  is no separate roadmap document.
 - **Per-crate `ARCHITECTURE.md`** — the "why" for a crate's internal
   design (e.g. `nexus-rt/docs/ARCHITECTURE.md`).
-- **Per-crate `ROADMAP.md`** — where that crate is going.
 - **`nexus-rt/docs/`** — extensive — this is the largest docs set.
   Start at `INDEX.md` and follow the breadcrumbs.
-- **`nexus-stats/PERF.md`** — performance methodology for stats.
+- **`nexus-stats/docs/reference/performance.md`** — cycle counts and
+  methodology for stats.
 - **`nexus-async-rt/BENCHMARKS.md`** — runtime perf history.
 
 ---
