@@ -283,6 +283,34 @@ fn bench_poll_saturation_on_work(samples: &mut [u64]) {
     black_box(sat.take());
 }
 
+/// Mixed load: an empty poll before a message at random, so whether the
+/// floor is pending is unpredictable. The regime that punishes a branch.
+fn bench_poll_saturation_on_work_mixed(samples: &mut [u64]) {
+    let mut sat = PollSaturation::new(50);
+    let mut rng = 12345u64;
+    let mut t = 0u64;
+    for _ in 0..WARMUP {
+        if next_val(&mut rng) & 1 == 0 {
+            sat.on_idle();
+        }
+        t += 10;
+        let _ = sat.on_work(t, 1);
+    }
+    for s in samples.iter_mut() {
+        let start = rdtsc_start();
+        for _ in 0..BATCH {
+            if next_val(&mut rng) & 1 == 0 {
+                sat.on_idle();
+            }
+            t += 10;
+            let _ = black_box(sat.on_work(t, 1));
+        }
+        let end = rdtsc_end();
+        *s = (end - start) / BATCH;
+    }
+    black_box(sat.take());
+}
+
 /// The idle spin: one flag store, no clock.
 fn bench_poll_saturation_on_idle(samples: &mut [u64]) {
     let mut sat = PollSaturation::new(50);
@@ -1023,6 +1051,8 @@ fn main() {
     print_row("WindowedMinF64::update", &mut buf);
     bench_poll_saturation_on_work(&mut buf);
     print_row("PollSaturation::on_work", &mut buf);
+    bench_poll_saturation_on_work_mixed(&mut buf);
+    print_row("PollSaturation::on_work (mixed)", &mut buf);
     bench_poll_saturation_on_idle(&mut buf);
     print_row("PollSaturation::on_idle", &mut buf);
     bench_liveness_u64(&mut buf);

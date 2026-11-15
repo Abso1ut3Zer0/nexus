@@ -12,6 +12,8 @@
 // State: one flag byte and nine `u64`, `repr(C)` so the fields touched by
 // every working poll share the first cache line.
 
+use core::hint::select_unpredictable;
+
 /// Summary of the polls since the previous [`PollSaturation::take`].
 ///
 /// Covers every poll in that period, not one poll. When to snap is the
@@ -254,36 +256,45 @@ impl PollSaturation {
     /// consumes the first-after-idle exemption and can start a run, but
     /// never changes `max_behind_ticks` or `max_messages_per_poll`.
     #[inline]
-    pub const fn on_work(&mut self, now: u64, n: u64) -> u64 {
+    pub fn on_work(&mut self, now: u64, n: u64) -> u64 {
+        // Selects, not branches. Whether the floor is pending is a coin flip
+        // under mixed load (idle before some messages, not others), and a
+        // mispredict there cost more than the whole function: 14 cycles p50
+        // against 6 for this form, measured pinned; equal in the other
+        // regimes. `select_unpredictable` keeps LLVM from turning the fresh
+        // case back into a branch to skip two loads, which it otherwise does
+        // when this is not inlined next to the `on_idle` call. The maxima are
+        // written unconditionally; the compiler emits cmov for each.
         let fresh = self.state & Self::FRESH != 0;
-        let behind = if fresh {
-            self.state &= !Self::FRESH;
-            self.floor = now;
-            self.backlog = 0;
-            0
-        } else {
-            now.saturating_sub(self.floor)
-        };
+        let floor = select_unpredictable(fresh, now, self.floor);
+        let backlog = select_unpredictable(fresh, 0, self.backlog) + n;
+        self.state &= !Self::FRESH;
+        self.floor = floor;
+        self.backlog = backlog;
+        let behind = now.saturating_sub(floor);
 
-        self.backlog += n;
         self.messages_seen += n;
         // The first unit of work after an empty poll did not wait; every
         // other message did.
-        self.messages_waited += if fresh { n.saturating_sub(1) } else { n };
-        if behind > self.budget {
-            self.messages_over_budget += n;
-        }
-        if self.backlog > self.max_backlog_messages {
-            self.max_backlog_messages = self.backlog;
-        }
-        if n > 0 {
-            if behind > self.max_behind_ticks {
-                self.max_behind_ticks = behind;
-            }
-            if n > self.max_messages_per_poll {
-                self.max_messages_per_poll = n;
-            }
-        }
+        self.messages_waited += n.saturating_sub(fresh as u64);
+        self.messages_over_budget += select_unpredictable(behind > self.budget, n, 0);
+        self.max_backlog_messages = if backlog > self.max_backlog_messages {
+            backlog
+        } else {
+            self.max_backlog_messages
+        };
+        // Non-message work (`n == 0`) never moves the maxima.
+        let behind_of_messages = if n > 0 { behind } else { 0 };
+        self.max_behind_ticks = if behind_of_messages > self.max_behind_ticks {
+            behind_of_messages
+        } else {
+            self.max_behind_ticks
+        };
+        self.max_messages_per_poll = if n > self.max_messages_per_poll {
+            n
+        } else {
+            self.max_messages_per_poll
+        };
         behind
     }
 
@@ -584,10 +595,18 @@ mod tests {
     }
 
     #[test]
-    fn layout_is_eighty_bytes_with_the_flag_first() {
-        assert_eq!(core::mem::size_of::<PollSaturation>(), 80);
-        assert_eq!(core::mem::align_of::<PollSaturation>(), 8);
-        assert_eq!(core::mem::size_of::<PollSummary>(), 56);
+    // `repr(C)`: the flag byte, padding up to `u64`'s alignment, then nine
+    // `u64`. Stated relative to `align_of::<u64>()` so it holds on targets
+    // where `u64` is 4-aligned (80 bytes on 64-bit, 76 there).
+    fn layout_is_flag_then_nine_u64() {
+        let a = core::mem::align_of::<u64>();
+        assert_eq!(core::mem::align_of::<PollSaturation>(), a);
+        assert_eq!(core::mem::size_of::<PollSaturation>(), a + 9 * 8);
+        // Six `u64` and two `bool`, padded to `u64`'s alignment (56 on 64-bit).
+        assert_eq!(
+            core::mem::size_of::<PollSummary>(),
+            (6usize * 8 + 2).next_multiple_of(a)
+        );
     }
 
     // Teeth: a false proof while a message is pending breaks the bound.

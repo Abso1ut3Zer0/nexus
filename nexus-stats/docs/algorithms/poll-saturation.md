@@ -6,8 +6,8 @@ no clock read on an idle spin.
 
 | Property | Value |
 |----------|-------|
-| Update cost | `on_idle`: one byte store. `on_work`: 22 instructions on the steady path, four predictable branches, no division, no call |
-| Memory | 80 bytes |
+| Update cost | `on_idle`: one byte store. `on_work`: 36 straight-line instructions, no branches, no division, no call; 5 cycles |
+| Memory | 80 bytes on 64-bit targets (a flag byte plus nine `u64`) |
 | Types | `PollSaturation`, `PollSummary` |
 | Output | `on_work` returns `behind` (ticks); `take` returns a `PollSummary` |
 
@@ -48,7 +48,7 @@ Three hot calls and one window read:
 | Call | When | Cost |
 |------|------|------|
 | `on_idle()` | the poll returned nothing | one store, no clock |
-| `on_work(now, n)` | `n` messages start processing at `now`; returns `behind` | 22 instructions, ~5 cycles |
+| `on_work(now, n)` | `n` messages start processing at `now`; returns `behind` | 36 instructions, no branches, ~5 cycles |
 | `on_drained(at)` | a batch poll came back short: the input was empty at `at` | a compare and two stores |
 | `take()` | whenever you decide to snap: the summary of every poll since the last take | copies 56 bytes |
 
@@ -186,15 +186,19 @@ bound reads 0 and proofs are ignored until the clock passes the floor.
 ## Performance
 
 Measured pinned (`taskset -c 0`, best of three, `examples/perf_stats.rs`):
-`on_work` 5 cycles p50, `on_idle` 1 cycle, beside `LivenessU64::update` at
-6 and `CoDelI64::update` at 5.
+`on_work` 5 cycles p50 under steady load and 5 under mixed load (an empty
+poll before a message at random), `on_idle` 1 cycle, beside
+`LivenessU64::update` at 7 and `CoDelI64::update` at 5 in the same runs.
 
-Disassembly of the steady `on_work` path (floor not pending): a byte load
-and test, a saturating subtraction (`sub` + `cmovae`), one `add` for the
-run, one SIMD `paddq` the compiler uses for `messages_seen` and `messages_waited` together,
-then four `cmp` + forward `ja` to out-of-line updates for `messages_over_budget` and the
-three maxima. 22 instructions, no division, no float, no call. `on_idle`
-is `mov byte ptr [self], 7; ret`. `on_drained` is nine instructions.
+`on_work` is branchless by design. Its one data-dependent decision, whether
+the floor is pending, is a coin flip under mixed load, and a branch on it
+mispredicted its way to 14 cycles p50 against 5 for selects
+(`core::hint::select_unpredictable`); the two forms are within a cycle of
+each other in every other regime. Disassembly: 36 straight-line
+instructions, `cmov` for the floor and backlog selects, the saturating
+subtraction, the over-budget increment and the three maxima; no jump of
+any kind, no division, no float, no call. `on_idle` is
+`mov byte ptr [self], 7; ret`. `on_drained` is nine instructions.
 
 The struct is `repr(C)` with the fields every working poll touches in the
 first cache line. All counters are `u64`: at 333k msg/s a `u32` wraps in
