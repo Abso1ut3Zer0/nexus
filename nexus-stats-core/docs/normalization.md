@@ -6,22 +6,22 @@ Streaming online normalizers. Module path: `nexus_stats_core::normalization`.
 
 | Type | Method | Memory | Feature gate |
 |------|--------|--------|-------------|
-| `ZScoreNormF64` / `ZScoreNormF32` | `(x - μ) / σ` via EW mean+var | small, fixed | `std` or `libm` |
-| `MinMaxNormF64` / `MinMaxNormF32` | `(x - min) / (max - min)` via windowed extremes | small, fixed | — |
-| `QuantileNormF64` / `QuantileNormF32` | Rank in P² quantile grid | O(resolution) | `alloc` |
+| `ZScoreNorm<f64>` / `ZScoreNorm<f32>` | `(x - μ) / σ` via EW mean+var | small, fixed | `std` or `libm` |
+| `MinMaxNorm<f64>` / `MinMaxNorm<f32>` | `(x - min) / (max - min)` via windowed extremes | small, fixed | — |
+| `QuantileNorm<f64>` / `QuantileNorm<f32>` | Rank in P² quantile grid | O(resolution) | `alloc` |
 
 All three follow the standard conventions: `update()` feeds a sample and returns the normalized value, `normalize()` queries without updating state, `count()` / `is_primed()` / `reset()`.
 
 ---
 
-## ZScoreNormF64 — EW z-score normalization
+## ZScoreNorm<f64> — EW z-score normalization
 
-Normalizes values to z-scores using exponentially-weighted mean and variance. Wraps `EwmaVarF64` internally.
+Normalizes values to z-scores using exponentially-weighted mean and variance. Wraps `EwmaVar` internally.
 
 ```rust
-use nexus_stats_core::normalization::ZScoreNormF64;
+use nexus_stats_core::normalization::ZScoreNorm<f64>;
 
-let mut zn = ZScoreNormF64::builder().halflife(100.0).build().unwrap();
+let mut zn = ZScoreNorm::<f64>::builder().halflife(100.0).build().unwrap();
 for i in 0..500 {
     let _ = zn.update(i as f64);
 }
@@ -34,14 +34,14 @@ let z = zn.update(250.0).unwrap().unwrap();  // z-score relative to EW stats
 
 ---
 
-## MinMaxNormF64 — Windowed min-max normalization
+## MinMaxNorm<f64> — Windowed min-max normalization
 
 Maps values to [0, 1] using windowed min and max trackers. Takes a `u64` timestamp parameter, consistent with the monitoring module.
 
 ```rust
-use nexus_stats_core::normalization::MinMaxNormF64;
+use nexus_stats_core::normalization::MinMaxNorm<f64>;
 
-let mut mn = MinMaxNormF64::builder()
+let mut mn = MinMaxNorm::<f64>::builder()
     .window_ns(1_000_000_000)  // 1-second window
     .build()
     .unwrap();
@@ -58,14 +58,14 @@ let v = mn.normalize(100.0).unwrap();  // position in [0, 1]
 
 ---
 
-## QuantileNormF64 — P² quantile grid normalization
+## QuantileNorm<f64> — P² quantile grid normalization
 
 Maps values to approximate uniform [0, 1] by maintaining a grid of P² percentile estimators at uniformly spaced quantile points. The normalized value is the interpolated rank within the grid.
 
 ```rust
-use nexus_stats_core::normalization::QuantileNormF64;
+use nexus_stats_core::normalization::QuantileNorm<f64>;
 
-let mut qn = QuantileNormF64::builder()
+let mut qn = QuantileNorm::<f64>::builder()
     .resolution(9)   // grid at 0.1, 0.2, ..., 0.9
     .build()
     .unwrap();
@@ -86,6 +86,6 @@ Resolution is configurable: `resolution(n)` places grid points at `1/(n+1), 2/(n
 
 ## Cross-references
 
-- The EW mean/variance underneath ZScoreNorm: [`statistics.md`](statistics.md) (EwmaVarF64).
+- The EW mean/variance underneath ZScoreNorm: [`statistics.md`](statistics.md) (EwmaVar).
 - The windowed trackers underneath MinMaxNorm: [`monitoring.md`](monitoring.md) (WindowedMax/Min).
-- The P² algorithm underneath QuantileNorm: [`statistics.md`](statistics.md) (PercentileF64).
+- The P² algorithm underneath QuantileNorm: [`statistics.md`](statistics.md) (Percentile).

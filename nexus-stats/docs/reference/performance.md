@@ -8,7 +8,7 @@ pinned to a single core.
 | Algorithm | p50 | p99 | Notes |
 |-----------|-----|-----|-------|
 | **Change Detection** | | | |
-| CusumF64 | 5 | 7 | add/sub/max |
+| Cusum | 5 | 7 | add/sub/max |
 | CusumI64 | 4 | 4 | integer only |
 | MosumF64<64> | 6 | 7 | ring buffer |
 | ShiryaevRoberts | 17 | 41 | one `exp()` |
@@ -16,46 +16,45 @@ pinned to a single core.
 | RobustZScoreF64 | 12 | 27 | EMA + MAD + freeze |
 | AdaptiveThresholdF64 | ~15 | ~20 | EMA + Welford + z-score |
 | **Smoothing** | | | |
-| EmaF64 | 5 | 6 | mul_add (FMA) |
+| Ema | 5 | 6 | mul_add (FMA) |
 | EmaI64 | 5 | 5 | bit-shift |
-| AsymEmaF64 | 11 | 12 | branch + mul_add |
+| AsymEma | 11 | 12 | branch + mul_add |
 | KamaF64<10> | 16 | 25 | O(N) volatility recompute |
 | Kalman1dF64 | 25 | 30 | 2x2 predict + update |
 | HoltF64 | 11 | 12 | two smoothing steps |
 | SpringF64 | 12 | 12 | Padé approximant |
 | WindowedMedianF64<32> | 136 | 195 | O(N) sorted array |
-| SlewF64 | ~3 | ~3 | clamp (maxsd/minsd) |
+| Slew<f64> | ~3 | ~3 | clamp (maxsd/minsd) |
 | **Statistics** | | | |
-| WelfordF64 | 10 | 12 | one division |
-| WelfordF64 query | 9 | 10 | includes vsqrtsd |
-| EwmaVarF64 | 12 | 30 | two mul_add |
-| CovarianceF64 | 12 | 40 | three accumulators |
-| HarmonicMeanF64 | ~5 | ~6 | one reciprocal |
+| Welford | 10 | 12 | one division |
+| Welford query | 9 | 10 | includes vsqrtsd |
+| EwmaVar | 12 | 30 | two mul_add |
+| Covariance | 12 | 40 | three accumulators |
+| HarmonicMean | ~5 | ~6 | one reciprocal |
 | **Monitoring** | | | |
-| DrawdownF64 | 5 | 5 | compare + max |
+| Drawdown<f64> | 5 | 5 | compare + max |
 | RunningMin/MaxF64 | 5 | 5 | single comparison |
 | WindowedMax/MinF64 | 9-10 | 12-34 | 3-sample promotion |
-| PeakHoldF64 | 7 | 9 | compare + decay |
-| MaxGaugeF64 | ~5 | ~5 | compare-and-swap |
-| LivenessI64 / LivenessU64 | 6 | 20 | EMA + deadline |
-| EventRateU64 | 6 | 9 | bit-shift EMA + inversion |
-| CoDelI64 | 7 | 10 | first_above deadline (RFC 8289) |
+| PeakHold<f64> | 7 | 9 | compare + decay |
+| MaxGauge<f64> | ~5 | ~5 | compare-and-swap |
+| Liveness | 6 | 20 | EMA + deadline |
+| EventRate | 6 | 9 | bit-shift EMA + inversion |
+| CoDel<i64> | 7 | 10 | first_above deadline (RFC 8289) |
 | PollSaturation::on_work | 5 | 6 | branchless (cmov selects, no jumps); 5 under mixed load too |
 | PollSaturation::on_idle | 1 | 1 | one byte store, no clock |
 | SojournSaturation::update | 6 | 7 | branchless: clamp, count, min, max, saturating total |
-| SaturationF64 | ~6 | ~8 | EMA + threshold |
-| ErrorRateF64 | ~6 | ~8 | EMA of outcomes |
+| ErrorRate | ~6 | ~8 | EMA of outcomes |
 | TrendAlertF64 | ~12 | ~18 | Holt + threshold |
-| JitterF64 | 6 | ~9 | EMA of deltas |
+| Jitter<f64> | 6 | ~9 | EMA of deltas |
 | **Frequency** | | | |
 | TopK<u64, 16> | 42 | 97 | linear scan |
 | **Utilities** | | | |
 | BoolWindow<1> | 6 | 11 | bit manipulation |
-| HysteresisF64 | ~3 | ~3 | two comparisons |
-| DeadBandF64 | ~2 | ~3 | one comparison |
+| Hysteresis<f64> | ~3 | ~3 | two comparisons |
+| DeadBand<f64> | ~2 | ~3 | one comparison |
 | DebounceU32 | ~2 | ~2 | increment + compare |
 | FirstDiff/SecondDiff | ~2 | ~2 | subtraction |
-| LevelCrossingF64 | ~2 | ~2 | one comparison |
+| LevelCrossing<f64> | ~2 | ~2 | one comparison |
 | PeakDetectorF64 | ~3 | ~3 | two comparisons |
 
 ## Memory Per Instance

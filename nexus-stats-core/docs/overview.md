@@ -9,9 +9,9 @@ Most end users should depend on `nexus-stats` directly (which re-exports everyth
 Every streaming type in this crate follows the same shape:
 
 ```rust
-use nexus_stats_core::statistics::WelfordF64;
+use nexus_stats_core::statistics::Welford;
 
-let mut w = WelfordF64::new();
+let mut w = Welford::new();
 w.update(100.5)?;           // O(1), Result for NaN/Inf
 w.update(99.8)?;
 if w.is_primed() {
@@ -25,7 +25,7 @@ w.reset();
 - **`is_primed()` / `count()` / `reset()`** on every type.
 - **O(1) per update.** Fixed memory. No allocation on the hot path after construction.
 - **`f64` variants** for float types; `i64` integer variants exist for the cheap primitives (EMA, DeadBand, etc.).
-- **Builder or `new(...)` for construction.** Types with many parameters (CUSUM, EwmaVar, AsymEma) use a builder; simple types (Welford, LevelCrossing, DeadBand, SlewLimiter) have a plain `new`.
+- **Builder or `new(...)` for construction.** Types with many parameters (CUSUM, EwmaVar, AsymEma) use a builder; simple types (Welford, LevelCrossing, DeadBand, Slew) have a plain `new`.
 
 ## Error Types
 
@@ -49,20 +49,23 @@ pub enum ConfigError {
 
 ## Module Layout
 
-- `nexus_stats_core::statistics` — Welford, Moments, EwmaVar, Covariance, OnlineCovariance, HarmonicMean, Percentile, BucketAccumulator, AmihudF64, HitRate, HalfLife, HurstF64, VarianceRatio.
-- `nexus_stats_core::smoothing` — `EmaF64`, `EmaI64`, `AsymEmaF64`, `AsymEmaI64`, `SlewLimiterF64`, `SlewLimiterI64`.
-- `nexus_stats_core::monitoring` — Drawdown, RunningMax/Min, WindowedMax/Min (several time types), PeakHold, MaxGauge, Liveness, EventRate, CoDel, Saturation, ErrorRate, Jitter.
+- `nexus_stats_core::statistics` — Welford, Moments, EwmaVar, Covariance, OnlineCovariance, HarmonicMean, Percentile, BucketAccumulator, Amihud, HitRate, HalfLife, Hurst, VarianceRatio.
+- `nexus_stats_core::smoothing` — `Ema`, `AsymEma`, `Slew<f64>` / `Slew<i64>`.
+- `nexus_stats_core::monitoring` — Drawdown, RunningMax/Min, WindowedMax/Min, PeakHold, MaxGauge, Liveness, EventRate, CoDel, ErrorRate, Jitter, HawkesIntensity, PollSaturation, SojournSaturation.
 - `nexus_stats_core::detection` — CUSUM, DistributionShift.
 - `nexus_stats_core::control` — DeadBand, Hysteresis, Debounce, LevelCrossing, FirstDiff, SecondDiff.
 
 Everything is namespaced by submodule. Import paths look like:
 
 ```rust
-use nexus_stats_core::statistics::WelfordF64;
-use nexus_stats_core::smoothing::EmaF64;
-use nexus_stats_core::detection::CusumF64;
-use nexus_stats_core::monitoring::WindowedMaxF64;
-use nexus_stats_core::control::DeadBandF64;
+use nexus_stats_core::statistics::Welford;
+use nexus_stats_core::smoothing::Ema;
+use nexus_stats_core::detection::Cusum;
+use nexus_stats_core::monitoring::WindowedMax;
+use nexus_stats_core::control::DeadBand;
+
+let mut w = WindowedMax::<f64>::new(1_000)?;   // the numeric type goes at the use site
+let mut d: DeadBand<i64> = DeadBand::new(3)?;
 ```
 
 ## Performance
@@ -80,17 +83,17 @@ nexus-stats-core = { version = "*", default-features = false, features = ["libm"
 nexus-stats-core = { version = "*", default-features = false, features = ["libm", "alloc"] }
 ```
 
-Time-aware types (`Liveness`, `EventRate`, `CoDel`, `Windowed*`) offer both `Instant`-based versions (require `std`) and raw `u64`/`i64` timestamp versions that work in `no_std`.
+Time-aware types (`Liveness`, `EventRate`, `CoDel`, `Windowed*`) take `u64` ticks in any unit and work in `no_std`; `clock::WallClock` (std) is the bridge from `Instant`, producing nanoseconds since construction.
 
 ## Integer Variants
 
 For latency-critical hot paths where float ops are cycles you don't have, integer variants exist for the cheap primitives:
 
-- `EmaI64`, `AsymEmaI64`, `SlewLimiterI64`
-- `DeadBandI64`, `HysteresisI64`, `LevelCrossingI64`, `FirstDiffI64`, `SecondDiffI64`
-- `RunningMaxI64`, `RunningMinI64`, `WindowedMaxI64`, `WindowedMinI64`
+- `Slew<i64>`
+- `DeadBand<i64>`, `Hysteresis<i64>`, `LevelCrossing<i64>`, `FirstDiff<i64>`, `SecondDiff<i64>`
+- `RunningMax<i64>`, `RunningMin<i64>`, `WindowedMax<i64>`, `WindowedMin<i64>`
 
-Integer types use fixed-point arithmetic internally and typically do not return `Result` from `update` because there's no NaN to worry about.
+These are the `i64` instantiations of the generic types, sharing one implementation with the `f64` form; their `update` does not return `Result` because there is no NaN to reject. Smoothing statistics (`Ema`, `Welford`, ...) are `f64` only: fixed-point smoothing of arbitrary data has no realistic caller.
 
 ## Re-exports
 

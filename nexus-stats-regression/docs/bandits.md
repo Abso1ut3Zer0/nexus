@@ -125,12 +125,12 @@ them to the bandit. Each algorithm has different requirements:
 ### Normalization strategies
 
 **Z-score normalization** (for UCB1, EpsilonGreedy):
-Track a running `WelfordF64` on raw rewards. Normalize as
+Track a running `Welford` on raw rewards. Normalize as
 `(reward - mean) / std_dev`, then shift to [0,1] if needed.
 
 **Min-max normalization** (for Exp3):
-`(reward - min) / (max - min)`. Use `RunningMinF64` /
-`RunningMaxF64` from nexus-stats monitoring, or windowed variants
+`(reward - min) / (max - min)`. Use `RunningMin<f64>` /
+`RunningMax<f64>` from nexus-stats monitoring, or windowed variants
 for non-stationary data.
 
 **Natural [0,1] rewards** (for ThompsonBeta):
@@ -190,7 +190,7 @@ Deterministic selection for auditability.
 
 ```rust
 use nexus_stats_regression::learning::Ucb1F64;
-use nexus_stats::statistics::WelfordF64;
+use nexus_stats::statistics::Welford;
 
 let mut spread_bandit = Ucb1F64::builder()
     .arms(2)               // 2 spread settings
@@ -200,7 +200,7 @@ let mut spread_bandit = Ucb1F64::builder()
     .unwrap();
 
 // Normalize rewards with running stats
-let mut reward_stats = WelfordF64::new();
+let mut reward_stats = Welford::new();
 
 // On each trade:
 let spread_idx = spread_bandit.select();

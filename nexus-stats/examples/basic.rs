@@ -3,7 +3,7 @@
 //!
 //! Run with: `cargo run --example basic -p nexus-stats`
 
-use nexus_stats::{Direction, detection::CusumF64, smoothing::EmaF64, statistics::WelfordF64};
+use nexus_stats::{Direction, detection::Cusum, smoothing::Ema, statistics::Welford};
 
 fn main() {
     // Simulated latency samples (μs): normal around 100, then a shift to 120
@@ -15,17 +15,17 @@ fn main() {
     ];
 
     // CUSUM: detect when the mean shifts
-    let mut cusum = CusumF64::builder(100.0)
+    let mut cusum = Cusum::builder(100.0)
         .slack(5.0)
         .threshold(30.0)
         .build()
         .unwrap();
 
     // EMA: smooth the noisy signal
-    let mut ema = EmaF64::builder().span(10).build().unwrap();
+    let mut ema = Ema::builder().span(10).build().unwrap();
 
     // Welford: track running statistics
-    let mut stats = WelfordF64::new();
+    let mut stats = Welford::new();
 
     println!("sample  raw    ema     mean   std_dev  cusum");
     println!("------  ---    ---     ----   -------  -----");

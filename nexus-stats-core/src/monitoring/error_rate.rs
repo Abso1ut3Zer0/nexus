@@ -16,8 +16,15 @@ use crate::math::MulAdd;
 /// `update_weighted(false, 2.0)` feeds 2.0 to the EMA (a failure that
 /// counts double). With weights > 1.0, the smoothed "rate" can exceed
 /// 1.0 — it becomes a severity-weighted signal rather than a pure rate.
+///
+/// # Weighting clock
+///
+/// Per `update` call: every sample counts the same. Correct when samples
+/// are evenly spaced, or one per event where per-event weighting is wanted.
+/// Never feed it from a loop whose iteration time depends on the quantity
+/// being measured.
 #[derive(Debug, Clone)]
-pub struct ErrorRateF64 {
+pub struct ErrorRate {
     alpha: f64,
     one_minus_alpha: f64,
     value: f64,
@@ -26,20 +33,20 @@ pub struct ErrorRateF64 {
     min_samples: u64,
 }
 
-/// Builder for [`ErrorRateF64`].
+/// Builder for [`ErrorRate`].
 #[derive(Debug, Clone)]
-pub struct ErrorRateF64Builder {
+pub struct ErrorRateBuilder {
     alpha: Option<f64>,
     threshold: Option<f64>,
     min_samples: u64,
 }
 
-impl ErrorRateF64 {
+impl ErrorRate {
     /// Creates a builder.
     #[inline]
     #[must_use]
-    pub fn builder() -> ErrorRateF64Builder {
-        ErrorRateF64Builder {
+    pub fn builder() -> ErrorRateBuilder {
+        ErrorRateBuilder {
             alpha: None,
             threshold: None,
             min_samples: 1,
@@ -144,7 +151,7 @@ impl ErrorRateF64 {
     }
 }
 
-impl ErrorRateF64Builder {
+impl ErrorRateBuilder {
     /// Smoothing factor.
     #[inline]
     #[must_use]
@@ -195,7 +202,7 @@ impl ErrorRateF64Builder {
     /// - Alpha must be in (0, 1) exclusive.
     /// - Threshold must be non-negative.
     #[inline]
-    pub fn build(self) -> Result<ErrorRateF64, crate::ConfigError> {
+    pub fn build(self) -> Result<ErrorRate, crate::ConfigError> {
         let alpha = self.alpha.ok_or(crate::ConfigError::Missing("alpha"))?;
         let threshold = self
             .threshold
@@ -209,7 +216,7 @@ impl ErrorRateF64Builder {
             ));
         }
 
-        Ok(ErrorRateF64 {
+        Ok(ErrorRate {
             alpha,
             one_minus_alpha: 1.0 - alpha,
             value: 0.0,
@@ -226,7 +233,7 @@ mod tests {
 
     #[test]
     fn all_success_is_healthy() {
-        let mut er = ErrorRateF64::builder()
+        let mut er = ErrorRate::builder()
             .alpha(0.3)
             .threshold(0.05)
             .build()
@@ -239,7 +246,7 @@ mod tests {
 
     #[test]
     fn all_failure_is_degraded() {
-        let mut er = ErrorRateF64::builder()
+        let mut er = ErrorRate::builder()
             .alpha(0.3)
             .threshold(0.05)
             .build()
@@ -253,7 +260,7 @@ mod tests {
 
     #[test]
     fn threshold_crossing() {
-        let mut er = ErrorRateF64::builder()
+        let mut er = ErrorRate::builder()
             .alpha(0.3)
             .threshold(0.5)
             .build()
@@ -274,12 +281,12 @@ mod tests {
 
     #[test]
     fn weighted_failure_triggers_faster() {
-        let mut light = ErrorRateF64::builder()
+        let mut light = ErrorRate::builder()
             .alpha(0.5)
             .threshold(0.5)
             .build()
             .unwrap();
-        let mut heavy = ErrorRateF64::builder()
+        let mut heavy = ErrorRate::builder()
             .alpha(0.5)
             .threshold(0.5)
             .build()
@@ -306,7 +313,7 @@ mod tests {
 
     #[test]
     fn priming() {
-        let mut er = ErrorRateF64::builder()
+        let mut er = ErrorRate::builder()
             .alpha(0.3)
             .threshold(0.05)
             .min_samples(5)
@@ -321,7 +328,7 @@ mod tests {
 
     #[test]
     fn reset() {
-        let mut er = ErrorRateF64::builder()
+        let mut er = ErrorRate::builder()
             .alpha(0.3)
             .threshold(0.05)
             .build()
@@ -337,7 +344,7 @@ mod tests {
 
     #[test]
     fn reconfigure_threshold_changes_behavior() {
-        let mut er = ErrorRateF64::builder()
+        let mut er = ErrorRate::builder()
             .alpha(0.1)
             .threshold(0.5)
             .build()
@@ -363,7 +370,7 @@ mod tests {
 
     #[test]
     fn errors_without_threshold() {
-        let result = ErrorRateF64::builder().alpha(0.3).build();
+        let result = ErrorRate::builder().alpha(0.3).build();
         assert!(matches!(
             result,
             Err(crate::ConfigError::Missing("threshold"))
@@ -372,19 +379,19 @@ mod tests {
 
     #[test]
     fn allows_zero_threshold() {
-        let er = ErrorRateF64::builder().alpha(0.3).threshold(0.0).build();
+        let er = ErrorRate::builder().alpha(0.3).threshold(0.0).build();
         assert!(er.is_ok());
     }
 
     #[test]
     fn rejects_negative_threshold() {
-        let result = ErrorRateF64::builder().alpha(0.3).threshold(-0.1).build();
+        let result = ErrorRate::builder().alpha(0.3).threshold(-0.1).build();
         assert!(matches!(result, Err(crate::ConfigError::Invalid(_))));
     }
 
     #[test]
     fn reconfigure_rejects_negative_threshold() {
-        let mut er = ErrorRateF64::builder()
+        let mut er = ErrorRate::builder()
             .alpha(0.3)
             .threshold(0.5)
             .build()
@@ -395,7 +402,7 @@ mod tests {
 
     #[test]
     fn rejects_nan_and_inf() {
-        let mut er = ErrorRateF64::builder()
+        let mut er = ErrorRate::builder()
             .alpha(0.3)
             .threshold(0.5)
             .build()

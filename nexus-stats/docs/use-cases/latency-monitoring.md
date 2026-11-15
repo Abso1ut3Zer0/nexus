@@ -17,27 +17,27 @@ durations, queue wait times). You need to:
 ## Recipe: Basic Latency Dashboard
 
 ```rust
-use nexus_stats::smoothing::EmaF64;
-use nexus_stats::statistics::WelfordF64;
-use nexus_stats::monitoring::PeakHoldF64;
+use nexus_stats::smoothing::Ema;
+use nexus_stats::statistics::Welford;
+use nexus_stats::monitoring::PeakHold<f64>;
 
 // Smooth display value
-let mut ema = EmaF64::builder().span(20).min_samples(5).build().unwrap();
+let mut ema = Ema::builder().span(20).min_samples(5).build().unwrap();
 
 // Running statistics
-let mut stats = WelfordF64::new();
+let mut stats = Welford::new();
 
 // Worst recent spike (fades over 100 samples)
-let mut peak = PeakHoldF64::builder()
+let mut peak = PeakHold::<f64>::builder()
     .hold_samples(50)
     .decay_rate(0.98)
     .build().unwrap();
 
 // On each latency measurement:
 fn on_measurement(latency_us: f64,
-                  ema: &mut EmaF64,
-                  stats: &mut WelfordF64,
-                  peak: &mut PeakHoldF64) {
+                  ema: &mut Ema,
+                  stats: &mut Welford,
+                  peak: &mut PeakHold<f64>) {
     let smoothed = ema.update(latency_us);
     stats.update(latency_us);
     let envelope = peak.update(latency_us);
@@ -54,12 +54,12 @@ fn on_measurement(latency_us: f64,
 
 ```rust
 use nexus_stats::Direction;
-use nexus_stats::detection::{CusumF64, TrendAlertF64};
+use nexus_stats::detection::{Cusum, TrendAlertF64};
 
 let baseline_us = 200.0;  // from calibration
 
 // Detect persistent shifts
-let mut cusum = CusumF64::builder(baseline_us)
+let mut cusum = Cusum::builder(baseline_us)
     .slack(10.0)       // 10μs noise tolerance
     .threshold(100.0)  // 100μs accumulated evidence
     .min_samples(50)
@@ -100,9 +100,9 @@ match cusum.update(latency_us) {
 ## Recipe: Latency Jitter Monitoring
 
 ```rust
-use nexus_stats::monitoring::JitterF64;
+use nexus_stats::monitoring::Jitter<f64>;
 
-let mut jitter = JitterF64::builder().span(30).build().unwrap();
+let mut jitter = Jitter::<f64>::builder().span(30).build().unwrap();
 
 // On each measurement:
 if let Some(j) = jitter.update(latency_us) {
@@ -119,7 +119,7 @@ if let Some(j) = jitter.update(latency_us) {
 
 ```rust
 use nexus_stats::detection::{MultiGateF64, Verdict};
-use nexus_stats::statistics::WelfordF64;
+use nexus_stats::statistics::Welford;
 
 // Multi-gate filter: reject impossible values, flag suspect ones
 let mut gate = MultiGateF64::builder()
@@ -130,7 +130,7 @@ let mut gate = MultiGateF64::builder()
     .build().unwrap();
 
 // Only feed good data to downstream stats
-let mut stats = WelfordF64::new();
+let mut stats = Welford::new();
 
 match gate.update(latency_us) {
     Some(Verdict::Accept) | Some(Verdict::Unusual) => {

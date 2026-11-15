@@ -40,11 +40,11 @@ Think of `nexus-stats-core::control` as "pointwise decisions" and this crate as 
 
 | Crate | Type | Answers |
 |-------|------|---------|
-| core | `DeadBandF64` | "Is this change big enough to act on?" |
-| core | `HysteresisF64` | "Am I in the hot zone, with flap protection?" |
+| core | `DeadBand<f64>` | "Is this change big enough to act on?" |
+| core | `Hysteresis<f64>` | "Am I in the hot zone, with flap protection?" |
 | core | `DebounceU32` | "Have I had N consecutive triggers?" |
-| core | `LevelCrossingF64` | "Did I cross this threshold?" |
-| core | `FirstDiffF64` | "What's the velocity?" |
+| core | `LevelCrossing<f64>` | "Did I cross this threshold?" |
+| core | `FirstDiff<f64>` | "What's the velocity?" |
 | control | `PeakDetectorF64` | "Where are the local maxima?" |
 | control | `BoolWindowF64` | "What fraction of the last N were true?" |
 | control | `TopK<K>` | "Who are the heavy hitters?" |

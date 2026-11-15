@@ -8,12 +8,12 @@
 /// - Filtering noisy boolean signals
 /// - "Only alert if elevated for N consecutive checks"
 #[derive(Debug, Clone)]
-pub struct DebounceU64 {
+pub struct Debounce {
     threshold: u64,
     consecutive: u64,
 }
 
-impl DebounceU64 {
+impl Debounce {
     /// Creates a new debounce filter.
     ///
     /// `threshold` is the number of consecutive active samples required
@@ -62,7 +62,7 @@ mod tests {
 
     #[test]
     fn triggers_after_threshold() {
-        let mut d = DebounceU64::new(3).unwrap();
+        let mut d = Debounce::new(3).unwrap();
         assert!(!d.update(true));
         assert!(!d.update(true));
         assert!(d.update(true)); // 3rd consecutive
@@ -70,7 +70,7 @@ mod tests {
 
     #[test]
     fn resets_on_false() {
-        let mut d = DebounceU64::new(3).unwrap();
+        let mut d = Debounce::new(3).unwrap();
         assert!(!d.update(true));
         assert!(!d.update(true));
         assert!(!d.update(false)); // reset
@@ -81,7 +81,7 @@ mod tests {
 
     #[test]
     fn no_false_trigger_at_threshold_minus_one() {
-        let mut d = DebounceU64::new(5).unwrap();
+        let mut d = Debounce::new(5).unwrap();
         for _ in 0..4 {
             assert!(!d.update(true));
         }
@@ -91,7 +91,7 @@ mod tests {
 
     #[test]
     fn stays_triggered() {
-        let mut d = DebounceU64::new(2).unwrap();
+        let mut d = Debounce::new(2).unwrap();
         assert!(!d.update(true));
         assert!(d.update(true));
         assert!(d.update(true)); // stays triggered
@@ -99,7 +99,7 @@ mod tests {
 
     #[test]
     fn reset() {
-        let mut d = DebounceU64::new(2).unwrap();
+        let mut d = Debounce::new(2).unwrap();
         let _ = d.update(true);
         d.reset();
         assert_eq!(d.count(), 0);
@@ -108,7 +108,7 @@ mod tests {
     #[test]
     fn rejects_zero_threshold() {
         assert!(matches!(
-            DebounceU64::new(0),
+            Debounce::new(0),
             Err(crate::ConfigError::Invalid(_))
         ));
     }

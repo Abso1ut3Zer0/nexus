@@ -13,8 +13,8 @@ per update. Zero configuration.
 ## What They Do
 
 ```rust
-let mut min = RunningMinF64::new();
-let mut max = RunningMaxF64::new();
+let mut min = RunningMin::<f64>::new();
+let mut max = RunningMax::<f64>::new();
 
 min.update(100.0);  // min = 100
 min.update(50.0);   // min = 50
@@ -36,8 +36,8 @@ max.update(120.0);  // max = 150 (unchanged)
 
 ```rust
 // Track best and worst latency ever
-let mut best = RunningMinF64::new();
-let mut worst = RunningMaxF64::new();
+let mut best = RunningMin::<f64>::new();
+let mut worst = RunningMax::<f64>::new();
 
 best.update(latency);
 worst.update(latency);

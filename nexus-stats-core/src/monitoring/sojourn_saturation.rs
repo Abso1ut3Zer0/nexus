@@ -103,7 +103,7 @@ impl SojournSummary {
 /// # Knobs
 ///
 /// `budget`, and when you snap. No interval, no target, no baseline window,
-/// no smoothing. [`CoDelI64`](super::CoDelI64) stays for callers who want
+/// no smoothing. [`CoDel<i64>`](super::CoDel<i64>) stays for callers who want
 /// the RFC detector to drive a control decision; this type is the
 /// observability summary. Smoothing belongs on the outputs, once per
 /// summary.

@@ -8,8 +8,8 @@ For advanced detection (MOSUM, Shiryaev-Roberts, AdaptiveThreshold, RobustZScore
 
 | Type | Detects |
 |------|---------|
-| `CusumF64` / `CusumI64` | Persistent shifts in mean (Page 1954) |
-| `DistributionShiftF64` | Change in distribution shape (skewness/kurtosis) |
+| `Cusum` | Persistent shifts in mean (Page 1954) |
+| `DistributionShift` | Change in distribution shape (skewness/kurtosis) |
 
 ---
 
@@ -30,8 +30,8 @@ The `slack` parameter (typically 0.5 * expected_shift) prevents false alarms fro
 ### API
 
 ```rust
-impl CusumF64 {
-    pub fn builder(target: f64) -> CusumF64Builder;
+impl Cusum {
+    pub fn builder(target: f64) -> CusumBuilder;
     pub fn update(&mut self, sample: f64) -> Result<Option<Direction>, DataError>;
     pub fn upper(&self) -> f64;
     pub fn lower(&self) -> f64;
@@ -45,11 +45,11 @@ impl CusumF64 {
 ### Example — latency shift detector
 
 ```rust
-use nexus_stats_core::detection::CusumF64;
+use nexus_stats_core::detection::Cusum;
 use nexus_stats_core::Direction;
 
 let target = 120.0; // expected latency in us
-let mut cusum = CusumF64::builder(target)
+let mut cusum = Cusum::builder(target)
     .slack(10.0)          // ignore noise up to 10us
     .threshold(50.0)      // cumulative budget before alert
     .build()
@@ -79,9 +79,9 @@ for &latency in &latencies {
 Detects changes in the *shape* of a distribution rather than its mean: kurtosis shift (tails getting fatter/thinner) and skewness shift. Maintains two windows — a slow baseline and a fast recent window — and compares them.
 
 ```rust
-use nexus_stats_core::detection::DistributionShiftF64;
+use nexus_stats_core::detection::DistributionShift;
 
-let mut ds = DistributionShiftF64::builder()
+let mut ds = DistributionShift::builder()
     .fast_window(100)
     .build();
 
@@ -102,4 +102,4 @@ if ds.is_shifted(2.0) {
 - Spike / transient detection: [`MOSUM`](../../nexus-stats-detection/docs/detection.md#mosum) in `nexus-stats-detection`.
 - Optimal change detection: [`Shiryaev-Roberts`](../../nexus-stats-detection/docs/detection.md#shiryaev-roberts).
 - Adaptive anomaly: [`AdaptiveThreshold`](../../nexus-stats-detection/docs/detection.md#adaptivethreshold).
-- Moments used to build `DistributionShift`: [`MomentsF64`](statistics.md#momentsf64--skewness-and-kurtosis).
+- Moments used to build `DistributionShift`: [`Moments`](statistics.md#momentsf64--skewness-and-kurtosis).

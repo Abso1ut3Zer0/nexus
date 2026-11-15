@@ -1,49 +1,127 @@
-use crate::math::MulAdd;
+use crate::Sample;
+use crate::sample::EmaKernel;
 
 /// Jitter tracker — smoothed absolute deviation between consecutive samples.
 ///
 /// Internally tracks an EMA of absolute consecutive deltas and an EMA of
-/// values for computing the jitter ratio.
+/// values for computing the jitter ratio. `Jitter<f64>` smooths with an
+/// alpha (`alpha`, `halflife` or `span`), can be seeded, rejects NaN and
+/// infinity and returns `Result`; `Jitter<i64>` smooths with the
+/// fixed-point shift EMA (`span`, rounded to `2^k - 1`) and cannot fail.
 ///
 /// # Use Cases
 /// - Network jitter (variation in inter-packet delay)
 /// - Latency jitter (variation in response times)
 /// - Clock stability monitoring
+///
+/// # Weighting clock
+///
+/// Per `update` call: every sample counts the same. Correct when samples
+/// are evenly spaced, or one per event where per-event weighting is wanted.
+/// Never feed it from a loop whose iteration time depends on the quantity
+/// being measured.
 #[derive(Debug, Clone)]
-pub struct JitterF64 {
-    alpha: f64,
-    one_minus_alpha: f64,
-    jitter: f64,
-    mean: f64,
-    last_sample: f64,
-    last_deviation: f64,
+pub struct Jitter<T: Sample> {
+    deviation: T::Ema,
+    mean: T::Ema,
+    last_sample: T,
+    last_deviation: T,
     count: u64,
     min_samples: u64,
 }
 
-/// Builder for [`JitterF64`].
+/// Builder for [`Jitter`].
 #[derive(Debug, Clone)]
-pub struct JitterF64Builder {
-    alpha: Option<f64>,
+pub struct JitterBuilder<T: Sample> {
+    ema: Option<T::EmaConfig>,
     min_samples: u64,
-    seed_value: Option<f64>,
-    seed_jitter: Option<f64>,
+    seed_value: Option<T>,
+    seed_jitter: Option<T>,
 }
 
-impl JitterF64 {
+impl<T: Sample> Jitter<T> {
     /// Creates a builder.
     #[inline]
     #[must_use]
-    pub fn builder() -> JitterF64Builder {
-        JitterF64Builder {
-            alpha: None,
+    pub fn builder() -> JitterBuilder<T> {
+        JitterBuilder {
+            ema: None,
             min_samples: 2,
             seed_value: None,
             seed_jitter: None,
         }
     }
 
-    /// Feeds a sample. Returns smoothed jitter once primed.
+    /// Smoothed jitter, or `None` until primed.
+    #[inline]
+    #[must_use]
+    pub fn jitter(&self) -> Option<T> {
+        if self.is_primed() {
+            Some(self.deviation.value())
+        } else {
+            None
+        }
+    }
+
+    /// Most recent absolute deviation, or `None` before the second sample.
+    #[inline]
+    #[must_use]
+    pub fn last_deviation(&self) -> Option<T> {
+        if self.count >= 2 {
+            Some(self.last_deviation)
+        } else {
+            None
+        }
+    }
+
+    /// Number of samples processed.
+    #[inline]
+    #[must_use]
+    pub fn count(&self) -> u64 {
+        self.count
+    }
+
+    /// Whether `min_samples` have been seen.
+    #[inline]
+    #[must_use]
+    pub fn is_primed(&self) -> bool {
+        self.count >= self.min_samples
+    }
+
+    /// Resets accumulated state. Configuration is kept.
+    #[inline]
+    pub fn reset(&mut self) {
+        self.deviation.reset();
+        self.mean.reset();
+        self.last_sample = T::ZERO;
+        self.last_deviation = T::ZERO;
+        self.count = 0;
+    }
+
+    /// Shared body: fold a sample, return the jitter once primed.
+    #[inline]
+    fn fold(&mut self, sample: T, abs_delta: impl FnOnce(T, T) -> T) -> Option<T> {
+        self.count += 1;
+        if self.count == 1 {
+            self.last_sample = sample;
+            self.mean.seed(sample);
+            return None;
+        }
+        let dev = abs_delta(sample, self.last_sample);
+        self.last_deviation = dev;
+        self.last_sample = sample;
+        self.deviation.fold(dev);
+        self.mean.fold(sample);
+        if self.is_primed() {
+            Some(self.deviation.value())
+        } else {
+            None
+        }
+    }
+}
+
+impl Jitter<f64> {
+    /// Feeds a sample. Returns the smoothed jitter once primed.
     ///
     /// # Errors
     ///
@@ -52,121 +130,63 @@ impl JitterF64 {
     #[inline]
     pub fn update(&mut self, sample: f64) -> Result<Option<f64>, crate::DataError> {
         check_finite!(sample);
-        self.count += 1;
-
-        if self.count == 1 {
-            self.last_sample = sample;
-            self.mean = sample;
-            return Ok(None);
-        }
-
-        let abs_delta = (sample - self.last_sample).abs();
-        self.last_deviation = abs_delta;
-        self.last_sample = sample;
-
-        if self.count == 2 {
-            self.jitter = abs_delta;
-        } else {
-            self.jitter = self
-                .alpha
-                .fma(abs_delta, self.one_minus_alpha * self.jitter);
-        }
-        self.mean = self.alpha.fma(sample, self.one_minus_alpha * self.mean);
-
-        if self.count >= self.min_samples {
-            Ok(Some(self.jitter))
-        } else {
-            Ok(None)
-        }
+        Ok(self.fold(sample, |a, b| (a - b).abs()))
     }
 
-    /// Current smoothed jitter (absolute deviation), or `None` if not primed.
-    #[inline]
-    #[must_use]
-    pub fn jitter(&self) -> Option<f64> {
-        if self.count >= self.min_samples {
-            Some(self.jitter)
-        } else {
-            None
-        }
-    }
-
-    /// Jitter as a fraction of the smoothed mean, or `None` if not primed
-    /// or mean is near zero (absolute value < epsilon).
+    /// Jitter relative to the smoothed level, `jitter / mean`, or `None`
+    /// until primed or while the mean is zero.
     #[inline]
     #[must_use]
     pub fn jitter_ratio(&self) -> Option<f64> {
-        if self.count >= self.min_samples && self.mean.abs() > f64::EPSILON {
-            Some(self.jitter / self.mean)
+        let mean = self.mean.value();
+        if self.is_primed() && mean.abs() > f64::EPSILON {
+            Some(self.deviation.value() / mean)
         } else {
             None
         }
-    }
-
-    /// Raw absolute deviation of the last two samples, or `None` if < 2 samples.
-    #[inline]
-    #[must_use]
-    pub fn last_deviation(&self) -> Option<f64> {
-        if self.count >= 2 {
-            Some(self.last_deviation)
-        } else {
-            None
-        }
-    }
-
-    /// Number of samples processed.
-    #[inline]
-    #[must_use]
-    pub fn count(&self) -> u64 {
-        self.count
-    }
-
-    /// Whether enough data has been collected.
-    #[inline]
-    #[must_use]
-    pub fn is_primed(&self) -> bool {
-        self.count >= self.min_samples
-    }
-
-    /// Resets to empty state. Parameters unchanged.
-    #[inline]
-    pub fn reset(&mut self) {
-        self.jitter = 0.0;
-        self.mean = 0.0;
-        self.last_sample = 0.0;
-        self.last_deviation = 0.0;
-        self.count = 0;
     }
 }
 
-impl JitterF64Builder {
-    /// Smoothing factor for jitter EMA.
+impl Jitter<i64> {
+    /// Feeds a sample. Returns the smoothed jitter once primed.
     #[inline]
-    #[must_use]
-    pub fn alpha(mut self, alpha: f64) -> Self {
-        self.alpha = Some(alpha);
-        self
+    pub fn update(&mut self, sample: i64) -> Option<i64> {
+        self.fold(sample, |a, b| (a - b).abs())
     }
 
-    /// Halflife for jitter smoothing.
+    /// Jitter relative to the smoothed level, `jitter / mean`, or `None`
+    /// until primed or while the mean is zero.
     #[inline]
     #[must_use]
-    #[cfg(any(feature = "std", feature = "libm"))]
-    pub fn halflife(mut self, halflife: f64) -> Self {
-        let ln2 = core::f64::consts::LN_2;
-        self.alpha = Some(1.0 - crate::math::exp(-ln2 / halflife));
-        self
+    #[allow(clippy::cast_precision_loss)]
+    pub fn jitter_ratio(&self) -> Option<f64> {
+        let mean = self.mean.value();
+        if self.is_primed() && mean != 0 {
+            Some(self.deviation.value() as f64 / mean as f64)
+        } else {
+            None
+        }
     }
 
-    /// Span for jitter smoothing.
+    /// The span actually used, rounded to `2^k - 1`.
+    #[inline]
+    #[must_use]
+    pub fn effective_span(&self) -> u64 {
+        self.deviation.span
+    }
+}
+
+impl<T: Sample> JitterBuilder<T> {
+    /// Smoothing span in samples. For `f64` this sets `alpha = 2 / (n + 1)`;
+    /// for `i64` it is rounded to `2^k - 1`.
     #[inline]
     #[must_use]
     pub fn span(mut self, n: u64) -> Self {
-        self.alpha = Some(2.0 / (n as f64 + 1.0));
+        self.ema = Some(T::ema_config_from_span(n));
         self
     }
 
-    /// Minimum samples before jitter is valid. Default: 2.
+    /// Minimum samples before `jitter()` is reported. Default 2.
     #[inline]
     #[must_use]
     pub fn min_samples(mut self, min: u64) -> Self {
@@ -174,211 +194,65 @@ impl JitterF64Builder {
         self
     }
 
-    /// Pre-loads the last sample value and smoothed jitter from calibration data.
-    ///
-    /// When seeded, `is_primed()` returns true immediately and the
-    /// next `update()` computes a deviation against `value`.
+    /// Pre-loads the level and the jitter from calibration data; the
+    /// detector starts primed.
     #[inline]
     #[must_use]
-    pub fn seed(mut self, value: f64, jitter: f64) -> Self {
+    pub fn seed(mut self, value: T, jitter: T) -> Self {
         self.seed_value = Some(value);
         self.seed_jitter = Some(jitter);
         self
     }
 
-    /// Builds the jitter tracker.
+    /// Builds the tracker.
     ///
     /// # Errors
     ///
-    /// - Alpha must have been set.
-    /// - Alpha must be in (0, 1) exclusive.
-    #[inline]
-    pub fn build(self) -> Result<JitterF64, crate::ConfigError> {
-        let alpha = self.alpha.ok_or(crate::ConfigError::Missing("alpha"))?;
-        if !(alpha > 0.0 && alpha < 1.0) {
-            return Err(crate::ConfigError::Invalid(
-                "Jitter alpha must be in (0, 1)",
-            ));
-        }
-
-        let (last_sample, jitter, mean, count) = match (self.seed_value, self.seed_jitter) {
-            (Some(v), Some(j)) => (v, j, v, self.min_samples),
-            _ => (0.0, 0.0, 0.0, 0),
+    /// `ConfigError::Missing("alpha")` (`f64`) or `Missing("span")` (`i64`) if
+    /// no smoothing was configured;
+    /// `ConfigError::Invalid` if it is out of range (alpha outside (0, 1),
+    /// span below 1).
+    pub fn build(self) -> Result<Jitter<T>, crate::ConfigError> {
+        let config = self
+            .ema
+            .ok_or(crate::ConfigError::Missing(T::EMA_CONFIG_NAME))?;
+        let mut deviation = T::Ema::new(config)?;
+        let mut mean = T::Ema::new(config)?;
+        let (last_sample, count) = match (self.seed_value, self.seed_jitter) {
+            (Some(v), Some(j)) => {
+                mean.seed(v);
+                deviation.seed(j);
+                (v, self.min_samples)
+            }
+            _ => (T::ZERO, 0),
         };
-
-        Ok(JitterF64 {
-            alpha,
-            one_minus_alpha: 1.0 - alpha,
-            jitter,
+        Ok(Jitter {
+            deviation,
             mean,
             last_sample,
-            last_deviation: 0.0,
+            last_deviation: T::ZERO,
             count,
             min_samples: self.min_samples,
         })
     }
 }
 
-/// Jitter tracker (integer variant) — fixed-point EMA of absolute deltas.
-///
-/// Uses kernel-style bit-shift arithmetic. `jitter_ratio()` is not
-/// available on integer types (integer division loses too much precision).
-#[derive(Debug, Clone)]
-pub struct JitterI64 {
-    acc: i128,
-    shift: u32,
-    span: u64,
-    last_sample: i64,
-    last_deviation: i64,
-    count: u64,
-    min_samples: u64,
-    initialized: bool,
-}
-
-/// Builder for [`JitterI64`].
-#[derive(Debug, Clone)]
-pub struct JitterI64Builder {
-    span: Option<u64>,
-    min_samples: u64,
-}
-
-impl JitterI64 {
-    /// Creates a builder.
+impl JitterBuilder<f64> {
+    /// Direct smoothing factor in (0, 1).
     #[inline]
     #[must_use]
-    pub fn builder() -> JitterI64Builder {
-        JitterI64Builder {
-            span: None,
-            min_samples: 2,
-        }
-    }
-
-    /// Feeds a sample. Returns smoothed jitter once primed.
-    #[inline]
-    #[must_use]
-    pub fn update(&mut self, sample: i64) -> Option<i64> {
-        self.count += 1;
-
-        if self.count == 1 {
-            self.last_sample = sample;
-            return None;
-        }
-
-        let abs_delta = (sample - self.last_sample).abs();
-        self.last_deviation = abs_delta;
-        self.last_sample = sample;
-
-        if self.initialized {
-            let delta_shifted = (abs_delta as i128) << self.shift;
-            self.acc += (delta_shifted - self.acc) >> self.shift;
-        } else {
-            self.acc = (abs_delta as i128) << self.shift;
-            self.initialized = true;
-        }
-
-        if self.count >= self.min_samples {
-            Some((self.acc >> self.shift) as i64)
-        } else {
-            None
-        }
-    }
-
-    /// Current smoothed jitter, or `None` if not primed.
-    #[inline]
-    #[must_use]
-    pub fn jitter(&self) -> Option<i64> {
-        if self.count >= self.min_samples && self.initialized {
-            Some((self.acc >> self.shift) as i64)
-        } else {
-            None
-        }
-    }
-
-    /// Raw absolute deviation of the last two samples, or `None` if < 2.
-    #[inline]
-    #[must_use]
-    pub fn last_deviation(&self) -> Option<i64> {
-        if self.count >= 2 {
-            Some(self.last_deviation)
-        } else {
-            None
-        }
-    }
-
-    /// Effective span after rounding.
-    #[inline]
-    #[must_use]
-    pub fn effective_span(&self) -> u64 {
-        self.span
-    }
-
-    /// Number of samples processed.
-    #[inline]
-    #[must_use]
-    pub fn count(&self) -> u64 {
-        self.count
-    }
-
-    /// Whether enough data has been collected.
-    #[inline]
-    #[must_use]
-    pub fn is_primed(&self) -> bool {
-        self.count >= self.min_samples
-    }
-
-    /// Resets to empty state.
-    #[inline]
-    pub fn reset(&mut self) {
-        self.acc = 0;
-        self.last_sample = 0;
-        self.last_deviation = 0;
-        self.count = 0;
-        self.initialized = false;
-    }
-}
-
-impl JitterI64Builder {
-    /// Smoothing span. Rounded up to next `2^k - 1`.
-    #[inline]
-    #[must_use]
-    pub fn span(mut self, n: u64) -> Self {
-        self.span = Some(n);
+    pub fn alpha(mut self, alpha: f64) -> Self {
+        self.ema = Some(alpha);
         self
     }
 
-    /// Minimum samples before jitter is valid. Default: 2.
+    /// Samples for a sample's weight to decay by half.
     #[inline]
     #[must_use]
-    pub fn min_samples(mut self, min: u64) -> Self {
-        self.min_samples = min;
+    #[cfg(any(feature = "std", feature = "libm"))]
+    pub fn halflife(mut self, halflife: f64) -> Self {
+        self.ema = Some(1.0 - crate::math::exp(-core::f64::consts::LN_2 / halflife));
         self
-    }
-
-    /// Builds the jitter tracker.
-    ///
-    /// # Errors
-    ///
-    /// - Span must have been set and >= 1.
-    #[inline]
-    pub fn build(self) -> Result<JitterI64, crate::ConfigError> {
-        let requested = self.span.ok_or(crate::ConfigError::Missing("span"))?;
-        if requested < 1 {
-            return Err(crate::ConfigError::Invalid("Jitter span must be >= 1"));
-        }
-
-        let effective = crate::smoothing::ema::next_power_of_two_minus_one(requested);
-        let shift = crate::smoothing::ema::log2_of_span_plus_one(effective);
-
-        Ok(JitterI64 {
-            acc: 0,
-            shift,
-            span: effective,
-            last_sample: 0,
-            last_deviation: 0,
-            count: 0,
-            min_samples: self.min_samples,
-            initialized: false,
-        })
     }
 }
 
@@ -386,10 +260,25 @@ impl JitterI64Builder {
 mod tests {
     use super::*;
 
+    // #763: with `min_samples(1)` the seeded jitter used to be discarded
+    // (the old code inferred "first real sample" from `count`). The kernel
+    // now carries an explicit seeded state: 0.3 * 10 + 0.7 * 5 = 6.5.
+    #[test]
+    fn seeded_jitter_survives_min_samples_one() {
+        let mut j = Jitter::<f64>::builder()
+            .alpha(0.3)
+            .min_samples(1)
+            .seed(100.0, 5.0)
+            .build()
+            .unwrap();
+        let out = j.update(110.0).unwrap().unwrap();
+        assert!((out - 6.5).abs() < 1e-12, "{out}");
+    }
+
     #[test]
     #[allow(clippy::float_cmp)]
     fn constant_input_zero_jitter() {
-        let mut j = JitterF64::builder().alpha(0.3).build().unwrap();
+        let mut j = Jitter::<f64>::builder().alpha(0.3).build().unwrap();
         for _ in 0..100 {
             let _ = j.update(100.0).unwrap();
         }
@@ -402,7 +291,7 @@ mod tests {
 
     #[test]
     fn alternating_input_high_jitter() {
-        let mut j = JitterF64::builder().alpha(0.5).build().unwrap();
+        let mut j = Jitter::<f64>::builder().alpha(0.5).build().unwrap();
         for i in 0..50 {
             let _ = j.update(if i % 2 == 0 { 100.0 } else { 200.0 }).unwrap();
         }
@@ -415,7 +304,7 @@ mod tests {
 
     #[test]
     fn jitter_ratio_correctness() {
-        let mut j = JitterF64::builder().alpha(0.3).build().unwrap();
+        let mut j = Jitter::<f64>::builder().alpha(0.3).build().unwrap();
         for i in 0..100 {
             let _ = j.update(100.0 + (i % 10) as f64).unwrap();
         }
@@ -428,7 +317,7 @@ mod tests {
 
     #[test]
     fn priming() {
-        let mut j = JitterF64::builder()
+        let mut j = Jitter::<f64>::builder()
             .alpha(0.3)
             .min_samples(5)
             .build()
@@ -441,7 +330,7 @@ mod tests {
 
     #[test]
     fn reset() {
-        let mut j = JitterF64::builder().alpha(0.3).build().unwrap();
+        let mut j = Jitter::<f64>::builder().alpha(0.3).build().unwrap();
         for _ in 0..10 {
             let _ = j.update(100.0).unwrap();
         }
@@ -452,7 +341,7 @@ mod tests {
 
     #[test]
     fn i64_basic() {
-        let mut j = JitterI64::builder().span(7).build().unwrap();
+        let mut j = Jitter::<i64>::builder().span(7).build().unwrap();
         let _ = j.update(100);
         let _ = j.update(110);
         let _ = j.update(105);
@@ -461,7 +350,7 @@ mod tests {
 
     #[test]
     fn seeded_is_primed() {
-        let j = JitterF64::builder()
+        let j = Jitter::<f64>::builder()
             .alpha(0.3)
             .seed(100.0, 5.0)
             .build()
@@ -473,7 +362,7 @@ mod tests {
 
     #[test]
     fn seeded_next_update_uses_seed_value() {
-        let mut j = JitterF64::builder()
+        let mut j = Jitter::<f64>::builder()
             .alpha(0.3)
             .seed(100.0, 5.0)
             .build()
@@ -489,13 +378,13 @@ mod tests {
 
     #[test]
     fn errors_without_alpha() {
-        let result = JitterF64::builder().build();
+        let result = Jitter::<f64>::builder().build();
         assert!(matches!(result, Err(crate::ConfigError::Missing("alpha"))));
     }
 
     #[test]
     fn rejects_nan_and_inf() {
-        let mut j = JitterF64::builder().alpha(0.3).build().unwrap();
+        let mut j = Jitter::<f64>::builder().alpha(0.3).build().unwrap();
         assert!(matches!(
             j.update(f64::NAN),
             Err(crate::DataError::NotANumber)

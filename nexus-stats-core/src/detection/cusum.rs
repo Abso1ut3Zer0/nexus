@@ -15,7 +15,7 @@ use crate::Direction;
 /// - Market data feed quality monitoring
 #[derive(Debug, Clone)]
 #[allow(clippy::struct_excessive_bools)]
-pub struct CusumF64 {
+pub struct Cusum {
     target: f64,
     slack_upper: f64,
     slack_lower: f64,
@@ -33,13 +33,13 @@ pub struct CusumF64 {
     threshold_lower_explicit: bool,
 }
 
-/// Builder for [`CusumF64`].
+/// Builder for [`Cusum`].
 ///
 /// # Example
 ///
 /// ```
 /// use nexus_stats_core::detection::*;
-/// let mut cusum = CusumF64::builder(100.0)
+/// let mut cusum = Cusum::builder(100.0)
 ///     .slack(5.0)
 ///     .threshold(50.0)
 ///     .min_samples(20)
@@ -47,7 +47,7 @@ pub struct CusumF64 {
 ///     .unwrap();
 /// ```
 #[derive(Debug, Clone)]
-pub struct CusumF64Builder {
+pub struct CusumBuilder {
     target: f64,
     slack_upper: Option<f64>,
     slack_lower: Option<f64>,
@@ -58,12 +58,12 @@ pub struct CusumF64Builder {
     seed_lower: Option<f64>,
 }
 
-impl CusumF64 {
+impl Cusum {
     /// Creates a builder with the target (expected baseline mean).
     #[inline]
     #[must_use]
-    pub fn builder(target: f64) -> CusumF64Builder {
-        CusumF64Builder {
+    pub fn builder(target: f64) -> CusumBuilder {
+        CusumBuilder {
             target,
             slack_upper: None,
             slack_lower: None,
@@ -160,16 +160,16 @@ impl CusumF64 {
         self.count = 0;
 
         if !self.slack_upper_explicit {
-            self.slack_upper = CusumF64Builder::default_slack(new_target);
+            self.slack_upper = CusumBuilder::default_slack(new_target);
         }
         if !self.slack_lower_explicit {
-            self.slack_lower = CusumF64Builder::default_slack(new_target);
+            self.slack_lower = CusumBuilder::default_slack(new_target);
         }
         if !self.threshold_upper_explicit {
-            self.threshold_upper = CusumF64Builder::default_threshold(new_target);
+            self.threshold_upper = CusumBuilder::default_threshold(new_target);
         }
         if !self.threshold_lower_explicit {
-            self.threshold_lower = CusumF64Builder::default_threshold(new_target);
+            self.threshold_lower = CusumBuilder::default_threshold(new_target);
         }
     }
 
@@ -264,7 +264,7 @@ impl CusumF64 {
     }
 }
 
-impl CusumF64Builder {
+impl CusumBuilder {
     #[inline]
     fn default_slack(target: f64) -> f64 {
         // 5% of target magnitude, floored to 0.0
@@ -379,7 +379,7 @@ impl CusumF64Builder {
     /// - Slack values must be non-negative.
     /// - Threshold values must be positive.
     #[inline]
-    pub fn build(self) -> Result<CusumF64, crate::ConfigError> {
+    pub fn build(self) -> Result<Cusum, crate::ConfigError> {
         let slack_upper_explicit = self.slack_upper.is_some();
         let slack_lower_explicit = self.slack_lower.is_some();
         let threshold_upper_explicit = self.threshold_upper.is_some();
@@ -422,7 +422,7 @@ impl CusumF64Builder {
         let seeded = self.seed_upper.is_some() || self.seed_lower.is_some();
         let initial_count = if seeded { self.min_samples } else { 0 };
 
-        Ok(CusumF64 {
+        Ok(Cusum {
             target: self.target,
             slack_upper,
             slack_lower,
@@ -450,7 +450,7 @@ mod tests {
 
     #[test]
     fn detects_upward_shift() {
-        let mut cusum = CusumF64::builder(100.0)
+        let mut cusum = Cusum::builder(100.0)
             .slack(5.0)
             .threshold(50.0)
             .build()
@@ -475,7 +475,7 @@ mod tests {
 
     #[test]
     fn detects_downward_shift() {
-        let mut cusum = CusumF64::builder(100.0)
+        let mut cusum = Cusum::builder(100.0)
             .slack(5.0)
             .threshold(50.0)
             .build()
@@ -494,7 +494,7 @@ mod tests {
 
     #[test]
     fn no_false_positive_at_target() {
-        let mut cusum = CusumF64::builder(100.0)
+        let mut cusum = Cusum::builder(100.0)
             .slack(5.0)
             .threshold(50.0)
             .build()
@@ -511,7 +511,7 @@ mod tests {
 
     #[test]
     fn returns_none_before_primed() {
-        let mut cusum = CusumF64::builder(100.0)
+        let mut cusum = Cusum::builder(100.0)
             .slack(5.0)
             .threshold(50.0)
             .min_samples(10)
@@ -531,7 +531,7 @@ mod tests {
 
     #[test]
     fn primed_immediately_with_zero_min_samples() {
-        let mut cusum = CusumF64::builder(100.0)
+        let mut cusum = Cusum::builder(100.0)
             .slack(5.0)
             .threshold(50.0)
             .build()
@@ -549,7 +549,7 @@ mod tests {
     #[test]
     #[allow(clippy::float_cmp)]
     fn reset_clears_state() {
-        let mut cusum = CusumF64::builder(100.0)
+        let mut cusum = Cusum::builder(100.0)
             .slack(5.0)
             .threshold(50.0)
             .build()
@@ -569,7 +569,7 @@ mod tests {
 
     #[test]
     fn reset_with_target_updates_defaults() {
-        let mut cusum = CusumF64::builder(100.0).build().unwrap();
+        let mut cusum = Cusum::builder(100.0).build().unwrap();
 
         // Defaults based on 100.0
         let original_slack = cusum.slack_upper();
@@ -585,7 +585,7 @@ mod tests {
     #[test]
     #[allow(clippy::float_cmp)]
     fn reset_with_target_preserves_explicit_params() {
-        let mut cusum = CusumF64::builder(100.0)
+        let mut cusum = Cusum::builder(100.0)
             .slack(10.0)
             .threshold(75.0)
             .build()
@@ -607,7 +607,7 @@ mod tests {
     #[test]
     fn asymmetric_slack() {
         // Tight upper slack (sensitive to increases), loose lower slack
-        let mut cusum = CusumF64::builder(100.0)
+        let mut cusum = Cusum::builder(100.0)
             .slack_upper(2.0)
             .slack_lower(10.0)
             .threshold(50.0)
@@ -635,7 +635,7 @@ mod tests {
 
     #[test]
     fn asymmetric_threshold() {
-        let mut cusum = CusumF64::builder(100.0)
+        let mut cusum = Cusum::builder(100.0)
             .slack(5.0)
             .threshold_upper(20.0) // trigger fast on increases
             .threshold_lower(500.0) // very slow to trigger on decreases
@@ -671,7 +671,7 @@ mod tests {
     #[test]
     #[allow(clippy::float_cmp)]
     fn symmetric_slack_sets_both() {
-        let cusum = CusumF64::builder(100.0).slack(7.5).build().unwrap();
+        let cusum = Cusum::builder(100.0).slack(7.5).build().unwrap();
 
         assert_eq!(cusum.slack_upper(), 7.5);
         assert_eq!(cusum.slack_lower(), 7.5);
@@ -680,7 +680,7 @@ mod tests {
     #[test]
     #[allow(clippy::float_cmp)]
     fn symmetric_threshold_sets_both() {
-        let cusum = CusumF64::builder(100.0).threshold(42.0).build().unwrap();
+        let cusum = Cusum::builder(100.0).threshold(42.0).build().unwrap();
 
         assert_eq!(cusum.threshold_upper(), 42.0);
         assert_eq!(cusum.threshold_lower(), 42.0);
@@ -692,7 +692,7 @@ mod tests {
 
     #[test]
     fn rejects_negative_slack_upper() {
-        let result = CusumF64::builder(100.0).slack_upper(-1.0).build();
+        let result = Cusum::builder(100.0).slack_upper(-1.0).build();
         assert!(matches!(
             result,
             Err(crate::ConfigError::Invalid(
@@ -703,7 +703,7 @@ mod tests {
 
     #[test]
     fn rejects_negative_slack_lower() {
-        let result = CusumF64::builder(100.0).slack_lower(-1.0).build();
+        let result = Cusum::builder(100.0).slack_lower(-1.0).build();
         assert!(matches!(
             result,
             Err(crate::ConfigError::Invalid(
@@ -714,7 +714,7 @@ mod tests {
 
     #[test]
     fn rejects_zero_threshold() {
-        let result = CusumF64::builder(100.0).threshold(0.0).build();
+        let result = Cusum::builder(100.0).threshold(0.0).build();
         assert!(matches!(
             result,
             Err(crate::ConfigError::Invalid(
@@ -725,7 +725,7 @@ mod tests {
 
     #[test]
     fn rejects_negative_threshold_lower() {
-        let result = CusumF64::builder(100.0).threshold_lower(-1.0).build();
+        let result = Cusum::builder(100.0).threshold_lower(-1.0).build();
         assert!(matches!(
             result,
             Err(crate::ConfigError::Invalid(
@@ -740,7 +740,7 @@ mod tests {
 
     #[test]
     fn count_increments() {
-        let mut cusum = CusumF64::builder(100.0)
+        let mut cusum = Cusum::builder(100.0)
             .slack(5.0)
             .threshold(50.0)
             .build()
@@ -756,7 +756,7 @@ mod tests {
     #[test]
     #[allow(clippy::float_cmp)]
     fn upper_and_lower_start_at_zero() {
-        let cusum = CusumF64::builder(100.0)
+        let cusum = Cusum::builder(100.0)
             .slack(5.0)
             .threshold(50.0)
             .build()
@@ -769,7 +769,7 @@ mod tests {
     #[test]
     #[allow(clippy::float_cmp)]
     fn cusum_at_exactly_slack_no_accumulation() {
-        let mut cusum = CusumF64::builder(100.0)
+        let mut cusum = Cusum::builder(100.0)
             .slack(5.0)
             .threshold(50.0)
             .build()
@@ -787,7 +787,7 @@ mod tests {
     #[test]
     #[allow(clippy::float_cmp)]
     fn reconfigure_changes_params_preserves_state() {
-        let mut cusum = CusumF64::builder(100.0)
+        let mut cusum = Cusum::builder(100.0)
             .slack(5.0)
             .threshold(50.0)
             .build()
@@ -818,7 +818,7 @@ mod tests {
 
     #[test]
     fn reconfigure_validates() {
-        let mut cusum = CusumF64::builder(100.0)
+        let mut cusum = Cusum::builder(100.0)
             .slack(5.0)
             .threshold(50.0)
             .build()
@@ -832,7 +832,7 @@ mod tests {
 
     #[test]
     fn rejects_nan_and_inf() {
-        let mut cusum = CusumF64::builder(100.0)
+        let mut cusum = Cusum::builder(100.0)
             .slack(5.0)
             .threshold(50.0)
             .build()

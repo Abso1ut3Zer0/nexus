@@ -8,12 +8,12 @@ These types don't estimate statistics — they implement discrete logic (thresho
 
 | Type | What it does |
 |------|--------------|
-| `DeadBandF64` / `DeadBandI64` | Suppress updates below a change threshold |
-| `HysteresisF64` / `HysteresisI64` | Binary decision with different on/off thresholds |
-| `DebounceU32` | Require N consecutive events before triggering |
-| `LevelCrossingF64` / `LevelCrossingI64` | Count / detect threshold crossings |
-| `FirstDiffF64` / `FirstDiffI64` | Discrete first difference (velocity) |
-| `SecondDiffF64` / `SecondDiffI64` | Discrete second difference (acceleration) |
+| `DeadBand<f64>` / `DeadBand<i64>` | Suppress updates below a change threshold |
+| `Hysteresis<f64>` / `Hysteresis<i64>` | Binary decision with different on/off thresholds |
+| `Debounce` | Require N consecutive events before triggering |
+| `LevelCrossing<f64>` / `LevelCrossing<i64>` | Count / detect threshold crossings |
+| `FirstDiff<f64>` / `FirstDiff<i64>` | Discrete first difference (velocity) |
+| `SecondDiff<f64>` / `SecondDiff<i64>` | Discrete second difference (acceleration) |
 
 ---
 
@@ -22,9 +22,9 @@ These types don't estimate statistics — they implement discrete logic (thresho
 Only emits the new sample if it differs from the last emitted sample by more than `threshold`. Below threshold, emits `None`.
 
 ```rust
-use nexus_stats_core::control::DeadBandF64;
+use nexus_stats_core::control::DeadBand<f64>;
 
-let mut db = DeadBandF64::new(0.01); // 1-cent dead band
+let mut db = DeadBand::<f64>::new(0.01); // 1-cent dead band
 let updates = [100.00, 100.005, 100.009, 100.012, 100.004];
 for u in updates {
     if let Some(v) = db.update(u).unwrap() {
@@ -43,9 +43,9 @@ for u in updates {
 A Schmitt trigger: turns on above `upper_threshold`, stays on until below `lower_threshold`. Stops the output from flapping when the input hovers near a single threshold.
 
 ```rust
-use nexus_stats_core::control::HysteresisF64;
+use nexus_stats_core::control::Hysteresis<f64>;
 
-let mut h = HysteresisF64::new(0.80, 0.60).unwrap(); // on at 0.80, off at 0.60
+let mut h = Hysteresis::<f64>::new(0.80, 0.60).unwrap(); // on at 0.80, off at 0.60
 for load in load_samples {
     let active = h.update(load).unwrap();
     // `active` is true as long as we're "in the hot zone"
@@ -61,9 +61,9 @@ for load in load_samples {
 Returns true only after `threshold` consecutive `true` inputs. Resets on any `false`.
 
 ```rust
-use nexus_stats_core::control::DebounceU32;
+use nexus_stats_core::control::Debounce;
 
-let mut db = DebounceU32::new(3).unwrap(); // need 3 consecutive trues
+let mut db = Debounce::new(3).unwrap(); // need 3 consecutive trues
 let events = [true, true, false, true, true, true, true];
 for e in events {
     if db.update(e) {
@@ -82,9 +82,9 @@ for e in events {
 Returns true when the input crosses a threshold (up or down). Counts crossings.
 
 ```rust
-use nexus_stats_core::control::LevelCrossingF64;
+use nexus_stats_core::control::LevelCrossing<f64>;
 
-let mut lc = LevelCrossingF64::new(0.0); // zero crossing
+let mut lc = LevelCrossing::<f64>::new(0.0); // zero crossing
 for x in signal {
     if lc.update(x).unwrap() {
         println!("crossed zero");
@@ -101,10 +101,10 @@ for x in signal {
 Streaming first (velocity) and second (acceleration) differences. Each returns `None` until enough samples to compute.
 
 ```rust
-use nexus_stats_core::control::{FirstDiffF64, SecondDiffF64};
+use nexus_stats_core::control::{FirstDiff, SecondDiff};
 
-let mut d1 = FirstDiffF64::new();
-let mut d2 = SecondDiffF64::new();
+let mut d1 = FirstDiff::<f64>::new();
+let mut d2 = SecondDiff::<f64>::new();
 
 for x in signal {
     let vel = d1.update(x).unwrap();

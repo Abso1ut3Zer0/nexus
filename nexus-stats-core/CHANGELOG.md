@@ -12,6 +12,28 @@ contained.
 
 ### Fixed
 
+- **`PeakHold<f64>`** returned `0.0` for a negative-only stream because the
+  peak started at zero; it now seeds from the first sample, as the integer
+  form always did ([#763](https://github.com/Abso1ut3Zer0/nexus/issues/763)).
+- **`Jitter<f64>`** discarded a seeded jitter under `min_samples(1)`, since
+  seeded state was inferred from the sample count; the smoother now carries
+  an explicit seeded flag ([#763](https://github.com/Abso1ut3Zer0/nexus/issues/763)).
+- `no_std` without `libm` compiles again (an unused `halflife` field in the
+  `HitRate` builder); the `TwoScaleRv` rustdoc no longer emits broken links.
+
+### Docs
+
+- Every monitoring type states its **weighting clock** (per `update` call, per
+  event with its timestamp, the caller's timestamps, or none) and the module
+  docs carry the rule: never update a per-call type from a loop whose
+  iteration time depends on the quantity being measured
+  ([#762](https://github.com/Abso1ut3Zer0/nexus/issues/762)). `EventRate`
+  documents that one stamp per batch breaks it and what to use instead;
+  `WindowedMax` / `WindowedMin` document that the accessors reflect the last
+  update ([#763](https://github.com/Abso1ut3Zer0/nexus/issues/763)).
+- `nexus-stats-core/docs` rewritten against the shipped API: the `Instant`
+  types it described never existed.
+
 - **`WindowedMin*` / `WindowedMax*`** departed from the kernel `win_minmax`
   algorithm they cite: a choice was replaced by age before its value was
   compared, and sub-windows were `window / 3` instead of the kernel's quarter
@@ -47,8 +69,50 @@ contained.
   read dead; and the multiple product saturates
   ([#760](https://github.com/Abso1ut3Zer0/nexus/issues/760)).
 
+### Changed
+
+- **One naming convention, no numeric suffixes** (the stats major, [#773](https://github.com/Abso1ut3Zer0/nexus/issues/773)).
+  A type whose algorithm exists for one numeric type is named plainly:
+  `EmaF64` → `Ema`, `WelfordF64` → `Welford`, `CusumF64` → `Cusum`,
+  `LivenessU64` → `Liveness`, `DebounceU64` → `Debounce`, and so on for every
+  `F64`/`U64`-only type; builders follow (`EmaBuilder`). A type whose algorithm
+  exists for two numeric types is one generic type bounded by the sealed
+  `Sample` trait (`f64`, `i64`): `Drawdown<f64>` / `Drawdown<i64>`,
+  `WindowedMax<T>`, `WindowedMin<T>`, `RunningMax<T>`, `RunningMin<T>`,
+  `MaxGauge<T>`, `PeakHold<T>`, `CoDel<T>`, `Jitter<T>`, `FirstDiff<T>`,
+  `SecondDiff<T>`, `Hysteresis<T>`, `DeadBand<T>`, `LevelCrossing<T>`,
+  `Slew<T>`; builders are `CoDelBuilder<T>` etc. The algorithm body is
+  written once; methods whose signature differs by type are implemented per
+  instantiation, so `update` still returns `Result` for floats (NaN and
+  infinity rejected) and the plain value for integers. Constructors and
+  builders are shared, so write the type once: `Drawdown::<i64>::new()`,
+  `let dd: Drawdown<f64> = Drawdown::new()`, `CoDel::<i64>::builder()`.
+  Codegen is unchanged (verified against the perf harness and disassembly).
+- **Normalizers are `Float` generics over `f64` internals.** `ZScoreNorm<T>`,
+  `MinMaxNorm<T>`, `QuantileNorm<T>` for `T` in `f64`, `f32`: they take and
+  return `T` but accumulate in `f64`, so the `f32` forms are boundary types
+  for `f32` feature vectors, no longer `f32` accumulators. The `pub(crate)`
+  `f32` stamps of `EwmaVar`, `Percentile` and the windowed extrema are gone.
+- **`DeadBand<T>::new(threshold: T)` returns `Result`** and rejects a negative
+  or non-finite threshold (`ConfigError::Invalid`); the integer form takes an
+  `i64` threshold instead of `u64`, with the same exact `abs_diff` arithmetic.
+- **`PeakHold<T>`**: after the hold expires, a sample equal to the decayed
+  peak now restarts the hold (`>=`, was `>`); the integer form drops to the
+  current sample as before. `jitter_ratio()` is available on `Jitter<i64>`.
+- **`Jitter<i64>` and `Jitter<f64>` share one builder:** `span(n)` on both;
+  `alpha` and `halflife` on `f64` only; `effective_span()` on `i64` only.
+
 ### Removed
 
+- **`SaturationF64`** ([#761](https://github.com/Abso1ut3Zer0/nexus/issues/761)):
+  an EMA of a caller-supplied utilization fraction against an unvalidated
+  threshold, identical to `ErrorRateF64::update_weighted`. Smooth the
+  fraction with `Ema` and compare, or use `PollSaturation` /
+  `SojournSaturation` for a consumer thread's saturation.
+- **`LivenessI64`, `EventRateI64`**: ticks are `u64` (the `clock` module's
+  contract). `Liveness` and `EventRate` are the former `U64` types.
+- **`update_i64(timestamp: i64, ..)`** on the windowed extrema and CoDel:
+  cast at the call site.
 - **`CoDelI64::min_sojourn()` / `CoDelF64::min_sojourn()`** — the detector
   no longer keeps a windowed minimum. No caller in the workspace; a minor
   per this crate's policy on narrowly scoped breaks.

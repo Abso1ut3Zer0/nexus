@@ -9,7 +9,7 @@ Supports parallel merging.
 |----------|-------|
 | Update cost | ~24 cycles |
 | Memory | ~40 bytes (f64) |
-| Types | `MomentsF64`, `MomentsF32`, `MomentsI64`, `MomentsI32` |
+| Types | `Moments`, `MomentsF32`, `MomentsI64`, `MomentsI32` |
 | Priming | Mean after 1, variance after 2, skewness after 3, kurtosis after 4 |
 | Output | `mean()`, `variance()`, `skewness()`, `kurtosis()` — all `Option` |
 | Error handling | Returns `Result<_, DataError>` on NaN/Inf input |
@@ -89,7 +89,7 @@ combined.M4 = a.M4 + b.M4 + delta⁴ × na × nb × (na² - na·nb + nb²) / N³
 
 ```rust
 // No configuration — create and update
-let mut m = MomentsF64::new();
+let mut m = Moments::new();
 
 for sample in data {
     m.update(sample).unwrap();
@@ -102,8 +102,8 @@ println!("kurtosis: {:?}", m.kurtosis());
 ### Merging
 
 ```rust
-let mut worker_a = MomentsF64::new();
-let mut worker_b = MomentsF64::new();
+let mut worker_a = Moments::new();
+let mut worker_b = Moments::new();
 
 for x in &data[..half] { worker_a.update(*x).unwrap(); }
 for x in &data[half..] { worker_b.update(*x).unwrap(); }
@@ -117,7 +117,7 @@ worker_a.merge(&worker_b);
 ### Distribution Shape Monitoring
 
 ```rust
-let mut samples = MomentsF64::new();
+let mut samples = Moments::new();
 
 // On each observation:
 samples.update(measurement).unwrap();
@@ -138,7 +138,7 @@ if let Some(kurt) = samples.kurtosis() {
 ### SRE — Latency Distribution Shape
 
 ```rust
-let mut latency = MomentsF64::new();
+let mut latency = Moments::new();
 
 // Per request:
 latency.update(response_time_us).unwrap();
@@ -172,8 +172,8 @@ use a batch estimator with Bessel's correction.
 
 | Operation | p50 |
 |-----------|-----|
-| `MomentsF64::update` | ~24 cycles |
-| `MomentsF64::merge` | ~30 cycles |
+| `Moments::update` | ~24 cycles |
+| `Moments::merge` | ~30 cycles |
 | `skewness()` query | ~15 cycles (includes `sqrt`) |
 
 ## Academic Reference

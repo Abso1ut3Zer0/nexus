@@ -84,7 +84,7 @@ These come from Kaufman's original paper. `window=10, fast=2, slow=30` is your d
 Three parameters:
 
 - `process_noise` (q) — how fast the true state can drift between samples. Bigger = filter tracks change faster, but responds more to measurement noise.
-- `measurement_noise` (r) — noise variance on observations. Calibrate this from a stationary period: run `WelfordF64` on residuals and use `.variance()`.
+- `measurement_noise` (r) — noise variance on observations. Calibrate this from a stationary period: run `Welford` on residuals and use `.variance()`.
 - `initial_variance` (p0) — initial uncertainty. Big number is safe; the filter converges quickly.
 
 Tuning intuition: the filter doesn't care about q and r individually, only the ratio q/r. Bigger ratio = more responsive. Smaller ratio = more smoothing. If both are wild guesses, fix `r = 1.0` and sweep `q` from 0.001 to 10 until you like the output.
@@ -108,7 +108,7 @@ Critically damped, so it *never* overshoots regardless of half-life.
 
 - `alpha` — same as regular EMA.
 - `threshold` — in multiples of `sigma`. Typically 1.5-3.0.
-- `sigma` — scale for the quadratic-linear boundary. Use current running stddev (from `EwmaVarF64`) or a calibration constant.
+- `sigma` — scale for the quadratic-linear boundary. Use current running stddev (from `EwmaVar`) or a calibration constant.
 
 A threshold of 1.5 means "steps larger than 1.5 sigma get capped". Start at 2.0 and adjust.
 

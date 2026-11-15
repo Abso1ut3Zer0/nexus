@@ -7,7 +7,7 @@ exponentially weighting recent samples more heavily than older ones.
 |----------|-------|
 | Update cost | ~5 cycles (float), ~5 cycles (integer) |
 | Memory | ~24 bytes (float), ~32 bytes (integer) |
-| Types | `EmaF64`, `EmaI64` |
+| Types | `Ema`, `EmaI64` |
 | Priming | Configurable via `min_samples` |
 | Output | `Option<T>` — smoothed value once primed |
 
@@ -116,14 +116,14 @@ Three ways to set the smoothing factor:
 
 ```rust
 // Direct alpha
-let ema = EmaF64::builder().alpha(0.1).build().unwrap();
+let ema = Ema::builder().alpha(0.1).build().unwrap();
 
 // From halflife (samples for weight to decay by half)
-let ema = EmaF64::builder().halflife(10.0).build().unwrap();
+let ema = Ema::builder().halflife(10.0).build().unwrap();
 
 // From span (pandas/finance convention)
 // alpha = 2 / (n + 1)
-let ema = EmaF64::builder().span(20).build().unwrap();
+let ema = Ema::builder().span(20).build().unwrap();
 ```
 
 ### Integer Variant
@@ -152,7 +152,7 @@ assert_eq!(ema.effective_span(), 15);
 Skip warmup with a known baseline:
 
 ```rust
-let ema = EmaF64::builder()
+let ema = Ema::builder()
     .alpha(0.1)
     .seed(100.0)  // start from known value
     .build().unwrap();
@@ -163,7 +163,7 @@ let ema = EmaF64::builder()
 ### Trading — Latency Smoothing
 
 ```rust
-let mut latency_ema = EmaF64::builder()
+let mut latency_ema = Ema::builder()
     .span(50)         // ~50 sample smoothing
     .min_samples(20)
     .build().unwrap();
@@ -192,7 +192,7 @@ if let Some(smoothed) = throughput.update(bytes_per_sec as i64) {
 ### Gaming — Frame Time Display
 
 ```rust
-let mut frame_ema = EmaF64::builder()
+let mut frame_ema = Ema::builder()
     .alpha(0.05)  // very smooth for display
     .build().unwrap();
 
@@ -206,7 +206,7 @@ if let Some(smoothed_dt) = frame_ema.update(frame_time_ms) {
 
 ```rust
 // Temperature sensor, 1 reading/second
-let mut temp = EmaF64::builder()
+let mut temp = Ema::builder()
     .halflife(30.0)   // 30-second halflife
     .min_samples(10)
     .build().unwrap();
@@ -215,7 +215,7 @@ let mut temp = EmaF64::builder()
 ### SRE — Error Rate Smoothing
 
 ```rust
-let mut error_rate = EmaF64::builder()
+let mut error_rate = Ema::builder()
     .span(100)  // smooth over ~100 observations
     .build().unwrap();
 
@@ -231,8 +231,8 @@ error_rate.update(if is_error { 1.0 } else { 0.0 });
 "Smooth the signal, detect when the smoothed value shifts":
 
 ```rust
-let mut ema = EmaF64::builder().span(20).build().unwrap();
-let mut cusum = CusumF64::builder(baseline).slack(k).threshold(h).build().unwrap();
+let mut ema = Ema::builder().span(20).build().unwrap();
+let mut cusum = Cusum::builder(baseline).slack(k).threshold(h).build().unwrap();
 
 if let Some(smoothed) = ema.update(sample) {
     cusum.update(smoothed);  // detect shifts in the smoothed signal
@@ -246,8 +246,8 @@ if let Some(smoothed) = ema.update(sample) {
 ```rust
 // AdaptiveThreshold uses EMA internally — this is built in.
 // But if you want separate control:
-let mut baseline = EmaF64::builder().span(100).build().unwrap();
-let mut fast = EmaF64::builder().span(5).build().unwrap();
+let mut baseline = Ema::builder().span(100).build().unwrap();
+let mut fast = Ema::builder().span(5).build().unwrap();
 
 // Divergence between fast and slow EMA signals regime change
 if let (Some(slow), Some(fast_val)) = (baseline.update(x), fast.update(x)) {
@@ -261,7 +261,7 @@ if let (Some(slow), Some(fast_val)) = (baseline.update(x), fast.update(x)) {
 
 | Operation | p50 | p99 |
 |-----------|-----|-----|
-| `EmaF64::update` | 5 cycles | 6 cycles |
+| `Ema::update` | 5 cycles | 6 cycles |
 | `EmaI64::update` | 5 cycles | 5 cycles |
 
 The float variant uses `mul_add` (FMA instruction). The integer variant

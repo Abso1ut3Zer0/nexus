@@ -9,7 +9,7 @@ Is your data naturally integer (nanoseconds, ticks, counts)?
   ├─ Yes → does the algorithm have an integer variant?
   │   ├─ Yes → use it (EmaI64, CusumI64, etc.)
   │   └─ No → convert to f64 on input
-  └─ No → use float (EmaF64, WelfordF64, etc.)
+  └─ No → use float (Ema, Welford, etc.)
 ```
 
 ## Integer Advantages

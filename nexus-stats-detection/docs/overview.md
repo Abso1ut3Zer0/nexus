@@ -49,7 +49,7 @@ A typical detection pipeline:
 raw input
    │
    ▼
- [HampelF64 or EmaF64]         pre-filter / smooth
+ [HampelF64 or Ema]         pre-filter / smooth
    │
    ▼
  [AdaptiveThresholdF64]        score the residual
@@ -65,6 +65,6 @@ Every stage is O(1) and composable. None of them allocate on the hot path.
 
 ## Cross-references
 
-- Basic CUSUM: [`nexus-stats-core::detection::CusumF64`](../../nexus-stats-core/docs/detection.md#cusum--cumulative-sum).
+- Basic CUSUM: [`nexus-stats-core::detection::Cusum`](../../nexus-stats-core/docs/detection.md#cusum--cumulative-sum).
 - Smoothing before detecting: [`nexus-stats-smoothing`](../../nexus-stats-smoothing/docs/INDEX.md).
 - Composing many detectors: see `choosing.md`.

@@ -7,7 +7,7 @@ resets when read. Designed for periodic scraping and alerting.
 |----------|-------|
 | Update cost | ~5 cycles |
 | Memory | ~8 bytes |
-| Types | `MaxGaugeF64`, `MaxGaugeF32`, `MaxGaugeI64`, `MaxGaugeI32` |
+| Types | `MaxGauge<f64>`, `MaxGaugeF32`, `MaxGauge<i64>`, `MaxGaugeI32` |
 | Error handling | Returns `Result<_, DataError>` on NaN/Inf input |
 
 ## What It Does
@@ -33,7 +33,7 @@ resets when read. Designed for periodic scraping and alerting.
 ## API
 
 ```rust
-let mut gauge = MaxGaugeF64::new();
+let mut gauge = MaxGauge::<f64>::new();
 
 gauge.update(10.0).unwrap();
 gauge.update(25.0).unwrap();
@@ -50,7 +50,7 @@ Netflix's Atlas telemetry uses this pattern for per-scrape max metrics.
 
 | Operation | p50 | p99 |
 |-----------|-----|-----|
-| `MaxGaugeF64::update` | ~5 cycles | ~5 cycles |
-| `MaxGaugeF64::take` | ~5 cycles | ~5 cycles |
+| `MaxGauge::<f64>::update` | ~5 cycles | ~5 cycles |
+| `MaxGauge::<f64>::take` | ~5 cycles | ~5 cycles |
 
 One comparison per update. `take()` reads + resets in one operation.

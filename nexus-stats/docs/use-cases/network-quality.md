@@ -6,22 +6,22 @@ estimation for networked systems.
 ## Recipe: RTT Monitoring (Jacobson/Karels Style)
 
 ```rust
-use nexus_stats::smoothing::AsymEmaF64;
-use nexus_stats::statistics::EwmaVarF64;
-use nexus_stats::monitoring::WindowedMinF64;
+use nexus_stats::smoothing::AsymEma;
+use nexus_stats::statistics::EwmaVar;
+use nexus_stats::monitoring::WindowedMin<f64>;
 
 // Asymmetric EMA: react fast to RTT increases, slow to decreases
 // This is the pattern TCP uses (Jacobson/Karels, RFC 6298)
-let mut srtt = AsymEmaF64::builder()
+let mut srtt = AsymEma::builder()
     .alpha_up(0.25)    // fast response to degradation (1/4)
     .alpha_down(0.125) // slow response to improvement (1/8)
     .build().unwrap();
 
 // RTT variance for timeout calculation
-let mut rttvar = EwmaVarF64::builder().span(7).build().unwrap();
+let mut rttvar = EwmaVar::builder().span(7).build().unwrap();
 
 // Min RTT baseline (BBR-style)
-let mut min_rtt = WindowedMinF64::new(10_000_000_000); // 10s window
+let mut min_rtt = WindowedMin::<f64>::new(10_000_000_000); // 10s window
 
 // On each RTT measurement:
 if let Some(smoothed) = srtt.update(rtt_ms) {
@@ -38,9 +38,9 @@ if let Some(smoothed) = srtt.update(rtt_ms) {
 ## Recipe: Jitter Buffer Sizing
 
 ```rust
-use nexus_stats::monitoring::JitterF64;
+use nexus_stats::monitoring::Jitter<f64>;
 
-let mut jitter = JitterF64::builder().span(16).build().unwrap(); // RFC 3550: alpha=1/16
+let mut jitter = Jitter::<f64>::builder().span(16).build().unwrap(); // RFC 3550: alpha=1/16
 
 // On each packet:
 let transit = arrival_time - send_time;
@@ -54,14 +54,14 @@ if let Some(j) = jitter.jitter() {
 ## Recipe: Bandwidth Estimation
 
 ```rust
-use nexus_stats::monitoring::WindowedMaxF64;
-use nexus_stats::statistics::HarmonicMeanF64;
+use nexus_stats::monitoring::WindowedMax<f64>;
+use nexus_stats::statistics::HarmonicMean;
 
 // Windowed max of delivery rate (BBR-style)
-let mut bw_max = WindowedMaxF64::new(rtt_window_ns);
+let mut bw_max = WindowedMax::<f64>::new(rtt_window_ns);
 
 // Harmonic mean for average throughput
-let mut avg_bw = HarmonicMeanF64::new();
+let mut avg_bw = HarmonicMean::new();
 
 // On each delivery acknowledgment:
 let delivery_rate = bytes_delivered as f64 / interval_sec;

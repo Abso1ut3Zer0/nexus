@@ -7,7 +7,7 @@ data source goes quiet.
 |----------|-------|
 | Update cost | ~6 cycles |
 | Memory | ~32 bytes |
-| Types | `LivenessI64`, `LivenessU64` |
+| Types | `Liveness` (`u64` ticks) |
 | Output | `bool` — true = alive, false = dead |
 
 ## What It Does
@@ -38,7 +38,7 @@ Two methods:
 ## Configuration
 
 ```rust
-let mut live = LivenessU64::builder()
+let mut live = Liveness::builder()
     .span(20)                  // EMA smoothing of intervals
     .deadline_multiple(5)      // dead if gap > 5× smoothed interval
     .min_samples(5)
@@ -67,7 +67,7 @@ deadline can judge it.
 
 ### Trading — WebSocket Feed Health
 ```rust
-let mut feed = LivenessI64::builder()
+let mut feed = Liveness::builder()
     .span(15)
     .deadline_multiple(5)
     .build().unwrap();
@@ -83,7 +83,7 @@ if !feed.check(now_ns) {
 
 ### Networking — Heartbeat Monitoring
 ```rust
-let mut heartbeat = LivenessU64::builder()
+let mut heartbeat = Liveness::builder()
     .deadline_absolute(30)    // 30 seconds absolute timeout
     .build().unwrap();
 ```
@@ -92,8 +92,8 @@ let mut heartbeat = LivenessU64::builder()
 
 | Operation | p50 | p99 |
 |-----------|-----|-----|
-| `LivenessU64::update` | 6 cycles | 20 cycles |
-| `LivenessU64::check` | ~3 cycles | ~3 cycles |
+| `Liveness::update` | 6 cycles | 20 cycles |
+| `Liveness::check` | ~3 cycles | ~3 cycles |
 
 `update()` includes one EMA update. `check()` is one subtraction +
 one comparison.

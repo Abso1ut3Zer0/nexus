@@ -17,10 +17,10 @@ room to act.
 
 ```rust
 use nexus_stats::Condition;
-use nexus_stats::monitoring::CoDelI64;
+use nexus_stats::monitoring::CoDel<i64>;
 
 // Detect standing queues via sojourn time
-let mut qd = CoDelI64::builder()
+let mut qd = CoDel::<i64>::builder()
     .target(10_000)          // 10μs acceptable queue wait
     .window(100_000_000)     // 100ms observation window
     .min_samples(20)
@@ -49,57 +49,54 @@ no message timestamps, see [Consumer Saturation](consumer-saturation.md):
 
 ```rust
 use nexus_stats::{Condition, Direction};
-use nexus_stats::monitoring::{CoDelI64, SaturationF64};
+use nexus_stats::monitoring::CoDel;
+use nexus_stats::smoothing::Ema;
 use nexus_stats::detection::TrendAlertF64;
 
-let mut queue_health = CoDelI64::builder()
+let mut queue_health = CoDel::<i64>::builder()
     .target(10_000).window(100_000_000).build().unwrap();
 
-let mut cpu_sat = SaturationF64::builder()
-    .span(20).threshold(0.85).build().unwrap();
+let mut cpu_util = Ema::builder().span(20).build().unwrap();  // smoothed CPU busy fraction
 
 let mut latency_trend = TrendAlertF64::builder()
     .alpha(0.3).beta(0.1).trend_threshold(1.0).build().unwrap();
 
 // Composite pressure assessment:
 let queue_pressure = queue_health.update(now, sojourn);
-let cpu_pressure = cpu_sat.update(cpu_utilization);
+cpu_util.update(cpu_utilization).unwrap();
+let cpu_hot = matches!(cpu_util.value(), Some(u) if u > 0.85);
 let trend = latency_trend.update(processing_time);
 
-let should_throttle = matches!(
-    (&queue_pressure, &cpu_pressure, &trend),
-    (Some(Condition::Degraded), _, _) |       // queue backing up
-    (_, Some(Condition::Degraded), _) |            // CPU maxed
-    (_, _, Some(Direction::Rising))                    // getting worse
-);
+let should_throttle = matches!(queue_pressure, Some(Condition::Degraded)) // queue backing up
+    || cpu_hot                                                             // CPU maxed
+    || matches!(trend, Some(Direction::Rising));                           // getting worse
 
 if should_throttle {
     reduce_strategy_aggression();
 }
 ```
 
-## Recipe: Aeron Publication Monitoring
+## Recipe: Message-Bus Publication Monitoring
 
 ```rust
-use nexus_stats::monitoring::SaturationF64;
-use nexus_stats::smoothing::AsymEmaF64;
+use nexus_stats::smoothing::{AsymEma, Ema};
 
-// Track Aeron buffer utilization
-let mut buf_sat = SaturationF64::builder()
-    .span(50)
-    .threshold(0.70)  // start worrying at 70% full
-    .build().unwrap();
+// Track the publication buffer's fill fraction
+let mut buf_fill = Ema::builder().span(50).build().unwrap();
 
 // Track publication latency with asymmetric EMA
 // (react fast to increases, slow to decreases)
-let mut pub_latency = AsymEmaF64::builder()
+let mut pub_latency = AsymEma::builder()
     .alpha_up(0.3)    // fast reaction to degradation
     .alpha_down(0.05) // slow to declare recovery
     .build().unwrap();
 
 // On each publication:
-let buf_utilization = aeron_pub.buffer_used() as f64 / aeron_pub.buffer_capacity() as f64;
-buf_sat.update(buf_utilization);
+let fill = publication.buffer_used() as f64 / publication.buffer_capacity() as f64;
+buf_fill.update(fill).unwrap();
+if matches!(buf_fill.value(), Some(f) if f > 0.70) {
+    // start worrying at 70% full
+}
 
 if let Some(smoothed) = pub_latency.update(pub_latency_ns as f64) {
     // smoothed tracks the publication latency with fast-rise/slow-fall
@@ -111,7 +108,7 @@ if let Some(smoothed) = pub_latency.update(pub_latency_ns as f64) {
 | Primitive | Role |
 |-----------|------|
 | [CoDel](../algorithms/codel.md) | Standing queue detection (CoDel) |
-| [Saturation](../algorithms/saturation.md) | Resource utilization threshold |
+| [EMA](../algorithms/ema.md) | Resource utilization, smoothed and compared to a threshold |
 | [TrendAlert](../algorithms/trend-alert.md) | "Getting worse" detection |
 | [AsymmetricEMA](../algorithms/asym-ema.md) | Fast-rise/slow-fall tracking |
 | [CUSUM](../algorithms/cusum.md) | Persistent processing time shifts |

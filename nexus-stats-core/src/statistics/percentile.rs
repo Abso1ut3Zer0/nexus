@@ -322,8 +322,7 @@ macro_rules! impl_percentile {
     };
 }
 
-impl_percentile!(pub PercentileF64, pub PercentileF64Builder, f64);
-impl_percentile!(#[allow(dead_code)] pub(crate) PercentileF32, #[allow(dead_code)] pub(crate) PercentileF32Builder, f32);
+impl_percentile!(pub Percentile, pub PercentileBuilder, f64);
 
 #[cfg(test)]
 mod tests {
@@ -331,7 +330,7 @@ mod tests {
 
     #[test]
     fn p50_converges_to_median() {
-        let mut p = PercentileF64::new(0.50).unwrap();
+        let mut p = Percentile::new(0.50).unwrap();
         for i in 1..=1000u64 {
             p.update(i as f64).unwrap();
         }
@@ -341,7 +340,7 @@ mod tests {
 
     #[test]
     fn p99_converges() {
-        let mut p = PercentileF64::new(0.99).unwrap();
+        let mut p = Percentile::new(0.99).unwrap();
         for i in 1..=10000u64 {
             p.update(i as f64).unwrap();
         }
@@ -351,7 +350,7 @@ mod tests {
 
     #[test]
     fn not_primed_until_5_observations() {
-        let mut p = PercentileF64::new(0.50).unwrap();
+        let mut p = Percentile::new(0.50).unwrap();
         for i in 0..4 {
             p.update(i as f64).unwrap();
             assert!(p.percentile().is_none());
@@ -363,7 +362,7 @@ mod tests {
     #[test]
     #[allow(clippy::float_cmp)]
     fn tracks_min_max() {
-        let mut p = PercentileF64::new(0.50).unwrap();
+        let mut p = Percentile::new(0.50).unwrap();
         for v in [5.0, 1.0, 9.0, 3.0, 7.0] {
             p.update(v).unwrap();
         }
@@ -373,7 +372,7 @@ mod tests {
 
     #[test]
     fn reset_clears_state() {
-        let mut p = PercentileF64::new(0.50).unwrap();
+        let mut p = Percentile::new(0.50).unwrap();
         for i in 0..100 {
             p.update(i as f64).unwrap();
         }
@@ -386,7 +385,7 @@ mod tests {
     #[test]
     #[allow(clippy::float_cmp)]
     fn constant_input() {
-        let mut p = PercentileF64::new(0.50).unwrap();
+        let mut p = Percentile::new(0.50).unwrap();
         for _ in 0..100 {
             p.update(42.0).unwrap();
         }
@@ -394,25 +393,16 @@ mod tests {
     }
 
     #[test]
-    fn f32_basic() {
-        let mut p = PercentileF32::new(0.50).unwrap();
-        for i in 1..=100u32 {
-            p.update(i as f32).unwrap();
-        }
-        assert!(p.percentile().is_some());
-    }
-
-    #[test]
     fn rejects_invalid_percentile() {
-        assert!(PercentileF64::new(0.0).is_err());
-        assert!(PercentileF64::new(1.0).is_err());
-        assert!(PercentileF64::new(-0.5).is_err());
-        assert!(PercentileF64::new(1.5).is_err());
+        assert!(Percentile::new(0.0).is_err());
+        assert!(Percentile::new(1.0).is_err());
+        assert!(Percentile::new(-0.5).is_err());
+        assert!(Percentile::new(1.5).is_err());
     }
 
     #[test]
     fn p90_reasonable() {
-        let mut p = PercentileF64::new(0.90).unwrap();
+        let mut p = Percentile::new(0.90).unwrap();
         for i in 1..=1000u64 {
             p.update(i as f64).unwrap();
         }
@@ -422,7 +412,7 @@ mod tests {
 
     #[test]
     fn skewed_distribution() {
-        let mut p = PercentileF64::new(0.99).unwrap();
+        let mut p = Percentile::new(0.99).unwrap();
         for i in 0..10000u64 {
             if i % 100 == 99 {
                 p.update(1000.0).unwrap();
@@ -436,7 +426,7 @@ mod tests {
 
     #[test]
     fn rejects_nan_and_inf() {
-        let mut p = PercentileF64::new(0.50).unwrap();
+        let mut p = Percentile::new(0.50).unwrap();
         assert_eq!(p.update(f64::NAN), Err(crate::DataError::NotANumber));
         assert_eq!(p.update(f64::INFINITY), Err(crate::DataError::Infinite));
         assert_eq!(p.update(f64::NEG_INFINITY), Err(crate::DataError::Infinite));

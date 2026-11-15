@@ -13,9 +13,9 @@ use alloc::collections::VecDeque;
 /// # Examples
 ///
 /// ```
-/// use nexus_stats_core::statistics::HurstF64;
+/// use nexus_stats_core::statistics::Hurst;
 ///
-/// let mut h = HurstF64::builder()
+/// let mut h = Hurst::builder()
 ///     .window_size(100)
 ///     .build().unwrap();
 ///
@@ -30,24 +30,24 @@ use alloc::collections::VecDeque;
 /// }
 /// ```
 #[derive(Debug, Clone)]
-pub struct HurstF64 {
+pub struct Hurst {
     window: VecDeque<f64>,
     window_size: usize,
     count: u64,
 }
 
-/// Builder for [`HurstF64`].
+/// Builder for [`Hurst`].
 #[derive(Debug, Clone)]
-pub struct HurstF64Builder {
+pub struct HurstBuilder {
     window_size: Option<usize>,
 }
 
-impl HurstF64 {
+impl Hurst {
     /// Creates a builder.
     #[inline]
     #[must_use]
-    pub fn builder() -> HurstF64Builder {
-        HurstF64Builder { window_size: None }
+    pub fn builder() -> HurstBuilder {
+        HurstBuilder { window_size: None }
     }
 
     /// Feed a value (typically a return or price level).
@@ -162,7 +162,7 @@ impl HurstF64 {
     }
 }
 
-impl HurstF64Builder {
+impl HurstBuilder {
     /// Rolling window size. Default: 100.
     #[inline]
     #[must_use]
@@ -177,7 +177,7 @@ impl HurstF64Builder {
     ///
     /// Returns `ConfigError::Invalid` if window_size < 20 (minimum for
     /// meaningful R/S analysis).
-    pub fn build(self) -> Result<HurstF64, crate::ConfigError> {
+    pub fn build(self) -> Result<Hurst, crate::ConfigError> {
         let window_size = self.window_size.unwrap_or(100);
         if window_size < 20 {
             return Err(crate::ConfigError::Invalid(
@@ -187,7 +187,7 @@ impl HurstF64Builder {
         let mut window = VecDeque::new();
         window.reserve_exact(window_size);
 
-        Ok(HurstF64 {
+        Ok(Hurst {
             window,
             window_size,
             count: 0,
@@ -201,7 +201,7 @@ mod tests {
 
     #[test]
     fn alternating_series_low_hurst() {
-        let mut h = HurstF64::builder().window_size(200).build().unwrap();
+        let mut h = Hurst::builder().window_size(200).build().unwrap();
 
         // Strongly mean-reverting: +1, -1, +1, -1, ...
         for i in 0..200 {
@@ -219,7 +219,7 @@ mod tests {
 
     #[test]
     fn trending_series_high_hurst() {
-        let mut h = HurstF64::builder().window_size(200).build().unwrap();
+        let mut h = Hurst::builder().window_size(200).build().unwrap();
 
         // Strongly trending: monotonically increasing
         for i in 0..200 {
@@ -236,7 +236,7 @@ mod tests {
 
     #[test]
     fn not_primed_before_20() {
-        let mut h = HurstF64::builder().window_size(100).build().unwrap();
+        let mut h = Hurst::builder().window_size(100).build().unwrap();
         for i in 0..19 {
             h.update(i as f64).unwrap();
         }
@@ -246,7 +246,7 @@ mod tests {
 
     #[test]
     fn primed_at_20() {
-        let mut h = HurstF64::builder().window_size(100).build().unwrap();
+        let mut h = Hurst::builder().window_size(100).build().unwrap();
         for i in 0..20 {
             h.update(i as f64).unwrap();
         }
@@ -256,7 +256,7 @@ mod tests {
 
     #[test]
     fn reset_clears_state() {
-        let mut h = HurstF64::builder().window_size(100).build().unwrap();
+        let mut h = Hurst::builder().window_size(100).build().unwrap();
         for i in 0..50 {
             h.update(i as f64).unwrap();
         }
@@ -267,19 +267,19 @@ mod tests {
 
     #[test]
     fn nan_rejected() {
-        let mut h = HurstF64::builder().window_size(100).build().unwrap();
+        let mut h = Hurst::builder().window_size(100).build().unwrap();
         assert!(h.update(f64::NAN).is_err());
     }
 
     #[test]
     fn inf_rejected() {
-        let mut h = HurstF64::builder().window_size(100).build().unwrap();
+        let mut h = Hurst::builder().window_size(100).build().unwrap();
         assert!(h.update(f64::INFINITY).is_err());
     }
 
     #[test]
     fn constant_series_no_hurst() {
-        let mut h = HurstF64::builder().window_size(50).build().unwrap();
+        let mut h = Hurst::builder().window_size(50).build().unwrap();
         for _ in 0..50 {
             h.update(5.0).unwrap();
         }

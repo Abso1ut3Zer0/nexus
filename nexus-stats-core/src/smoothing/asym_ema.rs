@@ -11,7 +11,7 @@ use crate::math::MulAdd;
 /// - Slow attack / fast decay for trough tracking
 /// - Asymmetric noise filtering
 #[derive(Debug, Clone)]
-pub struct AsymEmaF64 {
+pub struct AsymEma {
     alpha_up: f64,
     alpha_down: f64,
     // Precomputed `1.0 - alpha_*` for the `update` hot path; saves a
@@ -25,20 +25,20 @@ pub struct AsymEmaF64 {
     min_samples: u64,
 }
 
-/// Builder for [`AsymEmaF64`].
+/// Builder for [`AsymEma`].
 #[derive(Debug, Clone)]
-pub struct AsymEmaF64Builder {
+pub struct AsymEmaBuilder {
     alpha_up: Option<f64>,
     alpha_down: Option<f64>,
     min_samples: u64,
 }
 
-impl AsymEmaF64 {
+impl AsymEma {
     /// Creates a builder.
     #[inline]
     #[must_use]
-    pub fn builder() -> AsymEmaF64Builder {
-        AsymEmaF64Builder {
+    pub fn builder() -> AsymEmaBuilder {
+        AsymEmaBuilder {
             alpha_up: None,
             alpha_down: None,
             min_samples: 1,
@@ -107,7 +107,7 @@ impl AsymEmaF64 {
     }
 }
 
-impl AsymEmaF64Builder {
+impl AsymEmaBuilder {
     /// Smoothing factor when sample > current value.
     #[inline]
     #[must_use]
@@ -155,7 +155,7 @@ impl AsymEmaF64Builder {
     /// - Both alpha_up and alpha_down must have been set.
     /// - Both must be in (0, 1) exclusive.
     #[inline]
-    pub fn build(self) -> Result<AsymEmaF64, crate::ConfigError> {
+    pub fn build(self) -> Result<AsymEma, crate::ConfigError> {
         let alpha_up = self
             .alpha_up
             .ok_or(crate::ConfigError::Missing("alpha_up"))?;
@@ -169,7 +169,7 @@ impl AsymEmaF64Builder {
             return Err(crate::ConfigError::Invalid("alpha_down must be in (0, 1)"));
         }
 
-        Ok(AsymEmaF64 {
+        Ok(AsymEma {
             alpha_up,
             alpha_down,
             one_minus_alpha_up: 1.0 - alpha_up,
@@ -187,7 +187,7 @@ mod tests {
 
     #[test]
     fn fast_attack_slow_decay() {
-        let mut ema = AsymEmaF64::builder()
+        let mut ema = AsymEma::builder()
             .alpha_up(0.9) // fast attack
             .alpha_down(0.1) // slow decay
             .build()
@@ -213,12 +213,12 @@ mod tests {
 
     #[test]
     fn asymmetric_response() {
-        let mut fast_up = AsymEmaF64::builder()
+        let mut fast_up = AsymEma::builder()
             .alpha_up(0.9)
             .alpha_down(0.1)
             .build()
             .unwrap();
-        let mut fast_down = AsymEmaF64::builder()
+        let mut fast_down = AsymEma::builder()
             .alpha_up(0.1)
             .alpha_down(0.9)
             .build()
@@ -236,7 +236,7 @@ mod tests {
 
     #[test]
     fn priming() {
-        let mut ema = AsymEmaF64::builder()
+        let mut ema = AsymEma::builder()
             .alpha_up(0.5)
             .alpha_down(0.5)
             .min_samples(5)
@@ -251,7 +251,7 @@ mod tests {
 
     #[test]
     fn reset() {
-        let mut ema = AsymEmaF64::builder()
+        let mut ema = AsymEma::builder()
             .alpha_up(0.5)
             .alpha_down(0.5)
             .build()
@@ -264,7 +264,7 @@ mod tests {
 
     #[test]
     fn errors_without_alpha_up() {
-        let result = AsymEmaF64::builder().alpha_down(0.5).build();
+        let result = AsymEma::builder().alpha_down(0.5).build();
         assert!(matches!(
             result,
             Err(crate::ConfigError::Missing("alpha_up"))
@@ -273,7 +273,7 @@ mod tests {
 
     #[test]
     fn rejects_nan_and_inf() {
-        let mut ema = AsymEmaF64::builder()
+        let mut ema = AsymEma::builder()
             .alpha_up(0.5)
             .alpha_down(0.3)
             .build()

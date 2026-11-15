@@ -16,7 +16,7 @@ Internally uses a bitmask for compact O(1) storage and updates — no allocation
 - **Fill rate monitoring** with exact window semantics rather than EW smoothing.
 - **Health gates** that require "at least X of the last N were good".
 
-When you want EW decay rather than a hard window, use [`ErrorRateF64`](../../nexus-stats-core/docs/monitoring.md#errorrate) or [`HitRateF64`](../../nexus-stats-core/docs/statistics.md#hitratef64--rolling-success-rate) instead.
+When you want EW decay rather than a hard window, use [`ErrorRate`](../../nexus-stats-core/docs/monitoring.md#errorrate) or [`HitRate`](../../nexus-stats-core/docs/statistics.md#hitratef64--rolling-success-rate) instead.
 
 ## API
 
@@ -61,6 +61,6 @@ If `sample_count` is much bigger than ~1024, consider whether an EW estimator gi
 
 ## Cross-references
 
-- [`ErrorRateF64`](../../nexus-stats-core/docs/monitoring.md#errorrate) — EW version with alert thresholds.
-- [`HitRateF64`](../../nexus-stats-core/docs/statistics.md#hitratef64--rolling-success-rate) — EW success-rate tracker.
+- [`ErrorRate`](../../nexus-stats-core/docs/monitoring.md#errorrate) — EW version with alert thresholds.
+- [`HitRate`](../../nexus-stats-core/docs/statistics.md#hitratef64--rolling-success-rate) — EW success-rate tracker.
 - [`BetaBinomialF64`](../../nexus-stats-regression/docs/estimation.md#betabinomialf64--bayesian-rate-estimation-for-successes) — Bayesian rate with credible intervals.

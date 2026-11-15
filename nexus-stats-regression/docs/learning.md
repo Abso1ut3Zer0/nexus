@@ -126,7 +126,7 @@ for (x, y) in training {
 
 ### Caveats
 
-- `delta` needs to be in the scale of the residual. Track `EwmaVarF64` on residuals and adjust.
+- `delta` needs to be in the scale of the residual. Track `EwmaVar` on residuals and adjust.
 - Slower convergence than plain LMS because outliers contribute less information.
 
 ---

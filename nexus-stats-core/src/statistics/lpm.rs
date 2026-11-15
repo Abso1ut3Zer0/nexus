@@ -12,9 +12,9 @@
 /// # Examples
 ///
 /// ```
-/// use nexus_stats_core::statistics::LpmF64;
+/// use nexus_stats_core::statistics::Lpm;
 ///
-/// let mut lpm = LpmF64::semivariance(0.0).unwrap();
+/// let mut lpm = Lpm::semivariance(0.0).unwrap();
 /// for &v in &[-3.0, -1.0, 0.0, 2.0, 5.0] {
 ///     lpm.update(v).unwrap();
 /// }
@@ -22,28 +22,28 @@
 /// assert!((sv - 2.0).abs() < 0.01);
 /// ```
 #[derive(Debug, Clone)]
-pub struct LpmF64 {
-    sum_lpm: f64,
+pub struct Lpm {
+    sum: f64,
     count: u64,
     target: f64,
     order: u32,
     min_samples: u64,
 }
 
-/// Builder for [`LpmF64`].
+/// Builder for [`Lpm`].
 #[derive(Debug, Clone)]
-pub struct LpmF64Builder {
+pub struct LpmBuilder {
     target: Option<f64>,
     order: Option<u32>,
     min_samples: u64,
 }
 
-impl LpmF64 {
+impl Lpm {
     /// Creates a builder.
     #[inline]
     #[must_use]
-    pub fn builder() -> LpmF64Builder {
-        LpmF64Builder {
+    pub fn builder() -> LpmBuilder {
+        LpmBuilder {
             target: None,
             order: None,
             min_samples: 1,
@@ -68,15 +68,15 @@ impl LpmF64 {
         let shortfall = self.target - sample;
         if shortfall > 0.0 {
             match self.order {
-                0 => self.sum_lpm += 1.0,
-                1 => self.sum_lpm += shortfall,
-                2 => self.sum_lpm += shortfall * shortfall,
+                0 => self.sum += 1.0,
+                1 => self.sum += shortfall,
+                2 => self.sum += shortfall * shortfall,
                 d => {
                     let mut power = shortfall;
                     for _ in 1..d {
                         power *= shortfall;
                     }
-                    self.sum_lpm += power;
+                    self.sum += power;
                 }
             }
         }
@@ -93,7 +93,7 @@ impl LpmF64 {
         if self.count < self.min_samples {
             None
         } else {
-            Some(self.sum_lpm / self.count as f64)
+            Some(self.sum / self.count as f64)
         }
     }
 
@@ -128,12 +128,12 @@ impl LpmF64 {
     /// Resets accumulated state. Target and order are preserved.
     #[inline]
     pub fn reset(&mut self) {
-        self.sum_lpm = 0.0;
+        self.sum = 0.0;
         self.count = 0;
     }
 }
 
-impl LpmF64Builder {
+impl LpmBuilder {
     /// Sets the target threshold (required).
     #[inline]
     #[must_use]
@@ -164,15 +164,15 @@ impl LpmF64Builder {
     ///
     /// Returns `ConfigError` if target is missing/non-finite or
     /// order is missing.
-    pub fn build(self) -> Result<LpmF64, crate::ConfigError> {
+    pub fn build(self) -> Result<Lpm, crate::ConfigError> {
         let target = self.target.ok_or(crate::ConfigError::Missing("target"))?;
         if !target.is_finite() {
             return Err(crate::ConfigError::Invalid("target must be finite"));
         }
         let order = self.order.ok_or(crate::ConfigError::Missing("order"))?;
 
-        Ok(LpmF64 {
-            sum_lpm: 0.0,
+        Ok(Lpm {
+            sum: 0.0,
             count: 0,
             target,
             order,
@@ -191,7 +191,7 @@ mod tests {
         // shortfalls: 3, 1, 0, 0, 0
         // squared shortfalls: 9, 1, 0, 0, 0
         // semivariance = 10 / 5 = 2.0
-        let mut lpm = LpmF64::semivariance(0.0).unwrap();
+        let mut lpm = Lpm::semivariance(0.0).unwrap();
         for &v in &[-3.0, -1.0, 0.0, 2.0, 5.0] {
             lpm.update(v).unwrap();
         }
@@ -201,7 +201,7 @@ mod tests {
 
     #[test]
     fn shortfall_probability() {
-        let mut lpm = LpmF64::builder().target(50.0).order(0).build().unwrap();
+        let mut lpm = Lpm::builder().target(50.0).order(0).build().unwrap();
         for i in 0..100 {
             lpm.update(i as f64).unwrap();
         }
@@ -211,7 +211,7 @@ mod tests {
 
     #[test]
     fn expected_shortfall() {
-        let mut lpm = LpmF64::builder().target(10.0).order(1).build().unwrap();
+        let mut lpm = Lpm::builder().target(10.0).order(1).build().unwrap();
         for &v in &[5.0, 8.0, 12.0, 15.0] {
             lpm.update(v).unwrap();
         }
@@ -222,7 +222,7 @@ mod tests {
 
     #[test]
     fn all_above_target() {
-        let mut lpm = LpmF64::semivariance(0.0).unwrap();
+        let mut lpm = Lpm::semivariance(0.0).unwrap();
         for &v in &[1.0, 2.0, 3.0] {
             lpm.update(v).unwrap();
         }
@@ -232,7 +232,7 @@ mod tests {
 
     #[test]
     fn all_below_target() {
-        let mut lpm = LpmF64::builder().target(100.0).order(2).build().unwrap();
+        let mut lpm = Lpm::builder().target(100.0).order(2).build().unwrap();
         for &v in &[90.0, 80.0, 70.0] {
             lpm.update(v).unwrap();
         }
@@ -247,8 +247,8 @@ mod tests {
 
     #[test]
     fn semivariance_convenience() {
-        let mut sv = LpmF64::semivariance(0.0).unwrap();
-        let mut manual = LpmF64::builder().target(0.0).order(2).build().unwrap();
+        let mut sv = Lpm::semivariance(0.0).unwrap();
+        let mut manual = Lpm::builder().target(0.0).order(2).build().unwrap();
         for &v in &[-2.0, -1.0, 0.0, 1.0, 2.0] {
             sv.update(v).unwrap();
             manual.update(v).unwrap();
@@ -259,7 +259,7 @@ mod tests {
 
     #[test]
     fn rejects_nan_inf() {
-        let mut lpm = LpmF64::semivariance(0.0).unwrap();
+        let mut lpm = Lpm::semivariance(0.0).unwrap();
         assert!(lpm.update(f64::NAN).is_err());
         assert!(lpm.update(f64::INFINITY).is_err());
         assert!(lpm.update(f64::NEG_INFINITY).is_err());
@@ -268,7 +268,7 @@ mod tests {
 
     #[test]
     fn reset_clears() {
-        let mut lpm = LpmF64::semivariance(5.0).unwrap();
+        let mut lpm = Lpm::semivariance(5.0).unwrap();
         lpm.update(2.0).unwrap();
         lpm.update(3.0).unwrap();
         assert_eq!(lpm.count(), 2);

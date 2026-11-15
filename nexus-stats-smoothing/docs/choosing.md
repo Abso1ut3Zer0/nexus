@@ -4,7 +4,7 @@ The #1 question for this crate is "which smoother, with what parameters?". Here'
 
 ## Is the raw signal noisy but stationary (mean-reverting around a level)?
 
-Use **`EmaF64`** from `nexus-stats-core::smoothing`. It's the cheapest primitive and usually the right answer. Pick a half-life: your alpha is then `1 - exp(-ln(2) / half_life_samples)`. Typical half-lives: 5-50 samples for "noisy latency", 100-1000 samples for "market mid-price", 10k+ for "long-run baseline".
+Use **`Ema`** from `nexus-stats-core::smoothing`. It's the cheapest primitive and usually the right answer. Pick a half-life: your alpha is then `1 - exp(-ln(2) / half_life_samples)`. Typical half-lives: 5-50 samples for "noisy latency", 100-1000 samples for "market mid-price", 10k+ for "long-run baseline".
 
 Only move off of EMA if one of the following is true.
 
@@ -28,7 +28,7 @@ See [kama.md](kama.md).
 
 Use **`Kalman1dF64`**. It gives you position + velocity with formal optimality under Gaussian noise. You provide process noise (how fast the true state drifts) and measurement noise (how bad your sensor is), and the filter computes the optimal Kalman gain on every step.
 
-This is the right choice when you actually know (or can estimate) the noise magnitudes — e.g. from a calibration run, or from `EwmaVarF64` over recent residuals. When you don't know them and you're just picking magic numbers, a `HoltF64` will give you 90% of the benefit with half the conceptual overhead.
+This is the right choice when you actually know (or can estimate) the noise magnitudes — e.g. from a calibration run, or from `EwmaVar` over recent residuals. When you don't know them and you're just picking magic numbers, a `HoltF64` will give you 90% of the benefit with half the conceptual overhead.
 
 See [kalman1d.md](kalman1d.md).
 
@@ -62,19 +62,19 @@ See [conditional-ema.md](conditional-ema.md).
 
 ## Still not sure?
 
-Start with `EmaF64` from `nexus-stats-core`. If the output lags badly on trends, move to `HoltF64`. If the output is wrecked by outliers, move to `HuberEmaF64`. If you *need* velocity, move to `Kalman1dF64`. Don't pick something clever if a cheap EMA solves the problem.
+Start with `Ema` from `nexus-stats-core`. If the output lags badly on trends, move to `HoltF64`. If the output is wrecked by outliers, move to `HuberEmaF64`. If you *need* velocity, move to `Kalman1dF64`. Don't pick something clever if a cheap EMA solves the problem.
 
 ## Side-by-side Example
 
 Here's the same noisy-with-trend input fed through several smoothers:
 
 ```rust
-use nexus_stats_core::smoothing::EmaF64;
+use nexus_stats_core::smoothing::Ema;
 use nexus_stats_smoothing::{HoltF64, KamaF64, Kalman1dF64};
 
 let samples: [f64; 8] = [100.0, 100.5, 101.2, 102.0, 102.8, 103.9, 105.1, 106.5];
 
-let mut ema    = EmaF64::new(0.2);
+let mut ema    = Ema::new(0.2);
 let mut holt   = HoltF64::builder().alpha(0.4).beta(0.2).build().unwrap();
 let mut kama   = KamaF64::builder()
     .window_size(10).fast_span(2).slow_span(30)

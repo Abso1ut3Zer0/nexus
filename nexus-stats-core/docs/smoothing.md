@@ -6,10 +6,9 @@ Base smoothing primitives. Module path: `nexus_stats_core::smoothing`. For anyth
 
 | Type | What it does | Notes |
 |------|--------------|-------|
-| `EmaF64` | Classic exponentially-weighted moving average | Builder, halflife or alpha |
-| `EmaI64` | Integer-fixed-point EMA | No NaN check, no Result on update |
-| `AsymEmaF64` / `AsymEmaI64` | Different alpha for rising vs falling samples | Drawdown-aware |
-| `SlewLimiterF64` / `SlewLimiterI64` | Hard rate-of-change clamp | Not statistical — deterministic |
+| `Ema` | Classic exponentially-weighted moving average | Builder, halflife or alpha |
+| `AsymEma` | Different alpha for rising vs falling samples | Drawdown-aware |
+| `Slew<f64>` / `Slew<i64>` | Hard rate-of-change clamp | Not statistical — deterministic |
 
 ---
 
@@ -18,9 +17,9 @@ Base smoothing primitives. Module path: `nexus_stats_core::smoothing`. For anyth
 The classic `y_t = alpha * x_t + (1 - alpha) * y_{t-1}`.
 
 ```rust
-use nexus_stats_core::smoothing::EmaF64;
+use nexus_stats_core::smoothing::Ema;
 
-let mut ema = EmaF64::builder().halflife(50.0).build().unwrap();
+let mut ema = Ema::builder().halflife(50.0).build().unwrap();
 for sample in stream { ema.update(sample).unwrap(); }
 let smoothed = ema.value().unwrap();
 ```
@@ -36,9 +35,9 @@ let smoothed = ema.value().unwrap();
 Two different alphas: one for `sample > current`, one for `sample < current`. Useful when you want to react fast to degradation but smooth slowly on recovery (or vice versa).
 
 ```rust
-use nexus_stats_core::smoothing::AsymEmaF64;
+use nexus_stats_core::smoothing::AsymEma;
 
-let mut aema = AsymEmaF64::builder()
+let mut aema = AsymEma::builder()
     .up_halflife(5.0)     // react fast to latency going up
     .down_halflife(50.0)  // smooth the recovery
     .build()
@@ -51,14 +50,14 @@ for us in latencies { aema.update(us).unwrap(); }
 
 ---
 
-## SlewLimiter
+## Slew
 
-A hard clamp on rate of change: output can change by at most `max_rate` per update.
+A hard clamp on rate of change: output can change by at most `max_rate` per update. `Slew<f64>` and `Slew<i64>`.
 
 ```rust
-use nexus_stats_core::smoothing::SlewLimiterF64;
+use nexus_stats_core::smoothing::Slew;
 
-let mut slew = SlewLimiterF64::new(0.01).unwrap(); // max change of 0.01 per step
+let mut slew = Slew::<f64>::new(0.01).unwrap(); // max change of 0.01 per step
 for setpoint in targets {
     let output = slew.update(setpoint).unwrap();
     // `output` tracks `setpoint` but never moves more than 0.01 per step.
@@ -71,12 +70,9 @@ for setpoint in targets {
 
 ---
 
-## Integer variants
+## Integer form
 
-`EmaI64` / `AsymEmaI64` / `SlewLimiterI64` use fixed-point arithmetic for hot paths where you can't afford float ops (hard real-time budgets, SIMD-heavy loops). Interface is the same, but:
-
-- `update` does not return `Result` (no NaN to guard against).
-- Internal precision is governed by a shift factor, documented on each type.
+`Slew<i64>` is the integer instantiation of the same type, for hot paths where the value is already an integer (ticks, fixed-point prices). Same interface, except `update` does not return `Result`: there is no NaN to guard against. The smoothers (`Ema`, `AsymEma`) are `f64` only.
 - Parameters are still converted from half-life at builder time.
 
 ---
@@ -84,4 +80,4 @@ for setpoint in targets {
 ## Cross-references
 
 - Advanced smoothers — Holt, KAMA, Kalman1d, Spring, Huber, Hampel, WindowedMedian — all in [`nexus-stats-smoothing`](../../nexus-stats-smoothing/docs/INDEX.md).
-- Streaming variance around an EMA: [`EwmaVarF64`](statistics.md#ewmavarf64--exponentially-weighted-variance).
+- Streaming variance around an EMA: [`EwmaVar`](statistics.md#ewmavarf64--exponentially-weighted-variance).

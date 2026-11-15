@@ -1,4 +1,4 @@
-use crate::smoothing::EmaF64;
+use crate::smoothing::Ema;
 
 /// Streaming Amihud ILLIQ ratio — illiquidity measure.
 ///
@@ -9,9 +9,9 @@ use crate::smoothing::EmaF64;
 /// # Examples
 ///
 /// ```
-/// use nexus_stats_core::statistics::AmihudF64;
+/// use nexus_stats_core::statistics::Amihud;
 ///
-/// let mut amihud = AmihudF64::builder()
+/// let mut amihud = Amihud::builder()
 ///     .alpha(0.05)
 ///     .build()
 ///     .unwrap();
@@ -21,23 +21,23 @@ use crate::smoothing::EmaF64;
 /// assert!(illiq > 0.0);
 /// ```
 #[derive(Debug, Clone)]
-pub struct AmihudF64 {
-    ema: EmaF64,
+pub struct Amihud {
+    ema: Ema,
     count: u64,
 }
 
-/// Builder for [`AmihudF64`].
+/// Builder for [`Amihud`].
 #[derive(Debug, Clone)]
-pub struct AmihudF64Builder {
+pub struct AmihudBuilder {
     alpha: Option<f64>,
 }
 
-impl AmihudF64 {
+impl Amihud {
     /// Creates a builder.
     #[inline]
     #[must_use]
-    pub fn builder() -> AmihudF64Builder {
-        AmihudF64Builder { alpha: None }
+    pub fn builder() -> AmihudBuilder {
+        AmihudBuilder { alpha: None }
     }
 
     /// Feed an absolute return and dollar volume for one period.
@@ -93,7 +93,7 @@ impl AmihudF64 {
     }
 }
 
-impl AmihudF64Builder {
+impl AmihudBuilder {
     /// Direct smoothing factor. Must be in (0, 1).
     #[inline]
     #[must_use]
@@ -117,12 +117,12 @@ impl AmihudF64Builder {
     /// # Errors
     ///
     /// Returns `ConfigError` if alpha is missing or invalid.
-    pub fn build(self) -> Result<AmihudF64, crate::ConfigError> {
+    pub fn build(self) -> Result<Amihud, crate::ConfigError> {
         let alpha = self.alpha.ok_or(crate::ConfigError::Missing("alpha"))?;
 
-        let ema = EmaF64::builder().alpha(alpha).build()?;
+        let ema = Ema::builder().alpha(alpha).build()?;
 
-        Ok(AmihudF64 { ema, count: 0 })
+        Ok(Amihud { ema, count: 0 })
     }
 }
 
@@ -132,7 +132,7 @@ mod tests {
 
     #[test]
     fn basic_illiq() {
-        let mut a = AmihudF64::builder().alpha(0.1).build().unwrap();
+        let mut a = Amihud::builder().alpha(0.1).build().unwrap();
         a.update(0.01, 1_000_000.0).unwrap();
         let illiq = a.illiq();
         assert!(illiq > 0.0);
@@ -141,8 +141,8 @@ mod tests {
 
     #[test]
     fn higher_impact_higher_illiq() {
-        let mut liquid = AmihudF64::builder().alpha(0.5).build().unwrap();
-        let mut illiquid = AmihudF64::builder().alpha(0.5).build().unwrap();
+        let mut liquid = Amihud::builder().alpha(0.5).build().unwrap();
+        let mut illiquid = Amihud::builder().alpha(0.5).build().unwrap();
 
         for _ in 0..50 {
             liquid.update(0.001, 10_000_000.0).unwrap();
@@ -159,7 +159,7 @@ mod tests {
 
     #[test]
     fn zero_volume_skipped() {
-        let mut a = AmihudF64::builder().alpha(0.1).build().unwrap();
+        let mut a = Amihud::builder().alpha(0.1).build().unwrap();
         a.update(0.01, 0.0).unwrap();
         assert_eq!(a.count(), 0);
         assert!(!a.is_primed());
@@ -167,7 +167,7 @@ mod tests {
 
     #[test]
     fn reset_clears_state() {
-        let mut a = AmihudF64::builder().alpha(0.1).build().unwrap();
+        let mut a = Amihud::builder().alpha(0.1).build().unwrap();
         a.update(0.01, 1_000_000.0).unwrap();
         a.reset();
         assert_eq!(a.count(), 0);
@@ -176,14 +176,14 @@ mod tests {
 
     #[test]
     fn nan_rejected() {
-        let mut a = AmihudF64::builder().alpha(0.1).build().unwrap();
+        let mut a = Amihud::builder().alpha(0.1).build().unwrap();
         assert!(a.update(f64::NAN, 1.0).is_err());
         assert!(a.update(1.0, f64::NAN).is_err());
     }
 
     #[test]
     fn inf_rejected() {
-        let mut a = AmihudF64::builder().alpha(0.1).build().unwrap();
+        let mut a = Amihud::builder().alpha(0.1).build().unwrap();
         assert!(a.update(f64::INFINITY, 1.0).is_err());
     }
 }

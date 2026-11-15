@@ -16,37 +16,37 @@ upstream services). These sources can fail in multiple ways:
 
 ```rust
 use nexus_stats::Direction;
-use nexus_stats::detection::CusumF64;
-use nexus_stats::monitoring::{LivenessI64, EventRateI64, JitterI64};
-use nexus_stats::control::DeadBandI64;
+use nexus_stats::detection::Cusum;
+use nexus_stats::monitoring::{Liveness, EventRate, Jitter};
+use nexus_stats::control::DeadBand;
 
 struct FeedMonitor {
-    liveness: LivenessI64,      // is it alive?
-    latency: CusumF64,          // has latency shifted?
-    rate: EventRateI64,         // is message rate normal?
-    jitter: JitterI64,          // is timing unstable?
-    staleness: DeadBandI64,     // is the value actually changing?
+    liveness: Liveness,      // is it alive?
+    latency: Cusum,          // has latency shifted?
+    rate: EventRate,         // is message rate normal?
+    jitter: Jitter<i64>,          // is timing unstable?
+    staleness: DeadBand<i64>,     // is the value actually changing?
 }
 
 impl FeedMonitor {
     fn new(baseline_latency: f64, expected_interval_ns: i64) -> Self {
         FeedMonitor {
-            liveness: LivenessI64::builder()
+            liveness: Liveness::builder()
                 .span(15)
                 .deadline_multiple(5)
                 .build(),
-            latency: CusumF64::builder(baseline_latency)
+            latency: Cusum::builder(baseline_latency)
                 .slack(baseline_latency * 0.05)
                 .threshold(baseline_latency * 0.5)
                 .min_samples(20)
                 .build(),
-            rate: EventRateI64::builder()
+            rate: EventRate::builder()
                 .span(15)
                 .build(),
-            jitter: JitterI64::builder()
+            jitter: Jitter::<i64>::builder()
                 .span(20)
                 .build(),
-            staleness: DeadBandI64::new(1), // flag if value changes by < 1
+            staleness: DeadBand::<i64>::new(1).unwrap(), // flag if value changes by < 1
         }
     }
 
@@ -76,17 +76,17 @@ impl FeedMonitor {
 ## Recipe: WebSocket Feed Health (Trading)
 
 ```rust
-use nexus_stats::detection::CusumF64;
-use nexus_stats::monitoring::{LivenessI64, EventRateI64};
+use nexus_stats::detection::Cusum;
+use nexus_stats::monitoring::{Liveness, EventRate};
 
 // Per-exchange feed monitor
-let mut liveness = LivenessI64::builder()
+let mut liveness = Liveness::builder()
     .span(15)
     .deadline_absolute(5_000_000_000)  // 5s absolute timeout
     .build().unwrap();
 
-let mut msg_rate = EventRateI64::builder().span(20).build().unwrap();
-let mut latency_cusum = CusumF64::builder(baseline_ws_latency)
+let mut msg_rate = EventRate::builder().span(20).build().unwrap();
+let mut latency_cusum = Cusum::builder(baseline_ws_latency)
     .slack(2.0).threshold(20.0).min_samples(50).build().unwrap();
 
 // On each WebSocket message:

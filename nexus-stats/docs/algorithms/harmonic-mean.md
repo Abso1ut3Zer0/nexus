@@ -7,7 +7,7 @@ rates gives the wrong answer.
 |----------|-------|
 | Update cost | ~5 cycles |
 | Memory | ~16 bytes |
-| Types | `HarmonicMeanF64`, `HarmonicMeanF32` |
+| Types | `HarmonicMean`, `HarmonicMeanF32` |
 | Output | `Option<T>` — harmonic mean once primed |
 
 ## Why Not Arithmetic Mean?
@@ -36,7 +36,7 @@ Implementation: maintain `sum_of_reciprocals` and `count`.
 ## Configuration
 
 ```rust
-let mut hm = HarmonicMeanF64::new();
+let mut hm = HarmonicMean::new();
 
 hm.update(10.0);  // first rate
 hm.update(1.0);   // second rate
@@ -61,6 +61,6 @@ assert!((hm.mean().unwrap() - 1.818).abs() < 0.01);
 
 | Operation | p50 | p99 |
 |-----------|-----|-----|
-| `HarmonicMeanF64::update` | ~5 cycles | ~6 cycles |
+| `HarmonicMean::update` | ~5 cycles | ~6 cycles |
 
 One reciprocal (division) + one addition per update.

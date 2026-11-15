@@ -1,4 +1,4 @@
-use crate::smoothing::EmaF64;
+use crate::smoothing::Ema;
 
 /// Fraction of directionally correct predictions with exponential weighting.
 ///
@@ -9,9 +9,9 @@ use crate::smoothing::EmaF64;
 /// # Examples
 ///
 /// ```
-/// use nexus_stats_core::statistics::HitRateF64;
+/// use nexus_stats_core::statistics::HitRate;
 ///
-/// let mut hr = HitRateF64::builder()
+/// let mut hr = HitRate::builder()
 ///     .halflife(50.0)
 ///     .build()
 ///     .unwrap();
@@ -21,28 +21,24 @@ use crate::smoothing::EmaF64;
 /// assert!((hr.hit_rate() - 1.0).abs() < f64::EPSILON);
 /// ```
 #[derive(Debug, Clone)]
-pub struct HitRateF64 {
+pub struct HitRate {
     hits: u64,
     total: u64,
-    ew_hits: EmaF64,
+    ew_hits: Ema,
 }
 
-/// Builder for [`HitRateF64`].
+/// Builder for [`HitRate`].
 #[derive(Debug, Clone)]
-pub struct HitRateF64Builder {
-    halflife: Option<f64>,
+pub struct HitRateBuilder {
     alpha: Option<f64>,
 }
 
-impl HitRateF64 {
+impl HitRate {
     /// Creates a builder.
     #[inline]
     #[must_use]
-    pub fn builder() -> HitRateF64Builder {
-        HitRateF64Builder {
-            halflife: None,
-            alpha: None,
-        }
+    pub fn builder() -> HitRateBuilder {
+        HitRateBuilder { alpha: None }
     }
 
     /// Feed a prediction and realized direction.
@@ -72,7 +68,7 @@ impl HitRateF64 {
         }
 
         let hit_val = if is_hit { 1.0 } else { 0.0 };
-        // EmaF64::update returns Result<Option<f64>, DataError>, but 0.0/1.0
+        // Ema::update returns Result<Option<f64>, DataError>, but 0.0/1.0
         // are always finite, so this cannot fail.
         let _ = self.ew_hits.update(hit_val);
 
@@ -118,7 +114,7 @@ impl HitRateF64 {
     }
 }
 
-impl HitRateF64Builder {
+impl HitRateBuilder {
     /// EW halflife in observations. One of `halflife` or `alpha` is required.
     #[inline]
     #[must_use]
@@ -126,7 +122,6 @@ impl HitRateF64Builder {
     pub fn halflife(mut self, halflife: f64) -> Self {
         let ln2 = core::f64::consts::LN_2;
         self.alpha = Some(1.0 - crate::math::exp(-ln2 / halflife));
-        self.halflife = Some(halflife);
         self
     }
 
@@ -143,14 +138,14 @@ impl HitRateF64Builder {
     /// # Errors
     ///
     /// Returns `ConfigError` if no smoothing factor was set.
-    pub fn build(self) -> Result<HitRateF64, crate::ConfigError> {
+    pub fn build(self) -> Result<HitRate, crate::ConfigError> {
         let alpha = self
             .alpha
             .ok_or(crate::ConfigError::Missing("alpha or halflife"))?;
 
-        let ew_hits = EmaF64::builder().alpha(alpha).build()?;
+        let ew_hits = Ema::builder().alpha(alpha).build()?;
 
-        Ok(HitRateF64 {
+        Ok(HitRate {
             hits: 0,
             total: 0,
             ew_hits,
@@ -164,7 +159,7 @@ mod tests {
 
     #[test]
     fn all_correct() {
-        let mut hr = HitRateF64::builder().alpha(0.1).build().unwrap();
+        let mut hr = HitRate::builder().alpha(0.1).build().unwrap();
         for _ in 0..100 {
             hr.update(1.0, 1.0).unwrap();
         }
@@ -174,7 +169,7 @@ mod tests {
 
     #[test]
     fn all_wrong() {
-        let mut hr = HitRateF64::builder().alpha(0.1).build().unwrap();
+        let mut hr = HitRate::builder().alpha(0.1).build().unwrap();
         for _ in 0..100 {
             hr.update(1.0, -1.0).unwrap();
         }
@@ -184,7 +179,7 @@ mod tests {
 
     #[test]
     fn mixed_directions() {
-        let mut hr = HitRateF64::builder().alpha(0.1).build().unwrap();
+        let mut hr = HitRate::builder().alpha(0.1).build().unwrap();
         // 5 hits, 5 misses
         for i in 0..10 {
             if i < 5 {
@@ -198,7 +193,7 @@ mod tests {
 
     #[test]
     fn zero_treated_as_miss() {
-        let mut hr = HitRateF64::builder().alpha(0.1).build().unwrap();
+        let mut hr = HitRate::builder().alpha(0.1).build().unwrap();
         hr.update(0.0, 1.0).unwrap();
         assert!(hr.hit_rate().abs() < f64::EPSILON);
         hr.update(1.0, 0.0).unwrap();
@@ -207,14 +202,14 @@ mod tests {
 
     #[test]
     fn priming() {
-        let hr = HitRateF64::builder().alpha(0.1).build().unwrap();
+        let hr = HitRate::builder().alpha(0.1).build().unwrap();
         assert!(!hr.is_primed());
         assert_eq!(hr.count(), 0);
     }
 
     #[test]
     fn reset_clears_state() {
-        let mut hr = HitRateF64::builder().alpha(0.1).build().unwrap();
+        let mut hr = HitRate::builder().alpha(0.1).build().unwrap();
         hr.update(1.0, 1.0).unwrap();
         hr.reset();
         assert_eq!(hr.count(), 0);
@@ -224,14 +219,14 @@ mod tests {
 
     #[test]
     fn nan_rejected() {
-        let mut hr = HitRateF64::builder().alpha(0.1).build().unwrap();
+        let mut hr = HitRate::builder().alpha(0.1).build().unwrap();
         assert!(hr.update(f64::NAN, 1.0).is_err());
         assert!(hr.update(1.0, f64::NAN).is_err());
     }
 
     #[test]
     fn inf_rejected() {
-        let mut hr = HitRateF64::builder().alpha(0.1).build().unwrap();
+        let mut hr = HitRate::builder().alpha(0.1).build().unwrap();
         assert!(hr.update(f64::INFINITY, 1.0).is_err());
     }
 }

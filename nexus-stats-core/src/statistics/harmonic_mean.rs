@@ -9,12 +9,12 @@
 /// - Mean speed over equal-distance segments
 /// - Any rate where arithmetic mean would be misleading
 #[derive(Debug, Clone)]
-pub struct HarmonicMeanF64 {
+pub struct HarmonicMean {
     reciprocal_sum: f64,
     count: u64,
 }
 
-impl HarmonicMeanF64 {
+impl HarmonicMean {
     /// Creates a new empty accumulator.
     #[inline]
     #[must_use]
@@ -77,7 +77,7 @@ impl HarmonicMeanF64 {
     }
 }
 
-impl Default for HarmonicMeanF64 {
+impl Default for HarmonicMean {
     #[inline]
     fn default() -> Self {
         Self::new()
@@ -90,13 +90,13 @@ mod tests {
 
     #[test]
     fn empty() {
-        let hm = HarmonicMeanF64::new();
+        let hm = HarmonicMean::new();
         assert!(hm.mean().is_none());
     }
 
     #[test]
     fn known_values() {
-        let mut hm = HarmonicMeanF64::new();
+        let mut hm = HarmonicMean::new();
         // HM(1, 4) = 2 / (1/1 + 1/4) = 2 / 1.25 = 1.6
         hm.update(1.0).unwrap();
         hm.update(4.0).unwrap();
@@ -106,7 +106,7 @@ mod tests {
 
     #[test]
     fn harmonic_leq_arithmetic() {
-        let mut hm = HarmonicMeanF64::new();
+        let mut hm = HarmonicMean::new();
         let vals = [2.0, 4.0, 8.0];
         let mut sum = 0.0;
         for &v in &vals {
@@ -123,7 +123,7 @@ mod tests {
 
     #[test]
     fn equal_values() {
-        let mut hm = HarmonicMeanF64::new();
+        let mut hm = HarmonicMean::new();
         for _ in 0..100 {
             hm.update(5.0).unwrap();
         }
@@ -136,7 +136,7 @@ mod tests {
 
     #[test]
     fn reset() {
-        let mut hm = HarmonicMeanF64::new();
+        let mut hm = HarmonicMean::new();
         hm.update(1.0).unwrap();
         hm.reset();
         assert_eq!(hm.count(), 0);
@@ -145,20 +145,20 @@ mod tests {
 
     #[test]
     fn default_is_empty() {
-        let hm = HarmonicMeanF64::default();
+        let hm = HarmonicMean::default();
         assert_eq!(hm.count(), 0);
     }
 
     #[test]
     #[should_panic(expected = "positive values")]
     fn panics_on_zero() {
-        let mut hm = HarmonicMeanF64::new();
+        let mut hm = HarmonicMean::new();
         hm.update(0.0).unwrap();
     }
 
     #[test]
     fn rejects_nan_and_inf() {
-        let mut hm = HarmonicMeanF64::new();
+        let mut hm = HarmonicMean::new();
         assert_eq!(hm.update(f64::NAN), Err(crate::DataError::NotANumber));
         assert_eq!(hm.update(f64::INFINITY), Err(crate::DataError::Infinite));
         assert_eq!(

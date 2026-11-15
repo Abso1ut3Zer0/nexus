@@ -1,6 +1,6 @@
 use nexus_stats_core::Direction;
-use nexus_stats_core::smoothing::EmaF64;
-use nexus_stats_core::statistics::WelfordF64;
+use nexus_stats_core::smoothing::Ema;
+use nexus_stats_core::statistics::Welford;
 
 macro_rules! impl_adaptive_threshold {
     ($name:ident, $builder:ident, $ty:ty, $ema:ty, $ema_builder:ident, $welford:ty) => {
@@ -278,9 +278,9 @@ impl_adaptive_threshold!(
     AdaptiveThresholdF64,
     AdaptiveThresholdF64Builder,
     f64,
-    EmaF64,
-    EmaF64Builder,
-    WelfordF64
+    Ema,
+    EmaBuilder,
+    Welford
 );
 
 #[cfg(test)]

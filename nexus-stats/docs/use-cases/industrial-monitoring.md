@@ -6,19 +6,19 @@ and IoT systems.
 ## Recipe: Sensor Input Validation
 
 ```rust
-use nexus_stats::smoothing::SlewF64;
+use nexus_stats::smoothing::Slew<f64>;
 use nexus_stats::detection::RobustZScoreF64;
-use nexus_stats::control::DeadBandF64;
+use nexus_stats::control::DeadBand<f64>;
 
 // Hard limits (physical impossibility)
-let mut slew = SlewF64::new(10.0);  // max 10°C change per sample
+let mut slew = Slew::<f64>::new(10.0);  // max 10°C change per sample
 
 // Statistical outlier detection
 let mut robust = RobustZScoreF64::builder()
     .span(100).reject_threshold(5.0).build().unwrap();
 
 // Stuck sensor detection
-let mut dead_band = DeadBandF64::new(0.01);  // report if > 0.01°C change
+let mut dead_band = DeadBand::<f64>::new(0.01);  // report if > 0.01°C change
 
 let clamped = slew.update(reading);
 let z = robust.update(clamped);
@@ -38,11 +38,11 @@ if changed.is_none() {
 
 ```rust
 use nexus_stats::Direction;
-use nexus_stats::detection::CusumF64;
+use nexus_stats::detection::Cusum;
 use nexus_stats::control::DebounceU32;
 
 // CUSUM for detecting drift from setpoint
-let mut drift = CusumF64::builder(setpoint)
+let mut drift = Cusum::builder(setpoint)
     .slack(tolerance * 0.5)
     .threshold(tolerance * 5.0)
     .build().unwrap();

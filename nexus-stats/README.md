@@ -9,10 +9,10 @@ anywhere you need statistics without latency jitter.
 ## Quick Start
 
 ```rust
-use nexus_stats::{Direction, detection::CusumF64, smoothing::EmaF64, statistics::WelfordF64};
+use nexus_stats::{Direction, detection::Cusum, smoothing::Ema, statistics::Welford};
 
 // Detect latency shifts with CUSUM
-let mut cusum = CusumF64::builder(100.0)  // target: 100μs baseline
+let mut cusum = Cusum::builder(100.0)  // target: 100μs baseline
     .slack(5.0)                            // sensitivity
     .threshold(50.0)                       // decision boundary
     .min_samples(20)                       // warmup
@@ -27,7 +27,7 @@ for latency in samples {
 }
 
 // Smooth noisy measurements with EMA
-let mut ema = EmaF64::builder()
+let mut ema = Ema::builder()
     .span(20)          // ~20-sample smoothing window
     .min_samples(10)
     .build().unwrap();
@@ -37,7 +37,7 @@ if let Some(smoothed) = ema.update(sample) {
 }
 
 // Track running statistics with Welford
-let mut stats = WelfordF64::new();
+let mut stats = Welford::new();
 stats.update(sample);
 if let Some(mean) = stats.mean() {
     println!("mean={mean}, std_dev={}", stats.std_dev().unwrap());
@@ -53,7 +53,7 @@ for deep-dives on each algorithm.
 
 | Type | What It Detects | p50 |
 |------|----------------|-----|
-| `CusumF64` | Persistent mean shifts (up or down) | 5 |
+| `Cusum` | Persistent mean shifts (up or down) | 5 |
 | `MosumF64` | Transient spikes within a window | 6 |
 | `ShiryaevRobertsF64` | Mean shifts with optimal detection delay | 17 |
 | `MultiGateF64` | Graded anomalies: Accept/Unusual/Suspect/Reject | 12 |
@@ -66,27 +66,27 @@ for deep-dives on each algorithm.
 
 | Type | What It Computes | p50 |
 |------|-----------------|-----|
-| `EmaF64` / `EmaI64` | Exponential moving average (float / integer) | 5 |
-| `AsymEmaF64` | Different alpha for rising vs falling | 11 |
+| `Ema` / `EmaI64` | Exponential moving average (float / integer) | 5 |
+| `AsymEma` | Different alpha for rising vs falling | 11 |
 | `KamaF64` | Kaufman adaptive MA (adapts to trend/noise) | 16 |
 | `Kalman1dF64` | 1D Kalman filter with velocity tracking | 25 |
 | `HoltF64` | Double exponential (level + trend) | 11 |
 | `SpringF64` | Critically damped spring (smooth target chasing) | 12 |
-| `SlewF64` | Hard rate-of-change clamp | 3 |
+| `Slew<f64>` | Hard rate-of-change clamp | 3 |
 | `WindowedMedianF64` | Robust median filter (outlier-immune) | 132 |
 
 ### Statistics
 
 | Type | What It Computes | p50 |
 |------|-----------------|-----|
-| `WelfordF64` | Online mean, variance, std dev (Chan's merge) | 10 |
-| `MomentsF64` | Online skewness & kurtosis (Pébay, 2008). Merge support | 24 |
-| `EwmaVarF64` | Exponentially weighted variance | 12 |
-| `CovarianceF64` | Online covariance + Pearson correlation | 12 |
-| `HarmonicMeanF64` | Correct average for rates/throughputs | 5 |
-| `BipowerVariationF64` | Jump-robust volatility (BV vs RV) | TBD |
-| `RollSpreadF64` *(std\|libm)* | Implicit bid-ask spread from autocovariance | TBD |
-| `TwoScaleRvF64` *(alloc, std\|libm)* | Noise-corrected realized variance | TBD |
+| `Welford` | Online mean, variance, std dev (Chan's merge) | 10 |
+| `Moments` | Online skewness & kurtosis (Pébay, 2008). Merge support | 24 |
+| `EwmaVar` | Exponentially weighted variance | 12 |
+| `Covariance` | Online covariance + Pearson correlation | 12 |
+| `HarmonicMean` | Correct average for rates/throughputs | 5 |
+| `BipowerVariation` | Jump-robust volatility (BV vs RV) | TBD |
+| `RollSpread` *(std\|libm)* | Implicit bid-ask spread from autocovariance | TBD |
+| `TwoScaleRv` *(alloc, std\|libm)* | Noise-corrected realized variance | TBD |
 
 ### Regression
 
@@ -129,21 +129,20 @@ for deep-dives on each algorithm.
 
 | Type | What It Tracks | p50 |
 |------|---------------|-----|
-| `DrawdownF64` | Peak-to-trough decline, max drawdown | 5 |
-| `RunningMinF64` / `RunningMaxF64` | All-time extrema | 5 |
-| `WindowedMaxF64` / `WindowedMinF64` | Sliding window extrema (Nichols'/BBR) | 9 |
-| `PeakHoldF64` | Peak envelope with hold + decay | 7 |
-| `MaxGaugeF64` | Reset-on-read maximum (Netflix pattern) | 5 |
-| `LivenessI64` / `LivenessU64` | Source alive/dead detection | 6 |
-| `EventRateU64` | Smoothed events per unit time | 6 |
-| `CoDelI64` | Queue backpressure detection (CoDel-inspired) | 7 |
+| `Drawdown<f64>` | Peak-to-trough decline, max drawdown | 5 |
+| `RunningMin<f64>` / `RunningMax<f64>` | All-time extrema | 5 |
+| `WindowedMax<f64>` / `WindowedMin<f64>` | Sliding window extrema (Nichols'/BBR) | 9 |
+| `PeakHold<f64>` | Peak envelope with hold + decay | 7 |
+| `MaxGauge<f64>` | Reset-on-read maximum (Netflix pattern) | 5 |
+| `Liveness` | Source alive/dead detection | 6 |
+| `EventRate` | Smoothed events per unit time | 6 |
+| `CoDel<i64>` | Queue backpressure detection (CoDel-inspired) | 7 |
 | `PollSaturation` | Consumer-side saturation from poll outcomes: `on_work` / `on_idle` | 5 / 1 |
 | `SojournSaturation` | Consumer saturation from stamped queue sojourn, exact per message | 6 |
-| `SaturationF64` | Resource utilization threshold (USE method) | 6 |
-| `ErrorRateF64` | Failure rate with weighted severity | 6 |
+| `ErrorRate` | Failure rate with weighted severity | 6 |
 | `TrendAlertF64` | Trend direction (Stable/Rising/Falling) | 12 |
-| `JitterF64` | Signal variability measurement | 6 |
-| `HawkesIntensityF64` *(std\|libm)* | Self-exciting point process intensity | TBD |
+| `Jitter<f64>` | Signal variability measurement | 6 |
+| `HawkesIntensity` *(std\|libm)* | Self-exciting point process intensity | TBD |
 
 ### Frequency & Scoring
 
@@ -157,14 +156,14 @@ for deep-dives on each algorithm.
 
 | Type | What It Does | p50 |
 |------|-------------|-----|
-| `DebounceU32` | N consecutive events before triggering | 2 |
-| `DeadBandF64` | Suppress changes below threshold | 2 |
-| `HysteresisF64` | Binary decision with different rising/falling thresholds | 3 |
+| `Debounce` | N consecutive events before triggering | 2 |
+| `DeadBand<f64>` | Suppress changes below threshold | 2 |
+| `Hysteresis<f64>` | Binary decision with different rising/falling thresholds | 3 |
 | `BoolWindow` | Sliding pass/fail rate over last N events | 6 |
 | `PeakDetectorF64` | Local maxima/minima with prominence | 3 |
-| `LevelCrossingF64` | Threshold crossing counter | 2 |
-| `FirstDiffF64` | Discrete derivative (rate of change) | 2 |
-| `SecondDiffF64` | Discrete acceleration | 2 |
+| `LevelCrossing<f64>` | Threshold crossing counter | 2 |
+| `FirstDiff<f64>` | Discrete derivative (rate of change) | 2 |
+| `SecondDiff<f64>` | Discrete acceleration | 2 |
 
 ## Type Variants
 
@@ -194,7 +193,7 @@ intrinsics; integer types use bit-shift arithmetic.
 | RollSpread | ✓ | ✓ | | | |
 | TwoScaleRv | | ✓ | | | |
 | HawkesIntensity | ✓ | ✓ | | | |
-| Saturation, ErrorRate, TrendAlert | ✓ | ✓ | | | |
+| ErrorRate, TrendAlert | ✓ | ✓ | | | |
 | ShiryaevRoberts | | ✓ | | | |
 | Ucb1, ThompsonBeta, ThompsonGamma, EpsilonGreedy, Exp3 | ✓ | ✓ | | | |
 
@@ -202,8 +201,8 @@ intrinsics; integer types use bit-shift arithmetic.
 
 All types follow consistent conventions:
 
-- **Builder pattern** for config-driven types (`CusumF64::builder(target)`)
-- **`const fn new()`** for zero-config types (`WelfordF64::new()`)
+- **Builder pattern** for config-driven types (`Cusum::builder(target)`)
+- **`const fn new()`** for zero-config types (`Welford::new()`)
 - **Priming** — returns `None` until `min_samples` reached
 - **`is_primed()`** — check if enough data has been seen
 - **`count()`** — total samples processed
@@ -283,19 +282,19 @@ See [`docs/use-cases/trading.md`](docs/use-cases/trading.md) for full guide with
 | Use Case | Type | Crate |
 |----------|------|-------|
 | Market impact | `KyleLambdaF64` | regression |
-| Illiquidity | `AmihudF64` | core |
+| Illiquidity | `Amihud` | core |
 | Bar construction | `BucketAccumulator` | core |
 | Signal decay curve | `SignalDecayCurve` | regression |
 | Lagged prediction / markout | `LaggedPredictor` | regression |
-| Mean-reversion speed | `HalfLifeF64` | core |
-| Trending vs mean-reverting | `HurstF64` | core |
-| Random walk test | `VarianceRatioF64` | core |
-| Distribution change | `DistributionShiftF64` | core |
-| Win rate | `HitRateF64` | core |
-| Jump-robust volatility | `BipowerVariationF64` | core |
-| Implicit spread estimation | `RollSpreadF64` | core |
-| Noise-corrected realized vol | `TwoScaleRvF64` | core |
-| Bursty event intensity | `HawkesIntensityF64` | core |
+| Mean-reversion speed | `HalfLife` | core |
+| Trending vs mean-reverting | `Hurst` | core |
+| Random walk test | `VarianceRatio` | core |
+| Distribution change | `DistributionShift` | core |
+| Win rate | `HitRate` | core |
+| Jump-robust volatility | `BipowerVariation` | core |
+| Implicit spread estimation | `RollSpread` | core |
+| Noise-corrected realized vol | `TwoScaleRv` | core |
+| Bursty event intensity | `HawkesIntensity` | core |
 | Conditional smoothing | `ConditionalEmaF64` | smoothing |
 | Venue selection | `ThompsonBetaF64` / `Ucb1F64` | regression |
 | Parameter A/B testing | `Ucb1F64` / `EpsilonGreedyF64` | regression |

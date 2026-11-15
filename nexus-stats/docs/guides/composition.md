@@ -59,8 +59,8 @@ Two EMAs at different speeds detect trend changes when the fast one
 crosses the slow one.
 
 ```rust
-let mut fast = EmaF64::builder().span(5).build().unwrap();
-let mut slow = EmaF64::builder().span(50).build().unwrap();
+let mut fast = Ema::builder().span(5).build().unwrap();
+let mut slow = Ema::builder().span(50).build().unwrap();
 
 if let (Some(f), Some(s)) = (fast.update(x), slow.update(x)) {
     if f > s { /* uptrend */ }

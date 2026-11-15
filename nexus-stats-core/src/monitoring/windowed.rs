@@ -16,9 +16,11 @@
 //
 // State: 3 × (timestamp, value) + u64 window + u64 count.
 
+use crate::Sample;
+
 /// Internal sample stored per sub-window.
 #[derive(Debug, Clone, Copy)]
-struct Sample<T: Copy> {
+struct Stamped<T: Copy> {
     timestamp: u64,
     value: T,
 }
@@ -27,31 +29,43 @@ struct Sample<T: Copy> {
 ///
 /// Tracks the maximum value within a `u64` timestamp window using only
 /// 3 stored samples. O(1) amortized per update, `no_std` compatible.
+/// `WindowedMax<f64>` rejects NaN and infinity and returns `Result`;
+/// `WindowedMax<i64>` cannot fail.
 ///
 /// # Use Cases
 /// - Max throughput tracking
 /// - BBR-style bandwidth estimation
 /// - Peak detection within a time window
+///
+/// # Weighting clock
+///
+/// Caller's timestamps. Any call rate; the window is measured in ticks, not
+/// samples. The accessor reflects the input as of the last `update`: a quiet
+/// input keeps returning its last extremum until a later `update` ages it
+/// out. A periodic reader that needs the window to expire without new data
+/// should feed the current tick with a neutral value or treat the result as
+/// stale by its own clock.
 #[derive(Debug, Clone)]
-pub struct WindowedMaxF64 {
+pub struct WindowedMax<T: Sample> {
     window: u64,
-    samples: [Sample<f64>; 3],
+    samples: [Stamped<T>; 3],
     count: u64,
 }
 
-impl WindowedMaxF64 {
-    /// Creates a new windowed max tracker.
+impl<T: Sample> WindowedMax<T> {
+    /// Creates a tracker over a window of `window` ticks.
     ///
-    /// `window` is in the same units as the timestamps you will pass
-    /// to [`update`](Self::update). Must be positive.
+    /// # Errors
+    ///
+    /// Returns `ConfigError::Invalid` if `window` is zero.
     #[inline]
     pub fn new(window: u64) -> Result<Self, crate::ConfigError> {
         if window == 0 {
             return Err(crate::ConfigError::Invalid("window must be positive"));
         }
-        let init = Sample {
+        let init = Stamped {
             timestamp: 0,
-            value: f64::MIN,
+            value: T::MIN,
         };
         Ok(Self {
             window,
@@ -60,39 +74,10 @@ impl WindowedMaxF64 {
         })
     }
 
-    /// Feeds a sample at the given timestamp. Returns current window max.
-    ///
-    /// # Errors
-    ///
-    /// Returns `DataError::NotANumber` if the value is NaN, or
-    /// `DataError::Infinite` if the value is infinite.
-    #[inline]
-    pub fn update(&mut self, timestamp: u64, value: f64) -> Result<f64, crate::DataError> {
-        check_finite!(value);
-        self.count += 1;
-        Ok(running(
-            &mut self.samples,
-            self.window,
-            timestamp,
-            value,
-            |a, b| a >= b,
-        ))
-    }
-
-    /// Convenience for `i64` timestamps (e.g., wire protocol epoch nanos).
-    ///
-    /// Timestamps must be non-negative. Negative values wrap to large
-    /// `u64` values and will produce incorrect window expiration.
-    #[inline]
-    pub fn update_i64(&mut self, timestamp: i64, value: f64) -> Result<f64, crate::DataError> {
-        debug_assert!(timestamp >= 0, "negative timestamp: {timestamp}");
-        self.update(timestamp as u64, value)
-    }
-
-    /// Current window maximum, or `None` if empty.
+    /// Current windowed maximum, or `None` before the first sample.
     #[inline]
     #[must_use]
-    pub fn max(&self) -> Option<f64> {
+    pub fn max(&self) -> Option<T> {
         if self.count == 0 {
             None
         } else {
@@ -100,7 +85,7 @@ impl WindowedMaxF64 {
         }
     }
 
-    /// Window size in raw units.
+    /// The window length in ticks.
     #[inline]
     #[must_use]
     pub fn window(&self) -> u64 {
@@ -114,153 +99,28 @@ impl WindowedMaxF64 {
         self.count
     }
 
-    /// Resets to empty state. Window size is preserved.
+    /// Resets to empty state. The window is kept.
     #[inline]
     pub fn reset(&mut self) {
-        let init = Sample {
+        let init = Stamped {
             timestamp: 0,
-            value: f64::MIN,
+            value: T::MIN,
         };
         self.samples = [init; 3];
         self.count = 0;
     }
-}
 
-/// Streaming windowed maximum over a sliding time window (Nichols' algorithm).
-///
-/// Tracks the maximum value within a `u64` timestamp window using only
-/// 3 stored samples. O(1) amortized per update, `no_std` compatible.
-///
-/// # Use Cases
-/// - Max throughput tracking
-/// - BBR-style bandwidth estimation
-/// - Peak detection within a time window
-/// - Deterministic replay with raw tick counters
-#[derive(Debug, Clone)]
-pub struct WindowedMaxI64 {
-    window: u64,
-    samples: [Sample<i64>; 3],
-    count: u64,
-}
-
-impl WindowedMaxI64 {
-    /// Creates a new windowed max tracker.
-    ///
-    /// `window` is in the same units as the timestamps you will pass
-    /// to [`update`](Self::update). Must be positive.
     #[inline]
-    pub fn new(window: u64) -> Result<Self, crate::ConfigError> {
-        if window == 0 {
-            return Err(crate::ConfigError::Invalid("window must be positive"));
-        }
-        let init = Sample {
-            timestamp: 0,
-            value: i64::MIN,
-        };
-        Ok(Self {
-            window,
-            samples: [init; 3],
-            count: 0,
-        })
-    }
-
-    /// Feeds a sample at the given timestamp. Returns current window max.
-    #[inline]
-    #[must_use]
-    pub fn update(&mut self, timestamp: u64, value: i64) -> i64 {
+    fn fold(&mut self, timestamp: u64, value: T) -> T {
         self.count += 1;
         running(&mut self.samples, self.window, timestamp, value, |a, b| {
             a >= b
         })
     }
-
-    /// Convenience for `i64` timestamps (e.g., wire protocol epoch nanos).
-    ///
-    /// Timestamps must be non-negative. Negative values wrap to large
-    /// `u64` values and will produce incorrect window expiration.
-    #[inline]
-    #[must_use]
-    pub fn update_i64(&mut self, timestamp: i64, value: i64) -> i64 {
-        debug_assert!(timestamp >= 0, "negative timestamp: {timestamp}");
-        self.update(timestamp as u64, value)
-    }
-
-    /// Current window maximum, or `None` if empty.
-    #[inline]
-    #[must_use]
-    pub fn max(&self) -> Option<i64> {
-        if self.count == 0 {
-            None
-        } else {
-            Some(self.samples[0].value)
-        }
-    }
-
-    /// Window size in raw units.
-    #[inline]
-    #[must_use]
-    pub fn window(&self) -> u64 {
-        self.window
-    }
-
-    /// Number of samples processed.
-    #[inline]
-    #[must_use]
-    pub fn count(&self) -> u64 {
-        self.count
-    }
-
-    /// Resets to empty state. Window size is preserved.
-    #[inline]
-    pub fn reset(&mut self) {
-        let init = Sample {
-            timestamp: 0,
-            value: i64::MIN,
-        };
-        self.samples = [init; 3];
-        self.count = 0;
-    }
 }
 
-/// Streaming windowed minimum over a sliding time window (Nichols' algorithm).
-///
-/// Tracks the minimum value within a `u64` timestamp window using only
-/// 3 stored samples. O(1) amortized per update, `no_std` compatible.
-///
-/// # Use Cases
-/// - Min RTT tracking (BBR)
-/// - Minimum price in a window
-/// - Best-case latency estimation
-/// - Deterministic replay with raw tick counters
-#[derive(Debug, Clone)]
-pub struct WindowedMinF64 {
-    window: u64,
-    samples: [Sample<f64>; 3],
-    count: u64,
-}
-
-impl WindowedMinF64 {
-    /// Creates a new windowed min tracker.
-    ///
-    /// `window` is in the same units as the timestamps you will pass
-    /// to [`update`](Self::update). Must be positive.
-    #[inline]
-    pub fn new(window: u64) -> Result<Self, crate::ConfigError> {
-        if window == 0 {
-            return Err(crate::ConfigError::Invalid("window must be positive"));
-        }
-        let init = Sample {
-            timestamp: 0,
-            value: f64::MAX,
-        };
-        Ok(Self {
-            window,
-            samples: [init; 3],
-            count: 0,
-        })
-    }
-
-    /// Feeds a sample at the given timestamp. Returns current window min.
+impl WindowedMax<f64> {
+    /// Feeds a sample at `timestamp`. Returns the current windowed maximum.
     ///
     /// # Errors
     ///
@@ -269,60 +129,15 @@ impl WindowedMinF64 {
     #[inline]
     pub fn update(&mut self, timestamp: u64, value: f64) -> Result<f64, crate::DataError> {
         check_finite!(value);
-        self.count += 1;
-        Ok(running(
-            &mut self.samples,
-            self.window,
-            timestamp,
-            value,
-            |a, b| a <= b,
-        ))
+        Ok(self.fold(timestamp, value))
     }
+}
 
-    /// Convenience for `i64` timestamps (e.g., wire protocol epoch nanos).
-    ///
-    /// Timestamps must be non-negative. Negative values wrap to large
-    /// `u64` values and will produce incorrect window expiration.
+impl WindowedMax<i64> {
+    /// Feeds a sample at `timestamp`. Returns the current windowed maximum.
     #[inline]
-    pub fn update_i64(&mut self, timestamp: i64, value: f64) -> Result<f64, crate::DataError> {
-        debug_assert!(timestamp >= 0, "negative timestamp: {timestamp}");
-        self.update(timestamp as u64, value)
-    }
-
-    /// Current window minimum, or `None` if empty.
-    #[inline]
-    #[must_use]
-    pub fn min(&self) -> Option<f64> {
-        if self.count == 0 {
-            None
-        } else {
-            Some(self.samples[0].value)
-        }
-    }
-
-    /// Window size in raw units.
-    #[inline]
-    #[must_use]
-    pub fn window(&self) -> u64 {
-        self.window
-    }
-
-    /// Number of samples processed.
-    #[inline]
-    #[must_use]
-    pub fn count(&self) -> u64 {
-        self.count
-    }
-
-    /// Resets to empty state. Window size is preserved.
-    #[inline]
-    pub fn reset(&mut self) {
-        let init = Sample {
-            timestamp: 0,
-            value: f64::MAX,
-        };
-        self.samples = [init; 3];
-        self.count = 0;
+    pub fn update(&mut self, timestamp: u64, value: i64) -> i64 {
+        self.fold(timestamp, value)
     }
 }
 
@@ -330,32 +145,44 @@ impl WindowedMinF64 {
 ///
 /// Tracks the minimum value within a `u64` timestamp window using only
 /// 3 stored samples. O(1) amortized per update, `no_std` compatible.
+/// `WindowedMin<f64>` rejects NaN and infinity and returns `Result`;
+/// `WindowedMin<i64>` cannot fail.
 ///
 /// # Use Cases
 /// - Min RTT tracking (BBR)
 /// - Minimum price in a window
 /// - Best-case latency estimation
 /// - Deterministic replay with raw tick counters
+///
+/// # Weighting clock
+///
+/// Caller's timestamps. Any call rate; the window is measured in ticks, not
+/// samples. The accessor reflects the input as of the last `update`: a quiet
+/// input keeps returning its last extremum until a later `update` ages it
+/// out. A periodic reader that needs the window to expire without new data
+/// should feed the current tick with a neutral value or treat the result as
+/// stale by its own clock.
 #[derive(Debug, Clone)]
-pub struct WindowedMinI64 {
+pub struct WindowedMin<T: Sample> {
     window: u64,
-    samples: [Sample<i64>; 3],
+    samples: [Stamped<T>; 3],
     count: u64,
 }
 
-impl WindowedMinI64 {
-    /// Creates a new windowed min tracker.
+impl<T: Sample> WindowedMin<T> {
+    /// Creates a tracker over a window of `window` ticks.
     ///
-    /// `window` is in the same units as the timestamps you will pass
-    /// to [`update`](Self::update). Must be positive.
+    /// # Errors
+    ///
+    /// Returns `ConfigError::Invalid` if `window` is zero.
     #[inline]
     pub fn new(window: u64) -> Result<Self, crate::ConfigError> {
         if window == 0 {
             return Err(crate::ConfigError::Invalid("window must be positive"));
         }
-        let init = Sample {
+        let init = Stamped {
             timestamp: 0,
-            value: i64::MAX,
+            value: T::MAX,
         };
         Ok(Self {
             window,
@@ -364,31 +191,10 @@ impl WindowedMinI64 {
         })
     }
 
-    /// Feeds a sample at the given timestamp. Returns current window min.
+    /// Current windowed minimum, or `None` before the first sample.
     #[inline]
     #[must_use]
-    pub fn update(&mut self, timestamp: u64, value: i64) -> i64 {
-        self.count += 1;
-        running(&mut self.samples, self.window, timestamp, value, |a, b| {
-            a <= b
-        })
-    }
-
-    /// Convenience for `i64` timestamps (e.g., wire protocol epoch nanos).
-    ///
-    /// Timestamps must be non-negative. Negative values wrap to large
-    /// `u64` values and will produce incorrect window expiration.
-    #[inline]
-    #[must_use]
-    pub fn update_i64(&mut self, timestamp: i64, value: i64) -> i64 {
-        debug_assert!(timestamp >= 0, "negative timestamp: {timestamp}");
-        self.update(timestamp as u64, value)
-    }
-
-    /// Current window minimum, or `None` if empty.
-    #[inline]
-    #[must_use]
-    pub fn min(&self) -> Option<i64> {
+    pub fn min(&self) -> Option<T> {
         if self.count == 0 {
             None
         } else {
@@ -396,7 +202,7 @@ impl WindowedMinI64 {
         }
     }
 
-    /// Window size in raw units.
+    /// The window length in ticks.
     #[inline]
     #[must_use]
     pub fn window(&self) -> u64 {
@@ -410,141 +216,45 @@ impl WindowedMinI64 {
         self.count
     }
 
-    /// Resets to empty state. Window size is preserved.
+    /// Resets to empty state. The window is kept.
     #[inline]
     pub fn reset(&mut self) {
-        let init = Sample {
+        let init = Stamped {
             timestamp: 0,
-            value: i64::MAX,
+            value: T::MAX,
         };
         self.samples = [init; 3];
         self.count = 0;
     }
-}
 
-// --- pub(crate) f32 variants for normalizers ---
-
-#[derive(Debug, Clone)]
-pub(crate) struct WindowedMaxF32 {
-    window: u64,
-    samples: [Sample<f32>; 3],
-    count: u64,
-}
-
-impl WindowedMaxF32 {
     #[inline]
-    pub(crate) fn new(window: u64) -> Result<Self, crate::ConfigError> {
-        if window == 0 {
-            return Err(crate::ConfigError::Invalid("window must be positive"));
-        }
-        let init = Sample {
-            timestamp: 0,
-            value: f32::MIN,
-        };
-        Ok(Self {
-            window,
-            samples: [init; 3],
-            count: 0,
+    fn fold(&mut self, timestamp: u64, value: T) -> T {
+        self.count += 1;
+        running(&mut self.samples, self.window, timestamp, value, |a, b| {
+            a <= b
         })
     }
+}
 
+impl WindowedMin<f64> {
+    /// Feeds a sample at `timestamp`. Returns the current windowed minimum.
+    ///
+    /// # Errors
+    ///
+    /// Returns `DataError::NotANumber` if the value is NaN, or
+    /// `DataError::Infinite` if the value is infinite.
     #[inline]
-    pub(crate) fn update(&mut self, timestamp: u64, value: f32) -> Result<f32, crate::DataError> {
+    pub fn update(&mut self, timestamp: u64, value: f64) -> Result<f64, crate::DataError> {
         check_finite!(value);
-        self.count += 1;
-        Ok(running(
-            &mut self.samples,
-            self.window,
-            timestamp,
-            value,
-            |a, b| a >= b,
-        ))
-    }
-
-    #[inline]
-    pub(crate) fn max(&self) -> Option<f32> {
-        if self.count == 0 {
-            None
-        } else {
-            Some(self.samples[0].value)
-        }
-    }
-
-    #[inline]
-    pub(crate) fn count(&self) -> u64 {
-        self.count
-    }
-
-    #[inline]
-    pub(crate) fn reset(&mut self) {
-        let init = Sample {
-            timestamp: 0,
-            value: f32::MIN,
-        };
-        self.samples = [init; 3];
-        self.count = 0;
+        Ok(self.fold(timestamp, value))
     }
 }
 
-#[derive(Debug, Clone)]
-pub(crate) struct WindowedMinF32 {
-    window: u64,
-    samples: [Sample<f32>; 3],
-    count: u64,
-}
-
-impl WindowedMinF32 {
+impl WindowedMin<i64> {
+    /// Feeds a sample at `timestamp`. Returns the current windowed minimum.
     #[inline]
-    pub(crate) fn new(window: u64) -> Result<Self, crate::ConfigError> {
-        if window == 0 {
-            return Err(crate::ConfigError::Invalid("window must be positive"));
-        }
-        let init = Sample {
-            timestamp: 0,
-            value: f32::MAX,
-        };
-        Ok(Self {
-            window,
-            samples: [init; 3],
-            count: 0,
-        })
-    }
-
-    #[inline]
-    pub(crate) fn update(&mut self, timestamp: u64, value: f32) -> Result<f32, crate::DataError> {
-        check_finite!(value);
-        self.count += 1;
-        Ok(running(
-            &mut self.samples,
-            self.window,
-            timestamp,
-            value,
-            |a, b| a <= b,
-        ))
-    }
-
-    #[inline]
-    pub(crate) fn min(&self) -> Option<f32> {
-        if self.count == 0 {
-            None
-        } else {
-            Some(self.samples[0].value)
-        }
-    }
-
-    #[inline]
-    pub(crate) fn count(&self) -> u64 {
-        self.count
-    }
-
-    #[inline]
-    pub(crate) fn reset(&mut self) {
-        let init = Sample {
-            timestamp: 0,
-            value: f32::MAX,
-        };
-        self.samples = [init; 3];
-        self.count = 0;
+    pub fn update(&mut self, timestamp: u64, value: i64) -> i64 {
+        self.fold(timestamp, value)
     }
 }
 
@@ -555,13 +265,13 @@ impl WindowedMinF32 {
 /// non-decreasing; subtraction wraps, as in the kernel's `u32` arithmetic.
 #[inline]
 fn running<T: Copy>(
-    s: &mut [Sample<T>; 3],
+    s: &mut [Stamped<T>; 3],
     win: u64,
     timestamp: u64,
     value: T,
     better: impl Fn(T, T) -> bool,
 ) -> T {
-    let val = Sample { timestamp, value };
+    let val = Stamped { timestamp, value };
 
     // Found a new extremum, or nothing left in the window: forget earlier
     // samples (`minmax_reset`).
@@ -583,7 +293,7 @@ fn running<T: Copy>(
 /// `minmax_subwin_update` from `lib/win_minmax.c`: as time advances, update
 /// the 1st, 2nd and 3rd choices.
 #[inline]
-fn subwin_update<T: Copy>(s: &mut [Sample<T>; 3], win: u64, val: Sample<T>) -> T {
+fn subwin_update<T: Copy>(s: &mut [Stamped<T>; 3], win: u64, val: Stamped<T>) -> T {
     let dt = val.timestamp.wrapping_sub(s[0].timestamp);
 
     if dt > win {
@@ -619,14 +329,14 @@ mod raw_tests {
 
     #[test]
     fn raw_max_basic() {
-        let mut wm = WindowedMaxF64::new(100).unwrap();
+        let mut wm = WindowedMax::<f64>::new(100).unwrap();
         assert_eq!(wm.update(0, 10.0).unwrap(), 10.0);
         assert_eq!(wm.update(50, 20.0).unwrap(), 20.0);
     }
 
     #[test]
     fn raw_max_expires() {
-        let mut wm = WindowedMaxF64::new(10).unwrap();
+        let mut wm = WindowedMax::<f64>::new(10).unwrap();
         let _ = wm.update(0, 100.0).unwrap();
         let _ = wm.update(5, 50.0).unwrap();
         let result = wm.update(11, 60.0).unwrap();
@@ -635,25 +345,19 @@ mod raw_tests {
 
     #[test]
     fn raw_min_basic() {
-        let mut wm = WindowedMinI64::new(100).unwrap();
+        let mut wm = WindowedMin::<i64>::new(100).unwrap();
         assert_eq!(wm.update(0, 100), 100);
         assert_eq!(wm.update(1, 50), 50);
     }
 
     #[test]
-    fn raw_max_i64_convenience() {
-        let mut wm = WindowedMaxF64::new(1000).unwrap();
-        assert_eq!(wm.update_i64(100i64, 42.0).unwrap(), 42.0);
-    }
-
-    #[test]
     fn raw_rejects_zero_window() {
-        assert!(WindowedMaxF64::new(0).is_err());
+        assert!(WindowedMax::<f64>::new(0).is_err());
     }
 
     #[test]
     fn rejects_nan_and_inf() {
-        let mut wm = WindowedMaxF64::new(100).unwrap();
+        let mut wm = WindowedMax::<f64>::new(100).unwrap();
         assert!(matches!(
             wm.update(0, f64::NAN),
             Err(crate::DataError::NotANumber)
@@ -663,7 +367,7 @@ mod raw_tests {
             Err(crate::DataError::Infinite)
         ));
 
-        let mut wn = WindowedMinF64::new(100).unwrap();
+        let mut wn = WindowedMin::<f64>::new(100).unwrap();
         assert!(matches!(
             wn.update(0, f64::NAN),
             Err(crate::DataError::NotANumber)
@@ -679,13 +383,13 @@ mod raw_tests {
     // true maximum is 90. The previous port returned 10.
     #[test]
     fn kernel_port_counterexample_max() {
-        let mut wm = WindowedMaxI64::new(100).unwrap();
+        let mut wm = WindowedMax::<i64>::new(100).unwrap();
         for (t, v) in [(0u64, 100i64), (40, 90), (80, 10), (101, 5)] {
             let _ = wm.update(t, v);
         }
         assert_eq!(wm.max(), Some(90));
 
-        let mut wf = WindowedMaxF64::new(100).unwrap();
+        let mut wf = WindowedMax::<f64>::new(100).unwrap();
         for (t, v) in [(0u64, 100.0f64), (40, 90.0), (80, 10.0), (101, 5.0)] {
             let _ = wf.update(t, v).unwrap();
         }
@@ -696,13 +400,13 @@ mod raw_tests {
     // previous port returned 100.
     #[test]
     fn kernel_port_counterexample_min() {
-        let mut wm = WindowedMinI64::new(100).unwrap();
+        let mut wm = WindowedMin::<i64>::new(100).unwrap();
         for (t, v) in [(0u64, 10i64), (40, 20), (80, 100), (101, 105)] {
             let _ = wm.update(t, v);
         }
         assert_eq!(wm.min(), Some(20));
 
-        let mut wf = WindowedMinF64::new(100).unwrap();
+        let mut wf = WindowedMin::<f64>::new(100).unwrap();
         for (t, v) in [(0u64, 10.0f64), (40, 20.0), (80, 100.0), (101, 105.0)] {
             let _ = wf.update(t, v).unwrap();
         }
@@ -755,8 +459,8 @@ mod raw_tests {
     /// returns the fraction of updates where the port disagreed with the truth.
     fn mismatch_rate(win: u64, n: usize, mut value: impl FnMut(&mut Rng) -> i64) -> (f64, f64) {
         let mut rng = Rng(0x9E37_79B9_7F4A_7C15);
-        let mut pmax = WindowedMaxI64::new(win).unwrap();
-        let mut pmin = WindowedMinI64::new(win).unwrap();
+        let mut pmax = WindowedMax::<i64>::new(win).unwrap();
+        let mut pmin = WindowedMin::<i64>::new(win).unwrap();
         let mut exact = ExactWindow {
             win,
             samples: std::collections::VecDeque::new(),
@@ -833,8 +537,8 @@ mod proptests {
             win in 1u64..200,
             steps in proptest::collection::vec((0u64..50, -1_000i64..1_000), 1..300),
         ) {
-            let mut pmax = WindowedMaxI64::new(win).unwrap();
-            let mut pmin = WindowedMinI64::new(win).unwrap();
+            let mut pmax = WindowedMax::<i64>::new(win).unwrap();
+            let mut pmin = WindowedMin::<i64>::new(win).unwrap();
             let mut hist: Vec<(u64, i64)> = Vec::new();
             let mut t = 0u64;
             for (gap, v) in steps {

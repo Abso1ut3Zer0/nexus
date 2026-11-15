@@ -8,21 +8,20 @@ These types all answer "is this system healthy?" questions in O(1) with fixed me
 
 | Type | What it does |
 |------|--------------|
-| `DrawdownF64` / `DrawdownI64` | Peak-to-trough decline, classic P&L metric |
-| `RunningMaxF64` / `RunningMinF64` | All-time max/min since last `reset()` |
-| `WindowedMaxF64` / `WindowedMinF64` | Sliding window max/min (monotone deque) |
-| `PeakHoldF64` / `PeakHoldF32` | Peak envelope with exponential decay |
-| `MaxGaugeF64` / `MaxGaugeI64` | Reset-on-read maximum (classic metric primitive) |
-| `LivenessU64` / `LivenessI64` / `LivenessInstant` | "Has anything happened recently?" detector |
-| `EventRateU64` / `EventRateInstant` | Smoothed events-per-unit-time |
-| `CoDelU64` / `CoDelInstant` | Controlled Delay queue latency monitor |
+| `Drawdown<f64>` / `Drawdown<i64>` | Peak-to-trough decline, classic P&L metric |
+| `RunningMax<f64>` / `RunningMin<f64>` | All-time max/min since last `reset()` |
+| `WindowedMax<T>` / `WindowedMin<T>` | Sliding time-window max/min (Nichols' 3-sample algorithm), `f64` or `i64` |
+| `PeakHold<f64>` / `PeakHold<i64>` | Peak envelope with exponential decay |
+| `MaxGauge<f64>` / `MaxGauge<i64>` | Reset-on-read maximum (classic metric primitive) |
+| `Liveness` | "Has anything happened recently?" detector |
+| `EventRate` | Smoothed events-per-unit-time |
+| `CoDel<i64>` / `CoDel<f64>` | Controlled Delay queue latency monitor |
 | `PollSaturation` | Consumer-side saturation from poll outcomes: how many messages waited behind this thread, for how long at most |
 | `SojournSaturation` | Consumer saturation from stamped queue sojourn: exact per-message wait, summarized per period |
-| `SaturationF64` | Resource utilization threshold with hysteresis |
-| `ErrorRateF64` | Error fraction tracker with alert conditions |
-| `JitterF64` / `JitterF32` | Inter-arrival / sample-to-sample variation |
+| `ErrorRate` | Error fraction tracker with alert conditions |
+| `Jitter<f64>` / `Jitter<i64>` | Inter-arrival / sample-to-sample variation |
 
-Each type comes in both the raw-timestamp and `Instant`-based flavors where time is involved. Use `Instant` in normal `std` code; use the raw-timestamp versions when you're in `no_std` or when you want deterministic wall-clock semantics (e.g. replaying a recorded timestamp).
+Time-aware types take `u64` ticks in any unit; `clock::WallClock` is the std bridge from `Instant` (nanoseconds since construction).
 
 ---
 
@@ -31,9 +30,9 @@ Each type comes in both the raw-timestamp and `Instant`-based flavors where time
 Tracks the running peak and the maximum observed drop from that peak. Essential P&L metric.
 
 ```rust
-use nexus_stats_core::monitoring::DrawdownF64;
+use nexus_stats_core::monitoring::Drawdown<f64>;
 
-let mut dd = DrawdownF64::new();
+let mut dd = Drawdown::<f64>::new();
 for equity in equity_curve {
     dd.update(equity).unwrap();
 }
@@ -50,8 +49,8 @@ let current = dd.current_drawdown(); // current drop from peak
 All-time extrema since construction or last `reset()`.
 
 ```rust
-use nexus_stats_core::monitoring::RunningMaxF64;
-let mut peak = RunningMaxF64::new();
+use nexus_stats_core::monitoring::RunningMax<f64>;
+let mut peak = RunningMax::<f64>::new();
 for pressure in pressures { peak.update(pressure).unwrap(); }
 let p = peak.value();
 ```
@@ -62,18 +61,16 @@ let p = peak.value();
 
 ## WindowedMax / WindowedMin
 
-Sliding window max/min over a fixed-size history. Uses a monotone deque for O(1) amortized update.
+Sliding time-window max/min with Kathleen Nichols' 3-sample algorithm (the Linux kernel's `win_minmax`, used by BBR): three stored samples, O(1) per update, approximate by design but never on the wrong side of the true extremum. `WindowedMax<T>` / `WindowedMin<T>` for `T` in `f64`, `i64`.
 
 ```rust
-use nexus_stats_core::monitoring::WindowedMaxU64;
+use nexus_stats_core::monitoring::WindowedMax;
 
 // u64 timestamp-based window, length in timestamp units
-let mut w = WindowedMaxU64::new(1_000_000).unwrap(); // 1M-unit window
-w.update(timestamp, value).unwrap();
-let max = w.value();
+let mut w = WindowedMax::<f64>::new(1_000_000).unwrap(); // 1M-tick window
+w.update(timestamp, value).unwrap();                       // `WindowedMax<i64>::update` returns the value directly
+let max = w.max();                                         // Option<f64>, as of the last update
 ```
-
-Variants exist for `Instant`-based windows and `i64` timestamps (useful for signed epochs).
 
 **Use for:** fire-and-forget sliding peak/trough queries; e.g. "what's the max bid change in the last 5s?".
 
@@ -86,9 +83,9 @@ Variants exist for `Instant`-based windows and `i64` timestamps (useful for sign
 Peak envelope with exponential decay. Like a volume meter on a mixing board: spikes jump up, then the level decays back down.
 
 ```rust
-use nexus_stats_core::monitoring::PeakHoldF64;
+use nexus_stats_core::monitoring::PeakHold<f64>;
 
-let mut hold = PeakHoldF64::builder().halflife(100.0).build().unwrap();
+let mut hold = PeakHold::<f64>::builder().halflife(100.0).build().unwrap();
 for sample in stream {
     let envelope = hold.update(sample).unwrap();
 }
@@ -103,8 +100,8 @@ for sample in stream {
 The classic metrics library primitive: latch the maximum, read-and-reset clears it.
 
 ```rust
-use nexus_stats_core::monitoring::MaxGaugeF64;
-let mut gauge = MaxGaugeF64::new();
+use nexus_stats_core::monitoring::MaxGauge<f64>;
+let mut gauge = MaxGauge::<f64>::new();
 for sample in samples { gauge.update(sample).unwrap(); }
 
 // At end of reporting interval:
@@ -117,18 +114,22 @@ let peak = gauge.take();  // returns the max, resets to 0
 
 ## Liveness
 
-Detects "source hasn't sent anything in a while". Maintains last-update timestamp, compares against current time, returns true if alive.
+Detects "source hasn't sent anything in a while". A fixed-point EMA of inter-arrival ticks with a deadline: `update(tick)` on each event, `check(now)` from a timer to catch silence.
 
 ```rust
-use nexus_stats_core::monitoring::LivenessInstant;
-use std::time::{Duration, Instant};
+use nexus_stats_core::clock::{Clock, WallClock};
+use nexus_stats_core::monitoring::Liveness;
 
-let mut live = LivenessInstant::builder()
-    .timeout(Duration::from_secs(5))
+let clock = WallClock::new();                 // nanosecond ticks since construction
+let mut live = Liveness::builder()
+    .span(15)
+    .deadline_multiple(5)                     // dead after 5x the smoothed interval
+    .deadline_absolute(5_000_000_000)         // or 5 s, whichever trips first
     .build()
     .unwrap();
 
-let alive = live.update(Instant::now());
+let alive = live.update(clock.stamp());       // on each event
+let still_alive = live.check(clock.stamp());  // on a timer
 ```
 
 **Use for:** feed health checks, watchdogs, dead-man switches.
@@ -140,10 +141,11 @@ let alive = live.update(Instant::now());
 Smoothed events-per-unit-time. Each `update(timestamp)` is one event; the type computes and smooths the instantaneous rate.
 
 ```rust
-use nexus_stats_core::monitoring::EventRateInstant;
-let mut rate = EventRateInstant::builder().halflife_secs(1.0).build().unwrap();
-rate.update(Instant::now());
-let events_per_sec = rate.rate();
+use nexus_stats_core::monitoring::EventRate;
+
+let mut rate = EventRate::builder().span(20).build().unwrap();
+rate.update(clock.stamp());                    // one call per event, with its own tick
+let events_per_tick = rate.rate();             // Option<f64>; divide by ticks-per-second for Hz
 ```
 
 **Use for:** print rates, tick rates, request rates — any streaming counter where you want a smoothed rate.
@@ -155,8 +157,14 @@ let events_per_sec = rate.rate();
 The Controlled Delay algorithm from Van Jacobson. Monitors queue sojourn time; fires when sojourn is above target for a sustained interval. Used in queue health / backpressure detection.
 
 ```rust
-use nexus_stats_core::monitoring::CoDelInstant;
-// ... see source for config API
+use nexus_stats_core::monitoring::CoDel;
+
+let mut codel = CoDel::<i64>::builder()
+    .target(50_000)          // 50 µs: sojourn above this is "delayed"
+    .window(100_000_000)     // 100 ms: standing if it stays above target this long
+    .build()
+    .unwrap();
+let condition = codel.update(now, dequeued - enqueued);   // Option<Condition>
 ```
 
 **Use for:** queue-health signals, AQM-style drop decisions, backpressure-before-loss alerts.
@@ -199,27 +207,14 @@ let summary = sat.take();                            // timer, count or event
 
 ---
 
-## Saturation
-
-Tracks "is this resource at high utilization?" using a threshold with hysteresis.
-
-```rust
-use nexus_stats_core::monitoring::SaturationF64;
-// builder API, see source
-```
-
-**Use for:** CPU/IO/disk saturation alarms, utilization-based load shedding.
-
----
-
 ## ErrorRate
 
 Rolling error fraction with alert `Condition` transitions (`Normal`, `Warning`, `Critical`).
 
 ```rust
-use nexus_stats_core::monitoring::ErrorRateF64;
+use nexus_stats_core::monitoring::ErrorRate;
 
-let mut er = ErrorRateF64::builder()
+let mut er = ErrorRate::builder()
     // thresholds, halflife, warmup
     .build().unwrap();
 
@@ -237,8 +232,8 @@ if let Some(cond) = er.update(request_succeeded) {
 Sample-to-sample variation (`|x_t - x_{t-1}|` smoothed), or inter-arrival jitter for event streams.
 
 ```rust
-use nexus_stats_core::monitoring::JitterF64;
-let mut j = JitterF64::builder().halflife(20.0).build().unwrap();
+use nexus_stats_core::monitoring::Jitter<f64>;
+let mut j = Jitter::<f64>::builder().halflife(20.0).build().unwrap();
 for x in stream { j.update(x).unwrap(); }
 let jitter = j.value();
 ```
@@ -249,6 +244,6 @@ let jitter = j.value();
 
 ## Cross-references
 
-- Percentile-based SLO tracking: [`PercentileF64`](statistics.md#percentilef64--online-percentile-p).
+- Percentile-based SLO tracking: [`Percentile`](statistics.md#percentilef64--online-percentile-p).
 - Adaptive anomaly scoring on top of these gauges: [`AdaptiveThreshold`](../../nexus-stats-detection/docs/INDEX.md).
 - Drop/backpressure decisions: combine `CoDel` with `ErrorRate` — see umbrella `use-cases/backpressure.md`.

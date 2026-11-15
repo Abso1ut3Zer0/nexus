@@ -4,7 +4,7 @@ Every detector tests a different hypothesis. Match the question to the type.
 
 ## "Has the mean persistently shifted?"
 
-Use **`CusumF64`** (from `nexus-stats-core::detection`). CUSUM accumulates deviations from a target, fires when the cumulative budget is exhausted. It does *not* fire on a single spike — the shift must be sustained.
+Use **`Cusum`** (from `nexus-stats-core::detection`). CUSUM accumulates deviations from a target, fires when the cumulative budget is exhausted. It does *not* fire on a single spike — the shift must be sustained.
 
 For optimal detection when you know the shift magnitude in advance, use **`ShiryaevRobertsF64`** (this crate). Shiryaev-Roberts is the asymptotically optimal detector in the minimax sense under a known alternative hypothesis.
 
@@ -30,7 +30,7 @@ Use **`TrendAlertF64`**. Internally uses Holt-style level+trend estimation; aler
 
 ## "Has the distribution *shape* changed?"
 
-Use **`DistributionShiftF64`** (from `nexus-stats-core::detection`). Compares fast-window skewness/kurtosis against a slow baseline. Catches "mean is still 0 but tails got fatter" regime changes.
+Use **`DistributionShift`** (from `nexus-stats-core::detection`). Compares fast-window skewness/kurtosis against a slow baseline. Catches "mean is still 0 but tails got fatter" regime changes.
 
 ## "I need *graded severity* — normal / warning / critical"
 
@@ -40,7 +40,7 @@ Use **`MultiGateF64`**. Layered threshold gates — configure multiple threshold
 
 Use **`AutocorrelationF64`** at lag 1 (or more). Positive autocorrelation at lag 1 = trending (if a step moved up, the next step is likely up too). Negative = mean-reverting. Near zero = random walk.
 
-For a full trend-vs-reversion suite, pair with [`HalfLifeF64`](../../nexus-stats-core/docs/statistics.md#halflifef64--mean-reversion-half-life) and [`HurstF64`](../../nexus-stats-core/docs/statistics.md#hurstf64--hurst-exponent).
+For a full trend-vs-reversion suite, pair with [`HalfLife`](../../nexus-stats-core/docs/statistics.md#halflifef64--mean-reversion-half-life) and [`Hurst`](../../nexus-stats-core/docs/statistics.md#hurstf64--hurst-exponent).
 
 ## "Which of these two streams leads?"
 

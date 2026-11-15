@@ -15,7 +15,7 @@ This is the Huber loss function's influence behavior applied to an online expone
 - **Mostly clean data with occasional shocks.** Fill ratios, latency under load, network throughput.
 - **You want all data to count,** just with bounded outlier influence — unlike a median, which throws information away.
 
-Not for: data that's routinely garbage (use `WindowedMedianF64` or `HampelF64`), data where the "outliers" are actually the signal (use plain `EmaF64`).
+Not for: data that's routinely garbage (use `WindowedMedianF64` or `HampelF64`), data where the "outliers" are actually the signal (use plain `Ema`).
 
 ## API
 
@@ -67,7 +67,7 @@ println!("robust mean latency = {:.1}us", robust.value().unwrap());
 ## Parameter tuning
 
 - `halflife`: same rules as a plain EMA. Pick based on how fast you want the baseline to respond.
-- `delta`: expected "honest" residual magnitude. A good heuristic is `2 * current_stddev`. Track it with `EwmaVarF64` and set `delta = 2 * stddev.sqrt()` at construction time.
+- `delta`: expected "honest" residual magnitude. A good heuristic is `2 * current_stddev`. Track it with `EwmaVar` and set `delta = 2 * stddev.sqrt()` at construction time.
 
 ## Caveats
 

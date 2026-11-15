@@ -7,7 +7,7 @@ mean of a streaming process.
 |----------|-------|
 | Update cost | ~5 cycles |
 | Memory | ~56 bytes |
-| Types | `CusumF64`, `CusumI64` |
+| Types | `Cusum`, `CusumI64` |
 | Priming | Configurable via `min_samples` |
 | Output | `Option<Direction>` — `Upper`, `Lower`, or `None` |
 
@@ -117,7 +117,7 @@ ARL₀ (>1000) with ARL₁ of ~10-20 samples.
 ## Configuration
 
 ```rust
-let mut cusum = CusumF64::builder(100.0)  // target: baseline mean
+let mut cusum = Cusum::builder(100.0)  // target: baseline mean
     .slack(5.0)                            // sensitivity
     .threshold(50.0)                       // decision boundary
     .min_samples(20)                       // warmup period
@@ -138,7 +138,7 @@ let mut cusum = CusumF64::builder(100.0)  // target: baseline mean
 Different sensitivity for upward vs downward shifts:
 
 ```rust
-let cusum = CusumF64::builder(100.0)
+let cusum = Cusum::builder(100.0)
     .slack_upper(2.0)     // very sensitive to increases
     .slack_lower(10.0)    // tolerant of decreases
     .threshold_upper(20.0)  // trigger fast on degradation
@@ -154,7 +154,7 @@ downward shifts (recovery) should be confirmed over a longer period.
 Skip warmup with a pre-loaded baseline:
 
 ```rust
-let cusum = CusumF64::builder(100.0)
+let cusum = Cusum::builder(100.0)
     .slack(5.0)
     .threshold(50.0)
     .seed_upper(0.0)  // start with zero accumulated evidence
@@ -182,7 +182,7 @@ to avoid zero-slack from integer truncation.
 
 ```rust
 // Baseline ack latency: 200μs, detect 50μs shifts
-let mut ack_monitor = CusumF64::builder(200.0)
+let mut ack_monitor = Cusum::builder(200.0)
     .slack(25.0)      // half of 50μs minimum shift
     .threshold(200.0) // ~8 samples of sustained shift
     .min_samples(100) // warmup after connect
@@ -216,7 +216,7 @@ let mut rtt_monitor = CusumI64::builder(rtt_baseline_ns)
 
 ```rust
 // Temperature sensor calibrated to 22.0°C
-let mut temp_monitor = CusumF64::builder(22.0)
+let mut temp_monitor = Cusum::builder(22.0)
     .slack(0.1)       // 0.1°C noise tolerance
     .threshold(2.0)   // 2°C accumulated drift
     .min_samples(60)  // 1 minute warmup at 1 sample/sec
@@ -227,7 +227,7 @@ let mut temp_monitor = CusumF64::builder(22.0)
 
 ```rust
 // Detect when frame time shifts from 16ms baseline (60fps)
-let mut frame_monitor = CusumF64::builder(16.67)
+let mut frame_monitor = Cusum::builder(16.67)
     .slack(1.0)       // 1ms tolerance
     .threshold(10.0)  // sustained shift evidence
     .build().unwrap();
@@ -237,7 +237,7 @@ let mut frame_monitor = CusumF64::builder(16.67)
 
 ```rust
 // Service baseline: 50ms p50
-let mut svc_monitor = CusumF64::builder(50.0)
+let mut svc_monitor = Cusum::builder(50.0)
     .slack(5.0)
     .threshold(50.0)
     .build().unwrap();
@@ -252,8 +252,8 @@ let mut svc_monitor = CusumF64::builder(50.0)
 "Detect both degradation and death":
 
 ```rust
-let mut cusum = CusumF64::builder(baseline).slack(k).threshold(h).build().unwrap();
-let mut liveness = LivenessU64::builder().span(20).deadline_multiple(5).build().unwrap();
+let mut cusum = Cusum::builder(baseline).slack(k).threshold(h).build().unwrap();
+let mut liveness = Liveness::builder().span(20).deadline_multiple(5).build().unwrap();
 
 // On each event:
 liveness.update(now);
@@ -272,7 +272,7 @@ if !liveness.check(now) {
 "Detect shift AND diagnose if it's getting worse":
 
 ```rust
-let mut cusum = CusumF64::builder(baseline).build().unwrap();
+let mut cusum = Cusum::builder(baseline).build().unwrap();
 let mut trend = TrendAlertF64::builder().alpha(0.3).beta(0.1)
     .trend_threshold(0.5).build().unwrap();
 
@@ -309,7 +309,7 @@ if let Some(Direction::Rising) = cusum.update(sample) {
 
 | Operation | p50 | p99 |
 |-----------|-----|-----|
-| `CusumF64::update` | 5 cycles | 7 cycles |
+| `Cusum::update` | 5 cycles | 7 cycles |
 | `CusumI64::update` | 4 cycles | 4 cycles |
 
 No branches beyond the `max(0, x)` clamp. No division, no transcendentals.

@@ -8,7 +8,7 @@ interval, not just once.
 |----------|-------|
 | Update cost | one compare and one timestamp compare |
 | Memory | 56 bytes |
-| Types | `CoDelI64`, `CoDelF64` |
+| Types | `CoDel<i64>`, `CoDel<f64>` |
 | Priming | Configurable via `min_samples` |
 | Output | `Option<Condition>` — `Normal` or `Degraded` |
 
@@ -53,7 +53,7 @@ continuously, for the whole window" does.
 - You can timestamp items at enqueue time
 
 **Don't use CoDel when:**
-- You don't have timestamps on queued items → use [Saturation](saturation.md) with queue depth instead
+- You don't have timestamps on queued items → use [PollSaturation](poll-saturation.md), which bounds the wait from poll outcomes alone
 - You want to detect individual slow items → use [AdaptiveThreshold](adaptive-threshold.md) on sojourn times
 - You want to detect mean shifts in processing time → use [CUSUM](cusum.md)
 
@@ -80,7 +80,7 @@ decide the response (slow producers, shed load, alert, etc.).
 ## Configuration
 
 ```rust
-let mut qd = CoDelI64::builder()
+let mut qd = CoDel::<i64>::builder()
     .target(100_000)       // 100μs target sojourn time
     .window(1_000_000_000) // 1 second observation window (in nanoseconds)
     .min_samples(10)
@@ -109,7 +109,7 @@ more confident, slower response. 100ms-1s is typical.
 
 ```rust
 // Detect backpressure before Aeron buffers fill
-let mut qd = CoDelI64::builder()
+let mut qd = CoDel::<i64>::builder()
     .target(10_000)         // 10μs max queue wait
     .window(100_000_000)    // 100ms observation window
     .min_samples(20)
@@ -133,7 +133,7 @@ match qd.update(now_ns as u64, sojourn_ns) {
 
 ```rust
 // Web server request queue monitoring
-let mut qd = CoDelI64::builder()
+let mut qd = CoDel::<i64>::builder()
     .target(5_000_000)       // 5ms max queue wait
     .window(10_000_000_000)  // 10s window
     .build().unwrap();
@@ -149,7 +149,7 @@ if let Some(Condition::Degraded) = qd.update(now_ns, wait_ms) {
 
 ```rust
 // Detect when the render command queue backs up
-let mut qd = CoDelI64::builder()
+let mut qd = CoDel::<i64>::builder()
     .target(2_000)           // 2ms max command wait
     .window(100_000_000)     // 100ms window
     .build().unwrap();
@@ -157,26 +157,25 @@ let mut qd = CoDelI64::builder()
 
 ## Composition Patterns
 
-### CoDel + Saturation
+### CoDel + PollSaturation
 
-"Comprehensive resource monitoring":
+"Standing queue with and without stamps":
 
 ```rust
-// CoDel catches standing queues (latency-based)
-// Saturation catches high utilization (throughput-based)
-let mut qd = CoDelI64::builder().target(t).window(w).build().unwrap();
-let mut sat = SaturationF64::builder().alpha(0.1).threshold(0.8).build().unwrap();
+// CoDel catches standing queues from stamped sojourn (latency-based)
+// PollSaturation bounds the wait from poll outcomes when there is no stamp
+let mut qd = CoDel::<i64>::builder().target(t).window(w).build().unwrap();
+let mut sat = PollSaturation::new(budget);
 
 // On dequeue:
 let sojourn = now - enqueue_time;
 let queue_pressure = qd.update(now, sojourn);
-let util_pressure = sat.update(utilization);
+let behind = sat.on_work(now, 1);
 
-match (queue_pressure, util_pressure) {
-    (Some(Condition::Degraded), _) => { /* queue backing up */ }
-    (_, Some(Condition::Degraded))     => { /* resource maxed out */ }
-    _                                   => { /* healthy */ }
+if queue_pressure == Some(Condition::Degraded) || behind > budget {
+    // queue backing up
 }
+// On the owner's timer: sat.take().is_backlogged is the standing-queue flag without stamps.
 ```
 
 ### CoDel + CUSUM
@@ -190,7 +189,7 @@ when the mean processing time has shifted (e.g., downstream got slower).
 
 | Operation | p50 | p99 |
 |-----------|-----|-----|
-| `CoDelI64::update` | 7 cycles | 10 cycles |
+| `CoDel::<i64>::update` | 7 cycles | 10 cycles |
 
 One comparison against the target and one against the armed deadline per
 update; no windowed minimum. The integer path avoids float conversion

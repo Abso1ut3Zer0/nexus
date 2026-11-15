@@ -32,8 +32,8 @@ signal processing primitives.
 ## Examples
 
 ```rust
-let mut rate = FirstDiffF64::new();
-let mut accel = SecondDiffF64::new();
+let mut rate = FirstDiff::<f64>::new();
+let mut accel = SecondDiff::<f64>::new();
 
 for sample in stream {
     if let Some(dx) = rate.update(sample).unwrap() {

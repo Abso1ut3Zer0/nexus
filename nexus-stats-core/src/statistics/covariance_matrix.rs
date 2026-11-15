@@ -14,7 +14,7 @@ use alloc::vec::Vec;
 /// - Portfolio risk decomposition
 /// - Feature correlation monitoring
 #[derive(Debug, Clone)]
-pub struct OnlineCovarianceF64 {
+pub struct OnlineCovariance {
     cov: Vec<f64>,
     means: Vec<f64>,
     dim: usize,
@@ -22,19 +22,19 @@ pub struct OnlineCovarianceF64 {
     count: u64,
 }
 
-/// Builder for [`OnlineCovarianceF64`].
+/// Builder for [`OnlineCovariance`].
 #[derive(Debug, Clone)]
-pub struct OnlineCovarianceF64Builder {
+pub struct OnlineCovarianceBuilder {
     dim: Option<usize>,
     alpha: Option<f64>,
 }
 
-impl OnlineCovarianceF64 {
+impl OnlineCovariance {
     /// Creates a builder.
     #[inline]
     #[must_use]
-    pub fn builder() -> OnlineCovarianceF64Builder {
-        OnlineCovarianceF64Builder {
+    pub fn builder() -> OnlineCovarianceBuilder {
+        OnlineCovarianceBuilder {
             dim: None,
             alpha: None,
         }
@@ -198,7 +198,7 @@ impl OnlineCovarianceF64 {
     }
 }
 
-impl OnlineCovarianceF64Builder {
+impl OnlineCovarianceBuilder {
     /// Number of dimensions (required).
     #[inline]
     #[must_use]
@@ -230,7 +230,7 @@ impl OnlineCovarianceF64Builder {
     /// # Errors
     ///
     /// Returns `ConfigError` if dim or alpha are missing/invalid.
-    pub fn build(self) -> Result<OnlineCovarianceF64, crate::ConfigError> {
+    pub fn build(self) -> Result<OnlineCovariance, crate::ConfigError> {
         let dim = self.dim.ok_or(crate::ConfigError::Missing("dim"))?;
         if dim == 0 {
             return Err(crate::ConfigError::Invalid("dim must be > 0"));
@@ -242,7 +242,7 @@ impl OnlineCovarianceF64Builder {
             return Err(crate::ConfigError::Invalid("alpha must be in (0, 1)"));
         }
 
-        Ok(OnlineCovarianceF64 {
+        Ok(OnlineCovariance {
             cov: vec![0.0; dim * dim],
             means: vec![0.0; dim],
             dim,
@@ -257,8 +257,8 @@ impl OnlineCovarianceF64Builder {
 mod tests {
     use super::*;
 
-    fn basic_cov(dim: usize) -> OnlineCovarianceF64 {
-        OnlineCovarianceF64::builder()
+    fn basic_cov(dim: usize) -> OnlineCovariance {
+        OnlineCovariance::builder()
             .dim(dim)
             .halflife(50.0)
             .build()
@@ -349,10 +349,10 @@ mod tests {
 
     #[test]
     fn invalid_config() {
-        assert!(OnlineCovarianceF64::builder().alpha(0.1).build().is_err()); // missing dim
-        assert!(OnlineCovarianceF64::builder().dim(2).build().is_err()); // missing alpha
+        assert!(OnlineCovariance::builder().alpha(0.1).build().is_err()); // missing dim
+        assert!(OnlineCovariance::builder().dim(2).build().is_err()); // missing alpha
         assert!(
-            OnlineCovarianceF64::builder()
+            OnlineCovariance::builder()
                 .dim(0)
                 .alpha(0.1)
                 .build()

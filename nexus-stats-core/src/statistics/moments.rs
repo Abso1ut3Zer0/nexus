@@ -27,16 +27,16 @@
 /// # Examples
 ///
 /// ```
-/// use nexus_stats_core::statistics::MomentsF64;
+/// use nexus_stats_core::statistics::Moments;
 ///
-/// let mut m = MomentsF64::new();
+/// let mut m = Moments::new();
 /// for i in 1..=1000u64 { m.update(i as f64).unwrap(); }
 /// // Uniform distribution: skewness ≈ 0, kurtosis ≈ -1.2
 /// let skew = m.skewness().unwrap();
 /// assert!(skew.abs() < 0.1);
 /// ```
 #[derive(Debug, Clone)]
-pub struct MomentsF64 {
+pub struct Moments {
     count: u64,
     mean: f64,
     m2: f64,
@@ -44,7 +44,7 @@ pub struct MomentsF64 {
     m4: f64,
 }
 
-impl MomentsF64 {
+impl Moments {
     /// Creates a new empty accumulator.
     #[inline]
     #[must_use]
@@ -237,7 +237,7 @@ impl MomentsF64 {
     }
 }
 
-impl Default for MomentsF64 {
+impl Default for Moments {
     #[inline]
     fn default() -> Self {
         Self::new()
@@ -250,7 +250,7 @@ mod tests {
 
     #[test]
     fn uniform_1_to_100() {
-        let mut m = MomentsF64::new();
+        let mut m = Moments::new();
         for i in 1..=100u64 {
             m.update(i as f64).unwrap();
         }
@@ -269,7 +269,7 @@ mod tests {
 
     #[test]
     fn uniform_skewness_near_zero() {
-        let mut m = MomentsF64::new();
+        let mut m = Moments::new();
         for i in 1..=10000u64 {
             m.update(i as f64).unwrap();
         }
@@ -279,7 +279,7 @@ mod tests {
 
     #[test]
     fn uniform_kurtosis() {
-        let mut m = MomentsF64::new();
+        let mut m = Moments::new();
         for i in 1..=10000u64 {
             m.update(i as f64).unwrap();
         }
@@ -292,7 +292,7 @@ mod tests {
 
     #[test]
     fn empty() {
-        let m = MomentsF64::new();
+        let m = Moments::new();
         assert_eq!(m.count(), 0);
         assert!(m.mean().is_none());
         assert!(m.variance().is_none());
@@ -303,7 +303,7 @@ mod tests {
 
     #[test]
     fn single_sample() {
-        let mut m = MomentsF64::new();
+        let mut m = Moments::new();
         m.update(42.0).unwrap();
         assert_eq!(m.count(), 1);
         assert_eq!(m.mean(), Some(42.0));
@@ -314,7 +314,7 @@ mod tests {
 
     #[test]
     fn priming_thresholds() {
-        let mut m = MomentsF64::new();
+        let mut m = Moments::new();
         m.update(1.0).unwrap();
         assert!(m.mean().is_some());
         m.update(2.0).unwrap();
@@ -329,7 +329,7 @@ mod tests {
     #[test]
     #[allow(clippy::float_cmp)]
     fn constant_input() {
-        let mut m = MomentsF64::new();
+        let mut m = Moments::new();
         for _ in 0..100 {
             m.update(42.0).unwrap();
         }
@@ -341,7 +341,7 @@ mod tests {
 
     #[test]
     fn right_skewed_distribution() {
-        let mut m = MomentsF64::new();
+        let mut m = Moments::new();
         for _ in 0..900 {
             m.update(1.0).unwrap();
         }
@@ -354,7 +354,7 @@ mod tests {
 
     #[test]
     fn reset_clears_state() {
-        let mut m = MomentsF64::new();
+        let mut m = Moments::new();
         for i in 0..100 {
             m.update(i as f64).unwrap();
         }
@@ -366,16 +366,16 @@ mod tests {
 
     #[test]
     fn merge_empty_into_empty() {
-        let mut a = MomentsF64::new();
-        let b = MomentsF64::new();
+        let mut a = Moments::new();
+        let b = Moments::new();
         a.merge(&b);
         assert_eq!(a.count(), 0);
     }
 
     #[test]
     fn merge_into_empty() {
-        let mut a = MomentsF64::new();
-        let mut b = MomentsF64::new();
+        let mut a = Moments::new();
+        let mut b = Moments::new();
         for i in 1..=50u64 {
             b.update(i as f64).unwrap();
         }
@@ -388,13 +388,13 @@ mod tests {
     fn merge_matches_single_pass() {
         let data: Vec<f64> = (1..=200).map(|i| i as f64).collect();
 
-        let mut single = MomentsF64::new();
+        let mut single = Moments::new();
         for &x in &data {
             single.update(x).unwrap();
         }
 
-        let mut first = MomentsF64::new();
-        let mut second = MomentsF64::new();
+        let mut first = Moments::new();
+        let mut second = Moments::new();
         for &x in &data[..80] {
             first.update(x).unwrap();
         }
@@ -412,13 +412,13 @@ mod tests {
 
     #[test]
     fn default_is_empty() {
-        let m = MomentsF64::default();
+        let m = Moments::default();
         assert_eq!(m.count(), 0);
     }
 
     #[test]
     fn rejects_nan_and_inf() {
-        let mut m = MomentsF64::new();
+        let mut m = Moments::new();
         assert_eq!(m.update(f64::NAN), Err(crate::DataError::NotANumber));
         assert_eq!(m.update(f64::INFINITY), Err(crate::DataError::Infinite));
         assert_eq!(m.update(f64::NEG_INFINITY), Err(crate::DataError::Infinite));
