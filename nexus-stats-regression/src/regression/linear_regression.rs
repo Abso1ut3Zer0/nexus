@@ -20,15 +20,15 @@ use nexus_stats_core::math::MulAdd;
 /// # Examples
 ///
 /// ```
-/// use nexus_stats_regression::regression::LinearRegressionF64;
+/// use nexus_stats_regression::regression::LinearRegression;
 ///
-/// let mut r = LinearRegressionF64::new();
+/// let mut r = LinearRegression::new();
 /// for x in 0..100u64 { r.update(x as f64, 2.0 * x as f64 + 3.0); }
 /// let slope = r.slope().unwrap();
 /// assert!((slope - 2.0).abs() < 0.001);
 /// ```
 #[derive(Debug, Clone)]
-pub struct LinearRegressionF64 {
+pub struct LinearRegression {
     sum_x: f64,
     sum_x2: f64,
     sum_y: f64,
@@ -38,18 +38,18 @@ pub struct LinearRegressionF64 {
     intercept: bool,
 }
 
-/// Builder for [`LinearRegressionF64`].
+/// Builder for [`LinearRegression`].
 #[derive(Debug, Clone)]
-pub struct LinearRegressionF64Builder {
+pub struct LinearRegressionBuilder {
     intercept: bool,
 }
 
-impl LinearRegressionF64 {
+impl LinearRegression {
     /// Creates a builder.
     #[inline]
     #[must_use]
-    pub fn builder() -> LinearRegressionF64Builder {
-        LinearRegressionF64Builder { intercept: true }
+    pub fn builder() -> LinearRegressionBuilder {
+        LinearRegressionBuilder { intercept: true }
     }
 
     /// Linear regression with intercept: `y = ax + b`.
@@ -216,14 +216,14 @@ impl LinearRegressionF64 {
     }
 }
 
-impl Default for LinearRegressionF64 {
+impl Default for LinearRegression {
     #[inline]
     fn default() -> Self {
         Self::new()
     }
 }
 
-impl LinearRegressionF64Builder {
+impl LinearRegressionBuilder {
     /// Whether to include the constant term. Default: `true`.
     #[inline]
     #[must_use]
@@ -233,8 +233,8 @@ impl LinearRegressionF64Builder {
     }
 
     /// Builds the regression.
-    pub fn build(self) -> Result<LinearRegressionF64, nexus_stats_core::ConfigError> {
-        Ok(LinearRegressionF64 {
+    pub fn build(self) -> Result<LinearRegression, nexus_stats_core::ConfigError> {
+        Ok(LinearRegression {
             sum_x: 0.0,
             sum_x2: 0.0,
             sum_y: 0.0,
@@ -263,9 +263,9 @@ impl LinearRegressionF64Builder {
 /// # Examples
 ///
 /// ```
-/// use nexus_stats_regression::regression::EwLinearRegressionF64;
+/// use nexus_stats_regression::regression::EwLinearRegression;
 ///
-/// let mut r = EwLinearRegressionF64::builder()
+/// let mut r = EwLinearRegression::builder()
 ///     .alpha(0.05)
 ///     .build()
 ///     .unwrap();
@@ -273,7 +273,7 @@ impl LinearRegressionF64Builder {
 /// assert!(r.slope().is_some());
 /// ```
 #[derive(Debug, Clone)]
-pub struct EwLinearRegressionF64 {
+pub struct EwLinearRegression {
     sum_x: f64,
     sum_x2: f64,
     sum_y: f64,
@@ -286,19 +286,19 @@ pub struct EwLinearRegressionF64 {
     intercept: bool,
 }
 
-/// Builder for [`EwLinearRegressionF64`].
+/// Builder for [`EwLinearRegression`].
 #[derive(Debug, Clone)]
-pub struct EwLinearRegressionF64Builder {
+pub struct EwLinearRegressionBuilder {
     alpha: Option<f64>,
     intercept: bool,
 }
 
-impl EwLinearRegressionF64 {
+impl EwLinearRegression {
     /// Creates a builder.
     #[inline]
     #[must_use]
-    pub fn builder() -> EwLinearRegressionF64Builder {
-        EwLinearRegressionF64Builder {
+    pub fn builder() -> EwLinearRegressionBuilder {
+        EwLinearRegressionBuilder {
             alpha: None,
             intercept: true,
         }
@@ -446,7 +446,7 @@ impl EwLinearRegressionF64 {
     }
 }
 
-impl EwLinearRegressionF64Builder {
+impl EwLinearRegressionBuilder {
     /// Weight on new observation, in (0, 1). Required.
     #[inline]
     #[must_use]
@@ -464,7 +464,7 @@ impl EwLinearRegressionF64Builder {
     }
 
     /// Builds the regression.
-    pub fn build(self) -> Result<EwLinearRegressionF64, nexus_stats_core::ConfigError> {
+    pub fn build(self) -> Result<EwLinearRegression, nexus_stats_core::ConfigError> {
         let alpha = self
             .alpha
             .ok_or(nexus_stats_core::ConfigError::Missing("alpha"))?;
@@ -474,7 +474,7 @@ impl EwLinearRegressionF64Builder {
             ));
         }
 
-        Ok(EwLinearRegressionF64 {
+        Ok(EwLinearRegression {
             sum_x: 0.0,
             sum_x2: 0.0,
             sum_y: 0.0,
@@ -499,7 +499,7 @@ mod tests {
 
     #[test]
     fn linear_exact_fit() {
-        let mut r = LinearRegressionF64::new();
+        let mut r = LinearRegression::new();
         for x in 0..100 {
             r.update(x as f64, 2.0f64.mul_add(x as f64, 3.0)).unwrap();
         }
@@ -510,7 +510,7 @@ mod tests {
 
     #[test]
     fn through_origin() {
-        let mut r = LinearRegressionF64::through_origin();
+        let mut r = LinearRegression::through_origin();
         for x in 1..100 {
             r.update(x as f64, 5.0 * x as f64).unwrap();
         }
@@ -521,7 +521,7 @@ mod tests {
 
     #[test]
     fn predict_linear() {
-        let mut r = LinearRegressionF64::new();
+        let mut r = LinearRegression::new();
         for x in 0..100 {
             r.update(x as f64, 2.0f64.mul_add(x as f64, 3.0)).unwrap();
         }
@@ -531,7 +531,7 @@ mod tests {
 
     #[test]
     fn r_squared_noisy() {
-        let mut r = LinearRegressionF64::new();
+        let mut r = LinearRegression::new();
         let mut rng = 12345u64;
         for x in 0..1000 {
             rng ^= rng << 13;
@@ -546,7 +546,7 @@ mod tests {
 
     #[test]
     fn constant_y_r_squared_none() {
-        let mut r = LinearRegressionF64::new();
+        let mut r = LinearRegression::new();
         for x in 0..100 {
             r.update(x as f64, 42.0).unwrap();
         }
@@ -555,7 +555,7 @@ mod tests {
 
     #[test]
     fn not_primed_returns_none() {
-        let mut r = LinearRegressionF64::new();
+        let mut r = LinearRegression::new();
         assert!(r.slope().is_none());
         r.update(1.0, 2.0).unwrap();
         assert!(r.slope().is_none()); // need 2 with intercept
@@ -565,7 +565,7 @@ mod tests {
 
     #[test]
     fn through_origin_primes_at_1() {
-        let mut r = LinearRegressionF64::through_origin();
+        let mut r = LinearRegression::through_origin();
         assert!(!r.is_primed());
         r.update(1.0, 5.0).unwrap();
         assert!(r.is_primed());
@@ -574,7 +574,7 @@ mod tests {
 
     #[test]
     fn reset_clears_state() {
-        let mut r = LinearRegressionF64::new();
+        let mut r = LinearRegression::new();
         for x in 0..100 {
             r.update(x as f64, x as f64).unwrap();
         }
@@ -586,7 +586,7 @@ mod tests {
 
     #[test]
     fn builder_no_intercept() {
-        let r = LinearRegressionF64::builder()
+        let r = LinearRegression::builder()
             .intercept(false)
             .build()
             .unwrap();
@@ -595,7 +595,7 @@ mod tests {
 
     #[test]
     fn empty_returns_none() {
-        let r = LinearRegressionF64::new();
+        let r = LinearRegression::new();
         assert!(r.slope().is_none());
         assert!(r.intercept_value().is_none());
         assert!(r.predict(1.0).is_none());
@@ -604,7 +604,7 @@ mod tests {
 
     #[test]
     fn default_is_new() {
-        let r = LinearRegressionF64::default();
+        let r = LinearRegression::default();
         assert_eq!(r.count(), 0);
         assert!(r.has_intercept());
     }
@@ -615,10 +615,7 @@ mod tests {
 
     #[test]
     fn ew_basic() {
-        let mut r = EwLinearRegressionF64::builder()
-            .alpha(0.05)
-            .build()
-            .unwrap();
+        let mut r = EwLinearRegression::builder().alpha(0.05).build().unwrap();
         for x in 0..500 {
             r.update(x as f64, 2.0f64.mul_add(x as f64, 3.0)).unwrap();
         }
@@ -628,10 +625,7 @@ mod tests {
 
     #[test]
     fn ew_adapts_to_trend_change() {
-        let mut r = EwLinearRegressionF64::builder()
-            .alpha(0.05)
-            .build()
-            .unwrap();
+        let mut r = EwLinearRegression::builder().alpha(0.05).build().unwrap();
         for x in 0..200 {
             r.update(x as f64, x as f64).unwrap();
         }
@@ -644,21 +638,18 @@ mod tests {
 
     #[test]
     fn ew_rejects_invalid_alpha() {
-        assert!(EwLinearRegressionF64::builder().alpha(0.0).build().is_err());
-        assert!(EwLinearRegressionF64::builder().alpha(1.0).build().is_err());
+        assert!(EwLinearRegression::builder().alpha(0.0).build().is_err());
+        assert!(EwLinearRegression::builder().alpha(1.0).build().is_err());
     }
 
     #[test]
     fn ew_rejects_missing_alpha() {
-        assert!(EwLinearRegressionF64::builder().build().is_err());
+        assert!(EwLinearRegression::builder().build().is_err());
     }
 
     #[test]
     fn ew_reset() {
-        let mut r = EwLinearRegressionF64::builder()
-            .alpha(0.05)
-            .build()
-            .unwrap();
+        let mut r = EwLinearRegression::builder().alpha(0.05).build().unwrap();
         for x in 0..100 {
             r.update(x as f64, x as f64).unwrap();
         }
@@ -669,7 +660,7 @@ mod tests {
 
     #[test]
     fn ols_rejects_nan_and_inf() {
-        let mut r = LinearRegressionF64::new();
+        let mut r = LinearRegression::new();
         assert_eq!(
             r.update(f64::NAN, 1.0),
             Err(nexus_stats_core::DataError::NotANumber)
@@ -683,10 +674,7 @@ mod tests {
 
     #[test]
     fn ew_rejects_nan_and_inf() {
-        let mut r = EwLinearRegressionF64::builder()
-            .alpha(0.05)
-            .build()
-            .unwrap();
+        let mut r = EwLinearRegression::builder().alpha(0.05).build().unwrap();
         assert_eq!(
             r.update(f64::NAN, 1.0),
             Err(nexus_stats_core::DataError::NotANumber)

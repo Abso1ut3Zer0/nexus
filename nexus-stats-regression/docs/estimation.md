@@ -2,9 +2,9 @@
 
 Module path: `nexus_stats_regression::estimation`.
 
-## Kalman2dF64 / Kalman3dF64 — Multivariate Kalman
+## Kalman2d / Kalman3d — Multivariate Kalman
 
-Two-dimensional and three-dimensional Kalman filters with customizable dynamics. Unlike `Kalman1dF64` (which lives in `nexus-stats-smoothing` and assumes constant-velocity dynamics), these filters let you pass an arbitrary transition matrix via `predict_with_dynamics`.
+Two-dimensional and three-dimensional Kalman filters with customizable dynamics. Unlike `Kalman1d` (which lives in `nexus-stats-smoothing` and assumes constant-velocity dynamics), these filters let you pass an arbitrary transition matrix via `predict_with_dynamics`.
 
 ### When to use each
 
@@ -15,8 +15,8 @@ Two-dimensional and three-dimensional Kalman filters with customizable dynamics.
 ### API (Kalman2d, Kalman3d mirrors it)
 
 ```rust
-impl Kalman2dF64 {
-    pub fn builder() -> Kalman2dF64Builder;
+impl Kalman2d {
+    pub fn builder() -> Kalman2dBuilder;
 
     pub fn predict(&mut self);
     pub fn predict_with_dynamics(&mut self, f: [[f64; 2]; 2]);
@@ -31,10 +31,10 @@ impl Kalman2dF64 {
 ### Example — Kalman2d with custom dynamics
 
 ```rust
-use nexus_stats_regression::estimation::Kalman2dF64;
+use nexus_stats_regression::estimation::Kalman2d;
 
 let dt = 0.01;
-let mut kf = Kalman2dF64::builder()
+let mut kf = Kalman2d::builder()
     .process_noise([[0.001, 0.0], [0.0, 0.001]])
     .measurement_noise([[0.1, 0.0], [0.0, 0.1]])
     .initial_state([0.0, 0.0])
@@ -56,16 +56,16 @@ for measurement in sensor_stream {
 
 ---
 
-## BetaBinomialF64 — Bayesian rate estimation for successes
+## BetaBinomial — Bayesian rate estimation for successes
 
 Conjugate Bayesian estimator for a Bernoulli success rate. Maintains `(alpha, beta)` hyperparameters that update analytically on every observation. Gives you not just a point estimate but full posterior — credible intervals, probability of exceeding a threshold, etc.
 
 ### API
 
 ```rust
-use nexus_stats_regression::estimation::BetaBinomialF64;
+use nexus_stats_regression::estimation::BetaBinomial;
 
-let mut bb = BetaBinomialF64::builder()
+let mut bb = BetaBinomial::builder()
     .prior_alpha(1.0)  // uniform prior
     .prior_beta(1.0)
     .build()
@@ -90,16 +90,16 @@ let (lo, hi) = bb.credible_interval(0.95);
 
 ---
 
-## GammaPoissonF64 — Bayesian rate estimation for counts
+## GammaPoisson — Bayesian rate estimation for counts
 
 Conjugate Bayesian estimator for a Poisson rate with known exposure. Maintains `(alpha, beta)` Gamma hyperparameters.
 
 ### API
 
 ```rust
-use nexus_stats_regression::estimation::GammaPoissonF64;
+use nexus_stats_regression::estimation::GammaPoisson;
 
-let mut gp = GammaPoissonF64::new();
+let mut gp = GammaPoisson::new();
 gp.update(event_count, exposure).unwrap();
 let rate = gp.posterior_mean();
 ```
@@ -119,5 +119,5 @@ let rate = gp.posterior_mean();
 
 ## Cross-references
 
-- Scalar state: [`Kalman1dF64`](../../nexus-stats-smoothing/docs/kalman1d.md).
+- Scalar state: [`Kalman1d`](../../nexus-stats-smoothing/docs/kalman1d.md).
 - Rate tracking without uncertainty: [`HitRate`](../../nexus-stats-core/docs/statistics.md#hitrate--rolling-success-rate), [`EventRate`](../../nexus-stats-core/docs/monitoring.md#eventrate).

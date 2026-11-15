@@ -63,4 +63,4 @@ If `sample_count` is much bigger than ~1024, consider whether an EW estimator gi
 
 - [`ErrorRate`](../../nexus-stats-core/docs/monitoring.md#errorrate) — EW version with alert thresholds.
 - [`HitRate`](../../nexus-stats-core/docs/statistics.md#hitratef64--rolling-success-rate) — EW success-rate tracker.
-- [`BetaBinomialF64`](../../nexus-stats-regression/docs/estimation.md#betabinomialf64--bayesian-rate-estimation-for-successes) — Bayesian rate with credible intervals.
+- [`BetaBinomial`](../../nexus-stats-regression/docs/estimation.md#betabinomialf64--bayesian-rate-estimation-for-successes) — Bayesian rate with credible intervals.

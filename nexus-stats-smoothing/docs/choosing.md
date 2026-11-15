@@ -10,7 +10,7 @@ Only move off of EMA if one of the following is true.
 
 ## Does the signal have a *trend* you want to estimate?
 
-Then mean-reverting assumption is wrong — EMA will lag the trend. Use **`HoltF64`**. Holt maintains `level` and `slope` estimates separately; `forecast(h)` gives you a look-ahead. Alpha tunes level responsiveness, beta tunes trend responsiveness.
+Then mean-reverting assumption is wrong — EMA will lag the trend. Use **`Holt`**. Holt maintains `level` and `slope` estimates separately; `forecast(h)` gives you a look-ahead. Alpha tunes level responsiveness, beta tunes trend responsiveness.
 
 Caveat: tuning two parameters is harder than tuning one. Start with alpha ~ 0.1, beta ~ 0.01, then adjust.
 
@@ -20,21 +20,21 @@ See [holt.md](holt.md).
 
 KAMA is designed for exactly this. It measures efficiency (|net change| / sum of |step changes|) over a lookback window and smooths more aggressively in choppy regimes, less aggressively in trending regimes.
 
-Use **`KamaF64`** when you have a fixed window size you're comfortable with and don't want to hand-tune between "responsive" and "smooth".
+Use **`Kama`** when you have a fixed window size you're comfortable with and don't want to hand-tune between "responsive" and "smooth".
 
 See [kama.md](kama.md).
 
 ## Do you have an *observation noise model* and want optimal estimates?
 
-Use **`Kalman1dF64`**. It gives you position + velocity with formal optimality under Gaussian noise. You provide process noise (how fast the true state drifts) and measurement noise (how bad your sensor is), and the filter computes the optimal Kalman gain on every step.
+Use **`Kalman1d`**. It gives you position + velocity with formal optimality under Gaussian noise. You provide process noise (how fast the true state drifts) and measurement noise (how bad your sensor is), and the filter computes the optimal Kalman gain on every step.
 
-This is the right choice when you actually know (or can estimate) the noise magnitudes — e.g. from a calibration run, or from `EwmaVar` over recent residuals. When you don't know them and you're just picking magic numbers, a `HoltF64` will give you 90% of the benefit with half the conceptual overhead.
+This is the right choice when you actually know (or can estimate) the noise magnitudes — e.g. from a calibration run, or from `EwmaVar` over recent residuals. When you don't know them and you're just picking magic numbers, a `Holt` will give you 90% of the benefit with half the conceptual overhead.
 
 See [kalman1d.md](kalman1d.md).
 
 ## Do you want to chase a *target* (that changes) smoothly, without overshoot?
 
-Use **`SpringF64`**. This is the critically-damped spring. You push a target, the spring chases it, and it's guaranteed not to overshoot. Tune by setting a half-life (time for distance-to-target to halve).
+Use **`Spring`**. This is the critically-damped spring. You push a target, the spring chases it, and it's guaranteed not to overshoot. Tune by setting a half-life (time for distance-to-target to halve).
 
 This is the right smoother for UI animations, slew-limited setpoints, and "target follower" control loops. It is *not* a statistical smoother — there's no noise model.
 
@@ -44,11 +44,11 @@ See [spring.md](spring.md).
 
 Three choices, in order of increasing aggressiveness:
 
-1. **`HuberEmaF64`** — EMA with a Huber-bounded step. Outliers still contribute, but their influence is capped at `threshold * sigma`. Best when "mostly clean data with occasional shocks".
+1. **`HuberEma`** — EMA with a Huber-bounded step. Outliers still contribute, but their influence is capped at `threshold * sigma`. Best when "mostly clean data with occasional shocks".
 
-2. **`HampelF64`** — Three-zone filter: close values pass through, medium outliers are Winsorized to the window boundary, far outliers are rejected entirely. Best when you have a clear notion of "obvious garbage" vs "real signal".
+2. **`Hampel`** — Three-zone filter: close values pass through, medium outliers are Winsorized to the window boundary, far outliers are rejected entirely. Best when you have a clear notion of "obvious garbage" vs "real signal".
 
-3. **`WindowedMedianF64`** — Hard median over a fixed window. Completely ignores up to 50% corrupted inputs. Use this when the data can be arbitrarily bad (sensor flakes, exchange glitches, dirty network).
+3. **`WindowedMedian<f64>`** — Hard median over a fixed window. Completely ignores up to 50% corrupted inputs. Use this when the data can be arbitrarily bad (sensor flakes, exchange glitches, dirty network).
 
 A common pattern: `WindowedMedian` → `EMA` to get the best of both.
 
@@ -56,13 +56,13 @@ See [huber-ema.md](huber-ema.md), [hampel.md](hampel.md), [windowed-median.md](w
 
 ## Do you only want to update the smoother when some condition holds?
 
-Use **`ConditionalEmaF64`** — e.g. "update this fill-rate EMA only when an order was placed", "update this latency EMA only when the queue wasn't empty". Avoids poisoning the average with idle-time zero samples.
+Use **`ConditionalEma`** — e.g. "update this fill-rate EMA only when an order was placed", "update this latency EMA only when the queue wasn't empty". Avoids poisoning the average with idle-time zero samples.
 
 See [conditional-ema.md](conditional-ema.md).
 
 ## Still not sure?
 
-Start with `Ema` from `nexus-stats-core`. If the output lags badly on trends, move to `HoltF64`. If the output is wrecked by outliers, move to `HuberEmaF64`. If you *need* velocity, move to `Kalman1dF64`. Don't pick something clever if a cheap EMA solves the problem.
+Start with `Ema` from `nexus-stats-core`. If the output lags badly on trends, move to `Holt`. If the output is wrecked by outliers, move to `HuberEma`. If you *need* velocity, move to `Kalman1d`. Don't pick something clever if a cheap EMA solves the problem.
 
 ## Side-by-side Example
 
@@ -70,16 +70,16 @@ Here's the same noisy-with-trend input fed through several smoothers:
 
 ```rust
 use nexus_stats_core::smoothing::Ema;
-use nexus_stats_smoothing::{HoltF64, KamaF64, Kalman1dF64};
+use nexus_stats_smoothing::{Holt, Kama, Kalman1d};
 
 let samples: [f64; 8] = [100.0, 100.5, 101.2, 102.0, 102.8, 103.9, 105.1, 106.5];
 
 let mut ema    = Ema::new(0.2);
-let mut holt   = HoltF64::builder().alpha(0.4).beta(0.2).build().unwrap();
-let mut kama   = KamaF64::builder()
+let mut holt   = Holt::builder().alpha(0.4).beta(0.2).build().unwrap();
+let mut kama   = Kama::builder()
     .window_size(10).fast_span(2).slow_span(30)
     .build().unwrap();
-let mut k1d    = Kalman1dF64::builder()
+let mut k1d    = Kalman1d::builder()
     .process_noise(0.01).measurement_noise(1.0)
     .build().unwrap();
 

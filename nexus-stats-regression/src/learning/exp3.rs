@@ -31,9 +31,9 @@ use alloc::vec;
 /// # Examples
 ///
 /// ```
-/// use nexus_stats_regression::learning::Exp3F64;
+/// use nexus_stats_regression::learning::Exp3;
 ///
-/// let mut bandit = Exp3F64::builder()
+/// let mut bandit = Exp3::builder()
 ///     .arms(3)
 ///     .gamma(0.1)
 ///     .build()
@@ -48,7 +48,7 @@ use alloc::vec;
 /// bandit.update(arm, 0.8, prob).unwrap();
 /// ```
 #[derive(Debug)]
-pub struct Exp3F64 {
+pub struct Exp3 {
     log_weights: Box<[f64]>,
     scratch: core::cell::UnsafeCell<Box<[f64]>>,
     gamma: f64,
@@ -58,7 +58,7 @@ pub struct Exp3F64 {
     min_samples: u64,
 }
 
-impl Clone for Exp3F64 {
+impl Clone for Exp3 {
     fn clone(&self) -> Self {
         Self {
             log_weights: self.log_weights.clone(),
@@ -72,21 +72,21 @@ impl Clone for Exp3F64 {
     }
 }
 
-/// Builder for [`Exp3F64`].
+/// Builder for [`Exp3`].
 #[derive(Debug, Clone)]
-pub struct Exp3F64Builder {
+pub struct Exp3Builder {
     arms: Option<usize>,
     gamma: Option<f64>,
     eta: Option<f64>,
     min_samples: Option<u64>,
 }
 
-impl Exp3F64 {
+impl Exp3 {
     /// Creates a builder.
     #[inline]
     #[must_use]
-    pub fn builder() -> Exp3F64Builder {
-        Exp3F64Builder {
+    pub fn builder() -> Exp3Builder {
+        Exp3Builder {
             arms: None,
             gamma: None,
             eta: None,
@@ -254,7 +254,7 @@ impl Exp3F64 {
     }
 }
 
-impl Exp3F64Builder {
+impl Exp3Builder {
     /// Sets the number of arms (required, >= 2).
     #[inline]
     #[must_use]
@@ -289,7 +289,7 @@ impl Exp3F64Builder {
 
     /// Builds the bandit.
     #[inline]
-    pub fn build(self) -> Result<Exp3F64, nexus_stats_core::ConfigError> {
+    pub fn build(self) -> Result<Exp3, nexus_stats_core::ConfigError> {
         let arms = self
             .arms
             .ok_or(nexus_stats_core::ConfigError::Missing("arms"))?;
@@ -311,7 +311,7 @@ impl Exp3F64Builder {
             ));
         }
         let min_samples = self.min_samples.unwrap_or(arms as u64);
-        Ok(Exp3F64 {
+        Ok(Exp3 {
             log_weights: vec![0.0; arms].into_boxed_slice(),
             scratch: core::cell::UnsafeCell::new(vec![0.0; arms].into_boxed_slice()),
             gamma,
@@ -339,7 +339,7 @@ mod tests {
 
     #[test]
     fn uniform_start() {
-        let bandit = Exp3F64::builder().arms(3).gamma(0.1).build().unwrap();
+        let bandit = Exp3::builder().arms(3).gamma(0.1).build().unwrap();
 
         let mut probs = vec![0.0; 3];
         bandit.probabilities(&mut probs);
@@ -354,7 +354,7 @@ mod tests {
 
     #[test]
     fn adapts_to_best() {
-        let mut bandit = Exp3F64::builder().arms(3).gamma(0.1).build().unwrap();
+        let mut bandit = Exp3::builder().arms(3).gamma(0.1).build().unwrap();
         let mut rng = make_rng(42);
 
         for _ in 0..500 {
@@ -373,7 +373,7 @@ mod tests {
 
     #[test]
     fn adversarial_robustness() {
-        let mut bandit = Exp3F64::builder().arms(2).gamma(0.2).build().unwrap();
+        let mut bandit = Exp3::builder().arms(2).gamma(0.2).build().unwrap();
         let mut rng = make_rng(42);
 
         // Alternating which arm pays
@@ -393,7 +393,7 @@ mod tests {
 
     #[test]
     fn prob_sums_to_one() {
-        let mut bandit = Exp3F64::builder().arms(4).gamma(0.15).build().unwrap();
+        let mut bandit = Exp3::builder().arms(4).gamma(0.15).build().unwrap();
         let mut rng = make_rng(42);
 
         for _ in 0..50 {
@@ -409,7 +409,7 @@ mod tests {
 
     #[test]
     fn log_weights_no_overflow() {
-        let mut bandit = Exp3F64::builder()
+        let mut bandit = Exp3::builder()
             .arms(2)
             .gamma(0.1)
             .eta(10.0) // aggressive learning rate
@@ -435,7 +435,7 @@ mod tests {
 
     #[test]
     fn reward_out_of_range() {
-        let mut bandit = Exp3F64::builder().arms(2).gamma(0.1).build().unwrap();
+        let mut bandit = Exp3::builder().arms(2).gamma(0.1).build().unwrap();
         assert!(bandit.update(0, -0.1, 0.5).is_err());
         assert!(bandit.update(0, 1.1, 0.5).is_err());
         assert!(bandit.update(0, 0.5, 0.0).is_err());
@@ -446,7 +446,7 @@ mod tests {
 
     #[test]
     fn reset_clears() {
-        let mut bandit = Exp3F64::builder().arms(3).gamma(0.1).build().unwrap();
+        let mut bandit = Exp3::builder().arms(3).gamma(0.1).build().unwrap();
 
         bandit.update(0, 0.9, 0.5).unwrap();
         bandit.update(1, 0.1, 0.4).unwrap();
@@ -463,17 +463,10 @@ mod tests {
 
     #[test]
     fn builder_validation() {
-        assert!(Exp3F64::builder().arms(1).gamma(0.1).build().is_err());
-        assert!(Exp3F64::builder().arms(2).gamma(0.0).build().is_err());
-        assert!(Exp3F64::builder().arms(2).gamma(1.5).build().is_err());
-        assert!(
-            Exp3F64::builder()
-                .arms(2)
-                .gamma(0.1)
-                .eta(0.0)
-                .build()
-                .is_err()
-        );
-        assert!(Exp3F64::builder().arms(2).build().is_err()); // missing gamma
+        assert!(Exp3::builder().arms(1).gamma(0.1).build().is_err());
+        assert!(Exp3::builder().arms(2).gamma(0.0).build().is_err());
+        assert!(Exp3::builder().arms(2).gamma(1.5).build().is_err());
+        assert!(Exp3::builder().arms(2).gamma(0.1).eta(0.0).build().is_err());
+        assert!(Exp3::builder().arms(2).build().is_err()); // missing gamma
     }
 }

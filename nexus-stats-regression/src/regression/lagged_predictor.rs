@@ -1,6 +1,6 @@
 use alloc::collections::VecDeque;
 
-use crate::regression::EwLinearRegressionF64;
+use crate::regression::EwLinearRegression;
 
 /// Streaming lagged prediction quality measurement.
 ///
@@ -35,7 +35,7 @@ use crate::regression::EwLinearRegressionF64;
 pub struct LaggedPredictor {
     lag: usize,
     history: VecDeque<f64>,
-    regression: EwLinearRegressionF64,
+    regression: EwLinearRegression,
     count: u64,
 }
 
@@ -187,7 +187,7 @@ impl LaggedPredictorBuilder {
         let ln2 = core::f64::consts::LN_2;
         let alpha = 1.0 - nexus_stats_core::math::exp(-ln2 / halflife);
 
-        let regression = EwLinearRegressionF64::builder().alpha(alpha).build()?;
+        let regression = EwLinearRegression::builder().alpha(alpha).build()?;
 
         let mut history = VecDeque::new();
         history.reserve_exact(lag);

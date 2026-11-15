@@ -6,9 +6,9 @@ not the hot path.
 
 | Type | Per step | Memory | Method |
 |------|----------|--------|--------|
-| `OnlineGdF64` | O(d) | 8d bytes | Fixed learning rate gradient descent |
-| `AdaGradF64` | O(d) | 16d bytes | Per-coordinate adaptive rates |
-| `AdamF64` | O(d) | 24d bytes | Adaptive moments + optional weight decay |
+| `OnlineGd` | O(d) | 8d bytes | Fixed learning rate gradient descent |
+| `AdaGrad` | O(d) | 16d bytes | Per-coordinate adaptive rates |
+| `Adam` | O(d) | 24d bytes | Adaptive moments + optional weight decay |
 
 All require `alloc`. AdaGrad and Adam additionally require `std|libm`
 (for `sqrt`). F64 only — optimization precision matters.
@@ -87,9 +87,9 @@ params[i] -= weight_decay * params[i]
 ### Online GD
 
 ```rust
-use nexus_stats::learning::OnlineGdF64;
+use nexus_stats::learning::OnlineGd;
 
-let mut gd = OnlineGdF64::builder()
+let mut gd = OnlineGd::builder()
     .dimensions(5)
     .learning_rate(0.01)
     .build()
@@ -104,9 +104,9 @@ println!("params: {:?}", gd.parameters());
 ### AdaGrad
 
 ```rust
-use nexus_stats::learning::AdaGradF64;
+use nexus_stats::learning::AdaGrad;
 
-let mut ag = AdaGradF64::builder()
+let mut ag = AdaGrad::builder()
     .dimensions(5)
     .learning_rate(0.01)
     .epsilon(1e-8)       // default
@@ -119,10 +119,10 @@ ag.step(&gradient).unwrap();
 ### Adam (with optional weight decay)
 
 ```rust
-use nexus_stats::learning::AdamF64;
+use nexus_stats::learning::Adam;
 
 // Standard Adam:
-let mut adam = AdamF64::builder()
+let mut adam = Adam::builder()
     .dimensions(5)
     .learning_rate(0.001)   // default
     .beta1(0.9)             // default
@@ -131,7 +131,7 @@ let mut adam = AdamF64::builder()
     .unwrap();
 
 // AdamW (with weight decay):
-let mut adamw = AdamF64::builder()
+let mut adamw = Adam::builder()
     .dimensions(5)
     .weight_decay(0.01)
     .build()
@@ -146,7 +146,7 @@ adam.step(&gradient).unwrap();
 
 ```rust
 // 3 monitoring signals, learn optimal combination weights
-let mut optimizer = AdamF64::builder()
+let mut optimizer = Adam::builder()
     .dimensions(3)
     .learning_rate(0.001)
     .build()
@@ -171,7 +171,7 @@ optimizer.step(&gradient).unwrap();
 
 ```rust
 // Tune an alerting threshold based on false positive/negative feedback
-let mut opt = OnlineGdF64::builder()
+let mut opt = OnlineGd::builder()
     .dimensions(1)
     .learning_rate(0.001)
     .build()
@@ -212,9 +212,9 @@ Dimension mismatch (gradient length != dimensions) panics.
 
 | Operation | p50 (d=10) |
 |-----------|-----------|
-| `OnlineGdF64::step` | ~15 cycles |
-| `AdaGradF64::step` | ~30 cycles |
-| `AdamF64::step` | ~50 cycles |
+| `OnlineGd::step` | ~15 cycles |
+| `AdaGrad::step` | ~30 cycles |
+| `Adam::step` | ~50 cycles |
 
 These are cheap — the cost is in computing the gradient, not
 applying it.

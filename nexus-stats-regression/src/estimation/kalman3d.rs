@@ -14,7 +14,7 @@
 /// - Level + trend + curvature estimation
 /// - Any 3-state linear system
 #[derive(Debug, Clone)]
-pub struct Kalman3dF64 {
+pub struct Kalman3d {
     state: [f64; 3],
     p: [f64; 9],
     q: [f64; 9],
@@ -26,21 +26,21 @@ pub struct Kalman3dF64 {
     initial_p: [f64; 9],
 }
 
-/// Builder for [`Kalman3dF64`].
+/// Builder for [`Kalman3d`].
 #[derive(Debug, Clone)]
-pub struct Kalman3dF64Builder {
+pub struct Kalman3dBuilder {
     process_noise: Option<[[f64; 3]; 3]>,
     measurement_noise: Option<f64>,
     initial_state: [f64; 3],
     initial_covariance: [[f64; 3]; 3],
 }
 
-impl Kalman3dF64 {
+impl Kalman3d {
     /// Creates a builder.
     #[inline]
     #[must_use]
-    pub fn builder() -> Kalman3dF64Builder {
-        Kalman3dF64Builder {
+    pub fn builder() -> Kalman3dBuilder {
+        Kalman3dBuilder {
             process_noise: None,
             measurement_noise: None,
             initial_state: [0.0; 3],
@@ -268,7 +268,7 @@ impl Kalman3dF64 {
     }
 }
 
-impl Kalman3dF64Builder {
+impl Kalman3dBuilder {
     /// Sets the 3x3 process noise matrix Q (required).
     #[inline]
     #[must_use]
@@ -308,7 +308,7 @@ impl Kalman3dF64Builder {
     /// - `process_noise` and `measurement_noise` must be set.
     /// - `measurement_noise` must be positive.
     #[inline]
-    pub fn build(self) -> Result<Kalman3dF64, nexus_stats_core::ConfigError> {
+    pub fn build(self) -> Result<Kalman3d, nexus_stats_core::ConfigError> {
         let q_mat = self
             .process_noise
             .ok_or(nexus_stats_core::ConfigError::Missing("process_noise"))?;
@@ -331,7 +331,7 @@ impl Kalman3dF64Builder {
             }
         }
 
-        Ok(Kalman3dF64 {
+        Ok(Kalman3d {
             state: self.initial_state,
             p,
             q,
@@ -355,7 +355,7 @@ mod tests {
 
     #[test]
     fn constant_signal_converges() {
-        let mut kf = Kalman3dF64::builder()
+        let mut kf = Kalman3d::builder()
             .process_noise(diagonal_q())
             .measurement_noise(1.0)
             .build()
@@ -377,7 +377,7 @@ mod tests {
     #[test]
     fn covariance_shrinks() {
         // Observe all 3 states to ensure all covariances shrink
-        let mut kf = Kalman3dF64::builder()
+        let mut kf = Kalman3d::builder()
             .process_noise([[0.001, 0.0, 0.0], [0.0, 0.001, 0.0], [0.0, 0.0, 0.001]])
             .measurement_noise(1.0)
             .initial_covariance([[100.0, 0.0, 0.0], [0.0, 100.0, 0.0], [0.0, 0.0, 100.0]])
@@ -409,7 +409,7 @@ mod tests {
 
     #[test]
     fn innovation_stored() {
-        let mut kf = Kalman3dF64::builder()
+        let mut kf = Kalman3d::builder()
             .process_noise(diagonal_q())
             .measurement_noise(1.0)
             .build()
@@ -428,7 +428,7 @@ mod tests {
 
     #[test]
     fn reset_restores_initial() {
-        let mut kf = Kalman3dF64::builder()
+        let mut kf = Kalman3d::builder()
             .process_noise(diagonal_q())
             .measurement_noise(1.0)
             .initial_state([5.0, 3.0, 1.0])
@@ -448,7 +448,7 @@ mod tests {
 
     #[test]
     fn builder_missing_process_noise() {
-        let result = Kalman3dF64::builder().measurement_noise(1.0).build();
+        let result = Kalman3d::builder().measurement_noise(1.0).build();
         assert!(matches!(
             result,
             Err(nexus_stats_core::ConfigError::Missing("process_noise"))
@@ -457,7 +457,7 @@ mod tests {
 
     #[test]
     fn builder_missing_measurement_noise() {
-        let result = Kalman3dF64::builder().process_noise(diagonal_q()).build();
+        let result = Kalman3d::builder().process_noise(diagonal_q()).build();
         assert!(matches!(
             result,
             Err(nexus_stats_core::ConfigError::Missing("measurement_noise"))
@@ -466,7 +466,7 @@ mod tests {
 
     #[test]
     fn builder_invalid_measurement_noise() {
-        let result = Kalman3dF64::builder()
+        let result = Kalman3d::builder()
             .process_noise(diagonal_q())
             .measurement_noise(0.0)
             .build();
@@ -475,7 +475,7 @@ mod tests {
             Err(nexus_stats_core::ConfigError::Invalid(_))
         ));
 
-        let result = Kalman3dF64::builder()
+        let result = Kalman3d::builder()
             .process_noise(diagonal_q())
             .measurement_noise(-1.0)
             .build();
@@ -489,7 +489,7 @@ mod tests {
     fn three_state_tracking() {
         // Observe position only, H = [1, 0, 0].
         // True signal: position grows linearly.
-        let mut kf = Kalman3dF64::builder()
+        let mut kf = Kalman3d::builder()
             .process_noise([[0.1, 0.0, 0.0], [0.0, 0.1, 0.0], [0.0, 0.0, 0.1]])
             .measurement_noise(1.0)
             .build()
@@ -511,7 +511,7 @@ mod tests {
     #[test]
     fn multi_observation_model() {
         // H = [0.5, 0.5, 0.0] — observe average of first two states.
-        let mut kf = Kalman3dF64::builder()
+        let mut kf = Kalman3d::builder()
             .process_noise(diagonal_q())
             .measurement_noise(0.1)
             .build()
@@ -531,7 +531,7 @@ mod tests {
 
     #[test]
     fn rejects_nan_and_inf() {
-        let mut kf = Kalman3dF64::builder()
+        let mut kf = Kalman3d::builder()
             .process_noise(diagonal_q())
             .measurement_noise(1.0)
             .build()

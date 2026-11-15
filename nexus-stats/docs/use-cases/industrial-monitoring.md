@@ -7,14 +7,14 @@ and IoT systems.
 
 ```rust
 use nexus_stats::smoothing::Slew;
-use nexus_stats::detection::RobustZScoreF64;
+use nexus_stats::detection::RobustZScore;
 use nexus_stats::control::DeadBand;
 
 // Hard limits (physical impossibility)
 let mut slew = Slew::<f64>::new(10.0).unwrap();  // max 10°C change per sample
 
 // Statistical outlier detection
-let mut robust = RobustZScoreF64::builder()
+let mut robust = RobustZScore::<f64>::builder()
     .span(100).reject_threshold(5.0).build().unwrap();
 
 // Stuck sensor detection

@@ -275,8 +275,8 @@ macro_rules! impl_adaptive_threshold {
 }
 
 impl_adaptive_threshold!(
-    AdaptiveThresholdF64,
-    AdaptiveThresholdF64Builder,
+    AdaptiveThreshold,
+    AdaptiveThresholdBuilder,
     f64,
     Ema,
     EmaBuilder,
@@ -289,7 +289,7 @@ mod tests {
 
     #[test]
     fn detects_high_anomaly() {
-        let mut at = AdaptiveThresholdF64::builder()
+        let mut at = AdaptiveThreshold::builder()
             .alpha(0.1)
             .z_threshold(2.0)
             .min_samples(20)
@@ -308,7 +308,7 @@ mod tests {
 
     #[test]
     fn detects_low_anomaly() {
-        let mut at = AdaptiveThresholdF64::builder()
+        let mut at = AdaptiveThreshold::builder()
             .alpha(0.1)
             .z_threshold(2.0)
             .min_samples(20)
@@ -321,7 +321,7 @@ mod tests {
 
         // Drop — need some variance first
         // Feed varying input to build std_dev
-        let mut at2 = AdaptiveThresholdF64::builder()
+        let mut at2 = AdaptiveThreshold::builder()
             .alpha(0.1)
             .z_threshold(2.0)
             .min_samples(20)
@@ -338,7 +338,7 @@ mod tests {
 
     #[test]
     fn no_false_positive_at_normal() {
-        let mut at = AdaptiveThresholdF64::builder()
+        let mut at = AdaptiveThreshold::builder()
             .alpha(0.1)
             .z_threshold(3.0)
             .min_samples(20)
@@ -356,7 +356,7 @@ mod tests {
 
     #[test]
     fn priming() {
-        let mut at = AdaptiveThresholdF64::builder()
+        let mut at = AdaptiveThreshold::builder()
             .alpha(0.1)
             .min_samples(10)
             .build()
@@ -372,7 +372,7 @@ mod tests {
 
     #[test]
     fn seeded_startup() {
-        let mut at = AdaptiveThresholdF64::builder()
+        let mut at = AdaptiveThreshold::builder()
             .alpha(0.1)
             .z_threshold(3.0)
             .seed(100.0, 5.0)
@@ -388,7 +388,7 @@ mod tests {
 
     #[test]
     fn reset() {
-        let mut at = AdaptiveThresholdF64::builder()
+        let mut at = AdaptiveThreshold::builder()
             .alpha(0.1)
             .min_samples(5)
             .build()
@@ -404,7 +404,7 @@ mod tests {
 
     #[test]
     fn reconfigure_z_threshold_preserves_state() {
-        let mut at = AdaptiveThresholdF64::builder()
+        let mut at = AdaptiveThreshold::builder()
             .alpha(0.1)
             .z_threshold(3.0)
             .min_samples(10)
@@ -425,7 +425,7 @@ mod tests {
 
     #[test]
     fn errors_without_alpha() {
-        let result = AdaptiveThresholdF64::builder().build();
+        let result = AdaptiveThreshold::builder().build();
         assert!(matches!(
             result,
             Err(nexus_stats_core::ConfigError::Missing("alpha"))
@@ -434,7 +434,7 @@ mod tests {
 
     #[test]
     fn rejects_nan_and_inf() {
-        let mut at = AdaptiveThresholdF64::builder()
+        let mut at = AdaptiveThreshold::builder()
             .alpha(0.1)
             .z_threshold(3.0)
             .min_samples(5)

@@ -1,6 +1,6 @@
 //! Hampel filter — three-zone outlier handling.
 
-use crate::WindowedMedianF64;
+use crate::WindowedMedian;
 
 /// Hampel filter — soft outlier filter with three zones.
 ///
@@ -18,8 +18,8 @@ use crate::WindowedMedianF64;
 /// - Spread smoothing — remove tick spikes without losing legitimate moves
 /// - Sensor data cleaning — three zones give finer control than hard rejection
 #[derive(Debug, Clone)]
-pub struct HampelF64 {
-    median: WindowedMedianF64,
+pub struct Hampel {
+    median: WindowedMedian<f64>,
     inner_threshold: f64,
     outer_threshold: f64,
     mad_scale: f64,
@@ -27,21 +27,21 @@ pub struct HampelF64 {
     count: u64,
 }
 
-/// Builder for [`HampelF64`].
+/// Builder for [`Hampel`].
 #[derive(Debug, Clone)]
-pub struct HampelF64Builder {
+pub struct HampelBuilder {
     window_size: usize,
     inner_threshold: f64,
     outer_threshold: f64,
     mad_scale: f64,
 }
 
-impl HampelF64 {
+impl Hampel {
     /// Creates a builder.
     #[inline]
     #[must_use]
-    pub fn builder() -> HampelF64Builder {
-        HampelF64Builder {
+    pub fn builder() -> HampelBuilder {
+        HampelBuilder {
             window_size: 21,
             inner_threshold: 2.0,
             outer_threshold: 3.5,
@@ -139,7 +139,7 @@ impl HampelF64 {
     }
 }
 
-impl HampelF64Builder {
+impl HampelBuilder {
     /// Sliding window size for the median. Default: 21.
     #[inline]
     #[must_use]
@@ -179,7 +179,7 @@ impl HampelF64Builder {
     /// # Errors
     ///
     /// Returns `ConfigError` if thresholds are invalid.
-    pub fn build(self) -> Result<HampelF64, nexus_stats_core::ConfigError> {
+    pub fn build(self) -> Result<Hampel, nexus_stats_core::ConfigError> {
         if self.inner_threshold <= 0.0 || !self.inner_threshold.is_finite() {
             return Err(nexus_stats_core::ConfigError::Invalid(
                 "inner_threshold must be positive and finite",
@@ -201,8 +201,8 @@ impl HampelF64Builder {
             ));
         }
 
-        Ok(HampelF64 {
-            median: WindowedMedianF64::new(self.window_size),
+        Ok(Hampel {
+            median: WindowedMedian::<f64>::new(self.window_size),
             inner_threshold: self.inner_threshold,
             outer_threshold: self.outer_threshold,
             mad_scale: self.mad_scale,
@@ -217,8 +217,8 @@ impl HampelF64Builder {
 mod tests {
     use super::*;
 
-    fn basic_hampel() -> HampelF64 {
-        HampelF64::builder().window_size(5).build().unwrap()
+    fn basic_hampel() -> Hampel {
+        Hampel::builder().window_size(5).build().unwrap()
     }
 
     #[test]
@@ -254,7 +254,7 @@ mod tests {
 
     #[test]
     fn moderate_outlier_is_winsorized() {
-        let mut h = HampelF64::builder()
+        let mut h = Hampel::builder()
             .window_size(5)
             .inner_threshold(1.0)
             .outer_threshold(5.0)
@@ -268,7 +268,7 @@ mod tests {
 
         // Moderate deviation — between inner and outer
         // Need MAD > 0 for z-score to be meaningful. Add some variance.
-        let mut h2 = HampelF64::builder()
+        let mut h2 = Hampel::builder()
             .window_size(5)
             .inner_threshold(1.0)
             .outer_threshold(5.0)
@@ -311,7 +311,7 @@ mod tests {
 
     #[test]
     fn priming_behavior() {
-        let mut h = HampelF64::builder().window_size(5).build().unwrap();
+        let mut h = Hampel::builder().window_size(5).build().unwrap();
         assert!(!h.is_primed());
         for i in 0..5 {
             h.update(i as f64).unwrap();
@@ -332,14 +332,14 @@ mod tests {
 
     #[test]
     fn rejects_invalid_config() {
-        assert!(HampelF64::builder().inner_threshold(0.0).build().is_err());
+        assert!(Hampel::builder().inner_threshold(0.0).build().is_err());
         assert!(
-            HampelF64::builder()
+            Hampel::builder()
                 .inner_threshold(3.0)
                 .outer_threshold(2.0)
                 .build()
                 .is_err()
         );
-        assert!(HampelF64::builder().window_size(2).build().is_err());
+        assert!(Hampel::builder().window_size(2).build().is_err());
     }
 }

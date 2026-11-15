@@ -7,7 +7,7 @@ Online autocorrelation coefficient at a configurable lag.
 |----------|-------|
 | Update cost | ~12 cycles |
 | Memory | `8×LAG + 32` bytes |
-| Types | `AutocorrelationF64`, `AutocorrelationI64` |
+| Types | `Autocorrelation` |
 | Priming | After `LAG + 2` samples |
 | Output | `correlation()` in [-1, 1], `covariance()` — both `Option` |
 | Error handling | Returns `Result<_, DataError>` on NaN/Inf input |
@@ -69,10 +69,10 @@ means for the lagged and current windows.
 ## Configuration
 
 ```rust
-use nexus_stats::signal::AutocorrelationF64;
+use nexus_stats::signal::Autocorrelation;
 
 // Lag-1 autocorrelation (is the signal trending?)
-let mut ac = AutocorrelationF64::builder().lag(1).build().unwrap();
+let mut ac = Autocorrelation::builder().lag(1).build().unwrap();
 
 for sample in data {
     ac.update(sample).unwrap();
@@ -91,7 +91,7 @@ via the builder.
 ### Trading — Regime Detection
 
 ```rust
-let mut ac = AutocorrelationF64::builder().lag(1).build().unwrap();
+let mut ac = Autocorrelation::builder().lag(1).build().unwrap();
 
 // Feed returns:
 ac.update(price_return).unwrap();
@@ -111,7 +111,7 @@ if let Some(r) = ac.correlation() {
 
 ```rust
 // High autocorrelation in quote changes = not updating
-let mut ac = AutocorrelationF64::builder().lag(1).build().unwrap();
+let mut ac = Autocorrelation::builder().lag(1).build().unwrap();
 
 // Feed quote deltas (should be ~random if feed is live):
 ac.update(new_quote - last_quote).unwrap();
@@ -127,7 +127,7 @@ if let Some(r) = ac.correlation() {
 
 ```rust
 // Detect periodic jitter at known interval
-let mut ac = AutocorrelationF64::builder().lag(100).build().unwrap();
+let mut ac = Autocorrelation::builder().lag(100).build().unwrap();
 
 // Feed inter-packet intervals:
 ac.update(interval_ms).unwrap();
@@ -139,19 +139,17 @@ if let Some(r) = ac.correlation() {
 }
 ```
 
-## Integer Variants
+## Integer Inputs
 
-`AutocorrelationI64` accepts integer samples,
-convert to f64 internally, and return f64 correlation values. Use these
-when your input is naturally integer (tick counts, queue depths) and
-you want to avoid the caller-side cast.
+Correlation is fractional, so there is no integer form. Cast integer
+samples (tick counts, queue depths) to `f64` at the call site.
 
 ## Performance
 
 | Operation | p50 |
 |-----------|-----|
-| `AutocorrelationF64::update` (lag=1) | ~12 cycles |
-| `AutocorrelationF64::update` (lag=10) | ~14 cycles |
+| `Autocorrelation::update` (lag=1) | ~12 cycles |
+| `Autocorrelation::update` (lag=10) | ~14 cycles |
 | `correlation()` query | ~3 cycles |
 
 The update cost is dominated by the Welford mean/variance update

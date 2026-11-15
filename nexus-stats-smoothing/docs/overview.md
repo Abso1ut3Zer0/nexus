@@ -13,7 +13,7 @@ The most common smoothers — `Ema`, `AsymEma`, `Slew<f64>` / `Slew<i64>` — li
 Every type follows the same streaming-statistics shape:
 
 ```rust
-let mut smoother = HoltF64::builder().alpha(0.2).beta(0.05).build()?;
+let mut smoother = Holt::builder().alpha(0.2).beta(0.05).build()?;
 smoother.update(100.5)?;                                       // O(1) per update, Result for NaN/Inf
 if smoother.is_primed() { let v = smoother.level().unwrap(); } // query
 smoother.reset();                                              // back to initial state
@@ -30,11 +30,11 @@ All update paths are O(1) in time and memory. Typical cycle counts (uncontested,
 
 | Type | p50 (approx cycles) |
 |------|---------------------|
-| HoltF64 | ~10 |
-| Kalman1dF64 | ~18 |
-| SpringF64 | ~8 |
-| HuberEmaF64 | ~12 |
-| KamaF64 (window size 10) | ~35 |
+| Holt | ~10 |
+| Kalman1d | ~18 |
+| Spring | ~8 |
+| HuberEma | ~12 |
+| Kama (window size 10) | ~35 |
 | Hampel (window size 11) | ~80 |
 | WindowedMedian (window size 21) | ~120 |
 
@@ -46,7 +46,7 @@ Measure on your own workload. Cycle counts scale with window size for windowed t
 |---------|--------|---------|
 | `std` | Uses `std` math (`libm` intrinsics). | Yes |
 | `libm` | `no_std` fallback for `f64`/`f32` math. | No |
-| `alloc` | Enables windowed types (`KamaF64`, `HampelF64`, `WindowedMedianF64`). | Yes via `std` |
+| `alloc` | Enables windowed types (`Kama`, `Hampel`, `WindowedMedian<f64>`). | Yes via `std` |
 
 In a strict `no_std` environment with `alloc`:
 
@@ -67,5 +67,5 @@ All types work in `no_std` with `libm`. The windowed types additionally require 
 
 - **Base smoothers** — `nexus-stats-core::smoothing::{Ema, AsymEma, Slew}`.
 - **Statistics on smoothed output** — feed the output into `Welford` or `EwmaVar` to get mean/variance bands.
-- **Change detection on smoothed output** — `Cusum`, `MosumF64`, `ShiryaevRobertsF64` live in `nexus-stats-core::detection` and `nexus-stats-detection::detection`.
-- **Regression on smoothed inputs** — `LinearRegressionF64`, `Kalman2dF64` in `nexus-stats-regression`.
+- **Change detection on smoothed output** — `Cusum`, `Mosum`, `ShiryaevRoberts` live in `nexus-stats-core::detection` and `nexus-stats-detection::detection`.
+- **Regression on smoothed inputs** — `LinearRegression`, `Kalman2d` in `nexus-stats-regression`.

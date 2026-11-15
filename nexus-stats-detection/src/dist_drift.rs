@@ -15,9 +15,9 @@ use alloc::boxed::Box;
 /// # Examples
 ///
 /// ```
-/// use nexus_stats_detection::detection::DistDriftF64;
+/// use nexus_stats_detection::detection::DistDrift;
 ///
-/// let mut drift = DistDriftF64::builder()
+/// let mut drift = DistDrift::builder()
 ///     .num_bins(10)
 ///     .min_val(0.0)
 ///     .max_val(100.0)
@@ -38,7 +38,7 @@ use alloc::boxed::Box;
 /// assert!(kl < 0.01);
 /// ```
 #[derive(Debug, Clone)]
-pub struct DistDriftF64 {
+pub struct DistDrift {
     reference: Box<[u64]>,
     live: Box<[u64]>,
     num_bins: usize,
@@ -50,21 +50,21 @@ pub struct DistDriftF64 {
     min_samples: u64,
 }
 
-/// Builder for [`DistDriftF64`].
+/// Builder for [`DistDrift`].
 #[derive(Debug, Clone)]
-pub struct DistDriftF64Builder {
+pub struct DistDriftBuilder {
     num_bins: Option<usize>,
     min_val: Option<f64>,
     max_val: Option<f64>,
     min_samples: u64,
 }
 
-impl DistDriftF64 {
+impl DistDrift {
     /// Creates a builder.
     #[inline]
     #[must_use]
-    pub fn builder() -> DistDriftF64Builder {
-        DistDriftF64Builder {
+    pub fn builder() -> DistDriftBuilder {
+        DistDriftBuilder {
             num_bins: None,
             min_val: None,
             max_val: None,
@@ -253,7 +253,7 @@ impl DistDriftF64 {
     }
 }
 
-impl DistDriftF64Builder {
+impl DistDriftBuilder {
     /// Number of histogram bins (required, >= 2).
     #[inline]
     #[must_use]
@@ -293,7 +293,7 @@ impl DistDriftF64Builder {
     ///
     /// Returns `ConfigError` if required fields are missing, bins < 2,
     /// or min_val >= max_val.
-    pub fn build(self) -> Result<DistDriftF64, nexus_stats_core::ConfigError> {
+    pub fn build(self) -> Result<DistDrift, nexus_stats_core::ConfigError> {
         let num_bins = self
             .num_bins
             .ok_or(nexus_stats_core::ConfigError::Missing("num_bins"))?;
@@ -331,7 +331,7 @@ impl DistDriftF64Builder {
 
         let bin_width = (max_val - min_val) / num_bins as f64;
 
-        Ok(DistDriftF64 {
+        Ok(DistDrift {
             reference: alloc::vec![0u64; num_bins].into_boxed_slice(),
             live: alloc::vec![0u64; num_bins].into_boxed_slice(),
             num_bins,
@@ -351,7 +351,7 @@ mod tests {
 
     #[test]
     fn identical_distributions_zero_divergence() {
-        let mut drift = DistDriftF64::builder()
+        let mut drift = DistDrift::builder()
             .num_bins(10)
             .min_val(0.0)
             .max_val(100.0)
@@ -371,7 +371,7 @@ mod tests {
 
     #[test]
     fn uniform_vs_concentrated() {
-        let mut drift = DistDriftF64::builder()
+        let mut drift = DistDrift::builder()
             .num_bins(10)
             .min_val(0.0)
             .max_val(100.0)
@@ -394,7 +394,7 @@ mod tests {
 
     #[test]
     fn js_bounded() {
-        let mut drift = DistDriftF64::builder()
+        let mut drift = DistDrift::builder()
             .num_bins(10)
             .min_val(0.0)
             .max_val(100.0)
@@ -414,13 +414,13 @@ mod tests {
 
     #[test]
     fn js_symmetric() {
-        let mut drift_ab = DistDriftF64::builder()
+        let mut drift_ab = DistDrift::builder()
             .num_bins(10)
             .min_val(0.0)
             .max_val(100.0)
             .build()
             .unwrap();
-        let mut drift_ba = DistDriftF64::builder()
+        let mut drift_ba = DistDrift::builder()
             .num_bins(10)
             .min_val(0.0)
             .max_val(100.0)
@@ -444,13 +444,13 @@ mod tests {
 
     #[test]
     fn kl_asymmetric() {
-        let mut drift_ab = DistDriftF64::builder()
+        let mut drift_ab = DistDrift::builder()
             .num_bins(10)
             .min_val(0.0)
             .max_val(100.0)
             .build()
             .unwrap();
-        let mut drift_ba = DistDriftF64::builder()
+        let mut drift_ba = DistDrift::builder()
             .num_bins(10)
             .min_val(0.0)
             .max_val(100.0)
@@ -474,7 +474,7 @@ mod tests {
 
     #[test]
     fn wasserstein_shifted() {
-        let mut drift = DistDriftF64::builder()
+        let mut drift = DistDrift::builder()
             .num_bins(100)
             .min_val(0.0)
             .max_val(100.0)
@@ -493,7 +493,7 @@ mod tests {
 
     #[test]
     fn out_of_range_clamped() {
-        let mut drift = DistDriftF64::builder()
+        let mut drift = DistDrift::builder()
             .num_bins(5)
             .min_val(0.0)
             .max_val(10.0)
@@ -509,7 +509,7 @@ mod tests {
 
     #[test]
     fn rejects_nan_inf() {
-        let mut drift = DistDriftF64::builder()
+        let mut drift = DistDrift::builder()
             .num_bins(5)
             .min_val(0.0)
             .max_val(10.0)
@@ -525,7 +525,7 @@ mod tests {
 
     #[test]
     fn reset_clears() {
-        let mut drift = DistDriftF64::builder()
+        let mut drift = DistDrift::builder()
             .num_bins(5)
             .min_val(0.0)
             .max_val(10.0)
@@ -556,7 +556,7 @@ mod tests {
 
     #[test]
     fn not_primed_returns_none() {
-        let mut drift = DistDriftF64::builder()
+        let mut drift = DistDrift::builder()
             .num_bins(5)
             .min_val(0.0)
             .max_val(10.0)

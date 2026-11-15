@@ -8,6 +8,15 @@ with the project-specific allowance that a minor bump may carry small,
 narrowly-scoped breaking changes when external blast radius is
 contained.
 
+## [Unreleased]
+
+### Changed
+
+- **No numeric suffixes** (the stats major, [#773](https://github.com/Abso1ut3Zer0/nexus/issues/773)). Every type here is `f64` and is named
+  plainly: `LinearRegressionF64` → `LinearRegression`, `RlsFilterF64` →
+  `RlsFilter`, `Ucb1F64` → `Ucb1`, `OnlineKMeansF64` → `OnlineKMeans`, and
+  so on; builders follow.
+
 ## [2.0.0] — 2026-05-28
 
 ### Removed

@@ -20,7 +20,7 @@ For small problems (polynomial fits, pairs-trade beta, signal decay curves) use 
 Single-output regressors (most of them):
 
 ```rust
-let mut reg = LinearRegressionF64::new();
+let mut reg = LinearRegression::new();
 reg.update(x, y)?;            // feed observations
 let y_hat = reg.predict(x0);  // query
 reg.slope();                  // Option<f64>
@@ -30,7 +30,7 @@ reg.intercept_value();        // Option<f64>
 Multi-feature learners:
 
 ```rust
-let mut lms = LmsFilterF64::builder().dimensions(8).step_size(0.01).build()?;
+let mut lms = LmsFilter::builder().dimensions(8).step_size(0.01).build()?;
 lms.update(&features, target);       // features is &[f64] of len dimensions
 let y_hat = lms.predict(&features);
 lms.weights();                        // &[f64]
@@ -74,13 +74,13 @@ The Kalman2d/Kalman3d and the scalar closed-form linear regressors work without 
 
 Common patterns:
 
-- **Pair-trading beta**: `LinearRegressionF64` or `EwLinearRegressionF64` on (x, y) returns.
-- **Streaming mid-price**: feed exchange mid into `Kalman2dF64` with position+velocity state.
-- **Signal research**: `LmsFilterF64` or `RlsFilterF64` with lagged features to find optimal weights.
+- **Pair-trading beta**: `LinearRegression` or `EwLinearRegression` on (x, y) returns.
+- **Streaming mid-price**: feed exchange mid into `Kalman2d` with position+velocity state.
+- **Signal research**: `LmsFilter` or `RlsFilter` with lagged features to find optimal weights.
 - **Execution quality**: `SignalDecayCurve` to find how fast alpha decays with holding period.
 
 ## Cross-references
 
-- Scalar Kalman: [`Kalman1dF64`](../../nexus-stats-smoothing/docs/kalman1d.md) — use instead of Kalman2d when state is 1D.
-- For regression *inputs* that are cleaned of noise: [`HampelF64`](../../nexus-stats-smoothing/docs/hampel.md), [`WindowedMedianF64`](../../nexus-stats-smoothing/docs/windowed-median.md).
+- Scalar Kalman: [`Kalman1d`](../../nexus-stats-smoothing/docs/kalman1d.md) — use instead of Kalman2d when state is 1D.
+- For regression *inputs* that are cleaned of noise: [`Hampel`](../../nexus-stats-smoothing/docs/hampel.md), [`WindowedMedian<f64>`](../../nexus-stats-smoothing/docs/windowed-median.md).
 - Half-life / Hurst classifiers: [`nexus-stats-core::statistics`](../../nexus-stats-core/docs/statistics.md).

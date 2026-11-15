@@ -30,35 +30,35 @@
 /// # Examples
 ///
 /// ```
-/// use nexus_stats_regression::estimation::GammaPoissonF64;
+/// use nexus_stats_regression::estimation::GammaPoisson;
 ///
-/// let mut gp = GammaPoissonF64::new();
+/// let mut gp = GammaPoisson::new();
 /// gp.update(100, 10.0);  // 100 events in 10 seconds
 /// let rate = gp.rate();
 /// // With weak prior (1,1), rate ≈ 101/11 ≈ 9.18
 /// assert!((rate - 9.18).abs() < 0.01);
 /// ```
 #[derive(Debug, Clone)]
-pub struct GammaPoissonF64 {
+pub struct GammaPoisson {
     alpha: f64,
     beta: f64,
     prior_alpha: f64,
     prior_beta: f64,
 }
 
-/// Builder for [`GammaPoissonF64`].
+/// Builder for [`GammaPoisson`].
 #[derive(Debug, Clone)]
-pub struct GammaPoissonF64Builder {
+pub struct GammaPoissonBuilder {
     alpha: f64,
     beta: f64,
 }
 
-impl GammaPoissonF64 {
+impl GammaPoisson {
     /// Creates a builder with default prior (alpha=1, beta=1).
     #[inline]
     #[must_use]
-    pub fn builder() -> GammaPoissonF64Builder {
-        GammaPoissonF64Builder {
+    pub fn builder() -> GammaPoissonBuilder {
+        GammaPoissonBuilder {
             alpha: 1.0,
             beta: 1.0,
         }
@@ -196,14 +196,14 @@ impl GammaPoissonF64 {
     }
 }
 
-impl Default for GammaPoissonF64 {
+impl Default for GammaPoisson {
     #[inline]
     fn default() -> Self {
         Self::new()
     }
 }
 
-impl GammaPoissonF64Builder {
+impl GammaPoissonBuilder {
     /// Sets the shape parameter (prior alpha). Must be > 0.
     #[inline]
     #[must_use]
@@ -226,14 +226,14 @@ impl GammaPoissonF64Builder {
     ///
     /// Returns `ConfigError::Invalid` if alpha or beta are not positive.
     #[inline]
-    pub fn build(self) -> Result<GammaPoissonF64, nexus_stats_core::ConfigError> {
+    pub fn build(self) -> Result<GammaPoisson, nexus_stats_core::ConfigError> {
         if !(self.alpha > 0.0) {
             return Err(nexus_stats_core::ConfigError::Invalid("alpha must be > 0"));
         }
         if !(self.beta > 0.0) {
             return Err(nexus_stats_core::ConfigError::Invalid("beta must be > 0"));
         }
-        Ok(GammaPoissonF64 {
+        Ok(GammaPoisson {
             alpha: self.alpha,
             beta: self.beta,
             prior_alpha: self.alpha,
@@ -248,7 +248,7 @@ mod tests {
 
     #[test]
     fn rate_after_observation() {
-        let mut gp = GammaPoissonF64::new();
+        let mut gp = GammaPoisson::new();
         gp.update(100, 10.0).unwrap();
         // Posterior: Gamma(1+100, 1+10) = Gamma(101, 11)
         // Mean = 101/11 ≈ 9.1818...
@@ -258,7 +258,7 @@ mod tests {
 
     #[test]
     fn variance_decreases_with_exposure() {
-        let mut gp = GammaPoissonF64::new();
+        let mut gp = GammaPoisson::new();
         gp.update(10, 1.0).unwrap();
         let v1 = gp.variance();
         gp.update(100, 10.0).unwrap();
@@ -269,7 +269,7 @@ mod tests {
     #[cfg(any(feature = "std", feature = "libm"))]
     #[test]
     fn credible_interval_narrows_with_data() {
-        let mut gp = GammaPoissonF64::new();
+        let mut gp = GammaPoisson::new();
         gp.update(10, 1.0).unwrap();
         let (lo1, hi1) = gp.credible_interval(0.95).unwrap();
         let width1 = hi1 - lo1;
@@ -286,7 +286,7 @@ mod tests {
 
     #[test]
     fn reset_restores_prior() {
-        let mut gp = GammaPoissonF64::with_prior(2.0, 3.0).unwrap();
+        let mut gp = GammaPoisson::with_prior(2.0, 3.0).unwrap();
         gp.update(50, 5.0).unwrap();
         assert!(gp.count() > 0);
         gp.reset();
@@ -297,26 +297,26 @@ mod tests {
 
     #[test]
     fn with_prior_validation() {
-        assert!(GammaPoissonF64::with_prior(0.0, 1.0).is_err());
-        assert!(GammaPoissonF64::with_prior(-1.0, 1.0).is_err());
-        assert!(GammaPoissonF64::with_prior(1.0, 0.0).is_err());
-        assert!(GammaPoissonF64::with_prior(1.0, -1.0).is_err());
-        assert!(GammaPoissonF64::with_prior(f64::NAN, 1.0).is_err());
-        assert!(GammaPoissonF64::with_prior(1.0, f64::NAN).is_err());
-        assert!(GammaPoissonF64::with_prior(1.0, 1.0).is_ok());
+        assert!(GammaPoisson::with_prior(0.0, 1.0).is_err());
+        assert!(GammaPoisson::with_prior(-1.0, 1.0).is_err());
+        assert!(GammaPoisson::with_prior(1.0, 0.0).is_err());
+        assert!(GammaPoisson::with_prior(1.0, -1.0).is_err());
+        assert!(GammaPoisson::with_prior(f64::NAN, 1.0).is_err());
+        assert!(GammaPoisson::with_prior(1.0, f64::NAN).is_err());
+        assert!(GammaPoisson::with_prior(1.0, 1.0).is_ok());
     }
 
     #[test]
     fn default_is_new() {
-        let a = GammaPoissonF64::new();
-        let b = GammaPoissonF64::default();
+        let a = GammaPoisson::new();
+        let b = GammaPoisson::default();
         assert_eq!(a.rate(), b.rate());
         assert_eq!(a.variance(), b.variance());
     }
 
     #[test]
     fn batch_observation_accumulates() {
-        let mut gp = GammaPoissonF64::new();
+        let mut gp = GammaPoisson::new();
         gp.update(10, 1.0).unwrap();
         gp.update(20, 2.0).unwrap();
         gp.update(30, 3.0).unwrap();
@@ -330,14 +330,14 @@ mod tests {
     #[cfg(any(feature = "std", feature = "libm"))]
     #[test]
     fn credible_interval_none_without_exposure() {
-        let gp = GammaPoissonF64::new();
+        let gp = GammaPoisson::new();
         assert!(gp.credible_interval(0.95).is_none());
     }
 
     #[cfg(any(feature = "std", feature = "libm"))]
     #[test]
     fn credible_interval_none_for_invalid_confidence() {
-        let mut gp = GammaPoissonF64::new();
+        let mut gp = GammaPoisson::new();
         gp.update(10, 1.0).unwrap();
         assert!(gp.credible_interval(0.0).is_none());
         assert!(gp.credible_interval(1.0).is_none());
@@ -347,13 +347,13 @@ mod tests {
 
     #[test]
     fn builder_defaults() {
-        let gp = GammaPoissonF64::builder().build().unwrap();
+        let gp = GammaPoisson::builder().build().unwrap();
         assert_eq!(gp.rate(), 1.0); // Gamma(1,1) → mean = 1
     }
 
     #[test]
     fn builder_custom_prior() {
-        let gp = GammaPoissonF64::builder()
+        let gp = GammaPoisson::builder()
             .alpha(5.0)
             .beta(2.0)
             .build()
@@ -363,13 +363,13 @@ mod tests {
 
     #[test]
     fn builder_validation() {
-        assert!(GammaPoissonF64::builder().alpha(0.0).build().is_err());
-        assert!(GammaPoissonF64::builder().beta(-1.0).build().is_err());
+        assert!(GammaPoisson::builder().alpha(0.0).build().is_err());
+        assert!(GammaPoisson::builder().beta(-1.0).build().is_err());
     }
 
     #[test]
     fn rejects_nan_and_inf_exposure() {
-        let mut gp = GammaPoissonF64::new();
+        let mut gp = GammaPoisson::new();
         assert_eq!(
             gp.update(10, f64::NAN),
             Err(nexus_stats_core::DataError::NotANumber)

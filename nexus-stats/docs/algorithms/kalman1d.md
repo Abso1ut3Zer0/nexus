@@ -8,7 +8,7 @@ noise — reactive when uncertain, stable when confident.
 |----------|-------|
 | Update cost | ~25 cycles |
 | Memory | ~56 bytes |
-| Types | `Kalman1dF64` |
+| Types | `Kalman1d` |
 | Priming | Configurable via `min_samples` |
 | Output | `Option<(T, T)>` — (position, velocity) |
 
@@ -58,7 +58,7 @@ variable-interval data, either:
 ## Configuration
 
 ```rust
-let mut kf = Kalman1dF64::builder()
+let mut kf = Kalman1d::builder()
     .process_noise(0.01)       // expected change per sample
     .measurement_noise(1.0)    // measurement uncertainty
     .min_samples(1)
@@ -80,7 +80,7 @@ if let Some((pos, vel)) = kf.update(measurement) {
 ### Seeding
 
 ```rust
-let kf = Kalman1dF64::builder()
+let kf = Kalman1d::builder()
     .process_noise(0.01)
     .measurement_noise(1.0)
     .seed(100.0, 0.5)  // initial position=100, velocity=0.5
@@ -93,7 +93,7 @@ let kf = Kalman1dF64::builder()
 ```rust
 // After reconnect, Kalman is reactive (uncertain).
 // As measurements stabilize, it smooths.
-let mut throughput = Kalman1dF64::builder()
+let mut throughput = Kalman1d::builder()
     .process_noise(100.0)     // throughput can change significantly
     .measurement_noise(500.0) // measurements are noisy
     .build().unwrap();
@@ -107,7 +107,7 @@ if let Some((current, trend)) = throughput.update(msgs_per_sec) {
 
 ### SRE — Load Prediction
 ```rust
-let mut load = Kalman1dF64::builder()
+let mut load = Kalman1d::builder()
     .process_noise(0.1)
     .measurement_noise(5.0)
     .build().unwrap();
@@ -121,7 +121,7 @@ if let Some((current, trend)) = load.update(cpu_percent) {
 
 | Operation | p50 | p99 |
 |-----------|-----|-----|
-| `Kalman1dF64::update` | 25 cycles | 30 cycles |
+| `Kalman1d::update` | 25 cycles | 30 cycles |
 
 2x2 matrix predict + update. ~15 multiplies + ~10 adds + 1 division.
 Uses `mul_add` (FMA) on the hot path.

@@ -9,15 +9,15 @@ quality, and regime detection. Maps trading problems to types.
 
 ### Measure price impact of order flow
 
-**Type:** `KyleLambdaF64` (nexus-stats-regression)
+**Type:** `KyleLambda` (nexus-stats-regression)
 
 Regresses price changes against signed order flow. Lambda = how much
 the price moves per unit of informed volume.
 
 ```rust
-use nexus_stats_regression::regression::KyleLambdaF64;
+use nexus_stats_regression::regression::KyleLambda;
 
-let mut kyle = KyleLambdaF64::builder()
+let mut kyle = KyleLambda::builder()
     .alpha(0.02)  // slow decay — impact is structural
     .build()?;
 
@@ -247,7 +247,7 @@ if let Some(shift) = det.skewness_shift() {
 
 ### Change detection on a running metric
 
-**Types:** `Cusum`, `ShiryaevRobertsF64` (nexus-stats-core)
+**Types:** `Cusum`, `ShiryaevRoberts` (nexus-stats-core)
 
 CUSUM detects persistent mean shifts. Shiryaev-Roberts detects transient
 shifts. Use CUSUM for structural changes (regime shift), S-R for
@@ -280,19 +280,19 @@ let rate = hits.ew_hit_rate();
 
 ### Conditional smoothing
 
-**Type:** `ConditionalEmaF64` (nexus-stats-smoothing)
+**Type:** `ConditionalEma` (nexus-stats-smoothing)
 
 EMA that only updates when a condition holds. "Mean markout when VPIN
 is high" vs "when VPIN is low."
 
 ```rust
-use nexus_stats_smoothing::ConditionalEmaF64;
+use nexus_stats_smoothing::ConditionalEma;
 
-let mut high_vpin_markout = ConditionalEmaF64::builder()
+let mut high_vpin_markout = ConditionalEma::builder()
     .halflife(50.0)
     .build()?;
 
-let mut low_vpin_markout = ConditionalEmaF64::builder()
+let mut low_vpin_markout = ConditionalEma::builder()
     .halflife(50.0)
     .build()?;
 
@@ -360,7 +360,7 @@ let horizon = decay.useful_horizon(0.01);  // predictive horizon
 
 | Use Case | Type | Crate |
 |----------|------|-------|
-| Market impact | `KyleLambdaF64` | regression |
+| Market impact | `KyleLambda` | regression |
 | Illiquidity | `Amihud` | core |
 | Bar construction | `BucketAccumulator` | core |
 | Signal decay curve | `SignalDecayCurve` | regression |
@@ -370,6 +370,6 @@ let horizon = decay.useful_horizon(0.01);  // predictive horizon
 | Random walk test | `VarianceRatio` | core |
 | Distribution change | `DistributionShift` | core/detection |
 | Win rate | `HitRate` | core |
-| Conditional smoothing | `ConditionalEmaF64` | smoothing |
+| Conditional smoothing | `ConditionalEma` | smoothing |
 | Mean shift detection | `Cusum` | core |
-| Transient anomaly detection | `ShiryaevRobertsF64` | core |
+| Transient anomaly detection | `ShiryaevRoberts` | core |

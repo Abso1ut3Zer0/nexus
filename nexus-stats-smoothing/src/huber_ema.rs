@@ -11,7 +11,7 @@
 /// - Spread smoothing where occasional tick spikes shouldn't move the estimate
 /// - Any streaming signal with fat-tailed noise
 #[derive(Debug, Clone)]
-pub struct HuberEmaF64 {
+pub struct HuberEma {
     alpha: f64,
     delta: f64,
     value: f64,
@@ -19,21 +19,21 @@ pub struct HuberEmaF64 {
     min_samples: u64,
 }
 
-/// Builder for [`HuberEmaF64`].
+/// Builder for [`HuberEma`].
 #[derive(Debug, Clone)]
-pub struct HuberEmaF64Builder {
+pub struct HuberEmaBuilder {
     alpha: Option<f64>,
     delta: Option<f64>,
     min_samples: u64,
     seed: Option<f64>,
 }
 
-impl HuberEmaF64 {
+impl HuberEma {
     /// Creates a builder.
     #[inline]
     #[must_use]
-    pub fn builder() -> HuberEmaF64Builder {
-        HuberEmaF64Builder {
+    pub fn builder() -> HuberEmaBuilder {
+        HuberEmaBuilder {
             alpha: None,
             delta: None,
             min_samples: 1,
@@ -117,7 +117,7 @@ impl HuberEmaF64 {
     }
 }
 
-impl HuberEmaF64Builder {
+impl HuberEmaBuilder {
     /// Direct smoothing factor. Must be in (0, 1).
     #[inline]
     #[must_use]
@@ -166,7 +166,7 @@ impl HuberEmaF64Builder {
     /// # Errors
     ///
     /// Returns `ConfigError` if alpha or delta are not set or invalid.
-    pub fn build(self) -> Result<HuberEmaF64, nexus_stats_core::ConfigError> {
+    pub fn build(self) -> Result<HuberEma, nexus_stats_core::ConfigError> {
         let alpha = self
             .alpha
             .ok_or(nexus_stats_core::ConfigError::Missing("alpha or halflife"))?;
@@ -186,7 +186,7 @@ impl HuberEmaF64Builder {
 
         let (value, count) = self.seed.map_or((0.0, 0), |v| (v, 1));
 
-        Ok(HuberEmaF64 {
+        Ok(HuberEma {
             alpha,
             delta,
             value,
@@ -201,12 +201,8 @@ impl HuberEmaF64Builder {
 mod tests {
     use super::*;
 
-    fn basic_huber() -> HuberEmaF64 {
-        HuberEmaF64::builder()
-            .alpha(0.1)
-            .delta(5.0)
-            .build()
-            .unwrap()
+    fn basic_huber() -> HuberEma {
+        HuberEma::builder().alpha(0.1).delta(5.0).build().unwrap()
     }
 
     #[test]
@@ -259,7 +255,7 @@ mod tests {
 
     #[test]
     fn infinite_delta_is_standard_ema() {
-        let mut h = HuberEmaF64::builder()
+        let mut h = HuberEma::builder()
             .alpha(0.1)
             .delta(f64::MAX)
             .build()
@@ -283,22 +279,10 @@ mod tests {
 
     #[test]
     fn rejects_invalid_config() {
-        assert!(HuberEmaF64::builder().delta(5.0).build().is_err()); // missing alpha
-        assert!(HuberEmaF64::builder().alpha(0.1).build().is_err()); // missing delta
-        assert!(
-            HuberEmaF64::builder()
-                .alpha(0.0)
-                .delta(5.0)
-                .build()
-                .is_err()
-        ); // alpha = 0
-        assert!(
-            HuberEmaF64::builder()
-                .alpha(0.1)
-                .delta(-1.0)
-                .build()
-                .is_err()
-        ); // negative delta
+        assert!(HuberEma::builder().delta(5.0).build().is_err()); // missing alpha
+        assert!(HuberEma::builder().alpha(0.1).build().is_err()); // missing delta
+        assert!(HuberEma::builder().alpha(0.0).delta(5.0).build().is_err()); // alpha = 0
+        assert!(HuberEma::builder().alpha(0.1).delta(-1.0).build().is_err()); // negative delta
     }
 
     #[test]

@@ -31,7 +31,7 @@ use alloc::vec;
 /// # Complexity
 /// O(k × d) per update.
 #[derive(Debug, Clone)]
-pub struct OnlineKMeansF64 {
+pub struct OnlineKMeans {
     centroids: Box<[f64]>,
     counts: Box<[u64]>,
     k: usize,
@@ -40,20 +40,20 @@ pub struct OnlineKMeansF64 {
     seeded: usize,
 }
 
-/// Builder for [`OnlineKMeansF64`].
+/// Builder for [`OnlineKMeans`].
 #[derive(Debug, Clone)]
-pub struct OnlineKMeansF64Builder {
+pub struct OnlineKMeansBuilder {
     clusters: Option<usize>,
     dimensions: Option<usize>,
     learning_rate: Option<f64>,
 }
 
-impl OnlineKMeansF64 {
+impl OnlineKMeans {
     /// Creates a builder.
     #[inline]
     #[must_use]
-    pub fn builder() -> OnlineKMeansF64Builder {
-        OnlineKMeansF64Builder {
+    pub fn builder() -> OnlineKMeansBuilder {
+        OnlineKMeansBuilder {
             clusters: Option::None,
             dimensions: Option::None,
             learning_rate: Option::None,
@@ -245,7 +245,7 @@ fn sq_dist(a: &[f64], b: &[f64]) -> f64 {
     sum
 }
 
-impl OnlineKMeansF64Builder {
+impl OnlineKMeansBuilder {
     /// Sets the number of clusters (required, >= 2).
     #[inline]
     #[must_use]
@@ -279,7 +279,7 @@ impl OnlineKMeansF64Builder {
     /// - `dimensions` must be >= 1.
     /// - `learning_rate` must be > 0.
     #[inline]
-    pub fn build(self) -> Result<OnlineKMeansF64, nexus_stats_core::ConfigError> {
+    pub fn build(self) -> Result<OnlineKMeans, nexus_stats_core::ConfigError> {
         let k = self
             .clusters
             .ok_or(nexus_stats_core::ConfigError::Missing("clusters"))?;
@@ -306,7 +306,7 @@ impl OnlineKMeansF64Builder {
             ));
         }
 
-        Ok(OnlineKMeansF64 {
+        Ok(OnlineKMeans {
             centroids: vec![0.0; k * dims].into_boxed_slice(),
             counts: vec![0u64; k].into_boxed_slice(),
             k,
@@ -321,8 +321,8 @@ impl OnlineKMeansF64Builder {
 mod tests {
     use super::*;
 
-    fn make(k: usize, dims: usize, lr: f64) -> OnlineKMeansF64 {
-        OnlineKMeansF64::builder()
+    fn make(k: usize, dims: usize, lr: f64) -> OnlineKMeans {
+        OnlineKMeans::builder()
             .clusters(k)
             .dimensions(dims)
             .learning_rate(lr)
@@ -428,7 +428,7 @@ mod tests {
     #[test]
     fn builder_validation() {
         // clusters < 2
-        let err = OnlineKMeansF64::builder()
+        let err = OnlineKMeans::builder()
             .clusters(1)
             .dimensions(2)
             .learning_rate(0.1)
@@ -436,7 +436,7 @@ mod tests {
         assert!(err.is_err());
 
         // dimensions 0
-        let err = OnlineKMeansF64::builder()
+        let err = OnlineKMeans::builder()
             .clusters(2)
             .dimensions(0)
             .learning_rate(0.1)
@@ -444,7 +444,7 @@ mod tests {
         assert!(err.is_err());
 
         // negative learning rate
-        let err = OnlineKMeansF64::builder()
+        let err = OnlineKMeans::builder()
             .clusters(2)
             .dimensions(2)
             .learning_rate(-0.01)
@@ -452,7 +452,7 @@ mod tests {
         assert!(err.is_err());
 
         // zero learning rate
-        let err = OnlineKMeansF64::builder()
+        let err = OnlineKMeans::builder()
             .clusters(2)
             .dimensions(2)
             .learning_rate(0.0)
@@ -460,7 +460,7 @@ mod tests {
         assert!(err.is_err());
 
         // missing required field
-        let err = OnlineKMeansF64::builder().clusters(2).dimensions(2).build();
+        let err = OnlineKMeans::builder().clusters(2).dimensions(2).build();
         assert!(err.is_err());
     }
 

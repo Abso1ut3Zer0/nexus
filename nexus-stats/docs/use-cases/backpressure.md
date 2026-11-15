@@ -51,14 +51,14 @@ no message timestamps, see [Consumer Saturation](consumer-saturation.md):
 use nexus_stats::{Condition, Direction};
 use nexus_stats::monitoring::CoDel;
 use nexus_stats::smoothing::Ema;
-use nexus_stats::detection::TrendAlertF64;
+use nexus_stats::detection::TrendAlert;
 
 let mut queue_health = CoDel::<i64>::builder()
     .target(10_000).window(100_000_000).build().unwrap();
 
 let mut cpu_util = Ema::builder().span(20).build().unwrap();  // smoothed CPU busy fraction
 
-let mut latency_trend = TrendAlertF64::builder()
+let mut latency_trend = TrendAlert::builder()
     .alpha(0.3).beta(0.1).trend_threshold(1.0).build().unwrap();
 
 // Composite pressure assessment:

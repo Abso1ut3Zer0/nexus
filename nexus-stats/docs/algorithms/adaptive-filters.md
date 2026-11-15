@@ -5,11 +5,11 @@ predict y. Update weights when the true y arrives."
 
 | Type | Update cost | Memory | Method |
 |------|-------------|--------|--------|
-| `LmsFilterF64` | O(d) | 8d bytes | Gradient descent |
-| `NlmsFilterF64` | O(d) | 8d bytes | Normalized gradient |
-| `RlsFilterF64` | O(d²) | 8d²+8d bytes | Recursive least squares |
-| `LogisticRegressionF64` | O(d) | 8d bytes | SGD on cross-entropy |
-| `OnlineKMeansF64` | O(k×d) | 8kd bytes | EMA centroid update |
+| `LmsFilter` | O(d) | 8d bytes | Gradient descent |
+| `NlmsFilter` | O(d) | 8d bytes | Normalized gradient |
+| `RlsFilter` | O(d²) | 8d²+8d bytes | Recursive least squares |
+| `LogisticRegression` | O(d) | 8d bytes | SGD on cross-entropy |
+| `OnlineKMeans` | O(k×d) | 8kd bytes | EMA centroid update |
 
 All require `alloc` (heap-allocated weight vectors).
 LogisticRegression additionally requires `std|libm` (sigmoid).
@@ -30,9 +30,9 @@ of input scale. Use NLMS unless you have a specific reason for LMS.
 ### Configuration
 
 ```rust
-use nexus_stats::learning::NlmsFilterF64;
+use nexus_stats::learning::NlmsFilter;
 
-let mut filter = NlmsFilterF64::builder()
+let mut filter = NlmsFilter::builder()
     .dimensions(3)
     .learning_rate(0.01)
     .epsilon(1e-8)
@@ -67,9 +67,9 @@ P = (P - K×x'×P) / λ       — covariance update (Sherman-Morrison)
 ### Configuration
 
 ```rust
-use nexus_stats::learning::RlsFilterF64;
+use nexus_stats::learning::RlsFilter;
 
-let mut filter = RlsFilterF64::builder()
+let mut filter = RlsFilter::builder()
     .dimensions(3)
     .forgetting_factor(0.99)    // 0.95-1.0 typical
     .initial_covariance(1000.0) // P = δ×I
@@ -125,9 +125,9 @@ range near 0 and 1.
 ### Configuration
 
 ```rust
-use nexus_stats::regression::LogisticRegressionF64;
+use nexus_stats::regression::LogisticRegression;
 
-let mut model = LogisticRegressionF64::builder()
+let mut model = LogisticRegression::builder()
     .dimensions(5)
     .learning_rate(0.01)
     .build()
@@ -157,9 +157,9 @@ initial centroids.
 ### Configuration
 
 ```rust
-use nexus_stats::learning::OnlineKMeansF64;
+use nexus_stats::learning::OnlineKMeans;
 
-let mut kmeans = OnlineKMeansF64::builder()
+let mut kmeans = OnlineKMeans::builder()
     .clusters(3)
     .dimensions(5)
     .learning_rate(0.01)
@@ -189,7 +189,7 @@ early-stage code.
 
 ```rust
 // Predict latency from queue depth + CPU + active connections
-let mut predictor = NlmsFilterF64::builder()
+let mut predictor = NlmsFilter::builder()
     .dimensions(3)
     .learning_rate(0.05)
     .build()
@@ -208,7 +208,7 @@ predictor.update(&features, actual_latency);
 ### Networking — Regime Classification
 
 ```rust
-let mut classifier = OnlineKMeansF64::builder()
+let mut classifier = OnlineKMeans::builder()
     .clusters(3)      // 3 regimes
     .dimensions(4)    // 4 features
     .learning_rate(0.02)

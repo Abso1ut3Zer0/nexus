@@ -54,13 +54,13 @@ for deep-dives on each algorithm.
 | Type | What It Detects | p50 |
 |------|----------------|-----|
 | `Cusum` | Persistent mean shifts (up or down) | 5 |
-| `MosumF64` | Transient spikes within a window | 6 |
-| `ShiryaevRobertsF64` | Mean shifts with optimal detection delay | 17 |
-| `MultiGateF64` | Graded anomalies: Accept/Unusual/Suspect/Reject | 12 |
-| `RobustZScoreF64` | MAD-based outlier scoring with estimator freeze | 12 |
-| `AdaptiveThresholdF64` | Z-score anomalies with self-learning baseline | 15 |
-| `PageHinkleyF64` | Sequential mean drift (Page-Hinkley test) | TBD |
-| `AdwinF64` | Adaptive window distribution change (ADWIN) | TBD |
+| `Mosum` | Transient spikes within a window | 6 |
+| `ShiryaevRoberts` | Mean shifts with optimal detection delay | 17 |
+| `MultiGate` | Graded anomalies: Accept/Unusual/Suspect/Reject | 12 |
+| `RobustZScore<f64>` | MAD-based outlier scoring with estimator freeze | 12 |
+| `AdaptiveThreshold` | Z-score anomalies with self-learning baseline | 15 |
+| `PageHinkley` | Sequential mean drift (Page-Hinkley test) | TBD |
+| `Adwin` | Adaptive window distribution change (ADWIN) | TBD |
 
 ### Smoothing & Filtering
 
@@ -68,12 +68,12 @@ for deep-dives on each algorithm.
 |------|-----------------|-----|
 | `Ema` / `EmaI64` | Exponential moving average (float / integer) | 5 |
 | `AsymEma` | Different alpha for rising vs falling | 11 |
-| `KamaF64` | Kaufman adaptive MA (adapts to trend/noise) | 16 |
-| `Kalman1dF64` | 1D Kalman filter with velocity tracking | 25 |
-| `HoltF64` | Double exponential (level + trend) | 11 |
-| `SpringF64` | Critically damped spring (smooth target chasing) | 12 |
+| `Kama` | Kaufman adaptive MA (adapts to trend/noise) | 16 |
+| `Kalman1d` | 1D Kalman filter with velocity tracking | 25 |
+| `Holt` | Double exponential (level + trend) | 11 |
+| `Spring` | Critically damped spring (smooth target chasing) | 12 |
 | `Slew<f64>` | Hard rate-of-change clamp | 3 |
-| `WindowedMedianF64` | Robust median filter (outlier-immune) | 132 |
+| `WindowedMedian<f64>` | Robust median filter (outlier-immune) | 132 |
 
 ### Statistics
 
@@ -92,38 +92,38 @@ for deep-dives on each algorithm.
 
 | Type | What It Computes | p50 |
 |------|-----------------|-----|
-| `LinearRegressionF64` | Online OLS linear fit (`y = ax + b`) | TBD |
-| `EwLinearRegressionF64` | Exponentially-weighted linear fit | TBD |
-| `PolynomialRegressionF64` | Online polynomial fit (`.builder().degree(2)`, `.degree(3)`, ...) | TBD |
-| `EwPolynomialRegressionF64` | Exponentially-weighted polynomial fit | TBD |
-| `ExponentialRegressionF64` | Exponential fit (`y = ae^(bx)`) | TBD |
-| `LogarithmicRegressionF64` | Logarithmic fit (`y = a·ln(x) + b`) | TBD |
-| `PowerRegressionF64` | Power law fit (`y = ax^b`) | TBD |
+| `LinearRegression` | Online OLS linear fit (`y = ax + b`) | TBD |
+| `EwLinearRegression` | Exponentially-weighted linear fit | TBD |
+| `PolynomialRegression` | Online polynomial fit (`.builder().degree(2)`, `.degree(3)`, ...) | TBD |
+| `EwPolynomialRegression` | Exponentially-weighted polynomial fit | TBD |
+| `ExponentialRegression` | Exponential fit (`y = ae^(bx)`) | TBD |
+| `LogarithmicRegression` | Logarithmic fit (`y = a·ln(x) + b`) | TBD |
+| `PowerRegression` | Power law fit (`y = ax^b`) | TBD |
 
 ### Multi-Armed Bandits *(alloc, std|libm)*
 
 | Type | What It Does | p50 |
 |------|-------------|-----|
-| `Ucb1F64` | UCB1 — deterministic explore/exploit | TBD |
-| `ThompsonBetaF64` | Thompson Sampling — Beta prior for [0,1] rewards | TBD |
-| `ThompsonGammaF64` | Thompson Sampling — Gamma prior for positive rewards | TBD |
-| `EpsilonGreedyF64` | ε-greedy — simplest bandit baseline | TBD |
-| `Exp3F64` | EXP3 — adversarial bandit (no stochastic assumption) | TBD |
+| `Ucb1` | UCB1 — deterministic explore/exploit | TBD |
+| `ThompsonBeta` | Thompson Sampling — Beta prior for [0,1] rewards | TBD |
+| `ThompsonGamma` | Thompson Sampling — Gamma prior for positive rewards | TBD |
+| `EpsilonGreedy` | ε-greedy — simplest bandit baseline | TBD |
+| `Exp3` | EXP3 — adversarial bandit (no stochastic assumption) | TBD |
 
 ### Signal Analysis
 
 | Type | What It Computes | p50 |
 |------|-----------------|-----|
-| `AutocorrelationF64` | Self-correlation at fixed lag (trending vs reverting) | 12 |
-| `CrossCorrelationF64` | Two-stream correlation with lead/lag detection | 39 |
+| `Autocorrelation` | Self-correlation at fixed lag (trending vs reverting) | 12 |
+| `CrossCorrelation` | Two-stream correlation with lead/lag detection | 39 |
 
 ### Information Theory *(std\|libm)*
 
 | Type | What It Computes | p50 |
 |------|-----------------|-----|
-| `EntropyF64` | Shannon entropy over K categories | 3 |
-| `TransferEntropyF64` *(alloc, std\|libm)* | Directed information flow (Granger causality) | 14 |
-| `PredictiveInfoBoundF64` *(alloc, std\|libm)* | Binned mutual information I(X;Y) with Miller-Madow | TBD |
+| `Entropy` | Shannon entropy over K categories | 3 |
+| `TransferEntropy` *(alloc, std\|libm)* | Directed information flow (Granger causality) | 14 |
+| `PredictiveInfoBound` *(alloc, std\|libm)* | Binned mutual information I(X;Y) with Miller-Madow | TBD |
 
 ### Monitoring
 
@@ -140,7 +140,7 @@ for deep-dives on each algorithm.
 | `PollSaturation` | Consumer-side saturation from poll outcomes: `on_work` / `on_idle` | 5 / 1 |
 | `SojournSaturation` | Consumer saturation from stamped queue sojourn, exact per message | 6 |
 | `ErrorRate` | Failure rate with weighted severity | 6 |
-| `TrendAlertF64` | Trend direction (Stable/Rising/Falling) | 12 |
+| `TrendAlert` | Trend direction (Stable/Rising/Falling) | 12 |
 | `Jitter<f64>` | Signal variability measurement | 6 |
 | `HawkesIntensity` *(std\|libm)* | Self-exciting point process intensity | TBD |
 
@@ -160,7 +160,7 @@ for deep-dives on each algorithm.
 | `DeadBand<f64>` | Suppress changes below threshold | 2 |
 | `Hysteresis<f64>` | Binary decision with different rising/falling thresholds | 3 |
 | `BoolWindow` | Sliding pass/fail rate over last N events | 6 |
-| `PeakDetectorF64` | Local maxima/minima with prominence | 3 |
+| `PeakDetector<f64>` | Local maxima/minima with prominence | 3 |
 | `LevelCrossing<f64>` | Threshold crossing counter | 2 |
 | `FirstDiff<f64>` | Discrete derivative (rate of change) | 2 |
 | `SecondDiff<f64>` | Discrete acceleration | 2 |
@@ -281,7 +281,7 @@ See [`docs/use-cases/trading.md`](docs/use-cases/trading.md) for full guide with
 
 | Use Case | Type | Crate |
 |----------|------|-------|
-| Market impact | `KyleLambdaF64` | regression |
+| Market impact | `KyleLambda` | regression |
 | Illiquidity | `Amihud` | core |
 | Bar construction | `BucketAccumulator` | core |
 | Signal decay curve | `SignalDecayCurve` | regression |
@@ -295,10 +295,10 @@ See [`docs/use-cases/trading.md`](docs/use-cases/trading.md) for full guide with
 | Implicit spread estimation | `RollSpread` | core |
 | Noise-corrected realized vol | `TwoScaleRv` | core |
 | Bursty event intensity | `HawkesIntensity` | core |
-| Conditional smoothing | `ConditionalEmaF64` | smoothing |
-| Venue selection | `ThompsonBetaF64` / `Ucb1F64` | regression |
-| Parameter A/B testing | `Ucb1F64` / `EpsilonGreedyF64` | regression |
-| Adversarial strategy | `Exp3F64` | regression |
+| Conditional smoothing | `ConditionalEma` | smoothing |
+| Venue selection | `ThompsonBeta` / `Ucb1` | regression |
+| Parameter A/B testing | `Ucb1` / `EpsilonGreedy` | regression |
+| Adversarial strategy | `Exp3` | regression |
 
 ## License
 

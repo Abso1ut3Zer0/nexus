@@ -1,7 +1,7 @@
 # ConditionalEMA
 
-**Type:** `ConditionalEmaF64`
-**Import:** `use nexus_stats_smoothing::ConditionalEmaF64;`
+**Type:** `ConditionalEma`
+**Import:** `use nexus_stats_smoothing::ConditionalEma;`
 **Feature flags:** None required.
 
 ## What it does
@@ -19,8 +19,8 @@ This cleanly separates "is the phenomenon happening?" from "how's it doing while
 ## API
 
 ```rust
-impl ConditionalEmaF64 {
-    pub fn builder() -> ConditionalEmaF64Builder;
+impl ConditionalEma {
+    pub fn builder() -> ConditionalEmaBuilder;
     pub fn update(&mut self, value: f64, active: bool) -> Result<(), DataError>;
     pub fn value(&self) -> Option<f64>;
     pub fn active_fraction(&self) -> f64;
@@ -30,11 +30,11 @@ impl ConditionalEmaF64 {
     pub fn reset(&mut self);
 }
 
-impl ConditionalEmaF64Builder {
+impl ConditionalEmaBuilder {
     pub fn alpha(self, alpha: f64) -> Self;
     pub fn halflife(self, halflife: f64) -> Self;
     pub fn min_samples(self, min: u64) -> Self;
-    pub fn build(self) -> Result<ConditionalEmaF64, ConfigError>;
+    pub fn build(self) -> Result<ConditionalEma, ConfigError>;
 }
 ```
 
@@ -43,9 +43,9 @@ impl ConditionalEmaF64Builder {
 ## Example — fill rate during active quoting
 
 ```rust
-use nexus_stats_smoothing::ConditionalEmaF64;
+use nexus_stats_smoothing::ConditionalEma;
 
-let mut fill_rate = ConditionalEmaF64::builder()
+let mut fill_rate = ConditionalEma::builder()
     .halflife(50.0)
     .build()
     .unwrap();

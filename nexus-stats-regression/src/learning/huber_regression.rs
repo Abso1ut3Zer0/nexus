@@ -28,9 +28,9 @@ use nexus_stats_core::math::MulAdd;
 /// # Examples
 ///
 /// ```
-/// use nexus_stats_regression::learning::HuberRegressionF64;
+/// use nexus_stats_regression::learning::HuberRegression;
 ///
-/// let mut reg = HuberRegressionF64::builder()
+/// let mut reg = HuberRegression::builder()
 ///     .dimensions(2)
 ///     .learning_rate(0.01)
 ///     .delta(1.0)
@@ -49,7 +49,7 @@ use nexus_stats_core::math::MulAdd;
 /// assert!((w[1] - 3.0).abs() < 0.5);
 /// ```
 #[derive(Debug, Clone)]
-pub struct HuberRegressionF64 {
+pub struct HuberRegression {
     weights: Box<[f64]>,
     dim: usize,
     lr: f64,
@@ -57,20 +57,20 @@ pub struct HuberRegressionF64 {
     count: u64,
 }
 
-/// Builder for [`HuberRegressionF64`].
+/// Builder for [`HuberRegression`].
 #[derive(Debug, Clone)]
-pub struct HuberRegressionF64Builder {
+pub struct HuberRegressionBuilder {
     dimensions: Option<usize>,
     learning_rate: Option<f64>,
     delta: Option<f64>,
 }
 
-impl HuberRegressionF64 {
+impl HuberRegression {
     /// Creates a builder.
     #[inline]
     #[must_use]
-    pub fn builder() -> HuberRegressionF64Builder {
-        HuberRegressionF64Builder {
+    pub fn builder() -> HuberRegressionBuilder {
+        HuberRegressionBuilder {
             dimensions: None,
             learning_rate: None,
             delta: None,
@@ -175,7 +175,7 @@ impl HuberRegressionF64 {
     }
 }
 
-impl HuberRegressionF64Builder {
+impl HuberRegressionBuilder {
     /// Number of features (required).
     #[inline]
     #[must_use]
@@ -205,7 +205,7 @@ impl HuberRegressionF64Builder {
     /// # Errors
     ///
     /// Returns `ConfigError` if any parameter is missing or invalid.
-    pub fn build(self) -> Result<HuberRegressionF64, nexus_stats_core::ConfigError> {
+    pub fn build(self) -> Result<HuberRegression, nexus_stats_core::ConfigError> {
         let dim = self
             .dimensions
             .ok_or(nexus_stats_core::ConfigError::Missing("dimensions"))?;
@@ -231,7 +231,7 @@ impl HuberRegressionF64Builder {
             ));
         }
 
-        Ok(HuberRegressionF64 {
+        Ok(HuberRegression {
             weights: vec![0.0; dim].into_boxed_slice(),
             dim,
             lr,
@@ -248,7 +248,7 @@ mod tests {
 
     #[test]
     fn clean_linear_data_converges() {
-        let mut reg = HuberRegressionF64::builder()
+        let mut reg = HuberRegression::builder()
             .dimensions(2)
             .learning_rate(0.001)
             .delta(10.0) // large delta → behaves like least squares
@@ -272,14 +272,14 @@ mod tests {
     fn outlier_robustness() {
         // Compare: Huber vs infinite-delta (standard regression) with outliers.
         // Use small learning rate relative to feature scale to avoid divergence.
-        let mut huber = HuberRegressionF64::builder()
+        let mut huber = HuberRegression::builder()
             .dimensions(1)
             .learning_rate(0.001)
             .delta(5.0)
             .build()
             .unwrap();
 
-        let mut standard = HuberRegressionF64::builder()
+        let mut standard = HuberRegression::builder()
             .dimensions(1)
             .learning_rate(0.001)
             .delta(f64::MAX)
@@ -308,7 +308,7 @@ mod tests {
 
     #[test]
     fn predict_matches_weights() {
-        let mut reg = HuberRegressionF64::builder()
+        let mut reg = HuberRegression::builder()
             .dimensions(2)
             .learning_rate(0.01)
             .delta(5.0)
@@ -327,7 +327,7 @@ mod tests {
 
     #[test]
     fn reset_clears() {
-        let mut reg = HuberRegressionF64::builder()
+        let mut reg = HuberRegression::builder()
             .dimensions(2)
             .learning_rate(0.01)
             .delta(5.0)
@@ -345,21 +345,21 @@ mod tests {
     #[test]
     fn invalid_config() {
         assert!(
-            HuberRegressionF64::builder()
+            HuberRegression::builder()
                 .learning_rate(0.01)
                 .delta(1.0)
                 .build()
                 .is_err()
         ); // missing dim
         assert!(
-            HuberRegressionF64::builder()
+            HuberRegression::builder()
                 .dimensions(2)
                 .delta(1.0)
                 .build()
                 .is_err()
         ); // missing lr
         assert!(
-            HuberRegressionF64::builder()
+            HuberRegression::builder()
                 .dimensions(2)
                 .learning_rate(0.01)
                 .build()

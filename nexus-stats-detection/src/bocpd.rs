@@ -27,9 +27,9 @@ struct Precomputed {
 /// # Examples
 ///
 /// ```
-/// use nexus_stats_detection::detection::BocpdF64;
+/// use nexus_stats_detection::detection::Bocpd;
 ///
-/// let mut bocpd = BocpdF64::builder()
+/// let mut bocpd = Bocpd::builder()
 ///     .max_run_length(200)
 ///     .hazard_lambda(100.0)
 ///     .build()
@@ -44,7 +44,7 @@ struct Precomputed {
 /// assert!(cp < 0.3);
 /// ```
 #[derive(Debug, Clone)]
-pub struct BocpdF64 {
+pub struct Bocpd {
     log_posterior: Box<[f64]>,
     suf_count: Box<[u64]>,
     suf_mean: Box<[f64]>,
@@ -65,9 +65,9 @@ pub struct BocpdF64 {
     min_samples: u64,
 }
 
-/// Builder for [`BocpdF64`].
+/// Builder for [`Bocpd`].
 #[derive(Debug, Clone)]
-pub struct BocpdF64Builder {
+pub struct BocpdBuilder {
     max_run_length: Option<usize>,
     hazard_lambda: Option<f64>,
     prior_mu: f64,
@@ -93,12 +93,12 @@ fn logsumexp_slice(values: &[f64]) -> f64 {
     max + ln(values.iter().map(|&v| exp(v - max)).sum::<f64>())
 }
 
-impl BocpdF64 {
+impl Bocpd {
     /// Creates a builder.
     #[inline]
     #[must_use]
-    pub fn builder() -> BocpdF64Builder {
-        BocpdF64Builder {
+    pub fn builder() -> BocpdBuilder {
+        BocpdBuilder {
             max_run_length: Option::None,
             hazard_lambda: Option::None,
             prior_mu: 0.0,
@@ -388,7 +388,7 @@ impl BocpdF64 {
     }
 }
 
-impl BocpdF64Builder {
+impl BocpdBuilder {
     /// Maximum run length / window size (required, >= 10).
     #[inline]
     #[must_use]
@@ -451,7 +451,7 @@ impl BocpdF64Builder {
     ///
     /// Returns `ConfigError` if required fields are missing, max_run_length < 10,
     /// hazard_lambda <= 1.0, or prior parameters are non-positive.
-    pub fn build(self) -> Result<BocpdF64, nexus_stats_core::ConfigError> {
+    pub fn build(self) -> Result<Bocpd, nexus_stats_core::ConfigError> {
         let max_run_length = self
             .max_run_length
             .ok_or(nexus_stats_core::ConfigError::Missing("max_run_length"))?;
@@ -526,7 +526,7 @@ impl BocpdF64Builder {
             }
         };
 
-        Ok(BocpdF64 {
+        Ok(Bocpd {
             log_posterior: alloc::vec![f64::NEG_INFINITY; size].into_boxed_slice(),
             suf_count: alloc::vec![0u64; size].into_boxed_slice(),
             suf_mean: alloc::vec![0.0f64; size].into_boxed_slice(),
@@ -550,8 +550,8 @@ impl BocpdF64Builder {
 mod tests {
     use super::*;
 
-    fn vague_prior() -> BocpdF64Builder {
-        BocpdF64::builder()
+    fn vague_prior() -> BocpdBuilder {
+        Bocpd::builder()
             .prior_kappa(0.01)
             .prior_alpha(0.5)
             .prior_beta(10.0)
@@ -602,7 +602,7 @@ mod tests {
 
     #[test]
     fn variance_shift_detected() {
-        let mut bocpd = BocpdF64::builder()
+        let mut bocpd = Bocpd::builder()
             .prior_mu(50.0)
             .prior_kappa(1.0)
             .prior_alpha(2.0)
@@ -722,7 +722,7 @@ mod tests {
 
     #[test]
     fn rejects_nan_inf() {
-        let mut bocpd = BocpdF64::builder()
+        let mut bocpd = Bocpd::builder()
             .max_run_length(20)
             .hazard_lambda(10.0)
             .build()

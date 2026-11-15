@@ -18,7 +18,7 @@ use nexus_stats_core::math::MulAdd;
 /// # Complexity
 /// O(d²) per update, heap-allocated weight vector and covariance matrix.
 #[derive(Debug, Clone)]
-pub struct RlsFilterF64 {
+pub struct RlsFilter {
     weights: Box<[f64]>,
     p_matrix: Box<[f64]>,
     scratch_px: Box<[f64]>,
@@ -30,21 +30,21 @@ pub struct RlsFilterF64 {
     count: u64,
 }
 
-/// Builder for [`RlsFilterF64`].
+/// Builder for [`RlsFilter`].
 #[derive(Debug, Clone)]
-pub struct RlsFilterF64Builder {
+pub struct RlsFilterBuilder {
     dimensions: Option<usize>,
     forgetting_factor: f64,
     initial_covariance: f64,
     max_covariance: Option<f64>,
 }
 
-impl RlsFilterF64 {
+impl RlsFilter {
     /// Creates a builder.
     #[inline]
     #[must_use]
-    pub fn builder() -> RlsFilterF64Builder {
-        RlsFilterF64Builder {
+    pub fn builder() -> RlsFilterBuilder {
+        RlsFilterBuilder {
             dimensions: None,
             forgetting_factor: 1.0,
             initial_covariance: 1000.0,
@@ -240,7 +240,7 @@ impl RlsFilterF64 {
     }
 }
 
-impl RlsFilterF64Builder {
+impl RlsFilterBuilder {
     /// Sets the number of input dimensions (required, >= 1).
     #[inline]
     #[must_use]
@@ -285,7 +285,7 @@ impl RlsFilterF64Builder {
 
     /// Builds the filter. Returns an error if parameters are missing or invalid.
     #[inline]
-    pub fn build(self) -> Result<RlsFilterF64, nexus_stats_core::ConfigError> {
+    pub fn build(self) -> Result<RlsFilter, nexus_stats_core::ConfigError> {
         let dims = self
             .dimensions
             .ok_or(nexus_stats_core::ConfigError::Missing("dimensions"))?;
@@ -314,7 +314,7 @@ impl RlsFilterF64Builder {
             p[i * dims + i] = delta;
         }
 
-        Ok(RlsFilterF64 {
+        Ok(RlsFilter {
             weights: vec![0.0; dims].into_boxed_slice(),
             p_matrix: p,
             scratch_px: vec![0.0; dims].into_boxed_slice(),
@@ -335,7 +335,7 @@ mod tests {
     #[test]
     fn learns_linear_relationship() {
         // y = 2*x1 + 3*x2
-        let mut filter = RlsFilterF64::builder().dimensions(2).build().unwrap();
+        let mut filter = RlsFilter::builder().dimensions(2).build().unwrap();
 
         for i in 0..200 {
             let x1 = (i as f64 * 0.7).sin();
@@ -351,7 +351,7 @@ mod tests {
 
     #[test]
     fn forgetting_adapts_to_change() {
-        let mut filter = RlsFilterF64::builder()
+        let mut filter = RlsFilter::builder()
             .dimensions(1)
             .forgetting_factor(0.95)
             .build()
@@ -384,7 +384,7 @@ mod tests {
 
     #[test]
     fn covariance_decreases() {
-        let mut filter = RlsFilterF64::builder()
+        let mut filter = RlsFilter::builder()
             .dimensions(1)
             .initial_covariance(1000.0)
             .build()
@@ -407,7 +407,7 @@ mod tests {
 
     #[test]
     fn predict_matches_dot_product() {
-        let mut filter = RlsFilterF64::builder().dimensions(3).build().unwrap();
+        let mut filter = RlsFilter::builder().dimensions(3).build().unwrap();
 
         filter.update(&[1.0, 0.0, 0.0], 5.0).unwrap();
         filter.update(&[0.0, 1.0, 0.0], 3.0).unwrap();
@@ -425,7 +425,7 @@ mod tests {
 
     #[test]
     fn reset_clears_state() {
-        let mut filter = RlsFilterF64::builder().dimensions(2).build().unwrap();
+        let mut filter = RlsFilter::builder().dimensions(2).build().unwrap();
 
         filter.update(&[1.0, 2.0], 5.0).unwrap();
         assert!(filter.count() > 0);
@@ -439,7 +439,7 @@ mod tests {
     #[test]
     #[should_panic(expected = "feature length")]
     fn dimension_mismatch_predict() {
-        let filter = RlsFilterF64::builder().dimensions(3).build().unwrap();
+        let filter = RlsFilter::builder().dimensions(3).build().unwrap();
 
         let _ = filter.predict(&[1.0, 2.0]);
     }
@@ -447,21 +447,21 @@ mod tests {
     #[test]
     #[should_panic(expected = "feature length")]
     fn dimension_mismatch_update() {
-        let mut filter = RlsFilterF64::builder().dimensions(3).build().unwrap();
+        let mut filter = RlsFilter::builder().dimensions(3).build().unwrap();
 
         let _ = filter.update(&[1.0], 5.0);
     }
 
     #[test]
     fn builder_rejects_zero_dimensions() {
-        let result = RlsFilterF64::builder().dimensions(0).build();
+        let result = RlsFilter::builder().dimensions(0).build();
         assert!(result.is_err());
     }
 
     #[test]
     fn builder_rejects_invalid_forgetting_factor() {
         assert!(
-            RlsFilterF64::builder()
+            RlsFilter::builder()
                 .dimensions(2)
                 .forgetting_factor(0.0)
                 .build()
@@ -469,7 +469,7 @@ mod tests {
         );
 
         assert!(
-            RlsFilterF64::builder()
+            RlsFilter::builder()
                 .dimensions(2)
                 .forgetting_factor(1.5)
                 .build()
@@ -477,7 +477,7 @@ mod tests {
         );
 
         assert!(
-            RlsFilterF64::builder()
+            RlsFilter::builder()
                 .dimensions(2)
                 .forgetting_factor(-0.1)
                 .build()
@@ -487,7 +487,7 @@ mod tests {
 
     #[test]
     fn builder_rejects_negative_covariance() {
-        let result = RlsFilterF64::builder()
+        let result = RlsFilter::builder()
             .dimensions(2)
             .initial_covariance(-1.0)
             .build();
@@ -496,7 +496,7 @@ mod tests {
 
     #[test]
     fn rejects_nan_target() {
-        let mut filter = RlsFilterF64::builder().dimensions(2).build().unwrap();
+        let mut filter = RlsFilter::builder().dimensions(2).build().unwrap();
         assert_eq!(
             filter.update(&[1.0, 2.0], f64::NAN),
             Err(nexus_stats_core::DataError::NotANumber)
@@ -506,7 +506,7 @@ mod tests {
 
     #[test]
     fn max_covariance_auto_resets() {
-        let mut rls = RlsFilterF64::builder()
+        let mut rls = RlsFilter::builder()
             .dimensions(1)
             .forgetting_factor(0.5) // aggressive forgetting
             .initial_covariance(100.0)

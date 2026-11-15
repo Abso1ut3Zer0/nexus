@@ -17,21 +17,21 @@
 /// - A/B testing with early stopping
 /// - Any binary outcome where you want uncertainty quantification
 #[derive(Debug, Clone)]
-pub struct BetaBinomialF64 {
+pub struct BetaBinomial {
     alpha: f64,
     beta: f64,
     prior_alpha: f64,
     prior_beta: f64,
 }
 
-/// Builder for [`BetaBinomialF64`].
+/// Builder for [`BetaBinomial`].
 #[derive(Debug, Clone)]
-pub struct BetaBinomialF64Builder {
+pub struct BetaBinomialBuilder {
     alpha: f64,
     beta: f64,
 }
 
-impl BetaBinomialF64 {
+impl BetaBinomial {
     /// Creates a new estimator with a uniform (uninformative) prior.
     ///
     /// Beta(1, 1) is the uniform distribution on [0, 1].
@@ -77,8 +77,8 @@ impl BetaBinomialF64 {
     /// Creates a builder with defaults of alpha=1.0, beta=1.0.
     #[inline]
     #[must_use]
-    pub fn builder() -> BetaBinomialF64Builder {
-        BetaBinomialF64Builder {
+    pub fn builder() -> BetaBinomialBuilder {
+        BetaBinomialBuilder {
             alpha: 1.0,
             beta: 1.0,
         }
@@ -221,14 +221,14 @@ impl BetaBinomialF64 {
     }
 }
 
-impl Default for BetaBinomialF64 {
+impl Default for BetaBinomial {
     #[inline]
     fn default() -> Self {
         Self::new()
     }
 }
 
-impl BetaBinomialF64Builder {
+impl BetaBinomialBuilder {
     /// Sets the alpha (success) prior parameter.
     #[inline]
     #[must_use]
@@ -251,7 +251,7 @@ impl BetaBinomialF64Builder {
     ///
     /// Both alpha and beta must be positive.
     #[inline]
-    pub fn build(self) -> Result<BetaBinomialF64, nexus_stats_core::ConfigError> {
+    pub fn build(self) -> Result<BetaBinomial, nexus_stats_core::ConfigError> {
         if !(self.alpha > 0.0) {
             return Err(nexus_stats_core::ConfigError::Invalid(
                 "alpha must be positive",
@@ -262,7 +262,7 @@ impl BetaBinomialF64Builder {
                 "beta must be positive",
             ));
         }
-        Ok(BetaBinomialF64 {
+        Ok(BetaBinomial {
             alpha: self.alpha,
             beta: self.beta,
             prior_alpha: self.alpha,
@@ -277,7 +277,7 @@ mod tests {
 
     #[test]
     fn uniform_prior_balanced_observations() {
-        let mut bb = BetaBinomialF64::new();
+        let mut bb = BetaBinomial::new();
         for _ in 0..50 {
             bb.update(true);
             bb.update(false);
@@ -289,7 +289,7 @@ mod tests {
 
     #[test]
     fn informative_prior() {
-        let bb = BetaBinomialF64::with_prior(10.0, 1.0).unwrap();
+        let bb = BetaBinomial::with_prior(10.0, 1.0).unwrap();
         // Beta(10, 1) → mean = 10/11 ≈ 0.909
         let mean = bb.mean();
         assert!(
@@ -300,7 +300,7 @@ mod tests {
 
     #[test]
     fn variance_decreases_with_observations() {
-        let mut bb = BetaBinomialF64::new();
+        let mut bb = BetaBinomial::new();
         let initial_var = bb.variance();
 
         for _ in 0..100 {
@@ -315,13 +315,13 @@ mod tests {
 
     #[test]
     fn mode_none_for_uniform_prior() {
-        let bb = BetaBinomialF64::new();
+        let bb = BetaBinomial::new();
         assert!(bb.mode().is_none(), "mode undefined for Beta(1, 1)");
     }
 
     #[test]
     fn mode_some_for_informative_prior() {
-        let bb = BetaBinomialF64::with_prior(10.0, 10.0).unwrap();
+        let bb = BetaBinomial::with_prior(10.0, 10.0).unwrap();
         // Beta(10, 10) → mode = 9/18 = 0.5
         let mode = bb.mode().unwrap();
         assert!((mode - 0.5).abs() < 1e-10, "expected 0.5, got {mode}");
@@ -330,7 +330,7 @@ mod tests {
     #[cfg(any(feature = "std", feature = "libm"))]
     #[test]
     fn credible_interval_narrows() {
-        let mut bb = BetaBinomialF64::with_prior(2.0, 2.0).unwrap();
+        let mut bb = BetaBinomial::with_prior(2.0, 2.0).unwrap();
         for _ in 0..10 {
             bb.update(true);
             bb.update(false);
@@ -353,7 +353,7 @@ mod tests {
 
     #[test]
     fn observe_batch_equivalence() {
-        let mut single = BetaBinomialF64::new();
+        let mut single = BetaBinomial::new();
         for _ in 0..30 {
             single.update(true);
         }
@@ -361,7 +361,7 @@ mod tests {
             single.update(false);
         }
 
-        let mut batch = BetaBinomialF64::new();
+        let mut batch = BetaBinomial::new();
         batch.update_batch(30, 20);
 
         assert!(
@@ -375,7 +375,7 @@ mod tests {
 
     #[test]
     fn reset_restores_prior() {
-        let mut bb = BetaBinomialF64::with_prior(5.0, 3.0).unwrap();
+        let mut bb = BetaBinomial::with_prior(5.0, 3.0).unwrap();
         let mean_before = bb.mean();
 
         for _ in 0..100 {
@@ -393,8 +393,8 @@ mod tests {
 
     #[test]
     fn default_is_new() {
-        let a = BetaBinomialF64::new();
-        let b = BetaBinomialF64::default();
+        let a = BetaBinomial::new();
+        let b = BetaBinomial::default();
         assert!(
             (a.mean() - b.mean()).abs() < 1e-10,
             "default and new should be identical"
@@ -403,10 +403,10 @@ mod tests {
 
     #[test]
     fn with_prior_validation() {
-        assert!(BetaBinomialF64::with_prior(0.0, 1.0).is_err());
-        assert!(BetaBinomialF64::with_prior(1.0, 0.0).is_err());
-        assert!(BetaBinomialF64::with_prior(-1.0, 1.0).is_err());
-        assert!(BetaBinomialF64::with_prior(1.0, -1.0).is_err());
-        assert!(BetaBinomialF64::with_prior(0.5, 0.5).is_ok());
+        assert!(BetaBinomial::with_prior(0.0, 1.0).is_err());
+        assert!(BetaBinomial::with_prior(1.0, 0.0).is_err());
+        assert!(BetaBinomial::with_prior(-1.0, 1.0).is_err());
+        assert!(BetaBinomial::with_prior(1.0, -1.0).is_err());
+        assert!(BetaBinomial::with_prior(0.5, 0.5).is_ok());
     }
 }

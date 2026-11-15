@@ -1,7 +1,7 @@
 # KAMA — Kaufman Adaptive Moving Average
 
-**Types:** `KamaF64`
-**Import:** `use nexus_stats_smoothing::KamaF64;`
+**Types:** `Kama`
+**Import:** `use nexus_stats_smoothing::Kama;`
 **Feature flags:** `alloc` (uses an internal window).
 
 ## What it does
@@ -26,8 +26,8 @@ Not for: signals where you already know the regime, or signals where you genuine
 ## API
 
 ```rust
-impl KamaF64 {
-    pub fn builder() -> KamaF64Builder;
+impl Kama {
+    pub fn builder() -> KamaBuilder;
     pub fn update(&mut self, sample: f64) -> Result<Option<f64>, DataError>;
     pub fn value(&self) -> Option<f64>;
     pub fn efficiency_ratio(&self) -> Option<f64>;
@@ -37,19 +37,19 @@ impl KamaF64 {
     pub fn reset(&mut self);
 }
 
-impl KamaF64Builder {
+impl KamaBuilder {
     pub fn window_size(self, n: usize) -> Self;   // efficiency lookback, default 10
     pub fn fast_span(self, n: u64) -> Self;       // fast EMA half-life, default 2
     pub fn slow_span(self, n: u64) -> Self;       // slow EMA half-life, default 30
     pub fn min_samples(self, min: u64) -> Self;
-    pub fn build(self) -> Result<KamaF64, ConfigError>;
+    pub fn build(self) -> Result<Kama, ConfigError>;
 }
 ```
 
 ## Example — price smoother for a crypto mid
 
 ```rust
-use nexus_stats_smoothing::KamaF64;
+use nexus_stats_smoothing::Kama;
 
 let prices: [f64; 12] = [
     100.0, 100.1, 99.95, 100.05, 100.02,   // ranging
@@ -57,7 +57,7 @@ let prices: [f64; 12] = [
     104.0, 104.5,                          // trending
 ];
 
-let mut kama = KamaF64::builder()
+let mut kama = Kama::builder()
     .window_size(10)
     .fast_span(2)
     .slow_span(30)

@@ -94,7 +94,7 @@ Tuning intuition: the filter doesn't care about q and r individually, only the r
 One parameter. Half-life in *samples* to reach halfway to target. Example:
 
 ```rust
-let mut spring = SpringF64::new(10.0); // halves distance every 10 samples
+let mut spring = Spring::new(10.0); // halves distance every 10 samples
 spring.set_target(100.0);
 spring.update();
 spring.value(); // approaches 100.0 over ~30-50 samples
@@ -104,7 +104,7 @@ Critically damped, so it *never* overshoots regardless of half-life.
 
 ## Huber EMA: Threshold
 
-`HuberEmaF64::new(alpha, threshold, sigma)`:
+`HuberEma::new(alpha, threshold, sigma)`:
 
 - `alpha` — same as regular EMA.
 - `threshold` — in multiples of `sigma`. Typically 1.5-3.0.
@@ -114,7 +114,7 @@ A threshold of 1.5 means "steps larger than 1.5 sigma get capped". Start at 2.0 
 
 ## Hampel: Window, k (MAD multiplier), Winsorize threshold
 
-`HampelF64::new(window, k_winsorize, k_reject)`:
+`Hampel::new(window, k_winsorize, k_reject)`:
 
 - `window` — sliding window size. 11 is classic (5 on each side + center).
 - `k_winsorize` — MAD multiplier for "Winsorize zone". Typically 3.0.
@@ -124,7 +124,7 @@ Under pure Gaussian noise, `k=3` MAD ≈ 2 sigma and `k=6` MAD ≈ 4 sigma.
 
 ## Windowed Median: Window
 
-`WindowedMedianF64::new(window)`. Odd `window` values are conventional (5, 11, 21, 51). Bigger window = more robust, more lag. At 50% corruption, up to `window/2 - 1` bad samples in the window don't affect the output.
+`WindowedMedian::<f64>::new(window)`. Odd `window` values are conventional (5, 11, 21, 51). Bigger window = more robust, more lag. At 50% corruption, up to `window/2 - 1` bad samples in the window don't affect the output.
 
 ## Testing Your Parameters
 

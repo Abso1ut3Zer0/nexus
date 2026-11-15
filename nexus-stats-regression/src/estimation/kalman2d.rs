@@ -14,7 +14,7 @@
 /// - Level + trend estimation
 /// - Any 2-state linear system
 #[derive(Debug, Clone)]
-pub struct Kalman2dF64 {
+pub struct Kalman2d {
     state: [f64; 2],
     p: [f64; 4],
     q: [f64; 4],
@@ -26,21 +26,21 @@ pub struct Kalman2dF64 {
     initial_p: [f64; 4],
 }
 
-/// Builder for [`Kalman2dF64`].
+/// Builder for [`Kalman2d`].
 #[derive(Debug, Clone)]
-pub struct Kalman2dF64Builder {
+pub struct Kalman2dBuilder {
     process_noise: Option<[[f64; 2]; 2]>,
     measurement_noise: Option<f64>,
     initial_state: [f64; 2],
     initial_covariance: [[f64; 2]; 2],
 }
 
-impl Kalman2dF64 {
+impl Kalman2d {
     /// Creates a builder.
     #[inline]
     #[must_use]
-    pub fn builder() -> Kalman2dF64Builder {
-        Kalman2dF64Builder {
+    pub fn builder() -> Kalman2dBuilder {
+        Kalman2dBuilder {
             process_noise: None,
             measurement_noise: None,
             initial_state: [0.0; 2],
@@ -235,7 +235,7 @@ impl Kalman2dF64 {
     }
 }
 
-impl Kalman2dF64Builder {
+impl Kalman2dBuilder {
     /// Sets the 2x2 process noise matrix Q (required).
     #[inline]
     #[must_use]
@@ -275,7 +275,7 @@ impl Kalman2dF64Builder {
     /// - `process_noise` and `measurement_noise` must be set.
     /// - `measurement_noise` must be positive.
     #[inline]
-    pub fn build(self) -> Result<Kalman2dF64, nexus_stats_core::ConfigError> {
+    pub fn build(self) -> Result<Kalman2d, nexus_stats_core::ConfigError> {
         let q_mat = self
             .process_noise
             .ok_or(nexus_stats_core::ConfigError::Missing("process_noise"))?;
@@ -293,7 +293,7 @@ impl Kalman2dF64Builder {
         let p0 = self.initial_covariance;
         let p = [p0[0][0], p0[0][1], p0[1][0], p0[1][1]];
 
-        Ok(Kalman2dF64 {
+        Ok(Kalman2d {
             state: self.initial_state,
             p,
             q,
@@ -313,7 +313,7 @@ mod tests {
 
     #[test]
     fn constant_signal_converges() {
-        let mut kf = Kalman2dF64::builder()
+        let mut kf = Kalman2d::builder()
             .process_noise([[0.01, 0.0], [0.0, 0.01]])
             .measurement_noise(1.0)
             .build()
@@ -334,7 +334,7 @@ mod tests {
 
     #[test]
     fn covariance_shrinks() {
-        let mut kf = Kalman2dF64::builder()
+        let mut kf = Kalman2d::builder()
             .process_noise([[0.01, 0.0], [0.0, 0.01]])
             .measurement_noise(1.0)
             .initial_covariance([[100.0, 0.0], [0.0, 100.0]])
@@ -362,7 +362,7 @@ mod tests {
 
     #[test]
     fn innovation_stored() {
-        let mut kf = Kalman2dF64::builder()
+        let mut kf = Kalman2d::builder()
             .process_noise([[0.01, 0.0], [0.0, 0.01]])
             .measurement_noise(1.0)
             .build()
@@ -381,7 +381,7 @@ mod tests {
 
     #[test]
     fn reset_restores_initial() {
-        let mut kf = Kalman2dF64::builder()
+        let mut kf = Kalman2d::builder()
             .process_noise([[0.01, 0.0], [0.0, 0.01]])
             .measurement_noise(1.0)
             .initial_state([5.0, 3.0])
@@ -401,7 +401,7 @@ mod tests {
 
     #[test]
     fn builder_missing_process_noise() {
-        let result = Kalman2dF64::builder().measurement_noise(1.0).build();
+        let result = Kalman2d::builder().measurement_noise(1.0).build();
         assert!(matches!(
             result,
             Err(nexus_stats_core::ConfigError::Missing("process_noise"))
@@ -410,7 +410,7 @@ mod tests {
 
     #[test]
     fn builder_missing_measurement_noise() {
-        let result = Kalman2dF64::builder()
+        let result = Kalman2d::builder()
             .process_noise([[0.01, 0.0], [0.0, 0.01]])
             .build();
         assert!(matches!(
@@ -421,7 +421,7 @@ mod tests {
 
     #[test]
     fn builder_invalid_measurement_noise() {
-        let result = Kalman2dF64::builder()
+        let result = Kalman2d::builder()
             .process_noise([[0.01, 0.0], [0.0, 0.01]])
             .measurement_noise(0.0)
             .build();
@@ -430,7 +430,7 @@ mod tests {
             Err(nexus_stats_core::ConfigError::Invalid(_))
         ));
 
-        let result = Kalman2dF64::builder()
+        let result = Kalman2d::builder()
             .process_noise([[0.01, 0.0], [0.0, 0.01]])
             .measurement_noise(-1.0)
             .build();
@@ -444,7 +444,7 @@ mod tests {
     fn two_state_tracking() {
         // Track position and velocity. Observe position only.
         // True velocity = 1.0 per step.
-        let mut kf = Kalman2dF64::builder()
+        let mut kf = Kalman2d::builder()
             .process_noise([[0.1, 0.0], [0.0, 0.1]])
             .measurement_noise(1.0)
             .build()
@@ -466,7 +466,7 @@ mod tests {
 
     #[test]
     fn noise_setter_getters() {
-        let mut kf = Kalman2dF64::builder()
+        let mut kf = Kalman2d::builder()
             .process_noise([[0.01, 0.0], [0.0, 0.01]])
             .measurement_noise(1.0)
             .build()
@@ -486,7 +486,7 @@ mod tests {
     fn high_r_trusts_observation_less() {
         // Two Kalmans: one with normal R, one with high R.
         // Feed same outlier — high R should move state less.
-        let mut kf_normal = Kalman2dF64::builder()
+        let mut kf_normal = Kalman2d::builder()
             .process_noise([[0.01, 0.0], [0.0, 0.01]])
             .measurement_noise(1.0)
             .build()
@@ -522,7 +522,7 @@ mod tests {
 
     #[test]
     fn rejects_nan_and_inf() {
-        let mut kf = Kalman2dF64::builder()
+        let mut kf = Kalman2d::builder()
             .process_noise([[0.01, 0.0], [0.0, 0.01]])
             .measurement_noise(1.0)
             .build()

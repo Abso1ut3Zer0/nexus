@@ -1,7 +1,7 @@
 # WindowedMedian
 
-**Types:** `WindowedMedianF64`, `WindowedMedianF32`
-**Import:** `use nexus_stats_smoothing::WindowedMedianF64;`
+**Types:** `WindowedMedian<f64>`, `WindowedMedianF32`
+**Import:** `use nexus_stats_smoothing::WindowedMedian;`
 **Feature flags:** `alloc`.
 
 ## What it does
@@ -19,7 +19,7 @@ Not for: signals where you need mean semantics (Welford), or where the window la
 ## API
 
 ```rust
-impl WindowedMedianF64 {
+impl WindowedMedian<f64> {
     pub fn new(window_size: usize) -> Self;
     pub fn update(&mut self, sample: f64) -> Result<(), DataError>;
     pub fn median(&self) -> Option<f64>;
@@ -32,7 +32,7 @@ impl WindowedMedianF64 {
 ## Example — latency floor detector
 
 ```rust
-use nexus_stats_smoothing::WindowedMedianF64;
+use nexus_stats_smoothing::WindowedMedian;
 
 let latencies: [f64; 12] = [
     120.0, 125.0, 118.0, 9500.0, 121.0, 130.0,
@@ -40,7 +40,7 @@ let latencies: [f64; 12] = [
 ];
 
 // 11-sample window. With 3 spikes out of 11, median stays clean (< 50% corruption).
-let mut med = WindowedMedianF64::new(11);
+let mut med = WindowedMedian::<f64>::new(11);
 
 for &us in &latencies {
     med.update(us).unwrap();

@@ -26,26 +26,26 @@ use nexus_stats_core::math::MulAdd;
 /// # Complexity
 /// O(dims) per update, heap-allocated weight vector.
 #[derive(Debug, Clone)]
-pub struct LmsFilterF64 {
+pub struct LmsFilter {
     weights: Box<[f64]>,
     learning_rate: f64,
     dims: usize,
     count: u64,
 }
 
-/// Builder for [`LmsFilterF64`].
+/// Builder for [`LmsFilter`].
 #[derive(Debug, Clone)]
-pub struct LmsFilterF64Builder {
+pub struct LmsFilterBuilder {
     dimensions: Option<usize>,
     learning_rate: Option<f64>,
 }
 
-impl LmsFilterF64 {
+impl LmsFilter {
     /// Creates a builder.
     #[inline]
     #[must_use]
-    pub fn builder() -> LmsFilterF64Builder {
-        LmsFilterF64Builder {
+    pub fn builder() -> LmsFilterBuilder {
+        LmsFilterBuilder {
             dimensions: None,
             learning_rate: None,
         }
@@ -145,7 +145,7 @@ impl LmsFilterF64 {
     }
 }
 
-impl LmsFilterF64Builder {
+impl LmsFilterBuilder {
     /// Sets the number of input dimensions (required, >= 1).
     #[inline]
     #[must_use]
@@ -164,7 +164,7 @@ impl LmsFilterF64Builder {
 
     /// Builds the filter. Returns an error if parameters are missing or invalid.
     #[inline]
-    pub fn build(self) -> Result<LmsFilterF64, nexus_stats_core::ConfigError> {
+    pub fn build(self) -> Result<LmsFilter, nexus_stats_core::ConfigError> {
         let dims = self
             .dimensions
             .ok_or(nexus_stats_core::ConfigError::Missing("dimensions"))?;
@@ -181,7 +181,7 @@ impl LmsFilterF64Builder {
                 "learning_rate must be positive",
             ));
         }
-        Ok(LmsFilterF64 {
+        Ok(LmsFilter {
             weights: vec![0.0; dims].into_boxed_slice(),
             learning_rate: lr,
             dims,
@@ -204,7 +204,7 @@ impl LmsFilterF64Builder {
 /// # Complexity
 /// O(dims) per update, heap-allocated weight vector.
 #[derive(Debug, Clone)]
-pub struct NlmsFilterF64 {
+pub struct NlmsFilter {
     weights: Box<[f64]>,
     learning_rate: f64,
     epsilon: f64,
@@ -212,20 +212,20 @@ pub struct NlmsFilterF64 {
     count: u64,
 }
 
-/// Builder for [`NlmsFilterF64`].
+/// Builder for [`NlmsFilter`].
 #[derive(Debug, Clone)]
-pub struct NlmsFilterF64Builder {
+pub struct NlmsFilterBuilder {
     dimensions: Option<usize>,
     learning_rate: Option<f64>,
     epsilon: Option<f64>,
 }
 
-impl NlmsFilterF64 {
+impl NlmsFilter {
     /// Creates a builder.
     #[inline]
     #[must_use]
-    pub fn builder() -> NlmsFilterF64Builder {
-        NlmsFilterF64Builder {
+    pub fn builder() -> NlmsFilterBuilder {
+        NlmsFilterBuilder {
             dimensions: None,
             learning_rate: None,
             epsilon: None,
@@ -337,7 +337,7 @@ impl NlmsFilterF64 {
     }
 }
 
-impl NlmsFilterF64Builder {
+impl NlmsFilterBuilder {
     /// Sets the number of input dimensions (required, >= 1).
     #[inline]
     #[must_use]
@@ -364,7 +364,7 @@ impl NlmsFilterF64Builder {
 
     /// Builds the filter. Returns an error if parameters are missing or invalid.
     #[inline]
-    pub fn build(self) -> Result<NlmsFilterF64, nexus_stats_core::ConfigError> {
+    pub fn build(self) -> Result<NlmsFilter, nexus_stats_core::ConfigError> {
         let dims = self
             .dimensions
             .ok_or(nexus_stats_core::ConfigError::Missing("dimensions"))?;
@@ -387,7 +387,7 @@ impl NlmsFilterF64Builder {
                 "epsilon must be positive",
             ));
         }
-        Ok(NlmsFilterF64 {
+        Ok(NlmsFilter {
             weights: vec![0.0; dims].into_boxed_slice(),
             learning_rate: lr,
             epsilon: eps,
@@ -404,7 +404,7 @@ mod tests {
     #[test]
     fn lms_learns_linear_relationship() {
         // y = 2*x1 + 3*x2
-        let mut filter = LmsFilterF64::builder()
+        let mut filter = LmsFilter::builder()
             .dimensions(2)
             .learning_rate(0.01)
             .build()
@@ -425,7 +425,7 @@ mod tests {
     #[test]
     fn nlms_learns_with_different_scales() {
         // y = 2*x1 + 3*x2, with x1 scaled 100x larger than x2
-        let mut filter = NlmsFilterF64::builder()
+        let mut filter = NlmsFilter::builder()
             .dimensions(2)
             .learning_rate(0.5)
             .build()
@@ -445,7 +445,7 @@ mod tests {
 
     #[test]
     fn predict_matches_manual_dot_product() {
-        let mut filter = LmsFilterF64::builder()
+        let mut filter = LmsFilter::builder()
             .dimensions(3)
             .learning_rate(0.1)
             .build()
@@ -468,7 +468,7 @@ mod tests {
 
     #[test]
     fn reset_clears_weights() {
-        let mut filter = LmsFilterF64::builder()
+        let mut filter = LmsFilter::builder()
             .dimensions(2)
             .learning_rate(0.1)
             .build()
@@ -486,7 +486,7 @@ mod tests {
     #[test]
     #[should_panic(expected = "feature length")]
     fn dimension_mismatch_panics_on_predict() {
-        let filter = LmsFilterF64::builder()
+        let filter = LmsFilter::builder()
             .dimensions(3)
             .learning_rate(0.1)
             .build()
@@ -498,7 +498,7 @@ mod tests {
     #[test]
     #[should_panic(expected = "feature length")]
     fn dimension_mismatch_panics_on_update() {
-        let mut filter = LmsFilterF64::builder()
+        let mut filter = LmsFilter::builder()
             .dimensions(3)
             .learning_rate(0.1)
             .build()
@@ -509,7 +509,7 @@ mod tests {
 
     #[test]
     fn builder_rejects_zero_dimensions() {
-        let result = LmsFilterF64::builder()
+        let result = LmsFilter::builder()
             .dimensions(0)
             .learning_rate(0.1)
             .build();
@@ -518,7 +518,7 @@ mod tests {
 
     #[test]
     fn builder_rejects_negative_learning_rate() {
-        let result = LmsFilterF64::builder()
+        let result = LmsFilter::builder()
             .dimensions(2)
             .learning_rate(-0.01)
             .build();
@@ -527,7 +527,7 @@ mod tests {
 
     #[test]
     fn nlms_builder_rejects_negative_epsilon() {
-        let result = NlmsFilterF64::builder()
+        let result = NlmsFilter::builder()
             .dimensions(2)
             .learning_rate(0.1)
             .epsilon(-1.0)
@@ -537,7 +537,7 @@ mod tests {
 
     #[test]
     fn count_tracks_updates() {
-        let mut filter = NlmsFilterF64::builder()
+        let mut filter = NlmsFilter::builder()
             .dimensions(1)
             .learning_rate(0.1)
             .build()
@@ -552,7 +552,7 @@ mod tests {
 
     #[test]
     fn nlms_epsilon_accessor() {
-        let filter = NlmsFilterF64::builder()
+        let filter = NlmsFilter::builder()
             .dimensions(1)
             .learning_rate(0.1)
             .epsilon(1e-6)
@@ -564,7 +564,7 @@ mod tests {
 
     #[test]
     fn nlms_default_epsilon() {
-        let filter = NlmsFilterF64::builder()
+        let filter = NlmsFilter::builder()
             .dimensions(1)
             .learning_rate(0.1)
             .build()
@@ -575,7 +575,7 @@ mod tests {
 
     #[test]
     fn lms_rejects_nan_target() {
-        let mut filter = LmsFilterF64::builder()
+        let mut filter = LmsFilter::builder()
             .dimensions(2)
             .learning_rate(0.01)
             .build()
@@ -589,7 +589,7 @@ mod tests {
 
     #[test]
     fn nlms_rejects_inf_target() {
-        let mut filter = NlmsFilterF64::builder()
+        let mut filter = NlmsFilter::builder()
             .dimensions(2)
             .learning_rate(0.5)
             .build()

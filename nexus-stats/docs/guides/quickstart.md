@@ -54,9 +54,9 @@ println!("mean={:.2}, std_dev={:.2}",
 ## Filter Bad Data
 
 ```rust
-use nexus_stats::detection::{MultiGateF64, Verdict};
+use nexus_stats::detection::{MultiGate, Verdict};
 
-let mut gate = MultiGateF64::builder()
+let mut gate = MultiGate::builder()
     .alpha(0.05)
     .hard_limit_pct(0.50)
     .suspect_z(5.0)

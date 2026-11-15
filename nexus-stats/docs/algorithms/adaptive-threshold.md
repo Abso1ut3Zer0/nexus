@@ -7,7 +7,7 @@ combines EMA (baseline) + Welford (std dev) to compute z-scores.
 |----------|-------|
 | Update cost | ~15 cycles |
 | Memory | ~56 bytes |
-| Types | `AdaptiveThresholdF64`, `AdaptiveThresholdF32` |
+| Types | `AdaptiveThreshold`, `AdaptiveThresholdF32` |
 | Priming | Default: 20 samples (needs enough data for std_dev) |
 | Output | `Option<Direction>` — `Normal`, `High`, or `Low` |
 
@@ -46,14 +46,14 @@ This matters — a latency spike (High) is different from a latency improvement 
 ## Configuration
 
 ```rust
-let mut at = AdaptiveThresholdF64::builder()
+let mut at = AdaptiveThreshold::builder()
     .span(50)            // EMA baseline smoothing
     .z_threshold(3.0)    // standard 3-sigma threshold
     .min_samples(20)     // warmup for std_dev
     .build().unwrap();
 
 // Or seed from known baseline:
-let at = AdaptiveThresholdF64::builder()
+let at = AdaptiveThreshold::builder()
     .span(50)
     .z_threshold(3.0)
     .seed(100.0, 5.0)  // baseline_mean=100, baseline_std=5
@@ -64,6 +64,6 @@ let at = AdaptiveThresholdF64::builder()
 
 | Operation | p50 | p99 |
 |-----------|-----|-----|
-| `AdaptiveThresholdF64::update` | ~15 cycles | ~20 cycles |
+| `AdaptiveThreshold::update` | ~15 cycles | ~20 cycles |
 
 EMA update + Welford update + z-score computation + comparison.

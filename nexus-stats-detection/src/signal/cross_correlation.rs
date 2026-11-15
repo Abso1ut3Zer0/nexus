@@ -35,10 +35,10 @@ use alloc::vec;
 /// # Examples
 ///
 /// ```
-/// use nexus_stats_detection::signal::CrossCorrelationF64;
+/// use nexus_stats_detection::signal::CrossCorrelation;
 ///
 /// // B = A shifted by 3 steps
-/// let mut cc = CrossCorrelationF64::builder().lag(10).build().unwrap();
+/// let mut cc = CrossCorrelation::builder().lag(10).build().unwrap();
 /// let a: Vec<f64> = (0..500).map(|i| (i as f64).sin()).collect();
 /// for i in 0..500 {
 ///     let b = if i >= 3 { a[i - 3] } else { 0.0 };
@@ -50,7 +50,7 @@ use alloc::vec;
 /// }
 /// ```
 #[derive(Debug, Clone)]
-pub struct CrossCorrelationF64 {
+pub struct CrossCorrelation {
     buffer_a: Box<[f64]>,
     cross_m: Box<[f64]>,
     lag: usize,
@@ -62,18 +62,18 @@ pub struct CrossCorrelationF64 {
     m2_b: f64,
 }
 
-/// Builder for [`CrossCorrelationF64`].
+/// Builder for [`CrossCorrelation`].
 #[derive(Debug, Clone)]
-pub struct CrossCorrelationF64Builder {
+pub struct CrossCorrelationBuilder {
     lag: Option<usize>,
 }
 
-impl CrossCorrelationF64 {
+impl CrossCorrelation {
     /// Creates a builder.
     #[inline]
     #[must_use]
-    pub fn builder() -> CrossCorrelationF64Builder {
-        CrossCorrelationF64Builder { lag: None }
+    pub fn builder() -> CrossCorrelationBuilder {
+        CrossCorrelationBuilder { lag: None }
     }
 
     /// Feeds paired observations from both streams.
@@ -242,7 +242,7 @@ impl CrossCorrelationF64 {
     }
 }
 
-impl CrossCorrelationF64Builder {
+impl CrossCorrelationBuilder {
     /// Sets the maximum lag (required, >= 1).
     ///
     /// The tracker computes cross-correlation at lags 0..lag-1.
@@ -258,14 +258,14 @@ impl CrossCorrelationF64Builder {
     /// # Errors
     /// Returns `ConfigError` if lag is missing or < 1.
     #[inline]
-    pub fn build(self) -> Result<CrossCorrelationF64, nexus_stats_core::ConfigError> {
+    pub fn build(self) -> Result<CrossCorrelation, nexus_stats_core::ConfigError> {
         let lag = self
             .lag
             .ok_or(nexus_stats_core::ConfigError::Missing("lag"))?;
         if lag < 1 {
             return Err(nexus_stats_core::ConfigError::Invalid("lag must be >= 1"));
         }
-        Ok(CrossCorrelationF64 {
+        Ok(CrossCorrelation {
             buffer_a: vec![0.0; lag].into_boxed_slice(),
             cross_m: vec![0.0; lag].into_boxed_slice(),
             lag,
@@ -285,7 +285,7 @@ mod tests {
 
     #[test]
     fn identical_streams_correlation_one() {
-        let mut cc = CrossCorrelationF64::builder().lag(1).build().unwrap();
+        let mut cc = CrossCorrelation::builder().lag(1).build().unwrap();
         for i in 0..1000u64 {
             let x = i as f64;
             cc.update(x, x).unwrap();
@@ -299,7 +299,7 @@ mod tests {
 
     #[test]
     fn opposite_streams_correlation_negative() {
-        let mut cc = CrossCorrelationF64::builder().lag(1).build().unwrap();
+        let mut cc = CrossCorrelation::builder().lag(1).build().unwrap();
         for i in 0..1000u64 {
             let x = i as f64;
             cc.update(x, -x).unwrap();
@@ -313,7 +313,7 @@ mod tests {
 
     #[test]
     fn shifted_signal_peak_lag() {
-        let mut cc = CrossCorrelationF64::builder().lag(10).build().unwrap();
+        let mut cc = CrossCorrelation::builder().lag(10).build().unwrap();
         let shift = 3;
         let a: Vec<f64> = (0..1000).map(|i| ((i as f64) * 0.1).sin()).collect();
         for i in 0..1000 {
@@ -329,7 +329,7 @@ mod tests {
 
     #[test]
     fn lag0_matches_covariance_type() {
-        let mut cc = CrossCorrelationF64::builder().lag(1).build().unwrap();
+        let mut cc = CrossCorrelation::builder().lag(1).build().unwrap();
         let mut cov = nexus_stats_core::statistics::Covariance::new();
 
         for i in 0..500u64 {
@@ -349,7 +349,7 @@ mod tests {
 
     #[test]
     fn not_primed_until_enough_samples() {
-        let mut cc = CrossCorrelationF64::builder().lag(5).build().unwrap();
+        let mut cc = CrossCorrelation::builder().lag(5).build().unwrap();
         for i in 0..5 {
             cc.update(i as f64, i as f64).unwrap();
             assert!(!cc.is_primed());
@@ -360,7 +360,7 @@ mod tests {
 
     #[test]
     fn lag_out_of_range_returns_none() {
-        let mut cc = CrossCorrelationF64::builder().lag(5).build().unwrap();
+        let mut cc = CrossCorrelation::builder().lag(5).build().unwrap();
         for i in 0..20 {
             cc.update(i as f64, i as f64).unwrap();
         }
@@ -370,7 +370,7 @@ mod tests {
 
     #[test]
     fn zero_variance_returns_none() {
-        let mut cc = CrossCorrelationF64::builder().lag(1).build().unwrap();
+        let mut cc = CrossCorrelation::builder().lag(1).build().unwrap();
         for _ in 0..100 {
             cc.update(42.0, 42.0).unwrap();
         }
@@ -379,7 +379,7 @@ mod tests {
 
     #[test]
     fn reset_clears_state() {
-        let mut cc = CrossCorrelationF64::builder().lag(3).build().unwrap();
+        let mut cc = CrossCorrelation::builder().lag(3).build().unwrap();
         for i in 0..100 {
             cc.update(i as f64, (i * 2) as f64).unwrap();
         }
@@ -390,13 +390,13 @@ mod tests {
 
     #[test]
     fn lag_accessor() {
-        let cc = CrossCorrelationF64::builder().lag(7).build().unwrap();
+        let cc = CrossCorrelation::builder().lag(7).build().unwrap();
         assert_eq!(cc.lag(), 7);
     }
 
     #[test]
     fn rejects_nan_and_inf() {
-        let mut cc = CrossCorrelationF64::builder().lag(1).build().unwrap();
+        let mut cc = CrossCorrelation::builder().lag(1).build().unwrap();
         assert_eq!(
             cc.update(f64::NAN, 1.0),
             Err(nexus_stats_core::DataError::NotANumber)
@@ -410,7 +410,7 @@ mod tests {
 
     #[test]
     fn builder_requires_lag() {
-        let result = CrossCorrelationF64::builder().build();
+        let result = CrossCorrelation::builder().build();
         assert!(matches!(
             result,
             Err(nexus_stats_core::ConfigError::Missing("lag"))
@@ -419,7 +419,7 @@ mod tests {
 
     #[test]
     fn builder_rejects_zero_lag() {
-        let result = CrossCorrelationF64::builder().lag(0).build();
+        let result = CrossCorrelation::builder().lag(0).build();
         assert!(result.is_err());
     }
 }

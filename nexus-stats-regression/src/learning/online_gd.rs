@@ -24,9 +24,9 @@ use alloc::vec;
 /// # Examples
 ///
 /// ```
-/// use nexus_stats_regression::learning::OnlineGdF64;
+/// use nexus_stats_regression::learning::OnlineGd;
 ///
-/// let mut gd = OnlineGdF64::builder()
+/// let mut gd = OnlineGd::builder()
 ///     .dimensions(2)
 ///     .learning_rate(0.1)
 ///     .build()
@@ -42,26 +42,26 @@ use alloc::vec;
 /// assert!(gd.parameters()[0].abs() < 0.01);
 /// ```
 #[derive(Debug, Clone)]
-pub struct OnlineGdF64 {
+pub struct OnlineGd {
     params: Box<[f64]>,
     learning_rate: f64,
     dims: usize,
     count: u64,
 }
 
-/// Builder for [`OnlineGdF64`].
+/// Builder for [`OnlineGd`].
 #[derive(Debug, Clone)]
-pub struct OnlineGdF64Builder {
+pub struct OnlineGdBuilder {
     dimensions: Option<usize>,
     learning_rate: Option<f64>,
 }
 
-impl OnlineGdF64 {
+impl OnlineGd {
     /// Creates a builder.
     #[inline]
     #[must_use]
-    pub fn builder() -> OnlineGdF64Builder {
-        OnlineGdF64Builder {
+    pub fn builder() -> OnlineGdBuilder {
+        OnlineGdBuilder {
             dimensions: Option::None,
             learning_rate: Option::None,
         }
@@ -162,7 +162,7 @@ impl OnlineGdF64 {
     }
 }
 
-impl OnlineGdF64Builder {
+impl OnlineGdBuilder {
     /// Sets the number of parameter dimensions (required, >= 1).
     #[inline]
     #[must_use]
@@ -184,7 +184,7 @@ impl OnlineGdF64Builder {
     /// # Errors
     /// Returns `ConfigError` if parameters are missing or invalid.
     #[inline]
-    pub fn build(self) -> Result<OnlineGdF64, nexus_stats_core::ConfigError> {
+    pub fn build(self) -> Result<OnlineGd, nexus_stats_core::ConfigError> {
         let dims = self
             .dimensions
             .ok_or(nexus_stats_core::ConfigError::Missing("dimensions"))?;
@@ -201,7 +201,7 @@ impl OnlineGdF64Builder {
                 "learning_rate must be positive",
             ));
         }
-        Ok(OnlineGdF64 {
+        Ok(OnlineGd {
             params: vec![0.0; dims].into_boxed_slice(),
             learning_rate: lr,
             dims,
@@ -217,7 +217,7 @@ mod tests {
     #[test]
     fn minimizes_quadratic() {
         // f(x) = x² → gradient = 2x, minimum at 0
-        let mut gd = OnlineGdF64::builder()
+        let mut gd = OnlineGd::builder()
             .dimensions(1)
             .learning_rate(0.1)
             .build()
@@ -238,7 +238,7 @@ mod tests {
     #[test]
     fn minimizes_2d_quadratic() {
         // f(x,y) = x² + y² → gradient = [2x, 2y]
-        let mut gd = OnlineGdF64::builder()
+        let mut gd = OnlineGd::builder()
             .dimensions(2)
             .learning_rate(0.1)
             .build()
@@ -257,7 +257,7 @@ mod tests {
     #[test]
     fn high_lr_diverges() {
         // Learning rate too high → parameters grow
-        let mut gd = OnlineGdF64::builder()
+        let mut gd = OnlineGd::builder()
             .dimensions(1)
             .learning_rate(1.5) // > 1.0 for quadratic → diverges
             .build()
@@ -273,7 +273,7 @@ mod tests {
 
     #[test]
     fn rejects_nan_gradient() {
-        let mut gd = OnlineGdF64::builder()
+        let mut gd = OnlineGd::builder()
             .dimensions(2)
             .learning_rate(0.01)
             .build()
@@ -288,7 +288,7 @@ mod tests {
 
     #[test]
     fn rejects_inf_gradient() {
-        let mut gd = OnlineGdF64::builder()
+        let mut gd = OnlineGd::builder()
             .dimensions(2)
             .learning_rate(0.01)
             .build()
@@ -308,7 +308,7 @@ mod tests {
     #[test]
     #[should_panic(expected = "gradient length")]
     fn dimension_mismatch_panics() {
-        let mut gd = OnlineGdF64::builder()
+        let mut gd = OnlineGd::builder()
             .dimensions(3)
             .learning_rate(0.01)
             .build()
@@ -319,7 +319,7 @@ mod tests {
 
     #[test]
     fn reset_zeros_params() {
-        let mut gd = OnlineGdF64::builder()
+        let mut gd = OnlineGd::builder()
             .dimensions(2)
             .learning_rate(0.1)
             .build()
@@ -336,7 +336,7 @@ mod tests {
 
     #[test]
     fn set_parameters_works() {
-        let mut gd = OnlineGdF64::builder()
+        let mut gd = OnlineGd::builder()
             .dimensions(3)
             .learning_rate(0.01)
             .build()
@@ -350,7 +350,7 @@ mod tests {
 
     #[test]
     fn count_tracks_steps() {
-        let mut gd = OnlineGdF64::builder()
+        let mut gd = OnlineGd::builder()
             .dimensions(1)
             .learning_rate(0.01)
             .build()
@@ -365,7 +365,7 @@ mod tests {
 
     #[test]
     fn builder_rejects_zero_dimensions() {
-        let result = OnlineGdF64::builder()
+        let result = OnlineGd::builder()
             .dimensions(0)
             .learning_rate(0.01)
             .build();
@@ -374,7 +374,7 @@ mod tests {
 
     #[test]
     fn builder_rejects_negative_lr() {
-        let result = OnlineGdF64::builder()
+        let result = OnlineGd::builder()
             .dimensions(2)
             .learning_rate(-0.01)
             .build();
@@ -383,7 +383,7 @@ mod tests {
 
     #[test]
     fn builder_requires_dimensions() {
-        let result = OnlineGdF64::builder().learning_rate(0.01).build();
+        let result = OnlineGd::builder().learning_rate(0.01).build();
         assert!(matches!(
             result,
             Err(nexus_stats_core::ConfigError::Missing("dimensions"))
@@ -392,7 +392,7 @@ mod tests {
 
     #[test]
     fn builder_requires_learning_rate() {
-        let result = OnlineGdF64::builder().dimensions(2).build();
+        let result = OnlineGd::builder().dimensions(2).build();
         assert!(matches!(
             result,
             Err(nexus_stats_core::ConfigError::Missing("learning_rate"))

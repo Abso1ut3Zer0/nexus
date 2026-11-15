@@ -28,7 +28,7 @@ pub enum Verdict {
 /// - Sensor anomaly detection with graded response
 /// - Multi-level alert systems
 #[derive(Debug, Clone)]
-pub struct MultiGateF64 {
+pub struct MultiGate {
     alpha: f64,
     one_minus_alpha: f64,
     ema_value: f64,
@@ -41,9 +41,9 @@ pub struct MultiGateF64 {
     initialized: bool,
 }
 
-/// Builder for [`MultiGateF64`].
+/// Builder for [`MultiGate`].
 #[derive(Debug, Clone)]
-pub struct MultiGateF64Builder {
+pub struct MultiGateBuilder {
     alpha: Option<f64>,
     hard_limit_pct: Option<f64>,
     suspect_z: Option<f64>,
@@ -51,12 +51,12 @@ pub struct MultiGateF64Builder {
     min_samples: u64,
 }
 
-impl MultiGateF64 {
+impl MultiGate {
     /// Creates a builder.
     #[inline]
     #[must_use]
-    pub fn builder() -> MultiGateF64Builder {
-        MultiGateF64Builder {
+    pub fn builder() -> MultiGateBuilder {
+        MultiGateBuilder {
             alpha: None,
             hard_limit_pct: None,
             suspect_z: None,
@@ -183,7 +183,7 @@ impl MultiGateF64 {
     }
 }
 
-impl MultiGateF64Builder {
+impl MultiGateBuilder {
     /// EMA smoothing factor.
     #[inline]
     #[must_use]
@@ -238,7 +238,7 @@ impl MultiGateF64Builder {
     ///
     /// - Alpha, hard_limit, and suspect_z must have been set.
     #[inline]
-    pub fn build(self) -> Result<MultiGateF64, nexus_stats_core::ConfigError> {
+    pub fn build(self) -> Result<MultiGate, nexus_stats_core::ConfigError> {
         let alpha = self
             .alpha
             .ok_or(nexus_stats_core::ConfigError::Missing("alpha"))?;
@@ -254,7 +254,7 @@ impl MultiGateF64Builder {
             ));
         }
 
-        Ok(MultiGateF64 {
+        Ok(MultiGate {
             alpha,
             one_minus_alpha: 1.0 - alpha,
             ema_value: 0.0,
@@ -273,8 +273,8 @@ impl MultiGateF64Builder {
 mod tests {
     use super::*;
 
-    fn make_gate() -> MultiGateF64 {
-        MultiGateF64::builder()
+    fn make_gate() -> MultiGate {
+        MultiGate::builder()
             .alpha(0.1)
             .hard_limit(0.5) // reject > 50% change
             .suspect_z(5.0) // suspect at 5x normal spread
@@ -323,7 +323,7 @@ mod tests {
 
     #[test]
     fn moderate_anomaly_suspect() {
-        let mut mg = MultiGateF64::builder()
+        let mut mg = MultiGate::builder()
             .alpha(0.1)
             .hard_limit(1.0) // very high hard limit
             .suspect_z(3.0)
@@ -365,7 +365,7 @@ mod tests {
 
     #[test]
     fn errors_without_hard_limit() {
-        let result = MultiGateF64::builder().alpha(0.1).suspect_z(3.0).build();
+        let result = MultiGate::builder().alpha(0.1).suspect_z(3.0).build();
         assert!(matches!(
             result,
             Err(nexus_stats_core::ConfigError::Missing("hard_limit"))

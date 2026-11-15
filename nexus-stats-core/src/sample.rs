@@ -49,6 +49,12 @@ pub trait Sample:
     /// assertion, so floats compile to a bare `maxsd`/`minsd` pair.
     fn clamp_to(self, lo: Self, hi: Self) -> Self;
 
+    /// The value halfway between `self` and `other`, without overflow.
+    fn midpoint(self, other: Self) -> Self;
+
+    /// The value as `f64` (exact for `f64`, rounded for large `i64`).
+    fn to_f64(self) -> f64;
+
     /// Exponential smoother for this type: alpha-weighted for floats, the
     /// kernel-style fixed-point shift EMA for integers. Used by `Jitter<T>`.
     #[doc(hidden)]
@@ -212,6 +218,16 @@ impl Sample for f64 {
         self.max(lo).min(hi)
     }
 
+    #[inline]
+    fn midpoint(self, other: Self) -> Self {
+        f64::midpoint(self, other)
+    }
+
+    #[inline]
+    fn to_f64(self) -> f64 {
+        self
+    }
+
     type Ema = AlphaEma;
     type EmaConfig = f64;
     const EMA_CONFIG_NAME: &'static str = "alpha";
@@ -247,6 +263,17 @@ impl Sample for i64 {
     #[inline]
     fn clamp_to(self, lo: Self, hi: Self) -> Self {
         Ord::max(self, lo).min(hi)
+    }
+
+    #[inline]
+    fn midpoint(self, other: Self) -> Self {
+        i64::midpoint(self, other)
+    }
+
+    #[inline]
+    #[allow(clippy::cast_precision_loss)]
+    fn to_f64(self) -> f64 {
+        self as f64
     }
 
     type Ema = ShiftEma;

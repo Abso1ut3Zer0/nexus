@@ -11,7 +11,7 @@ use nexus_stats_core::math::MulAdd;
 /// - Capacity planning and degradation forecasting
 /// - Adaptive baselines that track drift
 #[derive(Debug, Clone)]
-pub struct HoltF64 {
+pub struct Holt {
     alpha: f64,
     beta: f64,
     one_minus_alpha: f64,
@@ -22,9 +22,9 @@ pub struct HoltF64 {
     min_samples: u64,
 }
 
-/// Builder for [`HoltF64`].
+/// Builder for [`Holt`].
 #[derive(Debug, Clone)]
-pub struct HoltF64Builder {
+pub struct HoltBuilder {
     alpha: Option<f64>,
     beta: Option<f64>,
     min_samples: u64,
@@ -32,12 +32,12 @@ pub struct HoltF64Builder {
     seed_trend: Option<f64>,
 }
 
-impl HoltF64 {
+impl Holt {
     /// Creates a builder.
     #[inline]
     #[must_use]
-    pub fn builder() -> HoltF64Builder {
-        HoltF64Builder {
+    pub fn builder() -> HoltBuilder {
+        HoltBuilder {
             alpha: None,
             beta: None,
             min_samples: 2,
@@ -144,7 +144,7 @@ impl HoltF64 {
     }
 }
 
-impl HoltF64Builder {
+impl HoltBuilder {
     /// Level smoothing factor. Must be in (0, 1) exclusive.
     #[inline]
     #[must_use]
@@ -187,7 +187,7 @@ impl HoltF64Builder {
     /// - Alpha and beta must have been set.
     /// - Both must be in (0, 1) exclusive.
     #[inline]
-    pub fn build(self) -> Result<HoltF64, nexus_stats_core::ConfigError> {
+    pub fn build(self) -> Result<Holt, nexus_stats_core::ConfigError> {
         let alpha = self
             .alpha
             .ok_or(nexus_stats_core::ConfigError::Missing("alpha"))?;
@@ -210,7 +210,7 @@ impl HoltF64Builder {
             _ => (0.0, 0.0, 0),
         };
 
-        Ok(HoltF64 {
+        Ok(Holt {
             alpha,
             beta,
             one_minus_alpha: 1.0 - alpha,
@@ -229,7 +229,7 @@ mod tests {
 
     #[test]
     fn constant_input_zero_trend() {
-        let mut h = HoltF64::builder().alpha(0.3).beta(0.1).build().unwrap();
+        let mut h = Holt::builder().alpha(0.3).beta(0.1).build().unwrap();
 
         for _ in 0..100 {
             h.update(50.0).unwrap();
@@ -244,7 +244,7 @@ mod tests {
 
     #[test]
     fn linear_input_correct_trend() {
-        let mut h = HoltF64::builder().alpha(0.5).beta(0.5).build().unwrap();
+        let mut h = Holt::builder().alpha(0.5).beta(0.5).build().unwrap();
 
         // Feed linear data: 0, 10, 20, 30, ...
         for i in 0..100 {
@@ -261,7 +261,7 @@ mod tests {
 
     #[test]
     fn forecast_accuracy() {
-        let mut h = HoltF64::builder().alpha(0.5).beta(0.5).build().unwrap();
+        let mut h = Holt::builder().alpha(0.5).beta(0.5).build().unwrap();
 
         for i in 0..50 {
             h.update(i as f64 * 10.0).unwrap();
@@ -278,7 +278,7 @@ mod tests {
 
     #[test]
     fn priming_needs_two_samples() {
-        let mut h = HoltF64::builder().alpha(0.3).beta(0.1).build().unwrap();
+        let mut h = Holt::builder().alpha(0.3).beta(0.1).build().unwrap();
 
         assert!(h.update(10.0).unwrap().is_none()); // first sample — not primed
         assert!(h.update(20.0).unwrap().is_some()); // second sample — primed
@@ -286,7 +286,7 @@ mod tests {
 
     #[test]
     fn reset_clears() {
-        let mut h = HoltF64::builder().alpha(0.3).beta(0.1).build().unwrap();
+        let mut h = Holt::builder().alpha(0.3).beta(0.1).build().unwrap();
         h.update(10.0).unwrap();
         h.update(20.0).unwrap();
 
@@ -298,7 +298,7 @@ mod tests {
 
     #[test]
     fn seeded_is_primed() {
-        let h = HoltF64::builder()
+        let h = Holt::builder()
             .alpha(0.3)
             .beta(0.1)
             .seed(100.0, 5.0)
@@ -312,7 +312,7 @@ mod tests {
 
     #[test]
     fn errors_without_alpha() {
-        let result = HoltF64::builder().beta(0.1).build();
+        let result = Holt::builder().beta(0.1).build();
         assert!(matches!(
             result,
             Err(nexus_stats_core::ConfigError::Missing("alpha"))
@@ -321,7 +321,7 @@ mod tests {
 
     #[test]
     fn errors_without_beta() {
-        let result = HoltF64::builder().alpha(0.3).build();
+        let result = Holt::builder().alpha(0.3).build();
         assert!(matches!(
             result,
             Err(nexus_stats_core::ConfigError::Missing("beta"))
@@ -330,7 +330,7 @@ mod tests {
 
     #[test]
     fn rejects_nan_and_inf() {
-        let mut h = HoltF64::builder().alpha(0.3).beta(0.1).build().unwrap();
+        let mut h = Holt::builder().alpha(0.3).beta(0.1).build().unwrap();
         assert!(matches!(
             h.update(f64::NAN),
             Err(nexus_stats_core::DataError::NotANumber)

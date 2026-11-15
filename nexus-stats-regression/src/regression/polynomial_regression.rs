@@ -14,12 +14,12 @@
 /// With intercept: `values[0]` = constant (a₀), `values[1]` = x coefficient (a₁), etc.
 /// Without intercept: `values[0]` = x¹ coefficient, `values[1]` = x² coefficient, etc.
 #[derive(Debug, Clone, Copy)]
-pub struct CoefficientsF64 {
+pub struct Coefficients {
     pub(crate) values: [f64; 9],
     pub(crate) len: usize,
 }
 
-impl CoefficientsF64 {
+impl Coefficients {
     /// Coefficients as a slice.
     #[inline]
     #[must_use]
@@ -53,7 +53,7 @@ impl CoefficientsF64 {
     }
 }
 
-impl core::ops::Index<usize> for CoefficientsF64 {
+impl core::ops::Index<usize> for Coefficients {
     type Output = f64;
     #[inline]
     fn index(&self, i: usize) -> &f64 {
@@ -131,10 +131,10 @@ pub(crate) fn gauss_solve_f64(dim: usize, a: &mut [[f64; 9]; 9], b: &mut [f64; 9
 /// # Examples
 ///
 /// ```
-/// use nexus_stats_regression::regression::PolynomialRegressionF64;
+/// use nexus_stats_regression::regression::PolynomialRegression;
 ///
 /// // Fit y = x² - 3x + 2 (quadratic)
-/// let mut r = PolynomialRegressionF64::builder().degree(2).build().unwrap();
+/// let mut r = PolynomialRegression::builder().degree(2).build().unwrap();
 /// for x in -50..50i64 {
 ///     let xf = x as f64;
 ///     r.update(xf, xf * xf - 3.0 * xf + 2.0);
@@ -143,7 +143,7 @@ pub(crate) fn gauss_solve_f64(dim: usize, a: &mut [[f64; 9]; 9], b: &mut [f64; 9
 /// assert_eq!(c.len(), 3); // [constant, x, x²]
 /// ```
 #[derive(Debug, Clone)]
-pub struct PolynomialRegressionF64 {
+pub struct PolynomialRegression {
     sum_x: [f64; 17],
     sum_xy: [f64; 9],
     sum_y2: f64,
@@ -152,19 +152,19 @@ pub struct PolynomialRegressionF64 {
     intercept: bool,
 }
 
-/// Builder for [`PolynomialRegressionF64`].
+/// Builder for [`PolynomialRegression`].
 #[derive(Debug, Clone)]
-pub struct PolynomialRegressionF64Builder {
+pub struct PolynomialRegressionBuilder {
     degree: Option<usize>,
     intercept: bool,
 }
 
-impl PolynomialRegressionF64 {
+impl PolynomialRegression {
     /// Creates a builder.
     #[inline]
     #[must_use]
-    pub fn builder() -> PolynomialRegressionF64Builder {
-        PolynomialRegressionF64Builder {
+    pub fn builder() -> PolynomialRegressionBuilder {
+        PolynomialRegressionBuilder {
             degree: None,
             intercept: true,
         }
@@ -220,7 +220,7 @@ impl PolynomialRegressionF64 {
     /// power (aₖ). Without intercept, the first coefficient corresponds
     /// to x¹.
     #[must_use]
-    pub fn coefficients(&self) -> Option<CoefficientsF64> {
+    pub fn coefficients(&self) -> Option<Coefficients> {
         let dim = self.dim();
         if (self.count as usize) < dim {
             return None;
@@ -241,7 +241,7 @@ impl PolynomialRegressionF64 {
             return None;
         }
 
-        let mut coeffs = CoefficientsF64 {
+        let mut coeffs = Coefficients {
             values: [0.0; 9],
             len: dim,
         };
@@ -319,7 +319,7 @@ impl PolynomialRegressionF64 {
     }
 }
 
-impl PolynomialRegressionF64Builder {
+impl PolynomialRegressionBuilder {
     /// Polynomial degree (1..=8). Required.
     #[inline]
     #[must_use]
@@ -344,7 +344,7 @@ impl PolynomialRegressionF64Builder {
     ///
     /// Returns `ConfigError::Missing` if degree not set.
     /// Returns `ConfigError::Invalid` if degree not in 1..=8.
-    pub fn build(self) -> Result<PolynomialRegressionF64, nexus_stats_core::ConfigError> {
+    pub fn build(self) -> Result<PolynomialRegression, nexus_stats_core::ConfigError> {
         let degree = self
             .degree
             .ok_or(nexus_stats_core::ConfigError::Missing("degree"))?;
@@ -354,7 +354,7 @@ impl PolynomialRegressionF64Builder {
             ));
         }
 
-        Ok(PolynomialRegressionF64 {
+        Ok(PolynomialRegression {
             sum_x: [0.0; 17],
             sum_xy: [0.0; 9],
             sum_y2: 0.0,
@@ -369,18 +369,12 @@ impl PolynomialRegressionF64Builder {
 mod tests {
     use super::*;
 
-    fn quadratic() -> PolynomialRegressionF64 {
-        PolynomialRegressionF64::builder()
-            .degree(2)
-            .build()
-            .unwrap()
+    fn quadratic() -> PolynomialRegression {
+        PolynomialRegression::builder().degree(2).build().unwrap()
     }
 
-    fn cubic() -> PolynomialRegressionF64 {
-        PolynomialRegressionF64::builder()
-            .degree(3)
-            .build()
-            .unwrap()
+    fn cubic() -> PolynomialRegression {
+        PolynomialRegression::builder().degree(3).build().unwrap()
     }
 
     // =========================================================================
@@ -436,10 +430,7 @@ mod tests {
 
     #[test]
     fn builder_degree_4() {
-        let mut r = PolynomialRegressionF64::builder()
-            .degree(4)
-            .build()
-            .unwrap();
+        let mut r = PolynomialRegression::builder().degree(4).build().unwrap();
         for x in -20..20 {
             let xf = x as f64;
             r.update(xf, xf * xf * xf * xf).unwrap();
@@ -451,7 +442,7 @@ mod tests {
 
     #[test]
     fn builder_no_intercept() {
-        let mut r = PolynomialRegressionF64::builder()
+        let mut r = PolynomialRegression::builder()
             .degree(1)
             .intercept(false)
             .build()
@@ -466,27 +457,17 @@ mod tests {
 
     #[test]
     fn builder_rejects_degree_0() {
-        assert!(
-            PolynomialRegressionF64::builder()
-                .degree(0)
-                .build()
-                .is_err()
-        );
+        assert!(PolynomialRegression::builder().degree(0).build().is_err());
     }
 
     #[test]
     fn builder_rejects_degree_9() {
-        assert!(
-            PolynomialRegressionF64::builder()
-                .degree(9)
-                .build()
-                .is_err()
-        );
+        assert!(PolynomialRegression::builder().degree(9).build().is_err());
     }
 
     #[test]
     fn builder_rejects_missing_degree() {
-        assert!(PolynomialRegressionF64::builder().build().is_err());
+        assert!(PolynomialRegression::builder().build().is_err());
     }
 
     // =========================================================================
@@ -524,15 +505,9 @@ mod tests {
 
     #[test]
     fn different_degrees_same_type() {
-        let models: [PolynomialRegressionF64; 2] = [
-            PolynomialRegressionF64::builder()
-                .degree(2)
-                .build()
-                .unwrap(),
-            PolynomialRegressionF64::builder()
-                .degree(3)
-                .build()
-                .unwrap(),
+        let models: [PolynomialRegression; 2] = [
+            PolynomialRegression::builder().degree(2).build().unwrap(),
+            PolynomialRegression::builder().degree(3).build().unwrap(),
         ];
         assert_eq!(models[0].degree(), 2);
         assert_eq!(models[1].degree(), 3);

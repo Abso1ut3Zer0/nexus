@@ -7,7 +7,7 @@ Online Pearson correlation between two streams at multiple lags.
 |----------|-------|
 | Update cost | ~39 cycles (LAG=10) |
 | Memory | `16×LAG + 48` bytes |
-| Types | `CrossCorrelationF64` |
+| Types | `CrossCorrelation` |
 | Priming | After `LAG + 2` paired observations |
 | Output | `correlation(lag)`, `covariance(lag)`, `peak_lag()` — all `Option` |
 | Feature | `std` or `libm` (needs `sqrt` for correlation) |
@@ -73,10 +73,10 @@ the current running mean — O(1/n) error, negligible for streaming.
 ## Configuration
 
 ```rust
-use nexus_stats::signal::CrossCorrelationF64;
+use nexus_stats::signal::CrossCorrelation;
 
 // Track correlations at lags 0..9
-let mut cc = CrossCorrelationF64::builder().lag(10).build().unwrap();
+let mut cc = CrossCorrelation::builder().lag(10).build().unwrap();
 
 for (a, b) in stream_a.iter().zip(stream_b.iter()) {
     cc.update(*a, *b);
@@ -98,7 +98,7 @@ if let Some(lag) = cc.peak_lag() {
 
 ```rust
 // Does sensor A's reading predict sensor B's?
-let mut cc = CrossCorrelationF64::builder().lag(20).build().unwrap();
+let mut cc = CrossCorrelation::builder().lag(20).build().unwrap();
 
 // Feed readings from both sensors:
 cc.update(sensor_a_reading, sensor_b_reading);
@@ -114,7 +114,7 @@ if let Some(lag) = cc.peak_lag() {
 
 ```rust
 // Does CPU spike predict latency spike?
-let mut cc = CrossCorrelationF64::builder().lag(10).build().unwrap();
+let mut cc = CrossCorrelation::builder().lag(10).build().unwrap();
 
 cc.update(cpu_utilization, request_latency);
 
@@ -126,7 +126,7 @@ cc.update(cpu_utilization, request_latency);
 
 ```rust
 // Measure propagation delay between two sensors
-let mut cc = CrossCorrelationF64::builder().lag(100).build().unwrap();
+let mut cc = CrossCorrelation::builder().lag(100).build().unwrap();
 
 cc.update(sensor_a_reading, sensor_b_reading);
 
@@ -154,6 +154,6 @@ confirm directionality.
 
 | Operation | p50 |
 |-----------|-----|
-| `CrossCorrelationF64::update` (lag=10) | ~39 cycles |
+| `CrossCorrelation::update` (lag=10) | ~39 cycles |
 | `correlation(lag)` query | ~8 cycles (includes `sqrt`) |
 | `peak_lag()` query | ~15 cycles (scans all lags) |

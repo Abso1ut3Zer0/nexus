@@ -18,9 +18,9 @@ use nexus_stats_core::DataError;
 /// # Examples
 ///
 /// ```
-/// use nexus_stats_detection::detection::PageHinkleyF64;
+/// use nexus_stats_detection::detection::PageHinkley;
 ///
-/// let mut ph = PageHinkleyF64::builder()
+/// let mut ph = PageHinkley::builder()
 ///     .threshold(50.0)
 ///     .alpha(0.5)
 ///     .build()
@@ -32,7 +32,7 @@ use nexus_stats_core::DataError;
 /// }
 /// ```
 #[derive(Debug, Clone)]
-pub struct PageHinkleyF64 {
+pub struct PageHinkley {
     threshold: f64,
     alpha: f64,
     mean: f64,
@@ -44,20 +44,20 @@ pub struct PageHinkleyF64 {
     min_samples: u64,
 }
 
-/// Builder for [`PageHinkleyF64`].
+/// Builder for [`PageHinkley`].
 #[derive(Debug, Clone)]
-pub struct PageHinkleyF64Builder {
+pub struct PageHinkleyBuilder {
     threshold: Option<f64>,
     alpha: Option<f64>,
     min_samples: u64,
 }
 
-impl PageHinkleyF64 {
+impl PageHinkley {
     /// Creates a builder.
     #[inline]
     #[must_use]
-    pub fn builder() -> PageHinkleyF64Builder {
-        PageHinkleyF64Builder {
+    pub fn builder() -> PageHinkleyBuilder {
+        PageHinkleyBuilder {
             threshold: None,
             alpha: None,
             min_samples: 30,
@@ -124,7 +124,7 @@ impl PageHinkleyF64 {
     }
 }
 
-impl PageHinkleyF64Builder {
+impl PageHinkleyBuilder {
     /// Detection threshold (lambda). Required, must be positive.
     ///
     /// Larger values reduce false positives but increase detection delay.
@@ -161,7 +161,7 @@ impl PageHinkleyF64Builder {
     /// - Threshold must have been set and be positive.
     /// - Alpha must have been set and be non-negative.
     #[inline]
-    pub fn build(self) -> Result<PageHinkleyF64, nexus_stats_core::ConfigError> {
+    pub fn build(self) -> Result<PageHinkley, nexus_stats_core::ConfigError> {
         let threshold = self
             .threshold
             .ok_or(nexus_stats_core::ConfigError::Missing("threshold"))?;
@@ -180,7 +180,7 @@ impl PageHinkleyF64Builder {
             ));
         }
 
-        Ok(PageHinkleyF64 {
+        Ok(PageHinkley {
             threshold,
             alpha,
             mean: 0.0,
@@ -200,7 +200,7 @@ mod tests {
 
     #[test]
     fn no_drift() {
-        let mut ph = PageHinkleyF64::builder()
+        let mut ph = PageHinkley::builder()
             .threshold(50.0)
             .alpha(0.5)
             .build()
@@ -213,7 +213,7 @@ mod tests {
 
     #[test]
     fn upward_drift() {
-        let mut ph = PageHinkleyF64::builder()
+        let mut ph = PageHinkley::builder()
             .threshold(50.0)
             .alpha(0.5)
             .min_samples(20)
@@ -236,7 +236,7 @@ mod tests {
 
     #[test]
     fn downward_drift() {
-        let mut ph = PageHinkleyF64::builder()
+        let mut ph = PageHinkley::builder()
             .threshold(50.0)
             .alpha(0.5)
             .min_samples(20)
@@ -259,14 +259,14 @@ mod tests {
 
     #[test]
     fn sensitivity_vs_alpha() {
-        let mut sensitive = PageHinkleyF64::builder()
+        let mut sensitive = PageHinkley::builder()
             .threshold(50.0)
             .alpha(0.0)
             .min_samples(20)
             .build()
             .unwrap();
 
-        let mut tolerant = PageHinkleyF64::builder()
+        let mut tolerant = PageHinkley::builder()
             .threshold(50.0)
             .alpha(5.0)
             .min_samples(20)
@@ -301,7 +301,7 @@ mod tests {
 
     #[test]
     fn reset_clears() {
-        let mut ph = PageHinkleyF64::builder()
+        let mut ph = PageHinkley::builder()
             .threshold(50.0)
             .alpha(0.5)
             .min_samples(20)
@@ -326,7 +326,7 @@ mod tests {
 
     #[test]
     fn nan_rejected() {
-        let mut ph = PageHinkleyF64::builder()
+        let mut ph = PageHinkley::builder()
             .threshold(50.0)
             .alpha(0.5)
             .build()
@@ -336,7 +336,7 @@ mod tests {
 
     #[test]
     fn inf_rejected() {
-        let mut ph = PageHinkleyF64::builder()
+        let mut ph = PageHinkley::builder()
             .threshold(50.0)
             .alpha(0.5)
             .build()
@@ -346,7 +346,7 @@ mod tests {
 
     #[test]
     fn builder_missing_threshold() {
-        let result = PageHinkleyF64::builder().alpha(0.5).build();
+        let result = PageHinkley::builder().alpha(0.5).build();
         assert!(matches!(
             result,
             Err(nexus_stats_core::ConfigError::Missing("threshold"))
@@ -355,7 +355,7 @@ mod tests {
 
     #[test]
     fn builder_negative_threshold() {
-        let result = PageHinkleyF64::builder().threshold(-1.0).alpha(0.5).build();
+        let result = PageHinkley::builder().threshold(-1.0).alpha(0.5).build();
         assert!(matches!(
             result,
             Err(nexus_stats_core::ConfigError::Invalid(_))

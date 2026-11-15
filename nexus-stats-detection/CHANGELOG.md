@@ -8,6 +8,25 @@ with the project-specific allowance that a minor bump may carry small,
 narrowly-scoped breaking changes when external blast radius is
 contained.
 
+## [Unreleased]
+
+### Changed
+
+- **No numeric suffixes** (the stats major, [#773](https://github.com/Abso1ut3Zer0/nexus/issues/773)): `CusumF64`-style names become plain
+  (`MosumF64` → `Mosum`, `AdaptiveThresholdF64` → `AdaptiveThreshold`,
+  `TrendAlertF64` → `TrendAlert`, `AutocorrelationF64` → `Autocorrelation`,
+  `BocpdF64` → `Bocpd`, ...); builders follow.
+- **`RobustZScore<T>`** replaces `RobustZScoreF64` / `RobustZScoreF32`: a
+  `Float` generic (`f64`, `f32`) that takes and returns `T` but keeps its EMA
+  baseline and absolute-deviation scale in `f64`, so the `f32` form is a
+  boundary type for `f32` feature pipelines, no longer an `f32` accumulator.
+
+### Removed
+
+- **`MosumI64`**, **`AutocorrelationI64`** ([#379](https://github.com/Abso1ut3Zer0/nexus/issues/379)):
+  no integer count-stream caller for MOSUM; autocorrelation is fractional.
+  Use `Mosum` and `Autocorrelation` on `f64`.
+
 ## [2.0.0] — 2026-05-28
 
 ### Removed

@@ -7,7 +7,7 @@ standard for filtering bad data in real-time systems.
 |----------|-------|
 | Update cost | ~12 cycles |
 | Memory | ~56 bytes |
-| Types | `MultiGateF64` |
+| Types | `MultiGate` |
 | Priming | Configurable via `min_samples` |
 | Output | `Option<Verdict>` — `Accept`, `Unusual`, `Suspect`, `Reject` |
 
@@ -59,7 +59,7 @@ is the #1 bug in production anomaly filters.
 ## Configuration
 
 ```rust
-let mut gate = MultiGateF64::builder()
+let mut gate = MultiGate::builder()
     .alpha(0.1)              // EMA smoothing
     .hard_limit_pct(0.50)    // reject >50% moves (Gate 1)
     .suspect_z(6.0)          // suspect >6σ moves (Gate 2)
@@ -80,7 +80,7 @@ match gate.update(sample) {
 
 ### Trading — Market Data Quality
 ```rust
-let mut tick_filter = MultiGateF64::builder()
+let mut tick_filter = MultiGate::builder()
     .alpha(0.05)
     .hard_limit_pct(0.20)     // 20% move = impossible for this instrument
     .suspect_z(5.0)
@@ -91,7 +91,7 @@ let mut tick_filter = MultiGateF64::builder()
 
 ### IoT — Sensor Data Validation
 ```rust
-let mut sensor = MultiGateF64::builder()
+let mut sensor = MultiGate::builder()
     .alpha(0.1)
     .hard_limit_pct(0.50)
     .suspect_z(4.0)
@@ -103,7 +103,7 @@ let mut sensor = MultiGateF64::builder()
 
 | Operation | p50 | p99 |
 |-----------|-----|-----|
-| `MultiGateF64::update` | 12 cycles | 17 cycles |
+| `MultiGate::update` | 12 cycles | 17 cycles |
 
 Three gate checks + conditional EMA update. The conditional update
 (freeze on reject) adds no cost on the Accept path.

@@ -121,4 +121,4 @@ for latency in latencies {
 
 - `ErrorRate` — rolling error fraction without sequential-test machinery.
 - `HitRate` — rolling success rate.
-- For multiple comparisons or continuous thresholds, use `AdaptiveThresholdF64` or `MultiGateF64` instead.
+- For multiple comparisons or continuous thresholds, use `AdaptiveThreshold` or `MultiGate` instead.

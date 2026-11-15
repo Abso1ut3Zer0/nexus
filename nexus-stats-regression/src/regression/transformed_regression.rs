@@ -5,7 +5,7 @@
 // - Logarithmic: y = a * ln(x) + b  ->  y = a * ln(x) + b  (already linear in ln(x))
 // - Power law: y = a * x^b  ->  ln(y) = ln(a) + b * ln(x)
 
-use super::linear_regression::{EwLinearRegressionF64, LinearRegressionF64};
+use super::linear_regression::{EwLinearRegression, LinearRegression};
 
 // ============================================================================
 // Exponential: y = a * e^(bx)
@@ -21,9 +21,9 @@ use super::linear_regression::{EwLinearRegressionF64, LinearRegressionF64};
 /// # Examples
 ///
 /// ```
-/// use nexus_stats_regression::regression::ExponentialRegressionF64;
+/// use nexus_stats_regression::regression::ExponentialRegression;
 ///
-/// let mut r = ExponentialRegressionF64::new();
+/// let mut r = ExponentialRegression::new();
 /// for x in 0..100 {
 ///     let y = 2.0_f64 * (0.05_f64 * x as f64).exp();
 ///     r.update(x as _, y);
@@ -32,17 +32,17 @@ use super::linear_regression::{EwLinearRegressionF64, LinearRegressionF64};
 /// assert!((rate - 0.05).abs() < 0.01);
 /// ```
 #[derive(Debug, Clone)]
-pub struct ExponentialRegressionF64 {
-    inner: LinearRegressionF64,
+pub struct ExponentialRegression {
+    inner: LinearRegression,
 }
 
-impl ExponentialRegressionF64 {
+impl ExponentialRegression {
     /// Creates a new empty exponential regression.
     #[inline]
     #[must_use]
     pub fn new() -> Self {
         Self {
-            inner: LinearRegressionF64::new(),
+            inner: LinearRegression::new(),
         }
     }
 
@@ -110,7 +110,7 @@ impl ExponentialRegressionF64 {
     }
 }
 
-impl Default for ExponentialRegressionF64 {
+impl Default for ExponentialRegression {
     #[inline]
     fn default() -> Self {
         Self::new()
@@ -129,9 +129,9 @@ impl Default for ExponentialRegressionF64 {
 /// # Examples
 ///
 /// ```
-/// use nexus_stats_regression::regression::LogarithmicRegressionF64;
+/// use nexus_stats_regression::regression::LogarithmicRegression;
 ///
-/// let mut r = LogarithmicRegressionF64::new();
+/// let mut r = LogarithmicRegression::new();
 /// for x in 1..200 {
 ///     let y = 3.0_f64 * (x as f64).ln() + 1.0_f64;
 ///     r.update(x as _, y);
@@ -140,17 +140,17 @@ impl Default for ExponentialRegressionF64 {
 /// assert!((slope - 3.0).abs() < 0.01);
 /// ```
 #[derive(Debug, Clone)]
-pub struct LogarithmicRegressionF64 {
-    inner: LinearRegressionF64,
+pub struct LogarithmicRegression {
+    inner: LinearRegression,
 }
 
-impl LogarithmicRegressionF64 {
+impl LogarithmicRegression {
     /// Creates a new empty logarithmic regression.
     #[inline]
     #[must_use]
     pub fn new() -> Self {
         Self {
-            inner: LinearRegressionF64::new(),
+            inner: LinearRegression::new(),
         }
     }
 
@@ -220,7 +220,7 @@ impl LogarithmicRegressionF64 {
     }
 }
 
-impl Default for LogarithmicRegressionF64 {
+impl Default for LogarithmicRegression {
     #[inline]
     fn default() -> Self {
         Self::new()
@@ -241,9 +241,9 @@ impl Default for LogarithmicRegressionF64 {
 /// # Examples
 ///
 /// ```
-/// use nexus_stats_regression::regression::PowerRegressionF64;
+/// use nexus_stats_regression::regression::PowerRegression;
 ///
-/// let mut r = PowerRegressionF64::new();
+/// let mut r = PowerRegression::new();
 /// for x in 1..200 {
 ///     let y = 4.0_f64 * (x as f64).powf(2.5);
 ///     r.update(x as _, y);
@@ -252,17 +252,17 @@ impl Default for LogarithmicRegressionF64 {
 /// assert!((exp - 2.5).abs() < 0.01);
 /// ```
 #[derive(Debug, Clone)]
-pub struct PowerRegressionF64 {
-    inner: LinearRegressionF64,
+pub struct PowerRegression {
+    inner: LinearRegression,
 }
 
-impl PowerRegressionF64 {
+impl PowerRegression {
     /// Creates a new empty power law regression.
     #[inline]
     #[must_use]
     pub fn new() -> Self {
         Self {
-            inner: LinearRegressionF64::new(),
+            inner: LinearRegression::new(),
         }
     }
 
@@ -338,7 +338,7 @@ impl PowerRegressionF64 {
     }
 }
 
-impl Default for PowerRegressionF64 {
+impl Default for PowerRegression {
     #[inline]
     fn default() -> Self {
         Self::new()
@@ -351,22 +351,22 @@ impl Default for PowerRegressionF64 {
 
 /// Exponentially-weighted exponential regression: `y = a * e^(bx)`.
 #[derive(Debug, Clone)]
-pub struct EwExponentialRegressionF64 {
-    inner: EwLinearRegressionF64,
+pub struct EwExponentialRegression {
+    inner: EwLinearRegression,
 }
 
-/// Builder for [`EwExponentialRegressionF64`].
+/// Builder for [`EwExponentialRegression`].
 #[derive(Debug, Clone)]
-pub struct EwExponentialRegressionF64Builder {
+pub struct EwExponentialRegressionBuilder {
     alpha: Option<f64>,
 }
 
-impl EwExponentialRegressionF64 {
+impl EwExponentialRegression {
     /// Creates a builder.
     #[inline]
     #[must_use]
-    pub fn builder() -> EwExponentialRegressionF64Builder {
-        EwExponentialRegressionF64Builder { alpha: None }
+    pub fn builder() -> EwExponentialRegressionBuilder {
+        EwExponentialRegressionBuilder { alpha: None }
     }
 
     /// Feeds (x, y). Silently skips if `y <= 0`.
@@ -433,7 +433,7 @@ impl EwExponentialRegressionF64 {
     }
 }
 
-impl EwExponentialRegressionF64Builder {
+impl EwExponentialRegressionBuilder {
     /// Weight on new observation, in (0, 1).
     #[inline]
     #[must_use]
@@ -443,33 +443,33 @@ impl EwExponentialRegressionF64Builder {
     }
 
     /// Builds the estimator.
-    pub fn build(self) -> Result<EwExponentialRegressionF64, nexus_stats_core::ConfigError> {
+    pub fn build(self) -> Result<EwExponentialRegression, nexus_stats_core::ConfigError> {
         let alpha = self
             .alpha
             .ok_or(nexus_stats_core::ConfigError::Missing("alpha"))?;
-        let inner = EwLinearRegressionF64::builder().alpha(alpha).build()?;
-        Ok(EwExponentialRegressionF64 { inner })
+        let inner = EwLinearRegression::builder().alpha(alpha).build()?;
+        Ok(EwExponentialRegression { inner })
     }
 }
 
 /// Exponentially-weighted logarithmic regression: `y = a * ln(x) + b`.
 #[derive(Debug, Clone)]
-pub struct EwLogarithmicRegressionF64 {
-    inner: EwLinearRegressionF64,
+pub struct EwLogarithmicRegression {
+    inner: EwLinearRegression,
 }
 
-/// Builder for [`EwLogarithmicRegressionF64`].
+/// Builder for [`EwLogarithmicRegression`].
 #[derive(Debug, Clone)]
-pub struct EwLogarithmicRegressionF64Builder {
+pub struct EwLogarithmicRegressionBuilder {
     alpha: Option<f64>,
 }
 
-impl EwLogarithmicRegressionF64 {
+impl EwLogarithmicRegression {
     /// Creates a builder.
     #[inline]
     #[must_use]
-    pub fn builder() -> EwLogarithmicRegressionF64Builder {
-        EwLogarithmicRegressionF64Builder { alpha: None }
+    pub fn builder() -> EwLogarithmicRegressionBuilder {
+        EwLogarithmicRegressionBuilder { alpha: None }
     }
 
     /// Feeds (x, y). Silently skips if `x <= 0`.
@@ -536,7 +536,7 @@ impl EwLogarithmicRegressionF64 {
     }
 }
 
-impl EwLogarithmicRegressionF64Builder {
+impl EwLogarithmicRegressionBuilder {
     /// Alpha.
     #[inline]
     #[must_use]
@@ -546,33 +546,33 @@ impl EwLogarithmicRegressionF64Builder {
     }
 
     /// Build.
-    pub fn build(self) -> Result<EwLogarithmicRegressionF64, nexus_stats_core::ConfigError> {
+    pub fn build(self) -> Result<EwLogarithmicRegression, nexus_stats_core::ConfigError> {
         let alpha = self
             .alpha
             .ok_or(nexus_stats_core::ConfigError::Missing("alpha"))?;
-        let inner = EwLinearRegressionF64::builder().alpha(alpha).build()?;
-        Ok(EwLogarithmicRegressionF64 { inner })
+        let inner = EwLinearRegression::builder().alpha(alpha).build()?;
+        Ok(EwLogarithmicRegression { inner })
     }
 }
 
 /// Exponentially-weighted power law regression: `y = a * x^b`.
 #[derive(Debug, Clone)]
-pub struct EwPowerRegressionF64 {
-    inner: EwLinearRegressionF64,
+pub struct EwPowerRegression {
+    inner: EwLinearRegression,
 }
 
-/// Builder for [`EwPowerRegressionF64`].
+/// Builder for [`EwPowerRegression`].
 #[derive(Debug, Clone)]
-pub struct EwPowerRegressionF64Builder {
+pub struct EwPowerRegressionBuilder {
     alpha: Option<f64>,
 }
 
-impl EwPowerRegressionF64 {
+impl EwPowerRegression {
     /// Creates a builder.
     #[inline]
     #[must_use]
-    pub fn builder() -> EwPowerRegressionF64Builder {
-        EwPowerRegressionF64Builder { alpha: None }
+    pub fn builder() -> EwPowerRegressionBuilder {
+        EwPowerRegressionBuilder { alpha: None }
     }
 
     /// Feeds (x, y). Silently skips if `x <= 0` or `y <= 0`.
@@ -645,7 +645,7 @@ impl EwPowerRegressionF64 {
     }
 }
 
-impl EwPowerRegressionF64Builder {
+impl EwPowerRegressionBuilder {
     /// Alpha.
     #[inline]
     #[must_use]
@@ -655,12 +655,12 @@ impl EwPowerRegressionF64Builder {
     }
 
     /// Build.
-    pub fn build(self) -> Result<EwPowerRegressionF64, nexus_stats_core::ConfigError> {
+    pub fn build(self) -> Result<EwPowerRegression, nexus_stats_core::ConfigError> {
         let alpha = self
             .alpha
             .ok_or(nexus_stats_core::ConfigError::Missing("alpha"))?;
-        let inner = EwLinearRegressionF64::builder().alpha(alpha).build()?;
-        Ok(EwPowerRegressionF64 { inner })
+        let inner = EwLinearRegression::builder().alpha(alpha).build()?;
+        Ok(EwPowerRegression { inner })
     }
 }
 
@@ -674,7 +674,7 @@ mod tests {
 
     #[test]
     fn exponential_exact_fit() {
-        let mut r = ExponentialRegressionF64::new();
+        let mut r = ExponentialRegression::new();
         for x in 0..100 {
             let xf = x as f64;
             let y = 2.0 * (0.05 * xf).exp();
@@ -689,7 +689,7 @@ mod tests {
 
     #[test]
     fn exponential_predict() {
-        let mut r = ExponentialRegressionF64::new();
+        let mut r = ExponentialRegression::new();
         for x in 0..100 {
             let xf = x as f64;
             r.update(xf, 2.0 * (0.05 * xf).exp()).unwrap();
@@ -701,7 +701,7 @@ mod tests {
 
     #[test]
     fn exponential_skips_negative_y() {
-        let mut r = ExponentialRegressionF64::new();
+        let mut r = ExponentialRegression::new();
         r.update(1.0, -5.0).unwrap(); // skipped
         r.update(2.0, 0.0).unwrap(); // skipped
         assert_eq!(r.count(), 0);
@@ -713,7 +713,7 @@ mod tests {
 
     #[test]
     fn logarithmic_exact_fit() {
-        let mut r = LogarithmicRegressionF64::new();
+        let mut r = LogarithmicRegression::new();
         for x in 1..200 {
             let xf = x as f64;
             r.update(xf, 3.0f64.mul_add(xf.ln(), 1.0)).unwrap();
@@ -726,7 +726,7 @@ mod tests {
 
     #[test]
     fn logarithmic_skips_negative_x() {
-        let mut r = LogarithmicRegressionF64::new();
+        let mut r = LogarithmicRegression::new();
         r.update(-1.0, 5.0).unwrap();
         r.update(0.0, 5.0).unwrap();
         assert_eq!(r.count(), 0);
@@ -734,7 +734,7 @@ mod tests {
 
     #[test]
     fn logarithmic_predict_negative_x_returns_none() {
-        let mut r = LogarithmicRegressionF64::new();
+        let mut r = LogarithmicRegression::new();
         for x in 1..100 {
             r.update(x as f64, (x as f64).ln()).unwrap();
         }
@@ -747,7 +747,7 @@ mod tests {
 
     #[test]
     fn power_exact_fit() {
-        let mut r = PowerRegressionF64::new();
+        let mut r = PowerRegression::new();
         for x in 1..200 {
             let xf = x as f64;
             r.update(xf, 4.0 * xf.powf(2.5)).unwrap();
@@ -760,7 +760,7 @@ mod tests {
 
     #[test]
     fn power_skips_nonpositive() {
-        let mut r = PowerRegressionF64::new();
+        let mut r = PowerRegression::new();
         r.update(0.0, 5.0).unwrap();
         r.update(1.0, -5.0).unwrap();
         let _ = r.update(-1.0, 5.0);
@@ -773,7 +773,7 @@ mod tests {
 
     #[test]
     fn ew_exponential_basic() {
-        let mut r = EwExponentialRegressionF64::builder()
+        let mut r = EwExponentialRegression::builder()
             .alpha(0.05)
             .build()
             .unwrap();
@@ -787,7 +787,7 @@ mod tests {
 
     #[test]
     fn ew_logarithmic_basic() {
-        let mut r = EwLogarithmicRegressionF64::builder()
+        let mut r = EwLogarithmicRegression::builder()
             .alpha(0.05)
             .build()
             .unwrap();
@@ -800,7 +800,7 @@ mod tests {
 
     #[test]
     fn ew_power_basic() {
-        let mut r = EwPowerRegressionF64::builder().alpha(0.05).build().unwrap();
+        let mut r = EwPowerRegression::builder().alpha(0.05).build().unwrap();
         for x in 1..300 {
             r.update(x as f64, 3.0 * (x as f64).powf(1.5)).unwrap();
         }
@@ -813,9 +813,9 @@ mod tests {
 
     #[test]
     fn reset_all_transforms() {
-        let mut exp = ExponentialRegressionF64::new();
-        let mut log = LogarithmicRegressionF64::new();
-        let mut pow = PowerRegressionF64::new();
+        let mut exp = ExponentialRegression::new();
+        let mut log = LogarithmicRegression::new();
+        let mut pow = PowerRegression::new();
         for x in 1..100 {
             exp.update(x as f64, (x as f64).exp()).unwrap();
             log.update(x as f64, (x as f64).ln()).unwrap();
@@ -831,8 +831,8 @@ mod tests {
 
     #[test]
     fn defaults_are_empty() {
-        assert_eq!(ExponentialRegressionF64::default().count(), 0);
-        assert_eq!(LogarithmicRegressionF64::default().count(), 0);
-        assert_eq!(PowerRegressionF64::default().count(), 0);
+        assert_eq!(ExponentialRegression::default().count(), 0);
+        assert_eq!(LogarithmicRegression::default().count(), 0);
+        assert_eq!(PowerRegression::default().count(), 0);
     }
 }

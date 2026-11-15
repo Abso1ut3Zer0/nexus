@@ -2,16 +2,16 @@
 
 Closed-form and EW regressors. Module path: `nexus_stats_regression::regression`.
 
-## LinearRegressionF64 — streaming OLS
+## LinearRegression — streaming OLS
 
 The simplest streaming regressor: y = a + bx. Updates sufficient statistics (`Σx`, `Σy`, `Σxy`, `Σx²`, `n`) on each `update(x, y)`; solves the OLS equations on query.
 
 ### API
 
 ```rust
-impl LinearRegressionF64 {
+impl LinearRegression {
     pub fn new() -> Self;
-    pub fn builder() -> LinearRegressionF64Builder;
+    pub fn builder() -> LinearRegressionBuilder;
     pub fn update(&mut self, x: f64, y: f64) -> Result<(), DataError>;
     pub fn slope(&self) -> Option<f64>;
     pub fn intercept_value(&self) -> Option<f64>;
@@ -24,9 +24,9 @@ impl LinearRegressionF64 {
 ### Example — pair-trade beta
 
 ```rust
-use nexus_stats_regression::regression::LinearRegressionF64;
+use nexus_stats_regression::regression::LinearRegression;
 
-let mut beta = LinearRegressionF64::new();
+let mut beta = LinearRegression::new();
 
 // Returns of instrument A (x) and instrument B (y).
 for (ra, rb) in paired_returns {
@@ -46,16 +46,16 @@ let fair = beta.predict(0.01).unwrap();
 ### Caveats
 
 - OLS assumes `x` is known and noise is in `y`. If both are noisy (pair-trade — both returns are estimates), consider total least squares or a Kalman filter.
-- No forgetting. Use `EwLinearRegressionF64` if you need the fit to adapt to drift.
+- No forgetting. Use `EwLinearRegression` if you need the fit to adapt to drift.
 
 ---
 
-## EwLinearRegressionF64 — forgetful linear regression
+## EwLinearRegression — forgetful linear regression
 
 Same shape, but sufficient statistics decay exponentially. The effective sample size stays bounded, so the regression adapts to regime changes.
 
 ```rust
-let mut beta = EwLinearRegressionF64::builder()
+let mut beta = EwLinearRegression::builder()
     .halflife(500.0)
     .build()
     .unwrap();
@@ -66,15 +66,15 @@ Use when the relationship between x and y drifts (structural beta change, regime
 
 ---
 
-## PolynomialRegressionF64 — streaming polynomial fit
+## PolynomialRegression — streaming polynomial fit
 
 Fits `y = a0 + a1 x + ... + ad x^d` for configurable degree `d`. Updates the power moments `Σx^k` and cross moments `Σx^k y` in O(d²) per update; solves on query.
 
 ### API
 
 ```rust
-impl PolynomialRegressionF64 {
-    pub fn builder() -> PolynomialRegressionF64Builder;
+impl PolynomialRegression {
+    pub fn builder() -> PolynomialRegressionBuilder;
     pub fn update(&mut self, x: f64, y: f64) -> Result<(), DataError>;
     pub fn coefficients(&self) -> Option<Vec<f64>>;
     pub fn predict(&self, x: f64) -> Option<f64>;
@@ -84,9 +84,9 @@ impl PolynomialRegressionF64 {
 ### Example — nonlinear trend
 
 ```rust
-use nexus_stats_regression::regression::PolynomialRegressionF64;
+use nexus_stats_regression::regression::PolynomialRegression;
 
-let mut quad = PolynomialRegressionF64::builder()
+let mut quad = PolynomialRegression::builder()
     .degree(2)
     .intercept(true)
     .build()
@@ -107,7 +107,7 @@ let y_hat = quad.predict(1.5).unwrap();
 
 ---
 
-## EwPolynomialRegressionF64 — forgetful polynomial regression
+## EwPolynomialRegression — forgetful polynomial regression
 
 Same as above but with EW decay. Use when the curve shape drifts.
 
@@ -128,10 +128,10 @@ You feed raw `(x, y)` pairs; the type applies the transform internally. `predict
 ### Example — exponential growth fit
 
 ```rust
-use nexus_stats_regression::regression::ExponentialRegressionF64;
+use nexus_stats_regression::regression::ExponentialRegression;
 // (Type name is illustrative; see source for the exact re-exported name.)
 
-let mut fit = ExponentialRegressionF64::new();
+let mut fit = ExponentialRegression::new();
 for (t, y) in growth_data {
     fit.update(t, y).unwrap();   // y must be positive
 }
@@ -146,15 +146,15 @@ let predicted = fit.predict(10.0).unwrap(); // e.g. y at t=10
 
 ---
 
-## LogisticRegressionF64 — online binary classifier
+## LogisticRegression — online binary classifier
 
 Online logistic regression via stochastic gradient steps on the logistic loss. Maintains a weight vector of dimension `features`; `predict(features)` returns a probability in `[0, 1]`.
 
 ### API
 
 ```rust
-impl LogisticRegressionF64 {
-    pub fn builder() -> LogisticRegressionF64Builder;
+impl LogisticRegression {
+    pub fn builder() -> LogisticRegressionBuilder;
     pub fn predict(&self, features: &[f64]) -> f64;        // 0..1
     pub fn update(&mut self, features: &[f64], outcome: bool);
     pub fn weights(&self) -> &[f64];
@@ -164,9 +164,9 @@ impl LogisticRegressionF64 {
 ### Example — predicting fill likelihood
 
 ```rust
-use nexus_stats_regression::regression::LogisticRegressionF64;
+use nexus_stats_regression::regression::LogisticRegression;
 
-let mut clf = LogisticRegressionF64::builder()
+let mut clf = LogisticRegression::builder()
     .dimensions(5)
     .learning_rate(0.01)
     .build()
@@ -225,15 +225,15 @@ let slope = pred.slope().unwrap();
 
 ---
 
-## KyleLambdaF64 — price impact slope
+## KyleLambda — price impact slope
 
 Kyle's lambda from market microstructure: `ΔP = λ * volume_imbalance`. The regression slope between signed volume and price change.
 
 ### API
 
 ```rust
-impl KyleLambdaF64 {
-    pub fn builder() -> KyleLambdaF64Builder;
+impl KyleLambda {
+    pub fn builder() -> KyleLambdaBuilder;
     pub fn update(&mut self, signed_volume: f64, price_change: f64) -> Result<(), DataError>;
     pub fn lambda(&self) -> Option<f64>;
     pub fn intercept(&self) -> Option<f64>;
@@ -243,9 +243,9 @@ impl KyleLambdaF64 {
 ### Example
 
 ```rust
-use nexus_stats_regression::regression::KyleLambdaF64;
+use nexus_stats_regression::regression::KyleLambda;
 
-let mut kl = KyleLambdaF64::builder()
+let mut kl = KyleLambda::builder()
     .halflife(1000.0)
     .build()
     .unwrap();

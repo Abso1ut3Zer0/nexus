@@ -4,22 +4,22 @@ Advanced change detection and signal analysis for [nexus-stats](https://crates.i
 
 ## Detection Types
 
-- **MosumF64** — Moving sum change detection (requires `alloc`)
-- **ShiryaevRobertsF64** — Shiryaev-Roberts change detection (requires `std` or `libm`)
-- **AdaptiveThresholdF64** — EMA + Welford adaptive threshold (requires `std` or `libm`)
-- **RobustZScoreF64** — Median-based robust Z-score anomaly detection
-- **TrendAlertF64** — Holt-based trend alerting
-- **MultiGateF64** — Multi-threshold gating
-- **PageHinkleyF64** — Sequential mean drift detection (Page-Hinkley test)
-- **AdwinF64** — Adaptive window distribution change detection (requires `alloc` + (`std` or `libm`))
+- **Mosum** — Moving sum change detection (requires `alloc`)
+- **ShiryaevRoberts** — Shiryaev-Roberts change detection (requires `std` or `libm`)
+- **AdaptiveThreshold** — EMA + Welford adaptive threshold (requires `std` or `libm`)
+- **RobustZScore<f64>** — Median-based robust Z-score anomaly detection
+- **TrendAlert** — Holt-based trend alerting
+- **MultiGate** — Multi-threshold gating
+- **PageHinkley** — Sequential mean drift detection (Page-Hinkley test)
+- **Adwin** — Adaptive window distribution change detection (requires `alloc` + (`std` or `libm`))
 
 ## Signal Types
 
-- **AutocorrelationF64** — Lagged autocorrelation (requires `alloc`)
-- **CrossCorrelationF64** — Lagged cross-correlation (requires `alloc`)
-- **EntropyF64** — Shannon entropy estimation (requires `alloc` + (`std` or `libm`))
-- **TransferEntropyF64** — Transfer entropy between series (requires `alloc` + (`std` or `libm`))
-- **PredictiveInfoBoundF64** — Binned mutual information estimation (requires `alloc` + (`std` or `libm`))
+- **Autocorrelation** — Lagged autocorrelation (requires `alloc`)
+- **CrossCorrelation** — Lagged cross-correlation (requires `alloc`)
+- **Entropy** — Shannon entropy estimation (requires `alloc` + (`std` or `libm`))
+- **TransferEntropy** — Transfer entropy between series (requires `alloc` + (`std` or `libm`))
+- **PredictiveInfoBound** — Binned mutual information estimation (requires `alloc` + (`std` or `libm`))
 
 ## Estimation Types
 
@@ -31,8 +31,8 @@ Advanced change detection and signal analysis for [nexus-stats](https://crates.i
 Enable the `detection` feature on `nexus-stats` for unified import paths:
 
 ```rust
-use nexus_stats::detection::RobustZScoreF64;
-use nexus_stats::signal::AutocorrelationF64;
+use nexus_stats::detection::RobustZScore;
+use nexus_stats::signal::Autocorrelation;
 ```
 
 ## License

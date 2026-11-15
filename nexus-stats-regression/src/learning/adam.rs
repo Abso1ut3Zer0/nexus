@@ -26,9 +26,9 @@ use alloc::vec;
 /// # Examples
 ///
 /// ```
-/// use nexus_stats_regression::learning::AdamF64;
+/// use nexus_stats_regression::learning::Adam;
 ///
-/// let mut adam = AdamF64::builder()
+/// let mut adam = Adam::builder()
 ///     .dimensions(2)
 ///     .learning_rate(0.01)
 ///     .build()
@@ -43,7 +43,7 @@ use alloc::vec;
 /// assert!(adam.parameters()[0].abs() < 0.1);
 /// ```
 #[derive(Debug, Clone)]
-pub struct AdamF64 {
+pub struct Adam {
     params: Box<[f64]>,
     m: Box<[f64]>,
     v: Box<[f64]>,
@@ -58,9 +58,9 @@ pub struct AdamF64 {
     count: u64,
 }
 
-/// Builder for [`AdamF64`].
+/// Builder for [`Adam`].
 #[derive(Debug, Clone)]
-pub struct AdamF64Builder {
+pub struct AdamBuilder {
     dimensions: Option<usize>,
     learning_rate: Option<f64>,
     beta1: Option<f64>,
@@ -69,12 +69,12 @@ pub struct AdamF64Builder {
     weight_decay: Option<f64>,
 }
 
-impl AdamF64 {
+impl Adam {
     /// Creates a builder.
     #[inline]
     #[must_use]
-    pub fn builder() -> AdamF64Builder {
-        AdamF64Builder {
+    pub fn builder() -> AdamBuilder {
+        AdamBuilder {
             dimensions: Option::None,
             learning_rate: Option::None,
             beta1: Option::None,
@@ -251,7 +251,7 @@ impl AdamF64 {
     }
 }
 
-impl AdamF64Builder {
+impl AdamBuilder {
     /// Sets the number of parameter dimensions (required, >= 1).
     #[inline]
     #[must_use]
@@ -308,7 +308,7 @@ impl AdamF64Builder {
     /// # Errors
     /// Returns `ConfigError` if parameters are missing or invalid.
     #[inline]
-    pub fn build(self) -> Result<AdamF64, nexus_stats_core::ConfigError> {
+    pub fn build(self) -> Result<Adam, nexus_stats_core::ConfigError> {
         let dims = self
             .dimensions
             .ok_or(nexus_stats_core::ConfigError::Missing("dimensions"))?;
@@ -349,7 +349,7 @@ impl AdamF64Builder {
                 "weight_decay must be non-negative",
             ));
         }
-        Ok(AdamF64 {
+        Ok(Adam {
             params: vec![0.0; dims].into_boxed_slice(),
             m: vec![0.0; dims].into_boxed_slice(),
             v: vec![0.0; dims].into_boxed_slice(),
@@ -372,7 +372,7 @@ mod tests {
 
     #[test]
     fn minimizes_quadratic() {
-        let mut adam = AdamF64::builder()
+        let mut adam = Adam::builder()
             .dimensions(2)
             .learning_rate(0.1)
             .build()
@@ -401,7 +401,7 @@ mod tests {
         // f(x,y) = (1-x)² + 100(y-x²)²
         // df/dx = -2(1-x) - 400x(y-x²)
         // df/dy = 200(y-x²)
-        let mut adam = AdamF64::builder()
+        let mut adam = Adam::builder()
             .dimensions(2)
             .learning_rate(0.001)
             .build()
@@ -425,7 +425,7 @@ mod tests {
     fn bias_correction_works() {
         // Without bias correction, early m/v estimates are too small.
         // Verify first step produces a meaningful parameter update.
-        let mut adam = AdamF64::builder()
+        let mut adam = Adam::builder()
             .dimensions(1)
             .learning_rate(0.1)
             .build()
@@ -447,7 +447,7 @@ mod tests {
 
     #[test]
     fn weight_decay_shrinks_params() {
-        let mut adam = AdamF64::builder()
+        let mut adam = Adam::builder()
             .dimensions(1)
             .learning_rate(0.001)
             .weight_decay(0.1)
@@ -468,7 +468,7 @@ mod tests {
 
     #[test]
     fn zero_weight_decay_is_standard_adam() {
-        let mut adam = AdamF64::builder()
+        let mut adam = Adam::builder()
             .dimensions(1)
             .learning_rate(0.1)
             .weight_decay(0.0)
@@ -485,7 +485,7 @@ mod tests {
 
     #[test]
     fn default_hyperparameters() {
-        let adam = AdamF64::builder()
+        let adam = Adam::builder()
             .dimensions(1)
             .learning_rate(0.001)
             .build()
@@ -499,7 +499,7 @@ mod tests {
 
     #[test]
     fn rejects_nan_gradient() {
-        let mut adam = AdamF64::builder()
+        let mut adam = Adam::builder()
             .dimensions(2)
             .learning_rate(0.001)
             .build()
@@ -514,7 +514,7 @@ mod tests {
 
     #[test]
     fn rejects_inf_gradient() {
-        let mut adam = AdamF64::builder()
+        let mut adam = Adam::builder()
             .dimensions(1)
             .learning_rate(0.001)
             .build()
@@ -530,7 +530,7 @@ mod tests {
     #[test]
     #[should_panic(expected = "gradient length")]
     fn dimension_mismatch_panics() {
-        let mut adam = AdamF64::builder()
+        let mut adam = Adam::builder()
             .dimensions(3)
             .learning_rate(0.001)
             .build()
@@ -541,7 +541,7 @@ mod tests {
 
     #[test]
     fn reset_clears_all() {
-        let mut adam = AdamF64::builder()
+        let mut adam = Adam::builder()
             .dimensions(2)
             .learning_rate(0.001)
             .build()
@@ -560,7 +560,7 @@ mod tests {
 
     #[test]
     fn set_parameters_preserves_moments() {
-        let mut adam = AdamF64::builder()
+        let mut adam = Adam::builder()
             .dimensions(2)
             .learning_rate(0.001)
             .build()
@@ -578,7 +578,7 @@ mod tests {
 
     #[test]
     fn count_tracks_steps() {
-        let mut adam = AdamF64::builder()
+        let mut adam = Adam::builder()
             .dimensions(1)
             .learning_rate(0.001)
             .build()
@@ -593,14 +593,14 @@ mod tests {
 
     #[test]
     fn builder_validates_beta1() {
-        let result = AdamF64::builder()
+        let result = Adam::builder()
             .dimensions(1)
             .learning_rate(0.001)
             .beta1(0.0)
             .build();
         assert!(result.is_err());
 
-        let result = AdamF64::builder()
+        let result = Adam::builder()
             .dimensions(1)
             .learning_rate(0.001)
             .beta1(1.0)
@@ -610,7 +610,7 @@ mod tests {
 
     #[test]
     fn builder_validates_beta2() {
-        let result = AdamF64::builder()
+        let result = Adam::builder()
             .dimensions(1)
             .learning_rate(0.001)
             .beta2(0.0)
@@ -620,7 +620,7 @@ mod tests {
 
     #[test]
     fn builder_validates_weight_decay() {
-        let result = AdamF64::builder()
+        let result = Adam::builder()
             .dimensions(1)
             .learning_rate(0.001)
             .weight_decay(-0.01)
@@ -630,7 +630,7 @@ mod tests {
 
     #[test]
     fn builder_requires_dimensions() {
-        let result = AdamF64::builder().learning_rate(0.001).build();
+        let result = Adam::builder().learning_rate(0.001).build();
         assert!(matches!(
             result,
             Err(nexus_stats_core::ConfigError::Missing("dimensions"))
@@ -639,7 +639,7 @@ mod tests {
 
     #[test]
     fn builder_requires_learning_rate() {
-        let result = AdamF64::builder().dimensions(2).build();
+        let result = Adam::builder().dimensions(2).build();
         assert!(matches!(
             result,
             Err(nexus_stats_core::ConfigError::Missing("learning_rate"))

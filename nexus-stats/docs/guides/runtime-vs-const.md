@@ -9,7 +9,7 @@ BoolWindow. These need to know the size of the buffer.
 
 ```rust
 // Window size known at compile time
-let mut mosum = MosumF64::<64>::builder(target)
+let mut mosum = Mosum::<64>::builder(target)
     .threshold(50.0)
     .build().unwrap();
 ```
@@ -29,7 +29,7 @@ nexus-stats = { version = "1.0", features = ["alloc"] }
 ```rust
 // Window size from configuration / runtime
 let window_size = config.mosum_window;
-let mut mosum = MosumF64::builder(target)
+let mut mosum = Mosum::builder(target)
     .window_size(window_size)
     .threshold(50.0)
     .build().unwrap();

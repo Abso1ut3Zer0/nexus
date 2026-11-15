@@ -1,8 +1,8 @@
 /// Generates a named feature vector struct where every field is `f64`.
 ///
 /// The struct converts to `&[f64]` at zero cost via `repr(C)` pointer
-/// cast, for passing to adaptive filters (`LmsFilterF64`, `RlsFilterF64`),
-/// classifiers (`LogisticRegressionF64`, `OnlineKMeansF64`),
+/// cast, for passing to adaptive filters (`LmsFilter`, `RlsFilter`),
+/// classifiers (`LogisticRegression`, `OnlineKMeans`),
 /// and optimizers (`AdamF64`, `AdaGradF64`) from the `nexus-stats-regression` crate.
 ///
 /// All fields are `pub` and `f64`. Construct via struct literal or

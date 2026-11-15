@@ -45,7 +45,7 @@ Think of `nexus-stats-core::control` as "pointwise decisions" and this crate as 
 | core | `DebounceU32` | "Have I had N consecutive triggers?" |
 | core | `LevelCrossing<f64>` | "Did I cross this threshold?" |
 | core | `FirstDiff<f64>` | "What's the velocity?" |
-| control | `PeakDetectorF64` | "Where are the local maxima?" |
+| control | `PeakDetector<f64>` | "Where are the local maxima?" |
 | control | `BoolWindowF64` | "What fraction of the last N were true?" |
 | control | `TopK<K>` | "Who are the heavy hitters?" |
 | control | `FlexProportion` | "What's entity X's share?" |

@@ -10,31 +10,31 @@
 //!
 //! | Type | Description | Feature |
 //! |------|-------------|---------|
-//! | `LinearRegressionF64` | Online linear regression | — |
-//! | `PolynomialRegressionF64` | Online polynomial regression | — |
-//! | `EwPolynomialRegressionF64` | Exponentially weighted polynomial regression | — |
+//! | `LinearRegression` | Online linear regression | — |
+//! | `PolynomialRegression` | Online polynomial regression | — |
+//! | `EwPolynomialRegression` | Exponentially weighted polynomial regression | — |
 //! | `TransformedRegressionF64` | Log/exp/power/reciprocal transformed fits | `std` or `libm` |
-//! | `LogisticRegressionF64` | Online logistic regression | `alloc` + (`std` or `libm`) |
+//! | `LogisticRegression` | Online logistic regression | `alloc` + (`std` or `libm`) |
 //!
 //! # Learning Types
 //!
 //! | Type | Description | Feature |
 //! |------|-------------|---------|
-//! | `LmsFilterF64` | Least Mean Squares adaptive filter | `alloc` |
-//! | `RlsFilterF64` | Recursive Least Squares adaptive filter | `alloc` |
-//! | `OnlineKMeansF64` | Online K-Means clustering | `alloc` |
-//! | `OnlineGdF64` | Online gradient descent optimizer | `alloc` |
-//! | `AdaGradF64` | AdaGrad optimizer | `alloc` + (`std` or `libm`) |
-//! | `AdamF64` | Adam optimizer | `alloc` + (`std` or `libm`) |
+//! | `LmsFilter` | Least Mean Squares adaptive filter | `alloc` |
+//! | `RlsFilter` | Recursive Least Squares adaptive filter | `alloc` |
+//! | `OnlineKMeans` | Online K-Means clustering | `alloc` |
+//! | `OnlineGd` | Online gradient descent optimizer | `alloc` |
+//! | `AdaGrad` | AdaGrad optimizer | `alloc` + (`std` or `libm`) |
+//! | `Adam` | Adam optimizer | `alloc` + (`std` or `libm`) |
 //!
 //! # Estimation Types
 //!
 //! | Type | Description | Feature |
 //! |------|-------------|---------|
-//! | `Kalman2dF64` | 2D Kalman filter | — |
-//! | `Kalman3dF64` | 3D Kalman filter | — |
-//! | `BetaBinomialF64` | Beta-Binomial conjugate estimator | `std` or `libm` |
-//! | `GammaPoissonF64` | Gamma-Poisson conjugate estimator | `std` or `libm` |
+//! | `Kalman2d` | 2D Kalman filter | — |
+//! | `Kalman3d` | 3D Kalman filter | — |
+//! | `BetaBinomial` | Beta-Binomial conjugate estimator | `std` or `libm` |
+//! | `GammaPoisson` | Gamma-Poisson conjugate estimator | `std` or `libm` |
 //!
 //! # Re-export
 //!

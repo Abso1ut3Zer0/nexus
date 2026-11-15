@@ -23,9 +23,9 @@ use alloc::vec;
 /// # Examples
 ///
 /// ```
-/// use nexus_stats_regression::learning::EpsilonGreedyF64;
+/// use nexus_stats_regression::learning::EpsilonGreedy;
 ///
-/// let mut bandit = EpsilonGreedyF64::builder()
+/// let mut bandit = EpsilonGreedy::builder()
 ///     .arms(3)
 ///     .epsilon(0.1)
 ///     .build()
@@ -40,7 +40,7 @@ use alloc::vec;
 /// bandit.update(arm, 1.0).unwrap();
 /// ```
 #[derive(Debug, Clone)]
-pub struct EpsilonGreedyF64 {
+pub struct EpsilonGreedy {
     counts: Box<[f64]>,
     rewards: Box<[f64]>,
     epsilon: f64,
@@ -50,21 +50,21 @@ pub struct EpsilonGreedyF64 {
     min_samples: u64,
 }
 
-/// Builder for [`EpsilonGreedyF64`].
+/// Builder for [`EpsilonGreedy`].
 #[derive(Debug, Clone)]
-pub struct EpsilonGreedyF64Builder {
+pub struct EpsilonGreedyBuilder {
     arms: Option<usize>,
     epsilon: Option<f64>,
     decay: f64,
     min_samples: Option<u64>,
 }
 
-impl EpsilonGreedyF64 {
+impl EpsilonGreedy {
     /// Creates a builder.
     #[inline]
     #[must_use]
-    pub fn builder() -> EpsilonGreedyF64Builder {
-        EpsilonGreedyF64Builder {
+    pub fn builder() -> EpsilonGreedyBuilder {
+        EpsilonGreedyBuilder {
             arms: None,
             epsilon: None,
             decay: 1.0,
@@ -210,7 +210,7 @@ impl EpsilonGreedyF64 {
     }
 }
 
-impl EpsilonGreedyF64Builder {
+impl EpsilonGreedyBuilder {
     /// Sets the number of arms (required, >= 2).
     #[inline]
     #[must_use]
@@ -245,7 +245,7 @@ impl EpsilonGreedyF64Builder {
 
     /// Builds the bandit.
     #[inline]
-    pub fn build(self) -> Result<EpsilonGreedyF64, nexus_stats_core::ConfigError> {
+    pub fn build(self) -> Result<EpsilonGreedy, nexus_stats_core::ConfigError> {
         let arms = self
             .arms
             .ok_or(nexus_stats_core::ConfigError::Missing("arms"))?;
@@ -266,7 +266,7 @@ impl EpsilonGreedyF64Builder {
             ));
         }
         let min_samples = self.min_samples.unwrap_or(arms as u64);
-        Ok(EpsilonGreedyF64 {
+        Ok(EpsilonGreedy {
             counts: vec![0.0; arms].into_boxed_slice(),
             rewards: vec![0.0; arms].into_boxed_slice(),
             epsilon,
@@ -294,7 +294,7 @@ mod tests {
 
     #[test]
     fn explore_all_first() {
-        let mut bandit = EpsilonGreedyF64::builder()
+        let mut bandit = EpsilonGreedy::builder()
             .arms(3)
             .epsilon(0.1)
             .build()
@@ -313,7 +313,7 @@ mod tests {
 
     #[test]
     fn pure_exploit() {
-        let mut bandit = EpsilonGreedyF64::builder()
+        let mut bandit = EpsilonGreedy::builder()
             .arms(3)
             .epsilon(0.01) // very low exploration
             .build()
@@ -347,7 +347,7 @@ mod tests {
     #[test]
     fn explores_at_rate() {
         let epsilon = 0.3;
-        let mut bandit = EpsilonGreedyF64::builder()
+        let mut bandit = EpsilonGreedy::builder()
             .arms(2)
             .epsilon(epsilon)
             .build()
@@ -381,7 +381,7 @@ mod tests {
 
     #[test]
     fn decay_adapts() {
-        let mut bandit = EpsilonGreedyF64::builder()
+        let mut bandit = EpsilonGreedy::builder()
             .arms(2)
             .epsilon(0.1)
             .decay(0.9)
@@ -410,7 +410,7 @@ mod tests {
 
     #[test]
     fn reset_clears() {
-        let mut bandit = EpsilonGreedyF64::builder()
+        let mut bandit = EpsilonGreedy::builder()
             .arms(2)
             .epsilon(0.1)
             .build()
@@ -423,7 +423,7 @@ mod tests {
 
     #[test]
     fn nan_rejected() {
-        let mut bandit = EpsilonGreedyF64::builder()
+        let mut bandit = EpsilonGreedy::builder()
             .arms(2)
             .epsilon(0.1)
             .build()
@@ -436,7 +436,7 @@ mod tests {
 
     #[test]
     fn inf_rejected() {
-        let mut bandit = EpsilonGreedyF64::builder()
+        let mut bandit = EpsilonGreedy::builder()
             .arms(2)
             .epsilon(0.1)
             .build()
@@ -450,35 +450,35 @@ mod tests {
     #[test]
     fn builder_validation() {
         assert!(
-            EpsilonGreedyF64::builder()
+            EpsilonGreedy::builder()
                 .arms(1)
                 .epsilon(0.1)
                 .build()
                 .is_err()
         );
         assert!(
-            EpsilonGreedyF64::builder()
+            EpsilonGreedy::builder()
                 .arms(2)
                 .epsilon(0.0)
                 .build()
                 .is_err()
         );
         assert!(
-            EpsilonGreedyF64::builder()
+            EpsilonGreedy::builder()
                 .arms(2)
                 .epsilon(1.0)
                 .build()
                 .is_err()
         );
         assert!(
-            EpsilonGreedyF64::builder()
+            EpsilonGreedy::builder()
                 .arms(2)
                 .epsilon(-0.1)
                 .build()
                 .is_err()
         );
         assert!(
-            EpsilonGreedyF64::builder()
+            EpsilonGreedy::builder()
                 .arms(2)
                 .epsilon(0.1)
                 .decay(0.0)
@@ -489,7 +489,7 @@ mod tests {
 
     #[test]
     fn mean_reward_tracks() {
-        let mut bandit = EpsilonGreedyF64::builder()
+        let mut bandit = EpsilonGreedy::builder()
             .arms(2)
             .epsilon(0.1)
             .build()
