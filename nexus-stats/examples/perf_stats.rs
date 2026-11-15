@@ -8,7 +8,7 @@
 
 use std::hint::black_box;
 
-use nexus_stats::monitoring::PollSaturation;
+use nexus_stats::monitoring::{PollSaturation, SojournSaturation};
 
 use nexus_stats::{
     control::{BoolWindow, HysteresisF64},
@@ -304,6 +304,27 @@ fn bench_poll_saturation_on_work_mixed(samples: &mut [u64]) {
             }
             t += 10;
             let _ = black_box(sat.on_work(t, 1));
+        }
+        let end = rdtsc_end();
+        *s = (end - start) / BATCH;
+    }
+    black_box(sat.take());
+}
+
+/// Sojourns around a floor of ~10 with an unpredictable minority over the
+/// budget of 50, so the over-budget compare cannot be predicted.
+fn bench_sojourn_saturation_update(samples: &mut [u64]) {
+    let mut sat = SojournSaturation::new(50);
+    let mut rng = 12345u64;
+    for _ in 0..WARMUP {
+        let x = next_val(&mut rng);
+        sat.update(if x.is_multiple_of(4) { 100 } else { 10 } + (x % 5) as i64);
+    }
+    for s in samples.iter_mut() {
+        let start = rdtsc_start();
+        for _ in 0..BATCH {
+            let x = next_val(&mut rng);
+            sat.update(if x.is_multiple_of(4) { 100 } else { 10 } + (x % 5) as i64);
         }
         let end = rdtsc_end();
         *s = (end - start) / BATCH;
@@ -1055,6 +1076,8 @@ fn main() {
     print_row("PollSaturation::on_work (mixed)", &mut buf);
     bench_poll_saturation_on_idle(&mut buf);
     print_row("PollSaturation::on_idle", &mut buf);
+    bench_sojourn_saturation_update(&mut buf);
+    print_row("SojournSaturation::update", &mut buf);
     bench_liveness_u64(&mut buf);
     print_row("LivenessU64::update", &mut buf);
     bench_running_min_f64(&mut buf);

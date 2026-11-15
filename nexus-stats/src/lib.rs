@@ -68,7 +68,7 @@
 //! | [`smoothing`] | EMA, AsymEma, Slew |
 //! | [`detection`] | CUSUM |
 //! | [`statistics`] | Welford, Moments, EwmaVar, Covariance, HarmonicMean, Percentile, BipowerVariation, RollSpread *(std\|libm)*, TwoScaleRv *(alloc, std\|libm)* |
-//! | [`monitoring`] | Drawdown, Windowed Min/Max, CoDel, PollSaturation, Liveness, EventRate, Jitter, ErrorRate, Saturation, HawkesIntensity *(std\|libm)* |
+//! | [`monitoring`] | Drawdown, Windowed Min/Max, CoDel, PollSaturation, SojournSaturation, Liveness, EventRate, Jitter, ErrorRate, Saturation, HawkesIntensity *(std\|libm)* |
 //! | [`control`] | DeadBand, Hysteresis, Debounce, LevelCrossing, Diff |
 //!
 //! ## Advanced (feature-gated, re-exported from subcrates)

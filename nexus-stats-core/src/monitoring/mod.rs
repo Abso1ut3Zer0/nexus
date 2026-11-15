@@ -13,6 +13,7 @@ mod peak_hold;
 mod poll_saturation;
 mod running;
 mod saturation;
+mod sojourn_saturation;
 pub(crate) mod windowed;
 
 pub use codel::*;
@@ -28,4 +29,5 @@ pub use peak_hold::*;
 pub use poll_saturation::*;
 pub use running::*;
 pub use saturation::*;
+pub use sojourn_saturation::*;
 pub use windowed::*;
