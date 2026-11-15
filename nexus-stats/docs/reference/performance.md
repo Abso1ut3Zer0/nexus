@@ -1,7 +1,13 @@
 # Performance Reference
 
 All measurements in CPU cycles (`rdtsc`), batch of 64 updates per sample,
-pinned to a single core.
+100k samples after 10k warmup, from `examples/perf_stats.rs` on an Intel Core
+Ultra 7 165U P-core, pinned (`taskset -c 0`), turbo disabled, best of three
+runs (minimum per row). Inputs are pseudo-random in a narrow band, except the
+threshold types (`DeadBand`, `Hysteresis`, `LevelCrossing`, `PeakDetector`),
+which see a slowly varying sawtooth so the branch is predictable, as a
+monitored signal is in practice; on white noise each flip costs a branch
+mispredict, about 20 cycles.
 
 ## Per-Algorithm Cycle Counts
 

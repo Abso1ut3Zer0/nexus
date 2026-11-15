@@ -102,7 +102,7 @@ for deep-dives on each algorithm.
 
 ### Multi-Armed Bandits *(alloc, std|libm)*
 
-| Type | What It Does | p50 |
+| Type | What It Does | p50 (`select`, 10 arms) |
 |------|-------------|-----|
 | `Ucb1` | UCB1 — deterministic explore/exploit | TBD |
 | `ThompsonBeta` | Thompson Sampling — Beta prior for [0,1] rewards | TBD |
@@ -219,8 +219,10 @@ Comprehensive [documentation](docs/INDEX.md) including:
 
 ## Performance
 
-All measurements in CPU cycles (`rdtsc`), pinned to a single core.
-Batch of 64 updates per sample to amortize timing overhead.
+All measurements in CPU cycles (`rdtsc`) on an Intel Core Ultra 7 165U P-core,
+pinned (`taskset -c 0`), turbo disabled, best of three runs; batch of 64 updates
+per sample to amortize timing overhead. Full tables, including p99:
+[`docs/reference/performance.md`](docs/reference/performance.md).
 
 ```bash
 cargo build --release --example perf_stats -p nexus-stats
