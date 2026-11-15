@@ -254,9 +254,9 @@ stats.update(sample).unwrap();
 
 | Feature | Default | What |
 |---------|---------|------|
-| `std` | yes | `WallClock`, hardware intrinsics for `sqrt`/`exp` |
+| `std` | yes | `WallClock`, hardware intrinsics for `sqrt`/`exp`; implies `alloc` |
 | `libm` | no | Pure Rust math fallback for `no_std` |
-| `alloc` | with `std` | Runtime-sized windows (MOSUM, WindowedMedian, KAMA, BoolWindow), adaptive filters, optimizers |
+| `alloc` | no (implied by `std`) | Runtime-sized windows (Mosum, WindowedMedian, Kama, BoolWindow), adaptive filters, optimizers |
 
 One of `std` or `libm` must be enabled. Update hot paths never use
 transcendentals — `sqrt` and `exp` are only used in queries (`std_dev()`)
