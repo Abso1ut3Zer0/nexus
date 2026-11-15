@@ -139,7 +139,7 @@ zero-alloc guarantees that backend exists to provide.
 ## Errors and poisoning
 
 `WsError` has the same structure as nexus-net's `ws::Error` — see
-[nexus-net/docs/errors.md](../../nexus-net/docs/errors.md). An IO
+[nexus-web/docs/errors.md](../../nexus-web/docs/errors.md). An IO
 error during a send poisons the `WsStream`; you must reconnect.
 Unlike the REST pool, there is no automatic WebSocket reconnect
 at the library layer — WebSocket connections are session-stateful

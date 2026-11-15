@@ -384,7 +384,7 @@ Frozen after build — no inserts, no removes.
 
 Declare resource dependencies in function signatures. `Res<T>` for shared
 reads, `ResMut<T>` for exclusive writes. See
-[Dependency Injection](#rest-and-resmut--dependency-injection) above.
+[Dependency Injection](#rest-and-resmutt--dependency-injection) above.
 
 ### Optional resources
 

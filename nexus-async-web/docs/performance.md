@@ -1,7 +1,7 @@
 # Performance
 
 The async adapter adds almost nothing on top of the sans-IO codec.
-The numbers in [nexus-net/docs/performance.md](../../nexus-net/docs/performance.md)
+The numbers in [nexus-web/docs/performance.md](../../nexus-web/docs/performance.md)
 apply directly for parse / encode / mask / UTF-8 validation — only
 the read/write boundary is different.
 
@@ -120,4 +120,4 @@ The three recv-path knobs (`buffer_capacity`, `compact_at`,
 ## See also
 
 - [tuning.md](./tuning.md) — recv path knobs
-- [nexus-net/docs/performance.md](../../nexus-net/docs/performance.md) — codec-level numbers
+- [nexus-web/docs/performance.md](../../nexus-web/docs/performance.md) — codec-level numbers

@@ -254,6 +254,6 @@ impl Exchange {
 ## See also
 
 - Sync (blocking-thread) equivalents in
-  [nexus-net/docs/patterns.md](../../nexus-net/docs/patterns.md).
+  [nexus-web/docs/patterns.md](../../nexus-web/docs/patterns.md).
 - [client-pool.md](./client-pool.md) for pool semantics.
 - [reconnect.md](./reconnect.md) for self-healing details.

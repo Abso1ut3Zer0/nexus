@@ -164,7 +164,7 @@ This avoids a second pass over the payload for masking (mask is
 XORed into place while the payload is being written) and eliminates
 double-buffering.
 
-See [buffers.md](./buffers.md) for the full model.
+See [nexus-net/docs/buffers.md](../../nexus-net/docs/buffers.md) for the full model.
 
 ### Masking (client role)
 
