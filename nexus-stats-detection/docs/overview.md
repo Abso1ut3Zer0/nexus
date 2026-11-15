@@ -55,7 +55,7 @@ raw input
  [AdaptiveThreshold]        score the residual
    │
    ▼
- [DebounceU32]                 suppress single-sample noise
+ [Debounce]                    suppress single-sample noise
    │
    ▼
  alert

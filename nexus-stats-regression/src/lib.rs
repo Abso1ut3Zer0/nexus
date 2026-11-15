@@ -13,7 +13,7 @@
 //! | `LinearRegression` | Online linear regression | — |
 //! | `PolynomialRegression` | Online polynomial regression | — |
 //! | `EwPolynomialRegression` | Exponentially weighted polynomial regression | — |
-//! | `TransformedRegressionF64` | Log/exp/power/reciprocal transformed fits | `std` or `libm` |
+//! | `ExponentialRegression`, `LogarithmicRegression`, `PowerRegression` (+ `Ew*`) | Linearized exp/log/power fits | `std` or `libm` |
 //! | `LogisticRegression` | Online logistic regression | `alloc` + (`std` or `libm`) |
 //!
 //! # Learning Types

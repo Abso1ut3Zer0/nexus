@@ -76,7 +76,7 @@
 //! | Feature | Module | Contents |
 //! |---------|--------|----------|
 //! | `smoothing` | `smoothing` | + Holt, KAMA, Spring, Kalman1d, WindowedMedian |
-//! | `detection` | `detection` | + MOSUM, Shiryaev-Roberts, AdaptiveThreshold, RobustZ, TrendAlert, MultiGate, PageHinkley, ADWIN |
+//! | `detection` | `detection` | + MOSUM, Shiryaev-Roberts, AdaptiveThreshold, RobustZScore, TrendAlert, MultiGate, PageHinkley, ADWIN, BOCPD, DistDrift |
 //! | `detection` | `signal` | Autocorrelation, CrossCorrelation, Entropy, TransferEntropy, PredictiveInfoBound |
 //! | `detection` | `estimation` | + SPRT |
 //! | `regression` | `regression` | Linear, Polynomial, EW variants, Transformed, LogisticRegression |
@@ -101,6 +101,12 @@
 
 // Re-export core types at crate root
 pub use nexus_stats_core::{Condition, ConfigError, DataError, Direction};
+
+/// Sealed numeric bounds of the generic types: [`Sample`] (`f64`, `i64`) and
+/// [`Float`] (`f64`, `f32`). Name them in your own signatures
+/// (`fn f<T: Sample>(d: &mut monitoring::Drawdown<T>)`); they cannot be
+/// implemented outside `nexus-stats-core`.
+pub use nexus_stats_core::{Float, Sample};
 
 /// Clock trait and implementations for time-aware stats types.
 pub use nexus_stats_core::clock;
@@ -129,8 +135,8 @@ pub mod smoothing {
 /// Change detection and anomaly detection.
 ///
 /// CUSUM is always available. Advanced types (MOSUM, Shiryaev-Roberts,
-/// AdaptiveThreshold, RobustZ, TrendAlert, MultiGate) require the
-/// `detection` feature.
+/// AdaptiveThreshold, RobustZScore, TrendAlert, MultiGate, PageHinkley,
+/// ADWIN, BOCPD, DistDrift) require the `detection` feature.
 pub mod detection {
     pub use nexus_stats_core::detection::*;
 

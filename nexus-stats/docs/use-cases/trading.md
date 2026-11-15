@@ -66,7 +66,8 @@ use nexus_stats_core::statistics::{BucketAccumulator, BucketPolicy};
 // Volume bars: close after $1M notional
 let mut bars = BucketAccumulator::builder()
     .policy(BucketPolicy::Volume(1_000_000.0))
-    .build();
+    .build()
+    .unwrap();
 
 // On each trade:
 if let Some(bar) = bars.update_volume(price, notional_volume)? {
@@ -174,7 +175,8 @@ use nexus_stats_core::statistics::Hurst;
 
 let mut hurst = Hurst::builder()
     .window_size(100)
-    .build();
+    .build()
+    .unwrap();
 
 // Feed bar-level returns (not tick-by-tick):
 hurst.update(bar_return)?;
@@ -201,7 +203,7 @@ use nexus_stats_core::statistics::VarianceRatio;
 
 let mut vr = VarianceRatio::builder()
     .q(5)            // compare 5-period vs 1-period variance
-    .halflife(200.0)
+    .alpha(0.0035)   // EW forgetting factor, about a 200-sample half-life
     .build()?;
 
 vr.update(price)?;
@@ -315,7 +317,8 @@ Feed `BucketAccumulator` summaries into `LaggedPredictor` with lag=1:
 ```rust
 let mut bars = BucketAccumulator::builder()
     .policy(BucketPolicy::Count(50))
-    .build();
+    .build()
+    .unwrap();
 
 let mut predictor = LaggedPredictor::builder()
     .lag(1)

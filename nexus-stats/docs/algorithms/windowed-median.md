@@ -7,7 +7,7 @@ Robust to outliers — the median ignores them entirely.
 |----------|-------|
 | Update cost | ~136 cycles (N=32) |
 | Memory | ~2×N×8 bytes |
-| Types | `WindowedMedian<f64>`, `WindowedMedianF32`, `WindowedMedian<i64>`, `WindowedMedianI32` |
+| Types | `WindowedMedian<f64>`, `WindowedMedian<i64>` |
 | Requires | `alloc` feature (runtime window size) |
 | Priming | After N samples (window full) |
 

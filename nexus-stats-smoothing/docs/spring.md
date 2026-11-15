@@ -70,5 +70,5 @@ Steady-state error is zero; only transient dynamics change.
 
 ## Cross-references
 
-- [SlewLimiter](../../nexus-stats-core/docs/smoothing.md#slewlimiter) — hard rate clamp, not a second-order system.
+- [SlewLimiter](../../nexus-stats-core/docs/smoothing.md#slew) — hard rate clamp, not a second-order system.
 - [EMA](../../nexus-stats-core/docs/smoothing.md#ema) — first-order, statistical smoother.

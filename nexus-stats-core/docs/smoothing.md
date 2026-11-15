@@ -80,4 +80,4 @@ for setpoint in targets {
 ## Cross-references
 
 - Advanced smoothers — Holt, KAMA, Kalman1d, Spring, Huber, Hampel, WindowedMedian — all in [`nexus-stats-smoothing`](../../nexus-stats-smoothing/docs/INDEX.md).
-- Streaming variance around an EMA: [`EwmaVar`](statistics.md#ewmavarf64--exponentially-weighted-variance).
+- Streaming variance around an EMA: [`EwmaVar`](statistics.md#ewmavar--exponentially-weighted-variance).

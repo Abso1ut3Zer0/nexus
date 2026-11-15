@@ -7,7 +7,7 @@ per sample.
 |----------|-------|
 | Update cost | ~1-2 cycles |
 | Memory | ~16 bytes |
-| Types | All (f32, f64, i32, i64) |
+| Types | `LevelCrossing<f64>`, `LevelCrossing<i64>` |
 | Output | `bool` — true on crossing |
 | Error handling | Returns `Result<_, DataError>` on NaN/Inf input |
 

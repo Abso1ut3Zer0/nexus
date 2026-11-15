@@ -80,7 +80,7 @@ let mut price_kama = Kama::builder()
     .slow_span(30)
     .build().unwrap();
 
-if let Some(smoothed) = price_kama.update(mid_price) {
+if let Some(smoothed) = price_kama.update(mid_price).unwrap() {
     // Tracks trends closely, filters noise
 }
 

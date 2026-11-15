@@ -22,8 +22,8 @@ Not for: exact frequency counts with bounded error on minor items — use a full
 ## API
 
 ```rust
-impl<K: Eq + Hash + Clone> TopK<K> {
-    pub fn new(/* capacity */) -> Self;
+impl<K: Eq + Clone, const CAP: usize> TopK<K, CAP> {
+    pub fn new() -> Self;            // CAP slots, fixed at compile time
     pub fn update(&mut self, key: K);
     pub fn top(&self, buf: &mut [(K, u64)]) -> usize;
     pub fn count_of(&self, key: &K) -> u64;

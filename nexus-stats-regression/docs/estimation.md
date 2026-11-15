@@ -66,15 +66,15 @@ Conjugate Bayesian estimator for a Bernoulli success rate. Maintains `(alpha, be
 use nexus_stats_regression::estimation::BetaBinomial;
 
 let mut bb = BetaBinomial::builder()
-    .prior_alpha(1.0)  // uniform prior
-    .prior_beta(1.0)
+    .alpha(1.0)  // uniform prior
+    .beta(1.0)
     .build()
     .unwrap();
 
 bb.update(true);                 // one success
 bb.update_batch(10, 5);          // 10 successes, 5 failures
-let mean = bb.posterior_mean();
-let (lo, hi) = bb.credible_interval(0.95);
+let mean = bb.mean();
+let (lo, hi) = bb.credible_interval(0.95).unwrap();
 ```
 
 ### When to use it
@@ -101,7 +101,7 @@ use nexus_stats_regression::estimation::GammaPoisson;
 
 let mut gp = GammaPoisson::new();
 gp.update(event_count, exposure).unwrap();
-let rate = gp.posterior_mean();
+let rate = gp.rate();
 ```
 
 ### When to use it

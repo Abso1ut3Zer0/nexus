@@ -9,7 +9,7 @@ mean of a streaming process.
 | Memory | ~56 bytes |
 | Types | `Cusum` |
 | Priming | Configurable via `min_samples` |
-| Output | `Option<Direction>` — `Upper`, `Lower`, or `None` |
+| Output | `Option<Direction>` — `Rising`, `Falling`, or `None` |
 
 ## What It Does
 
@@ -253,7 +253,7 @@ let mut liveness = Liveness::builder().span(20).deadline_multiple(5).build().unw
 
 // On each event:
 liveness.update(now);
-if let Some(shift) = cusum.update(latency) {
+if let Some(shift) = cusum.update(latency).unwrap() {
     // Degradation detected
 }
 
@@ -281,7 +281,7 @@ match cusum.update(sample) {
             _ => {}
         }
     }
-    _ => { trend.update(sample); }
+    _ => { trend.update(sample).unwrap(); }
 }
 ```
 
@@ -308,7 +308,6 @@ if let Some(Direction::Rising) = cusum.update(sample) {
 | `Cusum::update` | 5 cycles | 7 cycles |
 
 No branches beyond the `max(0, x)` clamp. No division, no transcendentals.
-Integer variant avoids float entirely.
 
 ## Academic Reference
 

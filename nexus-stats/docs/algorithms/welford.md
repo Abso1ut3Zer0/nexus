@@ -8,7 +8,7 @@ Chan's algorithm.
 |----------|-------|
 | Update cost | ~10 cycles |
 | Memory | ~24 bytes |
-| Types | `Welford`, `WelfordF32` |
+| Types | `Welford` |
 | Priming | Mean after 1 sample, variance after 2 |
 | Output | `mean()`, `variance()`, `std_dev()` — all `Option<T>` |
 
@@ -98,8 +98,8 @@ let mut worker_a = Welford::new();
 let mut worker_b = Welford::new();
 
 // Split work
-for x in &data[..half] { worker_a.update(*x); }
-for x in &data[half..] { worker_b.update(*x); }
+for x in &data[..half] { worker_a.update(*x).unwrap(); }
+for x in &data[half..] { worker_b.update(*x).unwrap(); }
 
 // Merge
 worker_a.merge(&worker_b);

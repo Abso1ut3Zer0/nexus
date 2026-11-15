@@ -5,11 +5,11 @@ exponentially weighting recent samples more heavily than older ones.
 
 | Property | Value |
 |----------|-------|
-| Update cost | ~5 cycles (float), ~5 cycles (integer) |
-| Memory | ~24 bytes (float), ~32 bytes (integer) |
+| Update cost | ~5 cycles |
+| Memory | ~24 bytes |
 | Types | `Ema` |
 | Priming | Configurable via `min_samples` |
-| Output | `Option<T>` — smoothed value once primed |
+| Output | `Option<f64>` — smoothed value once primed |
 
 ## What It Does
 
@@ -56,7 +56,6 @@ EMA = alpha × sample + (1 - alpha) × EMA
 - You need the simplest possible smoother
 - The signal has consistent noise characteristics
 - ~5 cycles per update is your budget
-- You need both float and integer variants
 
 **Don't use EMA when:**
 - Signal alternates between trending and noisy → use [KAMA](kama.md) (adapts alpha)
@@ -87,30 +86,7 @@ The parameter `alpha` controls the decay rate:
 **First sample:** The first value initializes the EMA directly (no
 smoothing). This avoids the "start from zero" bias.
 
-### Integer Variant (Kernel Pattern)
-
-The integer EMA uses the Linux kernel's fixed-point approach:
-
-```
-acc += (sample_shifted - acc) >> shift
-output = acc >> shift
-```
-
-No floating point. The `shift` value determines the weight:
-`weight = 1 / 2^shift`. Configured via `span(n)` which rounds up to
-the next `2^k - 1`.
-
-| Span requested | Effective span | Shift | Weight |
-|----------------|---------------|-------|--------|
-| 1 | 1 | 1 | 1/2 |
-| 2-3 | 3 | 2 | 1/4 |
-| 4-7 | 7 | 3 | 1/8 |
-| 8-15 | 15 | 4 | 1/16 |
-| 16-31 | 31 | 5 | 1/32 |
-
 ## Configuration
-
-### Float Variant
 
 Three ways to set the smoothing factor:
 
@@ -165,7 +141,7 @@ let mut latency_ema = Ema::builder()
     .build().unwrap();
 
 // On each round-trip:
-if let Some(smoothed) = latency_ema.update(rtt_us) {
+if let Some(smoothed) = latency_ema.update(rtt_us).unwrap() {
     dashboard.set_latency(smoothed);
 }
 ```
@@ -179,8 +155,8 @@ let mut throughput = Ema::builder()
     .build().unwrap();
 
 // On each measurement interval:
-let bytes_per_sec = bytes_received / interval_secs;
-if let Some(smoothed) = throughput.update(bytes_per_sec as i64) {
+let bytes_per_sec = bytes_received as f64 / interval_secs;
+if let Some(smoothed) = throughput.update(bytes_per_sec).unwrap() {
     adjust_quality(smoothed);
 }
 ```
@@ -193,7 +169,7 @@ let mut frame_ema = Ema::builder()
     .build().unwrap();
 
 // Each frame:
-if let Some(smoothed_dt) = frame_ema.update(frame_time_ms) {
+if let Some(smoothed_dt) = frame_ema.update(frame_time_ms).unwrap() {
     hud.set_fps(1000.0 / smoothed_dt);
 }
 ```
@@ -230,8 +206,8 @@ error_rate.update(if is_error { 1.0 } else { 0.0 });
 let mut ema = Ema::builder().span(20).build().unwrap();
 let mut cusum = Cusum::builder(baseline).slack(k).threshold(h).build().unwrap();
 
-if let Some(smoothed) = ema.update(sample) {
-    cusum.update(smoothed);  // detect shifts in the smoothed signal
+if let Some(smoothed) = ema.update(sample).unwrap() {
+    cusum.update(smoothed).unwrap();  // detect shifts in the smoothed signal
 }
 ```
 
@@ -246,7 +222,7 @@ let mut baseline = Ema::builder().span(100).build().unwrap();
 let mut fast = Ema::builder().span(5).build().unwrap();
 
 // Divergence between fast and slow EMA signals regime change
-if let (Some(slow), Some(fast_val)) = (baseline.update(x), fast.update(x)) {
+if let (Some(slow), Some(fast_val)) = (baseline.update(x).unwrap(), fast.update(x).unwrap()) {
     if (fast_val - slow).abs() > threshold {
         // significant divergence
     }
@@ -259,8 +235,7 @@ if let (Some(slow), Some(fast_val)) = (baseline.update(x), fast.update(x)) {
 |-----------|-----|-----|
 | `Ema::update` | 5 cycles | 6 cycles |
 
-The float variant uses `mul_add` (FMA instruction). The integer variant
-uses bit-shift arithmetic with no floating point.
+`update` is one `mul_add` (a single FMA instruction) plus the priming count.
 
 ## Academic Reference
 

@@ -7,7 +7,7 @@ rates gives the wrong answer.
 |----------|-------|
 | Update cost | ~5 cycles |
 | Memory | ~16 bytes |
-| Types | `HarmonicMean`, `HarmonicMeanF32` |
+| Types | `HarmonicMean` |
 | Output | `Option<T>` — harmonic mean once primed |
 
 ## Why Not Arithmetic Mean?

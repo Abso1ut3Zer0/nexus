@@ -64,7 +64,7 @@ any slower would lag unnecessarily.
 ## Configuration
 
 ```rust
-let mut spring = Spring::new(0.5);  // smooth_time in seconds
+let mut spring = Spring::new(0.5).unwrap();  // smooth_time in seconds
 
 // Each update: provide target and time delta
 let smoothed = spring.update(target_value, dt_seconds).unwrap();
@@ -91,7 +91,7 @@ mathematically exact rate.
 
 ### Dashboard — Smooth Gauge Display
 ```rust
-let mut gauge = Spring::new(0.3);
+let mut gauge = Spring::new(0.3).unwrap();
 
 // On each data update (potentially irregular):
 let display_value = gauge.update(actual_value, dt).unwrap();
@@ -100,7 +100,7 @@ render_gauge(display_value);
 
 ### Trading — Adaptive Threshold
 ```rust
-let mut threshold = Spring::new(1.0);
+let mut threshold = Spring::new(1.0).unwrap();
 
 // Smoothly track a moving threshold target
 let target = compute_new_threshold(market_conditions);
@@ -109,8 +109,8 @@ let smooth_threshold = threshold.update(target, dt).unwrap();
 
 ### Gaming — Camera Follow
 ```rust
-let mut cam_x = Spring::new(0.2);
-let mut cam_y = Spring::new(0.2);
+let mut cam_x = Spring::new(0.2).unwrap();
+let mut cam_y = Spring::new(0.2).unwrap();
 
 let sx = cam_x.update(player_x, dt).unwrap();
 let sy = cam_y.update(player_y, dt).unwrap();

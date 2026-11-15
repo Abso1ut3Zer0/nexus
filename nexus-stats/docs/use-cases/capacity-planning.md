@@ -8,18 +8,18 @@ Load distribution analysis, trend forecasting, and shard balancing.
 use nexus_stats::frequency::{FlexProportionGlobal, FlexProportionEntity};
 
 // Track what % of traffic each shard handles
-let mut global = FlexProportionGlobal::new(100_000); // half-life: 100k events
+let mut global = FlexProportionGlobal::new(100_000).unwrap(); // half-life: 100k events
 let mut per_shard: Vec<FlexProportionEntity> = (0..num_shards)
     .map(|_| FlexProportionEntity::new())
     .collect();
 
-// On each event routed to shard i:
-global.record();
-per_shard[shard_id].record(&mut global);
+// On each event routed to shard i: the global first, then the shard with the global's period
+global.update();
+per_shard[shard_id].update(global.period());
 
 // Periodic capacity review:
 for (i, shard) in per_shard.iter().enumerate() {
-    let pct = shard.fraction(&global);
+    let pct = shard.fraction(global.total(), global.period());
     if pct > 0.30 {
         log::warn!("shard {i} handles {:.0}% of traffic — consider rebalancing", pct * 100.0);
     }
@@ -37,7 +37,7 @@ let mut load = Kalman1d::builder()
     .measurement_noise(10.0)
     .build().unwrap();
 
-if let Some((current, trend)) = load.update(requests_per_sec) {
+if let Some((current, trend)) = load.update(requests_per_sec).unwrap() {
     let forecast_1h = current + trend * 3600.0;
     if forecast_1h > capacity_limit {
         alert_warn("at current trend, capacity exceeded in ~1 hour");
@@ -53,7 +53,7 @@ use nexus_stats::frequency::TopK;
 let mut hot: TopK<String, 10> = TopK::new();
 
 // On each market data message:
-hot.observe(symbol.to_string());
+hot.update(symbol.to_string());
 
 // Periodic review:
 for (sym, count) in hot.top() {

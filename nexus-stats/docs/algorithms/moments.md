@@ -9,7 +9,7 @@ Supports parallel merging.
 |----------|-------|
 | Update cost | ~24 cycles |
 | Memory | ~40 bytes (f64) |
-| Types | `Moments`, `MomentsF32`, `MomentsI64`, `MomentsI32` |
+| Types | `Moments` |
 | Priming | Mean after 1, variance after 2, skewness after 3, kurtosis after 4 |
 | Output | `mean()`, `variance()`, `skewness()`, `kurtosis()` — all `Option` |
 | Error handling | Returns `Result<_, DataError>` on NaN/Inf input |
@@ -41,7 +41,7 @@ has kurtosis of -1.2.
 **Don't use Moments when:**
 - You only need mean + variance → use [Welford](welford.md) (cheaper)
 - You only need smoothed mean → use [EMA](ema.md)
-- You need percentiles → use [Percentile](../algorithms/percentile.md)
+- You need percentiles → use [Percentile](../../../nexus-stats-core/docs/statistics.md#percentile--online-percentile-p²)
 - You need windowed statistics → Moments is all-history, not windowed
 
 ## How It Works

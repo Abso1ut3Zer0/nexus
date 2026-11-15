@@ -11,7 +11,7 @@ All adaptive filters follow:
 ```rust
 let mut filter = LmsFilter::builder()
     .dimensions(8)
-    .step_size(0.01)
+    .learning_rate(0.01)
     .build()
     .unwrap();
 
@@ -115,7 +115,7 @@ use nexus_stats_regression::learning::HuberRegression;
 let mut fit = HuberRegression::builder()
     .dimensions(3)
     .delta(1.5)            // Huber threshold in residual stddevs
-    .step_size(0.01)
+    .learning_rate(0.01)
     .build()
     .unwrap();
 
@@ -142,7 +142,7 @@ use nexus_stats_regression::learning::OnlineKMeans;
 
 let mut km = OnlineKMeans::builder()
     .dimensions(3)
-    .num_clusters(5)
+    .clusters(5)
     // learning rate
     .build()
     .unwrap();
@@ -209,7 +209,7 @@ let mut opt = Adam::builder()
     .build()
     .unwrap();
 
-opt.update(&gradients);
+opt.step(&gradients).unwrap();
 ```
 
 ### When to use it

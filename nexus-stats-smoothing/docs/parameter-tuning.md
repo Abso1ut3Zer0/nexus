@@ -89,18 +89,20 @@ Three parameters:
 
 Tuning intuition: the filter doesn't care about q and r individually, only the ratio q/r. Bigger ratio = more responsive. Smaller ratio = more smoothing. If both are wild guesses, fix `r = 1.0` and sweep `q` from 0.001 to 10 until you like the output.
 
-## Spring: Half-Life
+## Spring: Smooth Time
 
-One parameter. Half-life in *samples* to reach halfway to target. Example:
+One parameter, `smooth_time`, in the same units as the `dt` you pass to
+`update`. It is the time scale of convergence: the spring closes most of the
+gap to its target within about `smooth_time`, and larger values are slower
+and smoother. Example:
 
 ```rust
-let mut spring = Spring::new(10.0); // halves distance every 10 samples
-spring.set_target(100.0);
-spring.update();
-spring.value(); // approaches 100.0 over ~30-50 samples
+let mut spring = Spring::new(0.5).unwrap();            // 0.5 s smooth time
+let shown = spring.update(target, dt_seconds).unwrap();  // each frame: target and elapsed time
+let pos = spring.value();                                // current position, no update
 ```
 
-Critically damped, so it *never* overshoots regardless of half-life.
+Critically damped, so it *never* overshoots regardless of `smooth_time`.
 
 ## Huber EMA: Threshold
 

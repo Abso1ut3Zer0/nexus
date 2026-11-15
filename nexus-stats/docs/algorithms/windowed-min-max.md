@@ -68,7 +68,7 @@ and simpler.
 ## Configuration
 
 ```rust
-let mut max = WindowedMax::<f64>::new(1_000_000_000);  // 1-second window in nanoseconds
+let mut max = WindowedMax::<f64>::new(1_000_000_000).unwrap();  // 1-second window in nanoseconds
 
 let current_max = max.update(now_ns, sample).unwrap();
 ```

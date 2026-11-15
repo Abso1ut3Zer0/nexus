@@ -7,7 +7,7 @@
 |----------|-------|
 | Update cost | ~7 cycles |
 | Memory | ~24 bytes |
-| Types | `PeakHold<f64>`, `PeakHoldF32`, `PeakHold<i64>`, `PeakHoldI32` |
+| Types | `PeakHold<f64>`, `PeakHold<i64>` |
 | Output | Current envelope value |
 
 ## What It Does
@@ -95,7 +95,7 @@ let mut worst_latency = PeakHold::<f64>::builder()
     .build().unwrap();
 
 // On each event:
-let envelope = worst_latency.update(latency_us);
+let envelope = worst_latency.update(latency_us).unwrap();
 dashboard.set_peak_latency(envelope);
 ```
 

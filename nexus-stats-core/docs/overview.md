@@ -24,7 +24,7 @@ w.reset();
 - **`update(sample)` → `Result<_, DataError>`** for float types. NaN/Inf inputs return an error. The caller decides whether to propagate, log, or swallow.
 - **`is_primed()` / `count()` / `reset()`** on every type.
 - **O(1) per update.** Fixed memory. No allocation on the hot path after construction.
-- **`f64` variants** for float types; `i64` integer variants exist for the cheap primitives (EMA, DeadBand, etc.).
+- **`f64` by default**; the cheap primitives (`Slew`, `DeadBand`, `Hysteresis`, the extrema, the diffs, ...) are generic over `f64` and `i64`. See [Integer Variants](#integer-variants).
 - **Builder or `new(...)` for construction.** Types with many parameters (CUSUM, EwmaVar, AsymEma) use a builder; simple types (Welford, LevelCrossing, DeadBand, Slew) have a plain `new`.
 
 ## Error Types

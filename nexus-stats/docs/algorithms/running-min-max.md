@@ -7,7 +7,7 @@ per update. Zero configuration.
 |----------|-------|
 | Update cost | ~5 cycles |
 | Memory | ~16 bytes |
-| Types | All (f32, f64, i32, i64) for both Min and Max |
+| Types | `RunningMax<f64>`, `RunningMax<i64>`, `RunningMin<f64>`, `RunningMin<i64>` |
 | Output | `Option<T>` — None until first sample |
 
 ## What They Do

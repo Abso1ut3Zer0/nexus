@@ -7,7 +7,7 @@ Supports Chan's merge for parallel aggregation.
 |----------|-------|
 | Update cost | ~12 cycles |
 | Memory | ~48 bytes |
-| Types | `Covariance`, `CovarianceF32` |
+| Types | `Covariance` |
 | Error handling | Returns `Result<_, DataError>` on NaN/Inf input |
 
 ## What It Does

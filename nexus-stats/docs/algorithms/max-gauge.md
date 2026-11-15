@@ -7,7 +7,7 @@ resets when read. Designed for periodic scraping and alerting.
 |----------|-------|
 | Update cost | ~5 cycles |
 | Memory | ~8 bytes |
-| Types | `MaxGauge<f64>`, `MaxGaugeF32`, `MaxGauge<i64>`, `MaxGaugeI32` |
+| Types | `MaxGauge<f64>`, `MaxGauge<i64>` |
 | Error handling | Returns `Result<_, DataError>` on NaN/Inf input |
 
 ## What It Does

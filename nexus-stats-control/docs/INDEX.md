@@ -22,15 +22,15 @@ The base control primitives (`DeadBand`, `Hysteresis`, `Debounce`, `LevelCrossin
 
 | Type | Module | Feature | Detects / Tracks |
 |------|--------|---------|-------------------|
-| `PeakDetector<f64>` / `I64` | `control` | — | Local maxima above a prominence threshold |
+| `PeakDetector<f64>` / `PeakDetector<i64>` | `control` | — | Local maxima above a prominence threshold |
 | `BoolWindow` | `control` | `alloc` | Rolling pass/fail fraction |
 | `TopK<K>` | `frequency` | `alloc` | Top-K frequent items (Space-Saving) |
-| `FlexProportion` / `FlexProportionAtomic` | `frequency` | — | Per-entity share of a streaming count |
+| `FlexProportionGlobal` + `FlexProportionEntity` | `frequency` | — | Per-entity share of a streaming count |
 | `DecayAccum` | `frequency` | — | Score that decays with time between events |
 
 ## Cross-references
 
 - Base control / thresholds: [`nexus-stats-core::control`](../../nexus-stats-core/docs/control.md).
 - Rolling rates with smoothing: [`nexus-stats-core::monitoring::EventRate`](../../nexus-stats-core/docs/monitoring.md#eventrate).
-- Bayesian rate with uncertainty: [`BetaBinomial`](../../nexus-stats-regression/docs/estimation.md#betabinomialf64--bayesian-rate-estimation-for-successes).
+- Bayesian rate with uncertainty: [`BetaBinomial`](../../nexus-stats-regression/docs/estimation.md#betabinomial--bayesian-rate-estimation-for-successes).
 - Umbrella: [`nexus-stats/docs`](../../nexus-stats/docs/INDEX.md).

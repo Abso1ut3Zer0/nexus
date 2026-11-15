@@ -48,8 +48,8 @@ use nexus_stats_detection::estimation::{SprtBernoulli, Decision};
 // H1: fill rate is 0.85 (new quoter)
 // type I error 5%, type II error 10%
 let mut sprt = SprtBernoulli::builder()
-    .p0(0.75)
-    .p1(0.85)
+    .null_rate(0.75)
+    .alt_rate(0.85)
     .alpha(0.05)
     .beta(0.10)
     .build()
@@ -91,11 +91,11 @@ use nexus_stats_detection::estimation::{SprtGaussian, Decision};
 
 // H0: deploy didn't regress (mean 120us)
 // H1: deploy regressed by 10us (mean 130us)
-// sigma known from historical data
+// variance known from historical data (sigma 5us)
 let mut sprt = SprtGaussian::builder()
-    .mu0(120.0)
-    .mu1(130.0)
-    .sigma(5.0)
+    .null_mean(120.0)
+    .alt_mean(130.0)
+    .variance(25.0)
     .alpha(0.01)
     .beta(0.05)
     .build()

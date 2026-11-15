@@ -10,6 +10,65 @@ contained.
 
 ## [Unreleased]
 
+The stats major ([#773](https://github.com/Abso1ut3Zer0/nexus/issues/773)):
+one naming convention across the family. Migration guide:
+[`docs/guides/migrating-to-7.md`](docs/guides/migrating-to-7.md).
+
+### Changed
+
+- **No numeric suffixes.** A type whose algorithm exists for one numeric
+  type is named plainly (`EmaF64` → `Ema`, `WelfordF64` → `Welford`,
+  `LivenessU64` → `Liveness`, `HoltF64` → `Holt`, `LinearRegressionF64` →
+  `LinearRegression`, ...); builders follow. A genuine pair is one generic
+  type bounded by the sealed `Sample` trait (`f64`, `i64`): `Drawdown<T>`,
+  `WindowedMax<T>`, `WindowedMin<T>`, `RunningMax<T>`, `RunningMin<T>`,
+  `MaxGauge<T>`, `PeakHold<T>`, `CoDel<T>`, `Jitter<T>`, `FirstDiff<T>`,
+  `SecondDiff<T>`, `Hysteresis<T>`, `DeadBand<T>`, `LevelCrossing<T>`,
+  `Slew<T>`, `WindowedMedian<T>`, `PeakDetector<T>`; the normalizers and
+  `RobustZScore<T>` are `Float` generics (`f64`, `f32`) over `f64`
+  internals. `update` returns `Result` on floats and the plain value on
+  `i64`. The full map, per crate, is in the core, smoothing, detection,
+  control and regression CHANGELOGs and in the migration guide.
+- `Sample` and `Float` are re-exported at the crate root so the bounds can be
+  named from the umbrella.
+- `DeadBand<T>::new` returns `Result`; `PeakHold` restarts its hold on a
+  sample equal to the decayed peak. The core CHANGELOG has the rest of the
+  behavior changes.
+
+### Removed
+
+- `SaturationF64` ([#761](https://github.com/Abso1ut3Zer0/nexus/issues/761)),
+  `LivenessF64`, `LivenessI64`, `EventRateI64`, `update_i64` on the windowed
+  extrema and CoDel, `CoDel::min_sojourn` (core); `MosumI64`,
+  `AutocorrelationI64` ([#379](https://github.com/Abso1ut3Zer0/nexus/issues/379),
+  detection); `DecayAccumF64` (control).
+
+### Added
+
+- `PollSaturation` / `PollSummary` ([#764](https://github.com/Abso1ut3Zer0/nexus/issues/764))
+  and `SojournSaturation` / `SojournSummary` ([#770](https://github.com/Abso1ut3Zer0/nexus/issues/770)):
+  a consumer thread's saturation from its poll outcomes, or from stamped
+  queue sojourns.
+
+### Fixed
+
+- Carried from core: `WindowedMin` / `WindowedMax` kernel-exact
+  ([#758](https://github.com/Abso1ut3Zer0/nexus/issues/758)), `CoDel` RFC 8289
+  `first_above` rule ([#759](https://github.com/Abso1ut3Zer0/nexus/issues/759)),
+  `Liveness` deadlines ([#760](https://github.com/Abso1ut3Zer0/nexus/issues/760)),
+  `PeakHold<f64>` negative-only streams and `Jitter<f64>` seeding
+  ([#763](https://github.com/Abso1ut3Zer0/nexus/issues/763)).
+
+### Docs
+
+- Every page under `docs/`, the README and the sub-crate docs use the new
+  names. The type matrix and the integer-vs-float guide are rewritten; the
+  README's type-variant table is replaced by a numeric-types section. About
+  150 stale code examples are fixed against the shipped API (methods and
+  builder options that never existed, unhandled `Result`s, removed types).
+  `docs/algorithms/saturation.md` is replaced by `poll-saturation.md` and
+  `sojourn-saturation.md`.
+
 ## [6.0.1] — 2026-06-05
 
 ### Changed

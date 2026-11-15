@@ -72,7 +72,7 @@ use nexus_stats::signal::Entropy;
 let mut e = Entropy::builder().bins(8).build().unwrap();
 
 for category in observations {
-    e.observe(category);
+    e.update(category);
 }
 
 println!("entropy: {:.3} nats", e.entropy().unwrap());
@@ -86,7 +86,7 @@ time via the builder. Categories must be in `0..bins`. Out-of-range panics.
 
 ```rust
 // How unusual was this observation?
-e.observe(rare_category);
+e.update(rare_category);
 if let Some(s) = e.surprise(rare_category) {
     // High surprise = rare event
     println!("surprise: {s:.2} nats");
@@ -108,7 +108,7 @@ let bucket = match order_size {
     1001..=10000 => 2,
     _           => 3,
 };
-e.observe(bucket);
+e.update(bucket);
 
 // Low entropy = concentrated in one bucket → predictable behavior
 // High entropy = diverse distribution → normal variation
@@ -121,7 +121,7 @@ e.observe(bucket);
 let mut e = Entropy::builder().bins(8).build().unwrap();
 
 let bucket = (latency_us / 100).min(7) as usize;
-e.observe(bucket);
+e.update(bucket);
 
 // Entropy drop = distribution concentrating = more predictable
 // Entropy spike = distribution spreading = less predictable
@@ -133,7 +133,7 @@ e.observe(bucket);
 // Track distribution of packet types
 let mut e = Entropy::builder().bins(16).build().unwrap();
 
-e.observe(packet_type as usize);
+e.update(packet_type as usize);
 
 // High entropy = diverse traffic (normal)
 // Low entropy = dominated by one type (possible attack)

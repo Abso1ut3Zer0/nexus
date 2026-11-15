@@ -50,7 +50,7 @@ let mut holt = Holt::builder()
     .beta(0.1)     // trend smoothing
     .build().unwrap();
 
-if let Some((level, trend)) = holt.update(sample) {
+if let Some((level, trend)) = holt.update(sample).unwrap() {
     let forecast_10 = holt.forecast(10).unwrap();
     if trend > 1.0 { /* getting worse */ }
 }

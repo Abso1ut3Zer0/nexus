@@ -7,7 +7,7 @@ configurable prominence threshold to filter noise.
 |----------|-------|
 | Update cost | ~3 cycles |
 | Memory | ~16 bytes |
-| Types | All (f32, f64, i32, i64) |
+| Types | `PeakDetector<f64>`, `PeakDetector<i64>` |
 | Output | `Option<Peak>` — detected peak with value and direction |
 | Error handling | Returns `Result<_, DataError>` on NaN/Inf input |
 

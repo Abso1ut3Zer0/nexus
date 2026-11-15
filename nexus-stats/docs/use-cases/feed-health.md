@@ -95,8 +95,8 @@ let mut latency_cusum = Cusum::builder(baseline_ws_latency)
 
 // On each WebSocket message:
 liveness.update(now_ns);
-msg_rate.tick(now_ns);
-latency_cusum.update(msg_latency_ms);
+msg_rate.update(now_ns);
+latency_cusum.update(msg_latency_ms).unwrap();
 
 // On timer tick (100ms from nexus-rt timer driver):
 if !liveness.check(now_ns) {

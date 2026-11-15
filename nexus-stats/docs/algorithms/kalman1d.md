@@ -64,7 +64,7 @@ let mut kf = Kalman1d::builder()
     .min_samples(1)
     .build().unwrap();
 
-if let Some((pos, vel)) = kf.update(measurement) {
+if let Some((pos, vel)) = kf.update(measurement).unwrap() {
     println!("estimated value: {pos}, trend: {vel}/sample");
 }
 ```
@@ -98,7 +98,7 @@ let mut throughput = Kalman1d::builder()
     .measurement_noise(500.0) // measurements are noisy
     .build().unwrap();
 
-if let Some((current, trend)) = throughput.update(msgs_per_sec) {
+if let Some((current, trend)) = throughput.update(msgs_per_sec).unwrap() {
     if trend < -10.0 {
         // throughput declining
     }
@@ -112,7 +112,7 @@ let mut load = Kalman1d::builder()
     .measurement_noise(5.0)
     .build().unwrap();
 
-if let Some((current, trend)) = load.update(cpu_percent) {
+if let Some((current, trend)) = load.update(cpu_percent).unwrap() {
     let predicted_5min = current + trend * 300.0; // 300 samples ahead
 }
 ```

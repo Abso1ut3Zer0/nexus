@@ -27,9 +27,9 @@ by at most `total / CAP`.
 ```rust
 let mut top: TopK<String, 16> = TopK::new();  // track top 16
 
-top.observe("BTC-USD".to_string());
-top.observe("ETH-USD".to_string());
-top.observe("BTC-USD".to_string());
+top.update("BTC-USD".to_string());
+top.update("ETH-USD".to_string());
+top.update("BTC-USD".to_string());
 
 let mut buf = [("".to_string(), 0u64); 16];
 let n = top.top(&mut buf);

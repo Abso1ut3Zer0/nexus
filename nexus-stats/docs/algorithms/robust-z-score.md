@@ -43,7 +43,7 @@ let mut rz = RobustZScore::<f64>::builder()
     .min_samples(20)
     .build().unwrap();
 
-if let Some(z) = rz.update(sample) {
+if let Some(z) = rz.update(sample).unwrap() {
     if z.abs() > 3.5 {
         // outlier detected, but EMA didn't move (frozen)
     }

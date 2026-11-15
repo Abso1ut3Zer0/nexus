@@ -27,7 +27,7 @@ Most algorithms are pure arithmetic — no `sqrt` or `exp` needed:
 | Debounce, Hysteresis, PeakDetector | No |
 | FirstDiff, SecondDiff, LevelCrossing | No |
 | BoolWindow, MaxGauge | No |
-| MOSUM (integer), Jitter (integer) | No |
+| Jitter<i64>, Liveness, EventRate, PollSaturation | No |
 | Welford (`std_dev()` query) | Yes (`sqrt`) |
 | ShiryaevRoberts | Yes (`exp`) |
 | EMA (`halflife()` constructor) | Yes (`exp`) |
@@ -36,11 +36,19 @@ Most algorithms are pure arithmetic — no `sqrt` or `exp` needed:
 If you only use algorithms that don't need math functions, you can
 skip both `std` and `libm` features entirely.
 
-## Integer Variants for Embedded
+## Integer Forms for Embedded
 
-The integer EMA (`EmaI64`) uses the Linux kernel's fixed-point
-pattern — bit-shift arithmetic with no floating point at all. This is
-ideal for Cortex-M and other platforms without FPU.
+The cheap primitives are generic over `f64` and `i64`: `Slew<i64>`,
+`DeadBand<i64>`, `Hysteresis<i64>`, `LevelCrossing<i64>`, `FirstDiff<i64>`,
+`SecondDiff<i64>`, `Drawdown<i64>`, `RunningMax<i64>`, `RunningMin<i64>`,
+`WindowedMax<i64>`, `WindowedMin<i64>`, `MaxGauge<i64>`, `PeakHold<i64>`,
+`CoDel<i64>`, `Jitter<i64>`, `WindowedMedian<i64>`, `PeakDetector<i64>`. The
+tick-based monitors (`Liveness`, `EventRate`, `PollSaturation`,
+`SojournSaturation`) are integer throughout. Where these need smoothing they
+use the Linux kernel's fixed-point pattern (a bit-shift EMA), so none of it
+touches floating point: ideal for Cortex-M and other platforms without an
+FPU. The smoothers that take arbitrary data (`Ema`, `AsymEma`, `Welford`,
+`Cusum`, ...) are `f64`; see [Integer vs Float](integer-vs-float.md).
 
 ## Memory Budgets
 

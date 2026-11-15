@@ -84,7 +84,7 @@ let mut te = TransferEntropy::builder()
     .unwrap();
 
 for (x_bin, y_bin) in discretized_data {
-    te.observe(x_bin, y_bin);
+    te.update(x_bin, y_bin);
 }
 
 if let Some(flow) = te.net_flow() {
@@ -148,7 +148,7 @@ let mut te = TransferEntropy::builder()
     .unwrap();
 
 // Discretize metrics into 8 bins (e.g., by quantile)
-te.observe(metric_a_bin, metric_b_bin);
+te.update(metric_a_bin, metric_b_bin);
 
 // Positive net_flow → metric A drives metric B
 ```
@@ -164,7 +164,7 @@ let mut te = TransferEntropy::builder()
     .unwrap();
 
 // Discretize both metrics into quartiles
-te.observe(cpu_quartile, latency_quartile);
+te.update(cpu_quartile, latency_quartile);
 
 // net_flow > 0 → CPU drives latency (expected)
 // net_flow < 0 → latency drives CPU (unexpected — investigate)

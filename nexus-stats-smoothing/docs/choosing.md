@@ -92,7 +92,7 @@ for &s in &samples {
         "raw={:.2} ema={:.2} holt={:.2} kama={:.2} k1d={:.2}",
         s,
         ema.value().unwrap_or(s),
-        holt.value().unwrap_or(s),
+        holt.level().unwrap_or(s),
         kama.value().unwrap_or(s),
         k1d.position(),
     );

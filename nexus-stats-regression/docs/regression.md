@@ -56,7 +56,7 @@ Same shape, but sufficient statistics decay exponentially. The effective sample 
 
 ```rust
 let mut beta = EwLinearRegression::builder()
-    .halflife(500.0)
+    .alpha(0.0014)   // forgetting factor, about a 500-sample half-life
     .build()
     .unwrap();
 for (x, y) in stream { beta.update(x, y).unwrap(); }
@@ -113,7 +113,7 @@ Same as above but with EW decay. Use when the curve shape drifts.
 
 ---
 
-## TransformedRegressionF64 — exp / log / power fits
+## ExponentialRegression / LogarithmicRegression / PowerRegression — linearized fits
 
 Streaming fits of nonlinear families that linearize under a transformation:
 
@@ -123,13 +123,12 @@ Streaming fits of nonlinear families that linearize under a transformation:
 | Logarithmic | — | y = a * ln(x) + b |
 | Power | log y, log x | y = a * x^b |
 
-You feed raw `(x, y)` pairs; the type applies the transform internally. `predict(x)` returns the value in original space.
+One type per family (`ExponentialRegression`, `LogarithmicRegression`, `PowerRegression`), each with an `Ew*` forgetful twin. You feed raw `(x, y)` pairs; the type applies the transform internally. `predict(x)` returns the value in original space.
 
 ### Example — exponential growth fit
 
 ```rust
 use nexus_stats_regression::regression::ExponentialRegression;
-// (Type name is illustrative; see source for the exact re-exported name.)
 
 let mut fit = ExponentialRegression::new();
 for (t, y) in growth_data {
@@ -246,7 +245,7 @@ impl KyleLambda {
 use nexus_stats_regression::regression::KyleLambda;
 
 let mut kl = KyleLambda::builder()
-    .halflife(1000.0)
+    .alpha(0.0007)   // forgetting factor, about a 1000-sample half-life
     .build()
     .unwrap();
 
@@ -289,5 +288,5 @@ for obs in observations {
 
 ## Cross-references
 
-- [`nexus-stats-core::statistics::HalfLife`](../../nexus-stats-core/docs/statistics.md#halflifef64--mean-reversion-half-life) — mean-reversion half-life for a single series.
-- [`Covariance`](../../nexus-stats-core/docs/statistics.md#covariancef64--online-covariance-and-correlation) — lag-0 linear relationship.
+- [`nexus-stats-core::statistics::HalfLife`](../../nexus-stats-core/docs/statistics.md#halflife--mean-reversion-half-life) — mean-reversion half-life for a single series.
+- [`Covariance`](../../nexus-stats-core/docs/statistics.md#covariance--online-covariance-and-correlation) — lag-0 linear relationship.

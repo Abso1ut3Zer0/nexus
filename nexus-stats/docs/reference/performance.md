@@ -9,21 +9,19 @@ pinned to a single core.
 |-----------|-----|-----|-------|
 | **Change Detection** | | | |
 | Cusum | 5 | 7 | add/sub/max |
-| CusumI64 | 4 | 4 | integer only |
-| Mosum<64> | 6 | 7 | ring buffer |
+| Mosum (window 64) | 6 | 7 | ring buffer |
 | ShiryaevRoberts | 17 | 41 | one `exp()` |
 | MultiGate | 12 | 17 | 3-gate + conditional EMA |
 | RobustZScore<f64> | 12 | 27 | EMA + MAD + freeze |
 | AdaptiveThreshold | ~15 | ~20 | EMA + Welford + z-score |
 | **Smoothing** | | | |
 | Ema | 5 | 6 | mul_add (FMA) |
-| EmaI64 | 5 | 5 | bit-shift |
 | AsymEma | 11 | 12 | branch + mul_add |
-| Kama<10> | 16 | 25 | O(N) volatility recompute |
+| Kama (window 10) | 16 | 25 | O(N) volatility recompute |
 | Kalman1d | 25 | 30 | 2x2 predict + update |
 | Holt | 11 | 12 | two smoothing steps |
 | Spring | 12 | 12 | Padé approximant |
-| WindowedMedian<f64><32> | 136 | 195 | O(N) sorted array |
+| WindowedMedian<f64> (window 32) | 136 | 195 | O(N) sorted array |
 | Slew<f64> | ~3 | ~3 | clamp (maxsd/minsd) |
 | **Statistics** | | | |
 | Welford | 10 | 12 | one division |
@@ -33,8 +31,8 @@ pinned to a single core.
 | HarmonicMean | ~5 | ~6 | one reciprocal |
 | **Monitoring** | | | |
 | Drawdown<f64> | 5 | 5 | compare + max |
-| RunningMin/MaxF64 | 5 | 5 | single comparison |
-| WindowedMax/MinF64 | 9-10 | 12-34 | 3-sample promotion |
+| RunningMin/Max<f64> | 5 | 5 | single comparison |
+| WindowedMax/Min<f64> | 9-10 | 12-34 | 3-sample promotion |
 | PeakHold<f64> | 7 | 9 | compare + decay |
 | MaxGauge<f64> | ~5 | ~5 | compare-and-swap |
 | Liveness | 6 | 20 | EMA + deadline |
@@ -49,10 +47,10 @@ pinned to a single core.
 | **Frequency** | | | |
 | TopK<u64, 16> | 42 | 97 | linear scan |
 | **Utilities** | | | |
-| BoolWindow<1> | 6 | 11 | bit manipulation |
+| BoolWindow (64) | 6 | 11 | bit manipulation |
 | Hysteresis<f64> | ~3 | ~3 | two comparisons |
 | DeadBand<f64> | ~2 | ~3 | one comparison |
-| DebounceU32 | ~2 | ~2 | increment + compare |
+| Debounce | ~2 | ~2 | increment + compare |
 | FirstDiff/SecondDiff | ~2 | ~2 | subtraction |
 | LevelCrossing<f64> | ~2 | ~2 | one comparison |
 | PeakDetector<f64> | ~3 | ~3 | two comparisons |
@@ -66,8 +64,8 @@ pinned to a single core.
 | Windowed types (3-sample Nichols') | 48 bytes |
 | PollSaturation (`repr(C)`: flag byte + nine `u64`) | 80 bytes (64-bit) |
 | SojournSaturation (budget + five `u64` + flag) | 56 bytes (64-bit) |
-| Ring buffer types (MOSUM<N>) | N × 8 bytes |
-| WindowedMedian<N> | 2 × N × 8 bytes |
+| Ring buffer types (MOSUM, window N) | N × 8 bytes |
+| WindowedMedian (window N) | 2 × N × 8 bytes |
 | TopK<K, CAP> | CAP × (sizeof(K) + 8) bytes |
 
 ## Running Benchmarks

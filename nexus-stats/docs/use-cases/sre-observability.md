@@ -16,19 +16,19 @@ let mut error_rate = ErrorRate::builder()
     .threshold(0.01)  // SLO: 99% success = 1% error budget
     .build().unwrap();
 
-// Sliding window for precise rate (last 100 events)
-let mut window = BoolWindow::<2>::new();  // 128-event window
+// Sliding window for the exact rate over the last 128 events
+let mut window = BoolWindow::new(128).unwrap();
 
 // On each request:
 let ok = response.status() < 500;
-error_rate.record(ok);
-window.record(ok);
+error_rate.update(ok);
+window.update(ok);
 
 // Two views:
 // error_rate.error_rate() → smoothed (good for dashboards)
 // window.failure_rate()   → exact over last 128 requests (good for alerting)
 
-if let Some(Condition::Degraded) = error_rate.record(ok) {
+if let Some(Condition::Degraded) = error_rate.update(ok) {
     // Smoothed error rate exceeds 1% → burning budget
 }
 ```

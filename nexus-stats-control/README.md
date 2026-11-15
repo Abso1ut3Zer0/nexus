@@ -11,7 +11,7 @@ Advanced control and frequency primitives for [nexus-stats](https://crates.io/cr
 
 - **TopK** — Top-K frequency tracking
 - **FlexProportion** — Flexible proportion tracking
-- **DecayAccumF64** — Exponential decay accumulator (requires `std` or `libm`)
+- **DecayAccum** — Exponential decay accumulator, `u64` ticks (requires `std` or `libm`)
 
 ## Usage
 

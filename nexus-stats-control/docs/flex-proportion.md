@@ -1,19 +1,14 @@
 # FlexProportion
 
-**Types:** `FlexProportion`, `FlexProportionAtomic`
-**Import:** `use nexus_stats_control::frequency::FlexProportion;`
+**Types:** `FlexProportionGlobal`, `FlexProportionEntity`
+**Import:** `use nexus_stats_control::frequency::{FlexProportionEntity, FlexProportionGlobal};`
 **Feature flags:** None required.
 
 ## What it does
 
-Tracks an entity's share of a total count over a streaming period. An entity increments its count; another counter tracks total events. Query returns the entity's fraction.
+Tracks each entity's share of a streaming event count with temporal decay, after the Linux kernel's `lib/flex_proportions.c`. One `FlexProportionGlobal` counts every event and advances a decay period every `half_life_events`; one `FlexProportionEntity` per tracked entity holds that entity's count and catches up on missed periods lazily, the next time it is updated or queried. Old activity fades, recent activity dominates.
 
-Two variants:
-
-- **`FlexProportion`** — single-owner, `&mut self`.
-- **`FlexProportionAtomic`** — thread-safe, atomic counters. Slightly more expensive per update.
-
-Both are O(1), zero allocation.
+Both halves are O(1), zero allocation. The entity never holds a reference to the global: it takes the current period as a plain `u64`, so a map of entities and the global can live in different places.
 
 ## When to use it
 
@@ -26,43 +21,50 @@ Not for: top-K ranking (use `TopK`). Not for: time-weighted rather than event-we
 ## API
 
 ```rust
-impl FlexProportion {
+impl FlexProportionGlobal {
     pub fn new(half_life_events: u64) -> Result<Self, ConfigError>;
-    pub fn update(&mut self);
+    pub fn update(&mut self);           // once per event, before the entity
+    pub fn total(&self) -> u64;
+    pub fn period(&self) -> u64;
+}
+
+impl FlexProportionEntity {
+    pub fn new() -> Self;
+    pub fn update(&mut self, current_period: u64);                   // pass global.period()
+    pub fn fraction(&self, total: u64, current_period: u64) -> f64;  // 0.0 to 1.0
     pub fn count(&self) -> u64;
     pub fn reset(&mut self);
-    // fraction / period tracking — see source
 }
 ```
 
-The `half_life_events` parameter controls how old events fade. Pass a large value for near-total counting, smaller for recency-weighted.
+`half_life_events` controls how fast old events fade: the global's period advances every that many events, and an entity's count halves once per period it missed. Pass a large value for near-total counting, smaller for recency-weighted shares.
 
 ## Example — per-client quota share
 
 ```rust
-use nexus_stats_control::frequency::FlexProportion;
+use nexus_stats_control::frequency::{FlexProportionEntity, FlexProportionGlobal};
 
-let mut client_a = FlexProportion::new(10_000).unwrap();
-let mut client_b = FlexProportion::new(10_000).unwrap();
+let mut global = FlexProportionGlobal::new(10_000).unwrap();
+let mut client_a = FlexProportionEntity::new();
+let mut client_b = FlexProportionEntity::new();
 
-// Each time client_a makes a request:
-client_a.update();
+// Each time client A makes a request: the global first, then the entity
+global.update();
+client_a.update(global.period());
 
-// Each time client_b makes a request:
-client_b.update();
+// Each time client B makes a request:
+global.update();
+client_b.update(global.period());
 
-// Query counts — fraction = count / total_count
-let total = client_a.count() + client_b.count();
-if total > 0 {
-    let share_a = client_a.count() as f64 / total as f64;
-    println!("client A share = {share_a:.3}");
-}
+// Query
+let share_a = client_a.fraction(global.total(), global.period());
+println!("client A share = {share_a:.3}");
 ```
 
 ## Caveats
 
-- **Not a full leaderboard.** You must hold a `FlexProportion` per tracked entity. For dynamic-entity top-K, use `TopK`.
-- **Atomic version contends** on the atomic counter under heavy multi-writer load. For single-writer hot paths, use the plain version.
+- **Not a full leaderboard.** You hold one `FlexProportionEntity` per tracked entity. For dynamic-entity top-K, use `TopK`.
+- **Single writer.** Both halves are `&mut self`; share them across threads behind your own synchronization.
 - **Half-life in events**, not time. If you want time-based decay, use `DecayAccum`.
 
 ## Cross-references

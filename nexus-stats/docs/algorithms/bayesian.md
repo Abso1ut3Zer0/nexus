@@ -6,7 +6,7 @@ O(1) per update, 16-32 bytes, pure arithmetic.
 | Property | Value |
 |----------|-------|
 | Update cost | ~3 cycles |
-| Types | `BetaBinomial/F32`, `GammaPoisson/F32` |
+| Types | `BetaBinomial`, `GammaPoisson` |
 | Memory | 32 bytes (f64) |
 | Priming | After 1 observation |
 | Output | `mean()`, `variance()`, `credible_interval()` |
@@ -85,14 +85,14 @@ use nexus_stats::estimation::BetaBinomial;
 let mut rate = BetaBinomial::new();
 
 // Informative prior (strong belief rate ≈ 0.7)
-let mut rate = BetaBinomial::with_prior(70.0, 30.0);
+let mut rate = BetaBinomial::with_prior(70.0, 30.0).unwrap();
 
 // Observe outcomes:
-rate.observe(true);   // success
-rate.observe(false);  // failure
+rate.update(true);   // success
+rate.update(false);  // failure
 
 // Batch update:
-rate.observe_batch(95, 5);  // 95 successes, 5 failures
+rate.update_batch(95, 5);  // 95 successes, 5 failures
 
 println!("rate: {:.3}", rate.mean());
 println!("95% CI: {:?}", rate.credible_interval(0.95));
@@ -106,10 +106,10 @@ use nexus_stats::estimation::GammaPoisson;
 let mut event_rate = GammaPoisson::new();
 
 // Observed 15 events in 3 seconds
-event_rate.observe(15, 3.0);
+event_rate.update(15, 3.0).unwrap();
 
 // Observed 22 events in 5 seconds
-event_rate.observe(22, 5.0);
+event_rate.update(22, 5.0).unwrap();
 
 println!("rate: {:.1} events/sec", event_rate.rate());
 println!("95% CI: {:?}", event_rate.credible_interval(0.95));
@@ -123,7 +123,7 @@ println!("95% CI: {:?}", event_rate.credible_interval(0.95));
 let mut errors = BetaBinomial::new();
 
 // Per request:
-errors.observe(request_succeeded);
+errors.update(request_succeeded);
 
 if let Some((lo, hi)) = errors.credible_interval(0.95) {
     let error_rate = 1.0 - errors.mean();
@@ -139,7 +139,7 @@ if let Some((lo, hi)) = errors.credible_interval(0.95) {
 let mut packet_rate = GammaPoisson::new();
 
 // Per measurement window (1 second):
-packet_rate.observe(packets_received, 1.0);
+packet_rate.update(packets_received, 1.0).unwrap();
 
 // Rate estimate stabilizes after a few windows.
 // CI narrows as you accumulate more exposure time.

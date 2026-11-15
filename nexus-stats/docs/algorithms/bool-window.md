@@ -37,10 +37,10 @@ no popcount needed per query.
 ## Configuration
 
 ```rust
-let mut window = BoolWindow::new(64);  // track last 64 events
+let mut window = BoolWindow::new(64).unwrap();  // track last 64 events
 
-window.record(true);   // success
-window.record(false);  // failure
+window.update(true);   // success
+window.update(false);  // failure
 
 let rate = window.failure_rate();  // 0.0 to 1.0
 let count = window.count();        // events seen so far (up to 64)
@@ -50,9 +50,9 @@ let count = window.count();        // events seen so far (up to 64)
 
 ### Circuit Breaker Input
 ```rust
-let mut outcomes = BoolWindow::new(20);  // last 20 requests
+let mut outcomes = BoolWindow::new(20).unwrap();  // last 20 requests
 
-outcomes.record(request_succeeded);
+outcomes.update(request_succeeded);
 
 if outcomes.failure_rate() > 0.5 && outcomes.count() >= 10 {
     trip_circuit_breaker();

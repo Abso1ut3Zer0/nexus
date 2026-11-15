@@ -31,17 +31,17 @@ fraction decays over time — recent activity matters more than old.
 ## Configuration
 
 ```rust
-let mut global = FlexProportionGlobal::new(1000);  // half-life: 1000 events
+let mut global = FlexProportionGlobal::new(1000).unwrap();  // half-life: 1000 events
 
 let mut entity_a = FlexProportionEntity::new();
 let mut entity_b = FlexProportionEntity::new();
 
-// On each event, record to both global and the responsible entity:
-global.record();
-entity_a.record(&mut global);
+// On each event: the global first, then the responsible entity with the global's period
+global.update();
+entity_a.update(global.period());
 
 // Query:
-let pct_a = entity_a.fraction(&global);  // 0.0 to 1.0
+let pct_a = entity_a.fraction(global.total(), global.period());  // 0.0 to 1.0
 ```
 
 ## Examples
@@ -49,16 +49,16 @@ let pct_a = entity_a.fraction(&global);  // 0.0 to 1.0
 ### Trading — Shard Load Balancing
 ```rust
 // Track which symbols generate most traffic for capacity planning
-let mut global = FlexProportionGlobal::new(100_000);
+let mut global = FlexProportionGlobal::new(100_000).unwrap();
 let mut per_symbol: HashMap<Symbol, FlexProportionEntity> = ...;
 
 // On each market data message:
-global.record();
-per_symbol.get_mut(&symbol).record(&mut global);
+global.update();
+per_symbol.get_mut(&symbol).unwrap().update(global.period());
 
 // Periodically check distribution:
 for (sym, entity) in &per_symbol {
-    let pct = entity.fraction(&global);
+    let pct = entity.fraction(global.total(), global.period());
     if pct > 0.20 { /* this symbol is >20% of traffic */ }
 }
 ```
@@ -66,18 +66,18 @@ for (sym, entity) in &per_symbol {
 ### SRE — Service Traffic Distribution
 ```rust
 // Which endpoints consume the most resources?
-let mut global = FlexProportionGlobal::new(50_000);
+let mut global = FlexProportionGlobal::new(50_000).unwrap();
 let mut per_endpoint: HashMap<String, FlexProportionEntity> = HashMap::new();
 
 // On each request:
-global.record();
+global.update();
 per_endpoint.entry(endpoint.clone())
     .or_insert_with(FlexProportionEntity::new)
-    .record(&mut global);
+    .update(global.period());
 
 // Review: which endpoint is heaviest?
 for (ep, entity) in &per_endpoint {
-    let pct = entity.fraction(&global);
+    let pct = entity.fraction(global.total(), global.period());
     if pct > 0.25 { log::warn!("{ep} handles {:.0}% of traffic", pct * 100.0); }
 }
 ```

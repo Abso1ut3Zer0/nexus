@@ -61,9 +61,9 @@ is the #1 bug in production anomaly filters.
 ```rust
 let mut gate = MultiGate::builder()
     .alpha(0.1)              // EMA smoothing
-    .hard_limit_pct(0.50)    // reject >50% moves (Gate 1)
+    .hard_limit(0.50)    // reject >50% moves (Gate 1)
     .suspect_z(6.0)          // suspect >6σ moves (Gate 2)
-    .unusual_spread_mult(3.0) // unusual >3× recent spread (Gate 3)
+    .unusual_spread_multiple(3.0) // unusual >3× recent spread (Gate 3)
     .min_samples(20)
     .build().unwrap();
 
@@ -82,9 +82,9 @@ match gate.update(sample) {
 ```rust
 let mut tick_filter = MultiGate::builder()
     .alpha(0.05)
-    .hard_limit_pct(0.20)     // 20% move = impossible for this instrument
+    .hard_limit(0.20)     // 20% move = impossible for this instrument
     .suspect_z(5.0)
-    .unusual_spread_mult(5.0)
+    .unusual_spread_multiple(5.0)
     .min_samples(100)
     .build().unwrap();
 ```
@@ -93,7 +93,7 @@ let mut tick_filter = MultiGate::builder()
 ```rust
 let mut sensor = MultiGate::builder()
     .alpha(0.1)
-    .hard_limit_pct(0.50)
+    .hard_limit(0.50)
     .suspect_z(4.0)
     .min_samples(30)
     .build().unwrap();
