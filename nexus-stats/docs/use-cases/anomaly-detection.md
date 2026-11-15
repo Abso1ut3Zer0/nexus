@@ -117,11 +117,11 @@ match (verdict, shift) {
 Sometimes the simplest check is the most effective:
 
 ```rust
-use nexus_stats::smoothing::Slew<f64>;
+use nexus_stats::smoothing::Slew;
 
 // Reject samples that change too fast
-let mut slew = Slew::<f64>::new(max_allowed_change);
-let clamped = slew.update(sample);
+let mut slew = Slew::<f64>::new(max_allowed_change).unwrap();
+let clamped = slew.update(sample).unwrap();
 
 if (clamped - sample).abs() > 0.001 {
     // Sample was clamped — original exceeded rate limit

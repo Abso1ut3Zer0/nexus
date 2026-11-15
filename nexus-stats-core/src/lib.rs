@@ -25,7 +25,8 @@ pub mod clock;
 
 pub use enums::{Condition, ConfigError, DataError, Direction};
 
-/// The numeric types the generic monitors accept (sealed).
+/// The numeric types the generic monitors accept. Sealed: named as bounds,
+/// implemented only here.
 pub mod sample;
 #[doc(hidden)]
 pub use sample::{AlphaEma, EmaKernel, ShiftEma};

@@ -7,7 +7,7 @@ exponentially weighting recent samples more heavily than older ones.
 |----------|-------|
 | Update cost | ~5 cycles (float), ~5 cycles (integer) |
 | Memory | ~24 bytes (float), ~32 bytes (integer) |
-| Types | `Ema`, `EmaI64` |
+| Types | `Ema` |
 | Priming | Configurable via `min_samples` |
 | Output | `Option<T>` — smoothed value once primed |
 
@@ -126,17 +126,13 @@ let ema = Ema::builder().halflife(10.0).build().unwrap();
 let ema = Ema::builder().span(20).build().unwrap();
 ```
 
-### Integer Variant
+### Integer Inputs
 
-```rust
-// Span rounds up to next 2^k - 1
-let ema = EmaI64::builder()
-    .span(10)         // rounds to 15 (2^4 - 1)
-    .min_samples(5)
-    .build().unwrap();
-
-assert_eq!(ema.effective_span(), 15);
-```
+`Ema` is `f64` only. A fixed-point EMA of arbitrary data has no realistic
+caller (the alpha is fractional, so integer arithmetic truncates every
+update); cast integer samples at the call site. The integer tick types that
+need a smoother (`Liveness`, `EventRate`, `Jitter<i64>`) carry their own
+shift-based EMA internally.
 
 ### Parameters
 
@@ -177,8 +173,8 @@ if let Some(smoothed) = latency_ema.update(rtt_us) {
 ### Networking — Throughput Estimation
 
 ```rust
-let mut throughput = EmaI64::builder()
-    .span(15)         // effective span: 15
+let mut throughput = Ema::builder()
+    .span(15)
     .min_samples(3)
     .build().unwrap();
 
@@ -262,7 +258,6 @@ if let (Some(slow), Some(fast_val)) = (baseline.update(x), fast.update(x)) {
 | Operation | p50 | p99 |
 |-----------|-----|-----|
 | `Ema::update` | 5 cycles | 6 cycles |
-| `EmaI64::update` | 5 cycles | 5 cycles |
 
 The float variant uses `mul_add` (FMA instruction). The integer variant
 uses bit-shift arithmetic with no floating point.

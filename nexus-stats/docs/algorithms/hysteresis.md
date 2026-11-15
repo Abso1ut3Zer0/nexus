@@ -72,7 +72,7 @@ low. Noise within the dead zone causes no state changes.
 let mut hyst = Hysteresis::<f64>::new(
     95.0,   // low threshold  (go LOW when signal drops below this)
     105.0,  // high threshold (go HIGH when signal rises above this)
-);
+).unwrap();
 ```
 
 ### Parameters
@@ -92,7 +92,7 @@ amplitude at the boundary.
 
 ```rust
 // Connection is "good" above 95% success rate, "bad" below 80%
-let mut conn_quality = Hysteresis::<f64>::new(0.80, 0.95);
+let mut conn_quality = Hysteresis::<f64>::new(0.80, 0.95).unwrap();
 
 // On each health check:
 let is_good = conn_quality.update(success_rate).unwrap();
@@ -105,14 +105,14 @@ if !is_good {
 
 ```rust
 // Alert when utilization crosses 90%, clear when it drops below 70%
-let mut util_alert = Hysteresis::<f64>::new(0.70, 0.90);
+let mut util_alert = Hysteresis::<f64>::new(0.70, 0.90).unwrap();
 ```
 
 ### IoT — Temperature Control
 
 ```rust
 // Heater: turn on below 19°C, off above 21°C
-let mut heater = Hysteresis::<f64>::new(19.0, 21.0);
+let mut heater = Hysteresis::<f64>::new(19.0, 21.0).unwrap();
 
 let should_heat = heater.update(current_temp).unwrap();
 ```
@@ -122,7 +122,7 @@ let should_heat = heater.update(current_temp).unwrap();
 ```rust
 // Switch to high-detail model when close, low-detail when far
 // Dead zone prevents LOD popping at the boundary
-let mut lod = Hysteresis::<f64>::new(45.0, 55.0);  // distance units
+let mut lod = Hysteresis::<f64>::new(45.0, 55.0).unwrap();  // distance units
 
 let use_high_detail = !lod.update(distance).unwrap();  // closer = lower value = HIGH
 ```

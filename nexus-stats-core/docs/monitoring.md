@@ -30,14 +30,14 @@ Time-aware types take `u64` ticks in any unit; `clock::WallClock` is the std bri
 Tracks the running peak and the maximum observed drop from that peak. Essential P&L metric.
 
 ```rust
-use nexus_stats_core::monitoring::Drawdown<f64>;
+use nexus_stats_core::monitoring::Drawdown;
 
 let mut dd = Drawdown::<f64>::new();
 for equity in equity_curve {
     dd.update(equity).unwrap();
 }
 let max_dd = dd.max_drawdown();     // largest drop in absolute units
-let current = dd.current_drawdown(); // current drop from peak
+let current = dd.drawdown(); // current drop from peak
 ```
 
 **Use for:** P&L monitoring, risk limits, drawdown-based circuit breakers.
@@ -49,10 +49,10 @@ let current = dd.current_drawdown(); // current drop from peak
 All-time extrema since construction or last `reset()`.
 
 ```rust
-use nexus_stats_core::monitoring::RunningMax<f64>;
+use nexus_stats_core::monitoring::RunningMax;
 let mut peak = RunningMax::<f64>::new();
 for pressure in pressures { peak.update(pressure).unwrap(); }
-let p = peak.value();
+let p = peak.max();
 ```
 
 **Use for:** watermark tracking. Shortest, cheapest type in this crate.
@@ -83,9 +83,13 @@ let max = w.max();                                         // Option<f64>, as of
 Peak envelope with exponential decay. Like a volume meter on a mixing board: spikes jump up, then the level decays back down.
 
 ```rust
-use nexus_stats_core::monitoring::PeakHold<f64>;
+use nexus_stats_core::monitoring::PeakHold;
 
-let mut hold = PeakHold::<f64>::builder().halflife(100.0).build().unwrap();
+let mut hold = PeakHold::<f64>::builder()
+    .hold_samples(10)     // hold a peak for 10 samples
+    .decay_rate(0.99)     // then decay 1% per sample
+    .build()
+    .unwrap();
 for sample in stream {
     let envelope = hold.update(sample).unwrap();
 }
@@ -100,7 +104,7 @@ for sample in stream {
 The classic metrics library primitive: latch the maximum, read-and-reset clears it.
 
 ```rust
-use nexus_stats_core::monitoring::MaxGauge<f64>;
+use nexus_stats_core::monitoring::MaxGauge;
 let mut gauge = MaxGauge::<f64>::new();
 for sample in samples { gauge.update(sample).unwrap(); }
 
@@ -232,10 +236,10 @@ if let Some(cond) = er.update(request_succeeded) {
 Sample-to-sample variation (`|x_t - x_{t-1}|` smoothed), or inter-arrival jitter for event streams.
 
 ```rust
-use nexus_stats_core::monitoring::Jitter<f64>;
+use nexus_stats_core::monitoring::Jitter;
 let mut j = Jitter::<f64>::builder().halflife(20.0).build().unwrap();
 for x in stream { j.update(x).unwrap(); }
-let jitter = j.value();
+let jitter = j.jitter();
 ```
 
 **Use for:** network quality, clock stability, sensor smoothness checks.

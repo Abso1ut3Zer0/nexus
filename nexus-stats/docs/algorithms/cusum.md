@@ -7,7 +7,7 @@ mean of a streaming process.
 |----------|-------|
 | Update cost | ~5 cycles |
 | Memory | ~56 bytes |
-| Types | `Cusum`, `CusumI64` |
+| Types | `Cusum` |
 | Priming | Configurable via `min_samples` |
 | Output | `Option<Direction>` — `Upper`, `Lower`, or `None` |
 
@@ -162,16 +162,11 @@ let cusum = Cusum::builder(100.0)
     .build().unwrap();
 ```
 
-### Integer Variant
+### Integer Inputs
 
-For duration/tick-based measurements without floating point:
-
-```rust
-let mut cusum = CusumI64::builder(1000)  // target: 1000 nanoseconds
-    .slack(50)
-    .threshold(500)
-    .build().unwrap();
-```
+`Cusum` is `f64` only: a sum of deviations is exact for integers below 2^53,
+so cast tick durations at the call site rather than carrying a fixed-point
+form.
 
 Note: for small integer targets, default slack uses `max(1, target / 20)`
 to avoid zero-slack from integer truncation.
@@ -206,9 +201,10 @@ match ack_monitor.update(ack_latency_us) {
 
 ```rust
 // Detect when path quality changes
-let mut rtt_monitor = CusumI64::builder(rtt_baseline_ns)
-    .slack(rtt_baseline_ns / 10)   // 10% tolerance
-    .threshold(rtt_baseline_ns * 5) // significant evidence
+let baseline = rtt_baseline_ns as f64;
+let mut rtt_monitor = Cusum::builder(baseline)
+    .slack(baseline / 10.0)     // 10% tolerance
+    .threshold(baseline * 5.0)  // significant evidence
     .build().unwrap();
 ```
 
@@ -310,7 +306,6 @@ if let Some(Direction::Rising) = cusum.update(sample) {
 | Operation | p50 | p99 |
 |-----------|-----|-----|
 | `Cusum::update` | 5 cycles | 7 cycles |
-| `CusumI64::update` | 4 cycles | 4 cycles |
 
 No branches beyond the `max(0, x)` clamp. No division, no transcendentals.
 Integer variant avoids float entirely.

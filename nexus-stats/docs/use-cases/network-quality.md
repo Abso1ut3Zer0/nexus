@@ -8,7 +8,7 @@ estimation for networked systems.
 ```rust
 use nexus_stats::smoothing::AsymEma;
 use nexus_stats::statistics::EwmaVar;
-use nexus_stats::monitoring::WindowedMin<f64>;
+use nexus_stats::monitoring::WindowedMin;
 
 // Asymmetric EMA: react fast to RTT increases, slow to decreases
 // This is the pattern TCP uses (Jacobson/Karels, RFC 6298)
@@ -38,7 +38,7 @@ if let Some(smoothed) = srtt.update(rtt_ms) {
 ## Recipe: Jitter Buffer Sizing
 
 ```rust
-use nexus_stats::monitoring::Jitter<f64>;
+use nexus_stats::monitoring::Jitter;
 
 let mut jitter = Jitter::<f64>::builder().span(16).build().unwrap(); // RFC 3550: alpha=1/16
 
@@ -54,7 +54,7 @@ if let Some(j) = jitter.jitter() {
 ## Recipe: Bandwidth Estimation
 
 ```rust
-use nexus_stats::monitoring::WindowedMax<f64>;
+use nexus_stats::monitoring::WindowedMax;
 use nexus_stats::statistics::HarmonicMean;
 
 // Windowed max of delivery rate (BBR-style)

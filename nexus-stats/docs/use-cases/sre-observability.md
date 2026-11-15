@@ -72,7 +72,7 @@ use nexus_stats::detection::Cusum;
 use nexus_stats::control::Debounce;
 
 // Consecutive health check failures → confirmed outage
-let mut health_debounce = Debounce::new(3);
+let mut health_debounce = Debounce::new(3).unwrap();
 
 // Error rate for gradual degradation
 let mut errors = ErrorRate::builder()

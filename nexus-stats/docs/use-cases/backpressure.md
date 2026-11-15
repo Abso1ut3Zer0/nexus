@@ -17,7 +17,7 @@ room to act.
 
 ```rust
 use nexus_stats::Condition;
-use nexus_stats::monitoring::CoDel<i64>;
+use nexus_stats::monitoring::CoDel;
 
 // Detect standing queues via sojourn time
 let mut qd = CoDel::<i64>::builder()

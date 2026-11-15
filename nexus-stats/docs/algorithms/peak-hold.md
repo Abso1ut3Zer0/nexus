@@ -111,7 +111,7 @@ let mut spike_display = PeakHold::<f64>::builder()
 ### Audio — Peak Level Meter (PPM)
 
 ```rust
-let mut meter = PeakHoldF32::builder()
+let mut meter = PeakHold::<f64>::builder()
     .hold_samples(0)      // no hold — instant decay
     .decay_rate(0.9995)   // slow decay (PPM standard)
     .build().unwrap();

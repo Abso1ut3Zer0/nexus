@@ -8,7 +8,7 @@ Frame timing, stutter detection, and adaptive quality.
 use nexus_stats::Direction;
 use nexus_stats::smoothing::Ema;
 use nexus_stats::detection::AdaptiveThresholdF64;
-use nexus_stats::monitoring::PeakHold<f64>;
+use nexus_stats::monitoring::PeakHold;
 
 // Smooth FPS display (don't show every fluctuation)
 let mut frame_ema = Ema::builder().alpha(0.05).build().unwrap();

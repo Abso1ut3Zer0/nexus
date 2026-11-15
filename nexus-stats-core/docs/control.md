@@ -22,9 +22,9 @@ These types don't estimate statistics — they implement discrete logic (thresho
 Only emits the new sample if it differs from the last emitted sample by more than `threshold`. Below threshold, emits `None`.
 
 ```rust
-use nexus_stats_core::control::DeadBand<f64>;
+use nexus_stats_core::control::DeadBand;
 
-let mut db = DeadBand::<f64>::new(0.01); // 1-cent dead band
+let mut db = DeadBand::<f64>::new(0.01).unwrap(); // 1-cent dead band
 let updates = [100.00, 100.005, 100.009, 100.012, 100.004];
 for u in updates {
     if let Some(v) = db.update(u).unwrap() {
@@ -43,7 +43,7 @@ for u in updates {
 A Schmitt trigger: turns on above `upper_threshold`, stays on until below `lower_threshold`. Stops the output from flapping when the input hovers near a single threshold.
 
 ```rust
-use nexus_stats_core::control::Hysteresis<f64>;
+use nexus_stats_core::control::Hysteresis;
 
 let mut h = Hysteresis::<f64>::new(0.80, 0.60).unwrap(); // on at 0.80, off at 0.60
 for load in load_samples {
@@ -82,7 +82,7 @@ for e in events {
 Returns true when the input crosses a threshold (up or down). Counts crossings.
 
 ```rust
-use nexus_stats_core::control::LevelCrossing<f64>;
+use nexus_stats_core::control::LevelCrossing;
 
 let mut lc = LevelCrossing::<f64>::new(0.0); // zero crossing
 for x in signal {

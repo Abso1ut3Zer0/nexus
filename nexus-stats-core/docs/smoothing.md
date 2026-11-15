@@ -38,8 +38,8 @@ Two different alphas: one for `sample > current`, one for `sample < current`. Us
 use nexus_stats_core::smoothing::AsymEma;
 
 let mut aema = AsymEma::builder()
-    .up_halflife(5.0)     // react fast to latency going up
-    .down_halflife(50.0)  // smooth the recovery
+    .span_up(5)      // react fast to latency going up
+    .span_down(50)   // smooth the recovery
     .build()
     .unwrap();
 

@@ -34,18 +34,22 @@ impl FeedMonitor {
             liveness: Liveness::builder()
                 .span(15)
                 .deadline_multiple(5)
-                .build(),
+                .build()
+                .unwrap(),
             latency: Cusum::builder(baseline_latency)
                 .slack(baseline_latency * 0.05)
                 .threshold(baseline_latency * 0.5)
                 .min_samples(20)
-                .build(),
+                .build()
+                .unwrap(),
             rate: EventRate::builder()
                 .span(15)
-                .build(),
+                .build()
+                .unwrap(),
             jitter: Jitter::<i64>::builder()
                 .span(20)
-                .build(),
+                .build()
+                .unwrap(),
             staleness: DeadBand::<i64>::new(1).unwrap(), // flag if value changes by < 1
         }
     }

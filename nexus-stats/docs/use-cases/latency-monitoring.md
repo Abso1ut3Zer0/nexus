@@ -19,7 +19,7 @@ durations, queue wait times). You need to:
 ```rust
 use nexus_stats::smoothing::Ema;
 use nexus_stats::statistics::Welford;
-use nexus_stats::monitoring::PeakHold<f64>;
+use nexus_stats::monitoring::PeakHold;
 
 // Smooth display value
 let mut ema = Ema::builder().span(20).min_samples(5).build().unwrap();
@@ -100,7 +100,7 @@ match cusum.update(latency_us) {
 ## Recipe: Latency Jitter Monitoring
 
 ```rust
-use nexus_stats::monitoring::Jitter<f64>;
+use nexus_stats::monitoring::Jitter;
 
 let mut jitter = Jitter::<f64>::builder().span(30).build().unwrap();
 

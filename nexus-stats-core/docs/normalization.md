@@ -19,7 +19,7 @@ All three follow the standard conventions: `update()` feeds a sample and returns
 Normalizes values to z-scores using exponentially-weighted mean and variance. Wraps `EwmaVar` internally.
 
 ```rust
-use nexus_stats_core::normalization::ZScoreNorm<f64>;
+use nexus_stats_core::normalization::ZScoreNorm;
 
 let mut zn = ZScoreNorm::<f64>::builder().halflife(100.0).build().unwrap();
 for i in 0..500 {
@@ -39,10 +39,10 @@ let z = zn.update(250.0).unwrap().unwrap();  // z-score relative to EW stats
 Maps values to [0, 1] using windowed min and max trackers. Takes a `u64` timestamp parameter, consistent with the monitoring module.
 
 ```rust
-use nexus_stats_core::normalization::MinMaxNorm<f64>;
+use nexus_stats_core::normalization::MinMaxNorm;
 
 let mut mn = MinMaxNorm::<f64>::builder()
-    .window_ns(1_000_000_000)  // 1-second window
+    .window(1_000_000_000)  // 1-second window
     .build()
     .unwrap();
 
@@ -63,7 +63,7 @@ let v = mn.normalize(100.0).unwrap();  // position in [0, 1]
 Maps values to approximate uniform [0, 1] by maintaining a grid of P² percentile estimators at uniformly spaced quantile points. The normalized value is the interpolated rank within the grid.
 
 ```rust
-use nexus_stats_core::normalization::QuantileNorm<f64>;
+use nexus_stats_core::normalization::QuantileNorm;
 
 let mut qn = QuantileNorm::<f64>::builder()
     .resolution(9)   // grid at 0.1, 0.2, ..., 0.9

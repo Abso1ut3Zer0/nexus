@@ -40,7 +40,7 @@ Spikes are slew-limited to a ramp. Gradual changes pass through unchanged.
 ## Configuration
 
 ```rust
-let mut slew = Slew::<f64>::new(5.0);  // max change of 5.0 per sample
+let mut slew = Slew::<f64>::new(5.0).unwrap();  // max change of 5.0 per sample
 
 slew.update(0.0).unwrap();    // → 0.0
 slew.update(100.0).unwrap();  // → 5.0 (clamped)
@@ -54,4 +54,6 @@ slew.update(10.0).unwrap();   // → 10.0 (within range, passes through)
 |-----------|-----|-----|
 | `Slew::<f64>::update` | ~3 cycles | ~3 cycles |
 
-Uses `clamp()` which compiles to `maxsd`/`minsd` (branchless).
+Clamps as `max(lo).min(hi)` (the sealed `Sample::clamp_to`), which compiles
+to a bare `maxsd`/`minsd` pair: branchless, and without the `lo <= hi`
+assertion and its panic path that `f64::clamp` carries.

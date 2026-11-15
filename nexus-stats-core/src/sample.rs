@@ -2,9 +2,10 @@
 //!
 //! A monitor whose algorithm is the same over several numeric types is one
 //! generic type, `Drawdown<T>`, `WindowedMax<T>`, `ZScoreNorm<T>`, bounded by
-//! one of the sealed traits here. The traits exist only as bounds: they are
-//! implemented for exactly the supported primitive types and cannot be
-//! implemented outside this crate, so users never name them. Where a method's
+//! one of the sealed traits here. The traits are implemented for exactly the
+//! supported primitive types and cannot be implemented outside this crate;
+//! you name them only as bounds (`fn f<T: Sample>(d: &mut Drawdown<T>)`),
+//! never implement them. Where a method's
 //! signature differs by type (float `update` returns `Result` because it
 //! rejects NaN and infinity; integer `update` cannot fail), the method is
 //! implemented per instantiation and documented on it.
@@ -22,8 +23,10 @@ mod private {
 /// A sample type for the comparison, extremum and timing monitors:
 /// `f64` or `i64`.
 ///
-/// Sealed. Appears only as the bound on generic monitors such as
-/// [`Drawdown<T>`](crate::monitoring::Drawdown).
+/// Sealed: implemented for `f64` and `i64` here and nowhere else. It appears
+/// as the bound on generic monitors such as
+/// [`Drawdown<T>`](crate::monitoring::Drawdown), and that bound is the only
+/// place a caller writes it.
 pub trait Sample:
     Copy + PartialOrd + Debug + Add<Output = Self> + Sub<Output = Self> + private::Sealed + 'static
 {

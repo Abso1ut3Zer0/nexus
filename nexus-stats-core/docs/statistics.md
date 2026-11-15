@@ -118,7 +118,7 @@ Builder-configured dimension `N`, streaming observation vectors of length `N`.
 ```rust
 use nexus_stats_core::statistics::OnlineCovariance;
 
-let mut cov = OnlineCovariance::builder().dimensions(3).build().unwrap();
+let mut cov = OnlineCovariance::builder().dim(3).build().unwrap();
 for observation in observations {
     cov.update(&observation).unwrap();  // &[f64] of length 3
 }
@@ -140,7 +140,7 @@ use nexus_stats_core::statistics::HarmonicMean;
 
 let mut h = HarmonicMean::new();
 for rate_mbps in throughputs { h.update(rate_mbps).unwrap(); }
-let effective = h.value().unwrap();
+let effective = h.mean().unwrap();
 ```
 
 **Use for:** "what's the effective throughput across these links?" (classical HM use case). Rarely the right answer for latency — arithmetic mean over latency is usually what you want.
@@ -201,7 +201,7 @@ Streaming (EW-smoothed) Amihud illiquidity: average of `|return| / dollar_volume
 use nexus_stats_core::statistics::Amihud;
 let mut a = Amihud::builder().halflife(500.0).build().unwrap();
 a.update(abs_return, dollar_volume).unwrap();
-let score = a.value().unwrap();
+let score = a.illiq().unwrap();
 ```
 
 **Use for:** liquidity monitoring on crypto venues. Cross-venue comparison. Signal input to smart order routing.
@@ -216,7 +216,7 @@ EW rolling fraction-of-labels-true. Like `ErrorRate` but generalized.
 use nexus_stats_core::statistics::HitRate;
 let mut hr = HitRate::builder().halflife(200.0).build().unwrap();
 hr.update(fill_happened, target_shares).unwrap();
-let rate = hr.value().unwrap();
+let rate = hr.hit_rate().unwrap();
 ```
 
 ---
@@ -268,7 +268,7 @@ let estimate = h.hurst().unwrap();
 use nexus_stats_core::statistics::VarianceRatio;
 let mut vr = VarianceRatio::builder().build().unwrap();
 for price in prices { vr.update(price).unwrap(); }
-let ratio = vr.ratio().unwrap();
+let ratio = vr.variance_ratio().unwrap();
 ```
 
 **Use for:** quantitative mean-reversion testing, complement to `HalfLife` and `Hurst`.

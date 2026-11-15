@@ -64,7 +64,7 @@ processing by suppressing small, irrelevant fluctuations.
 ## Configuration
 
 ```rust
-let mut db = DeadBand::<f64>::new(5.0);  // suppress changes < 5.0
+let mut db = DeadBand::<f64>::new(5.0).unwrap();  // suppress changes < 5.0
 
 // Returns Some only when change from last reported value exceeds threshold
 match db.update(sample).unwrap() {
@@ -79,21 +79,21 @@ match db.update(sample).unwrap() {
 
 ```rust
 // Temperature sensor: only report if changed by 0.5°C
-let mut db = DeadBand::<f64>::new(0.5);
+let mut db = DeadBand::<f64>::new(0.5).unwrap();
 ```
 
 ### SRE — Metric Reduction
 
 ```rust
 // CPU utilization: only alert on 5% changes
-let mut db = DeadBand::<f64>::new(5.0);
+let mut db = DeadBand::<f64>::new(5.0).unwrap();
 ```
 
 ### Trading — Quote Throttling
 
 ```rust
 // Throttle internal quote updates: only propagate if price moved 1 tick
-let mut db = DeadBand::<i64>::new(1);
+let mut db = DeadBand::<i64>::new(1).unwrap();
 ```
 
 ## Performance
