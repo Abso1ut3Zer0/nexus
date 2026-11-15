@@ -17,6 +17,7 @@ These types all answer "is this system healthy?" questions in O(1) with fixed me
 | `EventRateU64` / `EventRateInstant` | Smoothed events-per-unit-time |
 | `CoDelU64` / `CoDelInstant` | Controlled Delay queue latency monitor |
 | `PollSaturation` | Consumer-side saturation from poll outcomes: how many messages waited behind this thread, for how long at most |
+| `SojournSaturation` | Consumer saturation from stamped queue sojourn: exact per-message wait, summarized per period |
 | `SaturationF64` | Resource utilization threshold with hysteresis |
 | `ErrorRateF64` | Error fraction tracker with alert conditions |
 | `JitterF64` / `JitterF32` | Inter-arrival / sample-to-sample variation |
@@ -179,6 +180,22 @@ let summary = sat.take();
 ```
 
 **Use for:** per-thread saturation beside utilization (USE method), deciding whether a late message waited for this consumer or was late upstream, backlog detection under poll limits.
+
+---
+
+## SojournSaturation
+
+The stamped twin of `PollSaturation`. Feed it each message's queue sojourn (dequeue tick minus enqueue tick, same clock); `take()` returns a `SojournSummary` of the period: `messages_seen`, `messages_over_budget`, `min_sojourn_ticks` (the floor; zero means the clocks disagree), `max_sojourn_ticks`, `total_sojourn_ticks` with an integer `mean_sojourn_ticks()`, and `is_backlogged` (no message within budget all period). No clock, no interval, no smoothing; snap when you decide.
+
+```rust
+use nexus_stats_core::monitoring::SojournSaturation;
+
+let mut sat = SojournSaturation::new(50_000);       // budget: 50 µs in ns ticks
+sat.update(dequeued_ns - enqueued_ns);               // per message, same clock
+let summary = sat.take();                            // timer, count or event
+```
+
+**Use for:** exact queue-wait reporting where messages carry an enqueue stamp (our queues and shm, exchange timestamps for upstream lag), beside `PollSaturation` for the count form and the utilization flag.
 
 ---
 

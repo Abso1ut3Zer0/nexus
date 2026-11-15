@@ -87,8 +87,8 @@ pub struct PollSummary {
 /// | Errors | the transport's own counters: drops, gaps, disconnects |
 ///
 /// When messages carry an enqueue stamp on the same clock, the duration is
-/// exact from the stamp and the sojourn-based tools are the better measure
-/// of it; this type still supplies the count form and the idle flag.
+/// exact and [`SojournSaturation`](super::SojournSaturation) measures it;
+/// this type still supplies the count form and the idle flag.
 ///
 /// # Model: the arrival floor
 ///

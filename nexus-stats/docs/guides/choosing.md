@@ -66,6 +66,8 @@ Start with your problem. Follow the tree to find the right primitive.
   - CoDel-inspired. Detects standing queues before buffers fill.
 - Is my consumer thread saturated? → [**PollSaturation**](../algorithms/poll-saturation.md)
   - From poll outcomes alone, no timestamps: how many messages waited behind this thread, for how long at most.
+- Messages carry an enqueue stamp? → [**SojournSaturation**](../algorithms/sojourn-saturation.md)
+  - Exact per-message wait summarized per period: over-budget count, floor, worst, mean, standing queue.
 - Is a resource running hot? → [**Saturation**](../algorithms/saturation.md)
   - EMA of utilization + threshold. `Normal` / `Saturated`.
 - Is the error rate too high? → [**ErrorRate**](../algorithms/error-rate.md)

@@ -42,6 +42,7 @@ pinned to a single core.
 | CoDelI64 | 7 | 10 | first_above deadline (RFC 8289) |
 | PollSaturation::on_work | 5 | 6 | branchless (cmov selects, no jumps); 5 under mixed load too |
 | PollSaturation::on_idle | 1 | 1 | one byte store, no clock |
+| SojournSaturation::update | 6 | 7 | branchless: clamp, count, min, max, saturating total |
 | SaturationF64 | ~6 | ~8 | EMA + threshold |
 | ErrorRateF64 | ~6 | ~8 | EMA of outcomes |
 | TrendAlertF64 | ~12 | ~18 | Holt + threshold |
@@ -65,6 +66,7 @@ pinned to a single core.
 | Welford, Covariance | 24-48 bytes |
 | Windowed types (3-sample Nichols') | 48 bytes |
 | PollSaturation (`repr(C)`: flag byte + nine `u64`) | 80 bytes (64-bit) |
+| SojournSaturation (budget + five `u64` + flag) | 56 bytes (64-bit) |
 | Ring buffer types (MOSUM<N>) | N × 8 bytes |
 | WindowedMedian<N> | 2 × N × 8 bytes |
 | TopK<K, CAP> | CAP × (sizeof(K) + 8) bytes |

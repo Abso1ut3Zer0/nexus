@@ -69,6 +69,16 @@ contained.
   `max_behind_ticks` (the duration form), and the `is_fully_utilized` / `is_backlogged`
   flags. Summaries merge exactly. 80 bytes, `on_idle` is one store
   ([#764](https://github.com/Abso1ut3Zer0/nexus/issues/764)).
+- **`SojournSaturation`** / **`SojournSummary`** — the stamped twin of
+  `PollSaturation`: feed each message's queue sojourn (dequeue tick minus
+  enqueue tick, same clock) and `take()` returns the period's
+  `messages_seen`, `messages_over_budget`, `min_sojourn_ticks` (the floor;
+  zero means the clocks disagree), `max_sojourn_ticks`,
+  `total_sojourn_ticks` with an integer `mean_sojourn_ticks()`, and
+  `is_backlogged` (no message within budget all period). One knob, the
+  budget; no clock inside; snap when the caller decides; summaries merge
+  exactly. Negative sojourns (clock skew) clamp to zero
+  ([#770](https://github.com/Abso1ut3Zer0/nexus/issues/770)).
 - **`LivenessU64`** — liveness detector with `u64` timestamps, mirrors `LivenessI64`.
 
 ## [3.0.1] — 2026-06-05

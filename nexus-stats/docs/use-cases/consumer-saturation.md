@@ -211,26 +211,36 @@ denominator.
 ## With Stamped Messages: Sojourn
 
 When each message carries an enqueue tick from the same clock, the wait is
-known exactly (`dequeue - enqueue`, the queue sojourn) and the time side
-needs no bound. Until the dedicated sojourn summary lands (#770), compose
-it from existing types beside `PollSaturation`, which still supplies
-`max_messages_per_poll` and the idle flag:
+known exactly (`dequeue - enqueue`, the queue sojourn) and nothing needs
+bounding. `SojournSaturation` is the twin of `PollSaturation` for that case,
+same vocabulary, same snap-when-you-decide summary:
 
 ```rust
-use nexus_stats::monitoring::{CoDelI64, MaxGaugeI64};
+use nexus_stats::monitoring::SojournSaturation;
 
-let mut standing = CoDelI64::builder().target(50_000).window(100_000_000).build()?;
-let mut worst = MaxGaugeI64::new();
+let mut sojourn = SojournSaturation::new(50_000);                 // budget: 50 µs in ns
 
-// per message, in the handler:
-let sojourn = (wall.now() - msg.sent_wall) as i64;
-if standing.update(now, sojourn) == Some(Condition::Degraded) { /* queue stood 100 ms */ }
-worst.update(sojourn);
+// per message, in the handler, beside the PollSaturation call:
+sojourn.update((wall_now_ns - msg.enqueued_wall_ns) as i64);
+
+// on the same snap as `sat.take()`:
+let s = sojourn.take();
+// s.messages_over_budget / s.messages_seen, s.max_sojourn_ticks,
+// s.min_sojourn_ticks (the floor; Some(0) means the clocks disagree),
+// s.mean_sojourn_ticks(), s.is_backlogged
 ```
 
 A sojourn is never zero (transit plus processing); what matters is that it
-stays near its floor. CoDel's rule is built for that: it fires when the
-minimum over an interval stays above target.
+stays near its floor and that the queue keeps draining to within budget.
+`is_backlogged` is CoDel's standing-queue rule with your period as the
+interval. Keep `PollSaturation` beside it when you want
+`max_messages_per_poll` and `is_fully_utilized`, which stamps cannot give
+you; keep `CoDelI64` when a control decision (shed, drop, back off) should
+follow from the delay.
+
+The stamp comes from the transport: for our queues and shared memory the
+slot carries it (#765); for an external feed the exchange timestamp plays
+the same role and the floor absorbs the clock offset.
 
 ## Rules Checklist
 
