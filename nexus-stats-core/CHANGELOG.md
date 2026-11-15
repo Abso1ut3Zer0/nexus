@@ -116,7 +116,7 @@ contained.
 - **`CoDelI64::min_sojourn()` / `CoDelF64::min_sojourn()`** — the detector
   no longer keeps a windowed minimum. No caller in the workspace; a minor
   per this crate's policy on narrowly scoped breaks.
-- **`LivenessF64`** — f64 timestamps cause silent precision loss past 2^52; use `LivenessI64` or `LivenessU64`.
+- **`LivenessF64`**: `f64` timestamps lose precision past 2^52; `Liveness` takes `u64` ticks.
 
 ### Added
 
@@ -144,7 +144,6 @@ contained.
   exactly as a plain fold (an empty period is the identity of every field).
   Negative sojourns (clock skew) clamp to zero
   ([#770](https://github.com/Abso1ut3Zer0/nexus/issues/770)).
-- **`LivenessU64`** — liveness detector with `u64` timestamps, mirrors `LivenessI64`.
 
 ## [3.0.1] — 2026-06-05
 

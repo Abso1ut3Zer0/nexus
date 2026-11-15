@@ -43,7 +43,7 @@ let mut cusum = Cusum::builder(expected_rate)
 
 rate.update(now_ns);
 if let Some(r) = rate.rate() {
-    if let Some(shift) = cusum.update(r) {
+    if let Some(shift) = cusum.update(r).unwrap() {
         match shift {
             Direction::Rising => log::warn!("rate spike detected"),
             Direction::Falling => log::warn!("rate drop detected"),

@@ -5,10 +5,10 @@ exponential smoothing. Signals when the trend component exceeds a threshold.
 
 | Property | Value |
 |----------|-------|
-| Update cost | ~12 cycles |
+| Update cost | 13 cycles |
 | Memory | ~40 bytes |
 | Types | `TrendAlert` |
-| Output | `Option<Direction>` — `Stable`, `Rising`, or `Falling` |
+| Output | `Option<Direction>` — `Neutral`, `Rising`, or `Falling` |
 
 ## What It Does
 
@@ -35,7 +35,7 @@ exponential smoothing. Signals when the trend component exceeds a threshold.
 Separates the signal into level + trend, then classifies:
 - **`Rising`** — trend > threshold (e.g., latency increasing)
 - **`Falling`** — trend < -threshold (e.g., throughput declining)
-- **`Stable`** — trend within ±threshold
+- **`Neutral`** — trend within ±threshold
 
 ## Configuration
 
@@ -60,4 +60,4 @@ Supports both absolute and relative thresholds.
 
 | Operation | p50 | p99 |
 |-----------|-----|-----|
-| `TrendAlert::update` | ~12 cycles | ~18 cycles |
+| `TrendAlert::update` | 13 cycles | 14 cycles |

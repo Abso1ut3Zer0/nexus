@@ -20,9 +20,9 @@ use nexus_stats::statistics::Welford;
 
 let mut gate = MultiGate::builder()
     .alpha(0.05)
-    .hard_limit_pct(0.30)     // 30% move = reject
+    .hard_limit(0.30)     // 30% move = reject
     .suspect_z(5.0)           // 5σ = suspect
-    .unusual_spread_mult(3.0) // 3× spread = unusual
+    .unusual_spread_multiple(3.0) // 3× spread = unusual
     .min_samples(50)
     .build().unwrap();
 
@@ -67,7 +67,7 @@ let mut rz = RobustZScore::<f64>::builder()
     .min_samples(30)
     .build().unwrap();
 
-if let Some(z) = rz.update(sample) {
+if let Some(z) = rz.update(sample).unwrap() {
     if z.abs() > 5.0 { /* almost certainly bad */ }
     else if z.abs() > 3.5 { /* probable outlier */ }
     else { /* normal */ }
@@ -84,14 +84,14 @@ use nexus_stats::Direction;
 use nexus_stats::detection::{MultiGate, Verdict, Cusum};
 
 let mut gate = MultiGate::builder().alpha(0.05).suspect_z(5.0)
-    .hard_limit_pct(0.30).min_samples(50).build().unwrap();
+    .hard_limit(0.30).min_samples(50).build().unwrap();
 
 let mut cusum = Cusum::builder(baseline)
     .slack(slack).threshold(threshold).build().unwrap();
 
 // On each sample:
-let verdict = gate.update(sample);
-let shift = cusum.update(sample);
+let verdict = gate.update(sample).unwrap();
+let shift = cusum.update(sample).unwrap();
 
 match (verdict, shift) {
     (Some(Verdict::Reject), _) => {

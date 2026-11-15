@@ -93,7 +93,7 @@ match cusum.update(latency_us) {
         alert_info("latency recovered");
         cusum.reset();
     }
-    _ => { trend.update(latency_us); }
+    _ => { trend.update(latency_us).unwrap(); }
 }
 ```
 
@@ -105,7 +105,7 @@ use nexus_stats::monitoring::Jitter;
 let mut jitter = Jitter::<f64>::builder().span(30).build().unwrap();
 
 // On each measurement:
-if let Some(j) = jitter.update(latency_us) {
+if let Some(j) = jitter.update(latency_us).unwrap() {
     if let Some(ratio) = jitter.jitter_ratio() {
         if ratio > 0.3 {
             // Jitter is 30% of mean — unstable
@@ -124,7 +124,7 @@ use nexus_stats::statistics::Welford;
 // Multi-gate filter: reject impossible values, flag suspect ones
 let mut gate = MultiGate::builder()
     .alpha(0.05)
-    .hard_limit_pct(0.50)  // reject >50% jumps
+    .hard_limit(0.50)  // reject >50% jumps
     .suspect_z(5.0)        // flag >5σ jumps
     .min_samples(50)
     .build().unwrap();

@@ -6,7 +6,7 @@ noise — reactive when uncertain, stable when confident.
 
 | Property | Value |
 |----------|-------|
-| Update cost | ~25 cycles |
+| Update cost | 29 cycles |
 | Memory | ~56 bytes |
 | Types | `Kalman1d` |
 | Priming | Configurable via `min_samples` |
@@ -64,7 +64,7 @@ let mut kf = Kalman1d::builder()
     .min_samples(1)
     .build().unwrap();
 
-if let Some((pos, vel)) = kf.update(measurement) {
+if let Some((pos, vel)) = kf.update(measurement).unwrap() {
     println!("estimated value: {pos}, trend: {vel}/sample");
 }
 ```
@@ -98,7 +98,7 @@ let mut throughput = Kalman1d::builder()
     .measurement_noise(500.0) // measurements are noisy
     .build().unwrap();
 
-if let Some((current, trend)) = throughput.update(msgs_per_sec) {
+if let Some((current, trend)) = throughput.update(msgs_per_sec).unwrap() {
     if trend < -10.0 {
         // throughput declining
     }
@@ -112,7 +112,7 @@ let mut load = Kalman1d::builder()
     .measurement_noise(5.0)
     .build().unwrap();
 
-if let Some((current, trend)) = load.update(cpu_percent) {
+if let Some((current, trend)) = load.update(cpu_percent).unwrap() {
     let predicted_5min = current + trend * 300.0; // 300 samples ahead
 }
 ```
@@ -121,7 +121,7 @@ if let Some((current, trend)) = load.update(cpu_percent) {
 
 | Operation | p50 | p99 |
 |-----------|-----|-----|
-| `Kalman1d::update` | 25 cycles | 30 cycles |
+| `Kalman1d::update` | 29 cycles | 32 cycles |
 
 2x2 matrix predict + update. ~15 multiplies + ~10 adds + 1 division.
 Uses `mul_add` (FMA) on the hot path.

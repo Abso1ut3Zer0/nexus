@@ -7,8 +7,7 @@ Start with your problem. Follow the tree to find the right primitive.
 **How noisy? What matters more — responsiveness or stability?**
 
 - Simple smoothing, good defaults → [**EMA**](../algorithms/ema.md)
-  - Float signals: `Ema`
-  - Integer signals (no float): `EmaI64`
+  - `Ema` is `f64`; cast integer samples at the call site (see [Integer vs Float](integer-vs-float.md))
 - Need to react fast when trending, slow when noisy → [**KAMA**](../algorithms/kama.md)
   - Adapts its smoothing factor based on signal efficiency ratio
 - Need to increase fast but decrease slow (or vice versa) → [**AsymmetricEMA**](../algorithms/asym-ema.md)

@@ -5,7 +5,7 @@ using only 3 stored samples. From Linux kernel `win_minmax.h` (TCP BBR).
 
 | Property | Value |
 |----------|-------|
-| Update cost | ~9 cycles (amortized O(1)) |
+| Update cost | 8 cycles (amortized O(1)) |
 | Memory | 64 bytes (3 samples, window, count) |
 | Types | `WindowedMax<f64>`, `WindowedMin<f64>`, `WindowedMax<i64>`, `WindowedMin<i64>` |
 | Accuracy | Approximate by design; see below |
@@ -68,7 +68,7 @@ and simpler.
 ## Configuration
 
 ```rust
-let mut max = WindowedMax::<f64>::new(1_000_000_000);  // 1-second window in nanoseconds
+let mut max = WindowedMax::<f64>::new(1_000_000_000).unwrap();  // 1-second window in nanoseconds
 
 let current_max = max.update(now_ns, sample).unwrap();
 ```
@@ -80,7 +80,7 @@ ticks, milliseconds, etc.).
 
 | Operation | p50 | p99 |
 |-----------|-----|-----|
-| `WindowedMax::<f64>::update` | 9 cycles | 12-34 cycles |
+| `WindowedMax::<f64>::update` | 8 cycles | 10 cycles |
 
 The p99 tail is higher when sub-window promotions occur (shuffling
 3 samples). p50 is a simple comparison.

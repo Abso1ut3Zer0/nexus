@@ -5,11 +5,11 @@ combines EMA (baseline) + Welford (std dev) to compute z-scores.
 
 | Property | Value |
 |----------|-------|
-| Update cost | ~15 cycles |
+| Update cost | 6 cycles |
 | Memory | ~56 bytes |
-| Types | `AdaptiveThreshold`, `AdaptiveThresholdF32` |
+| Types | `AdaptiveThreshold` |
 | Priming | Default: 20 samples (needs enough data for std_dev) |
-| Output | `Option<Direction>` — `Normal`, `High`, or `Low` |
+| Output | `Option<Direction>` — `Rising` or `Falling` once `|z|` crosses the threshold, else `None` |
 
 ## What It Does
 
@@ -29,8 +29,8 @@ combines EMA (baseline) + Welford (std dev) to compute z-scores.
       └──────────────────────────────────── t
 ```
 
-Reports **direction**: `High` (above baseline) or `Low` (below baseline).
-This matters — a latency spike (High) is different from a latency improvement (Low).
+Reports **direction**: `Rising` (above baseline) or `Falling` (below baseline).
+This matters — a latency spike (`Rising`) is different from a latency improvement (`Falling`).
 
 ## When to Use It
 
@@ -64,6 +64,6 @@ let at = AdaptiveThreshold::builder()
 
 | Operation | p50 | p99 |
 |-----------|-----|-----|
-| `AdaptiveThreshold::update` | ~15 cycles | ~20 cycles |
+| `AdaptiveThreshold::update` | 6 cycles | 7 cycles |
 
 EMA update + Welford update + z-score computation + comparison.

@@ -10,7 +10,7 @@ use nexus_stats::smoothing::Ema;
 let mut ema = Ema::builder().span(20).build().unwrap();
 
 for sample in data {
-    if let Some(smoothed) = ema.update(sample) {
+    if let Some(smoothed) = ema.update(sample).unwrap() {
         use_smoothed_value(smoothed);
     }
 }
@@ -58,7 +58,7 @@ use nexus_stats::detection::{MultiGate, Verdict};
 
 let mut gate = MultiGate::builder()
     .alpha(0.05)
-    .hard_limit_pct(0.50)
+    .hard_limit(0.50)
     .suspect_z(5.0)
     .min_samples(50)
     .build().unwrap();

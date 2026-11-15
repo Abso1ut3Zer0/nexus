@@ -225,7 +225,7 @@ uncertainty grows but the state estimate persists.
 
 | Operation | p50 |
 |-----------|-----|
-| `Kalman2d::predict` | ~8 cycles |
-| `Kalman2d::update` | ~20 cycles |
-| `Kalman3d::predict` | ~15 cycles |
-| `Kalman3d::update` | ~50 cycles |
+| `Kalman2d::predict` | 1 cycles |
+| `Kalman2d::update` | 33 cycles |
+| `Kalman3d::predict` | 1 cycles |
+| `Kalman3d::update` | 60 cycles |

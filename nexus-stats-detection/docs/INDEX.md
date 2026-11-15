@@ -36,7 +36,7 @@ nexus_stats_detection::
 
 | Type | What it computes |
 |------|------------------|
-| `Autocorrelation` / `I64` | ρ(lag) — is the signal trending or mean-reverting? |
+| `Autocorrelation` | ρ(lag) — is the signal trending or mean-reverting? |
 | `CrossCorrelation` | ρ(x_t, y_{t-lag}) — which stream leads? |
 | `Entropy` | Shannon entropy over categorical distributions |
 | `TransferEntropy` | Directed information flow — Granger-style causality |

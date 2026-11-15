@@ -20,9 +20,9 @@ let mut robust = RobustZScore::<f64>::builder()
 // Stuck sensor detection
 let mut dead_band = DeadBand::<f64>::new(0.01).unwrap();  // report if > 0.01°C change
 
-let clamped = slew.update(reading);
-let z = robust.update(clamped);
-let changed = dead_band.update(clamped);
+let clamped = slew.update(reading).unwrap();
+let z = robust.update(clamped).unwrap();
+let changed = dead_band.update(clamped).unwrap();
 
 if changed.is_none() {
     stuck_counter += 1;
@@ -50,7 +50,7 @@ let mut drift = Cusum::builder(setpoint)
 // Debounce for confirmed out-of-spec
 let mut confirmed = Debounce::new(5).unwrap();
 
-if let Some(shift) = drift.update(measurement) {
+if let Some(shift) = drift.update(measurement).unwrap() {
     if matches!(shift, Direction::Rising | Direction::Falling) {
         if confirmed.update(true) {
             alert_process_drift(shift);

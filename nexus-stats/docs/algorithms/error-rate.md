@@ -4,10 +4,10 @@
 
 | Property | Value |
 |----------|-------|
-| Update cost | ~6 cycles |
+| Update cost | 9 cycles |
 | Memory | ~32 bytes |
 | Types | `ErrorRate` |
-| Output | `Option<Condition>` — `Healthy` or `Degraded` |
+| Output | `Option<Condition>` — `Normal` or `Degraded` |
 
 ## What It Does
 
@@ -43,12 +43,12 @@ let mut er = ErrorRate::builder()
     .build().unwrap();
 
 // Simple binary:
-er.record(request_succeeded);
+er.update(request_succeeded);
 
 // Weighted:
-er.record_weighted(false, severity_score);
+er.update_weighted(false, severity_score).unwrap();
 
-if let Some(Condition::Degraded) = er.record(false) {
+if let Some(Condition::Degraded) = er.update(false) {
     trip_circuit_breaker();
 }
 ```
@@ -62,4 +62,4 @@ if let Some(Condition::Degraded) = er.record(false) {
 
 | Operation | p50 | p99 |
 |-----------|-----|-----|
-| `ErrorRate::record` | ~6 cycles | ~8 cycles |
+| `ErrorRate::update` | 9 cycles | 13 cycles |

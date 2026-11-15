@@ -99,7 +99,7 @@ if ds.is_shifted(2.0) {
 
 ## Cross-references
 
-- Spike / transient detection: [`MOSUM`](../../nexus-stats-detection/docs/detection.md#mosum) in `nexus-stats-detection`.
-- Optimal change detection: [`Shiryaev-Roberts`](../../nexus-stats-detection/docs/detection.md#shiryaev-roberts).
-- Adaptive anomaly: [`AdaptiveThreshold`](../../nexus-stats-detection/docs/detection.md#adaptivethreshold).
-- Moments used to build `DistributionShift`: [`Moments`](statistics.md#momentsf64--skewness-and-kurtosis).
+- Spike / transient detection: [`MOSUM`](../../nexus-stats-detection/docs/detection.md#mosum--moving-sum) in `nexus-stats-detection`.
+- Optimal change detection: [`Shiryaev-Roberts`](../../nexus-stats-detection/docs/detection.md#shiryaevroberts--optimal-change-detection).
+- Adaptive anomaly: [`AdaptiveThreshold`](../../nexus-stats-detection/docs/detection.md#adaptivethreshold--ema-based-z-score).
+- Moments used to build `DistributionShift`: [`Moments`](statistics.md#moments--skewness-and-kurtosis).

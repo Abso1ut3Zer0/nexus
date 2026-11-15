@@ -213,7 +213,7 @@ let summary = sat.take();                            // timer, count or event
 
 ## ErrorRate
 
-Rolling error fraction with alert `Condition` transitions (`Normal`, `Warning`, `Critical`).
+Rolling error fraction with alert `Condition` transitions (`Normal`, `Degraded`).
 
 ```rust
 use nexus_stats_core::monitoring::ErrorRate;
@@ -248,6 +248,6 @@ let jitter = j.jitter();
 
 ## Cross-references
 
-- Percentile-based SLO tracking: [`Percentile`](statistics.md#percentilef64--online-percentile-p).
+- Percentile-based SLO tracking: [`Percentile`](statistics.md#percentile--online-percentile-p²).
 - Adaptive anomaly scoring on top of these gauges: [`AdaptiveThreshold`](../../nexus-stats-detection/docs/INDEX.md).
 - Drop/backpressure decisions: combine `CoDel` with `ErrorRate` — see umbrella `use-cases/backpressure.md`.

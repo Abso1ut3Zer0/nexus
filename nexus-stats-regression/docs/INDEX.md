@@ -22,11 +22,11 @@ All types are streaming, O(1) or O(N) per update in feature dimension, and zero-
 
 | Type | Fits |
 |------|------|
-| `LinearRegression` / `F32` | y = a + bx (ordinary least squares, closed-form, streaming) |
-| `EwLinearRegression` / `F32` | EW variant of above |
-| `PolynomialRegression` / `F32` | y = a0 + a1 x + a2 x² + ... + ad x^d |
-| `EwPolynomialRegression` / `F32` | EW variant |
-| `TransformedRegressionF64` | Exp / log / power fits via linearization |
+| `LinearRegression` | y = a + bx (ordinary least squares, closed-form, streaming) |
+| `EwLinearRegression` | EW variant of above |
+| `PolynomialRegression` | y = a0 + a1 x + a2 x² + ... + ad x^d |
+| `EwPolynomialRegression` | EW variant |
+| `ExponentialRegression` / `LogarithmicRegression` / `PowerRegression` (+ `Ew*`) | Exp / log / power fits via linearization |
 | `LogisticRegression` | Binary classifier via online gradient steps |
 | `LaggedPredictor` | y_t = a + b * x_{t-lag} — trading-specific |
 | `KyleLambda` | Price impact slope from volume (market microstructure) |
@@ -36,28 +36,28 @@ All types are streaming, O(1) or O(N) per update in feature dimension, and zero-
 
 | Type | Algorithm |
 |------|-----------|
-| `LmsFilter` / `F32` | Least Mean Squares — simplest adaptive filter |
-| `NlmsFilter` / `F32` | Normalized LMS — step-size invariant to input power |
-| `RlsFilter` / `F32` | Recursive Least Squares — fast-converging, matrix-inversion-style |
+| `LmsFilter` | Least Mean Squares — simplest adaptive filter |
+| `NlmsFilter` | Normalized LMS — step-size invariant to input power |
+| `RlsFilter` | Recursive Least Squares — fast-converging, matrix-inversion-style |
 | `HuberRegression` | Outlier-robust linear regression via Huber loss |
 | `OnlineKMeans` | Streaming k-means cluster assignment |
 | `OnlineGd` | Plain gradient descent |
 | `AdaGrad` | Per-feature adaptive learning rate |
 | `Adam` | Adam / AdamW optimizer |
-| `Ucb1` / `F32` | UCB1 multi-armed bandit — deterministic, no RNG |
-| `ThompsonBeta` / `F32` | Thompson Sampling with Beta prior (binary/[0,1] rewards) |
-| `ThompsonGamma` / `F32` | Thompson Sampling with Gamma prior (positive rewards) |
-| `EpsilonGreedy` / `F32` | Epsilon-greedy bandit |
-| `Exp3` / `F32` | EXP3 adversarial bandit (log-space weights) |
+| `Ucb1` | UCB1 multi-armed bandit — deterministic, no RNG |
+| `ThompsonBeta` | Thompson Sampling with Beta prior (binary/[0,1] rewards) |
+| `ThompsonGamma` | Thompson Sampling with Gamma prior (positive rewards) |
+| `EpsilonGreedy` | Epsilon-greedy bandit |
+| `Exp3` | EXP3 adversarial bandit (log-space weights) |
 
 ### estimation
 
 | Type | What it is |
 |------|------------|
-| `Kalman2d` / `F32` | 2D Kalman filter with customizable dynamics |
-| `Kalman3d` / `F32` | 3D Kalman filter |
+| `Kalman2d` | 2D Kalman filter with customizable dynamics |
+| `Kalman3d` | 3D Kalman filter |
 | `BetaBinomial` | Bayesian rate estimation (success/failure) |
-| `GammaPoisson` / `F32` | Bayesian rate estimation (Poisson count / exposure) |
+| `GammaPoisson` | Bayesian rate estimation (Poisson count / exposure) |
 
 ## Cross-references
 

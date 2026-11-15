@@ -20,7 +20,7 @@ examples.
 - [AdaptiveThreshold](algorithms/adaptive-threshold.md) — Z-score anomaly detection
 
 ### Smoothing & Filtering
-- [EMA](algorithms/ema.md) — Exponential moving average (float and integer)
+- [EMA](algorithms/ema.md) — Exponential moving average
 - [AsymmetricEMA](algorithms/asym-ema.md) — Different smoothing for rising vs falling
 - [KAMA](algorithms/kama.md) — Kaufman adaptive moving average
 - [Kalman1D](algorithms/kalman1d.md) — 1D Kalman filter with velocity
@@ -119,7 +119,8 @@ Domain-specific recipes showing how to compose primitives for real problems.
 - [Quick Start](guides/quickstart.md) — Copy-paste recipes
 - [Composing Primitives](guides/composition.md) — Building complex monitors from simple parts
 - [Parameter Tuning](guides/parameter-tuning.md) — How to set alpha, threshold, slack, etc.
-- [Integer vs Float](guides/integer-vs-float.md) — When to use which variant
+- [Integer vs Float](guides/integer-vs-float.md) — Which types have an `i64` form, and the caller rules for the generics
+- [Migrating to 7.0](guides/migrating-to-7.md) — 6.x → 7.0: rename map, generics, removed types, behavior changes
 - [no_std Usage](guides/no-std.md) — Embedded and kernel use cases
 - [Runtime vs Const Generic](guides/runtime-vs-const.md) — alloc feature flag explained
 

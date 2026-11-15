@@ -65,7 +65,7 @@ let mut latency_trend = TrendAlert::builder()
 let queue_pressure = queue_health.update(now, sojourn);
 cpu_util.update(cpu_utilization).unwrap();
 let cpu_hot = matches!(cpu_util.value(), Some(u) if u > 0.85);
-let trend = latency_trend.update(processing_time);
+let trend = latency_trend.update(processing_time).unwrap();
 
 let should_throttle = matches!(queue_pressure, Some(Condition::Degraded)) // queue backing up
     || cpu_hot                                                             // CPU maxed
@@ -98,7 +98,7 @@ if matches!(buf_fill.value(), Some(f) if f > 0.70) {
     // start worrying at 70% full
 }
 
-if let Some(smoothed) = pub_latency.update(pub_latency_ns as f64) {
+if let Some(smoothed) = pub_latency.update(pub_latency_ns as f64).unwrap() {
     // smoothed tracks the publication latency with fast-rise/slow-fall
 }
 ```

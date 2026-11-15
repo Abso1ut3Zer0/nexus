@@ -5,7 +5,7 @@
 
 | Property | Value |
 |----------|-------|
-| Update cost | ~11 cycles |
+| Update cost | 12 cycles |
 | Memory | ~32 bytes |
 | Types | `Holt` |
 | Priming | After 2 samples (needs 2 for initial trend) |
@@ -50,7 +50,7 @@ let mut holt = Holt::builder()
     .beta(0.1)     // trend smoothing
     .build().unwrap();
 
-if let Some((level, trend)) = holt.update(sample) {
+if let Some((level, trend)) = holt.update(sample).unwrap() {
     let forecast_10 = holt.forecast(10).unwrap();
     if trend > 1.0 { /* getting worse */ }
 }
@@ -65,6 +65,6 @@ if let Some((level, trend)) = holt.update(sample) {
 
 | Operation | p50 | p99 |
 |-----------|-----|-----|
-| `Holt::update` | 11 cycles | 12 cycles |
+| `Holt::update` | 12 cycles | 12 cycles |
 
 Two `mul_add` operations per update. No division, no transcendentals.

@@ -5,7 +5,7 @@ processing by suppressing small, irrelevant fluctuations.
 
 | Property | Value |
 |----------|-------|
-| Update cost | ~2 cycles |
+| Update cost | 4 cycles |
 | Memory | ~16 bytes |
 | Types | `DeadBand<f64>`, `DeadBand<i64>` |
 | Output | `Option<T>` — `Some(value)` if changed enough, `None` if suppressed |
@@ -100,6 +100,6 @@ let mut db = DeadBand::<i64>::new(1).unwrap();
 
 | Operation | p50 | p99 |
 |-----------|-----|-----|
-| `DeadBand::<f64>::update` | ~2 cycles | ~3 cycles |
+| `DeadBand::<f64>::update` | 4 cycles | 4 cycles |
 
 One subtraction, one absolute value, one comparison.

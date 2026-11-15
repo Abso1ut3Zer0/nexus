@@ -6,21 +6,21 @@ Streaming, fixed-memory, O(1)-per-update statistical primitives. Module path: `n
 
 | Type | What it computes | Memory |
 |------|------------------|--------|
-| `Welford` / `WelfordF32` | Mean, variance, stddev | 3 words |
-| `Moments` / `MomentsF32` | Mean, variance, skewness, kurtosis (Pebay 2008) | 5 words |
-| `EwmaVar` / `EwmaVarF32` | Exponentially-weighted mean & variance | small, fixed |
-| `Covariance` / `CovarianceF32` | Online covariance + Pearson correlation | 5 words |
+| `Welford` | Mean, variance, stddev | 3 words |
+| `Moments` | Mean, variance, skewness, kurtosis (Pebay 2008) | 5 words |
+| `EwmaVar` | Exponentially-weighted mean & variance | small, fixed |
+| `Covariance` | Online covariance + Pearson correlation | 5 words |
 | `OnlineCovariance` | N-dimensional covariance matrix | O(N²) |
-| `HarmonicMean` / `HarmonicMeanF32` | Harmonic mean | 2 words |
-| `Percentile` / `PercentileF32` | Online percentile (P² algorithm) | small, fixed |
+| `HarmonicMean` | Harmonic mean | 2 words |
+| `Percentile` | Online percentile (P² algorithm) | small, fixed |
 | `BucketAccumulator` | Bar-style OHLC / VWAP aggregation | small, fixed |
 | `Amihud` | Amihud illiquidity measure (EW) | small |
 | `HitRate` | Rolling success rate over labels | small |
 | `HalfLife` | Mean-reversion half-life estimator | small |
 | `Hurst` | Hurst exponent (R/S estimator) | alloc, windowed |
 | `VarianceRatio` | Lo-MacKinlay variance ratio (mean-reversion test) | small |
-| `Lpm` / `LpmF32` | Lower partial moments (downside risk, semivariance) | 5 words |
-| `Cvar` / `CvarF32` | Conditional Value at Risk (expected shortfall) | small, fixed |
+| `Lpm` | Lower partial moments (downside risk, semivariance) | 5 words |
+| `Cvar` | Conditional Value at Risk (expected shortfall) | small, fixed |
 
 ---
 

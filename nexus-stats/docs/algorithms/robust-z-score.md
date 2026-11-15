@@ -6,7 +6,7 @@ WindowedMedian (O(1) vs O(N)), more robust than AdaptiveThreshold
 
 | Property | Value |
 |----------|-------|
-| Update cost | ~12 cycles |
+| Update cost | 12 cycles |
 | Memory | ~32 bytes |
 | Types | `RobustZScore<f64>`, `RobustZScore<f32>` |
 | Output | `Option<f64>` — modified z-score |
@@ -43,7 +43,7 @@ let mut rz = RobustZScore::<f64>::builder()
     .min_samples(20)
     .build().unwrap();
 
-if let Some(z) = rz.update(sample) {
+if let Some(z) = rz.update(sample).unwrap() {
     if z.abs() > 3.5 {
         // outlier detected, but EMA didn't move (frozen)
     }
@@ -54,4 +54,4 @@ if let Some(z) = rz.update(sample) {
 
 | Operation | p50 | p99 |
 |-----------|-----|-----|
-| `RobustZScore::<f64>::update` | 12 cycles | 27 cycles |
+| `RobustZScore::<f64>::update` | 12 cycles | 13 cycles |

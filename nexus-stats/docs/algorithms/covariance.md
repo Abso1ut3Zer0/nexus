@@ -5,9 +5,9 @@ Supports Chan's merge for parallel aggregation.
 
 | Property | Value |
 |----------|-------|
-| Update cost | ~12 cycles |
+| Update cost | 10 cycles |
 | Memory | ~48 bytes |
-| Types | `Covariance`, `CovarianceF32` |
+| Types | `Covariance` |
 | Error handling | Returns `Result<_, DataError>` on NaN/Inf input |
 
 ## What It Does
@@ -47,7 +47,7 @@ if let Some(r) = cov.correlation() {
 
 | Operation | p50 | p99 |
 |-----------|-----|-----|
-| `Covariance::update` | 12 cycles | 40 cycles |
-| `correlation()` query | ~30 cycles (includes sqrt) |
+| `Covariance::update` | 10 cycles | 11 cycles |
+| `correlation()` query | 6 cycles (includes sqrt) |
 
 Three running accumulators (M2_x, M2_y, C) updated per paired sample.

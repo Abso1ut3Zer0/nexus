@@ -1,6 +1,6 @@
 # WindowedMedian
 
-**Types:** `WindowedMedian<f64>`, `WindowedMedianF32`
+**Types:** `WindowedMedian<f64>`, `WindowedMedian<i64>`
 **Import:** `use nexus_stats_smoothing::WindowedMedian;`
 **Feature flags:** `alloc`.
 
@@ -66,4 +66,4 @@ One parameter: window size. Odd values (5, 11, 21, 51) are conventional. Larger 
 ## Cross-references
 
 - [Hampel](hampel.md) — same window plus threshold-based filtering.
-- [Percentile (P²)](../../nexus-stats-core/docs/statistics.md#percentile) — streaming percentiles with O(1) memory.
+- [Percentile (P²)](../../nexus-stats-core/docs/statistics.md#percentile--online-percentile-p²) — streaming percentiles with O(1) memory.

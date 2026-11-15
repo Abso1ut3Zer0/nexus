@@ -7,7 +7,7 @@ Online regression, learning, and estimation for [nexus-stats](https://crates.io/
 - **LinearRegression** — Online linear regression
 - **PolynomialRegression** — Online polynomial regression
 - **EwPolynomialRegression** — Exponentially weighted polynomial regression
-- **TransformedRegressionF64** — Log/exp/power/reciprocal transforms (requires `std` or `libm`)
+- **ExponentialRegression / LogarithmicRegression / PowerRegression** (+ `Ew*` forgetful forms) — Linearized exp/log/power fits (requires `std` or `libm`)
 - **LogisticRegression** — Online logistic regression (requires `alloc` + (`std` or `libm`))
 
 ## Learning Types

@@ -102,4 +102,4 @@ In a real system, you'd wire the forecast into an alerting rule: "warn if `forec
 - [EMA](../../nexus-stats-core/docs/smoothing.md#ema) — simpler, no trend estimate.
 - [KAMA](kama.md) — adapts smoothing by efficiency rather than estimating trend directly.
 - [Kalman1d](kalman1d.md) — formal position + velocity with a noise model.
-- [TrendAlert](../../nexus-stats-detection/docs/detection.md#trendalert) — uses Holt-style trend for threshold alerts.
+- [TrendAlert](../../nexus-stats-detection/docs/detection.md#trendalert--forecast-based-detection) — uses Holt-style trend for threshold alerts.

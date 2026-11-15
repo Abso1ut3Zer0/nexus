@@ -65,35 +65,35 @@
 //!
 //! | Module | Contents |
 //! |--------|----------|
-//! | [`smoothing`] | EMA, AsymEma, Slew |
-//! | [`detection`] | CUSUM |
+//! | [`smoothing`] | Ema, AsymEma, Slew |
+//! | [`detection`] | Cusum, DistributionShift *(std\|libm)* |
 //! | [`statistics`] | Welford, Moments, EwmaVar, Covariance, HarmonicMean, Percentile, BipowerVariation, RollSpread *(std\|libm)*, TwoScaleRv *(alloc, std\|libm)* |
-//! | [`monitoring`] | Drawdown, Windowed Min/Max, CoDel, PollSaturation, SojournSaturation, Liveness, EventRate, Jitter, ErrorRate, HawkesIntensity *(std\|libm)* |
-//! | [`control`] | DeadBand, Hysteresis, Debounce, LevelCrossing, Diff |
+//! | [`monitoring`] | Drawdown, RunningMax, RunningMin, WindowedMax, WindowedMin, MaxGauge, PeakHold, CoDel, PollSaturation, SojournSaturation, Liveness, EventRate, Jitter, ErrorRate, HawkesIntensity *(std\|libm)* |
+//! | [`control`] | DeadBand, Hysteresis, Debounce, LevelCrossing, FirstDiff, SecondDiff |
 //!
 //! ## Advanced (feature-gated, re-exported from subcrates)
 //!
 //! | Feature | Module | Contents |
 //! |---------|--------|----------|
-//! | `smoothing` | `smoothing` | + Holt, KAMA, Spring, Kalman1d, WindowedMedian |
-//! | `detection` | `detection` | + MOSUM, Shiryaev-Roberts, AdaptiveThreshold, RobustZ, TrendAlert, MultiGate, PageHinkley, ADWIN |
+//! | `smoothing` | `smoothing` | + Holt, Kama, Spring, Kalman1d, ConditionalEma, HuberEma, Hampel, WindowedMedian |
+//! | `detection` | `detection` | + Mosum, ShiryaevRoberts, AdaptiveThreshold, RobustZScore, TrendAlert, MultiGate, PageHinkley, Adwin, Bocpd, DistDrift |
 //! | `detection` | `signal` | Autocorrelation, CrossCorrelation, Entropy, TransferEntropy, PredictiveInfoBound |
-//! | `detection` | `estimation` | + SPRT |
-//! | `regression` | `regression` | Linear, Polynomial, EW variants, Transformed, LogisticRegression |
-//! | `regression` | `learning` | LMS, NLMS, RLS, OnlineKMeans, GD, AdaGrad, Adam, UCB1, ThompsonBeta, ThompsonGamma, EpsilonGreedy, EXP3 |
-//! | `regression` | `estimation` | + Kalman 2d/3d, BetaBinomial, GammaPoisson |
+//! | `detection` | `estimation` | + SprtBernoulli, SprtGaussian |
+//! | `regression` | `regression` | LinearRegression, PolynomialRegression, EwLinearRegression, EwPolynomialRegression, ExponentialRegression, LogarithmicRegression, PowerRegression (+ `Ew*`), LogisticRegression, KyleLambda, LaggedPredictor, SignalDecayCurve |
+//! | `regression` | `learning` | LmsFilter, NlmsFilter, RlsFilter, HuberRegression, OnlineKMeans, OnlineGd, AdaGrad, Adam, Ucb1, ThompsonBeta, ThompsonGamma, EpsilonGreedy, Exp3 |
+//! | `regression` | `estimation` | + Kalman2d, Kalman3d, BetaBinomial, GammaPoisson |
 //! | `control` | `control` | + PeakDetector, BoolWindow |
-//! | `control` | `frequency` | TopK, FlexProportion, DecayAccum |
+//! | `control` | `frequency` | TopK, FlexProportionGlobal, FlexProportionEntity, DecayAccum |
 //! | `full` | all | Everything above |
 //!
 //! # Features
 //!
 //! | Feature | Default | Enables |
 //! |---------|---------|---------|
-//! | `std` | yes | `WallClock`, `sqrt`/`exp` intrinsics |
-//! | `alloc` | with `std` | MOSUM, KAMA, WindowedMedian, BoolWindow, adaptive filters, optimizers |
-//! | `libm` | no | Pure Rust `sqrt`/`exp` fallback for `no_std` (enables Shiryaev-Roberts, etc.) |
-//! | `smoothing` | no | Advanced smoothing types (Holt, KAMA, Spring, Kalman1d, WindowedMedian) |
+//! | `std` | yes | `WallClock`, `sqrt`/`exp` intrinsics; implies `alloc` |
+//! | `alloc` | no (implied by `std`) | Mosum, Kama, Hampel, WindowedMedian, BoolWindow, the correlations and entropies, adaptive filters, optimizers, bandits |
+//! | `libm` | no | Pure Rust `sqrt`/`exp` fallback for `no_std` (enables ShiryaevRoberts, AdaptiveThreshold, HalfLife, ...) |
+//! | `smoothing` | no | Advanced smoothing types (Holt, Kama, Spring, Kalman1d, WindowedMedian, ...) |
 //! | `detection` | no | Advanced detection + signal analysis (implies `smoothing`) |
 //! | `regression` | no | Regression, learning, estimation types |
 //! | `control` | no | Advanced control + frequency types |
@@ -101,6 +101,12 @@
 
 // Re-export core types at crate root
 pub use nexus_stats_core::{Condition, ConfigError, DataError, Direction};
+
+/// Sealed numeric bounds of the generic types: [`Sample`] (`f64`, `i64`) and
+/// [`Float`] (`f64`, `f32`). Name them in your own signatures
+/// (`fn f<T: Sample>(d: &mut monitoring::Drawdown<T>)`); they cannot be
+/// implemented outside `nexus-stats-core`.
+pub use nexus_stats_core::{Float, Sample};
 
 /// Clock trait and implementations for time-aware stats types.
 pub use nexus_stats_core::clock;
@@ -116,8 +122,8 @@ pub use nexus_stats_core::feature_vector;
 
 /// Smoothing and filtering primitives.
 ///
-/// Core types (EMA, AsymEma, Slew) are always available. Advanced types
-/// (Holt, KAMA, Spring, Kalman1d, WindowedMedian) require the `smoothing`
+/// Core types (`Ema`, `AsymEma`, `Slew`) are always available. Advanced types
+/// (`Holt`, `Kama`, `Spring`, `Kalman1d`, `WindowedMedian`) require the `smoothing`
 /// feature.
 pub mod smoothing {
     pub use nexus_stats_core::smoothing::*;
@@ -128,9 +134,10 @@ pub mod smoothing {
 
 /// Change detection and anomaly detection.
 ///
-/// CUSUM is always available. Advanced types (MOSUM, Shiryaev-Roberts,
-/// AdaptiveThreshold, RobustZ, TrendAlert, MultiGate) require the
-/// `detection` feature.
+/// `Cusum` is always available. Advanced types (`Mosum`, `ShiryaevRoberts`,
+/// `AdaptiveThreshold`, `RobustZScore`, `TrendAlert`, `MultiGate`,
+/// `PageHinkley`, `Adwin`, `Bocpd`, `DistDrift`) require the `detection`
+/// feature.
 pub mod detection {
     pub use nexus_stats_core::detection::*;
 
@@ -172,7 +179,7 @@ pub mod signal {
 ///
 /// Kalman1d is available via [`smoothing`] with the `smoothing` feature.
 /// Kalman2d/3d, BetaBinomial, GammaPoisson require the `regression` feature.
-/// SPRT requires the `detection` feature.
+/// `SprtBernoulli` / `SprtGaussian` require the `detection` feature.
 #[cfg(any(feature = "regression", feature = "detection"))]
 pub mod estimation {
     #[cfg(feature = "detection")]

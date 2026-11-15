@@ -5,9 +5,9 @@ fast, decrease slow" — or vice versa.
 
 | Property | Value |
 |----------|-------|
-| Update cost | ~11 cycles |
+| Update cost | 11 cycles |
 | Memory | ~16 bytes |
-| Types | `AsymEma`, `AsymEmaI64` |
+| Types | `AsymEma` |
 | Priming | Configurable via `min_samples` |
 | Output | `Option<T>` — smoothed value once primed |
 
@@ -56,7 +56,7 @@ let mut ema = AsymEma::builder()
 
 | Operation | p50 | p99 |
 |-----------|-----|-----|
-| `AsymEma::update` | 11 cycles | 12 cycles |
+| `AsymEma::update` | 11 cycles | 11 cycles |
 
 One branch (rising vs falling) + one `mul_add`. The branch is
 well-predicted for signals with consistent direction.

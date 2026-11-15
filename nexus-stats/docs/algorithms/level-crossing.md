@@ -5,9 +5,9 @@ per sample.
 
 | Property | Value |
 |----------|-------|
-| Update cost | ~1-2 cycles |
+| Update cost | 3 cycles |
 | Memory | ~16 bytes |
-| Types | All (f32, f64, i32, i64) |
+| Types | `LevelCrossing<f64>`, `LevelCrossing<i64>` |
 | Output | `bool` — true on crossing |
 | Error handling | Returns `Result<_, DataError>` on NaN/Inf input |
 
@@ -52,6 +52,6 @@ assert_eq!(lc.crossing_count(), 2);
 
 | Operation | p50 | p99 |
 |-----------|-----|-----|
-| `LevelCrossing::<f64>::update` | ~2 cycles | ~2 cycles |
+| `LevelCrossing::<f64>::update` | 3 cycles | 4 cycles |
 
 One comparison per sample. Branch perfectly predicted for stable signals.

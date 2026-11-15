@@ -49,7 +49,7 @@ use nexus_stats_detection::detection::Mosum;
 use nexus_stats_core::Direction;
 
 let mut mosum = Mosum::builder(120.0) // target latency 120us
-    .window(50)
+    .window_size(50)
     .threshold(500.0)                    // 500us-us cumulative budget
     .build()
     .unwrap();
@@ -81,7 +81,7 @@ for &latency in &request_latencies {
 
 Shiryaev-Roberts is the asymptotically optimal (minimax) change-point detector when the pre-change and post-change distributions are known. It maintains a likelihood-ratio statistic `R_t` and fires when `R_t` exceeds a threshold.
 
-Under the standard framing, you provide the pre-change mean (`mu_0`), post-change mean (`mu_1`), and noise scale (`sigma`). The detector updates the likelihood ratio on every sample.
+Under the standard framing, you provide the pre-change mean, the post-change mean, and the noise variance. The detector updates the likelihood ratio on every sample.
 
 ### When to use it
 
@@ -100,9 +100,9 @@ impl ShiryaevRoberts {
 }
 
 impl ShiryaevRobertsBuilder {
-    pub fn mu_before(self, mu: f64) -> Self;
-    pub fn mu_after(self, mu: f64) -> Self;
-    pub fn sigma(self, sigma: f64) -> Self;
+    pub fn pre_change_mean(self, mean: f64) -> Self;
+    pub fn post_change_mean(self, mean: f64) -> Self;
+    pub fn variance(self, variance: f64) -> Self;
     pub fn threshold(self, t: f64) -> Self;
     pub fn build(self) -> Result<ShiryaevRoberts, ConfigError>;
 }
@@ -113,11 +113,11 @@ impl ShiryaevRobertsBuilder {
 ```rust
 use nexus_stats_detection::detection::ShiryaevRoberts;
 
-// Known: pre-change mean 0.5, post-change mean 1.2, noise sigma 0.3.
+// Known: pre-change mean 0.5, post-change mean 1.2, noise sigma 0.3 (variance 0.09).
 let mut sr = ShiryaevRoberts::builder()
-    .mu_before(0.5)
-    .mu_after(1.2)
-    .sigma(0.3)
+    .pre_change_mean(0.5)
+    .post_change_mean(1.2)
+    .variance(0.09)
     .threshold(100.0) // larger = fewer false alarms, slower detection
     .build()
     .unwrap();
@@ -156,7 +156,7 @@ Maintains a streaming EMA and EW variance. On each update, computes `z = (x - em
 ```rust
 impl AdaptiveThreshold {
     pub fn builder() -> AdaptiveThresholdBuilder;
-    pub fn update(&mut self, sample: f64) -> Result<Option<Condition>, DataError>;
+    pub fn update(&mut self, sample: f64) -> Result<Option<Direction>, DataError>;
     pub fn z_score(&self) -> Option<f64>;
     // more
 }
@@ -166,19 +166,18 @@ impl AdaptiveThreshold {
 
 ```rust
 use nexus_stats_detection::detection::AdaptiveThreshold;
-use nexus_stats_core::Condition;
+use nexus_stats_core::Direction;
 
 let mut at = AdaptiveThreshold::builder()
     .halflife(500.0)
-    .warning_sigma(2.0)
-    .critical_sigma(4.0)
+    .z_threshold(3.0)      // flag samples beyond 3 sigma of the adaptive baseline
     .build()
     .unwrap();
 
 for &load in &cpu_samples {
     match at.update(load).unwrap() {
-        Some(Condition::Warning) => log_warn("cpu anomaly"),
-        Some(Condition::Critical) => page_oncall("cpu spike"),
+        Some(Direction::Rising) => page_oncall("cpu spike"),
+        Some(Direction::Falling) => log_warn("cpu dropout"),
         _ => {}
     }
 }
@@ -252,7 +251,7 @@ for &price in &prices {
 
 ### What it does
 
-Internally maintains a Holt-style level + trend estimate. Fires when the `forecast(h)` function exceeds a threshold — i.e. when you're projected to cross a limit within `h` samples.
+Internally maintains a Holt-style level + trend estimate. Fires when the smoothed trend (slope per sample) exceeds a threshold, absolute (`trend_threshold`) or relative to the level (`trend_threshold_relative`); `forecast(steps)` projects the level ahead for your own limit checks.
 
 ### When to use it
 
@@ -265,7 +264,7 @@ Internally maintains a Holt-style level + trend estimate. Fires when the `foreca
 ```rust
 impl TrendAlert {
     pub fn builder() -> TrendAlertBuilder;
-    pub fn update(&mut self, sample: f64) -> Result<Option<Condition>, DataError>;
+    pub fn update(&mut self, sample: f64) -> Result<Option<Direction>, DataError>;
     // level(), trend(), forecast(steps)
 }
 ```
@@ -274,19 +273,17 @@ impl TrendAlert {
 
 ```rust
 use nexus_stats_detection::detection::TrendAlert;
-use nexus_stats_core::Condition;
+use nexus_stats_core::Direction;
 
 let mut alert = TrendAlert::builder()
     .alpha(0.3)
     .beta(0.05)
-    .forecast_horizon(300) // 300 samples ahead
-    .warning_threshold(180.0)
-    .critical_threshold(200.0)
+    .trend_threshold(0.5)   // slope per sample (latency units) that counts as a trend
     .build()
     .unwrap();
 
 for &latency in &stream {
-    if let Some(Condition::Critical) = alert.update(latency).unwrap() {
+    if let Some(Direction::Rising) = alert.update(latency).unwrap() {
         fire_page();
     }
 }
@@ -305,23 +302,32 @@ for &latency in &stream {
 
 ### What it does
 
-Multiple thresholded "gates" feeding a single state machine. Typically configured with `Warning` and `Critical` levels that each have their own hysteresis and debounce. Emits state *transitions* (`None | Warning | Critical`) rather than per-sample scores.
+Three gates, outer to inner, each more sensitive than the last, giving one `Verdict` per sample: a **hard limit** on the fractional move from the EMA baseline (`Reject`), a **z-score** gate against the EW standard deviation (`Suspect`), and a **spread** gate relative to recent volatility (`Unusual`); a sample inside all three is `Accept`. The baseline EMA is not updated on `Suspect` or `Reject`, so a bad sample cannot pull the estimator toward itself and hide the next one.
 
 ### When to use it
 
-- **Composite alerts** where "warning" and "critical" need separate debouncing, separate hysteresis, or separate thresholds.
-- **Dashboards** that distinguish "degraded" from "failing".
+- **Market data quality**: reject impossible prints, flag suspicious ones, keep the baseline honest.
+- **Sensor validation**, and any feed where graded severity beats a single outlier flag.
 
 ### API
 
 ```rust
 impl MultiGate {
     pub fn builder() -> MultiGateBuilder;
-    pub fn update(&mut self, sample: f64) -> Result<Option<Condition>, DataError>;
+    pub fn update(&mut self, sample: f64) -> Result<Option<Verdict>, DataError>;
+}
+
+impl MultiGateBuilder {
+    pub fn alpha(self, alpha: f64) -> Self;                // or span(n)
+    pub fn hard_limit(self, pct: f64) -> Self;             // gate 1: fraction of the baseline
+    pub fn suspect_z(self, z: f64) -> Self;                // gate 2: z-score
+    pub fn unusual_spread_multiple(self, k: f64) -> Self;  // gate 3: multiple of recent spread
+    pub fn min_samples(self, min: u64) -> Self;
+    pub fn build(self) -> Result<MultiGate, ConfigError>;
 }
 ```
 
-Configure gates via the builder; see source for the exact parameter set.
+`Verdict` is `Accept | Unusual | Suspect | Reject`. Diagrams and examples: [MultiGate](../../nexus-stats/docs/algorithms/multi-gate.md).
 
 ---
 

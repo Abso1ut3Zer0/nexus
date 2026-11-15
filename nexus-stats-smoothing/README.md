@@ -8,7 +8,7 @@ Advanced smoothing algorithms for [nexus-stats](https://crates.io/crates/nexus-s
 - **Spring** — Critically damped spring (chase without overshoot)
 - **Kalman1d** — 1D Kalman filter (position + velocity)
 - **Kama** — Kaufman Adaptive Moving Average (requires `alloc`)
-- **WindowedMedian<f64> / WindowedMedianF32** — Running median (requires `alloc`)
+- **WindowedMedian<f64> / WindowedMedian<i64>** — Running median (requires `alloc`)
 
 ## Usage
 

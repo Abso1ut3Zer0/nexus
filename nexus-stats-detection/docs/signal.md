@@ -27,7 +27,6 @@ use nexus_stats_detection::signal::Autocorrelation;
 
 let mut ac = Autocorrelation::builder()
     .lag(1)
-    .halflife(500.0)
     .build()
     .unwrap();
 
@@ -65,8 +64,7 @@ let rho = ac.correlation().unwrap(); // -1.0 .. 1.0
 use nexus_stats_detection::signal::CrossCorrelation;
 
 let mut xc = CrossCorrelation::builder()
-    .max_lag(10)
-    .halflife(1000.0)
+    .lag(10)             // correlations are kept for lags 0..=10
     .build()
     .unwrap();
 
@@ -74,7 +72,8 @@ for (a, b) in paired_stream {
     xc.update(a, b).unwrap();
 }
 
-// query via accessor methods for peak lag and peak correlation, see source
+let lead = xc.peak_lag();            // Option<usize>: the lag with the strongest correlation
+let rho = xc.correlation(3);         // Option<f64>: correlation at a given lag
 ```
 
 ### Caveats
@@ -104,13 +103,12 @@ Shannon entropy `H = -Σ p_i log p_i` over a categorical distribution. You feed 
 use nexus_stats_detection::signal::Entropy;
 
 let mut e = Entropy::builder()
-    .num_bins(10)
-    .halflife(500.0)
+    .bins(10)
     .build()
     .unwrap();
 
 for category in categorized_events {
-    e.update(category); // bin index in 0..num_bins
+    e.update(category); // bin index in 0..bins
 }
 
 let h = e.entropy();        // 0.0 .. ln(num_bins)
@@ -147,8 +145,8 @@ Transfer entropy from X to Y:
 use nexus_stats_detection::signal::TransferEntropy;
 
 let mut te = TransferEntropy::builder()
-    .num_bins(5)
-    // more config
+    .bins(5)
+    .lag(1)
     .build()
     .unwrap();
 
@@ -156,7 +154,7 @@ for (x_bin, y_bin) in paired_binned_stream {
     te.update(x_bin, y_bin);
 }
 
-let te_xy = te.value(); // bits
+let te_xy = te.te_x_to_y(); // Option<f64>, bits; te_y_to_x() and net_flow() for the reverse and the difference
 ```
 
 ### Caveats

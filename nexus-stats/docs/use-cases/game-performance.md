@@ -56,7 +56,7 @@ let utilization = frame_time_ms / target_frame_time_ms;
 budget.update(utilization).unwrap();
 let over_budget = matches!(budget.value(), Some(u) if u > 0.90);  // 90% of budget = 15ms
 
-match (over_budget, trend.update(frame_time_ms)) {
+match (over_budget, trend.update(frame_time_ms).unwrap()) {
     (true, Some(Direction::Rising)) => {
         reduce_quality();  // overloaded and getting worse
     }

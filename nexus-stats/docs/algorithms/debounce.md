@@ -5,7 +5,7 @@ A single negative resets the counter. From AUTOSAR diagnostic standards.
 
 | Property | Value |
 |----------|-------|
-| Update cost | ~2 cycles |
+| Update cost | 5 cycles |
 | Memory | ~16 bytes |
 | Types | `Debounce` |
 | Output | `bool` — true once threshold reached |
@@ -67,6 +67,6 @@ if fault.update(reading_out_of_range) {
 
 | Operation | p50 | p99 |
 |-----------|-----|-----|
-| `Debounce::update` | ~2 cycles | ~2 cycles |
+| `Debounce::update` | 5 cycles | 5 cycles |
 
 One increment + one comparison. Perfectly predicted branch.

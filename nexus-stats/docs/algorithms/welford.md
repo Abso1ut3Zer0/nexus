@@ -6,9 +6,9 @@ Chan's algorithm.
 
 | Property | Value |
 |----------|-------|
-| Update cost | ~10 cycles |
+| Update cost | 11 cycles |
 | Memory | ~24 bytes |
-| Types | `Welford`, `WelfordF32` |
+| Types | `Welford` |
 | Priming | Mean after 1 sample, variance after 2 |
 | Output | `mean()`, `variance()`, `std_dev()` — all `Option<T>` |
 
@@ -98,8 +98,8 @@ let mut worker_a = Welford::new();
 let mut worker_b = Welford::new();
 
 // Split work
-for x in &data[..half] { worker_a.update(*x); }
-for x in &data[half..] { worker_b.update(*x); }
+for x in &data[..half] { worker_a.update(*x).unwrap(); }
+for x in &data[half..] { worker_b.update(*x).unwrap(); }
 
 // Merge
 worker_a.merge(&worker_b);
@@ -154,8 +154,8 @@ for w in &per_worker {
 
 | Operation | p50 | p99 |
 |-----------|-----|-----|
-| `Welford::update` | 10 cycles | 12 cycles |
-| `Welford::std_dev` query | ~9 cycles | ~10 cycles |
+| `Welford::update` | 11 cycles | 13 cycles |
+| `Welford::std_dev` query | 6 cycles | 6 cycles |
 
 The update includes one division (`delta / count`). The `std_dev()` query
 includes one `sqrt` (hardware `vsqrtsd`, ~13 cycles latency but pipelined).

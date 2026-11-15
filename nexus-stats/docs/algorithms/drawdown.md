@@ -5,7 +5,7 @@ for circuit breakers.
 
 | Property | Value |
 |----------|-------|
-| Update cost | ~5 cycles |
+| Update cost | 5 cycles |
 | Memory | ~24 bytes |
 | Types | `Drawdown<f64>`, `Drawdown<i64>` |
 | Output | Current drawdown value |

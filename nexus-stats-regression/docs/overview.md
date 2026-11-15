@@ -30,7 +30,7 @@ reg.intercept_value();        // Option<f64>
 Multi-feature learners:
 
 ```rust
-let mut lms = LmsFilter::builder().dimensions(8).step_size(0.01).build()?;
+let mut lms = LmsFilter::builder().dimensions(8).learning_rate(0.01).build()?;
 lms.update(&features, target);       // features is &[f64] of len dimensions
 let y_hat = lms.predict(&features);
 lms.weights();                        // &[f64]

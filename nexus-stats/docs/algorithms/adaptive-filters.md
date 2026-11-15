@@ -225,8 +225,8 @@ let regime = classifier.update(&features);
 
 | Operation | p50 (d=5) |
 |-----------|-----------|
-| `LmsFilter::update` | ~15 cycles |
-| `NlmsFilter::update` | ~20 cycles |
-| `RlsFilter::update` | ~80 cycles |
-| `LogisticRegression::update` | ~25 cycles |
-| `OnlineKMeans::update` (k=3) | ~40 cycles |
+| `LmsFilter::update` | 62 cycles |
+| `NlmsFilter::update` | 90 cycles |
+| `RlsFilter::update` | 413 cycles |
+| `LogisticRegression::update` | 74 cycles |
+| `OnlineKMeans::update` (k=3) | 50 cycles |

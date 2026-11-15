@@ -5,9 +5,9 @@ signal is, not where it is.
 
 | Property | Value |
 |----------|-------|
-| Update cost | ~6 cycles |
+| Update cost | 7 cycles |
 | Memory | ~24 bytes |
-| Types | `Jitter<f64>`, `JitterF32`, `Jitter<i64>`, `JitterI32` |
+| Types | `Jitter<f64>`, `Jitter<i64>` |
 | Output | `Option<T>` — smoothed jitter value |
 
 ## What It Does
@@ -29,7 +29,7 @@ jitter / mean (context-relative: is 5μs jitter a lot? depends on mean).
 ```rust
 let mut j = Jitter::<f64>::builder().span(20).build().unwrap();
 
-if let Some(jitter) = j.update(latency) {
+if let Some(jitter) = j.update(latency).unwrap() {
     if let Some(ratio) = j.jitter_ratio() {
         // ratio > 0.5 → jitter is 50% of mean → very unstable
     }
@@ -40,4 +40,4 @@ if let Some(jitter) = j.update(latency) {
 
 | Operation | p50 | p99 |
 |-----------|-----|-----|
-| `Jitter::<f64>::update` | 6 cycles | ~9 cycles |
+| `Jitter::<f64>::update` | 7 cycles | 8 cycles |

@@ -5,7 +5,7 @@ from streaming data with controlled error rates and minimal samples.
 
 | Property | Value |
 |----------|-------|
-| Update cost | ~5 cycles |
+| Update cost | 19 cycles |
 | Memory | 48-88 bytes |
 | Types | `SprtBernoulli`, `SprtGaussian` |
 | Priming | Immediate (can decide after 1 observation) |
@@ -83,7 +83,7 @@ let mut test = SprtBernoulli::builder()
 
 // Feed observations:
 for outcome in observations {
-    match test.observe(outcome) {
+    match test.update(outcome) {
         Decision::AcceptAlternative => {
             println!("rate is significantly above 50%");
             break;
@@ -112,7 +112,7 @@ let mut test = SprtGaussian::builder()
     .unwrap();
 
 for value in measurements {
-    match test.observe(value) {
+    match test.update(value).unwrap() {
         Decision::AcceptAlternative => {
             println!("mean has shifted to ~105");
             break;
@@ -137,7 +137,7 @@ let mut test = SprtBernoulli::builder()
     .unwrap();
 
 // Feed results from the new configuration:
-let decision = test.observe(request_succeeded);
+let decision = test.update(request_succeeded);
 // SPRT stops as soon as it has enough evidence —
 // typically 50-200 observations for this effect size.
 ```
@@ -155,7 +155,7 @@ let mut test = SprtGaussian::builder()
     .unwrap();
 
 // Per request:
-let decision = test.observe(latency_us);
+let decision = test.update(latency_us).unwrap();
 ```
 
 ## SPRT vs CUSUM
@@ -174,8 +174,8 @@ Use SPRT for experiments, CUSUM for alerting.
 
 | Operation | p50 |
 |-----------|-----|
-| `SprtBernoulli::observe` | ~5 cycles |
-| `SprtGaussian::observe` | ~8 cycles |
+| `SprtBernoulli::update` | 19 cycles |
+| `SprtGaussian::update` | 7 cycles |
 | Builder (one-time) | ~50 cycles (includes ln) |
 
 ## Academic Reference

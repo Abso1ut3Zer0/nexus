@@ -62,7 +62,7 @@ crosses the slow one.
 let mut fast = Ema::builder().span(5).build().unwrap();
 let mut slow = Ema::builder().span(50).build().unwrap();
 
-if let (Some(f), Some(s)) = (fast.update(x), slow.update(x)) {
+if let (Some(f), Some(s)) = (fast.update(x).unwrap(), slow.update(x).unwrap()) {
     if f > s { /* uptrend */ }
     else { /* downtrend */ }
 }
@@ -86,9 +86,11 @@ if let Some(Direction::Rising) = cusum.update(sample) {
 Combine several bool-returning monitors into a composite:
 
 ```rust
+enum Status { Healthy, Warning, Critical }   // your own summary type
+
 let alive = liveness.check(now);
 let queue_ok = !matches!(qd.update(now, sojourn), Some(Condition::Degraded));
-let errors_ok = !matches!(error_rate.record(ok), Some(Condition::Degraded));
+let errors_ok = !matches!(error_rate.update(ok), Some(Condition::Degraded));
 
 let health_score = [alive, queue_ok, errors_ok]
     .iter().filter(|&&b| b).count();

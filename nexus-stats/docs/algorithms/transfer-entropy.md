@@ -6,7 +6,7 @@ Granger causality.
 
 | Property | Value |
 |----------|-------|
-| Update cost | ~14 cycles |
+| Update cost | 14 cycles |
 | Memory | `2×bins³×8 + 2×bins²×8 + 2×lag×8` bytes (heap) |
 | Types | `TransferEntropy` |
 | Priming | After `lag + 1` paired observations |
@@ -84,7 +84,7 @@ let mut te = TransferEntropy::builder()
     .unwrap();
 
 for (x_bin, y_bin) in discretized_data {
-    te.observe(x_bin, y_bin);
+    te.update(x_bin, y_bin);
 }
 
 if let Some(flow) = te.net_flow() {
@@ -148,7 +148,7 @@ let mut te = TransferEntropy::builder()
     .unwrap();
 
 // Discretize metrics into 8 bins (e.g., by quantile)
-te.observe(metric_a_bin, metric_b_bin);
+te.update(metric_a_bin, metric_b_bin);
 
 // Positive net_flow → metric A drives metric B
 ```
@@ -164,7 +164,7 @@ let mut te = TransferEntropy::builder()
     .unwrap();
 
 // Discretize both metrics into quartiles
-te.observe(cpu_quartile, latency_quartile);
+te.update(cpu_quartile, latency_quartile);
 
 // net_flow > 0 → CPU drives latency (expected)
 // net_flow < 0 → latency drives CPU (unexpected — investigate)
@@ -180,9 +180,9 @@ the lag, use transfer entropy to confirm which signal drives which.
 
 | Operation | p50 |
 |-----------|-----|
-| `observe` (bins=8, lag=1) | ~14 cycles |
-| `te_x_to_y()` query (bins=8) | ~500 cycles |
-| `net_flow()` query (bins=8) | ~1000 cycles |
+| `update` (bins=8, lag=1) | 14 cycles |
+| `te_x_to_y()` query (bins=8) | 9667 cycles |
+| `net_flow()` query (bins=8) | 19542 cycles |
 
 The update is O(1) — table lookups and increments. The query is
 O(bins³) due to iterating the joint frequency table.
