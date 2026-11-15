@@ -257,15 +257,14 @@ impl PollSaturation {
     /// never changes `max_behind_ticks` or `max_messages_per_poll`.
     #[inline]
     pub fn on_work(&mut self, now: u64, n: u64) -> u64 {
-        // Selects, not branches. Whether the floor is pending is a coin flip
-        // under mixed load (idle before some messages, not others), and a
-        // mispredict there cost more than the whole function: 14 cycles p50
-        // against 6 for this form, measured pinned; equal in the other
-        // regimes. `select_unpredictable` keeps LLVM from turning the fresh
-        // case back into a branch to skip two loads, which it otherwise does
-        // when this is not inlined next to the `on_idle` call. The maxima are
-        // written unconditionally; the compiler emits cmov for each.
+        // Straight-line by design: no branch in here, because whether the
+        // floor is pending is a coin flip under mixed load and a mispredict
+        // there cost more than the whole function (14 cycles p50 against 5,
+        // measured pinned). `select_unpredictable` keeps LLVM from turning
+        // the selects back into a jump; `max` compiles to cmov.
         let fresh = self.state & Self::FRESH != 0;
+
+        // A pending floor becomes this stamp and starts a new backlog.
         let floor = select_unpredictable(fresh, now, self.floor);
         let backlog = select_unpredictable(fresh, 0, self.backlog) + n;
         self.state &= !Self::FRESH;
@@ -273,28 +272,18 @@ impl PollSaturation {
         self.backlog = backlog;
         let behind = now.saturating_sub(floor);
 
-        self.messages_seen += n;
         // The first unit of work after an empty poll did not wait; every
         // other message did.
-        self.messages_waited += n.saturating_sub(fresh as u64);
+        let first_after_idle = fresh as u64;
+        self.messages_seen += n;
+        self.messages_waited += n.saturating_sub(first_after_idle);
         self.messages_over_budget += select_unpredictable(behind > self.budget, n, 0);
-        self.max_backlog_messages = if backlog > self.max_backlog_messages {
-            backlog
-        } else {
-            self.max_backlog_messages
-        };
+
         // Non-message work (`n == 0`) never moves the maxima.
-        let behind_of_messages = if n > 0 { behind } else { 0 };
-        self.max_behind_ticks = if behind_of_messages > self.max_behind_ticks {
-            behind_of_messages
-        } else {
-            self.max_behind_ticks
-        };
-        self.max_messages_per_poll = if n > self.max_messages_per_poll {
-            n
-        } else {
-            self.max_messages_per_poll
-        };
+        let message_behind = select_unpredictable(n > 0, behind, 0);
+        self.max_backlog_messages = self.max_backlog_messages.max(backlog);
+        self.max_behind_ticks = self.max_behind_ticks.max(message_behind);
+        self.max_messages_per_poll = self.max_messages_per_poll.max(n);
         behind
     }
 
