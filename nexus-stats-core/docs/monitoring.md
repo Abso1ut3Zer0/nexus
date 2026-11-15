@@ -16,6 +16,7 @@ These types all answer "is this system healthy?" questions in O(1) with fixed me
 | `LivenessU64` / `LivenessI64` / `LivenessInstant` | "Has anything happened recently?" detector |
 | `EventRateU64` / `EventRateInstant` | Smoothed events-per-unit-time |
 | `CoDelU64` / `CoDelInstant` | Controlled Delay queue latency monitor |
+| `PollSaturation` | Consumer-side saturation from poll outcomes: how many messages waited behind this thread, for how long at most |
 | `SaturationF64` | Resource utilization threshold with hysteresis |
 | `ErrorRateF64` | Error fraction tracker with alert conditions |
 | `JitterF64` / `JitterF32` | Inter-arrival / sample-to-sample variation |
@@ -158,6 +159,26 @@ use nexus_stats_core::monitoring::CoDelInstant;
 ```
 
 **Use for:** queue-health signals, AQM-style drop decisions, backpressure-before-loss alerts.
+
+---
+
+## PollSaturation
+
+Saturation of a consumer thread from what each poll returned: no message timestamps, no queue depth, no clock read on an idle spin. An empty poll (or a short batch poll) proves the input empty; every message taken afterwards arrived after that proof, so `now - proof` bounds how long any message in a poll waited for this thread. `take()` returns a `PollSummary` of every poll since the previous take, whenever the caller decides to snap (a timer, a message count, an event): the count form (`max_messages_per_poll`, `max_backlog_messages`), the duration form (`messages_waited`, `messages_over_budget`, `max_behind_ticks`) and the `is_fully_utilized` / `is_backlogged` flags. Summaries merge exactly.
+
+```rust
+use nexus_stats_core::monitoring::PollSaturation;
+
+let mut sat = PollSaturation::new(50_000);          // budget: 50 µs in ns ticks
+// per poll:
+//   nothing returned        -> sat.on_idle()
+//   n messages start at now -> let behind = sat.on_work(now, n);
+//   short batch poll        -> sat.on_drained(at)
+// whenever you decide to snap (timer, count, event):
+let summary = sat.take();
+```
+
+**Use for:** per-thread saturation beside utilization (USE method), deciding whether a late message waited for this consumer or was late upstream, backlog detection under poll limits.
 
 ---
 

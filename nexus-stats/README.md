@@ -137,6 +137,7 @@ for deep-dives on each algorithm.
 | `LivenessI64` / `LivenessU64` | Source alive/dead detection | 6 |
 | `EventRateU64` | Smoothed events per unit time | 6 |
 | `CoDelI64` | Queue backpressure detection (CoDel-inspired) | 7 |
+| `PollSaturation` | Consumer-side saturation from poll outcomes: `on_work` / `on_idle` | 5 / 1 |
 | `SaturationF64` | Resource utilization threshold (USE method) | 6 |
 | `ErrorRateF64` | Failure rate with weighted severity | 6 |
 | `TrendAlertF64` | Trend direction (Stable/Rising/Falling) | 12 |

@@ -56,6 +56,19 @@ contained.
 
 ### Added
 
+- **`PollSaturation`** / **`PollSummary`** — consumer-side saturation from
+  poll outcomes and the caller's stamps: no message timestamps, no queue
+  depth, no clock inside the type, no clock read on an idle spin. Tracks the
+  arrival floor (the latest tick the input was proven empty, by an empty
+  poll or a short batch poll) and `on_work(now, n)` returns `behind`, an
+  upper bound on how long any message in that poll waited for this thread;
+  zero is exact. `new(budget)` takes the wait you consider late. `take()`
+  returns the summary of every poll since the previous take, whenever the
+  caller decides to snap (timer, message count, event): `max_messages_per_poll` and
+  `max_backlog_messages` (the count form of saturation), `messages_waited`, `messages_over_budget` and
+  `max_behind_ticks` (the duration form), and the `is_fully_utilized` / `is_backlogged`
+  flags. Summaries merge exactly. 80 bytes, `on_idle` is one store
+  ([#764](https://github.com/Abso1ut3Zer0/nexus/issues/764)).
 - **`LivenessU64`** — liveness detector with `u64` timestamps, mirrors `LivenessI64`.
 
 ## [3.0.1] — 2026-06-05

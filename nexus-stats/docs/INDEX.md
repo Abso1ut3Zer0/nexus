@@ -76,6 +76,7 @@ examples.
 - [Liveness](algorithms/liveness.md) — Source alive/dead detection
 - [EventRate](algorithms/event-rate.md) — Smoothed events per unit time
 - [CoDel](algorithms/codel.md) — Controlled Delay queue monitor
+- [PollSaturation](algorithms/poll-saturation.md) — Consumer-side saturation from poll outcomes
 - [Saturation](algorithms/saturation.md) — Resource utilization threshold
 - [ErrorRate](algorithms/error-rate.md) — Failure rate tracking
 - [TrendAlert](algorithms/trend-alert.md) — Trend direction detection
@@ -103,6 +104,7 @@ Domain-specific recipes showing how to compose primitives for real problems.
 - [Backpressure Detection](use-cases/backpressure.md) — Early warning before buffers fill
 - [Anomaly Detection](use-cases/anomaly-detection.md) — Bad data, outliers, impossible events
 - [Feed Health](use-cases/feed-health.md) — Monitoring data sources for degradation
+- [Consumer Saturation](use-cases/consumer-saturation.md) — A consumer thread measuring its own saturation from poll outcomes
 - [Rate Management](use-cases/rate-management.md) — Tracking and adapting to rate limits
 - [Capacity Planning](use-cases/capacity-planning.md) — Load distribution and trend analysis
 - [Game Performance](use-cases/game-performance.md) — Frame timing, stutter, adaptive quality
