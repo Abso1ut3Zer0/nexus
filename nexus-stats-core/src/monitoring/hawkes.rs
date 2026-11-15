@@ -19,9 +19,9 @@
 /// # Examples
 ///
 /// ```
-/// use nexus_stats_core::monitoring::HawkesIntensityF64;
+/// use nexus_stats_core::monitoring::HawkesIntensity;
 ///
-/// let mut h = HawkesIntensityF64::builder()
+/// let mut h = HawkesIntensity::builder()
 ///     .mu(1.0)
 ///     .alpha(0.5)
 ///     .beta(1.0)
@@ -32,8 +32,13 @@
 /// h.update(100);
 /// assert!(h.intensity() > 1.0); // above baseline after event
 /// ```
+///
+/// # Weighting clock
+///
+/// Caller's timestamps: the intensity decays by the elapsed ticks between
+/// calls, so any call rate is correct.
 #[derive(Debug, Clone)]
-pub struct HawkesIntensityF64 {
+pub struct HawkesIntensity {
     mu: f64,
     alpha: f64,
     beta: f64,
@@ -43,21 +48,21 @@ pub struct HawkesIntensityF64 {
     min_samples: u64,
 }
 
-/// Builder for [`HawkesIntensityF64`].
+/// Builder for [`HawkesIntensity`].
 #[derive(Debug, Clone)]
-pub struct HawkesIntensityF64Builder {
+pub struct HawkesIntensityBuilder {
     mu: Option<f64>,
     alpha: Option<f64>,
     beta: Option<f64>,
     min_samples: u64,
 }
 
-impl HawkesIntensityF64 {
+impl HawkesIntensity {
     /// Creates a builder.
     #[inline]
     #[must_use]
-    pub fn builder() -> HawkesIntensityF64Builder {
-        HawkesIntensityF64Builder {
+    pub fn builder() -> HawkesIntensityBuilder {
+        HawkesIntensityBuilder {
             mu: None,
             alpha: None,
             beta: None,
@@ -149,7 +154,7 @@ impl HawkesIntensityF64 {
     }
 }
 
-impl HawkesIntensityF64Builder {
+impl HawkesIntensityBuilder {
     /// Baseline intensity mu (required, > 0).
     #[inline]
     #[must_use]
@@ -191,7 +196,7 @@ impl HawkesIntensityF64Builder {
     /// - `beta` must be positive and finite.
     /// - `alpha` must be < `beta` (branching ratio < 1).
     #[inline]
-    pub fn build(self) -> Result<HawkesIntensityF64, crate::ConfigError> {
+    pub fn build(self) -> Result<HawkesIntensity, crate::ConfigError> {
         let mu = self.mu.ok_or(crate::ConfigError::Missing("mu"))?;
         if mu <= 0.0 || !mu.is_finite() {
             return Err(crate::ConfigError::Invalid(
@@ -219,7 +224,7 @@ impl HawkesIntensityF64Builder {
             ));
         }
 
-        Ok(HawkesIntensityF64 {
+        Ok(HawkesIntensity {
             mu,
             alpha,
             beta,
@@ -237,7 +242,7 @@ mod tests {
 
     #[test]
     fn baseline_without_events() {
-        let h = HawkesIntensityF64::builder()
+        let h = HawkesIntensity::builder()
             .mu(5.0)
             .alpha(0.5)
             .beta(1.0)
@@ -250,7 +255,7 @@ mod tests {
 
     #[test]
     fn excitation_spike() {
-        let mut h = HawkesIntensityF64::builder()
+        let mut h = HawkesIntensity::builder()
             .mu(1.0)
             .alpha(0.5)
             .beta(1.0)
@@ -267,7 +272,7 @@ mod tests {
 
     #[test]
     fn decay_over_time() {
-        let mut h = HawkesIntensityF64::builder()
+        let mut h = HawkesIntensity::builder()
             .mu(1.0)
             .alpha(0.5)
             .beta(1.0)
@@ -284,7 +289,7 @@ mod tests {
 
     #[test]
     fn burst_intensifies() {
-        let mut h = HawkesIntensityF64::builder()
+        let mut h = HawkesIntensity::builder()
             .mu(1.0)
             .alpha(0.5)
             .beta(1.0)
@@ -308,7 +313,7 @@ mod tests {
 
     #[test]
     fn branching_ratio_value() {
-        let h = HawkesIntensityF64::builder()
+        let h = HawkesIntensity::builder()
             .mu(1.0)
             .alpha(0.3)
             .beta(1.0)
@@ -320,14 +325,14 @@ mod tests {
 
     #[test]
     fn stability_validation() {
-        let result = HawkesIntensityF64::builder()
+        let result = HawkesIntensity::builder()
             .mu(1.0)
             .alpha(1.0)
             .beta(1.0)
             .build();
         assert!(matches!(result, Err(crate::ConfigError::Invalid(_))));
 
-        let result = HawkesIntensityF64::builder()
+        let result = HawkesIntensity::builder()
             .mu(1.0)
             .alpha(2.0)
             .beta(1.0)
@@ -337,7 +342,7 @@ mod tests {
 
     #[test]
     fn reset_clears() {
-        let mut h = HawkesIntensityF64::builder()
+        let mut h = HawkesIntensity::builder()
             .mu(1.0)
             .alpha(0.5)
             .beta(1.0)
@@ -353,7 +358,7 @@ mod tests {
 
     #[test]
     fn same_timestamp_events() {
-        let mut h = HawkesIntensityF64::builder()
+        let mut h = HawkesIntensity::builder()
             .mu(1.0)
             .alpha(0.5)
             .beta(1.0)

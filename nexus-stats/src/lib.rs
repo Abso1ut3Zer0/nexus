@@ -12,9 +12,9 @@
 //! Import from the category module you need:
 //!
 //! ```rust
-//! use nexus_stats::smoothing::EmaF64;
-//! use nexus_stats::detection::CusumF64;
-//! use nexus_stats::statistics::WelfordF64;
+//! use nexus_stats::smoothing::Ema;
+//! use nexus_stats::detection::Cusum;
+//! use nexus_stats::statistics::Welford;
 //! use nexus_stats::{DataError, ConfigError, Direction};
 //! ```
 //!
@@ -68,7 +68,7 @@
 //! | [`smoothing`] | EMA, AsymEma, Slew |
 //! | [`detection`] | CUSUM |
 //! | [`statistics`] | Welford, Moments, EwmaVar, Covariance, HarmonicMean, Percentile, BipowerVariation, RollSpread *(std\|libm)*, TwoScaleRv *(alloc, std\|libm)* |
-//! | [`monitoring`] | Drawdown, Windowed Min/Max, CoDel, PollSaturation, SojournSaturation, Liveness, EventRate, Jitter, ErrorRate, Saturation, HawkesIntensity *(std\|libm)* |
+//! | [`monitoring`] | Drawdown, Windowed Min/Max, CoDel, PollSaturation, SojournSaturation, Liveness, EventRate, Jitter, ErrorRate, HawkesIntensity *(std\|libm)* |
 //! | [`control`] | DeadBand, Hysteresis, Debounce, LevelCrossing, Diff |
 //!
 //! ## Advanced (feature-gated, re-exported from subcrates)

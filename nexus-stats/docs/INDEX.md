@@ -78,7 +78,6 @@ examples.
 - [CoDel](algorithms/codel.md) — Controlled Delay queue monitor
 - [PollSaturation](algorithms/poll-saturation.md) — Consumer-side saturation from poll outcomes
 - [SojournSaturation](algorithms/sojourn-saturation.md) — Consumer saturation from stamped queue sojourn
-- [Saturation](algorithms/saturation.md) — Resource utilization threshold
 - [ErrorRate](algorithms/error-rate.md) — Failure rate tracking
 - [TrendAlert](algorithms/trend-alert.md) — Trend direction detection
 - [Jitter](algorithms/jitter.md) — Signal variability measurement

@@ -1,4 +1,4 @@
-use super::PercentileF64;
+use super::Percentile;
 
 /// Conditional Value at Risk (Expected Shortfall).
 ///
@@ -14,9 +14,9 @@ use super::PercentileF64;
 /// # Examples
 ///
 /// ```
-/// use nexus_stats_core::statistics::CvarF64;
+/// use nexus_stats_core::statistics::Cvar;
 ///
-/// let mut cvar = CvarF64::builder().alpha(0.05).build().unwrap();
+/// let mut cvar = Cvar::builder().alpha(0.05).build().unwrap();
 /// // Cycling input so tail samples accumulate after P² converges
 /// for i in 0..5000u64 {
 ///     cvar.update((i % 1000 + 1) as f64).unwrap();
@@ -26,26 +26,26 @@ use super::PercentileF64;
 /// assert!(cv < 500.0 && cv > 0.0);
 /// ```
 #[derive(Debug, Clone)]
-pub struct CvarF64 {
-    percentile: PercentileF64,
+pub struct Cvar {
+    percentile: Percentile,
     tail_sum: f64,
     tail_count: u64,
     count: u64,
     alpha: f64,
 }
 
-/// Builder for [`CvarF64`].
+/// Builder for [`Cvar`].
 #[derive(Debug, Clone)]
-pub struct CvarF64Builder {
+pub struct CvarBuilder {
     alpha: Option<f64>,
 }
 
-impl CvarF64 {
+impl Cvar {
     /// Creates a builder.
     #[inline]
     #[must_use]
-    pub fn builder() -> CvarF64Builder {
-        CvarF64Builder { alpha: None }
+    pub fn builder() -> CvarBuilder {
+        CvarBuilder { alpha: None }
     }
 
     /// Feeds a sample.
@@ -135,7 +135,7 @@ impl CvarF64 {
     }
 }
 
-impl CvarF64Builder {
+impl CvarBuilder {
     /// Confidence level in (0, 1) exclusive.
     ///
     /// For 5% CVaR (worst 5%): `alpha(0.05)`.
@@ -151,7 +151,7 @@ impl CvarF64Builder {
     /// # Errors
     ///
     /// Returns `ConfigError` if alpha is missing or not in (0, 1).
-    pub fn build(self) -> Result<CvarF64, crate::ConfigError> {
+    pub fn build(self) -> Result<Cvar, crate::ConfigError> {
         let alpha = self.alpha.ok_or(crate::ConfigError::Missing("alpha"))?;
         if !(alpha > 0.0 && alpha < 1.0) {
             return Err(crate::ConfigError::Invalid(
@@ -159,9 +159,9 @@ impl CvarF64Builder {
             ));
         }
 
-        let percentile = PercentileF64::new(alpha)?;
+        let percentile = Percentile::new(alpha)?;
 
-        Ok(CvarF64 {
+        Ok(Cvar {
             percentile,
             tail_sum: 0.0,
             tail_count: 0,
@@ -177,7 +177,7 @@ mod tests {
 
     #[test]
     fn known_distribution() {
-        let mut cv = CvarF64::builder().alpha(0.05).build().unwrap();
+        let mut cv = Cvar::builder().alpha(0.05).build().unwrap();
         // Cycling [1..1000] ensures tail samples accumulate after P² converges
         for i in 0..10_000u64 {
             let v = (i % 1000 + 1) as f64;
@@ -191,8 +191,8 @@ mod tests {
 
     #[test]
     fn var_matches_percentile() {
-        let mut cv = CvarF64::builder().alpha(0.10).build().unwrap();
-        let mut p = PercentileF64::new(0.10).unwrap();
+        let mut cv = Cvar::builder().alpha(0.10).build().unwrap();
+        let mut p = Percentile::new(0.10).unwrap();
         for i in 1..=500 {
             let v = i as f64;
             cv.update(v).unwrap();
@@ -208,7 +208,7 @@ mod tests {
 
     #[test]
     fn empty_returns_none() {
-        let cv = CvarF64::builder().alpha(0.05).build().unwrap();
+        let cv = Cvar::builder().alpha(0.05).build().unwrap();
         assert!(cv.cvar().is_none());
         assert!(cv.var().is_none());
         assert!(!cv.is_primed());
@@ -216,7 +216,7 @@ mod tests {
 
     #[test]
     fn priming_phase() {
-        let mut cv = CvarF64::builder().alpha(0.05).build().unwrap();
+        let mut cv = Cvar::builder().alpha(0.05).build().unwrap();
         for i in 1..=4 {
             cv.update(i as f64).unwrap();
             assert!(!cv.percentile.is_primed());
@@ -228,7 +228,7 @@ mod tests {
 
     #[test]
     fn all_equal() {
-        let mut cv = CvarF64::builder().alpha(0.05).build().unwrap();
+        let mut cv = Cvar::builder().alpha(0.05).build().unwrap();
         for _ in 0..200 {
             cv.update(42.0).unwrap();
         }
@@ -248,7 +248,7 @@ mod tests {
 
     #[test]
     fn tail_heavier_than_var() {
-        let mut cv = CvarF64::builder().alpha(0.10).build().unwrap();
+        let mut cv = Cvar::builder().alpha(0.10).build().unwrap();
         for i in 0..10_000u64 {
             let v = (i % 1000 + 1) as f64;
             cv.update(v).unwrap();
@@ -269,7 +269,7 @@ mod tests {
 
     #[test]
     fn rejects_nan_inf() {
-        let mut cv = CvarF64::builder().alpha(0.05).build().unwrap();
+        let mut cv = Cvar::builder().alpha(0.05).build().unwrap();
         assert!(cv.update(f64::NAN).is_err());
         assert!(cv.update(f64::INFINITY).is_err());
         assert!(cv.update(f64::NEG_INFINITY).is_err());
@@ -278,7 +278,7 @@ mod tests {
 
     #[test]
     fn reset_clears() {
-        let mut cv = CvarF64::builder().alpha(0.05).build().unwrap();
+        let mut cv = Cvar::builder().alpha(0.05).build().unwrap();
         for i in 1..=100 {
             cv.update(i as f64).unwrap();
         }

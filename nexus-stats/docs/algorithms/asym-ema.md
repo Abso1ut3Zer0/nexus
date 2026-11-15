@@ -7,7 +7,7 @@ fast, decrease slow" — or vice versa.
 |----------|-------|
 | Update cost | ~11 cycles |
 | Memory | ~16 bytes |
-| Types | `AsymEmaF64`, `AsymEmaI64` |
+| Types | `AsymEma`, `AsymEmaI64` |
 | Priming | Configurable via `min_samples` |
 | Output | `Option<T>` — smoothed value once primed |
 
@@ -37,7 +37,7 @@ variance grows quickly (detecting degradation fast) but shrinks slowly
 ## Configuration
 
 ```rust
-let mut ema = AsymEmaF64::builder()
+let mut ema = AsymEma::builder()
     .alpha_up(0.3)     // fast response to increases
     .alpha_down(0.05)  // slow response to decreases
     .min_samples(5)
@@ -46,7 +46,7 @@ let mut ema = AsymEmaF64::builder()
 
 Or using spans:
 ```rust
-let mut ema = AsymEmaF64::builder()
+let mut ema = AsymEma::builder()
     .span_up(5)    // ~5-sample response on increases
     .span_down(40) // ~40-sample response on decreases
     .build().unwrap();
@@ -56,7 +56,7 @@ let mut ema = AsymEmaF64::builder()
 
 | Operation | p50 | p99 |
 |-----------|-----|-----|
-| `AsymEmaF64::update` | 11 cycles | 12 cycles |
+| `AsymEma::update` | 11 cycles | 12 cycles |
 
 One branch (rising vs falling) + one `mul_add`. The branch is
 well-predicted for signals with consistent direction.

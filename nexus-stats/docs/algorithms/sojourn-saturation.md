@@ -54,7 +54,7 @@ Two knobs, and only two:
   The period is your decision; the type keeps no clock. Snap short for
   alerting and merge for publishing.
 
-No interval, no target, no baseline window, no smoothing. `CoDelI64` stays
+No interval, no target, no baseline window, no smoothing. `CoDel<i64>` stays
 for callers who want the RFC detector to drive a control decision (shed,
 drop, back off); this is the observability summary.
 
@@ -104,13 +104,13 @@ up as a zero minimum.
 |---|---|
 | An enqueue tick on the same clock | `SojournSaturation`: exact. Add `PollSaturation` beside it if you also want `max_messages_per_poll` and the utilization flag. |
 | No stamp (sockets, buses, channels you don't own, one-per-poll loops) | `PollSaturation`: a sound bound from emptiness proofs. |
-| A control decision to drive from queue delay | `CoDelI64` on the sojourn. |
+| A control decision to drive from queue delay | `CoDel<i64>` on the sojourn. |
 
 ## Performance
 
 Measured pinned (`taskset -c 0`, best of three, `examples/perf_stats.rs`,
 one message in four over budget at random so the compare cannot be
-predicted): `update` 6 cycles p50, beside `CoDelI64::update` at 5 and
+predicted): `update` 6 cycles p50, beside `CoDel::<i64>::update` at 5 and
 `PollSaturation::on_work` at 5 in the same runs.
 
 `update` is branchless: the clamp is a `cmovg`, the over-budget and

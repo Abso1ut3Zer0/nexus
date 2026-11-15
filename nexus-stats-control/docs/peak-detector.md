@@ -16,7 +16,7 @@ There's also a minimum-detecting variant (check the source — it mirrors the ma
 - **Peak finding** in smoothed market data (mid-price tops, volume spikes).
 - **Instrument / sensor data** — find the characteristic bumps of a waveform.
 
-Not for: when all you need is "was the last value the max so far?" (use `RunningMaxF64`) or "max over a sliding window?" (use `WindowedMaxF64`).
+Not for: when all you need is "was the last value the max so far?" (use `RunningMax<f64>`) or "max over a sliding window?" (use `WindowedMax<f64>`).
 
 ## API
 
@@ -56,7 +56,7 @@ for &v in &volumes {
 ## Parameter tuning
 
 - **prominence**: the minimum rise-then-fall in sample units to count as a peak. Too small = false positives from noise; too large = misses real peaks. Start with `2-3 * sigma(signal)`.
-- If the signal is noisy, pre-filter with [`EmaF64`](../../nexus-stats-core/docs/smoothing.md) or [`HampelF64`](../../nexus-stats-smoothing/docs/hampel.md) before feeding the detector.
+- If the signal is noisy, pre-filter with [`Ema`](../../nexus-stats-core/docs/smoothing.md) or [`HampelF64`](../../nexus-stats-smoothing/docs/hampel.md) before feeding the detector.
 
 ## Caveats
 
@@ -65,6 +65,6 @@ for &v in &volumes {
 
 ## Cross-references
 
-- [`RunningMaxF64`](../../nexus-stats-core/docs/monitoring.md#runningmax--runningmin) — just the all-time max.
-- [`WindowedMaxF64`](../../nexus-stats-core/docs/monitoring.md#windowedmax--windowedmin) — sliding-window max.
-- [`LevelCrossingF64`](../../nexus-stats-core/docs/control.md#levelcrossing--threshold-crossing-detector) — threshold crossing detection.
+- [`RunningMax<f64>`](../../nexus-stats-core/docs/monitoring.md#runningmax--runningmin) — just the all-time max.
+- [`WindowedMax<f64>`](../../nexus-stats-core/docs/monitoring.md#windowedmax--windowedmin) — sliding-window max.
+- [`LevelCrossing<f64>`](../../nexus-stats-core/docs/control.md#levelcrossing--threshold-crossing-detector) — threshold crossing detection.

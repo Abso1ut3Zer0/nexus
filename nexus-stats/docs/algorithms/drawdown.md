@@ -7,7 +7,7 @@ for circuit breakers.
 |----------|-------|
 | Update cost | ~5 cycles |
 | Memory | ~24 bytes |
-| Types | `DrawdownF64`, `DrawdownI64` |
+| Types | `Drawdown<f64>`, `Drawdown<i64>` |
 | Output | Current drawdown value |
 | Error handling | Returns `Result<_, DataError>` on NaN/Inf input |
 
@@ -37,7 +37,7 @@ Tracks three values: peak (highest value seen), current drawdown
 ## Configuration
 
 ```rust
-let mut dd = DrawdownF64::new();
+let mut dd = Drawdown::<f64>::new();
 
 dd.update(100.0).unwrap();  // peak = 100, drawdown = 0
 dd.update(90.0).unwrap();   // peak = 100, drawdown = 10
@@ -55,6 +55,6 @@ Zero config — just create and update. Implements `Default`.
 
 | Operation | p50 | p99 |
 |-----------|-----|-----|
-| `DrawdownF64::update` | 5 cycles | 5 cycles |
+| `Drawdown::<f64>::update` | 5 cycles | 5 cycles |
 
 One comparison + one conditional update. Pure arithmetic.

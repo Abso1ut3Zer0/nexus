@@ -7,7 +7,7 @@
 |----------|-------|
 | Update cost | ~7 cycles |
 | Memory | ~24 bytes |
-| Types | `PeakHoldF64`, `PeakHoldF32`, `PeakHoldI64`, `PeakHoldI32` |
+| Types | `PeakHold<f64>`, `PeakHoldF32`, `PeakHold<i64>`, `PeakHoldI32` |
 | Output | Current envelope value |
 
 ## What It Does
@@ -68,7 +68,7 @@ drops abruptly when the peak exits the window.
 ## Configuration
 
 ```rust
-let mut peak = PeakHoldF64::builder()
+let mut peak = PeakHold::<f64>::builder()
     .hold_samples(10)     // hold peak for 10 samples before decay
     .decay_rate(0.95)     // multiply by 0.95 each sample after hold
     .build().unwrap();
@@ -89,7 +89,7 @@ let mut peak = PeakHoldF64::builder()
 ### Trading — Worst Latency Envelope
 
 ```rust
-let mut worst_latency = PeakHoldF64::builder()
+let mut worst_latency = PeakHold::<f64>::builder()
     .hold_samples(100)   // hold worst spike for 100 ticks
     .decay_rate(0.99)    // slow fade
     .build().unwrap();
@@ -102,7 +102,7 @@ dashboard.set_peak_latency(envelope);
 ### Gaming — Frame Time Spike Display
 
 ```rust
-let mut spike_display = PeakHoldF64::builder()
+let mut spike_display = PeakHold::<f64>::builder()
     .hold_samples(60)    // hold for 1 second at 60fps
     .decay_rate(0.97)
     .build().unwrap();
@@ -111,7 +111,7 @@ let mut spike_display = PeakHoldF64::builder()
 ### Audio — Peak Level Meter (PPM)
 
 ```rust
-let mut meter = PeakHoldF32::builder()
+let mut meter = PeakHold::<f64>::builder()
     .hold_samples(0)      // no hold — instant decay
     .decay_rate(0.9995)   // slow decay (PPM standard)
     .build().unwrap();
@@ -121,7 +121,7 @@ let mut meter = PeakHoldF32::builder()
 
 | Operation | p50 | p99 |
 |-----------|-----|-----|
-| `PeakHoldF64::update` | 7 cycles | 9 cycles |
+| `PeakHold::<f64>::update` | 7 cycles | 9 cycles |
 
 One comparison (new peak?), one conditional multiply (decay), one
 counter decrement (hold). No division, no transcendentals.

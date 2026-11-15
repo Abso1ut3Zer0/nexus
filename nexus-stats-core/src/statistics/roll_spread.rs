@@ -20,9 +20,9 @@ use crate::math::MulAdd;
 /// # Examples
 ///
 /// ```
-/// use nexus_stats_core::statistics::RollSpreadF64;
+/// use nexus_stats_core::statistics::RollSpread;
 ///
-/// let mut rs = RollSpreadF64::builder()
+/// let mut rs = RollSpread::builder()
 ///     .alpha(0.05)
 ///     .build()
 ///     .unwrap();
@@ -35,7 +35,7 @@ use crate::math::MulAdd;
 /// assert!(rs.spread().is_some());
 /// ```
 #[derive(Debug, Clone)]
-pub struct RollSpreadF64 {
+pub struct RollSpread {
     alpha: f64,
     one_minus_alpha: f64,
     ew_cov: f64,
@@ -46,19 +46,19 @@ pub struct RollSpreadF64 {
     min_samples: u64,
 }
 
-/// Builder for [`RollSpreadF64`].
+/// Builder for [`RollSpread`].
 #[derive(Debug, Clone)]
-pub struct RollSpreadF64Builder {
+pub struct RollSpreadBuilder {
     alpha: Option<f64>,
     min_samples: u64,
 }
 
-impl RollSpreadF64 {
+impl RollSpread {
     /// Creates a builder.
     #[inline]
     #[must_use]
-    pub fn builder() -> RollSpreadF64Builder {
-        RollSpreadF64Builder {
+    pub fn builder() -> RollSpreadBuilder {
+        RollSpreadBuilder {
             alpha: None,
             min_samples: 30,
         }
@@ -170,7 +170,7 @@ impl RollSpreadF64 {
     }
 }
 
-impl RollSpreadF64Builder {
+impl RollSpreadBuilder {
     /// EW decay factor (required, in (0, 1)).
     #[inline]
     #[must_use]
@@ -193,7 +193,7 @@ impl RollSpreadF64Builder {
     ///
     /// - Alpha must have been set and be in (0, 1).
     #[inline]
-    pub fn build(self) -> Result<RollSpreadF64, crate::ConfigError> {
+    pub fn build(self) -> Result<RollSpread, crate::ConfigError> {
         let alpha = self.alpha.ok_or(crate::ConfigError::Missing("alpha"))?;
         if alpha <= 0.0 || alpha >= 1.0 || !alpha.is_finite() {
             return Err(crate::ConfigError::Invalid(
@@ -201,7 +201,7 @@ impl RollSpreadF64Builder {
             ));
         }
 
-        Ok(RollSpreadF64 {
+        Ok(RollSpread {
             alpha,
             one_minus_alpha: 1.0 - alpha,
             ew_cov: 0.0,
@@ -220,7 +220,7 @@ mod tests {
 
     #[test]
     fn mean_reverting_spread() {
-        let mut rs = RollSpreadF64::builder()
+        let mut rs = RollSpread::builder()
             .alpha(0.05)
             .min_samples(10)
             .build()
@@ -238,7 +238,7 @@ mod tests {
 
     #[test]
     fn trending_no_spread() {
-        let mut rs = RollSpreadF64::builder()
+        let mut rs = RollSpread::builder()
             .alpha(0.05)
             .min_samples(10)
             .build()
@@ -256,7 +256,7 @@ mod tests {
 
     #[test]
     fn hasbrouck_vs_roll() {
-        let mut rs = RollSpreadF64::builder()
+        let mut rs = RollSpread::builder()
             .alpha(0.05)
             .min_samples(10)
             .build()
@@ -278,7 +278,7 @@ mod tests {
 
     #[test]
     fn autocovariance_negative() {
-        let mut rs = RollSpreadF64::builder()
+        let mut rs = RollSpread::builder()
             .alpha(0.05)
             .min_samples(10)
             .build()
@@ -298,7 +298,7 @@ mod tests {
 
     #[test]
     fn reset_clears() {
-        let mut rs = RollSpreadF64::builder()
+        let mut rs = RollSpread::builder()
             .alpha(0.05)
             .min_samples(10)
             .build()
@@ -315,7 +315,7 @@ mod tests {
 
     #[test]
     fn nan_rejected() {
-        let mut rs = RollSpreadF64::builder().alpha(0.05).build().unwrap();
+        let mut rs = RollSpread::builder().alpha(0.05).build().unwrap();
         assert!(matches!(
             rs.update(f64::NAN),
             Err(crate::DataError::NotANumber)
@@ -324,7 +324,7 @@ mod tests {
 
     #[test]
     fn inf_rejected() {
-        let mut rs = RollSpreadF64::builder().alpha(0.05).build().unwrap();
+        let mut rs = RollSpread::builder().alpha(0.05).build().unwrap();
         assert!(matches!(
             rs.update(f64::INFINITY),
             Err(crate::DataError::Infinite)
@@ -334,15 +334,15 @@ mod tests {
     #[test]
     fn builder_validation() {
         assert!(matches!(
-            RollSpreadF64::builder().build(),
+            RollSpread::builder().build(),
             Err(crate::ConfigError::Missing("alpha"))
         ));
         assert!(matches!(
-            RollSpreadF64::builder().alpha(0.0).build(),
+            RollSpread::builder().alpha(0.0).build(),
             Err(crate::ConfigError::Invalid(_))
         ));
         assert!(matches!(
-            RollSpreadF64::builder().alpha(1.0).build(),
+            RollSpread::builder().alpha(1.0).build(),
             Err(crate::ConfigError::Invalid(_))
         ));
     }

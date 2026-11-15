@@ -7,7 +7,7 @@ Supports Chan's merge for parallel aggregation.
 |----------|-------|
 | Update cost | ~12 cycles |
 | Memory | ~48 bytes |
-| Types | `CovarianceF64`, `CovarianceF32` |
+| Types | `Covariance`, `CovarianceF32` |
 | Error handling | Returns `Result<_, DataError>` on NaN/Inf input |
 
 ## What It Does
@@ -16,7 +16,7 @@ Tracks two signals simultaneously and computes their covariance and
 Pearson correlation coefficient (-1 to +1).
 
 ```rust
-let mut cov = CovarianceF64::new();
+let mut cov = Covariance::new();
 
 for (x, y) in paired_samples {
     cov.update(x, y).unwrap();
@@ -47,7 +47,7 @@ if let Some(r) = cov.correlation() {
 
 | Operation | p50 | p99 |
 |-----------|-----|-----|
-| `CovarianceF64::update` | 12 cycles | 40 cycles |
+| `Covariance::update` | 12 cycles | 40 cycles |
 | `correlation()` query | ~30 cycles (includes sqrt) |
 
 Three running accumulators (M2_x, M2_y, C) updated per paired sample.

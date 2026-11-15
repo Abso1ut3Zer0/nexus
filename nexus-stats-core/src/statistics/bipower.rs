@@ -9,16 +9,16 @@
 /// # Examples
 ///
 /// ```
-/// use nexus_stats_core::statistics::BipowerVariationF64;
+/// use nexus_stats_core::statistics::BipowerVariation;
 ///
-/// let mut bv = BipowerVariationF64::new();
+/// let mut bv = BipowerVariation::new();
 /// for i in 0..100 {
 ///     bv.update(100.0 + (i as f64) * 0.01).unwrap();
 /// }
 /// assert!(bv.bipower_variation().is_some());
 /// ```
 #[derive(Debug, Clone)]
-pub struct BipowerVariationF64 {
+pub struct BipowerVariation {
     sum_bv: f64,
     sum_rv: f64,
     prev_abs_diff: f64,
@@ -27,13 +27,13 @@ pub struct BipowerVariationF64 {
     min_samples: u64,
 }
 
-/// Builder for [`BipowerVariationF64`].
+/// Builder for [`BipowerVariation`].
 #[derive(Debug, Clone)]
-pub struct BipowerVariationF64Builder {
+pub struct BipowerVariationBuilder {
     min_samples: u64,
 }
 
-impl BipowerVariationF64 {
+impl BipowerVariation {
     /// Creates a new bipower variation tracker with default min_samples (30).
     #[inline]
     #[must_use]
@@ -51,8 +51,8 @@ impl BipowerVariationF64 {
     /// Creates a builder.
     #[inline]
     #[must_use]
-    pub fn builder() -> BipowerVariationF64Builder {
-        BipowerVariationF64Builder { min_samples: 30 }
+    pub fn builder() -> BipowerVariationBuilder {
+        BipowerVariationBuilder { min_samples: 30 }
     }
 
     /// Feeds a trade price.
@@ -162,13 +162,13 @@ impl BipowerVariationF64 {
     }
 }
 
-impl Default for BipowerVariationF64 {
+impl Default for BipowerVariation {
     fn default() -> Self {
         Self::new()
     }
 }
 
-impl BipowerVariationF64Builder {
+impl BipowerVariationBuilder {
     /// Minimum prices before results are valid. Default: 30.
     #[inline]
     #[must_use]
@@ -179,8 +179,8 @@ impl BipowerVariationF64Builder {
 
     /// Builds the bipower variation tracker.
     #[inline]
-    pub fn build(self) -> BipowerVariationF64 {
-        BipowerVariationF64 {
+    pub fn build(self) -> BipowerVariation {
+        BipowerVariation {
             sum_bv: 0.0,
             sum_rv: 0.0,
             prev_abs_diff: 0.0,
@@ -197,7 +197,7 @@ mod tests {
 
     #[test]
     fn smooth_series() {
-        let mut bv = BipowerVariationF64::new();
+        let mut bv = BipowerVariation::new();
         for i in 0..100 {
             bv.update((i as f64).mul_add(0.01, 100.0)).unwrap();
         }
@@ -212,7 +212,7 @@ mod tests {
 
     #[test]
     fn series_with_jump() {
-        let mut bv = BipowerVariationF64::new();
+        let mut bv = BipowerVariation::new();
         for i in 0..50 {
             bv.update((i as f64).mul_add(0.01, 100.0)).unwrap();
         }
@@ -226,7 +226,7 @@ mod tests {
 
     #[test]
     fn jump_ratio_range() {
-        let mut bv = BipowerVariationF64::new();
+        let mut bv = BipowerVariation::new();
         for i in 0..50 {
             bv.update((i as f64).mul_add(0.01, 100.0)).unwrap();
         }
@@ -243,13 +243,13 @@ mod tests {
 
     #[test]
     fn rv_matches_manual() {
-        let mut bv = BipowerVariationF64::new();
+        let mut bv = BipowerVariation::new();
         let prices = [100.0, 101.0, 99.0, 102.0];
         for &p in &prices {
             bv.update(p).unwrap();
         }
         // diffs: 1, -2, 3 -> sum_sq = 1+4+9 = 14, n = 3 -> RV = 14/3
-        let min_bv = BipowerVariationF64::builder().min_samples(2).build();
+        let min_bv = BipowerVariation::builder().min_samples(2).build();
         let mut bv2 = min_bv;
         for &p in &prices {
             bv2.update(p).unwrap();
@@ -264,7 +264,7 @@ mod tests {
 
     #[test]
     fn bv_scaling() {
-        let mut bv = BipowerVariationF64::builder().min_samples(4).build();
+        let mut bv = BipowerVariation::builder().min_samples(4).build();
         let prices = [100.0, 101.0, 99.0, 102.0, 100.0];
         for &p in &prices {
             bv.update(p).unwrap();
@@ -281,7 +281,7 @@ mod tests {
 
     #[test]
     fn reset_clears() {
-        let mut bv = BipowerVariationF64::new();
+        let mut bv = BipowerVariation::new();
         for i in 0..50 {
             bv.update((i as f64).mul_add(0.1, 100.0)).unwrap();
         }
@@ -293,7 +293,7 @@ mod tests {
 
     #[test]
     fn nan_rejected() {
-        let mut bv = BipowerVariationF64::new();
+        let mut bv = BipowerVariation::new();
         assert!(matches!(
             bv.update(f64::NAN),
             Err(crate::DataError::NotANumber)
@@ -302,7 +302,7 @@ mod tests {
 
     #[test]
     fn inf_rejected() {
-        let mut bv = BipowerVariationF64::new();
+        let mut bv = BipowerVariation::new();
         assert!(matches!(
             bv.update(f64::INFINITY),
             Err(crate::DataError::Infinite)

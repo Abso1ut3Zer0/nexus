@@ -8,24 +8,21 @@ lives in the `nexus-rate` crate. This covers the *measurement* side.
 ## Recipe: Monitor Against Exchange Rate Limits
 
 ```rust
-use nexus_stats::Condition;
-use nexus_stats::monitoring::{EventRateU64, SaturationF64};
+use nexus_stats::monitoring::EventRate;
+use nexus_stats::smoothing::Ema;
 
 // Track our own order rate
-let mut order_rate = EventRateU64::builder().span(15).build().unwrap();
+let mut order_rate = EventRate::builder().span(15).build().unwrap();
 
-// Detect if we're approaching the limit
-let mut limit_sat = SaturationF64::builder()
-    .span(10)
-    .threshold(0.80)  // warn at 80% of exchange limit
-    .build().unwrap();
+// Smoothed fraction of the exchange limit we are using
+let mut limit_util = Ema::builder().span(10).build().unwrap();
 
 // On each order sent:
 order_rate.update(now_ns);
 
 if let Some(rate) = order_rate.rate() {
-    let utilization = rate / exchange_rate_limit;
-    if let Some(Condition::Degraded) = limit_sat.update(utilization) {
+    limit_util.update(rate / exchange_rate_limit).unwrap();
+    if matches!(limit_util.value(), Some(u) if u > 0.80) {  // warn at 80% of the limit
         throttle_order_flow();
     }
 }
@@ -35,11 +32,11 @@ if let Some(rate) = order_rate.rate() {
 
 ```rust
 use nexus_stats::Direction;
-use nexus_stats::monitoring::EventRateU64;
-use nexus_stats::detection::CusumF64;
+use nexus_stats::monitoring::EventRate;
+use nexus_stats::detection::Cusum;
 
-let mut rate = EventRateU64::builder().span(31).build().unwrap();
-let mut cusum = CusumF64::builder(expected_rate)
+let mut rate = EventRate::builder().span(31).build().unwrap();
+let mut cusum = Cusum::builder(expected_rate)
     .slack(expected_rate * 0.1)
     .threshold(expected_rate * 2.0)
     .build().unwrap();
@@ -61,6 +58,6 @@ if let Some(r) = rate.rate() {
 | Primitive | Role |
 |-----------|------|
 | [EventRate](../algorithms/event-rate.md) | Smoothed rate measurement |
-| [Saturation](../algorithms/saturation.md) | Rate limit utilization |
+| [EMA](../algorithms/ema.md) | Rate-limit utilization, smoothed |
 | [CUSUM](../algorithms/cusum.md) | Rate shift detection |
 | [LevelCrossing](../algorithms/level-crossing.md) | Count rate limit breaches |

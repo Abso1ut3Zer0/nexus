@@ -1,6 +1,6 @@
 use alloc::collections::VecDeque;
 
-use crate::statistics::EwmaVarF64;
+use crate::statistics::EwmaVar;
 
 /// Variance Ratio VR(q) test for mean-reversion detection.
 ///
@@ -14,9 +14,9 @@ use crate::statistics::EwmaVarF64;
 /// # Examples
 ///
 /// ```
-/// use nexus_stats_core::statistics::VarianceRatioF64;
+/// use nexus_stats_core::statistics::VarianceRatio;
 ///
-/// let mut vr = VarianceRatioF64::builder()
+/// let mut vr = VarianceRatio::builder()
 ///     .q(5)
 ///     .alpha(0.05)
 ///     .build()
@@ -33,28 +33,28 @@ use crate::statistics::EwmaVarF64;
 /// }
 /// ```
 #[derive(Debug, Clone)]
-pub struct VarianceRatioF64 {
+pub struct VarianceRatio {
     q: usize,
-    short_var: EwmaVarF64,
-    long_var: EwmaVarF64,
+    short_var: EwmaVar,
+    long_var: EwmaVar,
     buffer: VecDeque<f64>,
     prev: f64,
     count: u64,
 }
 
-/// Builder for [`VarianceRatioF64`].
+/// Builder for [`VarianceRatio`].
 #[derive(Debug, Clone)]
-pub struct VarianceRatioF64Builder {
+pub struct VarianceRatioBuilder {
     q: Option<usize>,
     alpha: Option<f64>,
 }
 
-impl VarianceRatioF64 {
+impl VarianceRatio {
     /// Creates a builder.
     #[inline]
     #[must_use]
-    pub fn builder() -> VarianceRatioF64Builder {
-        VarianceRatioF64Builder {
+    pub fn builder() -> VarianceRatioBuilder {
+        VarianceRatioBuilder {
             q: None,
             alpha: None,
         }
@@ -155,7 +155,7 @@ impl VarianceRatioF64 {
     }
 }
 
-impl VarianceRatioF64Builder {
+impl VarianceRatioBuilder {
     /// The ratio period. VR(q) compares q-period to 1-period variance.
     /// Required. Must be >= 2.
     #[inline]
@@ -178,7 +178,7 @@ impl VarianceRatioF64Builder {
     /// # Errors
     ///
     /// Returns `ConfigError` if q or alpha is missing/invalid.
-    pub fn build(self) -> Result<VarianceRatioF64, crate::ConfigError> {
+    pub fn build(self) -> Result<VarianceRatio, crate::ConfigError> {
         let q = self.q.ok_or(crate::ConfigError::Missing("q"))?;
         if q < 2 {
             return Err(crate::ConfigError::Invalid("q must be >= 2"));
@@ -186,13 +186,13 @@ impl VarianceRatioF64Builder {
 
         let alpha = self.alpha.ok_or(crate::ConfigError::Missing("alpha"))?;
 
-        let short_var = EwmaVarF64::builder().alpha(alpha).build()?;
-        let long_var = EwmaVarF64::builder().alpha(alpha).build()?;
+        let short_var = EwmaVar::builder().alpha(alpha).build()?;
+        let long_var = EwmaVar::builder().alpha(alpha).build()?;
 
         let mut buffer = VecDeque::new();
         buffer.reserve_exact(q + 1);
 
-        Ok(VarianceRatioF64 {
+        Ok(VarianceRatio {
             q,
             short_var,
             long_var,
@@ -209,11 +209,7 @@ mod tests {
 
     #[test]
     fn trending_series_vr_above_1() {
-        let mut vr = VarianceRatioF64::builder()
-            .q(5)
-            .alpha(0.05)
-            .build()
-            .unwrap();
+        let mut vr = VarianceRatio::builder().q(5).alpha(0.05).build().unwrap();
 
         // Monotonic trend — q-period returns should have higher variance
         // relative to q * 1-period variance.
@@ -234,11 +230,7 @@ mod tests {
 
     #[test]
     fn mean_reverting_series_vr_below_1() {
-        let mut vr = VarianceRatioF64::builder()
-            .q(5)
-            .alpha(0.05)
-            .build()
-            .unwrap();
+        let mut vr = VarianceRatio::builder().q(5).alpha(0.05).build().unwrap();
 
         // Mean-reverting: alternates around a center
         for i in 0..500 {
@@ -257,11 +249,7 @@ mod tests {
 
     #[test]
     fn not_primed_early() {
-        let mut vr = VarianceRatioF64::builder()
-            .q(5)
-            .alpha(0.05)
-            .build()
-            .unwrap();
+        let mut vr = VarianceRatio::builder().q(5).alpha(0.05).build().unwrap();
 
         vr.update(100.0).unwrap();
         assert!(!vr.is_primed());
@@ -270,17 +258,13 @@ mod tests {
 
     #[test]
     fn q_must_be_at_least_2() {
-        let result = VarianceRatioF64::builder().q(1).alpha(0.05).build();
+        let result = VarianceRatio::builder().q(1).alpha(0.05).build();
         assert!(result.is_err());
     }
 
     #[test]
     fn reset_clears_state() {
-        let mut vr = VarianceRatioF64::builder()
-            .q(5)
-            .alpha(0.05)
-            .build()
-            .unwrap();
+        let mut vr = VarianceRatio::builder().q(5).alpha(0.05).build().unwrap();
 
         for i in 0..100 {
             vr.update(i as f64).unwrap();
@@ -292,21 +276,13 @@ mod tests {
 
     #[test]
     fn nan_rejected() {
-        let mut vr = VarianceRatioF64::builder()
-            .q(5)
-            .alpha(0.05)
-            .build()
-            .unwrap();
+        let mut vr = VarianceRatio::builder().q(5).alpha(0.05).build().unwrap();
         assert!(vr.update(f64::NAN).is_err());
     }
 
     #[test]
     fn inf_rejected() {
-        let mut vr = VarianceRatioF64::builder()
-            .q(5)
-            .alpha(0.05)
-            .build()
-            .unwrap();
+        let mut vr = VarianceRatio::builder().q(5).alpha(0.05).build().unwrap();
         assert!(vr.update(f64::INFINITY).is_err());
     }
 }

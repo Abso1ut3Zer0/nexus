@@ -330,7 +330,7 @@ mod tests {
     #[test]
     fn lag0_matches_covariance_type() {
         let mut cc = CrossCorrelationF64::builder().lag(1).build().unwrap();
-        let mut cov = nexus_stats_core::statistics::CovarianceF64::new();
+        let mut cov = nexus_stats_core::statistics::Covariance::new();
 
         for i in 0..500u64 {
             let x = i as f64;

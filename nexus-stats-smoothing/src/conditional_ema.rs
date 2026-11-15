@@ -1,8 +1,8 @@
-use nexus_stats_core::smoothing::EmaF64;
+use nexus_stats_core::smoothing::Ema;
 
 /// EMA that only updates when a condition holds.
 ///
-/// Wraps an `EmaF64` and only feeds values when `active` is true.
+/// Wraps an `Ema` and only feeds values when `active` is true.
 /// Tracks both total observations and active observations for
 /// computing the active fraction (what percentage of ticks the
 /// condition was met).
@@ -29,7 +29,7 @@ use nexus_stats_core::smoothing::EmaF64;
 /// ```
 #[derive(Debug, Clone)]
 pub struct ConditionalEmaF64 {
-    ema: EmaF64,
+    ema: Ema,
     count: u64,
     active_count: u64,
 }
@@ -156,7 +156,7 @@ impl ConditionalEmaF64Builder {
             .alpha
             .ok_or(nexus_stats_core::ConfigError::Missing("alpha"))?;
 
-        let ema = EmaF64::builder()
+        let ema = Ema::builder()
             .alpha(alpha)
             .min_samples(self.min_samples)
             .build()?;

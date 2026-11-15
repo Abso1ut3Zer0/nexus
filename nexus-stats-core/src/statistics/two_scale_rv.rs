@@ -7,9 +7,9 @@ use alloc::vec;
 /// Combines high-frequency (all-tick) and subsampled (every K ticks)
 /// realized variance to cancel microstructure noise bias.
 ///
-/// TSRV = [Y,Y]^{(avg)} - (n̄ / n) · [Y,Y]^{(all)}
+/// TSRV = `[Y,Y]^{(avg)}` - (n̄ / n) · `[Y,Y]^{(all)}`
 ///
-/// where [Y,Y]^{(avg)} = Σ(K-tick returns²) / K and n̄ = n_slow / K.
+/// where `[Y,Y]^{(avg)}` = Σ(K-tick returns²) / K and n̄ = n_slow / K.
 ///
 /// Zhang, Mykland, Aït-Sahalia (2005).
 ///
@@ -20,9 +20,9 @@ use alloc::vec;
 /// # Examples
 ///
 /// ```
-/// use nexus_stats_core::statistics::TwoScaleRvF64;
+/// use nexus_stats_core::statistics::TwoScaleRv;
 ///
-/// let mut tsrv = TwoScaleRvF64::builder()
+/// let mut tsrv = TwoScaleRv::builder()
 ///     .k(5)
 ///     .min_samples(20)
 ///     .build()
@@ -34,7 +34,7 @@ use alloc::vec;
 /// assert!(tsrv.realized_variance().is_some());
 /// ```
 #[derive(Debug, Clone)]
-pub struct TwoScaleRvF64 {
+pub struct TwoScaleRv {
     fast_sum_sq: f64,
     slow_sum_sq: f64,
     buffer: Box<[f64]>,
@@ -47,19 +47,19 @@ pub struct TwoScaleRvF64 {
     min_samples: u64,
 }
 
-/// Builder for [`TwoScaleRvF64`].
+/// Builder for [`TwoScaleRv`].
 #[derive(Debug, Clone)]
-pub struct TwoScaleRvF64Builder {
+pub struct TwoScaleRvBuilder {
     k: Option<usize>,
     min_samples: Option<u64>,
 }
 
-impl TwoScaleRvF64 {
+impl TwoScaleRv {
     /// Creates a builder.
     #[inline]
     #[must_use]
-    pub fn builder() -> TwoScaleRvF64Builder {
-        TwoScaleRvF64Builder {
+    pub fn builder() -> TwoScaleRvBuilder {
+        TwoScaleRvBuilder {
             k: Option::None,
             min_samples: Option::None,
         }
@@ -191,7 +191,7 @@ impl TwoScaleRvF64 {
     }
 }
 
-impl TwoScaleRvF64Builder {
+impl TwoScaleRvBuilder {
     /// Subsampling frequency (required, >= 2).
     #[inline]
     #[must_use]
@@ -214,7 +214,7 @@ impl TwoScaleRvF64Builder {
     ///
     /// - `k` must have been set and be >= 2.
     #[inline]
-    pub fn build(self) -> Result<TwoScaleRvF64, crate::ConfigError> {
+    pub fn build(self) -> Result<TwoScaleRv, crate::ConfigError> {
         let k = self.k.ok_or(crate::ConfigError::Missing("k"))?;
         if k < 2 {
             return Err(crate::ConfigError::Invalid("TwoScaleRv k must be >= 2"));
@@ -222,7 +222,7 @@ impl TwoScaleRvF64Builder {
 
         let min_samples = self.min_samples.unwrap_or((k * 10) as u64);
 
-        Ok(TwoScaleRvF64 {
+        Ok(TwoScaleRv {
             fast_sum_sq: 0.0,
             slow_sum_sq: 0.0,
             buffer: vec![0.0; k].into_boxed_slice(),
@@ -243,11 +243,7 @@ mod tests {
 
     #[test]
     fn white_noise_correction() {
-        let mut tsrv = TwoScaleRvF64::builder()
-            .k(5)
-            .min_samples(10)
-            .build()
-            .unwrap();
+        let mut tsrv = TwoScaleRv::builder().k(5).min_samples(10).build().unwrap();
 
         // Noisy prices: smooth trend + noise
         for i in 0..500 {
@@ -272,11 +268,7 @@ mod tests {
 
     #[test]
     fn clean_signal_produces_valid_result() {
-        let mut tsrv = TwoScaleRvF64::builder()
-            .k(5)
-            .min_samples(10)
-            .build()
-            .unwrap();
+        let mut tsrv = TwoScaleRv::builder().k(5).min_samples(10).build().unwrap();
 
         for i in 0..200 {
             tsrv.update((i as f64).mul_add(0.01, 100.0)).unwrap();
@@ -293,11 +285,7 @@ mod tests {
 
     #[test]
     fn noise_variance_positive() {
-        let mut tsrv = TwoScaleRvF64::builder()
-            .k(5)
-            .min_samples(10)
-            .build()
-            .unwrap();
+        let mut tsrv = TwoScaleRv::builder().k(5).min_samples(10).build().unwrap();
 
         for i in 0..500 {
             let noise = if i % 2 == 0 { 0.1 } else { -0.1 };
@@ -310,11 +298,7 @@ mod tests {
 
     #[test]
     fn volatility_is_sqrt() {
-        let mut tsrv = TwoScaleRvF64::builder()
-            .k(5)
-            .min_samples(10)
-            .build()
-            .unwrap();
+        let mut tsrv = TwoScaleRv::builder().k(5).min_samples(10).build().unwrap();
 
         for i in 0..200 {
             tsrv.update((i as f64).mul_add(0.01, 100.0)).unwrap();
@@ -338,16 +322,8 @@ mod tests {
             })
             .collect();
 
-        let mut tsrv_small = TwoScaleRvF64::builder()
-            .k(3)
-            .min_samples(10)
-            .build()
-            .unwrap();
-        let mut tsrv_large = TwoScaleRvF64::builder()
-            .k(10)
-            .min_samples(10)
-            .build()
-            .unwrap();
+        let mut tsrv_small = TwoScaleRv::builder().k(3).min_samples(10).build().unwrap();
+        let mut tsrv_large = TwoScaleRv::builder().k(10).min_samples(10).build().unwrap();
 
         for &p in &prices {
             tsrv_small.update(p).unwrap();
@@ -361,11 +337,7 @@ mod tests {
 
     #[test]
     fn reset_clears() {
-        let mut tsrv = TwoScaleRvF64::builder()
-            .k(5)
-            .min_samples(10)
-            .build()
-            .unwrap();
+        let mut tsrv = TwoScaleRv::builder().k(5).min_samples(10).build().unwrap();
 
         for i in 0..50 {
             tsrv.update((i as f64).mul_add(0.01, 100.0)).unwrap();
@@ -377,7 +349,7 @@ mod tests {
 
     #[test]
     fn nan_rejected() {
-        let mut tsrv = TwoScaleRvF64::builder().k(5).build().unwrap();
+        let mut tsrv = TwoScaleRv::builder().k(5).build().unwrap();
         assert!(matches!(
             tsrv.update(f64::NAN),
             Err(crate::DataError::NotANumber)
@@ -386,7 +358,7 @@ mod tests {
 
     #[test]
     fn inf_rejected() {
-        let mut tsrv = TwoScaleRvF64::builder().k(5).build().unwrap();
+        let mut tsrv = TwoScaleRv::builder().k(5).build().unwrap();
         assert!(matches!(
             tsrv.update(f64::INFINITY),
             Err(crate::DataError::Infinite)
@@ -396,11 +368,11 @@ mod tests {
     #[test]
     fn builder_validation() {
         assert!(matches!(
-            TwoScaleRvF64::builder().build(),
+            TwoScaleRv::builder().build(),
             Err(crate::ConfigError::Missing("k"))
         ));
         assert!(matches!(
-            TwoScaleRvF64::builder().k(1).build(),
+            TwoScaleRv::builder().k(1).build(),
             Err(crate::ConfigError::Invalid(_))
         ));
     }

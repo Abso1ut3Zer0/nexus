@@ -10,7 +10,7 @@ use crate::math::MulAdd;
 /// - Latency correlation across venues
 /// - Co-movement detection
 #[derive(Debug, Clone)]
-pub struct CovarianceF64 {
+pub struct Covariance {
     count: u64,
     mean_x: f64,
     mean_y: f64,
@@ -19,7 +19,7 @@ pub struct CovarianceF64 {
     co_moment: f64,
 }
 
-impl CovarianceF64 {
+impl Covariance {
     /// Creates a new empty accumulator.
     #[inline]
     #[must_use]
@@ -157,7 +157,7 @@ impl CovarianceF64 {
     }
 }
 
-impl Default for CovarianceF64 {
+impl Default for Covariance {
     #[inline]
     fn default() -> Self {
         Self::new()
@@ -170,7 +170,7 @@ mod tests {
 
     #[test]
     fn empty() {
-        let c = CovarianceF64::new();
+        let c = Covariance::new();
         assert_eq!(c.count(), 0);
         assert!(c.covariance().is_none());
         assert!(c.correlation().is_none());
@@ -178,7 +178,7 @@ mod tests {
 
     #[test]
     fn perfect_positive_correlation() {
-        let mut c = CovarianceF64::new();
+        let mut c = Covariance::new();
         for i in 0..100 {
             c.update(i as f64, i as f64 * 2.0).unwrap();
         }
@@ -191,7 +191,7 @@ mod tests {
 
     #[test]
     fn perfect_negative_correlation() {
-        let mut c = CovarianceF64::new();
+        let mut c = Covariance::new();
         for i in 0..100 {
             c.update(i as f64, -(i as f64)).unwrap();
         }
@@ -204,7 +204,7 @@ mod tests {
 
     #[test]
     fn known_covariance() {
-        let mut c = CovarianceF64::new();
+        let mut c = Covariance::new();
         // Simple dataset: (1,2), (2,4), (3,6)
         c.update(1.0, 2.0).unwrap();
         c.update(2.0, 4.0).unwrap();
@@ -223,13 +223,13 @@ mod tests {
         let data_x: [f64; 8] = [1.0, 3.0, 5.0, 7.0, 2.0, 4.0, 6.0, 8.0];
         let data_y: [f64; 8] = [2.0, 6.0, 10.0, 14.0, 4.0, 8.0, 12.0, 16.0];
 
-        let mut single = CovarianceF64::new();
+        let mut single = Covariance::new();
         for i in 0..8 {
             single.update(data_x[i], data_y[i]).unwrap();
         }
 
-        let mut a = CovarianceF64::new();
-        let mut b = CovarianceF64::new();
+        let mut a = Covariance::new();
+        let mut b = Covariance::new();
         for i in 0..4 {
             a.update(data_x[i], data_y[i]).unwrap();
         }
@@ -245,7 +245,7 @@ mod tests {
 
     #[test]
     fn reset_clears() {
-        let mut c = CovarianceF64::new();
+        let mut c = Covariance::new();
         c.update(1.0, 2.0).unwrap();
         c.update(3.0, 4.0).unwrap();
         c.reset();
@@ -254,13 +254,13 @@ mod tests {
 
     #[test]
     fn default_is_empty() {
-        let c = CovarianceF64::default();
+        let c = Covariance::default();
         assert_eq!(c.count(), 0);
     }
 
     #[test]
     fn zero_variance_returns_none_correlation() {
-        let mut c = CovarianceF64::new();
+        let mut c = Covariance::new();
         c.update(5.0, 1.0).unwrap();
         c.update(5.0, 2.0).unwrap(); // X has zero variance
         assert!(c.correlation().is_none());
@@ -268,7 +268,7 @@ mod tests {
 
     #[test]
     fn rejects_nan_and_inf() {
-        let mut c = CovarianceF64::new();
+        let mut c = Covariance::new();
         // NaN in x
         assert_eq!(c.update(f64::NAN, 1.0), Err(crate::DataError::NotANumber));
         // NaN in y

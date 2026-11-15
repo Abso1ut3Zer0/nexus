@@ -21,7 +21,7 @@ trend_t = beta  * (level_t - level_{t-1}) + (1 - beta) * trend_{t-1}
 - **Capacity planning.** Throughput with drift — Holt separates "busy moment" from "the system is slowly saturating".
 - **Market mid-price with drift.** When you care about both the current mid and whether it's moving.
 
-Not for: signals with no trend (plain `EmaF64` is cheaper and equivalent), signals dominated by outliers (use `HuberEmaF64` or `HampelF64` first), signals with seasonality (Holt doesn't model that — look at Holt-Winters, not provided here).
+Not for: signals with no trend (plain `Ema` is cheaper and equivalent), signals dominated by outliers (use `HuberEmaF64` or `HampelF64` first), signals with seasonality (Holt doesn't model that — look at Holt-Winters, not provided here).
 
 ## API
 

@@ -6,32 +6,32 @@ Streaming, fixed-memory, O(1)-per-update statistical primitives. Module path: `n
 
 | Type | What it computes | Memory |
 |------|------------------|--------|
-| `WelfordF64` / `WelfordF32` | Mean, variance, stddev | 3 words |
-| `MomentsF64` / `MomentsF32` | Mean, variance, skewness, kurtosis (Pebay 2008) | 5 words |
-| `EwmaVarF64` / `EwmaVarF32` | Exponentially-weighted mean & variance | small, fixed |
-| `CovarianceF64` / `CovarianceF32` | Online covariance + Pearson correlation | 5 words |
-| `OnlineCovarianceF64` | N-dimensional covariance matrix | O(N²) |
-| `HarmonicMeanF64` / `HarmonicMeanF32` | Harmonic mean | 2 words |
-| `PercentileF64` / `PercentileF32` | Online percentile (P² algorithm) | small, fixed |
+| `Welford` / `WelfordF32` | Mean, variance, stddev | 3 words |
+| `Moments` / `MomentsF32` | Mean, variance, skewness, kurtosis (Pebay 2008) | 5 words |
+| `EwmaVar` / `EwmaVarF32` | Exponentially-weighted mean & variance | small, fixed |
+| `Covariance` / `CovarianceF32` | Online covariance + Pearson correlation | 5 words |
+| `OnlineCovariance` | N-dimensional covariance matrix | O(N²) |
+| `HarmonicMean` / `HarmonicMeanF32` | Harmonic mean | 2 words |
+| `Percentile` / `PercentileF32` | Online percentile (P² algorithm) | small, fixed |
 | `BucketAccumulator` | Bar-style OHLC / VWAP aggregation | small, fixed |
-| `AmihudF64` | Amihud illiquidity measure (EW) | small |
-| `HitRateF64` | Rolling success rate over labels | small |
-| `HalfLifeF64` | Mean-reversion half-life estimator | small |
-| `HurstF64` | Hurst exponent (R/S estimator) | alloc, windowed |
-| `VarianceRatioF64` | Lo-MacKinlay variance ratio (mean-reversion test) | small |
-| `LpmF64` / `LpmF32` | Lower partial moments (downside risk, semivariance) | 5 words |
-| `CvarF64` / `CvarF32` | Conditional Value at Risk (expected shortfall) | small, fixed |
+| `Amihud` | Amihud illiquidity measure (EW) | small |
+| `HitRate` | Rolling success rate over labels | small |
+| `HalfLife` | Mean-reversion half-life estimator | small |
+| `Hurst` | Hurst exponent (R/S estimator) | alloc, windowed |
+| `VarianceRatio` | Lo-MacKinlay variance ratio (mean-reversion test) | small |
+| `Lpm` / `LpmF32` | Lower partial moments (downside risk, semivariance) | 5 words |
+| `Cvar` / `CvarF32` | Conditional Value at Risk (expected shortfall) | small, fixed |
 
 ---
 
-## WelfordF64 — Online mean / variance / stddev
+## Welford — Online mean / variance / stddev
 
 Numerically stable single-pass computation of sample mean and variance using Welford's algorithm. No catastrophic cancellation. Supports merging partial results via Chan's algorithm for parallel aggregation.
 
 ```rust
-use nexus_stats_core::statistics::WelfordF64;
+use nexus_stats_core::statistics::Welford;
 
-let mut w = WelfordF64::new();
+let mut w = Welford::new();
 for latency_us in [120.0, 118.0, 125.0, 130.0, 119.0] {
     w.update(latency_us).unwrap();
 }
@@ -48,14 +48,14 @@ let n    = w.count();
 
 ---
 
-## MomentsF64 — Skewness and kurtosis
+## Moments — Skewness and kurtosis
 
 Extends Welford to third and fourth central moments using Pébay's online formulas. Numerically stable, single pass.
 
 ```rust
-use nexus_stats_core::statistics::MomentsF64;
+use nexus_stats_core::statistics::Moments;
 
-let mut m = MomentsF64::new();
+let mut m = Moments::new();
 for r in returns { m.update(r).unwrap(); }
 
 let skew      = m.skewness().unwrap();         // asymmetry, 0 = symmetric
@@ -69,14 +69,14 @@ let excess    = m.excess_kurtosis().unwrap();  // normal = 0
 
 ---
 
-## EwmaVarF64 — Exponentially-weighted variance
+## EwmaVar — Exponentially-weighted variance
 
-Mean and variance with an EMA-style forgetting factor. Adapts to drift unlike `WelfordF64`.
+Mean and variance with an EMA-style forgetting factor. Adapts to drift unlike `Welford`.
 
 ```rust
-use nexus_stats_core::statistics::EwmaVarF64;
+use nexus_stats_core::statistics::EwmaVar;
 
-let mut ew = EwmaVarF64::builder()
+let mut ew = EwmaVar::builder()
     .halflife(100.0)
     .build()
     .unwrap();
@@ -91,14 +91,14 @@ let (mean, var) = (ew.mean().unwrap(), ew.variance().unwrap());
 
 ---
 
-## CovarianceF64 — Online covariance and correlation
+## Covariance — Online covariance and correlation
 
 Tracks `cov(X, Y)` and `corr(X, Y)` in one pass.
 
 ```rust
-use nexus_stats_core::statistics::CovarianceF64;
+use nexus_stats_core::statistics::Covariance;
 
-let mut c = CovarianceF64::new();
+let mut c = Covariance::new();
 for (bid_change, ask_change) in book_updates {
     c.update(bid_change, ask_change).unwrap();
 }
@@ -111,14 +111,14 @@ let corr = c.correlation().unwrap();
 
 ---
 
-## OnlineCovarianceF64 — N-dim covariance matrix
+## OnlineCovariance — N-dim covariance matrix
 
 Builder-configured dimension `N`, streaming observation vectors of length `N`.
 
 ```rust
-use nexus_stats_core::statistics::OnlineCovarianceF64;
+use nexus_stats_core::statistics::OnlineCovariance;
 
-let mut cov = OnlineCovarianceF64::builder().dimensions(3).build().unwrap();
+let mut cov = OnlineCovariance::builder().dim(3).build().unwrap();
 for observation in observations {
     cov.update(&observation).unwrap();  // &[f64] of length 3
 }
@@ -131,16 +131,16 @@ for observation in observations {
 
 ---
 
-## HarmonicMeanF64 — Correct average of rates
+## HarmonicMean — Correct average of rates
 
 `H = n / sum(1/x_i)`. The right mean for ratios, rates, and latencies when you care about throughput semantics.
 
 ```rust
-use nexus_stats_core::statistics::HarmonicMeanF64;
+use nexus_stats_core::statistics::HarmonicMean;
 
-let mut h = HarmonicMeanF64::new();
+let mut h = HarmonicMean::new();
 for rate_mbps in throughputs { h.update(rate_mbps).unwrap(); }
-let effective = h.value().unwrap();
+let effective = h.mean().unwrap();
 ```
 
 **Use for:** "what's the effective throughput across these links?" (classical HM use case). Rarely the right answer for latency — arithmetic mean over latency is usually what you want.
@@ -149,14 +149,14 @@ let effective = h.value().unwrap();
 
 ---
 
-## PercentileF64 — Online percentile (P²)
+## Percentile — Online percentile (P²)
 
 The P² algorithm: maintains 5 markers that track a target percentile in O(1) memory. No window, no allocation, adapts over time.
 
 ```rust
-use nexus_stats_core::statistics::PercentileF64;
+use nexus_stats_core::statistics::Percentile;
 
-let mut p99 = PercentileF64::new(0.99).unwrap();
+let mut p99 = Percentile::new(0.99).unwrap();
 for latency in latencies { p99.update(latency).unwrap(); }
 
 if p99.is_primed() {
@@ -175,15 +175,15 @@ if p99.is_primed() {
 Accumulates samples into time-bucketed bars (OHLC, VWAP, count, sum). Emits a `BucketSummary` when the bucket rolls.
 
 ```rust
-use nexus_stats_core::statistics::BucketAccumulator;
+use nexus_stats_core::statistics::{BucketAccumulator, BucketPolicy};
 
 let mut bucket = BucketAccumulator::builder()
-    // parameters here, see source
+    .policy(BucketPolicy::Count(100))   // close a bar every 100 samples
     .build()
     .unwrap();
 
 for tick in ticks {
-    if let Some(Some(summary)) = Some(bucket.update_volume(tick.price, tick.volume).ok()) {
+    if let Ok(Some(summary)) = bucket.update_volume(tick.price, tick.volume) {
         // bucket rolled, summary is the finished bar
     }
 }
@@ -193,41 +193,41 @@ for tick in ticks {
 
 ---
 
-## AmihudF64 — Illiquidity estimator
+## Amihud — Illiquidity estimator
 
 Streaming (EW-smoothed) Amihud illiquidity: average of `|return| / dollar_volume`. Higher = less liquid.
 
 ```rust
-use nexus_stats_core::statistics::AmihudF64;
-let mut a = AmihudF64::builder().halflife(500.0).build().unwrap();
+use nexus_stats_core::statistics::Amihud;
+let mut a = Amihud::builder().halflife(500.0).build().unwrap();
 a.update(abs_return, dollar_volume).unwrap();
-let score = a.value().unwrap();
+let score = a.illiq().unwrap();
 ```
 
 **Use for:** liquidity monitoring on crypto venues. Cross-venue comparison. Signal input to smart order routing.
 
 ---
 
-## HitRateF64 — Rolling success rate
+## HitRate — Rolling success rate
 
 EW rolling fraction-of-labels-true. Like `ErrorRate` but generalized.
 
 ```rust
-use nexus_stats_core::statistics::HitRateF64;
-let mut hr = HitRateF64::builder().halflife(200.0).build().unwrap();
+use nexus_stats_core::statistics::HitRate;
+let mut hr = HitRate::builder().halflife(200.0).build().unwrap();
 hr.update(fill_happened, target_shares).unwrap();
-let rate = hr.value().unwrap();
+let rate = hr.hit_rate().unwrap();
 ```
 
 ---
 
-## HalfLifeF64 — Mean-reversion half-life
+## HalfLife — Mean-reversion half-life
 
 Fits a linear regression `Δx_t = α + β*(x_{t-1} - μ)` in a streaming way. If `β < 0`, the series is mean-reverting and the half-life is `ln(2) / -β`.
 
 ```rust
-use nexus_stats_core::statistics::HalfLifeF64;
-let mut hl = HalfLifeF64::builder().build();
+use nexus_stats_core::statistics::HalfLife;
+let mut hl = HalfLife::builder().build();
 for spread in spreads { hl.update(spread).unwrap(); }
 
 if let Some(h) = hl.half_life() {
@@ -239,7 +239,7 @@ if let Some(h) = hl.half_life() {
 
 ---
 
-## HurstF64 — Hurst exponent
+## Hurst — Hurst exponent
 
 Rescaled-range estimator. Classifies a series:
 
@@ -248,8 +248,8 @@ Rescaled-range estimator. Classifies a series:
 - `H > 0.5` → persistent / trending.
 
 ```rust
-use nexus_stats_core::statistics::HurstF64;
-let mut h = HurstF64::builder().build().unwrap();
+use nexus_stats_core::statistics::Hurst;
+let mut h = Hurst::builder().build().unwrap();
 for x in series { h.update(x).unwrap(); }
 let estimate = h.hurst().unwrap();
 ```
@@ -260,22 +260,22 @@ let estimate = h.hurst().unwrap();
 
 ---
 
-## VarianceRatioF64 — Lo-MacKinlay variance ratio test
+## VarianceRatio — Lo-MacKinlay variance ratio test
 
 `VR(k) = Var(k-period return) / (k * Var(1-period return))`. Under a random walk VR = 1; VR < 1 indicates mean-reversion, VR > 1 indicates momentum/persistence.
 
 ```rust
-use nexus_stats_core::statistics::VarianceRatioF64;
-let mut vr = VarianceRatioF64::builder().build().unwrap();
+use nexus_stats_core::statistics::VarianceRatio;
+let mut vr = VarianceRatio::builder().build().unwrap();
 for price in prices { vr.update(price).unwrap(); }
-let ratio = vr.ratio().unwrap();
+let ratio = vr.variance_ratio().unwrap();
 ```
 
-**Use for:** quantitative mean-reversion testing, complement to `HalfLifeF64` and `HurstF64`.
+**Use for:** quantitative mean-reversion testing, complement to `HalfLife` and `Hurst`.
 
 ---
 
-## LpmF64 — Lower Partial Moments (downside risk)
+## Lpm — Lower Partial Moments (downside risk)
 
 Measures deviations below a target threshold, raised to a configurable integer order. Fishburn (1977), Sortino & van der Meer (1991).
 
@@ -284,17 +284,17 @@ Measures deviations below a target threshold, raised to a configurable integer o
 - **Order 2**: semivariance (variance of downside deviations only)
 
 ```rust
-use nexus_stats_core::statistics::LpmF64;
+use nexus_stats_core::statistics::Lpm;
 
 // Semivariance (order 2) with target = 0.0
-let mut lpm = LpmF64::semivariance(0.0).unwrap();
+let mut lpm = Lpm::semivariance(0.0).unwrap();
 for &v in &[-3.0, -1.0, 0.0, 2.0, 5.0] {
     lpm.update(v).unwrap();
 }
 let sv = lpm.lpm().unwrap();  // (9 + 1 + 0 + 0 + 0) / 5 = 2.0
 
 // Shortfall probability (order 0)
-let mut sp = LpmF64::builder().target(50.0).order(0).build().unwrap();
+let mut sp = Lpm::builder().target(50.0).order(0).build().unwrap();
 for i in 0..100 { sp.update(i as f64).unwrap(); }
 let prob = sp.lpm().unwrap();  // ~0.5
 ```
@@ -305,14 +305,14 @@ let prob = sp.lpm().unwrap();  // ~0.5
 
 ---
 
-## CvarF64 — Conditional Value at Risk (Expected Shortfall)
+## Cvar — Conditional Value at Risk (Expected Shortfall)
 
 Streaming CVaR: the average loss in the worst α-tail, estimated online using a P² percentile estimator for VaR.
 
 ```rust
-use nexus_stats_core::statistics::CvarF64;
+use nexus_stats_core::statistics::Cvar;
 
-let mut cvar = CvarF64::builder().alpha(0.05).build().unwrap();
+let mut cvar = Cvar::builder().alpha(0.05).build().unwrap();
 for i in 0..2000 {
     cvar.update((i % 1000 + 1) as f64).unwrap();
 }

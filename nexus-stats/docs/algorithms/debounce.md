@@ -7,7 +7,7 @@ A single negative resets the counter. From AUTOSAR diagnostic standards.
 |----------|-------|
 | Update cost | ~2 cycles |
 | Memory | ~16 bytes |
-| Types | `DebounceU32`, `DebounceU64` |
+| Types | `Debounce` |
 | Output | `bool` — true once threshold reached |
 
 ## What It Does
@@ -36,7 +36,7 @@ A single negative resets the counter. From AUTOSAR diagnostic standards.
 ## Configuration
 
 ```rust
-let mut db = DebounceU32::new(3);  // need 3 consecutive actives
+let mut db = Debounce::new(3).unwrap();  // need 3 consecutive actives
 
 db.update(true);   // 1 — false
 db.update(true);   // 2 — false
@@ -49,7 +49,7 @@ db.update(true);   // 1 — false (starts over)
 
 ### Trading — Connection Dead Detection
 ```rust
-let mut timeout_debounce = DebounceU32::new(3);
+let mut timeout_debounce = Debounce::new(3).unwrap();
 if timeout_debounce.update(request_timed_out) {
     failover_to_backup();
 }
@@ -57,7 +57,7 @@ if timeout_debounce.update(request_timed_out) {
 
 ### IoT — Sensor Fault Confirmation
 ```rust
-let mut fault = DebounceU32::new(5);
+let mut fault = Debounce::new(5).unwrap();
 if fault.update(reading_out_of_range) {
     raise_alarm();
 }
@@ -67,6 +67,6 @@ if fault.update(reading_out_of_range) {
 
 | Operation | p50 | p99 |
 |-----------|-----|-----|
-| `DebounceU32::update` | ~2 cycles | ~2 cycles |
+| `Debounce::update` | ~2 cycles | ~2 cycles |
 
 One increment + one comparison. Perfectly predicted branch.

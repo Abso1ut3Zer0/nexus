@@ -7,12 +7,12 @@ per second is this source producing?"
 |----------|-------|
 | Update cost | ~6 cycles |
 | Memory | ~32 bytes |
-| Types | `EventRateU64`, `EventRateI64` |
+| Types | `EventRate` (`u64` ticks) |
 
 ## API
 
 ```rust
-let mut rate = EventRateU64::builder().span(15).build().unwrap();
+let mut rate = EventRate::builder().span(15).build().unwrap();
 
 rate.update(timestamp_ns);  // record an event
 if let Some(r) = rate.rate() {
@@ -21,10 +21,9 @@ if let Some(r) = rate.rate() {
 ```
 
 Internally: bit-shift EMA of inter-arrival times (i128 accumulator,
-shift-based smoothing), rate = 1.0 / interval. Same pattern as `LivenessI64`.
+shift-based smoothing), rate = 1.0 / interval. Same pattern as `Liveness`.
 
-`EventRateU64` takes `u64` timestamps (e.g. nanoseconds from `Instant`).
-`EventRateI64` takes `i64` timestamps for signed time representations.
+`EventRate` takes `u64` timestamps (e.g. nanoseconds from `Instant`).
 
 ## When to Use Something Else
 

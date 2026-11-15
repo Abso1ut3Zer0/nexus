@@ -194,13 +194,13 @@ Smoothing belongs on the outputs, once per summary, where it is cheap and
 keeps its denominator:
 
 ```rust
-use nexus_stats::detection::CusumF64;
-use nexus_stats::smoothing::EmaF64;
+use nexus_stats::detection::Cusum;
+use nexus_stats::smoothing::Ema;
 
 let w = sat.take();
 let over_frac = w.messages_over_budget as f64 / w.messages_seen.max(1) as f64;
-over_ema.update(over_frac)?;                  // EmaF64, span of a few summaries
-drift.update(w.max_behind_ticks as f64)?;           // CusumF64: is the worst case trending up
+over_ema.update(over_frac)?;                  // Ema, span of a few summaries
+drift.update(w.max_behind_ticks as f64)?;           // Cusum: is the worst case trending up
 ```
 
 Not inside the type: an EMA there would have to decay on idle spins
@@ -238,7 +238,7 @@ stays near its floor and that the queue keeps draining to within budget.
 `is_backlogged` is CoDel's standing-queue rule with your period as the
 interval. Keep `PollSaturation` beside it when you want
 `max_messages_per_poll` and `is_fully_utilized`, which stamps cannot give
-you; keep `CoDelI64` when a control decision (shed, drop, back off) should
+you; keep `CoDel<i64>` when a control decision (shed, drop, back off) should
 follow from the delay.
 
 The stamp comes from the transport: for our queues and shared memory the

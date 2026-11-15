@@ -7,7 +7,7 @@ variance. The RiskMetrics (JP Morgan 1996) pattern.
 |----------|-------|
 | Update cost | ~12 cycles |
 | Memory | ~24 bytes |
-| Types | `EwmaVarF64`, `EwmaVarF32` |
+| Types | `EwmaVar`, `EwmaVarF32` |
 
 ## What It Does
 
@@ -37,7 +37,7 @@ fades away.
 ## Configuration
 
 ```rust
-let mut ev = EwmaVarF64::builder().span(30).min_samples(10).build().unwrap();
+let mut ev = EwmaVar::builder().span(30).min_samples(10).build().unwrap();
 
 if let Some((mean, var)) = ev.update(sample) {
     let threshold = mean + 3.0 * var.sqrt();
@@ -48,4 +48,4 @@ if let Some((mean, var)) = ev.update(sample) {
 
 | Operation | p50 | p99 |
 |-----------|-----|-----|
-| `EwmaVarF64::update` | 12 cycles | 30 cycles |
+| `EwmaVar::update` | 12 cycles | 30 cycles |

@@ -16,7 +16,7 @@ binary "good/bad" but graded severity with different actions.
 
 ```rust
 use nexus_stats::detection::{MultiGateF64, Verdict};
-use nexus_stats::statistics::WelfordF64;
+use nexus_stats::statistics::Welford;
 
 let mut gate = MultiGateF64::builder()
     .alpha(0.05)
@@ -27,7 +27,7 @@ let mut gate = MultiGateF64::builder()
     .build().unwrap();
 
 // Only update downstream stats with clean data
-let mut stats = WelfordF64::new();
+let mut stats = Welford::new();
 
 match gate.update(sample) {
     Some(Verdict::Accept) => {
@@ -81,12 +81,12 @@ the process. How to tell them apart:
 
 ```rust
 use nexus_stats::Direction;
-use nexus_stats::detection::{MultiGateF64, Verdict, CusumF64};
+use nexus_stats::detection::{MultiGateF64, Verdict, Cusum};
 
 let mut gate = MultiGateF64::builder().alpha(0.05).suspect_z(5.0)
     .hard_limit_pct(0.30).min_samples(50).build().unwrap();
 
-let mut cusum = CusumF64::builder(baseline)
+let mut cusum = Cusum::builder(baseline)
     .slack(slack).threshold(threshold).build().unwrap();
 
 // On each sample:
@@ -117,11 +117,11 @@ match (verdict, shift) {
 Sometimes the simplest check is the most effective:
 
 ```rust
-use nexus_stats::smoothing::SlewF64;
+use nexus_stats::smoothing::Slew;
 
 // Reject samples that change too fast
-let mut slew = SlewF64::new(max_allowed_change);
-let clamped = slew.update(sample);
+let mut slew = Slew::<f64>::new(max_allowed_change).unwrap();
+let clamped = slew.update(sample).unwrap();
 
 if (clamped - sample).abs() > 0.001 {
     // Sample was clamped — original exceeded rate limit

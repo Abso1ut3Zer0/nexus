@@ -8,9 +8,9 @@
 /// # Examples
 ///
 /// ```
-/// use nexus_stats_core::statistics::HalfLifeF64;
+/// use nexus_stats_core::statistics::HalfLife;
 ///
-/// let mut hl = HalfLifeF64::new();
+/// let mut hl = HalfLife::new();
 ///
 /// // Feed a trending series (monotonically increasing)
 /// for i in 0..100 {
@@ -23,9 +23,9 @@
 /// }
 /// ```
 #[derive(Debug, Clone)]
-pub struct HalfLifeF64 {
+pub struct HalfLife {
     // Welford-style accumulators for Cov(x_t, x_{t-1}) and Var(x_t).
-    // Using the standard online algorithm from CovarianceF64.
+    // Using the standard online algorithm from Covariance.
     n: u64,
     mean_x: f64,    // running mean of x_t (current value)
     mean_prev: f64, // running mean of x_{t-1} (previous value)
@@ -35,13 +35,13 @@ pub struct HalfLifeF64 {
     count: u64, // total observations including first (which has no pair)
 }
 
-impl Default for HalfLifeF64 {
+impl Default for HalfLife {
     fn default() -> Self {
         Self::new()
     }
 }
 
-impl HalfLifeF64 {
+impl HalfLife {
     /// Creates a new estimator.
     #[inline]
     #[must_use]
@@ -61,8 +61,8 @@ impl HalfLifeF64 {
     /// has no configuration parameters).
     #[inline]
     #[must_use]
-    pub fn builder() -> HalfLifeF64Builder {
-        HalfLifeF64Builder { _private: () }
+    pub fn builder() -> HalfLifeBuilder {
+        HalfLifeBuilder { _private: () }
     }
 
     /// Feed a value from the time series.
@@ -90,7 +90,7 @@ impl HalfLifeF64 {
 
             // Welford co-moment: OLD dx (before mean update) × (prev - NEW mean_prev).
             // mean_prev was already updated on line 89, so this uses the new mean.
-            // Same pattern as CovarianceF64::update.
+            // Same pattern as Covariance::update.
             let dx2 = value - self.mean_x;
             self.co_moment += dx * (self.prev - self.mean_prev);
 
@@ -160,16 +160,16 @@ impl HalfLifeF64 {
     }
 }
 
-/// Builder for [`HalfLifeF64`].
+/// Builder for [`HalfLife`].
 #[derive(Debug, Clone)]
-pub struct HalfLifeF64Builder {
+pub struct HalfLifeBuilder {
     _private: (),
 }
 
-impl HalfLifeF64Builder {
+impl HalfLifeBuilder {
     /// Build the estimator.
-    pub fn build(self) -> HalfLifeF64 {
-        HalfLifeF64::new()
+    pub fn build(self) -> HalfLife {
+        HalfLife::new()
     }
 }
 
@@ -190,7 +190,7 @@ mod tests {
 
     #[test]
     fn ar1_process_half_life() {
-        let mut hl = HalfLifeF64::new();
+        let mut hl = HalfLife::new();
 
         // AR(1) with phi=0.9: half-life = -ln(2)/ln(0.9) ≈ 6.58
         let phi = 0.9;
@@ -211,7 +211,7 @@ mod tests {
 
     #[test]
     fn not_primed_before_3() {
-        let mut hl = HalfLifeF64::new();
+        let mut hl = HalfLife::new();
         hl.update(1.0).unwrap();
         hl.update(2.0).unwrap();
         // n=1 pair, need at least 2 pairs
@@ -221,7 +221,7 @@ mod tests {
 
     #[test]
     fn primed_at_3() {
-        let mut hl = HalfLifeF64::new();
+        let mut hl = HalfLife::new();
         hl.update(1.0).unwrap();
         hl.update(2.0).unwrap();
         hl.update(3.0).unwrap();
@@ -230,7 +230,7 @@ mod tests {
 
     #[test]
     fn reset_clears_state() {
-        let mut hl = HalfLifeF64::new();
+        let mut hl = HalfLife::new();
         for i in 0..100 {
             hl.update(i as f64).unwrap();
         }
@@ -241,19 +241,19 @@ mod tests {
 
     #[test]
     fn nan_rejected() {
-        let mut hl = HalfLifeF64::new();
+        let mut hl = HalfLife::new();
         assert!(hl.update(f64::NAN).is_err());
     }
 
     #[test]
     fn inf_rejected() {
-        let mut hl = HalfLifeF64::new();
+        let mut hl = HalfLife::new();
         assert!(hl.update(f64::INFINITY).is_err());
     }
 
     #[test]
     fn constant_series_no_half_life() {
-        let mut hl = HalfLifeF64::new();
+        let mut hl = HalfLife::new();
         for _ in 0..100 {
             hl.update(5.0).unwrap();
         }
@@ -262,7 +262,7 @@ mod tests {
 
     #[test]
     fn alternating_series_no_half_life() {
-        let mut hl = HalfLifeF64::new();
+        let mut hl = HalfLife::new();
         // Alternating: AC(1) should be negative → no half-life
         for i in 0..1000 {
             let val = if i % 2 == 0 { 10.0 } else { -10.0 };

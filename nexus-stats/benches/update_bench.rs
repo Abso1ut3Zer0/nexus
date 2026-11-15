@@ -13,29 +13,24 @@
 
 use criterion::{Criterion, black_box, criterion_group, criterion_main};
 use nexus_stats::{
-    control::{DeadBandF64, FirstDiffF64, HysteresisF64, LevelCrossingF64, SecondDiffF64},
+    control::{DeadBand, FirstDiff, Hysteresis, LevelCrossing, SecondDiff},
     detection::{
-        AdaptiveThresholdF64, BocpdF64, CusumF64, DistDriftF64, RobustZScoreF64,
-        ShiryaevRobertsF64, TrendAlertF64,
+        AdaptiveThresholdF64, BocpdF64, Cusum, DistDriftF64, RobustZScoreF64, ShiryaevRobertsF64,
+        TrendAlertF64,
     },
     estimation::{Kalman2dF64, Kalman3dF64},
     learning::{
         AdaGradF64, AdamF64, EpsilonGreedyF64, Exp3F64, LmsFilterF64, NlmsFilterF64, OnlineGdF64,
         OnlineKMeansF64, RlsFilterF64, ThompsonBetaF64, ThompsonGammaF64, Ucb1F64,
     },
-    monitoring::{
-        DrawdownF64, ErrorRateF64, JitterF64, RunningMaxF64, RunningMinF64, SaturationF64,
-    },
-    normalization::{MinMaxNormF64, ZScoreNormF64},
+    monitoring::{Drawdown, ErrorRate, Jitter, RunningMax, RunningMin},
+    normalization::{MinMaxNorm, ZScoreNorm},
     regression::{
         EwLinearRegressionF64, LinearRegressionF64, LogisticRegressionF64, PolynomialRegressionF64,
     },
     signal::{AutocorrelationF64, CrossCorrelationF64, EntropyF64, TransferEntropyF64},
-    smoothing::{AsymEmaF64, EmaF64, HoltF64, Kalman1dF64, SlewF64, SpringF64},
-    statistics::{
-        CovarianceF64, CvarF64, EwmaVarF64, HarmonicMeanF64, LpmF64, MomentsF64, PercentileF64,
-        WelfordF64,
-    },
+    smoothing::{AsymEma, Ema, HoltF64, Kalman1dF64, Slew, SpringF64},
+    statistics::{Covariance, Cvar, EwmaVar, HarmonicMean, Lpm, Moments, Percentile, Welford},
 };
 
 // Simple LCG for deterministic pseudo-random data in benchmarks.
@@ -77,40 +72,40 @@ impl Lcg {
 
 fn bench_welford(c: &mut Criterion) {
     let mut rng = Lcg::new(42);
-    let mut w = WelfordF64::new();
+    let mut w = Welford::new();
     for _ in 0..1000 {
         let _ = w.update(rng.next_f64());
     }
-    c.bench_function("WelfordF64::update", |b| {
+    c.bench_function("Welford::update", |b| {
         b.iter(|| w.update(black_box(rng.next_f64())).unwrap())
     });
 }
 
 fn bench_moments(c: &mut Criterion) {
     let mut rng = Lcg::new(42);
-    let mut m = MomentsF64::new();
+    let mut m = Moments::new();
     for _ in 0..1000 {
         let _ = m.update(rng.next_f64());
     }
-    c.bench_function("MomentsF64::update", |b| {
+    c.bench_function("Moments::update", |b| {
         b.iter(|| m.update(black_box(rng.next_f64())).unwrap())
     });
 }
 
 fn bench_ema(c: &mut Criterion) {
     let mut rng = Lcg::new(42);
-    let mut e = EmaF64::builder().span(20).min_samples(1).build().unwrap();
+    let mut e = Ema::builder().span(20).min_samples(1).build().unwrap();
     for _ in 0..1000 {
         let _ = e.update(rng.next_f64());
     }
-    c.bench_function("EmaF64::update (span=20)", |b| {
+    c.bench_function("Ema::update (span=20)", |b| {
         b.iter(|| e.update(black_box(rng.next_f64())).unwrap())
     });
 }
 
 fn bench_asym_ema(c: &mut Criterion) {
     let mut rng = Lcg::new(42);
-    let mut e = AsymEmaF64::builder()
+    let mut e = AsymEma::builder()
         .alpha_up(0.3)
         .alpha_down(0.1)
         .build()
@@ -118,7 +113,7 @@ fn bench_asym_ema(c: &mut Criterion) {
     for _ in 0..1000 {
         let _ = e.update(rng.next_f64());
     }
-    c.bench_function("AsymEmaF64::update", |b| {
+    c.bench_function("AsymEma::update", |b| {
         b.iter(|| e.update(black_box(rng.next_f64())).unwrap())
     });
 }
@@ -141,22 +136,22 @@ fn bench_holt(c: &mut Criterion) {
 
 fn bench_ewma_var(c: &mut Criterion) {
     let mut rng = Lcg::new(42);
-    let mut e = EwmaVarF64::builder().alpha(0.1).build().unwrap();
+    let mut e = EwmaVar::builder().alpha(0.1).build().unwrap();
     for _ in 0..1000 {
         let _ = e.update(rng.next_f64());
     }
-    c.bench_function("EwmaVarF64::update", |b| {
+    c.bench_function("EwmaVar::update", |b| {
         b.iter(|| e.update(black_box(rng.next_f64())).unwrap())
     });
 }
 
 fn bench_covariance(c: &mut Criterion) {
     let mut rng = Lcg::new(42);
-    let mut cov = CovarianceF64::new();
+    let mut cov = Covariance::new();
     for _ in 0..1000 {
         let _ = cov.update(rng.next_f64(), rng.next_f64());
     }
-    c.bench_function("CovarianceF64::update", |b| {
+    c.bench_function("Covariance::update", |b| {
         b.iter(|| {
             cov.update(black_box(rng.next_f64()), black_box(rng.next_f64()))
                 .unwrap()
@@ -166,88 +161,88 @@ fn bench_covariance(c: &mut Criterion) {
 
 fn bench_harmonic_mean(c: &mut Criterion) {
     let mut rng = Lcg::new(42);
-    let mut h = HarmonicMeanF64::new();
+    let mut h = HarmonicMean::new();
     for _ in 0..1000 {
         let _ = h.update(rng.next_f64() + 1.0); // must be positive
     }
-    c.bench_function("HarmonicMeanF64::update", |b| {
+    c.bench_function("HarmonicMean::update", |b| {
         b.iter(|| h.update(black_box(rng.next_f64() + 1.0)).unwrap())
     });
 }
 
 fn bench_percentile_p50(c: &mut Criterion) {
     let mut rng = Lcg::new(42);
-    let mut p = PercentileF64::builder().percentile(0.5).build().unwrap();
+    let mut p = Percentile::builder().percentile(0.5).build().unwrap();
     for _ in 0..1000 {
         let _ = p.update(rng.next_f64());
     }
-    c.bench_function("PercentileF64::update (p50)", |b| {
+    c.bench_function("Percentile::update (p50)", |b| {
         b.iter(|| p.update(black_box(rng.next_f64())).unwrap())
     });
 }
 
 fn bench_percentile_p99(c: &mut Criterion) {
     let mut rng = Lcg::new(42);
-    let mut p = PercentileF64::builder().percentile(0.99).build().unwrap();
+    let mut p = Percentile::builder().percentile(0.99).build().unwrap();
     for _ in 0..1000 {
         let _ = p.update(rng.next_f64());
     }
-    c.bench_function("PercentileF64::update (p99)", |b| {
+    c.bench_function("Percentile::update (p99)", |b| {
         b.iter(|| p.update(black_box(rng.next_f64())).unwrap())
     });
 }
 
 fn bench_jitter(c: &mut Criterion) {
     let mut rng = Lcg::new(42);
-    let mut j = JitterF64::builder().alpha(0.1).build().unwrap();
+    let mut j = Jitter::<f64>::builder().alpha(0.1).build().unwrap();
     for _ in 0..1000 {
         let _ = j.update(rng.next_f64());
     }
-    c.bench_function("JitterF64::update", |b| {
+    c.bench_function("Jitter::<f64>::update", |b| {
         b.iter(|| j.update(black_box(rng.next_f64())).unwrap())
     });
 }
 
 fn bench_drawdown(c: &mut Criterion) {
     let mut rng = Lcg::new(42);
-    let mut d = DrawdownF64::new();
+    let mut d = Drawdown::<f64>::new();
     for _ in 0..1000 {
         let _ = d.update(rng.next_f64());
     }
-    c.bench_function("DrawdownF64::update", |b| {
+    c.bench_function("Drawdown::<f64>::update", |b| {
         b.iter(|| d.update(black_box(rng.next_f64())).unwrap())
     });
 }
 
 fn bench_running_min(c: &mut Criterion) {
     let mut rng = Lcg::new(42);
-    let mut r = RunningMinF64::new();
+    let mut r = RunningMin::<f64>::new();
     for _ in 0..1000 {
         r.update(rng.next_f64());
     }
-    c.bench_function("RunningMinF64::update", |b| {
+    c.bench_function("RunningMin::<f64>::update", |b| {
         b.iter(|| r.update(black_box(rng.next_f64())))
     });
 }
 
 fn bench_running_max(c: &mut Criterion) {
     let mut rng = Lcg::new(42);
-    let mut r = RunningMaxF64::new();
+    let mut r = RunningMax::<f64>::new();
     for _ in 0..1000 {
         r.update(rng.next_f64());
     }
-    c.bench_function("RunningMaxF64::update", |b| {
+    c.bench_function("RunningMax::<f64>::update", |b| {
         b.iter(|| r.update(black_box(rng.next_f64())))
     });
 }
 
 fn bench_slew(c: &mut Criterion) {
     let mut rng = Lcg::new(42);
-    let mut s = SlewF64::new(5.0).unwrap();
+    let mut s = Slew::<f64>::new(5.0).unwrap();
     for _ in 0..1000 {
         s.update(rng.next_f64());
     }
-    c.bench_function("SlewF64::update", |b| {
+    c.bench_function("Slew::<f64>::update", |b| {
         b.iter(|| s.update(black_box(rng.next_f64())))
     });
 }
@@ -265,62 +260,62 @@ fn bench_spring(c: &mut Criterion) {
 
 fn bench_dead_band(c: &mut Criterion) {
     let mut rng = Lcg::new(42);
-    let mut d = DeadBandF64::new(1.0);
+    let mut d = DeadBand::<f64>::new(1.0).unwrap();
     for _ in 0..1000 {
         d.update(rng.next_f64());
     }
-    c.bench_function("DeadBandF64::update", |b| {
+    c.bench_function("DeadBand::<f64>::update", |b| {
         b.iter(|| d.update(black_box(rng.next_f64())))
     });
 }
 
 fn bench_hysteresis(c: &mut Criterion) {
     let mut rng = Lcg::new(42);
-    let mut h = HysteresisF64::new(40.0, 60.0).unwrap();
+    let mut h = Hysteresis::<f64>::new(40.0, 60.0).unwrap();
     for _ in 0..1000 {
         h.update(rng.next_f64());
     }
-    c.bench_function("HysteresisF64::update", |b| {
+    c.bench_function("Hysteresis::<f64>::update", |b| {
         b.iter(|| h.update(black_box(rng.next_f64())))
     });
 }
 
 fn bench_level_crossing(c: &mut Criterion) {
     let mut rng = Lcg::new(42);
-    let mut l = LevelCrossingF64::new(50.0);
+    let mut l = LevelCrossing::<f64>::new(50.0);
     for _ in 0..1000 {
         l.update(rng.next_f64());
     }
-    c.bench_function("LevelCrossingF64::update", |b| {
+    c.bench_function("LevelCrossing::<f64>::update", |b| {
         b.iter(|| l.update(black_box(rng.next_f64())))
     });
 }
 
 fn bench_first_diff(c: &mut Criterion) {
     let mut rng = Lcg::new(42);
-    let mut d = FirstDiffF64::new();
+    let mut d = FirstDiff::<f64>::new();
     for _ in 0..1000 {
         d.update(rng.next_f64());
     }
-    c.bench_function("FirstDiffF64::update", |b| {
+    c.bench_function("FirstDiff::<f64>::update", |b| {
         b.iter(|| d.update(black_box(rng.next_f64())))
     });
 }
 
 fn bench_second_diff(c: &mut Criterion) {
     let mut rng = Lcg::new(42);
-    let mut d = SecondDiffF64::new();
+    let mut d = SecondDiff::<f64>::new();
     for _ in 0..1000 {
         d.update(rng.next_f64());
     }
-    c.bench_function("SecondDiffF64::update", |b| {
+    c.bench_function("SecondDiff::<f64>::update", |b| {
         b.iter(|| d.update(black_box(rng.next_f64())))
     });
 }
 
 fn bench_cusum(c: &mut Criterion) {
     let mut rng = Lcg::new(42);
-    let mut cs = CusumF64::builder(50.0)
+    let mut cs = Cusum::builder(50.0)
         .threshold(10.0)
         .slack(0.5)
         .build()
@@ -328,7 +323,7 @@ fn bench_cusum(c: &mut Criterion) {
     for _ in 0..1000 {
         let _ = cs.update(rng.next_f64());
     }
-    c.bench_function("CusumF64::update", |b| {
+    c.bench_function("Cusum::update", |b| {
         b.iter(|| cs.update(black_box(rng.next_f64())).unwrap())
     });
 }
@@ -400,7 +395,7 @@ fn bench_robust_z(c: &mut Criterion) {
 
 fn bench_error_rate(c: &mut Criterion) {
     let mut rng = Lcg::new(42);
-    let mut er = ErrorRateF64::builder()
+    let mut er = ErrorRate::builder()
         .alpha(0.1)
         .threshold(0.5)
         .build()
@@ -408,23 +403,8 @@ fn bench_error_rate(c: &mut Criterion) {
     for _ in 0..1000 {
         er.update(rng.next_f64() > 50.0);
     }
-    c.bench_function("ErrorRateF64::update", |b| {
+    c.bench_function("ErrorRate::update", |b| {
         b.iter(|| er.update(black_box(rng.next_f64() > 50.0)))
-    });
-}
-
-fn bench_saturation(c: &mut Criterion) {
-    let mut rng = Lcg::new(42);
-    let mut s = SaturationF64::builder()
-        .alpha(0.1)
-        .threshold(80.0)
-        .build()
-        .unwrap();
-    for _ in 0..1000 {
-        let _ = s.update(rng.next_f64());
-    }
-    c.bench_function("SaturationF64::update", |b| {
-        b.iter(|| s.update(black_box(rng.next_f64())).unwrap())
     });
 }
 
@@ -1095,45 +1075,45 @@ fn bench_exp3_select(c: &mut Criterion) {
 
 fn bench_lpm(c: &mut Criterion) {
     let mut rng = Lcg::new(42);
-    let mut lpm = LpmF64::builder().target(0.0).order(2).build().unwrap();
+    let mut lpm = Lpm::builder().target(0.0).order(2).build().unwrap();
     for _ in 0..1000 {
         let _ = lpm.update(rng.next_f64() - 50.0);
     }
-    c.bench_function("LpmF64::update (order=2)", |b| {
+    c.bench_function("Lpm::update (order=2)", |b| {
         b.iter(|| lpm.update(black_box(rng.next_f64() - 50.0)).unwrap())
     });
 }
 
 fn bench_cvar(c: &mut Criterion) {
     let mut rng = Lcg::new(42);
-    let mut cv = CvarF64::builder().alpha(0.05).build().unwrap();
+    let mut cv = Cvar::builder().alpha(0.05).build().unwrap();
     for _ in 0..1000 {
         let _ = cv.update(rng.next_f64());
     }
-    c.bench_function("CvarF64::update (alpha=0.05)", |b| {
+    c.bench_function("Cvar::update (alpha=0.05)", |b| {
         b.iter(|| cv.update(black_box(rng.next_f64())).unwrap())
     });
 }
 
 fn bench_zscore_norm(c: &mut Criterion) {
     let mut rng = Lcg::new(42);
-    let mut zs = ZScoreNormF64::builder().span(20).build().unwrap();
+    let mut zs = ZScoreNorm::<f64>::builder().span(20).build().unwrap();
     for _ in 0..1000 {
         let _ = zs.update(rng.next_f64());
     }
-    c.bench_function("ZScoreNormF64::update", |b| {
+    c.bench_function("ZScoreNorm::<f64>::update", |b| {
         b.iter(|| zs.update(black_box(rng.next_f64())).unwrap())
     });
 }
 
 fn bench_minmax_norm(c: &mut Criterion) {
     let mut rng = Lcg::new(42);
-    let mut mm = MinMaxNormF64::builder().window(100).build().unwrap();
+    let mut mm = MinMaxNorm::<f64>::builder().window(100).build().unwrap();
     for i in 0..1000u64 {
         let _ = mm.update(i, rng.next_f64());
     }
     let mut ts = 1000u64;
-    c.bench_function("MinMaxNormF64::update", |b| {
+    c.bench_function("MinMaxNorm::<f64>::update", |b| {
         b.iter(|| {
             ts += 1;
             mm.update(black_box(ts), black_box(rng.next_f64())).unwrap()
@@ -1213,7 +1193,6 @@ criterion_group!(
     bench_adaptive_threshold,
     bench_robust_z,
     bench_error_rate,
-    bench_saturation,
 );
 
 criterion_group!(

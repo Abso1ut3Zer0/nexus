@@ -7,7 +7,7 @@ Start with your problem. Follow the tree to find the right primitive.
 **How noisy? What matters more — responsiveness or stability?**
 
 - Simple smoothing, good defaults → [**EMA**](../algorithms/ema.md)
-  - Float signals: `EmaF64`
+  - Float signals: `Ema`
   - Integer signals (no float): `EmaI64`
 - Need to react fast when trending, slow when noisy → [**KAMA**](../algorithms/kama.md)
   - Adapts its smoothing factor based on signal efficiency ratio
@@ -58,6 +58,14 @@ Start with your problem. Follow the tree to find the right primitive.
 
 ## "I want to monitor system health"
 
+Every monitoring type states its **weighting clock** in its rustdoc: what one
+`update` is worth (per call, per event with its own timestamp, the caller's
+timestamps, or none). The rule: never update a per-call type from a loop
+whose iteration time depends on the quantity you are measuring. Sampling
+queue fill once per spin iteration into an EMA reads healthy under load,
+because the loop spins less exactly when the queue is deep. Use a per-event
+type with timestamps, or `PollSaturation`, which is weighted per message.
+
 **What are you monitoring?**
 
 - Is a data source alive? → [**Liveness**](../algorithms/liveness.md)
@@ -68,8 +76,7 @@ Start with your problem. Follow the tree to find the right primitive.
   - From poll outcomes alone, no timestamps: how many messages waited behind this thread, for how long at most.
 - Messages carry an enqueue stamp? → [**SojournSaturation**](../algorithms/sojourn-saturation.md)
   - Exact per-message wait summarized per period: over-budget count, floor, worst, mean, standing queue.
-- Is a resource running hot? → [**Saturation**](../algorithms/saturation.md)
-  - EMA of utilization + threshold. `Normal` / `Saturated`.
+- Is a resource running hot? → smooth the busy fraction with [**EMA**](../algorithms/ema.md) and compare it to your threshold. For a consumer thread's own saturation, PollSaturation / SojournSaturation above.
 - Is the error rate too high? → [**ErrorRate**](../algorithms/error-rate.md)
   - EMA of success/failure outcomes. Supports weighted severity.
 - What's the worst since I last checked? → [**MaxGauge**](../algorithms/max-gauge.md)

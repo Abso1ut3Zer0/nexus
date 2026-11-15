@@ -79,7 +79,7 @@ println!(
 - The filter only cares about the *ratio* `q / r`. Fix `r = (sensor_stddev)^2` and sweep `q` until the output looks right.
 - Small `q/r` → heavy smoothing, slow to respond.
 - Large `q/r` → light smoothing, noisy.
-- Calibrate `r` by running `WelfordF64` on residuals during a stationary period: `r ~ welford.variance()`.
+- Calibrate `r` by running `Welford` on residuals during a stationary period: `r ~ welford.variance()`.
 
 See [parameter-tuning.md](parameter-tuning.md#kalman1d-process-noise-and-measurement-noise).
 

@@ -39,7 +39,7 @@ pub(crate) const fn log2_of_span_plus_one(span: u64) -> u32 {
 /// - Tracking moving average of throughput
 /// - Baseline estimation for anomaly detection
 #[derive(Debug, Clone)]
-pub struct EmaF64 {
+pub struct Ema {
     alpha: f64,
     one_minus_alpha: f64,
     value: f64,
@@ -47,20 +47,20 @@ pub struct EmaF64 {
     min_samples: u64,
 }
 
-/// Builder for [`EmaF64`].
+/// Builder for [`Ema`].
 #[derive(Debug, Clone)]
-pub struct EmaF64Builder {
+pub struct EmaBuilder {
     alpha: Option<f64>,
     min_samples: u64,
     seed: Option<f64>,
 }
 
-impl EmaF64 {
+impl Ema {
     /// Creates a builder.
     #[inline]
     #[must_use]
-    pub fn builder() -> EmaF64Builder {
-        EmaF64Builder {
+    pub fn builder() -> EmaBuilder {
+        EmaBuilder {
             alpha: None,
             min_samples: 1,
             seed: None,
@@ -148,7 +148,7 @@ impl EmaF64 {
     }
 }
 
-impl EmaF64Builder {
+impl EmaBuilder {
     /// Direct smoothing factor. Must be in (0, 1) exclusive.
     #[inline]
     #[must_use]
@@ -207,7 +207,7 @@ impl EmaF64Builder {
     /// - Alpha must have been set (via `alpha`, `halflife`, or `span`).
     /// - Alpha must be in (0, 1) exclusive.
     #[inline]
-    pub fn build(self) -> Result<EmaF64, crate::ConfigError> {
+    pub fn build(self) -> Result<Ema, crate::ConfigError> {
         let alpha = self.alpha.ok_or(crate::ConfigError::Missing("alpha"))?;
         if !(alpha > 0.0 && alpha < 1.0) {
             return Err(crate::ConfigError::Invalid("EMA alpha must be in (0, 1)"));
@@ -217,7 +217,7 @@ impl EmaF64Builder {
             .seed
             .map_or((0.0, 0), |seed_val| (seed_val, self.min_samples));
 
-        Ok(EmaF64 {
+        Ok(Ema {
             alpha,
             one_minus_alpha: 1.0 - alpha,
             value,
@@ -233,14 +233,14 @@ mod tests {
 
     #[test]
     fn first_sample_initializes() {
-        let mut ema = EmaF64::builder().alpha(0.5).build().unwrap();
+        let mut ema = Ema::builder().alpha(0.5).build().unwrap();
         assert_eq!(ema.update(100.0).unwrap(), Some(100.0));
         assert_eq!(ema.value(), Some(100.0));
     }
 
     #[test]
     fn convergence_toward_constant() {
-        let mut ema = EmaF64::builder().alpha(0.1).build().unwrap();
+        let mut ema = Ema::builder().alpha(0.1).build().unwrap();
 
         // Initialize with 0
         ema.update(0.0).unwrap();
@@ -259,8 +259,8 @@ mod tests {
 
     #[test]
     fn higher_alpha_reacts_faster() {
-        let mut fast = EmaF64::builder().alpha(0.9).build().unwrap();
-        let mut slow = EmaF64::builder().alpha(0.1).build().unwrap();
+        let mut fast = Ema::builder().alpha(0.9).build().unwrap();
+        let mut slow = Ema::builder().alpha(0.1).build().unwrap();
 
         fast.update(0.0).unwrap();
         slow.update(0.0).unwrap();
@@ -279,7 +279,7 @@ mod tests {
 
     #[test]
     fn priming_behavior() {
-        let mut ema = EmaF64::builder().alpha(0.5).min_samples(5).build().unwrap();
+        let mut ema = Ema::builder().alpha(0.5).min_samples(5).build().unwrap();
 
         for i in 1..5 {
             assert_eq!(
@@ -296,7 +296,7 @@ mod tests {
 
     #[test]
     fn reset_clears_state() {
-        let mut ema = EmaF64::builder().alpha(0.5).build().unwrap();
+        let mut ema = Ema::builder().alpha(0.5).build().unwrap();
         ema.update(100.0).unwrap();
         ema.update(200.0).unwrap();
 
@@ -310,33 +310,33 @@ mod tests {
 
     #[test]
     fn span_computes_alpha() {
-        let ema = EmaF64::builder().span(19).build().unwrap();
+        let ema = Ema::builder().span(19).build().unwrap();
         // alpha = 2 / (19 + 1) = 0.1
         assert!((ema.alpha() - 0.1).abs() < 1e-10);
     }
 
     #[test]
     fn halflife_computes_alpha() {
-        let ema = EmaF64::builder().halflife(1.0).build().unwrap();
+        let ema = Ema::builder().halflife(1.0).build().unwrap();
         // halflife=1: alpha = 1 - exp(-ln2) = 1 - 0.5 = 0.5
         assert!((ema.alpha() - 0.5).abs() < 1e-10);
     }
 
     #[test]
     fn errors_without_alpha() {
-        let result = EmaF64::builder().build();
+        let result = Ema::builder().build();
         assert!(matches!(result, Err(crate::ConfigError::Missing("alpha"))));
     }
 
     #[test]
     fn errors_on_alpha_zero() {
-        let result = EmaF64::builder().alpha(0.0).build();
+        let result = Ema::builder().alpha(0.0).build();
         assert!(matches!(result, Err(crate::ConfigError::Invalid(_))));
     }
 
     #[test]
     fn errors_on_alpha_one() {
-        let result = EmaF64::builder().alpha(1.0).build();
+        let result = Ema::builder().alpha(1.0).build();
         assert!(matches!(result, Err(crate::ConfigError::Invalid(_))));
     }
 
@@ -347,7 +347,7 @@ mod tests {
     #[test]
     #[allow(clippy::float_cmp)]
     fn float_reconfigure_alpha_preserves_value() {
-        let mut ema = EmaF64::builder().alpha(0.5).build().unwrap();
+        let mut ema = Ema::builder().alpha(0.5).build().unwrap();
         ema.update(100.0).unwrap();
         ema.update(200.0).unwrap();
         let val_before = ema.value().unwrap();
@@ -362,7 +362,7 @@ mod tests {
 
     #[test]
     fn float_reconfigure_alpha_validates() {
-        let mut ema = EmaF64::builder().alpha(0.5).build().unwrap();
+        let mut ema = Ema::builder().alpha(0.5).build().unwrap();
         assert!(ema.reconfigure_alpha(0.0).is_err());
         assert!(ema.reconfigure_alpha(1.0).is_err());
         assert!(ema.reconfigure_alpha(-0.1).is_err());
@@ -370,7 +370,7 @@ mod tests {
 
     #[test]
     fn rejects_nan_and_inf() {
-        let mut ema = EmaF64::builder().alpha(0.5).build().unwrap();
+        let mut ema = Ema::builder().alpha(0.5).build().unwrap();
         assert!(matches!(
             ema.update(f64::NAN),
             Err(crate::DataError::NotANumber)

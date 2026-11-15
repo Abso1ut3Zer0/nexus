@@ -6,7 +6,7 @@
 |----------|-------|
 | Update cost | ~6 cycles |
 | Memory | ~32 bytes |
-| Types | `ErrorRateF64` |
+| Types | `ErrorRate` |
 | Output | `Option<Condition>` — `Healthy` or `Degraded` |
 
 ## What It Does
@@ -37,7 +37,7 @@ severity. Useful when not all errors are equal (timeout vs rejection vs crash).
 ## Configuration
 
 ```rust
-let mut er = ErrorRateF64::builder()
+let mut er = ErrorRate::builder()
     .span(100)          // smooth over ~100 outcomes
     .threshold(0.05)    // degraded above 5% error rate
     .build().unwrap();
@@ -62,4 +62,4 @@ if let Some(Condition::Degraded) = er.record(false) {
 
 | Operation | p50 | p99 |
 |-----------|-----|-----|
-| `ErrorRateF64::record` | ~6 cycles | ~8 cycles |
+| `ErrorRate::record` | ~6 cycles | ~8 cycles |

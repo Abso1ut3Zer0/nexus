@@ -11,19 +11,17 @@ use std::hint::black_box;
 use nexus_stats::monitoring::{PollSaturation, SojournSaturation};
 
 use nexus_stats::{
-    control::{BoolWindow, HysteresisF64},
-    detection::{CusumF64, MosumF64, MultiGateF64, RobustZScoreF64, ShiryaevRobertsF64},
+    control::{BoolWindow, Hysteresis},
+    detection::{Cusum, MosumF64, MultiGateF64, RobustZScoreF64, ShiryaevRobertsF64},
     frequency::TopK,
     learning::{EpsilonGreedyF64, Exp3F64, ThompsonBetaF64, ThompsonGammaF64, Ucb1F64},
     monitoring::{
-        CoDelI64, DrawdownF64, EventRateU64, LivenessU64, PeakHoldF64, RunningMaxF64,
-        RunningMinF64, WindowedMaxF64, WindowedMinF64,
+        CoDel, Drawdown, EventRate, Liveness, PeakHold, RunningMax, RunningMin, WindowedMax,
+        WindowedMin,
     },
     signal::{AutocorrelationF64, CrossCorrelationF64, EntropyF64, TransferEntropyF64},
-    smoothing::{
-        AsymEmaF64, EmaF64, HoltF64, Kalman1dF64, KamaF64, SlewF64, SpringF64, WindowedMedianF64,
-    },
-    statistics::{CovarianceF64, EwmaVarF64, MomentsF64, WelfordF64},
+    smoothing::{AsymEma, Ema, HoltF64, Kalman1dF64, KamaF64, Slew, SpringF64, WindowedMedianF64},
+    statistics::{Covariance, EwmaVar, Moments, Welford},
 };
 
 // ============================================================================
@@ -103,7 +101,7 @@ fn next_unit(state: &mut u64) -> f64 {
 // ============================================================================
 
 fn bench_cusum_f64(samples: &mut [u64]) {
-    let mut cusum = CusumF64::builder(100.0)
+    let mut cusum = Cusum::builder(100.0)
         .slack(5.0)
         .threshold(1e18)
         .build()
@@ -124,7 +122,7 @@ fn bench_cusum_f64(samples: &mut [u64]) {
 }
 
 fn bench_ema_f64(samples: &mut [u64]) {
-    let mut ema = EmaF64::builder().alpha(0.1).build().unwrap();
+    let mut ema = Ema::builder().alpha(0.1).build().unwrap();
     let mut rng = 12345u64;
     let _ = ema.update(100.0);
     for _ in 0..WARMUP {
@@ -142,7 +140,7 @@ fn bench_ema_f64(samples: &mut [u64]) {
 }
 
 fn bench_welford_f64(samples: &mut [u64]) {
-    let mut w = WelfordF64::new();
+    let mut w = Welford::new();
     let mut rng = 12345u64;
     for _ in 0..WARMUP {
         w.update(90.0 + (next_val(&mut rng) % 20) as f64).unwrap();
@@ -164,7 +162,7 @@ fn bench_welford_f64(samples: &mut [u64]) {
 // ============================================================================
 
 fn bench_drawdown_f64(samples: &mut [u64]) {
-    let mut dd = DrawdownF64::new();
+    let mut dd = Drawdown::<f64>::new();
     let mut rng = 12345u64;
     for _ in 0..WARMUP {
         let _ = dd.update(90.0 + (next_val(&mut rng) % 20) as f64);
@@ -181,7 +179,7 @@ fn bench_drawdown_f64(samples: &mut [u64]) {
 }
 
 fn bench_windowed_max_f64(samples: &mut [u64]) {
-    let mut wm = WindowedMaxF64::new(1000).unwrap();
+    let mut wm = WindowedMax::<f64>::new(1000).unwrap();
     let mut rng = 12345u64;
     for t in 0..WARMUP as u64 {
         let _ = wm.update(t, 90.0 + (next_val(&mut rng) % 20) as f64);
@@ -200,7 +198,7 @@ fn bench_windowed_max_f64(samples: &mut [u64]) {
 }
 
 fn bench_windowed_min_f64(samples: &mut [u64]) {
-    let mut wm = WindowedMinF64::new(1000).unwrap();
+    let mut wm = WindowedMin::<f64>::new(1000).unwrap();
     let mut rng = 12345u64;
     for t in 0..WARMUP as u64 {
         let _ = wm.update(t, 90.0 + (next_val(&mut rng) % 20) as f64);
@@ -219,7 +217,7 @@ fn bench_windowed_min_f64(samples: &mut [u64]) {
 }
 
 fn bench_ewma_var_f64(samples: &mut [u64]) {
-    let mut ev = EwmaVarF64::builder().alpha(0.1).build().unwrap();
+    let mut ev = EwmaVar::builder().alpha(0.1).build().unwrap();
     let mut rng = 12345u64;
     for _ in 0..WARMUP {
         let _ = ev.update(90.0 + (next_val(&mut rng) % 20) as f64).unwrap();
@@ -240,7 +238,7 @@ fn bench_ewma_var_f64(samples: &mut [u64]) {
 // ============================================================================
 
 fn bench_liveness_u64(samples: &mut [u64]) {
-    let mut lv = LivenessU64::builder()
+    let mut lv = Liveness::builder()
         .span(7)
         .deadline_multiple(3)
         .build()
@@ -372,7 +370,7 @@ fn bench_mosum_f64(samples: &mut [u64]) {
 // ============================================================================
 
 fn bench_covariance_f64(samples: &mut [u64]) {
-    let mut cov = CovarianceF64::new();
+    let mut cov = Covariance::new();
     let mut rng = 12345u64;
     for _ in 0..WARMUP {
         let x = 90.0 + (next_val(&mut rng) % 20) as f64;
@@ -460,7 +458,7 @@ fn bench_topk(samples: &mut [u64]) {
 // ============================================================================
 
 fn bench_running_min_f64(samples: &mut [u64]) {
-    let mut rm = RunningMinF64::new();
+    let mut rm = RunningMin::<f64>::new();
     let mut rng = 12345u64;
     for _ in 0..WARMUP {
         let _ = rm.update(90.0 + (next_val(&mut rng) % 20) as f64);
@@ -477,7 +475,7 @@ fn bench_running_min_f64(samples: &mut [u64]) {
 }
 
 fn bench_running_max_f64(samples: &mut [u64]) {
-    let mut rm = RunningMaxF64::new();
+    let mut rm = RunningMax::<f64>::new();
     let mut rng = 12345u64;
     for _ in 0..WARMUP {
         let _ = rm.update(90.0 + (next_val(&mut rng) % 20) as f64);
@@ -494,7 +492,7 @@ fn bench_running_max_f64(samples: &mut [u64]) {
 }
 
 fn bench_event_rate_u64(samples: &mut [u64]) {
-    let mut er = EventRateU64::builder().span(15).build().unwrap();
+    let mut er = EventRate::builder().span(15).build().unwrap();
     let mut rng = 12345u64;
     let mut t = 0u64;
     for _ in 0..WARMUP {
@@ -514,7 +512,7 @@ fn bench_event_rate_u64(samples: &mut [u64]) {
 }
 
 fn bench_codel_i64(samples: &mut [u64]) {
-    let mut qd = CoDelI64::builder()
+    let mut qd = CoDel::<i64>::builder()
         .target(100)
         .window(1000)
         .build()
@@ -624,7 +622,7 @@ fn bench_spring_f64(samples: &mut [u64]) {
 }
 
 fn bench_peak_hold_f64(samples: &mut [u64]) {
-    let mut ph = PeakHoldF64::builder()
+    let mut ph = PeakHold::<f64>::builder()
         .decay_rate(0.99)
         .hold_samples(10)
         .build()
@@ -645,7 +643,7 @@ fn bench_peak_hold_f64(samples: &mut [u64]) {
 }
 
 fn bench_asym_ema_f64(samples: &mut [u64]) {
-    let mut ae = AsymEmaF64::builder()
+    let mut ae = AsymEma::builder()
         .alpha_up(0.9)
         .alpha_down(0.1)
         .build()
@@ -709,7 +707,7 @@ fn bench_kalman1d_f64(samples: &mut [u64]) {
 // ============================================================================
 
 fn bench_slew_f64(samples: &mut [u64]) {
-    let mut sl = SlewF64::new(5.0).unwrap();
+    let mut sl = Slew::<f64>::new(5.0).unwrap();
     let mut rng = 12345u64;
     let _ = sl.update(100.0);
     for _ in 0..WARMUP {
@@ -744,7 +742,7 @@ fn bench_bool_window(samples: &mut [u64]) {
 }
 
 fn bench_hysteresis_f64(samples: &mut [u64]) {
-    let mut hy = HysteresisF64::new(40.0, 60.0).unwrap();
+    let mut hy = Hysteresis::<f64>::new(40.0, 60.0).unwrap();
     let mut rng = 12345u64;
     for _ in 0..WARMUP {
         let _ = hy.update((next_val(&mut rng) % 100) as f64);
@@ -765,7 +763,7 @@ fn bench_hysteresis_f64(samples: &mut [u64]) {
 // ============================================================================
 
 fn bench_moments_f64(samples: &mut [u64]) {
-    let mut m = MomentsF64::new();
+    let mut m = Moments::new();
     let mut rng = 12345u64;
     for _ in 0..WARMUP {
         m.update(90.0 + (next_val(&mut rng) % 20) as f64).unwrap();
@@ -1040,7 +1038,7 @@ fn main() {
     section("Change Detection");
     print_header();
     bench_cusum_f64(&mut buf);
-    print_row("CusumF64::update", &mut buf);
+    print_row("Cusum::update", &mut buf);
     bench_mosum_f64(&mut buf);
     print_row("MosumF64(64)::update", &mut buf);
     bench_shiryaev_roberts(&mut buf);
@@ -1049,27 +1047,27 @@ fn main() {
     section("Smoothing");
     print_header();
     bench_ema_f64(&mut buf);
-    print_row("EmaF64::update", &mut buf);
+    print_row("Ema::update", &mut buf);
     bench_holt_f64(&mut buf);
     print_row("HoltF64::update", &mut buf);
 
     section("Variance & Correlation");
     print_header();
     bench_welford_f64(&mut buf);
-    print_row("WelfordF64::update", &mut buf);
+    print_row("Welford::update", &mut buf);
     bench_ewma_var_f64(&mut buf);
-    print_row("EwmaVarF64::update", &mut buf);
+    print_row("EwmaVar::update", &mut buf);
     bench_covariance_f64(&mut buf);
-    print_row("CovarianceF64::update", &mut buf);
+    print_row("Covariance::update", &mut buf);
 
     section("Monitoring");
     print_header();
     bench_drawdown_f64(&mut buf);
-    print_row("DrawdownF64::update", &mut buf);
+    print_row("Drawdown::<f64>::update", &mut buf);
     bench_windowed_max_f64(&mut buf);
-    print_row("WindowedMaxF64::update", &mut buf);
+    print_row("WindowedMax::<f64>::update", &mut buf);
     bench_windowed_min_f64(&mut buf);
-    print_row("WindowedMinF64::update", &mut buf);
+    print_row("WindowedMin::<f64>::update", &mut buf);
     bench_poll_saturation_on_work(&mut buf);
     print_row("PollSaturation::on_work", &mut buf);
     bench_poll_saturation_on_work_mixed(&mut buf);
@@ -1079,15 +1077,15 @@ fn main() {
     bench_sojourn_saturation_update(&mut buf);
     print_row("SojournSaturation::update", &mut buf);
     bench_liveness_u64(&mut buf);
-    print_row("LivenessU64::update", &mut buf);
+    print_row("Liveness::update", &mut buf);
     bench_running_min_f64(&mut buf);
-    print_row("RunningMinF64::update", &mut buf);
+    print_row("RunningMin::<f64>::update", &mut buf);
     bench_running_max_f64(&mut buf);
-    print_row("RunningMaxF64::update", &mut buf);
+    print_row("RunningMax::<f64>::update", &mut buf);
     bench_event_rate_u64(&mut buf);
-    print_row("EventRateU64::update", &mut buf);
+    print_row("EventRate::update", &mut buf);
     bench_codel_i64(&mut buf);
-    print_row("CoDelI64::update", &mut buf);
+    print_row("CoDel::<i64>::update", &mut buf);
 
     section("Anomaly Detection");
     print_header();
@@ -1103,9 +1101,9 @@ fn main() {
     bench_spring_f64(&mut buf);
     print_row("SpringF64::update", &mut buf);
     bench_peak_hold_f64(&mut buf);
-    print_row("PeakHoldF64::update", &mut buf);
+    print_row("PeakHold::<f64>::update", &mut buf);
     bench_asym_ema_f64(&mut buf);
-    print_row("AsymEmaF64::update", &mut buf);
+    print_row("AsymEma::update", &mut buf);
     bench_kama_f64(&mut buf);
     print_row("KamaF64(10)::update", &mut buf);
     bench_kalman1d_f64(&mut buf);
@@ -1114,11 +1112,11 @@ fn main() {
     section("Utilities");
     print_header();
     bench_slew_f64(&mut buf);
-    print_row("SlewF64::update", &mut buf);
+    print_row("Slew::<f64>::update", &mut buf);
     bench_bool_window(&mut buf);
     print_row("BoolWindow<1>::update", &mut buf);
     bench_hysteresis_f64(&mut buf);
-    print_row("HysteresisF64::update", &mut buf);
+    print_row("Hysteresis::<f64>::update", &mut buf);
 
     section("Frequency");
     print_header();
@@ -1128,7 +1126,7 @@ fn main() {
     section("Statistics & Signal Analysis");
     print_header();
     bench_moments_f64(&mut buf);
-    print_row("MomentsF64::update", &mut buf);
+    print_row("Moments::update", &mut buf);
     bench_autocorrelation_f64(&mut buf);
     print_row("Autocorrelation<1>::update", &mut buf);
     bench_cross_correlation_f64(&mut buf);

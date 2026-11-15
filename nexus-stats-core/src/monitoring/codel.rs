@@ -1,8 +1,5 @@
 use crate::Condition;
-
-// =========================================================================
-// Raw (u64 timestamp) variants — no_std compatible
-// =========================================================================
+use crate::Sample;
 
 /// CoDel standing-queue detector (RFC 8289, Nichols & Jacobson).
 ///
@@ -14,7 +11,8 @@ use crate::Condition;
 /// standing queue. A single slow item, or a burst shorter than the window,
 /// is `Normal`.
 ///
-/// State is one timestamp. `no_std` compatible.
+/// State is one timestamp. `no_std` compatible. `CoDel<f64>` rejects NaN and
+/// infinity and returns `Result`; `CoDel<i64>` cannot fail.
 ///
 /// # Weighting clock
 ///
@@ -23,8 +21,8 @@ use crate::Condition;
 /// long as the window and any real gap between samples fit in half its
 /// range (elapsed time is computed with wrapping subtraction).
 #[derive(Debug, Clone)]
-pub struct CoDelI64 {
-    target: i64,
+pub struct CoDel<T: Sample> {
+    target: T,
     interval: u64,
     first_above: Option<u64>,
     elevated: bool,
@@ -32,64 +30,28 @@ pub struct CoDelI64 {
     min_samples: u64,
 }
 
-/// Builder for [`CoDelI64`].
+/// Builder for [`CoDel`].
 #[derive(Debug, Clone)]
-pub struct CoDelI64Builder {
-    target: Option<i64>,
+pub struct CoDelBuilder<T: Sample> {
+    target: Option<T>,
     window: Option<u64>,
     min_samples: u64,
 }
 
-impl CoDelI64 {
+impl<T: Sample> CoDel<T> {
     /// Creates a builder.
     #[inline]
     #[must_use]
-    pub fn builder() -> CoDelI64Builder {
-        CoDelI64Builder {
+    pub fn builder() -> CoDelBuilder<T> {
+        CoDelBuilder {
             target: None,
             window: None,
             min_samples: 1,
         }
     }
 
-    /// Feeds a sojourn time at the given timestamp.
-    ///
-    /// Returns `Some(Condition)` once primed, `None` before.
-    #[inline]
-    #[must_use]
-    pub fn update(&mut self, timestamp: u64, sojourn: i64) -> Option<Condition> {
-        self.count += 1;
-        self.elevated = standing_queue(
-            &mut self.first_above,
-            self.interval,
-            timestamp,
-            sojourn > self.target,
-        );
-
-        if self.count < self.min_samples {
-            return None;
-        }
-
-        Some(if self.elevated {
-            Condition::Degraded
-        } else {
-            Condition::Normal
-        })
-    }
-
-    /// Convenience for `i64` timestamps (e.g., wire protocol epoch nanos).
-    ///
-    /// Timestamps must be non-negative. Negative values wrap to large
-    /// `u64` values and will produce incorrect interval arithmetic.
-    #[inline]
-    #[must_use]
-    pub fn update_i64(&mut self, timestamp: i64, sojourn: i64) -> Option<Condition> {
-        debug_assert!(timestamp >= 0, "negative timestamp: {timestamp}");
-        self.update(timestamp as u64, sojourn)
-    }
-
-    /// Whether the last sample found a standing queue (sojourn above target
-    /// for a whole interval).
+    /// Whether the queue is currently standing (sojourn above target for a
+    /// full window).
     #[inline]
     #[must_use]
     pub fn is_elevated(&self) -> bool {
@@ -103,109 +65,44 @@ impl CoDelI64 {
         self.count
     }
 
-    /// Whether the monitor has reached `min_samples`.
+    /// Whether `min_samples` have been seen.
     #[inline]
     #[must_use]
     pub fn is_primed(&self) -> bool {
         self.count >= self.min_samples
     }
 
-    /// Resets to empty state. Parameters unchanged.
+    /// Resets the detector. Configuration is kept.
     #[inline]
     pub fn reset(&mut self) {
         self.first_above = None;
         self.elevated = false;
         self.count = 0;
     }
-}
 
-impl CoDelI64Builder {
-    /// Target sojourn time. Samples above it count toward a standing queue.
     #[inline]
-    #[must_use]
-    pub fn target(mut self, target: i64) -> Self {
-        self.target = Some(target);
-        self
-    }
-
-    /// Interval (RFC 8289): how long sojourn must stay above target before
-    /// the queue counts as standing. Same units as the timestamps.
-    #[inline]
-    #[must_use]
-    pub fn window(mut self, window: u64) -> Self {
-        self.window = Some(window);
-        self
-    }
-
-    /// Minimum samples before monitoring activates. Default: 1.
-    #[inline]
-    #[must_use]
-    pub fn min_samples(mut self, min: u64) -> Self {
-        self.min_samples = min;
-        self
-    }
-
-    /// Builds the CoDel monitor.
-    ///
-    /// # Errors
-    ///
-    /// - Target must have been set.
-    /// - Window must have been set and be positive.
-    #[inline]
-    pub fn build(self) -> Result<CoDelI64, crate::ConfigError> {
-        let target = self.target.ok_or(crate::ConfigError::Missing("target"))?;
-        let window = self.window.ok_or(crate::ConfigError::Missing("window"))?;
-        if window == 0 {
-            return Err(crate::ConfigError::Invalid("CoDel window must be positive"));
+    fn fold(&mut self, timestamp: u64, above_target: bool) -> Option<Condition> {
+        self.count += 1;
+        self.elevated = standing_queue(
+            &mut self.first_above,
+            self.interval,
+            timestamp,
+            above_target,
+        );
+        if self.count < self.min_samples {
+            return None;
         }
-
-        Ok(CoDelI64 {
-            target,
-            interval: window,
-            first_above: None,
-            elevated: false,
-            count: 0,
-            min_samples: self.min_samples,
+        Some(if self.elevated {
+            Condition::Degraded
+        } else {
+            Condition::Normal
         })
     }
 }
 
-/// CoDel standing-queue detector (RFC 8289, Nichols & Jacobson), `f64` sojourns.
-///
-/// See [`CoDelI64`] for the rule. Rejects NaN and infinite sojourns.
-#[derive(Debug, Clone)]
-pub struct CoDelF64 {
-    target: f64,
-    interval: u64,
-    first_above: Option<u64>,
-    elevated: bool,
-    count: u64,
-    min_samples: u64,
-}
-
-/// Builder for [`CoDelF64`].
-#[derive(Debug, Clone)]
-pub struct CoDelF64Builder {
-    target: Option<f64>,
-    window: Option<u64>,
-    min_samples: u64,
-}
-
-impl CoDelF64 {
-    /// Creates a builder.
-    #[inline]
-    #[must_use]
-    pub fn builder() -> CoDelF64Builder {
-        CoDelF64Builder {
-            target: None,
-            window: None,
-            min_samples: 1,
-        }
-    }
-
-    /// Feeds a sojourn time at the given timestamp.
-    ///
-    /// Returns `Some(Condition)` once primed, `None` before.
+impl CoDel<f64> {
+    /// Feeds one item's sojourn at its dequeue `timestamp`. Returns the
+    /// condition once primed.
     ///
     /// # Errors
     ///
@@ -218,81 +115,30 @@ impl CoDelF64 {
         sojourn: f64,
     ) -> Result<Option<Condition>, crate::DataError> {
         check_finite!(sojourn);
-        self.count += 1;
-        self.elevated = standing_queue(
-            &mut self.first_above,
-            self.interval,
-            timestamp,
-            sojourn > self.target,
-        );
-
-        if self.count < self.min_samples {
-            return Ok(None);
-        }
-
-        Ok(Some(if self.elevated {
-            Condition::Degraded
-        } else {
-            Condition::Normal
-        }))
-    }
-
-    /// Convenience for `i64` timestamps (e.g., wire protocol epoch nanos).
-    ///
-    /// Timestamps must be non-negative. Negative values wrap to large
-    /// `u64` values and will produce incorrect interval arithmetic.
-    #[inline]
-    pub fn update_i64(
-        &mut self,
-        timestamp: i64,
-        sojourn: f64,
-    ) -> Result<Option<Condition>, crate::DataError> {
-        debug_assert!(timestamp >= 0, "negative timestamp: {timestamp}");
-        self.update(timestamp as u64, sojourn)
-    }
-
-    /// Whether the last sample found a standing queue (sojourn above target
-    /// for a whole interval).
-    #[inline]
-    #[must_use]
-    pub fn is_elevated(&self) -> bool {
-        self.elevated
-    }
-
-    /// Number of samples processed.
-    #[inline]
-    #[must_use]
-    pub fn count(&self) -> u64 {
-        self.count
-    }
-
-    /// Whether the monitor has reached `min_samples`.
-    #[inline]
-    #[must_use]
-    pub fn is_primed(&self) -> bool {
-        self.count >= self.min_samples
-    }
-
-    /// Resets to empty state. Parameters unchanged.
-    #[inline]
-    pub fn reset(&mut self) {
-        self.first_above = None;
-        self.elevated = false;
-        self.count = 0;
+        Ok(self.fold(timestamp, sojourn > self.target))
     }
 }
 
-impl CoDelF64Builder {
-    /// Target sojourn time. Samples above it count toward a standing queue.
+impl CoDel<i64> {
+    /// Feeds one item's sojourn at its dequeue `timestamp`. Returns the
+    /// condition once primed.
+    #[inline]
+    pub fn update(&mut self, timestamp: u64, sojourn: i64) -> Option<Condition> {
+        self.fold(timestamp, sojourn > self.target)
+    }
+}
+
+impl<T: Sample> CoDelBuilder<T> {
+    /// Sojourn above which the queue counts as delayed (the RFC's *target*).
     #[inline]
     #[must_use]
-    pub fn target(mut self, target: f64) -> Self {
+    pub fn target(mut self, target: T) -> Self {
         self.target = Some(target);
         self
     }
 
-    /// Interval (RFC 8289): how long sojourn must stay above target before
-    /// the queue counts as standing. Same units as the timestamps.
+    /// How long sojourn must stay above target before the queue is
+    /// standing, in ticks (the RFC's *interval*).
     #[inline]
     #[must_use]
     pub fn window(mut self, window: u64) -> Self {
@@ -300,7 +146,7 @@ impl CoDelF64Builder {
         self
     }
 
-    /// Minimum samples before monitoring activates. Default: 1.
+    /// Samples required before `update` reports a condition. Default 1.
     #[inline]
     #[must_use]
     pub fn min_samples(mut self, min: u64) -> Self {
@@ -308,14 +154,13 @@ impl CoDelF64Builder {
         self
     }
 
-    /// Builds the CoDel monitor.
+    /// Builds the detector.
     ///
     /// # Errors
     ///
-    /// - Target must have been set and be finite.
-    /// - Window must have been set and be positive.
-    #[inline]
-    pub fn build(self) -> Result<CoDelF64, crate::ConfigError> {
+    /// `ConfigError::Missing` if `target` or `window` was not set;
+    /// `ConfigError::Invalid` if `target` is not finite or `window` is zero.
+    pub fn build(self) -> Result<CoDel<T>, crate::ConfigError> {
         let target = self.target.ok_or(crate::ConfigError::Missing("target"))?;
         if !target.is_finite() {
             return Err(crate::ConfigError::Invalid("CoDel target must be finite"));
@@ -324,8 +169,7 @@ impl CoDelF64Builder {
         if window == 0 {
             return Err(crate::ConfigError::Invalid("CoDel window must be positive"));
         }
-
-        Ok(CoDelF64 {
+        Ok(CoDel {
             target,
             interval: window,
             first_above: None,
@@ -337,7 +181,7 @@ impl CoDelF64Builder {
 }
 
 // =========================================================================
-// RFC 8289 standing-queue rule, shared by the I64 and F64 variants
+// RFC 8289 standing-queue rule, shared by every instantiation
 // =========================================================================
 
 /// The `first_above_time` rule from RFC 8289 section 5.6.
@@ -374,8 +218,8 @@ mod raw_tests {
     use super::*;
     use crate::Condition;
 
-    fn codel(target: i64, window: u64) -> CoDelI64 {
-        CoDelI64::builder()
+    fn codel(target: i64, window: u64) -> CoDel<i64> {
+        CoDel::<i64>::builder()
             .target(target)
             .window(window)
             .build()
@@ -450,7 +294,7 @@ mod raw_tests {
 
     #[test]
     fn min_samples_primes() {
-        let mut cd = CoDelI64::builder()
+        let mut cd = CoDel::<i64>::builder()
             .target(50)
             .window(1000)
             .min_samples(3)
@@ -489,7 +333,7 @@ mod raw_tests {
 
     #[test]
     fn raw_codel_f64() {
-        let mut cd = CoDelF64::builder()
+        let mut cd = CoDel::<f64>::builder()
             .target(0.5)
             .window(1000)
             .build()
@@ -503,7 +347,7 @@ mod raw_tests {
 
     #[test]
     fn rejects_nan_and_inf() {
-        let mut cd = CoDelF64::builder()
+        let mut cd = CoDel::<f64>::builder()
             .target(0.5)
             .window(1000)
             .build()
@@ -517,7 +361,7 @@ mod raw_tests {
             Err(crate::DataError::Infinite)
         ));
         assert!(
-            CoDelF64::builder()
+            CoDel::<f64>::builder()
                 .target(f64::NAN)
                 .window(1000)
                 .build()

@@ -11,13 +11,13 @@ use crate::math::MulAdd;
 /// - Z-score computation (combine with EMA for baseline)
 /// - Input to adaptive thresholds
 #[derive(Debug, Clone)]
-pub struct WelfordF64 {
+pub struct Welford {
     count: u64,
     mean: f64,
     m2: f64,
 }
 
-impl WelfordF64 {
+impl Welford {
     /// Creates a new empty accumulator.
     #[inline]
     #[must_use]
@@ -148,7 +148,7 @@ impl WelfordF64 {
     }
 }
 
-impl Default for WelfordF64 {
+impl Default for Welford {
     #[inline]
     fn default() -> Self {
         Self::new()
@@ -161,7 +161,7 @@ mod tests {
 
     #[test]
     fn empty_returns_none() {
-        let w = WelfordF64::new();
+        let w = Welford::new();
         assert_eq!(w.count(), 0);
         assert!(w.mean().is_none());
         assert!(w.variance().is_none());
@@ -171,7 +171,7 @@ mod tests {
 
     #[test]
     fn single_sample() {
-        let mut w = WelfordF64::new();
+        let mut w = Welford::new();
         w.update(42.0).unwrap();
 
         assert_eq!(w.count(), 1);
@@ -182,7 +182,7 @@ mod tests {
 
     #[test]
     fn known_values() {
-        let mut w = WelfordF64::new();
+        let mut w = Welford::new();
 
         for &x in &[2.0, 4.0, 4.0, 4.0, 5.0, 5.0, 7.0, 9.0] {
             w.update(x).unwrap();
@@ -214,7 +214,7 @@ mod tests {
 
     #[test]
     fn two_samples() {
-        let mut w = WelfordF64::new();
+        let mut w = Welford::new();
         w.update(10.0).unwrap();
         w.update(20.0).unwrap();
 
@@ -226,7 +226,7 @@ mod tests {
 
     #[test]
     fn numerical_stability_large_offset() {
-        let mut w = WelfordF64::new();
+        let mut w = Welford::new();
         let base = 1e8;
 
         for i in 0..1000 {
@@ -240,8 +240,8 @@ mod tests {
 
     #[test]
     fn merge_empty_into_empty() {
-        let mut a = WelfordF64::new();
-        let b = WelfordF64::new();
+        let mut a = Welford::new();
+        let b = Welford::new();
         a.merge(&b);
         assert_eq!(a.count(), 0);
         assert!(a.mean().is_none());
@@ -249,8 +249,8 @@ mod tests {
 
     #[test]
     fn merge_into_empty() {
-        let mut a = WelfordF64::new();
-        let mut b = WelfordF64::new();
+        let mut a = Welford::new();
+        let mut b = Welford::new();
         b.update(10.0).unwrap();
         b.update(20.0).unwrap();
 
@@ -261,10 +261,10 @@ mod tests {
 
     #[test]
     fn merge_empty_into_existing() {
-        let mut a = WelfordF64::new();
+        let mut a = Welford::new();
         a.update(10.0).unwrap();
         a.update(20.0).unwrap();
-        let b = WelfordF64::new();
+        let b = Welford::new();
 
         a.merge(&b);
         assert_eq!(a.count(), 2);
@@ -275,13 +275,13 @@ mod tests {
     fn merge_matches_single_accumulator() {
         let data = [2.0, 4.0, 4.0, 4.0, 5.0, 5.0, 7.0, 9.0];
 
-        let mut single = WelfordF64::new();
+        let mut single = Welford::new();
         for &x in &data {
             single.update(x).unwrap();
         }
 
-        let mut first = WelfordF64::new();
-        let mut second = WelfordF64::new();
+        let mut first = Welford::new();
+        let mut second = Welford::new();
         for &x in &data[..4] {
             first.update(x).unwrap();
         }
@@ -297,9 +297,9 @@ mod tests {
 
     #[test]
     fn merge_uneven_split() {
-        let mut single = WelfordF64::new();
-        let mut a = WelfordF64::new();
-        let mut b = WelfordF64::new();
+        let mut single = Welford::new();
+        let mut a = Welford::new();
+        let mut b = Welford::new();
 
         for i in 0..100 {
             let x = i as f64;
@@ -319,7 +319,7 @@ mod tests {
 
     #[test]
     fn reset_clears_state() {
-        let mut w = WelfordF64::new();
+        let mut w = Welford::new();
         for i in 0..100 {
             w.update(i as f64).unwrap();
         }
@@ -332,13 +332,13 @@ mod tests {
 
     #[test]
     fn default_is_empty() {
-        let w = WelfordF64::default();
+        let w = Welford::default();
         assert_eq!(w.count(), 0);
     }
 
     #[test]
     fn from_parts_round_trip() {
-        let mut w = WelfordF64::new();
+        let mut w = Welford::new();
         for &x in &[2.0, 4.0, 4.0, 4.0, 5.0, 5.0, 7.0, 9.0] {
             w.update(x).unwrap();
         }
@@ -347,7 +347,7 @@ mod tests {
         let mean = w.mean().unwrap();
         let m2 = w.variance().unwrap() * (count - 1) as f64;
 
-        let w2 = WelfordF64::from_parts(count, mean, m2);
+        let w2 = Welford::from_parts(count, mean, m2);
         assert_eq!(w2.count(), count);
         assert!((w2.mean().unwrap() - mean).abs() < 1e-10);
         assert!((w2.variance().unwrap() - w.variance().unwrap()).abs() < 1e-10);
@@ -355,7 +355,7 @@ mod tests {
 
     #[test]
     fn rejects_nan_and_inf() {
-        let mut w = WelfordF64::new();
+        let mut w = Welford::new();
         assert_eq!(w.update(f64::NAN), Err(crate::DataError::NotANumber));
         assert_eq!(w.update(f64::INFINITY), Err(crate::DataError::Infinite));
         assert_eq!(w.update(f64::NEG_INFINITY), Err(crate::DataError::Infinite));
@@ -384,7 +384,7 @@ mod proptests {
         fn fuzz_variance_matches_two_pass_reference(
             samples in proptest::collection::vec(-1e6f64..1e6, 2..200),
         ) {
-            let mut w = WelfordF64::new();
+            let mut w = Welford::new();
             for &s in &samples {
                 w.update(s).unwrap();
             }
@@ -426,16 +426,16 @@ mod proptests {
                     (Just(samples), 1usize..=max_split)
                 }),
         ) {
-            let mut whole = WelfordF64::new();
+            let mut whole = Welford::new();
             for &s in &samples {
                 whole.update(s).unwrap();
             }
 
-            let mut left = WelfordF64::new();
+            let mut left = Welford::new();
             for &s in &samples[..split] {
                 left.update(s).unwrap();
             }
-            let mut right = WelfordF64::new();
+            let mut right = Welford::new();
             for &s in &samples[split..] {
                 right.update(s).unwrap();
             }

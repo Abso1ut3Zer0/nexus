@@ -120,4 +120,4 @@ let rate = gp.posterior_mean();
 ## Cross-references
 
 - Scalar state: [`Kalman1dF64`](../../nexus-stats-smoothing/docs/kalman1d.md).
-- Rate tracking without uncertainty: [`HitRateF64`](../../nexus-stats-core/docs/statistics.md#hitratef64--rolling-success-rate), [`EventRateInstant`](../../nexus-stats-core/docs/monitoring.md#eventrate).
+- Rate tracking without uncertainty: [`HitRate`](../../nexus-stats-core/docs/statistics.md#hitrate--rolling-success-rate), [`EventRate`](../../nexus-stats-core/docs/monitoring.md#eventrate).

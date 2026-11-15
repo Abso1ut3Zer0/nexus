@@ -7,11 +7,11 @@ service health for site reliability engineering.
 
 ```rust
 use nexus_stats::Condition;
-use nexus_stats::monitoring::ErrorRateF64;
+use nexus_stats::monitoring::ErrorRate;
 use nexus_stats::control::BoolWindow;
 
 // Track error rate with EMA
-let mut error_rate = ErrorRateF64::builder()
+let mut error_rate = ErrorRate::builder()
     .span(1000)       // smooth over ~1000 requests
     .threshold(0.01)  // SLO: 99% success = 1% error budget
     .build().unwrap();
@@ -36,30 +36,29 @@ if let Some(Condition::Degraded) = error_rate.record(ok) {
 ## Recipe: USE Method (Utilization, Saturation, Errors)
 
 ```rust
-use nexus_stats::monitoring::{SaturationF64, CoDelI64, ErrorRateF64};
+use nexus_stats::monitoring::{CoDel, ErrorRate};
+use nexus_stats::smoothing::Ema;
 
 // Per resource (CPU, memory, disk, network):
 struct ResourceMonitor {
-    utilization: SaturationF64,     // U: how busy
-    codel: CoDelI64,     // S: how queued (if applicable)
-    error_rate: ErrorRateF64,       // E: how broken
+    utilization: Ema,            // U: how busy (smoothed busy fraction)
+    codel: CoDel<i64>,           // S: how queued (if applicable)
+    error_rate: ErrorRate,       // E: how broken
 }
 
 impl ResourceMonitor {
     fn new() -> Self {
         ResourceMonitor {
-            utilization: SaturationF64::builder()
-                .span(20).threshold(0.80).build(),
-            codel: CoDelI64::builder()
-                .target(10_000).window(1_000_000_000).build(),
-            error_rate: ErrorRateF64::builder()
-                .span(100).threshold(0.01).build(),
+            utilization: Ema::builder().span(20).build().unwrap(),
+            codel: CoDel::<i64>::builder()
+                .target(10_000).window(1_000_000_000).build().unwrap(),
+            error_rate: ErrorRate::builder()
+                .span(100).threshold(0.01).build().unwrap(),
         }
     }
 
     fn is_healthy(&self) -> bool {
-        !self.utilization.is_primed()
-            || !matches!(self.utilization.utilization(), Some(u) if u > 0.80)
+        !matches!(self.utilization.value(), Some(u) if u > 0.80)
     }
 }
 ```
@@ -68,19 +67,19 @@ impl ResourceMonitor {
 
 ```rust
 use nexus_stats::Direction;
-use nexus_stats::monitoring::ErrorRateF64;
-use nexus_stats::detection::CusumF64;
-use nexus_stats::control::DebounceU32;
+use nexus_stats::monitoring::ErrorRate;
+use nexus_stats::detection::Cusum;
+use nexus_stats::control::Debounce;
 
 // Consecutive health check failures → confirmed outage
-let mut health_debounce = DebounceU32::new(3);
+let mut health_debounce = Debounce::new(3).unwrap();
 
 // Error rate for gradual degradation
-let mut errors = ErrorRateF64::builder()
+let mut errors = ErrorRate::builder()
     .span(200).threshold(0.05).build().unwrap();
 
 // Latency shift for performance degradation
-let mut latency = CusumF64::builder(baseline_ms)
+let mut latency = Cusum::builder(baseline_ms)
     .slack(5.0).threshold(50.0).build().unwrap();
 
 // Overall assessment:
@@ -102,7 +101,7 @@ if is_confirmed_down {
 |-----------|------|
 | [ErrorRate](../algorithms/error-rate.md) | SLO / error budget tracking |
 | [BoolWindow](../algorithms/bool-window.md) | Exact failure rate over last N |
-| [Saturation](../algorithms/saturation.md) | Utilization (USE method) |
+| [EMA](../algorithms/ema.md) | Utilization: smoothed busy fraction (USE method) |
 | [CoDel](../algorithms/codel.md) | Saturation / queueing (USE method) |
 | [PollSaturation](../algorithms/poll-saturation.md) | Saturation of a consumer thread from poll outcomes (USE method) |
 | [CUSUM](../algorithms/cusum.md) | Latency degradation detection |

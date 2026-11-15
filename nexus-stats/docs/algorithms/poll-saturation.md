@@ -78,7 +78,7 @@ budget above is 50 µs. Two knobs, and only two:
   maxima take the max, flags AND, exactly.
 
 No span, no decay, no sample count, no clock. Smoothing, if wanted, goes on
-the outputs once per summary (`EmaF64` on `messages_over_budget / messages_seen`, `CusumF64` on
+the outputs once per summary (`Ema` on `messages_over_budget / messages_seen`, `Cusum` on
 `max_behind_ticks`), not inside the type.
 
 ## Reading the Summary
@@ -188,7 +188,7 @@ bound reads 0 and proofs are ignored until the clock passes the floor.
 Measured pinned (`taskset -c 0`, best of three, `examples/perf_stats.rs`):
 `on_work` 5 cycles p50 under steady load and 5 under mixed load (an empty
 poll before a message at random), `on_idle` 1 cycle, beside
-`LivenessU64::update` at 7 and `CoDelI64::update` at 5 in the same runs.
+`Liveness::update` at 7 and `CoDel::<i64>::update` at 5 in the same runs.
 
 `on_work` is branchless by design. Its one data-dependent decision, whether
 the floor is pending, is a coin flip under mixed load, and a branch on it

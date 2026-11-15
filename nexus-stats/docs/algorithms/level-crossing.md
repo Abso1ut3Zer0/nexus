@@ -32,7 +32,7 @@ and activity/oscillation counting.
 ## API
 
 ```rust
-let mut lc = LevelCrossingF64::new(100.0);  // threshold
+let mut lc = LevelCrossing::<f64>::new(100.0);  // threshold
 
 lc.update(95.0).unwrap();   // below — false
 lc.update(105.0).unwrap();  // crossed! — true
@@ -52,6 +52,6 @@ assert_eq!(lc.crossing_count(), 2);
 
 | Operation | p50 | p99 |
 |-----------|-----|-----|
-| `LevelCrossingF64::update` | ~2 cycles | ~2 cycles |
+| `LevelCrossing::<f64>::update` | ~2 cycles | ~2 cycles |
 
 One comparison per sample. Branch perfectly predicted for stable signals.

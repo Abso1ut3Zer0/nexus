@@ -33,15 +33,15 @@ if let Some(lambda) = kyle.lambda() {
 
 ### Measure illiquidity
 
-**Type:** `AmihudF64` (nexus-stats-core)
+**Type:** `Amihud` (nexus-stats-core)
 
 `|return| / dollar_volume` — higher means more illiquid, wider spreads
 needed. Simpler than Kyle's lambda (no regression, just a ratio).
 
 ```rust
-use nexus_stats_core::statistics::AmihudF64;
+use nexus_stats_core::statistics::Amihud;
 
-let mut illiq = AmihudF64::builder()
+let mut illiq = Amihud::builder()
     .halflife(100.0)
     .build()?;
 
@@ -143,15 +143,15 @@ markout.update(fill_price, current_mid)?;
 
 ### How fast does my signal mean-revert?
 
-**Type:** `HalfLifeF64` (nexus-stats-core)
+**Type:** `HalfLife` (nexus-stats-core)
 
 Estimates mean-reversion half-life from lag-1 autocorrelation.
 `half_life = -ln(2) / ln(AC(1))`.
 
 ```rust
-use nexus_stats_core::statistics::HalfLifeF64;
+use nexus_stats_core::statistics::HalfLife;
 
-let mut hl = HalfLifeF64::new();
+let mut hl = HalfLife::new();
 
 // Feed spread observations:
 hl.update(current_spread)?;
@@ -164,15 +164,15 @@ if let Some(half_life) = hl.half_life() {
 
 ### Is the market trending or mean-reverting?
 
-**Type:** `HurstF64` (nexus-stats-core)
+**Type:** `Hurst` (nexus-stats-core)
 
 Rolling Hurst exponent via R/S analysis. H < 0.5 = mean-reverting,
 H > 0.5 = trending, H ≈ 0.5 = random walk.
 
 ```rust
-use nexus_stats_core::statistics::HurstF64;
+use nexus_stats_core::statistics::Hurst;
 
-let mut hurst = HurstF64::builder()
+let mut hurst = Hurst::builder()
     .window_size(100)
     .build();
 
@@ -186,20 +186,20 @@ if hurst.is_mean_reverting() {
 }
 ```
 
-**Pair with `VarianceRatioF64`** for confirmation — two independent
+**Pair with `VarianceRatio`** for confirmation — two independent
 tests of the same hypothesis.
 
 ### Variance ratio test for random walk
 
-**Type:** `VarianceRatioF64` (nexus-stats-core)
+**Type:** `VarianceRatio` (nexus-stats-core)
 
 VR(q) = Var(q-period returns) / (q × Var(1-period returns)).
 VR = 1 → random walk. VR < 1 → mean-reverting. VR > 1 → trending.
 
 ```rust
-use nexus_stats_core::statistics::VarianceRatioF64;
+use nexus_stats_core::statistics::VarianceRatio;
 
-let mut vr = VarianceRatioF64::builder()
+let mut vr = VarianceRatio::builder()
     .q(5)            // compare 5-period vs 1-period variance
     .halflife(200.0)
     .build()?;
@@ -220,15 +220,15 @@ Cheaper to compute than Hurst.
 
 ### Has the distribution changed?
 
-**Type:** `DistributionShiftF64` (nexus-stats-core)
+**Type:** `DistributionShift` (nexus-stats-core)
 
 Compares fast-window vs slow-baseline kurtosis and skewness. Catches
 regime changes that CUSUM misses (mean stays flat, but tails get fat).
 
 ```rust
-use nexus_stats_core::detection::DistributionShiftF64;
+use nexus_stats_core::detection::DistributionShift;
 
-let mut det = DistributionShiftF64::builder()
+let mut det = DistributionShift::builder()
     .fast_window(50)
     .build();
 
@@ -247,7 +247,7 @@ if let Some(shift) = det.skewness_shift() {
 
 ### Change detection on a running metric
 
-**Types:** `CusumF64`, `ShiryaevRobertsF64` (nexus-stats-core)
+**Types:** `Cusum`, `ShiryaevRobertsF64` (nexus-stats-core)
 
 CUSUM detects persistent mean shifts. Shiryaev-Roberts detects transient
 shifts. Use CUSUM for structural changes (regime shift), S-R for
@@ -259,15 +259,15 @@ short-lived anomalies (flash event).
 
 ### Track win rate
 
-**Type:** `HitRateF64` (nexus-stats-core)
+**Type:** `HitRate` (nexus-stats-core)
 
 Fraction of directionally correct predictions. Both cumulative and
 exponentially weighted.
 
 ```rust
-use nexus_stats_core::statistics::HitRateF64;
+use nexus_stats_core::statistics::HitRate;
 
-let mut hits = HitRateF64::builder()
+let mut hits = HitRate::builder()
     .halflife(100.0)
     .build()?;
 
@@ -361,15 +361,15 @@ let horizon = decay.useful_horizon(0.01);  // predictive horizon
 | Use Case | Type | Crate |
 |----------|------|-------|
 | Market impact | `KyleLambdaF64` | regression |
-| Illiquidity | `AmihudF64` | core |
+| Illiquidity | `Amihud` | core |
 | Bar construction | `BucketAccumulator` | core |
 | Signal decay curve | `SignalDecayCurve` | regression |
 | Lagged prediction / markout | `LaggedPredictor` | regression |
-| Mean-reversion speed | `HalfLifeF64` | core |
-| Trending vs mean-reverting | `HurstF64` | core |
-| Random walk test | `VarianceRatioF64` | core |
-| Distribution change | `DistributionShiftF64` | core/detection |
-| Win rate | `HitRateF64` | core |
+| Mean-reversion speed | `HalfLife` | core |
+| Trending vs mean-reverting | `Hurst` | core |
+| Random walk test | `VarianceRatio` | core |
+| Distribution change | `DistributionShift` | core/detection |
+| Win rate | `HitRate` | core |
 | Conditional smoothing | `ConditionalEmaF64` | smoothing |
-| Mean shift detection | `CusumF64` | core |
+| Mean shift detection | `Cusum` | core |
 | Transient anomaly detection | `ShiryaevRobertsF64` | core |

@@ -8,7 +8,7 @@ Chan's algorithm.
 |----------|-------|
 | Update cost | ~10 cycles |
 | Memory | ~24 bytes |
-| Types | `WelfordF64`, `WelfordF32` |
+| Types | `Welford`, `WelfordF32` |
 | Priming | Mean after 1 sample, variance after 2 |
 | Output | `mean()`, `variance()`, `std_dev()` — all `Option<T>` |
 
@@ -78,7 +78,7 @@ the results without loss of precision.
 
 ```rust
 // No configuration needed — just create and update
-let mut stats = WelfordF64::new();
+let mut stats = Welford::new();
 
 for sample in data {
     stats.update(sample);
@@ -94,8 +94,8 @@ println!("n={}, mean={:.2}, std_dev={:.2}",
 ### Merging
 
 ```rust
-let mut worker_a = WelfordF64::new();
-let mut worker_b = WelfordF64::new();
+let mut worker_a = Welford::new();
+let mut worker_b = Welford::new();
 
 // Split work
 for x in &data[..half] { worker_a.update(*x); }
@@ -111,7 +111,7 @@ worker_a.merge(&worker_b);
 ### Signal-to-Noise Ratio
 
 ```rust
-let mut stats = WelfordF64::new();
+let mut stats = Welford::new();
 
 // On each observation:
 stats.update(measurement);
@@ -124,7 +124,7 @@ if let (Some(mean), Some(std)) = (stats.mean(), stats.std_dev()) {
 ### Networking — Latency Statistics
 
 ```rust
-let mut latency_stats = WelfordF64::new();
+let mut latency_stats = Welford::new();
 
 // Per-request:
 latency_stats.update(response_time_ms);
@@ -139,12 +139,12 @@ if let Some(std) = latency_stats.std_dev() {
 
 ```rust
 // Each worker tracks its own stats
-let mut per_worker: Vec<WelfordF64> = (0..num_workers)
-    .map(|_| WelfordF64::new())
+let mut per_worker: Vec<Welford> = (0..num_workers)
+    .map(|_| Welford::new())
     .collect();
 
 // Periodically merge for global view
-let mut global = WelfordF64::new();
+let mut global = Welford::new();
 for w in &per_worker {
     global.merge(w);
 }
@@ -154,8 +154,8 @@ for w in &per_worker {
 
 | Operation | p50 | p99 |
 |-----------|-----|-----|
-| `WelfordF64::update` | 10 cycles | 12 cycles |
-| `WelfordF64::std_dev` query | ~9 cycles | ~10 cycles |
+| `Welford::update` | 10 cycles | 12 cycles |
+| `Welford::std_dev` query | ~9 cycles | ~10 cycles |
 
 The update includes one division (`delta / count`). The `std_dev()` query
 includes one `sqrt` (hardware `vsqrtsd`, ~13 cycles latency but pipelined).

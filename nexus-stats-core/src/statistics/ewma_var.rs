@@ -224,8 +224,7 @@ macro_rules! impl_ewma_var {
     };
 }
 
-impl_ewma_var!(pub EwmaVarF64, pub EwmaVarF64Builder, f64);
-impl_ewma_var!(#[allow(dead_code)] pub(crate) EwmaVarF32, #[allow(dead_code)] pub(crate) EwmaVarF32Builder, f32);
+impl_ewma_var!(pub EwmaVar, pub EwmaVarBuilder, f64);
 
 #[cfg(test)]
 mod tests {
@@ -233,7 +232,7 @@ mod tests {
 
     #[test]
     fn constant_input_zero_variance() {
-        let mut ev = EwmaVarF64::builder().alpha(0.1).build().unwrap();
+        let mut ev = EwmaVar::builder().alpha(0.1).build().unwrap();
 
         for _ in 0..100 {
             let _ = ev.update(100.0).unwrap();
@@ -248,7 +247,7 @@ mod tests {
 
     #[test]
     fn variance_positive_for_varying_input() {
-        let mut ev = EwmaVarF64::builder().alpha(0.1).build().unwrap();
+        let mut ev = EwmaVar::builder().alpha(0.1).build().unwrap();
 
         for i in 0..100 {
             let _ = ev.update(if i % 2 == 0 { 100.0 } else { 110.0 }).unwrap();
@@ -263,7 +262,7 @@ mod tests {
 
     #[test]
     fn priming_behavior() {
-        let mut ev = EwmaVarF64::builder()
+        let mut ev = EwmaVar::builder()
             .alpha(0.1)
             .min_samples(5)
             .build()
@@ -278,7 +277,7 @@ mod tests {
 
     #[test]
     fn reset_clears_state() {
-        let mut ev = EwmaVarF64::builder().alpha(0.1).build().unwrap();
+        let mut ev = EwmaVar::builder().alpha(0.1).build().unwrap();
         for i in 0..50 {
             let _ = ev.update(i as f64).unwrap();
         }
@@ -291,7 +290,7 @@ mod tests {
 
     #[test]
     fn std_dev_is_sqrt_of_variance() {
-        let mut ev = EwmaVarF64::builder().alpha(0.3).build().unwrap();
+        let mut ev = EwmaVar::builder().alpha(0.3).build().unwrap();
         for i in 0..50 {
             let _ = ev.update(100.0 + (i % 10) as f64).unwrap();
         }
@@ -303,16 +302,8 @@ mod tests {
     }
 
     #[test]
-    fn f32_basic() {
-        let mut ev = EwmaVarF32::builder().alpha(0.1).build().unwrap();
-        let _ = ev.update(100.0).unwrap();
-        let _ = ev.update(110.0).unwrap();
-        assert!(ev.variance().is_some());
-    }
-
-    #[test]
     fn seeded_is_primed() {
-        let ev = EwmaVarF64::builder()
+        let ev = EwmaVar::builder()
             .alpha(0.1)
             .seed(100.0, 25.0)
             .build()
@@ -325,13 +316,13 @@ mod tests {
 
     #[test]
     fn errors_without_alpha() {
-        let result = EwmaVarF64::builder().build();
+        let result = EwmaVar::builder().build();
         assert!(matches!(result, Err(crate::ConfigError::Missing("alpha"))));
     }
 
     #[test]
     fn rejects_nan_and_inf() {
-        let mut ev = EwmaVarF64::builder().alpha(0.1).build().unwrap();
+        let mut ev = EwmaVar::builder().alpha(0.1).build().unwrap();
         assert_eq!(ev.update(f64::NAN), Err(crate::DataError::NotANumber));
         assert_eq!(ev.update(f64::INFINITY), Err(crate::DataError::Infinite));
         assert_eq!(

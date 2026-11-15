@@ -170,5 +170,5 @@ let te_xy = te.value(); // bits
 
 ## Cross-references
 
-- `HurstF64`, `HalfLifeF64`, `VarianceRatioF64` — [`nexus-stats-core::statistics`](../../nexus-stats-core/docs/statistics.md) — complementary regime classifiers.
-- `CovarianceF64` — lag-0 linear relationship when nonlinear info isn't needed.
+- `Hurst`, `HalfLife`, `VarianceRatio` — [`nexus-stats-core::statistics`](../../nexus-stats-core/docs/statistics.md) — complementary regime classifiers.
+- `Covariance` — lag-0 linear relationship when nonlinear info isn't needed.
