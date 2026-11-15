@@ -13,10 +13,12 @@
 /// decision: a timer (every millisecond, every second), a count (every
 /// 1,000 messages), or an event; the type keeps no clock.
 ///
-/// Merges exactly across summaries: counts and totals add, `min` takes the
-/// min, `max` the max, `is_backlogged` ANDs, and a summary with no messages
-/// is neutral (the other side's values stand).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+/// Merges exactly as a plain fold: counts and totals add, `min` takes the
+/// min, `max` the max, `is_backlogged` ANDs. A period with no messages is
+/// the identity of every field (`u64::MAX` minimum, zero maximum and
+/// total, `true` flag) and carries no information in them: read
+/// `messages_seen` first.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct SojournSummary {
     /// Messages seen in the period.
     pub messages_seen: u64,
@@ -25,9 +27,9 @@ pub struct SojournSummary {
     /// past the budget.
     pub messages_over_budget: u64,
     /// Shortest sojourn, in the caller's tick unit: the floor, transit plus
-    /// processing. `None` when no message was seen. **Zero means the two
-    /// clocks disagree**, because a real sojourn is never zero.
-    pub min_sojourn_ticks: Option<u64>,
+    /// processing. `u64::MAX` when no message was seen. **Zero means the
+    /// two clocks disagree**, because a real sojourn is never zero.
+    pub min_sojourn_ticks: u64,
     /// Longest sojourn: the worst wait. Zero when no message was seen.
     pub max_sojourn_ticks: u64,
     /// Sum of all sojourns, saturating. [`mean_sojourn_ticks`] divides it by
@@ -38,7 +40,8 @@ pub struct SojournSummary {
     pub total_sojourn_ticks: u64,
     /// No message within budget for the whole period: the queue stood the
     /// entire time. CoDel's standing queue with the period as the interval.
-    /// False for an empty period.
+    /// Vacuously true for an empty period, as for
+    /// [`PollSummary`](super::PollSummary).
     pub is_backlogged: bool,
 }
 
@@ -160,14 +163,13 @@ impl SojournSaturation {
     /// count, an event.
     #[inline]
     pub fn take(&mut self) -> SojournSummary {
-        let seen = self.messages_seen;
         let summary = SojournSummary {
-            messages_seen: seen,
+            messages_seen: self.messages_seen,
             messages_over_budget: self.messages_over_budget,
-            min_sojourn_ticks: (seen > 0).then_some(self.min_sojourn),
+            min_sojourn_ticks: self.min_sojourn,
             max_sojourn_ticks: self.max_sojourn,
             total_sojourn_ticks: self.total_sojourn,
-            is_backlogged: seen > 0 && !self.within_budget_seen,
+            is_backlogged: !self.within_budget_seen,
         };
         self.messages_seen = 0;
         self.messages_over_budget = 0;
@@ -191,14 +193,20 @@ mod tests {
 
     const BUDGET: u64 = 50;
 
+    // An empty period is the identity of every field: merging it into any
+    // other summary changes nothing. It carries no information; readers
+    // check `messages_seen` first.
     #[test]
-    fn empty_period_reads_as_nothing_not_as_a_queue() {
+    fn empty_period_is_the_merge_identity() {
         let mut sat = SojournSaturation::new(BUDGET);
         let s = sat.take();
-        assert_eq!(s, SojournSummary::default());
-        assert_eq!(s.min_sojourn_ticks, None);
+        assert_eq!(s.messages_seen, 0);
+        assert_eq!(s.messages_over_budget, 0);
+        assert_eq!(s.min_sojourn_ticks, u64::MAX);
+        assert_eq!(s.max_sojourn_ticks, 0);
+        assert_eq!(s.total_sojourn_ticks, 0);
         assert_eq!(s.mean_sojourn_ticks(), None);
-        assert!(!s.is_backlogged);
+        assert!(s.is_backlogged);
     }
 
     #[test]
@@ -208,7 +216,7 @@ mod tests {
         let s = sat.take();
         assert_eq!(s.messages_seen, 1);
         assert_eq!(s.messages_over_budget, 0);
-        assert_eq!(s.min_sojourn_ticks, Some(12));
+        assert_eq!(s.min_sojourn_ticks, 12);
         assert_eq!(s.max_sojourn_ticks, 12);
         assert_eq!(s.total_sojourn_ticks, 12);
         assert_eq!(s.mean_sojourn_ticks(), Some(12));
@@ -255,7 +263,7 @@ mod tests {
         sat.update(-1_000);
         sat.update(40);
         let s = sat.take();
-        assert_eq!(s.min_sojourn_ticks, Some(0));
+        assert_eq!(s.min_sojourn_ticks, 0);
         assert_eq!(s.total_sojourn_ticks, 70);
         assert_eq!(s.messages_over_budget, 0);
     }
@@ -287,7 +295,7 @@ mod tests {
         let _ = sat.take();
         sat.update(5);
         let s = sat.take();
-        assert_eq!(s.min_sojourn_ticks, Some(5));
+        assert_eq!(s.min_sojourn_ticks, 5);
         assert_eq!(s.max_sojourn_ticks, 5);
         assert_eq!(s.messages_over_budget, 0);
         assert!(!s.is_backlogged);
@@ -326,10 +334,10 @@ mod tests {
             core::mem::size_of::<SojournSaturation>(),
             (6usize * 8 + 1).next_multiple_of(a)
         );
-        // two counts, Option<u64>, max, total, flag.
+        // two counts, min, max, total, flag.
         assert_eq!(
             core::mem::size_of::<SojournSummary>(),
-            (4 * 8 + core::mem::size_of::<Option<u64>>() + 1).next_multiple_of(a)
+            (5usize * 8 + 1).next_multiple_of(a)
         );
     }
 }
@@ -341,14 +349,8 @@ mod proptests {
 
     const BUDGET: u64 = 50;
 
-    /// The merge rule the docs promise, with an empty summary neutral.
+    /// The merge rule the docs promise: a plain fold, no special cases.
     fn merge(a: SojournSummary, b: SojournSummary) -> SojournSummary {
-        if a.messages_seen == 0 {
-            return b;
-        }
-        if b.messages_seen == 0 {
-            return a;
-        }
         SojournSummary {
             messages_seen: a.messages_seen + b.messages_seen,
             messages_over_budget: a.messages_over_budget + b.messages_over_budget,
@@ -398,12 +400,12 @@ mod proptests {
             prop_assert_eq!(s.messages_seen, clamped.len() as u64);
             prop_assert_eq!(s.messages_over_budget, clamped.iter().filter(|&&x| x > BUDGET).count() as u64);
             prop_assert!(s.messages_over_budget <= s.messages_seen);
-            prop_assert_eq!(s.min_sojourn_ticks, clamped.iter().copied().min());
+            prop_assert_eq!(s.min_sojourn_ticks, clamped.iter().copied().min().unwrap_or(u64::MAX));
             prop_assert_eq!(s.max_sojourn_ticks, clamped.iter().copied().max().unwrap_or(0));
             prop_assert_eq!(s.total_sojourn_ticks, clamped.iter().sum::<u64>());
-            prop_assert_eq!(s.is_backlogged, !clamped.is_empty() && clamped.iter().all(|&x| x > BUDGET));
-            if let (Some(min), Some(mean)) = (s.min_sojourn_ticks, s.mean_sojourn_ticks()) {
-                prop_assert!(min <= mean && mean <= s.max_sojourn_ticks);
+            prop_assert_eq!(s.is_backlogged, clamped.iter().all(|&x| x > BUDGET));
+            if let Some(mean) = s.mean_sojourn_ticks() {
+                prop_assert!(s.min_sojourn_ticks <= mean && mean <= s.max_sojourn_ticks);
             }
         }
     }

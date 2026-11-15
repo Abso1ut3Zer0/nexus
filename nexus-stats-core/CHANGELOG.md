@@ -77,7 +77,8 @@ contained.
   `total_sojourn_ticks` with an integer `mean_sojourn_ticks()`, and
   `is_backlogged` (no message within budget all period). One knob, the
   budget; no clock inside; snap when the caller decides; summaries merge
-  exactly. Negative sojourns (clock skew) clamp to zero
+  exactly as a plain fold (an empty period is the identity of every field).
+  Negative sojourns (clock skew) clamp to zero
   ([#770](https://github.com/Abso1ut3Zer0/nexus/issues/770)).
 - **`LivenessU64`** — liveness detector with `u64` timestamps, mirrors `LivenessI64`.
 

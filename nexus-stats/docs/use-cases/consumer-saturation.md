@@ -226,7 +226,7 @@ sojourn.update((wall_now_ns - msg.enqueued_wall_ns) as i64);
 // on the same snap as `sat.take()`:
 let s = sojourn.take();
 // s.messages_over_budget / s.messages_seen, s.max_sojourn_ticks,
-// s.min_sojourn_ticks (the floor; Some(0) means the clocks disagree),
+// s.min_sojourn_ticks (the floor; 0 means the clocks disagree),
 // s.mean_sojourn_ticks(), s.is_backlogged
 ```
 

@@ -59,19 +59,21 @@ drop, back off); this is the observability summary.
 |-------|---------|---------|
 | `messages_seen` | messages in the period | denominator |
 | `messages_over_budget` | of those, sojourn above `budget` | `/ messages_seen` near 0 |
-| `min_sojourn_ticks` | the floor: transit plus processing. `None` for an empty period | small and stable. **Zero means the two clocks disagree** |
+| `min_sojourn_ticks` | the floor: transit plus processing. `u64::MAX` for an empty period | small and stable. **Zero means the two clocks disagree** |
 | `max_sojourn_ticks` | the worst wait | under `budget` |
 | `total_sojourn_ticks` | sum of sojourns, saturating | |
 | `mean_sojourn_ticks()` | `total / messages_seen`, integer | close to `min` |
-| `is_backlogged` | no message within budget all period: CoDel's standing queue with the period as the interval. False for an empty period | false |
+| `is_backlogged` | no message within budget all period: CoDel's standing queue with the period as the interval. Vacuously true for an empty period, as in `PollSummary` | false |
 
 `total_sojourn_ticks / period length` is the mean number of messages waiting
 (Little's law), so the count form of saturation is one division away;
 healthy is well under 1. That is the same quantity `PollSaturation` reports
 as `max_messages_per_poll`, reached from the other direction.
 
-Merging summaries is exact: counts and totals add, `min` takes the min,
-`max` the max, `is_backlogged` ANDs, and an empty summary is neutral.
+Merging summaries is an exact plain fold: counts and totals add, `min`
+takes the min, `max` the max, `is_backlogged` ANDs. An empty period is the
+identity of every field and carries no information in `min`, `max` or the
+flag; read `messages_seen` first.
 
 ## Clocks and Stamps
 
