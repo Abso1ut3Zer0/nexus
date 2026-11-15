@@ -33,8 +33,13 @@ use nexus_stats::monitoring::SojournSaturation;
 
 let mut sat = SojournSaturation::new(50_000);      // budget: 50 µs in ns ticks
 
-// per message, in the handler: same clock on both sides
-sat.update((now_wall_ns - msg.enqueued_wall_ns) as i64);
+// per message, in the handler: both stamps from the same clock.
+// i128 wall-clock nanoseconds: the difference is signed, negative on skew.
+let sojourn: i128 = now_wall_ns - msg.enqueued_wall_ns;
+sat.update(sojourn as i64);                        // fits i64 for 292 years
+// u64 monotonic ticks: wrapping subtraction reinterpreted as i64 is the
+// signed difference, negative on skew. Never a plain `a - b` on u64.
+sat.update(now_ticks.wrapping_sub(msg.enqueued_ticks) as i64);
 
 // whenever you decide to snap: a timer, every N messages, an event
 let s = sat.take();

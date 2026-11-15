@@ -92,10 +92,13 @@ impl SojournSummary {
 /// in-process and same-host producers that is one monotonic or wall clock
 /// and the sojourn is exact. Across hosts a wall-clock offset shifts every
 /// sojourn by the same amount; the minimum absorbs it and the over-budget
-/// count must be read against it. Subtract in the caller's wide type and
-/// pass the difference: a nanosecond difference fits `i64` for 292 years.
-/// A negative difference is clock skew; it is clamped to zero, which then
-/// shows up as a zero minimum.
+/// count must be read against it. Subtract in a signed type and pass the
+/// difference: with `i128` wall-clock nanoseconds, `(now - enqueued) as
+/// i64` (the difference fits `i64` for 292 years); with `u64` ticks,
+/// `now.wrapping_sub(enqueued) as i64`, which is the signed difference.
+/// Never a plain `u64` subtraction, which underflows on skew into a huge
+/// positive wait. A negative difference is clock skew; it is clamped to
+/// zero, which then shows up as a zero minimum.
 ///
 /// # Knobs
 ///

@@ -191,7 +191,7 @@ The stamped twin of `PollSaturation`. Feed it each message's queue sojourn (dequ
 use nexus_stats_core::monitoring::SojournSaturation;
 
 let mut sat = SojournSaturation::new(50_000);       // budget: 50 µs in ns ticks
-sat.update(dequeued_ns - enqueued_ns);               // per message, same clock
+sat.update(dequeued_ns.wrapping_sub(enqueued_ns) as i64); // u64 stamps, same clock; negative on skew, clamped inside
 let summary = sat.take();                            // timer, count or event
 ```
 

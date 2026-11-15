@@ -220,8 +220,11 @@ use nexus_stats::monitoring::SojournSaturation;
 
 let mut sojourn = SojournSaturation::new(50_000);                 // budget: 50 µs in ns
 
-// per message, in the handler, beside the PollSaturation call:
-sojourn.update((wall_now_ns - msg.enqueued_wall_ns) as i64);
+// per message, in the handler, beside the PollSaturation call. Both stamps
+// are i128 wall-clock nanoseconds, so the difference is signed and negative
+// on skew; with u64 ticks use `now.wrapping_sub(enqueued) as i64` instead.
+let wait: i128 = wall_now_ns - msg.enqueued_wall_ns;
+sojourn.update(wait as i64);
 
 // on the same snap as `sat.take()`:
 let s = sojourn.take();
