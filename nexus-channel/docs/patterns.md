@@ -158,5 +158,5 @@ let (tx, rx) = channel_with_config::<Event>(4096, 64);
 ```
 
 Pair with CPU pinning (e.g. `taskset -c 0,2`) and hyperthreading disabled
-on the critical cores. See the nexus workspace `CLAUDE.md` for the full
-benchmarking setup.
+on the critical cores. See [`docs/benchmarking.md`](../../docs/benchmarking.md)
+for the full benchmarking setup.

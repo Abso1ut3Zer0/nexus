@@ -368,8 +368,7 @@ fn conformance_seq_reset() {
 
 // ── battle-test scenarios (Tier 1 sequence-number + Tier 3 liveness) ─────────
 //
-// See `.claude/fix-battletest-findings.md` for the pass/finding disposition of
-// each case and the FIX 4.4 rationale behind every assertion.
+// Each case states the FIX 4.4 rationale behind its assertions inline.
 
 /// Drive `recv` to a terminal outcome, recording whether `Resending` was ever
 /// entered and whether an `Application` message surfaced. Returns the disconnect
@@ -564,7 +563,7 @@ fn conformance_test_request_long_id() {
     assert!(child.wait().unwrap().success());
 }
 
-// Regression for confirmed engine bug Q1 (see .claude/fix-battletest-findings.md):
+// Regression for a confirmed engine bug found by the battle-test sweep:
 // a below-expected SequenceReset-GapFill carrying PossDupFlag=Y must be discarded
 // (the session survives), NOT treated as SeqNumTooLow. `on_sequence_reset` once
 // hard-coded `poss_dup=false` and disconnected; the fix landed (#606), so this

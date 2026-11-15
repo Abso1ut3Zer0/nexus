@@ -420,5 +420,3 @@ borrowing iterator over validated subslices) is miri-clean.
   build-for-your-target stance. Documented here rather than changed.
 - **`parse_tag` hardening** parked above, pending a real caller that
   needs adversarial-input bounds.
-- The stale `.claude/perf.md` (reader-only, references the old
-  `parser.rs` name) is superseded by this catalog.

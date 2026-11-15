@@ -33,4 +33,3 @@ wakers, mio-driven IO, and a tokio bridge for ecosystem code on cold paths.
 - [nexus-rt docs](../../nexus-rt/docs/INDEX.md) — Dispatch framework that
   this runtime drives
 - [BENCHMARKS.md](../BENCHMARKS.md) — Measured latencies and throughput
-- [ROADMAP.md](../ROADMAP.md) — Planned work
