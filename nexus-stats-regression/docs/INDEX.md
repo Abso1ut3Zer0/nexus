@@ -22,45 +22,45 @@ All types are streaming, O(1) or O(N) per update in feature dimension, and zero-
 
 | Type | Fits |
 |------|------|
-| `LinearRegressionF64` / `F32` | y = a + bx (ordinary least squares, closed-form, streaming) |
-| `EwLinearRegressionF64` / `F32` | EW variant of above |
-| `PolynomialRegressionF64` / `F32` | y = a0 + a1 x + a2 x² + ... + ad x^d |
-| `EwPolynomialRegressionF64` / `F32` | EW variant |
+| `LinearRegression` / `F32` | y = a + bx (ordinary least squares, closed-form, streaming) |
+| `EwLinearRegression` / `F32` | EW variant of above |
+| `PolynomialRegression` / `F32` | y = a0 + a1 x + a2 x² + ... + ad x^d |
+| `EwPolynomialRegression` / `F32` | EW variant |
 | `TransformedRegressionF64` | Exp / log / power fits via linearization |
-| `LogisticRegressionF64` | Binary classifier via online gradient steps |
+| `LogisticRegression` | Binary classifier via online gradient steps |
 | `LaggedPredictor` | y_t = a + b * x_{t-lag} — trading-specific |
-| `KyleLambdaF64` | Price impact slope from volume (market microstructure) |
+| `KyleLambda` | Price impact slope from volume (market microstructure) |
 | `SignalDecayCurve` | Fits an exponential decay to IC vs horizon |
 
 ### learning (adaptive filters + optimizers)
 
 | Type | Algorithm |
 |------|-----------|
-| `LmsFilterF64` / `F32` | Least Mean Squares — simplest adaptive filter |
-| `NlmsFilterF64` / `F32` | Normalized LMS — step-size invariant to input power |
-| `RlsFilterF64` / `F32` | Recursive Least Squares — fast-converging, matrix-inversion-style |
-| `HuberRegressionF64` | Outlier-robust linear regression via Huber loss |
-| `OnlineKMeansF64` | Streaming k-means cluster assignment |
-| `OnlineGdF64` | Plain gradient descent |
-| `AdaGradF64` | Per-feature adaptive learning rate |
-| `AdamF64` | Adam / AdamW optimizer |
-| `Ucb1F64` / `F32` | UCB1 multi-armed bandit — deterministic, no RNG |
-| `ThompsonBetaF64` / `F32` | Thompson Sampling with Beta prior (binary/[0,1] rewards) |
-| `ThompsonGammaF64` / `F32` | Thompson Sampling with Gamma prior (positive rewards) |
-| `EpsilonGreedyF64` / `F32` | Epsilon-greedy bandit |
-| `Exp3F64` / `F32` | EXP3 adversarial bandit (log-space weights) |
+| `LmsFilter` / `F32` | Least Mean Squares — simplest adaptive filter |
+| `NlmsFilter` / `F32` | Normalized LMS — step-size invariant to input power |
+| `RlsFilter` / `F32` | Recursive Least Squares — fast-converging, matrix-inversion-style |
+| `HuberRegression` | Outlier-robust linear regression via Huber loss |
+| `OnlineKMeans` | Streaming k-means cluster assignment |
+| `OnlineGd` | Plain gradient descent |
+| `AdaGrad` | Per-feature adaptive learning rate |
+| `Adam` | Adam / AdamW optimizer |
+| `Ucb1` / `F32` | UCB1 multi-armed bandit — deterministic, no RNG |
+| `ThompsonBeta` / `F32` | Thompson Sampling with Beta prior (binary/[0,1] rewards) |
+| `ThompsonGamma` / `F32` | Thompson Sampling with Gamma prior (positive rewards) |
+| `EpsilonGreedy` / `F32` | Epsilon-greedy bandit |
+| `Exp3` / `F32` | EXP3 adversarial bandit (log-space weights) |
 
 ### estimation
 
 | Type | What it is |
 |------|------------|
-| `Kalman2dF64` / `F32` | 2D Kalman filter with customizable dynamics |
-| `Kalman3dF64` / `F32` | 3D Kalman filter |
-| `BetaBinomialF64` | Bayesian rate estimation (success/failure) |
-| `GammaPoissonF64` / `F32` | Bayesian rate estimation (Poisson count / exposure) |
+| `Kalman2d` / `F32` | 2D Kalman filter with customizable dynamics |
+| `Kalman3d` / `F32` | 3D Kalman filter |
+| `BetaBinomial` | Bayesian rate estimation (success/failure) |
+| `GammaPoisson` / `F32` | Bayesian rate estimation (Poisson count / exposure) |
 
 ## Cross-references
 
-- Scalar Kalman: [`Kalman1dF64`](../../nexus-stats-smoothing/docs/kalman1d.md) in `nexus-stats-smoothing`.
+- Scalar Kalman: [`Kalman1d`](../../nexus-stats-smoothing/docs/kalman1d.md) in `nexus-stats-smoothing`.
 - Half-life / Hurst / variance ratio (complement regression for regime classification): [`nexus-stats-core::statistics`](../../nexus-stats-core/docs/statistics.md).
 - Umbrella long-form: [`nexus-stats/docs`](../../nexus-stats/docs/INDEX.md).

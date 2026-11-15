@@ -6,7 +6,7 @@ Module path: `nexus_stats_detection::detection`.
 
 ## MOSUM — Moving Sum
 
-**Types:** `MosumF64`, `MosumI64`. Requires `alloc`.
+**Types:** `Mosum`. Requires `alloc`.
 
 ### What it does
 
@@ -27,28 +27,28 @@ fire if mosum_t < -threshold   (Direction::Down)
 ### API
 
 ```rust
-impl MosumF64 {
-    pub fn builder(target: f64) -> MosumF64Builder;
+impl Mosum {
+    pub fn builder(target: f64) -> MosumBuilder;
     pub fn update(&mut self, sample: f64) -> Result<Option<Direction>, DataError>;
     pub fn is_primed(&self) -> bool;
     pub fn reset(&mut self);
     // value accessors, see source
 }
 
-impl MosumF64Builder {
+impl MosumBuilder {
     pub fn window(self, n: u64) -> Self;
     pub fn threshold(self, t: f64) -> Self;
-    pub fn build(self) -> Result<MosumF64, ConfigError>;
+    pub fn build(self) -> Result<Mosum, ConfigError>;
 }
 ```
 
 ### Example — latency spike detector
 
 ```rust
-use nexus_stats_detection::detection::MosumF64;
+use nexus_stats_detection::detection::Mosum;
 use nexus_stats_core::Direction;
 
-let mut mosum = MosumF64::builder(120.0) // target latency 120us
+let mut mosum = Mosum::builder(120.0) // target latency 120us
     .window(50)
     .threshold(500.0)                    // 500us-us cumulative budget
     .build()
@@ -75,7 +75,7 @@ for &latency in &request_latencies {
 
 ## ShiryaevRoberts — Optimal change detection
 
-**Type:** `ShiryaevRobertsF64`. Requires `std` or `libm`.
+**Type:** `ShiryaevRoberts`. Requires `std` or `libm`.
 
 ### What it does
 
@@ -92,29 +92,29 @@ Under the standard framing, you provide the pre-change mean (`mu_0`), post-chang
 ### API
 
 ```rust
-impl ShiryaevRobertsF64 {
-    pub fn builder() -> ShiryaevRobertsF64Builder;
+impl ShiryaevRoberts {
+    pub fn builder() -> ShiryaevRobertsBuilder;
     pub fn update(&mut self, sample: f64) -> Result<Option<bool>, DataError>;
     pub fn is_primed(&self) -> bool;
     // more accessors, see source
 }
 
-impl ShiryaevRobertsF64Builder {
+impl ShiryaevRobertsBuilder {
     pub fn mu_before(self, mu: f64) -> Self;
     pub fn mu_after(self, mu: f64) -> Self;
     pub fn sigma(self, sigma: f64) -> Self;
     pub fn threshold(self, t: f64) -> Self;
-    pub fn build(self) -> Result<ShiryaevRobertsF64, ConfigError>;
+    pub fn build(self) -> Result<ShiryaevRoberts, ConfigError>;
 }
 ```
 
 ### Example — regime-change detector
 
 ```rust
-use nexus_stats_detection::detection::ShiryaevRobertsF64;
+use nexus_stats_detection::detection::ShiryaevRoberts;
 
 // Known: pre-change mean 0.5, post-change mean 1.2, noise sigma 0.3.
-let mut sr = ShiryaevRobertsF64::builder()
+let mut sr = ShiryaevRoberts::builder()
     .mu_before(0.5)
     .mu_after(1.2)
     .sigma(0.3)
@@ -139,7 +139,7 @@ for &x in &stream {
 
 ## AdaptiveThreshold — EMA-based z-score
 
-**Type:** `AdaptiveThresholdF64`. Requires `std` or `libm`.
+**Type:** `AdaptiveThreshold`. Requires `std` or `libm`.
 
 ### What it does
 
@@ -154,8 +154,8 @@ Maintains a streaming EMA and EW variance. On each update, computes `z = (x - em
 ### API
 
 ```rust
-impl AdaptiveThresholdF64 {
-    pub fn builder() -> AdaptiveThresholdF64Builder;
+impl AdaptiveThreshold {
+    pub fn builder() -> AdaptiveThresholdBuilder;
     pub fn update(&mut self, sample: f64) -> Result<Option<Condition>, DataError>;
     pub fn z_score(&self) -> Option<f64>;
     // more
@@ -165,10 +165,10 @@ impl AdaptiveThresholdF64 {
 ### Example — CPU load outlier
 
 ```rust
-use nexus_stats_detection::detection::AdaptiveThresholdF64;
+use nexus_stats_detection::detection::AdaptiveThreshold;
 use nexus_stats_core::Condition;
 
-let mut at = AdaptiveThresholdF64::builder()
+let mut at = AdaptiveThreshold::builder()
     .halflife(500.0)
     .warning_sigma(2.0)
     .critical_sigma(4.0)
@@ -186,14 +186,14 @@ for &load in &cpu_samples {
 
 ### Caveats
 
-- Gaussian assumption. Fat tails → frequent false alarms. Use `RobustZScoreF64` instead.
+- Gaussian assumption. Fat tails → frequent false alarms. Use `RobustZScore<f64>` instead.
 - The baseline adapts — if the anomaly is *sustained*, the baseline eventually catches up and the alarm clears.
 
 ---
 
 ## RobustZScore — MAD-based anomaly score
 
-**Type:** `RobustZScoreF64`.
+**Type:** `RobustZScore<f64>`.
 
 ### What it does
 
@@ -210,27 +210,31 @@ Robust to up to ~50% corruption — unlike AdaptiveThreshold, whose variance est
 ### API
 
 ```rust
-impl RobustZScoreF64 {
-    pub fn builder() -> RobustZScoreF64Builder;
-    pub fn update(&mut self, sample: f64) -> Result<Option<Condition>, DataError>;
-    // accessors
+impl RobustZScore<f64> {
+    pub fn builder() -> RobustZScoreBuilder<f64>;
+    /// The robust z-score of `sample` once primed; samples past
+    /// `reject_threshold` are scored but do not move the estimators.
+    pub fn update(&mut self, sample: f64) -> Result<Option<f64>, DataError>;
+    // accessors: z_score(), baseline(), mad(), count(), is_primed(), reset()
 }
 ```
 
 ### Example — price outlier detection
 
 ```rust
-use nexus_stats_detection::detection::RobustZScoreF64;
+use nexus_stats_detection::detection::RobustZScore;
 
-let mut rz = RobustZScoreF64::builder()
-    .warning_threshold(3.0)
-    .critical_threshold(6.0)
+let mut rz = RobustZScore::<f64>::builder()
+    .span(50)                 // EMA span for the baseline and the MAD scale
+    .reject_threshold(3.5)    // |z| above this does not move the estimators
     .build()
     .unwrap();
 
 for &price in &prices {
-    if let Some(cond) = rz.update(price).unwrap() {
-        println!("price outlier: {cond:?}");
+    if let Some(z) = rz.update(price).unwrap() {
+        if z.abs() > 3.0 {
+            println!("price outlier: z = {z:.1}");
+        }
     }
 }
 ```
@@ -244,7 +248,7 @@ for &price in &prices {
 
 ## TrendAlert — Forecast-based detection
 
-**Type:** `TrendAlertF64`.
+**Type:** `TrendAlert`.
 
 ### What it does
 
@@ -259,8 +263,8 @@ Internally maintains a Holt-style level + trend estimate. Fires when the `foreca
 ### API
 
 ```rust
-impl TrendAlertF64 {
-    pub fn builder() -> TrendAlertF64Builder;
+impl TrendAlert {
+    pub fn builder() -> TrendAlertBuilder;
     pub fn update(&mut self, sample: f64) -> Result<Option<Condition>, DataError>;
     // level(), trend(), forecast(steps)
 }
@@ -269,10 +273,10 @@ impl TrendAlertF64 {
 ### Example — SLO degradation
 
 ```rust
-use nexus_stats_detection::detection::TrendAlertF64;
+use nexus_stats_detection::detection::TrendAlert;
 use nexus_stats_core::Condition;
 
-let mut alert = TrendAlertF64::builder()
+let mut alert = TrendAlert::builder()
     .alpha(0.3)
     .beta(0.05)
     .forecast_horizon(300) // 300 samples ahead
@@ -297,7 +301,7 @@ for &latency in &stream {
 
 ## MultiGate — Layered severity
 
-**Type:** `MultiGateF64`.
+**Type:** `MultiGate`.
 
 ### What it does
 
@@ -311,8 +315,8 @@ Multiple thresholded "gates" feeding a single state machine. Typically configure
 ### API
 
 ```rust
-impl MultiGateF64 {
-    pub fn builder() -> MultiGateF64Builder;
+impl MultiGate {
+    pub fn builder() -> MultiGateBuilder;
     pub fn update(&mut self, sample: f64) -> Result<Option<Condition>, DataError>;
 }
 ```

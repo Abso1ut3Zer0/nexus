@@ -335,7 +335,7 @@ fn debug_format() {
 #[cfg(all(feature = "regression", feature = "alloc"))]
 #[test]
 fn works_with_lms_filter() {
-    use nexus_stats::learning::LmsFilterF64;
+    use nexus_stats::learning::LmsFilter;
 
     feature_vector! {
         struct LmsFeatures {
@@ -345,7 +345,7 @@ fn works_with_lms_filter() {
         }
     }
 
-    let mut filter = LmsFilterF64::builder()
+    let mut filter = LmsFilter::builder()
         .dimensions(LmsFeatures::DIMENSIONS)
         .learning_rate(0.01)
         .build()
@@ -363,7 +363,7 @@ fn works_with_lms_filter() {
 #[cfg(all(feature = "regression", feature = "alloc"))]
 #[test]
 fn works_with_nlms_filter() {
-    use nexus_stats::learning::NlmsFilterF64;
+    use nexus_stats::learning::NlmsFilter;
 
     feature_vector! {
         struct NlmsFeatures {
@@ -372,7 +372,7 @@ fn works_with_nlms_filter() {
         }
     }
 
-    let mut filter = NlmsFilterF64::builder()
+    let mut filter = NlmsFilter::builder()
         .dimensions(NlmsFeatures::DIMENSIONS)
         .learning_rate(0.5)
         .build()
@@ -386,7 +386,7 @@ fn works_with_nlms_filter() {
 #[cfg(all(feature = "regression", feature = "alloc"))]
 #[test]
 fn works_with_rls_filter() {
-    use nexus_stats::learning::RlsFilterF64;
+    use nexus_stats::learning::RlsFilter;
 
     feature_vector! {
         struct RlsFeatures {
@@ -395,7 +395,7 @@ fn works_with_rls_filter() {
         }
     }
 
-    let mut filter = RlsFilterF64::builder()
+    let mut filter = RlsFilter::builder()
         .dimensions(RlsFeatures::DIMENSIONS)
         .forgetting_factor(0.99)
         .build()
@@ -409,7 +409,7 @@ fn works_with_rls_filter() {
 #[cfg(all(feature = "regression", feature = "alloc"))]
 #[test]
 fn works_with_online_gd() {
-    use nexus_stats::learning::OnlineGdF64;
+    use nexus_stats::learning::OnlineGd;
 
     feature_vector! {
         struct GdGradient {
@@ -418,7 +418,7 @@ fn works_with_online_gd() {
         }
     }
 
-    let mut opt = OnlineGdF64::builder()
+    let mut opt = OnlineGd::builder()
         .dimensions(GdGradient::DIMENSIONS)
         .learning_rate(0.01)
         .build()
@@ -436,7 +436,7 @@ fn works_with_online_gd() {
 ))]
 #[test]
 fn works_with_adagrad() {
-    use nexus_stats::learning::AdaGradF64;
+    use nexus_stats::learning::AdaGrad;
 
     feature_vector! {
         struct AgGradient {
@@ -446,7 +446,7 @@ fn works_with_adagrad() {
         }
     }
 
-    let mut opt = AdaGradF64::builder()
+    let mut opt = AdaGrad::builder()
         .dimensions(AgGradient::DIMENSIONS)
         .learning_rate(0.1)
         .build()
@@ -468,7 +468,7 @@ fn works_with_adagrad() {
 ))]
 #[test]
 fn works_with_adam() {
-    use nexus_stats::learning::AdamF64;
+    use nexus_stats::learning::Adam;
 
     feature_vector! {
         struct AdamGradient {
@@ -477,7 +477,7 @@ fn works_with_adam() {
         }
     }
 
-    let mut opt = AdamF64::builder()
+    let mut opt = Adam::builder()
         .dimensions(AdamGradient::DIMENSIONS)
         .learning_rate(0.001)
         .build()
@@ -495,7 +495,7 @@ fn works_with_adam() {
 ))]
 #[test]
 fn works_with_adam_weight_decay() {
-    use nexus_stats::learning::AdamF64;
+    use nexus_stats::learning::Adam;
 
     feature_vector! {
         struct WdGradient {
@@ -504,7 +504,7 @@ fn works_with_adam_weight_decay() {
         }
     }
 
-    let mut opt = AdamF64::builder()
+    let mut opt = Adam::builder()
         .dimensions(WdGradient::DIMENSIONS)
         .learning_rate(0.001)
         .weight_decay(0.01)
@@ -523,7 +523,7 @@ fn works_with_adam_weight_decay() {
 ))]
 #[test]
 fn works_with_logistic_regression() {
-    use nexus_stats::regression::LogisticRegressionF64;
+    use nexus_stats::regression::LogisticRegression;
 
     feature_vector! {
         struct LrFeatures {
@@ -532,7 +532,7 @@ fn works_with_logistic_regression() {
         }
     }
 
-    let mut lr = LogisticRegressionF64::builder()
+    let mut lr = LogisticRegression::builder()
         .dimensions(LrFeatures::DIMENSIONS)
         .learning_rate(0.1)
         .build()
@@ -546,7 +546,7 @@ fn works_with_logistic_regression() {
 #[cfg(all(feature = "regression", feature = "alloc"))]
 #[test]
 fn works_with_online_kmeans() {
-    use nexus_stats::learning::OnlineKMeansF64;
+    use nexus_stats::learning::OnlineKMeans;
 
     feature_vector! {
         struct KmFeatures {
@@ -555,7 +555,7 @@ fn works_with_online_kmeans() {
         }
     }
 
-    let mut km = OnlineKMeansF64::builder()
+    let mut km = OnlineKMeans::builder()
         .dimensions(KmFeatures::DIMENSIONS)
         .clusters(3)
         .learning_rate(0.1)
@@ -576,7 +576,7 @@ fn works_with_online_kmeans() {
 ))]
 #[test]
 fn realistic_training_loop() {
-    use nexus_stats::learning::AdamF64;
+    use nexus_stats::learning::Adam;
 
     feature_vector! {
         struct ModelParams {
@@ -585,7 +585,7 @@ fn realistic_training_loop() {
         }
     }
 
-    let mut opt = AdamF64::builder()
+    let mut opt = Adam::builder()
         .dimensions(ModelParams::DIMENSIONS)
         .learning_rate(0.01)
         .build()

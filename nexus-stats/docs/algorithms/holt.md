@@ -7,7 +7,7 @@
 |----------|-------|
 | Update cost | ~11 cycles |
 | Memory | ~32 bytes |
-| Types | `HoltF64` |
+| Types | `Holt` |
 | Priming | After 2 samples (needs 2 for initial trend) |
 | Output | `Option<(T, T)>` — (level, trend) |
 
@@ -45,7 +45,7 @@ trend = beta × (level - prev_level) + (1 - beta) × trend
 ## Configuration
 
 ```rust
-let mut holt = HoltF64::builder()
+let mut holt = Holt::builder()
     .alpha(0.3)    // level smoothing
     .beta(0.1)     // trend smoothing
     .build().unwrap();
@@ -65,6 +65,6 @@ if let Some((level, trend)) = holt.update(sample) {
 
 | Operation | p50 | p99 |
 |-----------|-----|-----|
-| `HoltF64::update` | 11 cycles | 12 cycles |
+| `Holt::update` | 11 cycles | 12 cycles |
 
 Two `mul_add` operations per update. No division, no transcendentals.

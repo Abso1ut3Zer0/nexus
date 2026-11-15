@@ -8,7 +8,7 @@ automatically when they leave the window.
 |----------|-------|
 | Update cost | ~6 cycles |
 | Memory | ~N×8 bytes (ring buffer) |
-| Types | `MosumF64`, `MosumI64` |
+| Types | `Mosum` |
 | Requires | `alloc` feature (runtime window size) |
 | Priming | After N samples (window full) |
 | Output | `Option<Direction>` — same as CUSUM |
@@ -57,7 +57,7 @@ decay). MOSUM naturally clears when the spike samples leave the window.
 ## Configuration
 
 ```rust
-let mut mosum = MosumF64::builder(100.0)  // target
+let mut mosum = Mosum::builder(100.0)  // target
     .window_size(64)                       // window size
     .threshold(200.0)
     .min_samples(64)  // primes after window fills
@@ -69,7 +69,7 @@ let mut mosum = MosumF64::builder(100.0)  // target
 ### Trading — Latency Spike Detection
 ```rust
 // Detect 10-sample latency spikes, auto-clear after
-let mut spike = MosumF64::builder(baseline_latency)
+let mut spike = Mosum::builder(baseline_latency)
     .window_size(10)
     .threshold(spike_threshold)
     .build().unwrap();
@@ -78,7 +78,7 @@ let mut spike = MosumF64::builder(baseline_latency)
 ### Networking — Burst Detection
 ```rust
 // Detect traffic bursts over a 32-sample window
-let mut burst = MosumI64::builder(normal_rate)
+let mut burst = Mosum::builder(normal_rate)
     .window_size(32)
     .threshold(burst_threshold)
     .build().unwrap();
@@ -88,7 +88,7 @@ let mut burst = MosumI64::builder(normal_rate)
 
 | Operation | p50 | p99 |
 |-----------|-----|-----|
-| `MosumF64::update` (window=64) | 6 cycles | 7 cycles |
+| `Mosum::update` (window=64) | 6 cycles | 7 cycles |
 
 O(1) per update: add new deviation, subtract evicted deviation from
 running sum, compare against threshold. Stack-allocated ring buffer.

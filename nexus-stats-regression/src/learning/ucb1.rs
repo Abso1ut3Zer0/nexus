@@ -28,9 +28,9 @@ use alloc::vec;
 /// # Examples
 ///
 /// ```
-/// use nexus_stats_regression::learning::Ucb1F64;
+/// use nexus_stats_regression::learning::Ucb1;
 ///
-/// let mut bandit = Ucb1F64::builder()
+/// let mut bandit = Ucb1::builder()
 ///     .arms(3)
 ///     .build()
 ///     .unwrap();
@@ -39,7 +39,7 @@ use alloc::vec;
 /// bandit.update(arm, 1.0).unwrap();
 /// ```
 #[derive(Debug, Clone)]
-pub struct Ucb1F64 {
+pub struct Ucb1 {
     counts: Box<[f64]>,
     rewards: Box<[f64]>,
     exploration: f64,
@@ -49,22 +49,22 @@ pub struct Ucb1F64 {
     min_samples: u64,
 }
 
-/// Builder for [`Ucb1F64`].
+/// Builder for [`Ucb1`].
 #[derive(Debug, Clone)]
-pub struct Ucb1F64Builder {
+pub struct Ucb1Builder {
     arms: Option<usize>,
     exploration: f64,
     decay: f64,
     min_samples: Option<u64>,
 }
 
-impl Ucb1F64 {
+impl Ucb1 {
     /// Creates a builder.
     #[inline]
     #[must_use]
-    pub fn builder() -> Ucb1F64Builder {
+    pub fn builder() -> Ucb1Builder {
         let sqrt2 = nexus_stats_core::math::sqrt(2.0);
-        Ucb1F64Builder {
+        Ucb1Builder {
             arms: None,
             exploration: sqrt2,
             decay: 1.0,
@@ -205,7 +205,7 @@ impl Ucb1F64 {
     }
 }
 
-impl Ucb1F64Builder {
+impl Ucb1Builder {
     /// Sets the number of arms (required, >= 2).
     #[inline]
     #[must_use]
@@ -240,7 +240,7 @@ impl Ucb1F64Builder {
 
     /// Builds the bandit.
     #[inline]
-    pub fn build(self) -> Result<Ucb1F64, nexus_stats_core::ConfigError> {
+    pub fn build(self) -> Result<Ucb1, nexus_stats_core::ConfigError> {
         let arms = self
             .arms
             .ok_or(nexus_stats_core::ConfigError::Missing("arms"))?;
@@ -258,7 +258,7 @@ impl Ucb1F64Builder {
             ));
         }
         let min_samples = self.min_samples.unwrap_or(arms as u64);
-        Ok(Ucb1F64 {
+        Ok(Ucb1 {
             counts: vec![0.0; arms].into_boxed_slice(),
             rewards: vec![0.0; arms].into_boxed_slice(),
             exploration: self.exploration,
@@ -276,7 +276,7 @@ mod tests {
 
     #[test]
     fn explore_all_first() {
-        let mut bandit = Ucb1F64::builder().arms(3).build().unwrap();
+        let mut bandit = Ucb1::builder().arms(3).build().unwrap();
         let a0 = bandit.select();
         bandit.update(a0, 0.5).unwrap();
         let a1 = bandit.select();
@@ -289,7 +289,7 @@ mod tests {
 
     #[test]
     fn exploits_best_arm() {
-        let mut bandit = Ucb1F64::builder().arms(3).build().unwrap();
+        let mut bandit = Ucb1::builder().arms(3).build().unwrap();
         // Seed all arms
         for i in 0..3 {
             bandit.update(i, if i == 1 { 1.0 } else { 0.0 }).unwrap();
@@ -310,7 +310,7 @@ mod tests {
 
     #[test]
     fn exploration_decreases() {
-        let mut bandit = Ucb1F64::builder().arms(2).build().unwrap();
+        let mut bandit = Ucb1::builder().arms(2).build().unwrap();
         bandit.update(0, 0.8).unwrap();
         bandit.update(1, 0.2).unwrap();
 
@@ -342,7 +342,7 @@ mod tests {
 
     #[test]
     fn decay_forgets() {
-        let mut bandit = Ucb1F64::builder().arms(2).decay(0.95).build().unwrap();
+        let mut bandit = Ucb1::builder().arms(2).decay(0.95).build().unwrap();
 
         bandit.update(0, 1.0).unwrap();
         bandit.update(1, 0.0).unwrap();
@@ -362,7 +362,7 @@ mod tests {
 
     #[test]
     fn decay_regime_shift() {
-        let mut bandit = Ucb1F64::builder().arms(2).decay(0.9).build().unwrap();
+        let mut bandit = Ucb1::builder().arms(2).decay(0.9).build().unwrap();
 
         // Phase 1: arm 0 is best
         for _ in 0..50 {
@@ -387,7 +387,7 @@ mod tests {
 
     #[test]
     fn reset_clears() {
-        let mut bandit = Ucb1F64::builder().arms(3).build().unwrap();
+        let mut bandit = Ucb1::builder().arms(3).build().unwrap();
         bandit.update(0, 1.0).unwrap();
         bandit.update(1, 0.5).unwrap();
         assert_eq!(bandit.total_pulls(), 2);
@@ -400,7 +400,7 @@ mod tests {
 
     #[test]
     fn nan_rejected() {
-        let mut bandit = Ucb1F64::builder().arms(2).build().unwrap();
+        let mut bandit = Ucb1::builder().arms(2).build().unwrap();
         assert_eq!(
             bandit.update(0, f64::NAN),
             Err(nexus_stats_core::DataError::NotANumber)
@@ -410,7 +410,7 @@ mod tests {
 
     #[test]
     fn inf_rejected() {
-        let mut bandit = Ucb1F64::builder().arms(2).build().unwrap();
+        let mut bandit = Ucb1::builder().arms(2).build().unwrap();
         assert_eq!(
             bandit.update(0, f64::INFINITY),
             Err(nexus_stats_core::DataError::Infinite)
@@ -419,17 +419,11 @@ mod tests {
 
     #[test]
     fn builder_validation() {
-        assert!(Ucb1F64::builder().arms(1).build().is_err());
-        assert!(Ucb1F64::builder().arms(2).exploration(0.0).build().is_err());
-        assert!(
-            Ucb1F64::builder()
-                .arms(2)
-                .exploration(-1.0)
-                .build()
-                .is_err()
-        );
-        assert!(Ucb1F64::builder().arms(2).decay(0.0).build().is_err());
-        assert!(Ucb1F64::builder().arms(2).decay(1.1).build().is_err());
-        assert!(Ucb1F64::builder().build().is_err()); // missing arms
+        assert!(Ucb1::builder().arms(1).build().is_err());
+        assert!(Ucb1::builder().arms(2).exploration(0.0).build().is_err());
+        assert!(Ucb1::builder().arms(2).exploration(-1.0).build().is_err());
+        assert!(Ucb1::builder().arms(2).decay(0.0).build().is_err());
+        assert!(Ucb1::builder().arms(2).decay(1.1).build().is_err());
+        assert!(Ucb1::builder().build().is_err()); // missing arms
     }
 }

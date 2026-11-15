@@ -54,7 +54,7 @@ fn on_measurement(latency_us: f64,
 
 ```rust
 use nexus_stats::Direction;
-use nexus_stats::detection::{Cusum, TrendAlertF64};
+use nexus_stats::detection::{Cusum, TrendAlert};
 
 let baseline_us = 200.0;  // from calibration
 
@@ -66,7 +66,7 @@ let mut cusum = Cusum::builder(baseline_us)
     .build().unwrap();
 
 // Detect trend (getting worse over time, not just high)
-let mut trend = TrendAlertF64::builder()
+let mut trend = TrendAlert::builder()
     .alpha(0.3)
     .beta(0.1)
     .trend_threshold(0.5)  // 0.5μs/sample increase rate
@@ -118,11 +118,11 @@ if let Some(j) = jitter.update(latency_us) {
 ## Recipe: Bad Measurement Filtering
 
 ```rust
-use nexus_stats::detection::{MultiGateF64, Verdict};
+use nexus_stats::detection::{MultiGate, Verdict};
 use nexus_stats::statistics::Welford;
 
 // Multi-gate filter: reject impossible values, flag suspect ones
-let mut gate = MultiGateF64::builder()
+let mut gate = MultiGate::builder()
     .alpha(0.05)
     .hard_limit_pct(0.50)  // reject >50% jumps
     .suspect_z(5.0)        // flag >5σ jumps

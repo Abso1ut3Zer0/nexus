@@ -269,7 +269,7 @@ if !liveness.check(now) {
 
 ```rust
 let mut cusum = Cusum::builder(baseline).build().unwrap();
-let mut trend = TrendAlertF64::builder().alpha(0.3).beta(0.1)
+let mut trend = TrendAlert::builder().alpha(0.3).beta(0.1)
     .trend_threshold(0.5).build().unwrap();
 
 match cusum.update(sample) {

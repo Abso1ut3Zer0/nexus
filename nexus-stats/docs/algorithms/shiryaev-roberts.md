@@ -7,7 +7,7 @@ detection delay among all sequential procedures.
 |----------|-------|
 | Update cost | ~17 cycles |
 | Memory | ~24 bytes |
-| Types | `ShiryaevRobertsF64` |
+| Types | `ShiryaevRoberts` |
 | Output | `Option<bool>` — true when change detected |
 
 ## What It Does
@@ -37,7 +37,7 @@ the threshold, a change is declared.
 ## Configuration
 
 ```rust
-let mut sr = ShiryaevRobertsF64::builder()
+let mut sr = ShiryaevRoberts::builder()
     .pre_change_mean(100.0)
     .post_change_mean(120.0)
     .variance(25.0)
@@ -52,7 +52,7 @@ Currently assumes normal distribution for the likelihood ratio.
 
 | Operation | p50 | p99 |
 |-----------|-----|-----|
-| `ShiryaevRobertsF64::update` | 17 cycles | 41 cycles |
+| `ShiryaevRoberts::update` | 17 cycles | 41 cycles |
 
 Dominated by one `exp()` call for the likelihood ratio computation.
 

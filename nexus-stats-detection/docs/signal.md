@@ -8,7 +8,7 @@ Signal-analysis primitives that answer "how does this stream relate to itself, o
 
 ## Autocorrelation
 
-**Types:** `AutocorrelationF64`, `AutocorrelationI64`.
+**Types:** `Autocorrelation`.
 
 ### What it computes
 
@@ -23,9 +23,9 @@ Signal-analysis primitives that answer "how does this stream relate to itself, o
 ### API
 
 ```rust
-use nexus_stats_detection::signal::AutocorrelationF64;
+use nexus_stats_detection::signal::Autocorrelation;
 
-let mut ac = AutocorrelationF64::builder()
+let mut ac = Autocorrelation::builder()
     .lag(1)
     .halflife(500.0)
     .build()
@@ -47,7 +47,7 @@ let rho = ac.correlation().unwrap(); // -1.0 .. 1.0
 
 ## CrossCorrelation
 
-**Type:** `CrossCorrelationF64`.
+**Type:** `CrossCorrelation`.
 
 ### What it computes
 
@@ -62,9 +62,9 @@ let rho = ac.correlation().unwrap(); // -1.0 .. 1.0
 ### API
 
 ```rust
-use nexus_stats_detection::signal::CrossCorrelationF64;
+use nexus_stats_detection::signal::CrossCorrelation;
 
-let mut xc = CrossCorrelationF64::builder()
+let mut xc = CrossCorrelation::builder()
     .max_lag(10)
     .halflife(1000.0)
     .build()
@@ -86,7 +86,7 @@ for (a, b) in paired_stream {
 
 ## Entropy
 
-**Type:** `EntropyF64`. Requires `alloc`.
+**Type:** `Entropy`. Requires `alloc`.
 
 ### What it computes
 
@@ -101,9 +101,9 @@ Shannon entropy `H = -Σ p_i log p_i` over a categorical distribution. You feed 
 ### API
 
 ```rust
-use nexus_stats_detection::signal::EntropyF64;
+use nexus_stats_detection::signal::Entropy;
 
-let mut e = EntropyF64::builder()
+let mut e = Entropy::builder()
     .num_bins(10)
     .halflife(500.0)
     .build()
@@ -125,7 +125,7 @@ let h = e.entropy();        // 0.0 .. ln(num_bins)
 
 ## TransferEntropy
 
-**Type:** `TransferEntropyF64`. Requires `alloc`.
+**Type:** `TransferEntropy`. Requires `alloc`.
 
 ### What it computes
 
@@ -144,9 +144,9 @@ Transfer entropy from X to Y:
 ### API
 
 ```rust
-use nexus_stats_detection::signal::TransferEntropyF64;
+use nexus_stats_detection::signal::TransferEntropy;
 
-let mut te = TransferEntropyF64::builder()
+let mut te = TransferEntropy::builder()
     .num_bins(5)
     // more config
     .build()

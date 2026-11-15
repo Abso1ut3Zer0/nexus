@@ -25,21 +25,21 @@ nexus_stats_detection::
 
 | Type | Hypothesis | When |
 |------|------------|------|
-| `MosumF64` / `MosumI64` | "Has a recent *window* mean deviated from baseline?" | Transient spikes, local anomalies |
-| `ShiryaevRobertsF64` | Optimal detection under a known alternative | Change-point with known magnitude |
-| `AdaptiveThresholdF64` | "Is |x - EMA| > k * EW_stddev?" | Generic z-score-based outlier |
-| `RobustZScoreF64` | MAD-based outlier score | Heavy-tailed data |
-| `TrendAlertF64` | "Has the slope (Holt trend) crossed a limit?" | Degradation forecasting |
-| `MultiGateF64` | Layered gates with graded severity | Composite alerting |
+| `Mosum` | "Has a recent *window* mean deviated from baseline?" | Transient spikes, local anomalies |
+| `ShiryaevRoberts` | Optimal detection under a known alternative | Change-point with known magnitude |
+| `AdaptiveThreshold` | "Is |x - EMA| > k * EW_stddev?" | Generic z-score-based outlier |
+| `RobustZScore<f64>` | MAD-based outlier score | Heavy-tailed data |
+| `TrendAlert` | "Has the slope (Holt trend) crossed a limit?" | Degradation forecasting |
+| `MultiGate` | Layered gates with graded severity | Composite alerting |
 
 ### signal
 
 | Type | What it computes |
 |------|------------------|
-| `AutocorrelationF64` / `I64` | ρ(lag) — is the signal trending or mean-reverting? |
-| `CrossCorrelationF64` | ρ(x_t, y_{t-lag}) — which stream leads? |
-| `EntropyF64` | Shannon entropy over categorical distributions |
-| `TransferEntropyF64` | Directed information flow — Granger-style causality |
+| `Autocorrelation` / `I64` | ρ(lag) — is the signal trending or mean-reverting? |
+| `CrossCorrelation` | ρ(x_t, y_{t-lag}) — which stream leads? |
+| `Entropy` | Shannon entropy over categorical distributions |
+| `TransferEntropy` | Directed information flow — Granger-style causality |
 
 ### estimation
 

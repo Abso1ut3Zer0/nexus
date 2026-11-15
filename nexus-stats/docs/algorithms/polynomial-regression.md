@@ -10,9 +10,9 @@ For linear regression (degree 1), see [LinearRegression](linear-regression.md)
 |----------|-------|
 | Update cost | ~25 cycles (quadratic), ~35 cycles (degree 4) |
 | Memory | ~208 bytes (fixed, independent of degree) |
-| Types | `PolynomialRegressionF64` |
-| EW types | `EwPolynomialRegressionF64` |
-| Transformed | `ExponentialRegressionF64`, `LogarithmicRegressionF64`, `PowerRegressionF64` |
+| Types | `PolynomialRegression` |
+| EW types | `EwPolynomialRegression` |
+| Transformed | `ExponentialRegression`, `LogarithmicRegression`, `PowerRegression` |
 | Priming | degree + 1 observations (with intercept), degree without |
 | Output | `coefficients()`, `r_squared()`, `predict(x)` |
 
@@ -93,22 +93,22 @@ Maximum system size: 9×9 (degree 8 + intercept).
 ### OLS (all-history)
 
 ```rust
-use nexus_stats::regression::PolynomialRegressionF64;
+use nexus_stats::regression::PolynomialRegression;
 
 // Quadratic: y = ax² + bx + c
-let mut r = PolynomialRegressionF64::builder()
+let mut r = PolynomialRegression::builder()
     .degree(2)
     .build()
     .unwrap();
 
 // Cubic: y = ax³ + bx² + cx + d
-let mut r = PolynomialRegressionF64::builder()
+let mut r = PolynomialRegression::builder()
     .degree(3)
     .build()
     .unwrap();
 
 // Degree 4, no intercept
-let mut r = PolynomialRegressionF64::builder()
+let mut r = PolynomialRegression::builder()
     .degree(4)
     .intercept(false)
     .build()
@@ -116,15 +116,15 @@ let mut r = PolynomialRegressionF64::builder()
 ```
 
 For linear regression (degree 1), use the dedicated
-[`LinearRegressionF64`](linear-regression.md) type instead —
+[`LinearRegression`](linear-regression.md) type instead —
 smaller state, closed-form solve, `slope()`/`intercept_value()` API.
 
 ### Exponentially-weighted
 
 ```rust
-use nexus_stats::regression::EwPolynomialRegressionF64;
+use nexus_stats::regression::EwPolynomialRegression;
 
-let mut r = EwPolynomialRegressionF64::builder()
+let mut r = EwPolynomialRegression::builder()
     .degree(3)
     .alpha(0.05)
     .build()
@@ -134,16 +134,16 @@ let mut r = EwPolynomialRegressionF64::builder()
 ### Transformed fits
 
 ```rust
-use nexus_stats::regression::ExponentialRegressionF64;
-use nexus_stats::regression::LogarithmicRegressionF64;
-use nexus_stats::regression::PowerRegressionF64;
+use nexus_stats::regression::ExponentialRegression;
+use nexus_stats::regression::LogarithmicRegression;
+use nexus_stats::regression::PowerRegression;
 
-let mut exp = ExponentialRegressionF64::new();    // y = a·e^(bx)
-let mut log = LogarithmicRegressionF64::new();    // y = a·ln(x) + b
-let mut pow = PowerRegressionF64::new();          // y = a·x^b
+let mut exp = ExponentialRegression::new();    // y = a·e^(bx)
+let mut log = LogarithmicRegression::new();    // y = a·ln(x) + b
+let mut pow = PowerRegression::new();          // y = a·x^b
 
 // EW variants with builder
-let mut ew_exp = EwExponentialRegressionF64::builder()
+let mut ew_exp = EwExponentialRegression::builder()
     .alpha(0.05)
     .build()
     .unwrap();
@@ -154,10 +154,10 @@ let mut ew_exp = EwExponentialRegressionF64::builder()
 ### Trading — Trend Estimation
 
 ```rust
-// For linear trends, use LinearRegressionF64 (see linear-regression.md).
+// For linear trends, use LinearRegression (see linear-regression.md).
 // PolynomialRegression is for degree 2+ curves:
 
-let mut accel = PolynomialRegressionF64::builder()
+let mut accel = PolynomialRegression::builder()
     .degree(2)
     .build()
     .unwrap();
@@ -178,7 +178,7 @@ if let Some(coeffs) = accel.coefficients() {
 ### Science — Exponential Decay Fitting
 
 ```rust
-let mut decay = ExponentialRegressionF64::new();
+let mut decay = ExponentialRegression::new();
 
 for (t, measurement) in data {
     decay.update(t, measurement);
@@ -193,13 +193,13 @@ if let Some(rate) = decay.growth_rate() {
 
 ```rust
 use std::collections::HashMap;
-use nexus_stats::regression::PolynomialRegressionF64;
+use nexus_stats::regression::PolynomialRegression;
 
-let mut models: HashMap<String, PolynomialRegressionF64> = HashMap::new();
+let mut models: HashMap<String, PolynomialRegression> = HashMap::new();
 
 // Different symbols get different model degrees
-models.insert("BTC".into(), PolynomialRegressionF64::quadratic());
-models.insert("ETH".into(), PolynomialRegressionF64::linear());
+models.insert("BTC".into(), PolynomialRegression::quadratic());
+models.insert("ETH".into(), PolynomialRegression::linear());
 
 for (symbol, x, y) in data_stream {
     if let Some(model) = models.get_mut(&symbol) {
@@ -253,8 +253,8 @@ Internally fits ln(y) = ln(a) + b·ln(x).
 
 | Operation | p50 |
 |-----------|-----|
-| `PolynomialRegressionF64::update` (linear) | ~15 cycles |
-| `PolynomialRegressionF64::update` (quadratic) | ~25 cycles |
+| `PolynomialRegression::update` (linear) | ~15 cycles |
+| `PolynomialRegression::update` (quadratic) | ~25 cycles |
 | `coefficients()` (linear, 2×2 solve) | ~30 cycles |
 | `coefficients()` (quadratic, 3×3 solve) | ~60 cycles |
 | `predict(x)` | ~35 cycles (re-solves + evaluates) |

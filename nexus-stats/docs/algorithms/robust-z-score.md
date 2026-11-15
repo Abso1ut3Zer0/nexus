@@ -8,7 +8,7 @@ WindowedMedian (O(1) vs O(N)), more robust than AdaptiveThreshold
 |----------|-------|
 | Update cost | ~12 cycles |
 | Memory | ~32 bytes |
-| Types | `RobustZScoreF64`, `RobustZScoreF32` |
+| Types | `RobustZScore<f64>`, `RobustZScore<f32>` |
 | Output | `Option<f64>` — modified z-score |
 
 ## What It Does
@@ -37,7 +37,7 @@ shift the baseline, making future outliers harder to detect.
 ## Configuration
 
 ```rust
-let mut rz = RobustZScoreF64::builder()
+let mut rz = RobustZScore::<f64>::builder()
     .span(50)               // EMA smoothing
     .reject_threshold(5.0)  // freeze EMA when z > 5
     .min_samples(20)
@@ -54,4 +54,4 @@ if let Some(z) = rz.update(sample) {
 
 | Operation | p50 | p99 |
 |-----------|-----|-----|
-| `RobustZScoreF64::update` | 12 cycles | 27 cycles |
+| `RobustZScore::<f64>::update` | 12 cycles | 27 cycles |

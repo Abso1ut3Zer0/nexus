@@ -15,10 +15,10 @@ binary "good/bad" but graded severity with different actions.
 ## Recipe: Graded Anomaly Filter
 
 ```rust
-use nexus_stats::detection::{MultiGateF64, Verdict};
+use nexus_stats::detection::{MultiGate, Verdict};
 use nexus_stats::statistics::Welford;
 
-let mut gate = MultiGateF64::builder()
+let mut gate = MultiGate::builder()
     .alpha(0.05)
     .hard_limit_pct(0.30)     // 30% move = reject
     .suspect_z(5.0)           // 5σ = suspect
@@ -59,9 +59,9 @@ as suspect or reject. This is the #1 bug in production anomaly filters.
 For cheaper O(1) outlier scoring when MultiGate is overkill:
 
 ```rust
-use nexus_stats::detection::RobustZScoreF64;
+use nexus_stats::detection::RobustZScore;
 
-let mut rz = RobustZScoreF64::builder()
+let mut rz = RobustZScore::<f64>::builder()
     .span(100)
     .reject_threshold(5.0)  // freeze baseline when z > 5
     .min_samples(30)
@@ -81,9 +81,9 @@ the process. How to tell them apart:
 
 ```rust
 use nexus_stats::Direction;
-use nexus_stats::detection::{MultiGateF64, Verdict, Cusum};
+use nexus_stats::detection::{MultiGate, Verdict, Cusum};
 
-let mut gate = MultiGateF64::builder().alpha(0.05).suspect_z(5.0)
+let mut gate = MultiGate::builder().alpha(0.05).suspect_z(5.0)
     .hard_limit_pct(0.30).min_samples(50).build().unwrap();
 
 let mut cusum = Cusum::builder(baseline)

@@ -18,7 +18,7 @@ use nexus_stats_core::math::MulAdd;
 /// - Estimating rate of change (velocity) from noisy data
 /// - Predictive filtering (forecast next value)
 #[derive(Debug, Clone)]
-pub struct Kalman1dF64 {
+pub struct Kalman1d {
     // State: [position, velocity]
     x0: f64,
     x1: f64,
@@ -34,9 +34,9 @@ pub struct Kalman1dF64 {
     initialized: bool,
 }
 
-/// Builder for [`Kalman1dF64`].
+/// Builder for [`Kalman1d`].
 #[derive(Debug, Clone)]
-pub struct Kalman1dF64Builder {
+pub struct Kalman1dBuilder {
     q: Option<f64>,
     r: Option<f64>,
     min_samples: u64,
@@ -44,12 +44,12 @@ pub struct Kalman1dF64Builder {
     seed_vel: Option<f64>,
 }
 
-impl Kalman1dF64 {
+impl Kalman1d {
     /// Creates a builder.
     #[inline]
     #[must_use]
-    pub fn builder() -> Kalman1dF64Builder {
-        Kalman1dF64Builder {
+    pub fn builder() -> Kalman1dBuilder {
+        Kalman1dBuilder {
             q: None,
             r: None,
             min_samples: 1,
@@ -185,7 +185,7 @@ impl Kalman1dF64 {
     }
 }
 
-impl Kalman1dF64Builder {
+impl Kalman1dBuilder {
     /// Process noise variance. Higher = more reactive to changes.
     ///
     /// The filter assumes dt=1 between samples. For variable-interval
@@ -229,7 +229,7 @@ impl Kalman1dF64Builder {
     /// - process_noise and measurement_noise must have been set.
     /// - Both must be positive.
     #[inline]
-    pub fn build(self) -> Result<Kalman1dF64, nexus_stats_core::ConfigError> {
+    pub fn build(self) -> Result<Kalman1d, nexus_stats_core::ConfigError> {
         let q = self
             .q
             .ok_or(nexus_stats_core::ConfigError::Missing("process_noise"))?;
@@ -254,7 +254,7 @@ impl Kalman1dF64Builder {
                 (0.0, 0.0, 0, false)
             };
 
-        Ok(Kalman1dF64 {
+        Ok(Kalman1d {
             x0,
             x1,
             p00: 1.0,
@@ -275,7 +275,7 @@ mod tests {
 
     #[test]
     fn converges_on_constant() {
-        let mut kf = Kalman1dF64::builder()
+        let mut kf = Kalman1d::builder()
             .process_noise(0.01)
             .measurement_noise(1.0)
             .build()
@@ -294,7 +294,7 @@ mod tests {
 
     #[test]
     fn tracks_linear_trend() {
-        let mut kf = Kalman1dF64::builder()
+        let mut kf = Kalman1d::builder()
             .process_noise(0.1)
             .measurement_noise(1.0)
             .build()
@@ -313,12 +313,12 @@ mod tests {
 
     #[test]
     fn high_process_noise_reactive() {
-        let mut reactive = Kalman1dF64::builder()
+        let mut reactive = Kalman1d::builder()
             .process_noise(10.0)
             .measurement_noise(1.0)
             .build()
             .unwrap();
-        let mut smooth = Kalman1dF64::builder()
+        let mut smooth = Kalman1d::builder()
             .process_noise(0.001)
             .measurement_noise(1.0)
             .build()
@@ -342,7 +342,7 @@ mod tests {
 
     #[test]
     fn uncertainty_decreases() {
-        let mut kf = Kalman1dF64::builder()
+        let mut kf = Kalman1d::builder()
             .process_noise(0.01)
             .measurement_noise(1.0)
             .build()
@@ -361,7 +361,7 @@ mod tests {
 
     #[test]
     fn seeded_startup() {
-        let kf = Kalman1dF64::builder()
+        let kf = Kalman1d::builder()
             .process_noise(0.01)
             .measurement_noise(1.0)
             .seed(100.0, 5.0)
@@ -375,7 +375,7 @@ mod tests {
 
     #[test]
     fn reset() {
-        let mut kf = Kalman1dF64::builder()
+        let mut kf = Kalman1d::builder()
             .process_noise(0.01)
             .measurement_noise(1.0)
             .build()
@@ -390,7 +390,7 @@ mod tests {
 
     #[test]
     fn seed_zero_zero_works() {
-        let mut kf = Kalman1dF64::builder()
+        let mut kf = Kalman1d::builder()
             .process_noise(0.01)
             .measurement_noise(1.0)
             .seed(0.0, 0.0)
@@ -405,7 +405,7 @@ mod tests {
 
     #[test]
     fn errors_without_process_noise() {
-        let result = Kalman1dF64::builder().measurement_noise(1.0).build();
+        let result = Kalman1d::builder().measurement_noise(1.0).build();
         assert!(matches!(
             result,
             Err(nexus_stats_core::ConfigError::Missing("process_noise"))
@@ -414,7 +414,7 @@ mod tests {
 
     #[test]
     fn rejects_nan_and_inf() {
-        let mut kf = Kalman1dF64::builder()
+        let mut kf = Kalman1d::builder()
             .process_noise(0.01)
             .measurement_noise(1.0)
             .build()

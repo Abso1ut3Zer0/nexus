@@ -1,7 +1,7 @@
 # Holt (Double Exponential Smoothing)
 
-**Types:** `HoltF64`
-**Import:** `use nexus_stats_smoothing::HoltF64;`
+**Types:** `Holt`
+**Import:** `use nexus_stats_smoothing::Holt;`
 **Feature flags:** None required.
 
 ## What it does
@@ -21,13 +21,13 @@ trend_t = beta  * (level_t - level_{t-1}) + (1 - beta) * trend_{t-1}
 - **Capacity planning.** Throughput with drift — Holt separates "busy moment" from "the system is slowly saturating".
 - **Market mid-price with drift.** When you care about both the current mid and whether it's moving.
 
-Not for: signals with no trend (plain `Ema` is cheaper and equivalent), signals dominated by outliers (use `HuberEmaF64` or `HampelF64` first), signals with seasonality (Holt doesn't model that — look at Holt-Winters, not provided here).
+Not for: signals with no trend (plain `Ema` is cheaper and equivalent), signals dominated by outliers (use `HuberEma` or `Hampel` first), signals with seasonality (Holt doesn't model that — look at Holt-Winters, not provided here).
 
 ## API
 
 ```rust
-impl HoltF64 {
-    pub fn builder() -> HoltF64Builder;
+impl Holt {
+    pub fn builder() -> HoltBuilder;
     pub fn update(&mut self, sample: f64) -> Result<Option<(f64, f64)>, DataError>;
     pub fn level(&self) -> Option<f64>;
     pub fn trend(&self) -> Option<f64>;
@@ -37,12 +37,12 @@ impl HoltF64 {
     pub fn reset(&mut self);
 }
 
-impl HoltF64Builder {
+impl HoltBuilder {
     pub fn alpha(self, alpha: f64) -> Self;       // level smoothing, (0, 1]
     pub fn beta(self, beta: f64) -> Self;         // trend smoothing, (0, 1]
     pub fn min_samples(self, min: u64) -> Self;   // minimum for is_primed()
     pub fn seed(self, level: f64, trend: f64) -> Self; // optional warm start
-    pub fn build(self) -> Result<HoltF64, ConfigError>;
+    pub fn build(self) -> Result<Holt, ConfigError>;
 }
 ```
 
@@ -60,7 +60,7 @@ See [parameter-tuning.md](parameter-tuning.md#holt-alpha-and-beta). Rules of thu
 ## Example — latency trend detection
 
 ```rust
-use nexus_stats_smoothing::HoltF64;
+use nexus_stats_smoothing::Holt;
 
 // Per-request latencies (microseconds), gradually degrading.
 let latencies: [f64; 20] = [
@@ -69,7 +69,7 @@ let latencies: [f64; 20] = [
     150.0, 156.0, 162.0, 168.0,
 ];
 
-let mut holt = HoltF64::builder()
+let mut holt = Holt::builder()
     .alpha(0.3)
     .beta(0.1)
     .build()
@@ -95,7 +95,7 @@ In a real system, you'd wire the forecast into an alerting rule: "warn if `forec
 - **First two samples.** The trend is initialized from `sample_2 - sample_1`. If that step is noisy, the initial trend is garbage until a few more updates come in. Use `seed()` if you have a better prior.
 - **Forecast is linear extrapolation.** Don't use `forecast(h)` with large `h` on anything that isn't locally linear. Holt is a local model.
 - **Two parameters.** Harder to tune than EMA. If you find yourself doing a 2D sweep, that's expected — plot alpha in `{0.05, 0.1, 0.2, 0.4}` crossed with beta in `{0.005, 0.02, 0.05, 0.1}` and pick visually.
-- **Outliers poison the trend.** A single spike contributes to `level_t - level_{t-1}`, which feeds the trend. Combine with `HampelF64` upstream if the input is dirty.
+- **Outliers poison the trend.** A single spike contributes to `level_t - level_{t-1}`, which feeds the trend. Combine with `Hampel` upstream if the input is dirty.
 
 ## Cross-references
 

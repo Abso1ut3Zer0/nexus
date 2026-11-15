@@ -7,7 +7,7 @@ response when trending, heavy smoothing when noisy. Used by quant shops.
 |----------|-------|
 | Update cost | ~16 cycles |
 | Memory | ~N×8 bytes (lookback buffer) |
-| Types | `KamaF64` |
+| Types | `Kama` |
 | Requires | `alloc` feature (runtime window size) |
 | Priming | After N samples |
 | Output | `Option<T>` — smoothed value once primed |
@@ -54,7 +54,7 @@ ER = direction / volatility                  (0 to 1)
 ## Configuration
 
 ```rust
-let mut kama = KamaF64::builder()
+let mut kama = Kama::builder()
     .window_size(10)  // ER lookback window
     .fast_span(2)     // alpha when ER=1 (very reactive)
     .slow_span(30)    // alpha when ER=0 (very smooth)
@@ -74,7 +74,7 @@ let mut kama = KamaF64::builder()
 
 ### Trading — Adaptive Price Smoothing
 ```rust
-let mut price_kama = KamaF64::builder()
+let mut price_kama = Kama::builder()
     .window_size(10)
     .fast_span(2)
     .slow_span(30)
@@ -95,7 +95,7 @@ if let Some(er) = price_kama.efficiency_ratio() {
 
 | Operation | p50 | p99 |
 |-----------|-----|-----|
-| `KamaF64::update` (window=10) | 16 cycles | 25 cycles |
+| `Kama::update` (window=10) | 16 cycles | 25 cycles |
 
 O(N) volatility recompute per update. For N=10, that's 9 subtractions
 + absolute values. Negligible for typical window sizes.

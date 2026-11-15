@@ -9,7 +9,7 @@ For small-dimension closed-form fits, use [`regression.md`](regression.md). For 
 All adaptive filters follow:
 
 ```rust
-let mut filter = LmsFilterF64::builder()
+let mut filter = LmsFilter::builder()
     .dimensions(8)
     .step_size(0.01)
     .build()
@@ -20,11 +20,11 @@ filter.update(&features, target).unwrap();          // or update(features, targe
 let weights = filter.weights();                     // &[f64]
 ```
 
-The optimizers (`OnlineGdF64`, `AdaGradF64`, `AdamF64`) are slightly different — they take a gradient rather than `(features, target)`, for use with user-defined loss functions.
+The optimizers (`OnlineGd`, `AdaGrad`, `Adam`) are slightly different — they take a gradient rather than `(features, target)`, for use with user-defined loss functions.
 
 ---
 
-## LmsFilterF64 — Least Mean Squares
+## LmsFilter — Least Mean Squares
 
 The canonical adaptive filter. On each sample:
 
@@ -48,7 +48,7 @@ Simple, cheap, works.
 
 ---
 
-## NlmsFilterF64 — Normalized LMS
+## NlmsFilter — Normalized LMS
 
 Same as LMS, except the step is normalized by input power: `weights += (step_size / (eps + |features|²)) * error * features`. Automatically adapts step size to the input magnitude.
 
@@ -64,16 +64,16 @@ Same as LMS, except the step is normalized by input power: `weights += (step_siz
 
 ---
 
-## RlsFilterF64 — Recursive Least Squares
+## RlsFilter — Recursive Least Squares
 
 Maintains an explicit covariance matrix `P` of the features and does Newton-style updates. Converges in roughly `dimensions` samples for well-conditioned problems — much faster than LMS/NLMS. O(d²) per update.
 
 ### API
 
 ```rust
-use nexus_stats_regression::learning::RlsFilterF64;
+use nexus_stats_regression::learning::RlsFilter;
 
-let mut rls = RlsFilterF64::builder()
+let mut rls = RlsFilter::builder()
     .dimensions(8)
     .forgetting_factor(0.99)   // 1.0 = batch, <1.0 = decay
     .max_covariance(1e4)       // resets P when trace exceeds this (auto-stability)
@@ -98,7 +98,7 @@ let y_hat = rls.predict(&features);
 
 ---
 
-## HuberRegressionF64 — outlier-robust linear regression
+## HuberRegression — outlier-robust linear regression
 
 Gradient descent on Huber loss: quadratic near the fit, linear for large residuals. Bounds the influence of any single observation.
 
@@ -110,9 +110,9 @@ Gradient descent on Huber loss: quadratic near the fit, linear for large residua
 ### Example
 
 ```rust
-use nexus_stats_regression::learning::HuberRegressionF64;
+use nexus_stats_regression::learning::HuberRegression;
 
-let mut fit = HuberRegressionF64::builder()
+let mut fit = HuberRegression::builder()
     .dimensions(3)
     .delta(1.5)            // Huber threshold in residual stddevs
     .step_size(0.01)
@@ -131,16 +131,16 @@ for (x, y) in training {
 
 ---
 
-## OnlineKMeansF64 — streaming cluster assignment
+## OnlineKMeans — streaming cluster assignment
 
 Online MacQueen-style k-means. Each new point is assigned to the nearest centroid and pulls that centroid toward itself. Unlike batch k-means, there's no global refitting.
 
 ### API
 
 ```rust
-use nexus_stats_regression::learning::OnlineKMeansF64;
+use nexus_stats_regression::learning::OnlineKMeans;
 
-let mut km = OnlineKMeansF64::builder()
+let mut km = OnlineKMeans::builder()
     .dimensions(3)
     .num_clusters(5)
     // learning rate
@@ -165,7 +165,7 @@ for point in stream {
 
 ---
 
-## OnlineGdF64 — plain online gradient descent
+## OnlineGd — plain online gradient descent
 
 A plain SGD loop. You compute gradients in your user code and call `update(gradient)` — the optimizer applies the step with configurable learning rate.
 
@@ -176,7 +176,7 @@ A plain SGD loop. You compute gradients in your user code and call `update(gradi
 
 ---
 
-## AdaGradF64 — adaptive per-feature learning rate
+## AdaGrad — adaptive per-feature learning rate
 
 AdaGrad accumulates squared gradients per feature and divides the learning rate by `sqrt(sum_sq_grad + eps)`. Features that get big gradients end up with small effective step sizes; rarely-updated features keep large ones.
 
@@ -191,16 +191,16 @@ AdaGrad accumulates squared gradients per feature and divides the learning rate 
 
 ---
 
-## AdamF64 — Adam / AdamW optimizer
+## Adam — Adam / AdamW optimizer
 
 Adam combines momentum and per-feature adaptive step sizes with bias correction. The default optimizer for most deep learning, usable here for custom online models.
 
 ### API
 
 ```rust
-use nexus_stats_regression::learning::AdamF64;
+use nexus_stats_regression::learning::Adam;
 
-let mut opt = AdamF64::builder()
+let mut opt = Adam::builder()
     .dimensions(10)
     .learning_rate(0.001)
     .beta1(0.9)

@@ -1,7 +1,7 @@
 # Kalman1d — Scalar Kalman Filter
 
-**Types:** `Kalman1dF64`
-**Import:** `use nexus_stats_smoothing::Kalman1dF64;`
+**Types:** `Kalman1d`
+**Import:** `use nexus_stats_smoothing::Kalman1d;`
 **Feature flags:** None required.
 
 ## What it does
@@ -19,13 +19,13 @@ The filter tracks an internal position estimate, velocity estimate, and covarian
 - You need a **velocity estimate**, not just a smoothed position.
 - You want formal optimality guarantees under Gaussian assumptions.
 
-Not for: guessing-at-parameters workflows (use Holt), heavy-tailed noise (Kalman assumes Gaussian; use `HuberEmaF64` or `HampelF64`), multivariate state (use `Kalman2dF64`/`Kalman3dF64` from `nexus-stats-regression`).
+Not for: guessing-at-parameters workflows (use Holt), heavy-tailed noise (Kalman assumes Gaussian; use `HuberEma` or `Hampel`), multivariate state (use `Kalman2d`/`Kalman3d` from `nexus-stats-regression`).
 
 ## API
 
 ```rust
-impl Kalman1dF64 {
-    pub fn builder() -> Kalman1dF64Builder;
+impl Kalman1d {
+    pub fn builder() -> Kalman1dBuilder;
     pub fn update(&mut self, measurement: f64) -> Result<Option<(f64, f64)>, DataError>;
     pub fn position(&self) -> Option<f64>;
     pub fn velocity(&self) -> Option<f64>;
@@ -35,19 +35,19 @@ impl Kalman1dF64 {
     pub fn reset(&mut self);
 }
 
-impl Kalman1dF64Builder {
+impl Kalman1dBuilder {
     pub fn process_noise(self, q: f64) -> Self;      // required
     pub fn measurement_noise(self, r: f64) -> Self;  // required
     pub fn min_samples(self, min: u64) -> Self;
     pub fn seed(self, position: f64, velocity: f64) -> Self;
-    pub fn build(self) -> Result<Kalman1dF64, ConfigError>;
+    pub fn build(self) -> Result<Kalman1d, ConfigError>;
 }
 ```
 
 ## Example — position tracking from noisy sensor
 
 ```rust
-use nexus_stats_smoothing::Kalman1dF64;
+use nexus_stats_smoothing::Kalman1d;
 
 // Noisy measurements of a slowly-moving target.
 let measurements: [f64; 10] = [
@@ -56,7 +56,7 @@ let measurements: [f64; 10] = [
 
 // r calibrated from a stationary period: sensor stddev ~ 0.3, so var ~ 0.09.
 // q chosen small: true motion is slow and roughly constant-velocity.
-let mut kf = Kalman1dF64::builder()
+let mut kf = Kalman1d::builder()
     .process_noise(0.001)
     .measurement_noise(0.09)
     .build()
@@ -85,7 +85,7 @@ See [parameter-tuning.md](parameter-tuning.md#kalman1d-process-noise-and-measure
 
 ## Caveats
 
-- Assumes Gaussian noise. Heavy-tailed (market returns, sensor flakes) will bias the estimate — pre-filter with `HampelF64`.
+- Assumes Gaussian noise. Heavy-tailed (market returns, sensor flakes) will bias the estimate — pre-filter with `Hampel`.
 - Assumes constant-velocity dynamics. If the true state has acceleration, bump `q` (the filter will absorb unmodeled dynamics as process noise).
 - `velocity()` is per-*step*, not per-unit-time. If your samples aren't at fixed intervals, build a proper state-space model instead.
 

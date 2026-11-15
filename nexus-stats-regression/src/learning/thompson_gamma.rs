@@ -24,9 +24,9 @@ use super::sampling::f64_impl;
 /// # Examples
 ///
 /// ```
-/// use nexus_stats_regression::learning::ThompsonGammaF64;
+/// use nexus_stats_regression::learning::ThompsonGamma;
 ///
-/// let mut bandit = ThompsonGammaF64::builder()
+/// let mut bandit = ThompsonGamma::builder()
 ///     .arms(3)
 ///     .build()
 ///     .unwrap();
@@ -40,7 +40,7 @@ use super::sampling::f64_impl;
 /// bandit.update(arm, 2.5).unwrap();
 /// ```
 #[derive(Debug, Clone)]
-pub struct ThompsonGammaF64 {
+pub struct ThompsonGamma {
     shapes: Box<[f64]>,
     rates: Box<[f64]>,
     initial_shape: f64,
@@ -51,9 +51,9 @@ pub struct ThompsonGammaF64 {
     min_samples: u64,
 }
 
-/// Builder for [`ThompsonGammaF64`].
+/// Builder for [`ThompsonGamma`].
 #[derive(Debug, Clone)]
-pub struct ThompsonGammaF64Builder {
+pub struct ThompsonGammaBuilder {
     arms: Option<usize>,
     initial_shape: f64,
     initial_rate: f64,
@@ -61,12 +61,12 @@ pub struct ThompsonGammaF64Builder {
     min_samples: Option<u64>,
 }
 
-impl ThompsonGammaF64 {
+impl ThompsonGamma {
     /// Creates a builder.
     #[inline]
     #[must_use]
-    pub fn builder() -> ThompsonGammaF64Builder {
-        ThompsonGammaF64Builder {
+    pub fn builder() -> ThompsonGammaBuilder {
+        ThompsonGammaBuilder {
             arms: None,
             initial_shape: 1.0,
             initial_rate: 1.0,
@@ -181,7 +181,7 @@ impl ThompsonGammaF64 {
     }
 }
 
-impl ThompsonGammaF64Builder {
+impl ThompsonGammaBuilder {
     /// Sets the number of arms (required, >= 2).
     #[inline]
     #[must_use]
@@ -224,7 +224,7 @@ impl ThompsonGammaF64Builder {
 
     /// Builds the bandit.
     #[inline]
-    pub fn build(self) -> Result<ThompsonGammaF64, nexus_stats_core::ConfigError> {
+    pub fn build(self) -> Result<ThompsonGamma, nexus_stats_core::ConfigError> {
         let arms = self
             .arms
             .ok_or(nexus_stats_core::ConfigError::Missing("arms"))?;
@@ -247,7 +247,7 @@ impl ThompsonGammaF64Builder {
             ));
         }
         let min_samples = self.min_samples.unwrap_or(arms as u64);
-        Ok(ThompsonGammaF64 {
+        Ok(ThompsonGamma {
             shapes: vec![self.initial_shape; arms].into_boxed_slice(),
             rates: vec![self.initial_rate; arms].into_boxed_slice(),
             initial_shape: self.initial_shape,
@@ -276,7 +276,7 @@ mod tests {
 
     #[test]
     fn explores_with_weak_prior() {
-        let bandit = ThompsonGammaF64::builder().arms(3).build().unwrap();
+        let bandit = ThompsonGamma::builder().arms(3).build().unwrap();
         let mut rng = make_rng(42);
         let mut counts = [0u32; 3];
         for _ in 0..300 {
@@ -289,7 +289,7 @@ mod tests {
 
     #[test]
     fn converges_to_best() {
-        let mut bandit = ThompsonGammaF64::builder().arms(3).build().unwrap();
+        let mut bandit = ThompsonGamma::builder().arms(3).build().unwrap();
         let mut rng = make_rng(42);
 
         for _ in 0..500 {
@@ -308,7 +308,7 @@ mod tests {
 
     #[test]
     fn mean_reward_tracks() {
-        let mut bandit = ThompsonGammaF64::builder().arms(2).build().unwrap();
+        let mut bandit = ThompsonGamma::builder().arms(2).build().unwrap();
         for _ in 0..200 {
             bandit.update(0, 3.0).unwrap();
             bandit.update(1, 7.0).unwrap();
@@ -324,7 +324,7 @@ mod tests {
 
     #[test]
     fn decay_adapts() {
-        let mut bandit = ThompsonGammaF64::builder()
+        let mut bandit = ThompsonGamma::builder()
             .arms(2)
             .decay(0.95)
             .build()
@@ -349,7 +349,7 @@ mod tests {
 
     #[test]
     fn negative_reward_rejected() {
-        let mut bandit = ThompsonGammaF64::builder().arms(2).build().unwrap();
+        let mut bandit = ThompsonGamma::builder().arms(2).build().unwrap();
         assert!(bandit.update(0, -1.0).is_err());
         assert!(bandit.update(0, 0.0).is_err());
         assert_eq!(bandit.total_pulls(), 0);
@@ -357,7 +357,7 @@ mod tests {
 
     #[test]
     fn reset_restores_prior() {
-        let mut bandit = ThompsonGammaF64::builder()
+        let mut bandit = ThompsonGamma::builder()
             .arms(2)
             .initial_shape(2.0)
             .initial_rate(3.0)
@@ -378,7 +378,7 @@ mod tests {
 
     #[test]
     fn nan_inf_rejected() {
-        let mut bandit = ThompsonGammaF64::builder().arms(2).build().unwrap();
+        let mut bandit = ThompsonGamma::builder().arms(2).build().unwrap();
         assert_eq!(
             bandit.update(0, f64::NAN),
             Err(nexus_stats_core::DataError::NotANumber)
@@ -391,27 +391,21 @@ mod tests {
 
     #[test]
     fn builder_validation() {
-        assert!(ThompsonGammaF64::builder().arms(1).build().is_err());
+        assert!(ThompsonGamma::builder().arms(1).build().is_err());
         assert!(
-            ThompsonGammaF64::builder()
+            ThompsonGamma::builder()
                 .arms(2)
                 .initial_shape(0.0)
                 .build()
                 .is_err()
         );
         assert!(
-            ThompsonGammaF64::builder()
+            ThompsonGamma::builder()
                 .arms(2)
                 .initial_rate(-1.0)
                 .build()
                 .is_err()
         );
-        assert!(
-            ThompsonGammaF64::builder()
-                .arms(2)
-                .decay(0.0)
-                .build()
-                .is_err()
-        );
+        assert!(ThompsonGamma::builder().arms(2).decay(0.0).build().is_err());
     }
 }

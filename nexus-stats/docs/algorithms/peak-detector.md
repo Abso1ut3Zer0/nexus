@@ -33,7 +33,7 @@ This filters out small oscillations — only significant reversals trigger.
 ## Configuration
 
 ```rust
-let mut pd = PeakDetectorF64::new(5.0);  // prominence = 5.0
+let mut pd = PeakDetector::<f64>::new(5.0).unwrap();  // prominence = 5.0
 
 // Returns Some(Peak) when a local extremum is found
 if let Some(peak) = pd.update(sample).unwrap() {

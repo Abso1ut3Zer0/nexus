@@ -10,20 +10,20 @@ pinned to a single core.
 | **Change Detection** | | | |
 | Cusum | 5 | 7 | add/sub/max |
 | CusumI64 | 4 | 4 | integer only |
-| MosumF64<64> | 6 | 7 | ring buffer |
+| Mosum<64> | 6 | 7 | ring buffer |
 | ShiryaevRoberts | 17 | 41 | one `exp()` |
-| MultiGateF64 | 12 | 17 | 3-gate + conditional EMA |
-| RobustZScoreF64 | 12 | 27 | EMA + MAD + freeze |
-| AdaptiveThresholdF64 | ~15 | ~20 | EMA + Welford + z-score |
+| MultiGate | 12 | 17 | 3-gate + conditional EMA |
+| RobustZScore<f64> | 12 | 27 | EMA + MAD + freeze |
+| AdaptiveThreshold | ~15 | ~20 | EMA + Welford + z-score |
 | **Smoothing** | | | |
 | Ema | 5 | 6 | mul_add (FMA) |
 | EmaI64 | 5 | 5 | bit-shift |
 | AsymEma | 11 | 12 | branch + mul_add |
-| KamaF64<10> | 16 | 25 | O(N) volatility recompute |
-| Kalman1dF64 | 25 | 30 | 2x2 predict + update |
-| HoltF64 | 11 | 12 | two smoothing steps |
-| SpringF64 | 12 | 12 | Padé approximant |
-| WindowedMedianF64<32> | 136 | 195 | O(N) sorted array |
+| Kama<10> | 16 | 25 | O(N) volatility recompute |
+| Kalman1d | 25 | 30 | 2x2 predict + update |
+| Holt | 11 | 12 | two smoothing steps |
+| Spring | 12 | 12 | Padé approximant |
+| WindowedMedian<f64><32> | 136 | 195 | O(N) sorted array |
 | Slew<f64> | ~3 | ~3 | clamp (maxsd/minsd) |
 | **Statistics** | | | |
 | Welford | 10 | 12 | one division |
@@ -44,7 +44,7 @@ pinned to a single core.
 | PollSaturation::on_idle | 1 | 1 | one byte store, no clock |
 | SojournSaturation::update | 6 | 7 | branchless: clamp, count, min, max, saturating total |
 | ErrorRate | ~6 | ~8 | EMA of outcomes |
-| TrendAlertF64 | ~12 | ~18 | Holt + threshold |
+| TrendAlert | ~12 | ~18 | Holt + threshold |
 | Jitter<f64> | 6 | ~9 | EMA of deltas |
 | **Frequency** | | | |
 | TopK<u64, 16> | 42 | 97 | linear scan |
@@ -55,7 +55,7 @@ pinned to a single core.
 | DebounceU32 | ~2 | ~2 | increment + compare |
 | FirstDiff/SecondDiff | ~2 | ~2 | subtraction |
 | LevelCrossing<f64> | ~2 | ~2 | one comparison |
-| PeakDetectorF64 | ~3 | ~3 | two comparisons |
+| PeakDetector<f64> | ~3 | ~3 | two comparisons |
 
 ## Memory Per Instance
 

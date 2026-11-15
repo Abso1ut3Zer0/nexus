@@ -7,7 +7,7 @@ Robust to outliers — the median ignores them entirely.
 |----------|-------|
 | Update cost | ~136 cycles (N=32) |
 | Memory | ~2×N×8 bytes |
-| Types | `WindowedMedianF64`, `WindowedMedianF32`, `WindowedMedianI64`, `WindowedMedianI32` |
+| Types | `WindowedMedian<f64>`, `WindowedMedianF32`, `WindowedMedian<i64>`, `WindowedMedianI32` |
 | Requires | `alloc` feature (runtime window size) |
 | Priming | After N samples (window full) |
 
@@ -49,7 +49,7 @@ Provides:
 ## Configuration
 
 ```rust
-let mut median = WindowedMedianF64::new(32);  // 32-sample window
+let mut median = WindowedMedian::<f64>::new(32);  // 32-sample window
 
 median.update(sample);
 
@@ -67,7 +67,7 @@ if let Some(z) = median.modified_z_score(sample) {
 
 | Operation | p50 | p99 |
 |-----------|-----|-----|
-| `WindowedMedianF64::update` (N=32) | 136 cycles | 195 cycles |
+| `WindowedMedian::<f64>::update` (N=32) | 136 cycles | 195 cycles |
 | `median()` query | O(1) | — |
 | `mad()` query | O(N log N) | — |
 

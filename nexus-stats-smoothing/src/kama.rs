@@ -18,7 +18,7 @@ use nexus_stats_core::math::MulAdd;
 /// - Adaptive smoothing that auto-tunes to market conditions
 /// - Noise-resistant trend following
 /// - Signal processing with variable noise levels
-pub struct KamaF64 {
+pub struct Kama {
     ring: *mut f64,
     window: usize,
     head: usize,
@@ -32,9 +32,9 @@ pub struct KamaF64 {
 }
 
 // SAFETY: buffer is exclusively owned, f64 is Copy + Send
-unsafe impl Send for KamaF64 {}
+unsafe impl Send for Kama {}
 
-impl KamaF64 {
+impl Kama {
     #[inline]
     fn ring(&self) -> &[f64] {
         // SAFETY: buffer allocated with capacity `window`, all elements initialized
@@ -48,21 +48,21 @@ impl KamaF64 {
     }
 }
 
-/// Builder for [`KamaF64`].
+/// Builder for [`Kama`].
 #[derive(Debug, Clone)]
-pub struct KamaF64Builder {
+pub struct KamaBuilder {
     window: Option<usize>,
     fast_span: u64,
     slow_span: u64,
     min_samples: Option<u64>,
 }
 
-impl KamaF64 {
+impl Kama {
     /// Creates a builder.
     #[inline]
     #[must_use]
-    pub fn builder() -> KamaF64Builder {
-        KamaF64Builder {
+    pub fn builder() -> KamaBuilder {
+        KamaBuilder {
             window: None,
             fast_span: 2,
             slow_span: 30,
@@ -218,7 +218,7 @@ impl KamaF64 {
     }
 }
 
-impl KamaF64Builder {
+impl KamaBuilder {
     /// Window size (number of samples in the ring buffer).
     #[inline]
     #[must_use]
@@ -259,7 +259,7 @@ impl KamaF64Builder {
     /// - `fast_span` must be >= 1.
     /// - `slow_span` must be > `fast_span`.
     #[inline]
-    pub fn build(self) -> Result<KamaF64, nexus_stats_core::ConfigError> {
+    pub fn build(self) -> Result<Kama, nexus_stats_core::ConfigError> {
         let window = self
             .window
             .ok_or(nexus_stats_core::ConfigError::Missing("window_size"))?;
@@ -286,7 +286,7 @@ impl KamaF64Builder {
         let fast_sc = 2.0 / (self.fast_span as f64 + 1.0);
         let slow_sc = 2.0 / (self.slow_span as f64 + 1.0);
 
-        Ok(KamaF64 {
+        Ok(Kama {
             ring,
             window,
             head: 0,
@@ -301,7 +301,7 @@ impl KamaF64Builder {
     }
 }
 
-impl Drop for KamaF64 {
+impl Drop for Kama {
     fn drop(&mut self) {
         // SAFETY: buffer was allocated by Vec with capacity `window`.
         // f64 is Copy so no element drops needed. Reclaim the allocation.
@@ -311,7 +311,7 @@ impl Drop for KamaF64 {
     }
 }
 
-impl Clone for KamaF64 {
+impl Clone for Kama {
     fn clone(&self) -> Self {
         let mut vec = alloc::vec![0.0f64; self.window];
         vec.copy_from_slice(self.ring());
@@ -332,9 +332,9 @@ impl Clone for KamaF64 {
     }
 }
 
-impl core::fmt::Debug for KamaF64 {
+impl core::fmt::Debug for Kama {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        f.debug_struct("KamaF64")
+        f.debug_struct("Kama")
             .field("window", &self.window)
             .field("count", &self.count)
             .field("value", &self.value)
@@ -348,7 +348,7 @@ mod tests {
 
     #[test]
     fn trending_signal_fast_response() {
-        let mut kama = KamaF64::builder().window_size(10).build().unwrap();
+        let mut kama = Kama::builder().window_size(10).build().unwrap();
 
         // Linear trend — ER should be high, KAMA should track closely
         for i in 0..50 {
@@ -361,7 +361,7 @@ mod tests {
 
     #[test]
     fn noisy_signal_slow_response() {
-        let mut kama = KamaF64::builder().window_size(10).build().unwrap();
+        let mut kama = Kama::builder().window_size(10).build().unwrap();
 
         // Oscillating — ER should be low
         for i in 0..50 {
@@ -375,7 +375,7 @@ mod tests {
 
     #[test]
     fn er_bounds() {
-        let mut kama = KamaF64::builder().window_size(10).build().unwrap();
+        let mut kama = Kama::builder().window_size(10).build().unwrap();
         for i in 0..20 {
             kama.update(i as f64).unwrap();
         }
@@ -388,7 +388,7 @@ mod tests {
 
     #[test]
     fn priming() {
-        let mut kama = KamaF64::builder().window_size(10).build().unwrap();
+        let mut kama = Kama::builder().window_size(10).build().unwrap();
         for i in 0..9 {
             assert!(kama.update(i as f64).unwrap().is_none());
         }
@@ -397,7 +397,7 @@ mod tests {
 
     #[test]
     fn reset() {
-        let mut kama = KamaF64::builder().window_size(10).build().unwrap();
+        let mut kama = Kama::builder().window_size(10).build().unwrap();
         for i in 0..20 {
             kama.update(i as f64).unwrap();
         }
@@ -407,13 +407,13 @@ mod tests {
 
     #[test]
     fn window_size_accessor() {
-        let kama = KamaF64::builder().window_size(10).build().unwrap();
+        let kama = Kama::builder().window_size(10).build().unwrap();
         assert_eq!(kama.window_size(), 10);
     }
 
     #[test]
     fn rejects_nan_and_inf() {
-        let mut kama = KamaF64::builder().window_size(10).build().unwrap();
+        let mut kama = Kama::builder().window_size(10).build().unwrap();
         assert!(matches!(
             kama.update(f64::NAN),
             Err(nexus_stats_core::DataError::NotANumber)

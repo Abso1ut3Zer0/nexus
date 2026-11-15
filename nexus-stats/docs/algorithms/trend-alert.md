@@ -7,7 +7,7 @@ exponential smoothing. Signals when the trend component exceeds a threshold.
 |----------|-------|
 | Update cost | ~12 cycles |
 | Memory | ~40 bytes |
-| Types | `TrendAlertF64` |
+| Types | `TrendAlert` |
 | Output | `Option<Direction>` — `Stable`, `Rising`, or `Falling` |
 
 ## What It Does
@@ -40,7 +40,7 @@ Separates the signal into level + trend, then classifies:
 ## Configuration
 
 ```rust
-let mut ta = TrendAlertF64::builder()
+let mut ta = TrendAlert::builder()
     .alpha(0.3)
     .beta(0.1)
     .trend_threshold(0.5)            // absolute: trend > 0.5 per sample
@@ -60,4 +60,4 @@ Supports both absolute and relative thresholds.
 
 | Operation | p50 | p99 |
 |-----------|-----|-----|
-| `TrendAlertF64::update` | ~12 cycles | ~18 cycles |
+| `TrendAlert::update` | ~12 cycles | ~18 cycles |

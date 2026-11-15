@@ -12,15 +12,15 @@ use nexus_stats::monitoring::{PollSaturation, SojournSaturation};
 
 use nexus_stats::{
     control::{BoolWindow, Hysteresis},
-    detection::{Cusum, MosumF64, MultiGateF64, RobustZScoreF64, ShiryaevRobertsF64},
+    detection::{Cusum, Mosum, MultiGate, RobustZScore, ShiryaevRoberts},
     frequency::TopK,
-    learning::{EpsilonGreedyF64, Exp3F64, ThompsonBetaF64, ThompsonGammaF64, Ucb1F64},
+    learning::{EpsilonGreedy, Exp3, ThompsonBeta, ThompsonGamma, Ucb1},
     monitoring::{
         CoDel, Drawdown, EventRate, Liveness, PeakHold, RunningMax, RunningMin, WindowedMax,
         WindowedMin,
     },
-    signal::{AutocorrelationF64, CrossCorrelationF64, EntropyF64, TransferEntropyF64},
-    smoothing::{AsymEma, Ema, HoltF64, Kalman1dF64, KamaF64, Slew, SpringF64, WindowedMedianF64},
+    signal::{Autocorrelation, CrossCorrelation, Entropy, TransferEntropy},
+    smoothing::{AsymEma, Ema, Holt, Kalman1d, Kama, Slew, Spring, WindowedMedian},
     statistics::{Covariance, EwmaVar, Moments, Welford},
 };
 
@@ -345,7 +345,7 @@ fn bench_poll_saturation_on_idle(samples: &mut [u64]) {
 }
 
 fn bench_mosum_f64(samples: &mut [u64]) {
-    let mut mosum = MosumF64::builder(100.0)
+    let mut mosum = Mosum::builder(100.0)
         .window_size(64)
         .threshold(1e18)
         .build()
@@ -391,7 +391,7 @@ fn bench_covariance_f64(samples: &mut [u64]) {
 }
 
 fn bench_holt_f64(samples: &mut [u64]) {
-    let mut h = HoltF64::builder().alpha(0.3).beta(0.1).build().unwrap();
+    let mut h = Holt::builder().alpha(0.3).beta(0.1).build().unwrap();
     let mut rng = 12345u64;
     for _ in 0..WARMUP {
         let _ = h.update(90.0 + (next_val(&mut rng) % 20) as f64);
@@ -408,7 +408,7 @@ fn bench_holt_f64(samples: &mut [u64]) {
 }
 
 fn bench_shiryaev_roberts(samples: &mut [u64]) {
-    let mut sr = ShiryaevRobertsF64::builder()
+    let mut sr = ShiryaevRoberts::builder()
         .pre_change_mean(100.0)
         .post_change_mean(110.0)
         .variance(25.0)
@@ -539,7 +539,7 @@ fn bench_codel_i64(samples: &mut [u64]) {
 // ============================================================================
 
 fn bench_multi_gate_f64(samples: &mut [u64]) {
-    let mut mg = MultiGateF64::builder()
+    let mut mg = MultiGate::builder()
         .alpha(0.1)
         .hard_limit(0.5)
         .suspect_z(5.0)
@@ -562,7 +562,7 @@ fn bench_multi_gate_f64(samples: &mut [u64]) {
 }
 
 fn bench_windowed_median_f64(samples: &mut [u64]) {
-    let mut wm = WindowedMedianF64::new(32);
+    let mut wm = WindowedMedian::<f64>::new(32);
     let mut rng = 12345u64;
     for _ in 0..WARMUP {
         let _ = wm.update(90.0 + (next_val(&mut rng) % 20) as f64);
@@ -579,7 +579,7 @@ fn bench_windowed_median_f64(samples: &mut [u64]) {
 }
 
 fn bench_robust_z_f64(samples: &mut [u64]) {
-    let mut rz = RobustZScoreF64::builder()
+    let mut rz = RobustZScore::<f64>::builder()
         .alpha(0.1)
         .reject_threshold(10.0)
         .min_samples(5)
@@ -605,7 +605,7 @@ fn bench_robust_z_f64(samples: &mut [u64]) {
 // ============================================================================
 
 fn bench_spring_f64(samples: &mut [u64]) {
-    let mut sp = SpringF64::new(0.5).unwrap();
+    let mut sp = Spring::new(0.5).unwrap();
     let mut rng = 12345u64;
     for _ in 0..WARMUP {
         let _ = sp.update(90.0 + (next_val(&mut rng) % 20) as f64, 0.016);
@@ -665,7 +665,7 @@ fn bench_asym_ema_f64(samples: &mut [u64]) {
 }
 
 fn bench_kama_f64(samples: &mut [u64]) {
-    let mut kama = KamaF64::builder().window_size(10).build().unwrap();
+    let mut kama = Kama::builder().window_size(10).build().unwrap();
     let mut rng = 12345u64;
     for _ in 0..WARMUP {
         let _ = kama.update(90.0 + (next_val(&mut rng) % 20) as f64);
@@ -682,7 +682,7 @@ fn bench_kama_f64(samples: &mut [u64]) {
 }
 
 fn bench_kalman1d_f64(samples: &mut [u64]) {
-    let mut kf = Kalman1dF64::builder()
+    let mut kf = Kalman1d::builder()
         .process_noise(0.01)
         .measurement_noise(1.0)
         .build()
@@ -780,7 +780,7 @@ fn bench_moments_f64(samples: &mut [u64]) {
 }
 
 fn bench_autocorrelation_f64(samples: &mut [u64]) {
-    let mut ac = AutocorrelationF64::builder().lag(1).build().unwrap();
+    let mut ac = Autocorrelation::builder().lag(1).build().unwrap();
     let mut rng = 12345u64;
     for _ in 0..WARMUP {
         let _ = ac.update(90.0 + (next_val(&mut rng) % 20) as f64);
@@ -797,7 +797,7 @@ fn bench_autocorrelation_f64(samples: &mut [u64]) {
 }
 
 fn bench_cross_correlation_f64(samples: &mut [u64]) {
-    let mut cc = CrossCorrelationF64::builder().lag(10).build().unwrap();
+    let mut cc = CrossCorrelation::builder().lag(10).build().unwrap();
     let mut rng = 12345u64;
     for _ in 0..WARMUP {
         let x = 90.0 + (next_val(&mut rng) % 20) as f64;
@@ -818,7 +818,7 @@ fn bench_cross_correlation_f64(samples: &mut [u64]) {
 }
 
 fn bench_entropy_f64(samples: &mut [u64]) {
-    let mut e = EntropyF64::builder().bins(8).build().unwrap();
+    let mut e = Entropy::builder().bins(8).build().unwrap();
     let mut rng = 12345u64;
     for _ in 0..WARMUP {
         e.update((next_val(&mut rng) % 8) as usize);
@@ -835,11 +835,7 @@ fn bench_entropy_f64(samples: &mut [u64]) {
 }
 
 fn bench_transfer_entropy_f64(samples: &mut [u64]) {
-    let mut te = TransferEntropyF64::builder()
-        .bins(8)
-        .lag(1)
-        .build()
-        .unwrap();
+    let mut te = TransferEntropy::builder().bins(8).lag(1).build().unwrap();
     let mut rng = 12345u64;
     for _ in 0..WARMUP {
         let x = (next_val(&mut rng) % 8) as usize;
@@ -877,7 +873,7 @@ fn bench_bandit_select_sweep(samples: &mut [u64]) {
 
     for &k in BANDIT_KS {
         // UCB1
-        let mut b = Ucb1F64::builder().arms(k).build().unwrap();
+        let mut b = Ucb1::builder().arms(k).build().unwrap();
         let mut rng = 12345u64;
         for _ in 0..(k * 100) {
             let arm = b.select();
@@ -897,7 +893,7 @@ fn bench_bandit_select_sweep(samples: &mut [u64]) {
     println!();
     for &k in BANDIT_KS {
         // ThompsonBeta
-        let mut b = ThompsonBetaF64::builder().arms(k).build().unwrap();
+        let mut b = ThompsonBeta::builder().arms(k).build().unwrap();
         let mut rng = 12345u64;
         for _ in 0..(k * 100) {
             let arm = b.select(&mut || next_unit(&mut rng));
@@ -917,7 +913,7 @@ fn bench_bandit_select_sweep(samples: &mut [u64]) {
     println!();
     for &k in BANDIT_KS {
         // ThompsonGamma
-        let mut b = ThompsonGammaF64::builder().arms(k).build().unwrap();
+        let mut b = ThompsonGamma::builder().arms(k).build().unwrap();
         let mut rng = 12345u64;
         for _ in 0..(k * 100) {
             let arm = b.select(&mut || next_unit(&mut rng));
@@ -937,7 +933,7 @@ fn bench_bandit_select_sweep(samples: &mut [u64]) {
     println!();
     for &k in BANDIT_KS {
         // EpsilonGreedy
-        let mut b = EpsilonGreedyF64::builder()
+        let mut b = EpsilonGreedy::builder()
             .arms(k)
             .epsilon(0.1)
             .build()
@@ -961,7 +957,7 @@ fn bench_bandit_select_sweep(samples: &mut [u64]) {
     println!();
     for &k in BANDIT_KS {
         // EXP3
-        let mut b = Exp3F64::builder().arms(k).gamma(0.1).build().unwrap();
+        let mut b = Exp3::builder().arms(k).gamma(0.1).build().unwrap();
         let mut rng = 12345u64;
         for _ in 0..(k * 100) {
             let (arm, prob) = b.select(&mut || next_unit(&mut rng));
@@ -987,7 +983,7 @@ fn bench_bandit_update_sweep(samples: &mut [u64]) {
 
     for &k in BANDIT_KS {
         // UCB1 stationary
-        let mut b = Ucb1F64::builder().arms(k).build().unwrap();
+        let mut b = Ucb1::builder().arms(k).build().unwrap();
         let mut rng = 12345u64;
         for _ in 0..(k * 100) {
             let arm = b.select();
@@ -1009,7 +1005,7 @@ fn bench_bandit_update_sweep(samples: &mut [u64]) {
     println!();
     for &k in BANDIT_KS {
         // UCB1 decay
-        let mut b = Ucb1F64::builder().arms(k).decay(0.99).build().unwrap();
+        let mut b = Ucb1::builder().arms(k).decay(0.99).build().unwrap();
         let mut rng = 12345u64;
         for _ in 0..(k * 100) {
             let arm = b.select();
@@ -1040,7 +1036,7 @@ fn main() {
     bench_cusum_f64(&mut buf);
     print_row("Cusum::update", &mut buf);
     bench_mosum_f64(&mut buf);
-    print_row("MosumF64(64)::update", &mut buf);
+    print_row("Mosum(64)::update", &mut buf);
     bench_shiryaev_roberts(&mut buf);
     print_row("ShiryaevRoberts::update", &mut buf);
 
@@ -1049,7 +1045,7 @@ fn main() {
     bench_ema_f64(&mut buf);
     print_row("Ema::update", &mut buf);
     bench_holt_f64(&mut buf);
-    print_row("HoltF64::update", &mut buf);
+    print_row("Holt::update", &mut buf);
 
     section("Variance & Correlation");
     print_header();
@@ -1090,24 +1086,24 @@ fn main() {
     section("Anomaly Detection");
     print_header();
     bench_multi_gate_f64(&mut buf);
-    print_row("MultiGateF64::update", &mut buf);
+    print_row("MultiGate::update", &mut buf);
     bench_windowed_median_f64(&mut buf);
     print_row("WindowedMedian(32)::update", &mut buf);
     bench_robust_z_f64(&mut buf);
-    print_row("RobustZScoreF64::update", &mut buf);
+    print_row("RobustZScore::<f64>::update", &mut buf);
 
     section("Signal Processing");
     print_header();
     bench_spring_f64(&mut buf);
-    print_row("SpringF64::update", &mut buf);
+    print_row("Spring::update", &mut buf);
     bench_peak_hold_f64(&mut buf);
     print_row("PeakHold::<f64>::update", &mut buf);
     bench_asym_ema_f64(&mut buf);
     print_row("AsymEma::update", &mut buf);
     bench_kama_f64(&mut buf);
-    print_row("KamaF64(10)::update", &mut buf);
+    print_row("Kama(10)::update", &mut buf);
     bench_kalman1d_f64(&mut buf);
-    print_row("Kalman1dF64::update", &mut buf);
+    print_row("Kalman1d::update", &mut buf);
 
     section("Utilities");
     print_header();

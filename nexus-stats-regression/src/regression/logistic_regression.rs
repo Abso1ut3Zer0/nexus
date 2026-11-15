@@ -35,26 +35,26 @@ fn sigmoid(z: f64) -> f64 {
 /// # Complexity
 /// O(dims) per update, heap-allocated weight vector.
 #[derive(Debug, Clone)]
-pub struct LogisticRegressionF64 {
+pub struct LogisticRegression {
     weights: Box<[f64]>,
     learning_rate: f64,
     dims: usize,
     count: u64,
 }
 
-/// Builder for [`LogisticRegressionF64`].
+/// Builder for [`LogisticRegression`].
 #[derive(Debug, Clone)]
-pub struct LogisticRegressionF64Builder {
+pub struct LogisticRegressionBuilder {
     dimensions: Option<usize>,
     learning_rate: Option<f64>,
 }
 
-impl LogisticRegressionF64 {
+impl LogisticRegression {
     /// Creates a builder.
     #[inline]
     #[must_use]
-    pub fn builder() -> LogisticRegressionF64Builder {
-        LogisticRegressionF64Builder {
+    pub fn builder() -> LogisticRegressionBuilder {
+        LogisticRegressionBuilder {
             dimensions: Option::None,
             learning_rate: Option::None,
         }
@@ -159,7 +159,7 @@ impl LogisticRegressionF64 {
     }
 }
 
-impl LogisticRegressionF64Builder {
+impl LogisticRegressionBuilder {
     /// Sets the number of input dimensions (required, >= 1).
     #[inline]
     #[must_use]
@@ -178,7 +178,7 @@ impl LogisticRegressionF64Builder {
 
     /// Builds the classifier. Returns an error if parameters are missing or invalid.
     #[inline]
-    pub fn build(self) -> Result<LogisticRegressionF64, nexus_stats_core::ConfigError> {
+    pub fn build(self) -> Result<LogisticRegression, nexus_stats_core::ConfigError> {
         let dims = self
             .dimensions
             .ok_or(nexus_stats_core::ConfigError::Missing("dimensions"))?;
@@ -195,7 +195,7 @@ impl LogisticRegressionF64Builder {
                 "learning_rate must be positive",
             ));
         }
-        Ok(LogisticRegressionF64 {
+        Ok(LogisticRegression {
             weights: vec![0.0_f64; dims].into_boxed_slice(),
             learning_rate: lr,
             dims,
@@ -212,7 +212,7 @@ mod tests {
     fn linearly_separable_convergence() {
         // Class 0: features around (-1, -1)
         // Class 1: features around (1, 1)
-        let mut lr = LogisticRegressionF64::builder()
+        let mut lr = LogisticRegression::builder()
             .dimensions(2)
             .learning_rate(0.1)
             .build()
@@ -243,7 +243,7 @@ mod tests {
 
     #[test]
     fn predict_in_range() {
-        let mut lr = LogisticRegressionF64::builder()
+        let mut lr = LogisticRegression::builder()
             .dimensions(2)
             .learning_rate(0.1)
             .build()
@@ -263,7 +263,7 @@ mod tests {
 
     #[test]
     fn reset_clears_weights() {
-        let mut lr = LogisticRegressionF64::builder()
+        let mut lr = LogisticRegression::builder()
             .dimensions(2)
             .learning_rate(0.1)
             .build()
@@ -281,7 +281,7 @@ mod tests {
     #[test]
     #[should_panic(expected = "feature length")]
     fn dimension_mismatch_predict() {
-        let lr = LogisticRegressionF64::builder()
+        let lr = LogisticRegression::builder()
             .dimensions(3)
             .learning_rate(0.1)
             .build()
@@ -293,7 +293,7 @@ mod tests {
     #[test]
     #[should_panic(expected = "feature length")]
     fn dimension_mismatch_update() {
-        let mut lr = LogisticRegressionF64::builder()
+        let mut lr = LogisticRegression::builder()
             .dimensions(3)
             .learning_rate(0.1)
             .build()
@@ -304,7 +304,7 @@ mod tests {
 
     #[test]
     fn builder_rejects_zero_dimensions() {
-        let result = LogisticRegressionF64::builder()
+        let result = LogisticRegression::builder()
             .dimensions(0)
             .learning_rate(0.1)
             .build();
@@ -313,7 +313,7 @@ mod tests {
 
     #[test]
     fn builder_rejects_negative_learning_rate() {
-        let result = LogisticRegressionF64::builder()
+        let result = LogisticRegression::builder()
             .dimensions(2)
             .learning_rate(-0.01)
             .build();
@@ -322,7 +322,7 @@ mod tests {
 
     #[test]
     fn builder_missing_dimensions() {
-        let result = LogisticRegressionF64::builder().learning_rate(0.1).build();
+        let result = LogisticRegression::builder().learning_rate(0.1).build();
         assert!(matches!(
             result,
             Err(nexus_stats_core::ConfigError::Missing("dimensions"))
@@ -331,7 +331,7 @@ mod tests {
 
     #[test]
     fn builder_missing_learning_rate() {
-        let result = LogisticRegressionF64::builder().dimensions(2).build();
+        let result = LogisticRegression::builder().dimensions(2).build();
         assert!(matches!(
             result,
             Err(nexus_stats_core::ConfigError::Missing("learning_rate"))
@@ -340,7 +340,7 @@ mod tests {
 
     #[test]
     fn count_tracks_updates() {
-        let mut lr = LogisticRegressionF64::builder()
+        let mut lr = LogisticRegression::builder()
             .dimensions(1)
             .learning_rate(0.1)
             .build()

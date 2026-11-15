@@ -20,9 +20,9 @@ use nexus_stats_core::DataError;
 /// # Examples
 ///
 /// ```
-/// use nexus_stats_detection::signal::PredictiveInfoBoundF64;
+/// use nexus_stats_detection::signal::PredictiveInfoBound;
 ///
-/// let mut pib = PredictiveInfoBoundF64::builder()
+/// let mut pib = PredictiveInfoBound::builder()
 ///     .bins(10)
 ///     .x_range(0.0, 100.0)
 ///     .y_range(0.0, 100.0)
@@ -37,7 +37,7 @@ use nexus_stats_core::DataError;
 /// assert!(pib.mutual_information().unwrap() > 0.0);
 /// ```
 #[derive(Debug, Clone)]
-pub struct PredictiveInfoBoundF64 {
+pub struct PredictiveInfoBound {
     bins: usize,
     x_min: f64,
     x_max: f64,
@@ -52,21 +52,21 @@ pub struct PredictiveInfoBoundF64 {
     min_samples: u64,
 }
 
-/// Builder for [`PredictiveInfoBoundF64`].
+/// Builder for [`PredictiveInfoBound`].
 #[derive(Debug, Clone)]
-pub struct PredictiveInfoBoundF64Builder {
+pub struct PredictiveInfoBoundBuilder {
     bins: Option<usize>,
     x_range: Option<(f64, f64)>,
     y_range: Option<(f64, f64)>,
     min_samples: Option<u64>,
 }
 
-impl PredictiveInfoBoundF64 {
+impl PredictiveInfoBound {
     /// Creates a builder.
     #[inline]
     #[must_use]
-    pub fn builder() -> PredictiveInfoBoundF64Builder {
-        PredictiveInfoBoundF64Builder {
+    pub fn builder() -> PredictiveInfoBoundBuilder {
+        PredictiveInfoBoundBuilder {
             bins: None,
             x_range: None,
             y_range: None,
@@ -243,7 +243,7 @@ impl PredictiveInfoBoundF64 {
     }
 }
 
-impl PredictiveInfoBoundF64Builder {
+impl PredictiveInfoBoundBuilder {
     /// Number of bins per dimension (required, 2..=256).
     #[inline]
     #[must_use]
@@ -282,7 +282,7 @@ impl PredictiveInfoBoundF64Builder {
     ///
     /// - `bins` must be in [2, 256].
     /// - `x_range` and `y_range` must have `max > min`, both finite.
-    pub fn build(self) -> Result<PredictiveInfoBoundF64, nexus_stats_core::ConfigError> {
+    pub fn build(self) -> Result<PredictiveInfoBound, nexus_stats_core::ConfigError> {
         let bins = self
             .bins
             .ok_or(nexus_stats_core::ConfigError::Missing("bins"))?;
@@ -324,7 +324,7 @@ impl PredictiveInfoBoundF64Builder {
             ));
         }
 
-        Ok(PredictiveInfoBoundF64 {
+        Ok(PredictiveInfoBound {
             bins,
             x_min,
             x_max,
@@ -347,7 +347,7 @@ mod tests {
 
     #[test]
     fn independent_variables() {
-        let mut pib = PredictiveInfoBoundF64::builder()
+        let mut pib = PredictiveInfoBound::builder()
             .bins(10)
             .x_range(0.0, 10.0)
             .y_range(0.0, 10.0)
@@ -374,7 +374,7 @@ mod tests {
 
     #[test]
     fn identical_variables() {
-        let mut pib = PredictiveInfoBoundF64::builder()
+        let mut pib = PredictiveInfoBound::builder()
             .bins(10)
             .x_range(0.0, 10.0)
             .y_range(0.0, 10.0)
@@ -397,7 +397,7 @@ mod tests {
 
     #[test]
     fn linear_relationship() {
-        let mut pib_tight = PredictiveInfoBoundF64::builder()
+        let mut pib_tight = PredictiveInfoBound::builder()
             .bins(10)
             .x_range(0.0, 10.0)
             .y_range(0.0, 20.0)
@@ -420,7 +420,7 @@ mod tests {
 
     #[test]
     fn clamping() {
-        let mut pib = PredictiveInfoBoundF64::builder()
+        let mut pib = PredictiveInfoBound::builder()
             .bins(5)
             .x_range(0.0, 10.0)
             .y_range(0.0, 10.0)
@@ -435,7 +435,7 @@ mod tests {
 
     #[test]
     fn miller_madow_correction() {
-        let mut pib = PredictiveInfoBoundF64::builder()
+        let mut pib = PredictiveInfoBound::builder()
             .bins(4)
             .x_range(0.0, 4.0)
             .y_range(0.0, 4.0)
@@ -454,7 +454,7 @@ mod tests {
 
     #[test]
     fn bits_vs_nats() {
-        let mut pib = PredictiveInfoBoundF64::builder()
+        let mut pib = PredictiveInfoBound::builder()
             .bins(5)
             .x_range(0.0, 5.0)
             .y_range(0.0, 5.0)
@@ -479,7 +479,7 @@ mod tests {
 
     #[test]
     fn normalized_mi_range() {
-        let mut pib = PredictiveInfoBoundF64::builder()
+        let mut pib = PredictiveInfoBound::builder()
             .bins(5)
             .x_range(0.0, 5.0)
             .y_range(0.0, 5.0)
@@ -501,7 +501,7 @@ mod tests {
 
     #[test]
     fn reset_clears() {
-        let mut pib = PredictiveInfoBoundF64::builder()
+        let mut pib = PredictiveInfoBound::builder()
             .bins(5)
             .x_range(0.0, 5.0)
             .y_range(0.0, 5.0)
@@ -521,7 +521,7 @@ mod tests {
 
     #[test]
     fn nan_rejected() {
-        let mut pib = PredictiveInfoBoundF64::builder()
+        let mut pib = PredictiveInfoBound::builder()
             .bins(5)
             .x_range(0.0, 5.0)
             .y_range(0.0, 5.0)
@@ -539,7 +539,7 @@ mod tests {
 
     #[test]
     fn inf_rejected() {
-        let mut pib = PredictiveInfoBoundF64::builder()
+        let mut pib = PredictiveInfoBound::builder()
             .bins(5)
             .x_range(0.0, 5.0)
             .y_range(0.0, 5.0)
@@ -554,7 +554,7 @@ mod tests {
     #[test]
     fn builder_validation() {
         assert!(matches!(
-            PredictiveInfoBoundF64::builder()
+            PredictiveInfoBound::builder()
                 .x_range(0.0, 10.0)
                 .y_range(0.0, 10.0)
                 .build(),
@@ -562,7 +562,7 @@ mod tests {
         ));
 
         assert!(matches!(
-            PredictiveInfoBoundF64::builder()
+            PredictiveInfoBound::builder()
                 .bins(1)
                 .x_range(0.0, 10.0)
                 .y_range(0.0, 10.0)
@@ -571,7 +571,7 @@ mod tests {
         ));
 
         assert!(matches!(
-            PredictiveInfoBoundF64::builder()
+            PredictiveInfoBound::builder()
                 .bins(257)
                 .x_range(0.0, 10.0)
                 .y_range(0.0, 10.0)
@@ -580,7 +580,7 @@ mod tests {
         ));
 
         assert!(matches!(
-            PredictiveInfoBoundF64::builder()
+            PredictiveInfoBound::builder()
                 .bins(10)
                 .x_range(10.0, 0.0)
                 .y_range(0.0, 10.0)
@@ -589,7 +589,7 @@ mod tests {
         ));
 
         assert!(matches!(
-            PredictiveInfoBoundF64::builder()
+            PredictiveInfoBound::builder()
                 .bins(10)
                 .x_range(0.0, 10.0)
                 .y_range(10.0, 0.0)

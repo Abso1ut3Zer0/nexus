@@ -33,7 +33,7 @@ Detection types don't all return the same shape. Know what you're getting:
 |---------|--------|
 | `std` | Native math via standard library; default. |
 | `libm` | `no_std` fallback. |
-| `alloc` | Enables `MosumF64`, entropy types, transfer entropy. |
+| `alloc` | Enables `Mosum`, entropy types, transfer entropy. |
 
 Shiryaev-Roberts, AdaptiveThreshold, and SPRT variants require `std` or `libm`. MOSUM, Entropy, CrossCorrelation, and TransferEntropy require `alloc`.
 
@@ -49,10 +49,10 @@ A typical detection pipeline:
 raw input
    │
    ▼
- [HampelF64 or Ema]         pre-filter / smooth
+ [Hampel or Ema]         pre-filter / smooth
    │
    ▼
- [AdaptiveThresholdF64]        score the residual
+ [AdaptiveThreshold]        score the residual
    │
    ▼
  [DebounceU32]                 suppress single-sample noise

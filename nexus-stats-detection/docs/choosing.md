@@ -6,11 +6,11 @@ Every detector tests a different hypothesis. Match the question to the type.
 
 Use **`Cusum`** (from `nexus-stats-core::detection`). CUSUM accumulates deviations from a target, fires when the cumulative budget is exhausted. It does *not* fire on a single spike — the shift must be sustained.
 
-For optimal detection when you know the shift magnitude in advance, use **`ShiryaevRobertsF64`** (this crate). Shiryaev-Roberts is the asymptotically optimal detector in the minimax sense under a known alternative hypothesis.
+For optimal detection when you know the shift magnitude in advance, use **`ShiryaevRoberts`** (this crate). Shiryaev-Roberts is the asymptotically optimal detector in the minimax sense under a known alternative hypothesis.
 
 ## "Was there a recent *transient* spike?"
 
-Use **`MosumF64`** — Moving Sum, the windowed cousin of CUSUM. It sums over a sliding window rather than an unbounded accumulator, so single spikes show up and then fade. Fires on recent anomalies, not on persistent shifts.
+Use **`Mosum`** — Moving Sum, the windowed cousin of CUSUM. It sums over a sliding window rather than an unbounded accumulator, so single spikes show up and then fade. Fires on recent anomalies, not on persistent shifts.
 
 CUSUM vs MOSUM: CUSUM detects "is the mean different now and staying different?". MOSUM detects "did something weird happen in the last N samples?".
 
@@ -18,15 +18,15 @@ CUSUM vs MOSUM: CUSUM detects "is the mean different now and staying different?"
 
 Two choices:
 
-- **`AdaptiveThresholdF64`** — Maintains EMA and EW variance, returns a z-score against the streaming baseline. Classic `|x - EMA| / stddev > k` test. Fast and simple. Assumes Gaussian noise.
+- **`AdaptiveThreshold`** — Maintains EMA and EW variance, returns a z-score against the streaming baseline. Classic `|x - EMA| / stddev > k` test. Fast and simple. Assumes Gaussian noise.
 
-- **`RobustZScoreF64`** — Same idea, but uses median and MAD instead of mean and variance. Robust to heavy tails and outliers (your baseline isn't polluted by the things you're trying to detect). Slower but correct under non-Gaussian noise.
+- **`RobustZScore<f64>`** — Same idea, but uses median and MAD instead of mean and variance. Robust to heavy tails and outliers (your baseline isn't polluted by the things you're trying to detect). Slower but correct under non-Gaussian noise.
 
 Pick RobustZ when your data has fat tails (financial returns, sensor flakes). Pick AdaptiveThreshold when it's Gaussian-ish (latency with GC, throughput with buffering).
 
 ## "Is the trend heading toward a limit?"
 
-Use **`TrendAlertF64`**. Internally uses Holt-style level+trend estimation; alerts when the extrapolated forecast crosses a threshold. This is the "latency is increasing, will cross SLO in 3 minutes" detector.
+Use **`TrendAlert`**. Internally uses Holt-style level+trend estimation; alerts when the extrapolated forecast crosses a threshold. This is the "latency is increasing, will cross SLO in 3 minutes" detector.
 
 ## "Has the distribution *shape* changed?"
 
@@ -34,23 +34,23 @@ Use **`DistributionShift`** (from `nexus-stats-core::detection`). Compares fast-
 
 ## "I need *graded severity* — normal / warning / critical"
 
-Use **`MultiGateF64`**. Layered threshold gates — configure multiple thresholds with separate halflives. Emits `Condition::Normal | Warning | Critical` state transitions.
+Use **`MultiGate`**. Layered threshold gates — configure multiple thresholds with separate halflives. Emits `Condition::Normal | Warning | Critical` state transitions.
 
 ## "Is this stream trending or reverting?"
 
-Use **`AutocorrelationF64`** at lag 1 (or more). Positive autocorrelation at lag 1 = trending (if a step moved up, the next step is likely up too). Negative = mean-reverting. Near zero = random walk.
+Use **`Autocorrelation`** at lag 1 (or more). Positive autocorrelation at lag 1 = trending (if a step moved up, the next step is likely up too). Negative = mean-reverting. Near zero = random walk.
 
 For a full trend-vs-reversion suite, pair with [`HalfLife`](../../nexus-stats-core/docs/statistics.md#halflifef64--mean-reversion-half-life) and [`Hurst`](../../nexus-stats-core/docs/statistics.md#hurstf64--hurst-exponent).
 
 ## "Which of these two streams leads?"
 
-Use **`CrossCorrelationF64`**. Given streams X and Y and a lag range, it computes ρ(x_t, y_{t-lag}) for each lag and tells you which direction leads.
+Use **`CrossCorrelation`**. Given streams X and Y and a lag range, it computes ρ(x_t, y_{t-lag}) for each lag and tells you which direction leads.
 
 Classic use: "does the bid side of exchange A lead the bid side of exchange B?". Or: "does our CPU spike lead or follow the latency spike?".
 
 ## "Does stream X causally drive stream Y?"
 
-Use **`TransferEntropyF64`**. Granger-style information-theoretic causality. Expensive to compute (histogram-based) but much stronger than correlation — it detects nonlinear dependencies correlation misses.
+Use **`TransferEntropy`**. Granger-style information-theoretic causality. Expensive to compute (histogram-based) but much stronger than correlation — it detects nonlinear dependencies correlation misses.
 
 Use for: causal signal research, factor discovery. Not for hot paths.
 

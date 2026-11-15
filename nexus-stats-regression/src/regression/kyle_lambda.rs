@@ -1,4 +1,4 @@
-use crate::regression::EwLinearRegressionF64;
+use crate::regression::EwLinearRegression;
 
 /// Kyle's Lambda — streaming price impact coefficient.
 ///
@@ -9,15 +9,15 @@ use crate::regression::EwLinearRegressionF64;
 ///
 /// Kyle (1985): ΔP = λ · SignedVolume + ε
 ///
-/// This is a thin wrapper around `EwLinearRegressionF64` that names
+/// This is a thin wrapper around `EwLinearRegression` that names
 /// the concept and documents the domain semantics.
 ///
 /// # Examples
 ///
 /// ```
-/// use nexus_stats_regression::regression::KyleLambdaF64;
+/// use nexus_stats_regression::regression::KyleLambda;
 ///
-/// let mut kyle = KyleLambdaF64::builder()
+/// let mut kyle = KyleLambda::builder()
 ///     .alpha(0.05)
 ///     .build()
 ///     .unwrap();
@@ -34,22 +34,22 @@ use crate::regression::EwLinearRegressionF64;
 /// }
 /// ```
 #[derive(Debug, Clone)]
-pub struct KyleLambdaF64 {
-    regression: EwLinearRegressionF64,
+pub struct KyleLambda {
+    regression: EwLinearRegression,
 }
 
-/// Builder for [`KyleLambdaF64`].
+/// Builder for [`KyleLambda`].
 #[derive(Debug, Clone)]
-pub struct KyleLambdaF64Builder {
+pub struct KyleLambdaBuilder {
     alpha: Option<f64>,
 }
 
-impl KyleLambdaF64 {
+impl KyleLambda {
     /// Creates a builder.
     #[inline]
     #[must_use]
-    pub fn builder() -> KyleLambdaF64Builder {
-        KyleLambdaF64Builder { alpha: None }
+    pub fn builder() -> KyleLambdaBuilder {
+        KyleLambdaBuilder { alpha: None }
     }
 
     /// Feed a (signed_volume, price_change) observation.
@@ -111,7 +111,7 @@ impl KyleLambdaF64 {
     }
 }
 
-impl KyleLambdaF64Builder {
+impl KyleLambdaBuilder {
     /// EW smoothing factor. Must be in (0, 1). Required.
     #[inline]
     #[must_use]
@@ -125,14 +125,14 @@ impl KyleLambdaF64Builder {
     /// # Errors
     ///
     /// Returns `ConfigError` if alpha is missing or invalid.
-    pub fn build(self) -> Result<KyleLambdaF64, nexus_stats_core::ConfigError> {
+    pub fn build(self) -> Result<KyleLambda, nexus_stats_core::ConfigError> {
         let alpha = self
             .alpha
             .ok_or(nexus_stats_core::ConfigError::Missing("alpha"))?;
 
-        let regression = EwLinearRegressionF64::builder().alpha(alpha).build()?;
+        let regression = EwLinearRegression::builder().alpha(alpha).build()?;
 
-        Ok(KyleLambdaF64 { regression })
+        Ok(KyleLambda { regression })
     }
 }
 
@@ -142,7 +142,7 @@ mod tests {
 
     #[test]
     fn known_lambda() {
-        let mut kyle = KyleLambdaF64::builder().alpha(0.05).build().unwrap();
+        let mut kyle = KyleLambda::builder().alpha(0.05).build().unwrap();
 
         // lambda = 0.001: price_change = 0.001 * signed_volume
         for i in 0..500 {
@@ -163,7 +163,7 @@ mod tests {
 
     #[test]
     fn no_relationship_low_r2() {
-        let mut kyle = KyleLambdaF64::builder().alpha(0.05).build().unwrap();
+        let mut kyle = KyleLambda::builder().alpha(0.05).build().unwrap();
 
         // Uncorrelated: volume and price change independent
         for i in 0..500 {
@@ -181,7 +181,7 @@ mod tests {
 
     #[test]
     fn reset_clears_state() {
-        let mut kyle = KyleLambdaF64::builder().alpha(0.05).build().unwrap();
+        let mut kyle = KyleLambda::builder().alpha(0.05).build().unwrap();
         for i in 0..100 {
             kyle.update(i as f64, i as f64 * 0.5).unwrap();
         }
@@ -192,14 +192,14 @@ mod tests {
 
     #[test]
     fn nan_rejected() {
-        let mut kyle = KyleLambdaF64::builder().alpha(0.05).build().unwrap();
+        let mut kyle = KyleLambda::builder().alpha(0.05).build().unwrap();
         assert!(kyle.update(f64::NAN, 1.0).is_err());
         assert!(kyle.update(1.0, f64::NAN).is_err());
     }
 
     #[test]
     fn inf_rejected() {
-        let mut kyle = KyleLambdaF64::builder().alpha(0.05).build().unwrap();
+        let mut kyle = KyleLambda::builder().alpha(0.05).build().unwrap();
         assert!(kyle.update(f64::INFINITY, 1.0).is_err());
     }
 }

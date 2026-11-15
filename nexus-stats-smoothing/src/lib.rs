@@ -11,14 +11,14 @@
 //!
 //! | Type | Description | Feature |
 //! |------|-------------|---------|
-//! | [`HoltF64`] | Double exponential smoothing (level + trend) | — |
-//! | [`SpringF64`] | Critically damped spring (chase without overshoot) | — |
-//! | [`Kalman1dF64`] | 1D Kalman filter (position + velocity) | — |
-//! | [`HuberEmaF64`] | Outlier-robust EMA (bounded step per observation) | — |
-//! | [`KamaF64`] | Kaufman Adaptive Moving Average | `alloc` |
-//! | [`HampelF64`] | Three-zone outlier filter (pass / Winsorize / reject) | `alloc` |
-//! | [`WindowedMedianF64`] | Running median over a sliding window (f64) | `alloc` |
-//! | [`WindowedMedianI64`] | Running median over a sliding window (i64) | `alloc` |
+//! | [`Holt`] | Double exponential smoothing (level + trend) | — |
+//! | [`Spring`] | Critically damped spring (chase without overshoot) | — |
+//! | [`Kalman1d`] | 1D Kalman filter (position + velocity) | — |
+//! | [`HuberEma`] | Outlier-robust EMA (bounded step per observation) | — |
+//! | [`Kama`] | Kaufman Adaptive Moving Average | `alloc` |
+//! | [`Hampel`] | Three-zone outlier filter (pass / Winsorize / reject) | `alloc` |
+//! | [`WindowedMedian<f64>`] | Running median over a sliding window (f64) | `alloc` |
+//! | [`WindowedMedian<i64>`] | Running median over a sliding window (i64) | `alloc` |
 //!
 //! # Re-export
 //!

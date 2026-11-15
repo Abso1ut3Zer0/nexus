@@ -1,5 +1,5 @@
 use nexus_stats_core::Direction;
-use nexus_stats_smoothing::HoltF64;
+use nexus_stats_smoothing::Holt;
 
 /// Trend alert — Holt's double exponential with threshold on the trend component.
 ///
@@ -11,16 +11,16 @@ use nexus_stats_smoothing::HoltF64;
 /// - Capacity planning — detect degradation trends
 /// - Drift detection in stationary processes
 #[derive(Debug, Clone)]
-pub struct TrendAlertF64 {
-    holt: HoltF64,
+pub struct TrendAlert {
+    holt: Holt,
     trend_threshold_abs: Option<f64>,
     trend_threshold_rel: Option<f64>,
     min_samples: u64,
 }
 
-/// Builder for [`TrendAlertF64`].
+/// Builder for [`TrendAlert`].
 #[derive(Debug, Clone)]
-pub struct TrendAlertF64Builder {
+pub struct TrendAlertBuilder {
     alpha: Option<f64>,
     beta: Option<f64>,
     trend_threshold_abs: Option<f64>,
@@ -28,12 +28,12 @@ pub struct TrendAlertF64Builder {
     min_samples: u64,
 }
 
-impl TrendAlertF64 {
+impl TrendAlert {
     /// Creates a builder.
     #[inline]
     #[must_use]
-    pub fn builder() -> TrendAlertF64Builder {
-        TrendAlertF64Builder {
+    pub fn builder() -> TrendAlertBuilder {
+        TrendAlertBuilder {
             alpha: None,
             beta: None,
             trend_threshold_abs: None,
@@ -144,7 +144,7 @@ impl TrendAlertF64 {
     }
 }
 
-impl TrendAlertF64Builder {
+impl TrendAlertBuilder {
     /// Level smoothing factor (Holt's alpha).
     #[inline]
     #[must_use]
@@ -192,7 +192,7 @@ impl TrendAlertF64Builder {
     /// - Alpha and beta must have been set.
     /// - At least one threshold (absolute or relative) must be set.
     #[inline]
-    pub fn build(self) -> Result<TrendAlertF64, nexus_stats_core::ConfigError> {
+    pub fn build(self) -> Result<TrendAlert, nexus_stats_core::ConfigError> {
         let alpha = self
             .alpha
             .ok_or(nexus_stats_core::ConfigError::Missing("alpha"))?;
@@ -219,13 +219,13 @@ impl TrendAlertF64Builder {
             ));
         }
 
-        let holt = HoltF64::builder()
+        let holt = Holt::builder()
             .alpha(alpha)
             .beta(beta)
             .min_samples(self.min_samples)
             .build()?;
 
-        Ok(TrendAlertF64 {
+        Ok(TrendAlert {
             holt,
             trend_threshold_abs: self.trend_threshold_abs,
             trend_threshold_rel: self.trend_threshold_rel,
@@ -241,7 +241,7 @@ mod tests {
 
     #[test]
     fn constant_is_stable() {
-        let mut ta = TrendAlertF64::builder()
+        let mut ta = TrendAlert::builder()
             .alpha(0.3)
             .beta(0.1)
             .trend_threshold(1.0)
@@ -256,7 +256,7 @@ mod tests {
 
     #[test]
     fn linear_increase_is_rising() {
-        let mut ta = TrendAlertF64::builder()
+        let mut ta = TrendAlert::builder()
             .alpha(0.5)
             .beta(0.5)
             .trend_threshold(5.0)
@@ -271,7 +271,7 @@ mod tests {
 
     #[test]
     fn linear_decrease_is_falling() {
-        let mut ta = TrendAlertF64::builder()
+        let mut ta = TrendAlert::builder()
             .alpha(0.5)
             .beta(0.5)
             .trend_threshold(5.0)
@@ -287,7 +287,7 @@ mod tests {
 
     #[test]
     fn relative_threshold() {
-        let mut ta = TrendAlertF64::builder()
+        let mut ta = TrendAlert::builder()
             .alpha(0.5)
             .beta(0.5)
             .trend_threshold_relative(0.05)
@@ -304,7 +304,7 @@ mod tests {
 
     #[test]
     fn priming() {
-        let mut ta = TrendAlertF64::builder()
+        let mut ta = TrendAlert::builder()
             .alpha(0.3)
             .beta(0.1)
             .trend_threshold(1.0)
@@ -320,7 +320,7 @@ mod tests {
 
     #[test]
     fn reset() {
-        let mut ta = TrendAlertF64::builder()
+        let mut ta = TrendAlert::builder()
             .alpha(0.3)
             .beta(0.1)
             .trend_threshold(1.0)
@@ -336,7 +336,7 @@ mod tests {
 
     #[test]
     fn reconfigure_threshold_preserves_state() {
-        let mut ta = TrendAlertF64::builder()
+        let mut ta = TrendAlert::builder()
             .alpha(0.3)
             .beta(0.1)
             .trend_threshold(1.0)
@@ -355,7 +355,7 @@ mod tests {
 
     #[test]
     fn errors_without_threshold() {
-        let result = TrendAlertF64::builder().alpha(0.3).beta(0.1).build();
+        let result = TrendAlert::builder().alpha(0.3).beta(0.1).build();
         assert!(matches!(
             result,
             Err(nexus_stats_core::ConfigError::Invalid(_))
@@ -364,7 +364,7 @@ mod tests {
 
     #[test]
     fn rejects_nan_and_inf() {
-        let mut ta = TrendAlertF64::builder()
+        let mut ta = TrendAlert::builder()
             .alpha(0.3)
             .beta(0.1)
             .trend_threshold(1.0)

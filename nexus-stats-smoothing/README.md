@@ -4,24 +4,24 @@ Advanced smoothing algorithms for [nexus-stats](https://crates.io/crates/nexus-s
 
 ## Types
 
-- **HoltF64** — Double exponential smoothing (level + trend)
-- **SpringF64** — Critically damped spring (chase without overshoot)
-- **Kalman1dF64** — 1D Kalman filter (position + velocity)
-- **KamaF64** — Kaufman Adaptive Moving Average (requires `alloc`)
-- **WindowedMedianF64 / WindowedMedianF32** — Running median (requires `alloc`)
+- **Holt** — Double exponential smoothing (level + trend)
+- **Spring** — Critically damped spring (chase without overshoot)
+- **Kalman1d** — 1D Kalman filter (position + velocity)
+- **Kama** — Kaufman Adaptive Moving Average (requires `alloc`)
+- **WindowedMedian<f64> / WindowedMedianF32** — Running median (requires `alloc`)
 
 ## Usage
 
 Enable the `smoothing` feature on `nexus-stats` for unified import paths:
 
 ```rust
-use nexus_stats::smoothing::HoltF64;
+use nexus_stats::smoothing::Holt;
 ```
 
 Or depend on this crate directly:
 
 ```rust
-use nexus_stats_smoothing::HoltF64;
+use nexus_stats_smoothing::Holt;
 ```
 
 ## License

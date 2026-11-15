@@ -31,10 +31,10 @@ use alloc::vec;
 /// # Examples
 ///
 /// ```
-/// use nexus_stats_detection::signal::AutocorrelationF64;
+/// use nexus_stats_detection::signal::Autocorrelation;
 ///
 /// // Strongly periodic signal: lag-1 autocorrelation of alternating values
-/// let mut ac = AutocorrelationF64::builder().lag(1).build().unwrap();
+/// let mut ac = Autocorrelation::builder().lag(1).build().unwrap();
 /// for i in 0..200u64 {
 ///     ac.update(if i % 2 == 0 { 1.0 } else { -1.0 }).unwrap();
 /// }
@@ -42,7 +42,7 @@ use alloc::vec;
 /// assert!(r < -0.9, "alternating signal should have negative lag-1 autocorrelation");
 /// ```
 #[derive(Debug, Clone)]
-pub struct AutocorrelationF64 {
+pub struct Autocorrelation {
     buffer: Box<[f64]>,
     lag: usize,
     head: usize,
@@ -52,18 +52,18 @@ pub struct AutocorrelationF64 {
     cross_m: f64,
 }
 
-/// Builder for [`AutocorrelationF64`].
+/// Builder for [`Autocorrelation`].
 #[derive(Debug, Clone)]
-pub struct AutocorrelationF64Builder {
+pub struct AutocorrelationBuilder {
     lag: Option<usize>,
 }
 
-impl AutocorrelationF64 {
+impl Autocorrelation {
     /// Creates a builder.
     #[inline]
     #[must_use]
-    pub fn builder() -> AutocorrelationF64Builder {
-        AutocorrelationF64Builder { lag: None }
+    pub fn builder() -> AutocorrelationBuilder {
+        AutocorrelationBuilder { lag: None }
     }
 
     /// Feeds a sample.
@@ -162,7 +162,7 @@ impl AutocorrelationF64 {
     }
 }
 
-impl AutocorrelationF64Builder {
+impl AutocorrelationBuilder {
     /// Sets the lag (required, >= 1).
     #[inline]
     #[must_use]
@@ -176,171 +176,14 @@ impl AutocorrelationF64Builder {
     /// # Errors
     /// Returns `ConfigError` if lag is missing or < 1.
     #[inline]
-    pub fn build(self) -> Result<AutocorrelationF64, nexus_stats_core::ConfigError> {
+    pub fn build(self) -> Result<Autocorrelation, nexus_stats_core::ConfigError> {
         let lag = self
             .lag
             .ok_or(nexus_stats_core::ConfigError::Missing("lag"))?;
         if lag < 1 {
             return Err(nexus_stats_core::ConfigError::Invalid("lag must be >= 1"));
         }
-        Ok(AutocorrelationF64 {
-            buffer: vec![0.0; lag].into_boxed_slice(),
-            lag,
-            head: 0,
-            count: 0,
-            mean: 0.0,
-            m2: 0.0,
-            cross_m: 0.0,
-        })
-    }
-}
-
-/// Online autocorrelation at a configurable lag (integer input variant).
-///
-/// Accepts integer samples, accumulates internally in f64.
-/// All query methods return f64.
-///
-/// # Complexity
-/// - O(1) per update, heap-allocated circular buffer.
-///
-/// # Examples
-///
-/// ```
-/// use nexus_stats_detection::signal::AutocorrelationI64;
-///
-/// let mut ac = AutocorrelationI64::builder().lag(1).build().unwrap();
-/// for i in 0..200 { ac.update(if i % 2 == 0 { 1 as i64 } else { -1 as i64 }); }
-/// let r = ac.correlation().unwrap();
-/// assert!(r < -0.9);
-/// ```
-#[derive(Debug, Clone)]
-pub struct AutocorrelationI64 {
-    buffer: Box<[f64]>,
-    lag: usize,
-    head: usize,
-    count: u64,
-    mean: f64,
-    m2: f64,
-    cross_m: f64,
-}
-
-/// Builder for [`AutocorrelationI64`].
-#[derive(Debug, Clone)]
-pub struct AutocorrelationI64Builder {
-    lag: Option<usize>,
-}
-
-impl AutocorrelationI64 {
-    /// Creates a builder.
-    #[inline]
-    #[must_use]
-    pub fn builder() -> AutocorrelationI64Builder {
-        AutocorrelationI64Builder { lag: None }
-    }
-
-    /// Feeds a sample.
-    #[inline]
-    pub fn update(&mut self, sample: i64) {
-        #[allow(clippy::cast_lossless, clippy::cast_possible_truncation)]
-        let x = sample as f64;
-        self.count += 1;
-
-        let delta = x - self.mean;
-        self.mean += delta / self.count as f64;
-        let delta2 = x - self.mean;
-        self.m2 += delta * delta2;
-
-        if self.count > self.lag as u64 {
-            let x_lagged = self.buffer[self.head];
-            self.cross_m += (x - self.mean) * (x_lagged - self.mean);
-        }
-
-        self.buffer[self.head] = x;
-        self.head = (self.head + 1) % self.lag;
-    }
-
-    /// Autocorrelation coefficient in \[-1, 1\], or `None` if fewer
-    /// than `lag + 2` samples or variance is zero.
-    #[inline]
-    #[must_use]
-    pub fn correlation(&self) -> Option<f64> {
-        if self.count < (self.lag as u64 + 2) {
-            return None;
-        }
-        if self.m2 == 0.0 {
-            return None;
-        }
-        let n_pairs = (self.count - self.lag as u64) as f64;
-        let n_samples = (self.count - 1) as f64;
-        Some(self.cross_m * n_samples / (self.m2 * n_pairs))
-    }
-
-    /// Raw autocovariance at the configured lag, or `None` if not primed.
-    #[inline]
-    #[must_use]
-    pub fn covariance(&self) -> Option<f64> {
-        if self.count < (self.lag as u64 + 2) {
-            return None;
-        }
-        let n_pairs = (self.count - self.lag as u64) as f64;
-        Some(self.cross_m / n_pairs)
-    }
-
-    /// The configured lag.
-    #[inline]
-    #[must_use]
-    pub fn lag(&self) -> usize {
-        self.lag
-    }
-
-    /// Number of observations processed.
-    #[inline]
-    #[must_use]
-    pub fn count(&self) -> u64 {
-        self.count
-    }
-
-    /// Whether enough data has been collected (>= lag + 2).
-    #[inline]
-    #[must_use]
-    pub fn is_primed(&self) -> bool {
-        self.count >= self.lag as u64 + 2
-    }
-
-    /// Resets to empty state. Configuration and buffer allocation preserved.
-    #[inline]
-    pub fn reset(&mut self) {
-        self.buffer.fill(0.0);
-        self.head = 0;
-        self.count = 0;
-        self.mean = 0.0;
-        self.m2 = 0.0;
-        self.cross_m = 0.0;
-    }
-}
-
-impl AutocorrelationI64Builder {
-    /// Sets the lag (required, >= 1).
-    #[inline]
-    #[must_use]
-    pub fn lag(mut self, lag: usize) -> Self {
-        self.lag = Some(lag);
-        self
-    }
-
-    /// Builds the autocorrelation tracker.
-    ///
-    /// # Errors
-    /// Returns `ConfigError` if lag is missing or < 1.
-    #[inline]
-    pub fn build(self) -> Result<AutocorrelationI64, nexus_stats_core::ConfigError> {
-        let lag = self
-            .lag
-            .ok_or(nexus_stats_core::ConfigError::Missing("lag"))?;
-        if lag < 1 {
-            return Err(nexus_stats_core::ConfigError::Invalid("lag must be >= 1"));
-        }
-        Ok(AutocorrelationI64 {
+        Ok(Autocorrelation {
             buffer: vec![0.0; lag].into_boxed_slice(),
             lag,
             head: 0,
@@ -358,7 +201,7 @@ mod tests {
 
     #[test]
     fn alternating_negative_lag1() {
-        let mut ac = AutocorrelationF64::builder().lag(1).build().unwrap();
+        let mut ac = Autocorrelation::builder().lag(1).build().unwrap();
         for i in 0..1000u64 {
             ac.update(if i % 2 == 0 { 1.0 } else { -1.0 }).unwrap();
         }
@@ -368,7 +211,7 @@ mod tests {
 
     #[test]
     fn trending_positive_lag1() {
-        let mut ac = AutocorrelationF64::builder().lag(1).build().unwrap();
+        let mut ac = Autocorrelation::builder().lag(1).build().unwrap();
         for i in 0..1000u64 {
             ac.update(i as f64).unwrap();
         }
@@ -381,7 +224,7 @@ mod tests {
 
     #[test]
     fn lag10_periodic() {
-        let mut ac = AutocorrelationF64::builder().lag(10).build().unwrap();
+        let mut ac = Autocorrelation::builder().lag(10).build().unwrap();
         for i in 0..2000u64 {
             ac.update((i % 10) as f64).unwrap();
         }
@@ -394,7 +237,7 @@ mod tests {
 
     #[test]
     fn constant_input_zero_variance() {
-        let mut ac = AutocorrelationF64::builder().lag(1).build().unwrap();
+        let mut ac = Autocorrelation::builder().lag(1).build().unwrap();
         for _ in 0..100 {
             ac.update(42.0).unwrap();
         }
@@ -403,7 +246,7 @@ mod tests {
 
     #[test]
     fn not_primed_until_lag_plus_2() {
-        let mut ac = AutocorrelationF64::builder().lag(5).build().unwrap();
+        let mut ac = Autocorrelation::builder().lag(5).build().unwrap();
         for i in 0..6 {
             ac.update(i as f64).unwrap();
             assert!(!ac.is_primed(), "should not be primed at count {}", i + 1);
@@ -414,7 +257,7 @@ mod tests {
 
     #[test]
     fn covariance_sign_matches_correlation() {
-        let mut ac = AutocorrelationF64::builder().lag(1).build().unwrap();
+        let mut ac = Autocorrelation::builder().lag(1).build().unwrap();
         for i in 0..500u64 {
             ac.update(i as f64).unwrap();
         }
@@ -428,7 +271,7 @@ mod tests {
 
     #[test]
     fn reset_clears_state() {
-        let mut ac = AutocorrelationF64::builder().lag(1).build().unwrap();
+        let mut ac = Autocorrelation::builder().lag(1).build().unwrap();
         for i in 0..100 {
             ac.update(i as f64).unwrap();
         }
@@ -440,23 +283,13 @@ mod tests {
 
     #[test]
     fn lag_accessor() {
-        let ac = AutocorrelationF64::builder().lag(7).build().unwrap();
+        let ac = Autocorrelation::builder().lag(7).build().unwrap();
         assert_eq!(ac.lag(), 7);
     }
 
     #[test]
-    fn i64_alternating() {
-        let mut ac = AutocorrelationI64::builder().lag(1).build().unwrap();
-        for i in 0..1000i64 {
-            ac.update(if i % 2 == 0 { 100 } else { -100 });
-        }
-        let r = ac.correlation().unwrap();
-        assert!(r < -0.9, "i64 alternating got {r}");
-    }
-
-    #[test]
     fn rejects_nan_and_inf() {
-        let mut ac = AutocorrelationF64::builder().lag(1).build().unwrap();
+        let mut ac = Autocorrelation::builder().lag(1).build().unwrap();
         assert_eq!(
             ac.update(f64::NAN),
             Err(nexus_stats_core::DataError::NotANumber)
@@ -470,7 +303,7 @@ mod tests {
 
     #[test]
     fn builder_requires_lag() {
-        let result = AutocorrelationF64::builder().build();
+        let result = Autocorrelation::builder().build();
         assert!(matches!(
             result,
             Err(nexus_stats_core::ConfigError::Missing("lag"))
@@ -479,7 +312,7 @@ mod tests {
 
     #[test]
     fn builder_rejects_zero_lag() {
-        let result = AutocorrelationF64::builder().lag(0).build();
+        let result = Autocorrelation::builder().lag(0).build();
         assert!(result.is_err());
     }
 }

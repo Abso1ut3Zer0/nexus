@@ -29,10 +29,10 @@ for (i, shard) in per_shard.iter().enumerate() {
 ## Recipe: Load Trend Forecasting
 
 ```rust
-use nexus_stats::estimation::Kalman1dF64;
+use nexus_stats::estimation::Kalman1d;
 
 // Kalman filter for load with velocity (trend)
-let mut load = Kalman1dF64::builder()
+let mut load = Kalman1d::builder()
     .process_noise(0.5)
     .measurement_noise(10.0)
     .build().unwrap();

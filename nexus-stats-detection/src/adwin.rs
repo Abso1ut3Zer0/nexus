@@ -99,9 +99,9 @@ impl BucketList {
 /// # Examples
 ///
 /// ```
-/// use nexus_stats_detection::detection::AdwinF64;
+/// use nexus_stats_detection::detection::Adwin;
 ///
-/// let mut ad = AdwinF64::builder()
+/// let mut ad = Adwin::builder()
 ///     .delta(0.01)
 ///     .build()
 ///     .unwrap();
@@ -112,7 +112,7 @@ impl BucketList {
 /// }
 /// ```
 #[derive(Debug, Clone)]
-pub struct AdwinF64 {
+pub struct Adwin {
     delta: f64,
     buckets: BucketList,
     total: f64,
@@ -121,20 +121,20 @@ pub struct AdwinF64 {
     min_samples: u64,
 }
 
-/// Builder for [`AdwinF64`].
+/// Builder for [`Adwin`].
 #[derive(Debug, Clone)]
-pub struct AdwinF64Builder {
+pub struct AdwinBuilder {
     delta: Option<f64>,
     max_buckets: usize,
     min_samples: u64,
 }
 
-impl AdwinF64 {
+impl Adwin {
     /// Creates a builder.
     #[inline]
     #[must_use]
-    pub fn builder() -> AdwinF64Builder {
-        AdwinF64Builder {
+    pub fn builder() -> AdwinBuilder {
+        AdwinBuilder {
             delta: None,
             max_buckets: 5,
             min_samples: 30,
@@ -272,7 +272,7 @@ impl AdwinF64 {
     }
 }
 
-impl AdwinF64Builder {
+impl AdwinBuilder {
     /// Confidence parameter (delta). Required, must be in (0, 1).
     ///
     /// Smaller values reduce false positives but increase detection delay.
@@ -308,7 +308,7 @@ impl AdwinF64Builder {
     ///
     /// - Delta must have been set and be in (0, 1).
     /// - `max_buckets` must be >= 2.
-    pub fn build(self) -> Result<AdwinF64, nexus_stats_core::ConfigError> {
+    pub fn build(self) -> Result<Adwin, nexus_stats_core::ConfigError> {
         let delta = self
             .delta
             .ok_or(nexus_stats_core::ConfigError::Missing("delta"))?;
@@ -323,7 +323,7 @@ impl AdwinF64Builder {
             ));
         }
 
-        Ok(AdwinF64 {
+        Ok(Adwin {
             delta,
             buckets: BucketList::new(self.max_buckets),
             total: 0.0,
@@ -340,7 +340,7 @@ mod tests {
 
     #[test]
     fn no_drift_stable() {
-        let mut ad = AdwinF64::builder()
+        let mut ad = Adwin::builder()
             .delta(0.01)
             .min_samples(20)
             .build()
@@ -353,7 +353,7 @@ mod tests {
 
     #[test]
     fn mean_shift_detected() {
-        let mut ad = AdwinF64::builder()
+        let mut ad = Adwin::builder()
             .delta(0.002)
             .min_samples(10)
             .build()
@@ -375,7 +375,7 @@ mod tests {
 
     #[test]
     fn window_shrinks_on_detection() {
-        let mut ad = AdwinF64::builder()
+        let mut ad = Adwin::builder()
             .delta(0.002)
             .min_samples(10)
             .build()
@@ -400,7 +400,7 @@ mod tests {
 
     #[test]
     fn mean_tracks_recent() {
-        let mut ad = AdwinF64::builder()
+        let mut ad = Adwin::builder()
             .delta(0.002)
             .min_samples(10)
             .build()
@@ -423,13 +423,9 @@ mod tests {
 
     #[test]
     fn sensitivity_vs_delta() {
-        let mut sensitive = AdwinF64::builder()
-            .delta(0.5)
-            .min_samples(10)
-            .build()
-            .unwrap();
+        let mut sensitive = Adwin::builder().delta(0.5).min_samples(10).build().unwrap();
 
-        let mut conservative = AdwinF64::builder()
+        let mut conservative = Adwin::builder()
             .delta(0.001)
             .min_samples(10)
             .build()
@@ -461,7 +457,7 @@ mod tests {
 
     #[test]
     fn reset_clears() {
-        let mut ad = AdwinF64::builder()
+        let mut ad = Adwin::builder()
             .delta(0.01)
             .min_samples(10)
             .build()
@@ -480,32 +476,32 @@ mod tests {
 
     #[test]
     fn nan_rejected() {
-        let mut ad = AdwinF64::builder().delta(0.01).build().unwrap();
+        let mut ad = Adwin::builder().delta(0.01).build().unwrap();
         assert!(matches!(ad.update(f64::NAN), Err(DataError::NotANumber)));
     }
 
     #[test]
     fn inf_rejected() {
-        let mut ad = AdwinF64::builder().delta(0.01).build().unwrap();
+        let mut ad = Adwin::builder().delta(0.01).build().unwrap();
         assert!(matches!(ad.update(f64::INFINITY), Err(DataError::Infinite)));
     }
 
     #[test]
     fn builder_validation() {
         assert!(matches!(
-            AdwinF64::builder().build(),
+            Adwin::builder().build(),
             Err(nexus_stats_core::ConfigError::Missing("delta"))
         ));
         assert!(matches!(
-            AdwinF64::builder().delta(0.0).build(),
+            Adwin::builder().delta(0.0).build(),
             Err(nexus_stats_core::ConfigError::Invalid(_))
         ));
         assert!(matches!(
-            AdwinF64::builder().delta(1.0).build(),
+            Adwin::builder().delta(1.0).build(),
             Err(nexus_stats_core::ConfigError::Invalid(_))
         ));
         assert!(matches!(
-            AdwinF64::builder().delta(0.01).max_buckets(1).build(),
+            Adwin::builder().delta(0.01).max_buckets(1).build(),
             Err(nexus_stats_core::ConfigError::Invalid(_))
         ));
     }

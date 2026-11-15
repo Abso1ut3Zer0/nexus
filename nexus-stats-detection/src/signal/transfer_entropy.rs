@@ -52,10 +52,10 @@ use alloc::vec;
 /// # Examples
 ///
 /// ```
-/// use nexus_stats_detection::signal::TransferEntropyF64;
+/// use nexus_stats_detection::signal::TransferEntropy;
 ///
 /// // X causes Y: Y_t = X_{t-1}, X is pseudo-random
-/// let mut te = TransferEntropyF64::builder()
+/// let mut te = TransferEntropy::builder()
 ///     .bins(4)
 ///     .lag(1)
 ///     .build()
@@ -74,7 +74,7 @@ use alloc::vec;
 /// assert!(te_xy > te_yx);
 /// ```
 #[derive(Debug, Clone)]
-pub struct TransferEntropyF64 {
+pub struct TransferEntropy {
     /// Joint counts: P(X_{t-LAG}, Y_{t-LAG}, Y_t) — flat bins³ array.
     joint_xy: Box<[u64]>,
     /// Joint counts: P(Y_{t-LAG}, X_{t-LAG}, X_t) — flat bins³ array.
@@ -99,19 +99,19 @@ pub struct TransferEntropyF64 {
     total: u64,
 }
 
-/// Builder for [`TransferEntropyF64`].
+/// Builder for [`TransferEntropy`].
 #[derive(Debug, Clone)]
-pub struct TransferEntropyF64Builder {
+pub struct TransferEntropyBuilder {
     bins: Option<usize>,
     lag: Option<usize>,
 }
 
-impl TransferEntropyF64 {
+impl TransferEntropy {
     /// Creates a builder.
     #[inline]
     #[must_use]
-    pub fn builder() -> TransferEntropyF64Builder {
-        TransferEntropyF64Builder {
+    pub fn builder() -> TransferEntropyBuilder {
+        TransferEntropyBuilder {
             bins: Option::None,
             lag: Option::None,
         }
@@ -309,7 +309,7 @@ impl TransferEntropyF64 {
     }
 }
 
-impl TransferEntropyF64Builder {
+impl TransferEntropyBuilder {
     /// Number of discretization bins. Required.
     #[inline]
     #[must_use]
@@ -334,7 +334,7 @@ impl TransferEntropyF64Builder {
     ///
     /// Returns `ConfigError::Missing` if `bins` or `lag` not set.
     /// Returns `ConfigError::Invalid` if `bins < 2` or `lag < 1`.
-    pub fn build(self) -> Result<TransferEntropyF64, nexus_stats_core::ConfigError> {
+    pub fn build(self) -> Result<TransferEntropy, nexus_stats_core::ConfigError> {
         let bins = self
             .bins
             .ok_or(nexus_stats_core::ConfigError::Missing("bins"))?;
@@ -365,7 +365,7 @@ impl TransferEntropyF64Builder {
                 "bins too large (bins³ overflows)",
             ))?;
 
-        Ok(TransferEntropyF64 {
+        Ok(TransferEntropy {
             joint_xy: vec![0u64; bins_cu].into_boxed_slice(),
             joint_yx: vec![0u64; bins_cu].into_boxed_slice(),
             marginal_y: vec![0u64; bins_sq].into_boxed_slice(),
@@ -385,8 +385,8 @@ impl TransferEntropyF64Builder {
 mod tests {
     use super::*;
 
-    fn te_builder(bins: usize, lag: usize) -> TransferEntropyF64 {
-        TransferEntropyF64::builder()
+    fn te_builder(bins: usize, lag: usize) -> TransferEntropy {
+        TransferEntropy::builder()
             .bins(bins)
             .lag(lag)
             .build()
@@ -562,25 +562,25 @@ mod tests {
 
     #[test]
     fn builder_rejects_bins_below_2() {
-        let r = TransferEntropyF64::builder().bins(1).lag(1).build();
+        let r = TransferEntropy::builder().bins(1).lag(1).build();
         assert!(r.is_err());
     }
 
     #[test]
     fn builder_rejects_lag_zero() {
-        let r = TransferEntropyF64::builder().bins(4).lag(0).build();
+        let r = TransferEntropy::builder().bins(4).lag(0).build();
         assert!(r.is_err());
     }
 
     #[test]
     fn builder_rejects_missing_bins() {
-        let r = TransferEntropyF64::builder().lag(1).build();
+        let r = TransferEntropy::builder().lag(1).build();
         assert!(r.is_err());
     }
 
     #[test]
     fn builder_rejects_missing_lag() {
-        let r = TransferEntropyF64::builder().bins(4).build();
+        let r = TransferEntropy::builder().bins(4).build();
         assert!(r.is_err());
     }
 

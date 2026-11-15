@@ -1,7 +1,7 @@
 # Hampel — Three-Zone Outlier Filter
 
-**Type:** `HampelF64`
-**Import:** `use nexus_stats_smoothing::HampelF64;`
+**Type:** `Hampel`
+**Import:** `use nexus_stats_smoothing::Hampel;`
 **Feature flags:** `alloc`.
 
 ## What it does
@@ -23,8 +23,8 @@ This gives you graded rejection: obvious spikes are capped, extreme spikes are r
 ## API
 
 ```rust
-impl HampelF64 {
-    pub fn builder() -> HampelF64Builder;
+impl Hampel {
+    pub fn builder() -> HampelBuilder;
     pub fn update(&mut self, x: f64) -> Result<f64, DataError>;
     pub fn value(&self) -> Option<f64>;
     pub fn median(&self) -> Option<f64>;
@@ -33,12 +33,12 @@ impl HampelF64 {
     pub fn reset(&mut self);
 }
 
-impl HampelF64Builder {
+impl HampelBuilder {
     pub fn window_size(self, n: usize) -> Self;       // odd, typical 11
     pub fn inner_threshold(self, t: f64) -> Self;     // MAD multiplier for Winsorize, typical 3.0
     pub fn outer_threshold(self, t: f64) -> Self;     // MAD multiplier for reject, typical 6.0
     pub fn mad_scale(self, s: f64) -> Self;           // 1.4826 for Gaussian
-    pub fn build(self) -> Result<HampelF64, ConfigError>;
+    pub fn build(self) -> Result<Hampel, ConfigError>;
 }
 ```
 
@@ -47,7 +47,7 @@ impl HampelF64Builder {
 ## Example — cleaning a noisy price feed
 
 ```rust
-use nexus_stats_smoothing::HampelF64;
+use nexus_stats_smoothing::Hampel;
 
 let raw_prices: [f64; 8] = [
     100.0, 100.1, 99.95, 100.05,
@@ -57,7 +57,7 @@ let raw_prices: [f64; 8] = [
     105.2,
 ];
 
-let mut hampel = HampelF64::builder()
+let mut hampel = Hampel::builder()
     .window_size(7)
     .inner_threshold(3.0)
     .outer_threshold(6.0)

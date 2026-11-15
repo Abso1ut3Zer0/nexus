@@ -5,8 +5,8 @@ models. Hardcoded small-matrix math — no generic linear algebra.
 
 | Type | States | Memory | Update cost |
 |------|--------|--------|-------------|
-| `Kalman2dF64/F32` | 2 | ~88 bytes | ~20 multiply-adds |
-| `Kalman3dF64/F32` | 3 | ~160 bytes | ~50 multiply-adds |
+| `Kalman2d/F32` | 2 | ~88 bytes | ~20 multiply-adds |
+| `Kalman3d/F32` | 3 | ~160 bytes | ~50 multiply-adds |
 
 No feature gates. Pure arithmetic. `no_std` compatible.
 
@@ -81,9 +81,9 @@ may be needed.
 ### Kalman2d
 
 ```rust
-use nexus_stats::estimation::Kalman2dF64;
+use nexus_stats::estimation::Kalman2d;
 
-let mut kf = Kalman2dF64::builder()
+let mut kf = Kalman2d::builder()
     .process_noise([[0.001, 0.0], [0.0, 0.001]])
     .measurement_noise(1.0)
     .initial_state([0.0, 0.0])
@@ -105,9 +105,9 @@ println!("covariance: {:?}", kf.covariance());
 ### Kalman3d
 
 ```rust
-use nexus_stats::estimation::Kalman3dF64;
+use nexus_stats::estimation::Kalman3d;
 
-let mut kf = Kalman3dF64::builder()
+let mut kf = Kalman3d::builder()
     .process_noise([
         [0.001, 0.0, 0.0],
         [0.0, 0.001, 0.0],
@@ -150,7 +150,7 @@ each tick, H changes, and the Kalman filter adapts.
 ### Monitoring — Level + Trend Tracking
 
 ```rust
-let mut kf = Kalman2dF64::builder()
+let mut kf = Kalman2d::builder()
     .process_noise([[0.01, 0.0], [0.0, 0.001]])
     .measurement_noise(5.0)
     .initial_state([0.0, 0.0])
@@ -177,7 +177,7 @@ if trend > 0.5 {
 
 ```rust
 // State: [true_value, drift_rate]
-let mut kf = Kalman2dF64::builder()
+let mut kf = Kalman2d::builder()
     .process_noise([[0.1, 0.0], [0.0, 0.01]])
     .measurement_noise(10.0)  // noisy sensor
     .initial_state([0.0, 0.0])
@@ -225,7 +225,7 @@ uncertainty grows but the state estimate persists.
 
 | Operation | p50 |
 |-----------|-----|
-| `Kalman2dF64::predict` | ~8 cycles |
-| `Kalman2dF64::update` | ~20 cycles |
-| `Kalman3dF64::predict` | ~15 cycles |
-| `Kalman3dF64::update` | ~50 cycles |
+| `Kalman2d::predict` | ~8 cycles |
+| `Kalman2d::update` | ~20 cycles |
+| `Kalman3d::predict` | ~15 cycles |
+| `Kalman3d::update` | ~50 cycles |

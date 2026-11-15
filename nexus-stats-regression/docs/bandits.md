@@ -35,26 +35,26 @@ its `gamma` exploration mixing rate.
 
 | Your situation | Use | Why |
 |----------------|-----|-----|
-| Binary outcome (fill / no fill) | `ThompsonBetaF64` | Natural conjugate for Bernoulli rewards. Explores proportional to uncertainty. |
-| Positive continuous reward (latency, P&L) | `ThompsonGammaF64` | Gamma prior handles unbounded positive rewards. Posterior mean tracks sample mean. |
-| Bounded reward, want deterministic selection | `Ucb1F64` | No RNG needed. Deterministic upper confidence bound. Good for auditing. |
-| Want the simplest possible thing | `EpsilonGreedyF64` | One parameter (ε). Easy to reason about. Good baseline. |
-| Adversarial environment (competitors adapt) | `Exp3F64` | No stochastic assumption. Robust when reward distributions shift arbitrarily. |
-| Need to explain decisions to compliance | `Ucb1F64` | Deterministic: same state always selects the same arm. Auditable. |
-| Few arms (2-5), fast convergence matters | `ThompsonBetaF64` / `ThompsonGammaF64` | Thompson converges faster than UCB1 empirically, especially for few arms. |
-| Many arms (50+), concerned about cost | `EpsilonGreedyF64` | O(K) select is cheap. ε controls exploration budget directly. |
+| Binary outcome (fill / no fill) | `ThompsonBeta` | Natural conjugate for Bernoulli rewards. Explores proportional to uncertainty. |
+| Positive continuous reward (latency, P&L) | `ThompsonGamma` | Gamma prior handles unbounded positive rewards. Posterior mean tracks sample mean. |
+| Bounded reward, want deterministic selection | `Ucb1` | No RNG needed. Deterministic upper confidence bound. Good for auditing. |
+| Want the simplest possible thing | `EpsilonGreedy` | One parameter (ε). Easy to reason about. Good baseline. |
+| Adversarial environment (competitors adapt) | `Exp3` | No stochastic assumption. Robust when reward distributions shift arbitrarily. |
+| Need to explain decisions to compliance | `Ucb1` | Deterministic: same state always selects the same arm. Auditable. |
+| Few arms (2-5), fast convergence matters | `ThompsonBeta` / `ThompsonGamma` | Thompson converges faster than UCB1 empirically, especially for few arms. |
+| Many arms (50+), concerned about cost | `EpsilonGreedy` | O(K) select is cheap. ε controls exploration budget directly. |
 
 ### Decision tree
 
 ```
 Is the reward binary (success/failure)?
-├─ Yes → ThompsonBetaF64
+├─ Yes → ThompsonBeta
 └─ No → Is the reward always positive?
-    ├─ Yes → ThompsonGammaF64
+    ├─ Yes → ThompsonGamma
     └─ No → Can you normalize to [0, 1]?
-        ├─ Yes, and you want deterministic → Ucb1F64
-        ├─ Yes, and environment is adversarial → Exp3F64
-        └─ Yes, and you want simplicity → EpsilonGreedyF64
+        ├─ Yes, and you want deterministic → Ucb1
+        ├─ Yes, and environment is adversarial → Exp3
+        └─ Yes, and you want simplicity → EpsilonGreedy
 ```
 
 ---
@@ -116,11 +116,11 @@ them to the bandit. Each algorithm has different requirements:
 
 | Algorithm | Valid rewards | Notes |
 |-----------|-------------|-------|
-| `Ucb1F64` | Any finite value | Regret bound assumes [0,1]. Scale `c` if using wider range. |
-| `ThompsonBetaF64` | [0, 1] | Returns `DataError` outside this range. |
-| `ThompsonGammaF64` | (0, ∞) | Returns `DataError` for zero or negative. |
-| `EpsilonGreedyF64` | Any finite value | No range assumption. |
-| `Exp3F64` | [0, 1] | Returns `DataError` outside this range. |
+| `Ucb1` | Any finite value | Regret bound assumes [0,1]. Scale `c` if using wider range. |
+| `ThompsonBeta` | [0, 1] | Returns `DataError` outside this range. |
+| `ThompsonGamma` | (0, ∞) | Returns `DataError` for zero or negative. |
+| `EpsilonGreedy` | Any finite value | No range assumption. |
+| `Exp3` | [0, 1] | Returns `DataError` outside this range. |
 
 ### Normalization strategies
 
@@ -151,9 +151,9 @@ Four exchanges, binary fill/no-fill outcome. Non-stationary because
 venue performance shifts with market conditions.
 
 ```rust
-use nexus_stats_regression::learning::ThompsonBetaF64;
+use nexus_stats_regression::learning::ThompsonBeta;
 
-let mut venue_bandit = ThompsonBetaF64::builder()
+let mut venue_bandit = ThompsonBeta::builder()
     .arms(4)               // 4 exchanges
     .decay(0.99)           // half-life ~69 orders
     .build()
@@ -189,10 +189,10 @@ Two spread parameters, reward = normalized P&L per trade.
 Deterministic selection for auditability.
 
 ```rust
-use nexus_stats_regression::learning::Ucb1F64;
+use nexus_stats_regression::learning::Ucb1;
 use nexus_stats::statistics::Welford;
 
-let mut spread_bandit = Ucb1F64::builder()
+let mut spread_bandit = Ucb1::builder()
     .arms(2)               // 2 spread settings
     .exploration(1.0)      // slightly less than default sqrt(2)
     .decay(0.995)          // slow decay, spreads are stable
@@ -226,9 +226,9 @@ Market adapts to your strategy. Reward distributions shift
 unpredictably. EXP3 provides worst-case guarantees.
 
 ```rust
-use nexus_stats_regression::learning::Exp3F64;
+use nexus_stats_regression::learning::Exp3;
 
-let mut strategy_bandit = Exp3F64::builder()
+let mut strategy_bandit = Exp3::builder()
     .arms(3)               // 3 strategy variants
     .gamma(0.2)            // 20% exploration mixing
     .build()

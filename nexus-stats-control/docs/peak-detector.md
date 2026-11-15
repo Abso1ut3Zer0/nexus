@@ -1,7 +1,7 @@
 # PeakDetector
 
-**Types:** `PeakDetectorF64`, `PeakDetectorI64`
-**Import:** `use nexus_stats_control::control::PeakDetectorF64;`
+**Types:** `PeakDetector<f64>`, `PeakDetector<i64>`
+**Import:** `use nexus_stats_control::control::PeakDetector;`
 **Feature flags:** None required.
 
 ## What it does
@@ -21,7 +21,7 @@ Not for: when all you need is "was the last value the max so far?" (use `Running
 ## API
 
 ```rust
-impl PeakDetectorF64 {
+impl PeakDetector<f64> {
     pub fn new(prominence: f64) -> Result<Self, ConfigError>;
     pub fn update(&mut self, sample: f64) -> Result<Option<Peak<f64>>, DataError>;
     pub fn reset(&mut self);
@@ -38,9 +38,9 @@ pub struct Peak<T> {
 ## Example — volume spike detection
 
 ```rust
-use nexus_stats_control::control::PeakDetectorF64;
+use nexus_stats_control::control::PeakDetector;
 
-let mut detector = PeakDetectorF64::new(100.0) // prominence = 100 units
+let mut detector = PeakDetector::<f64>::new(100.0) // prominence = 100 units
     .expect("prominence > 0");
 
 let volumes = [50.0, 80.0, 120.0, 200.0, 180.0, 90.0, 60.0, 55.0, 70.0];
@@ -56,7 +56,7 @@ for &v in &volumes {
 ## Parameter tuning
 
 - **prominence**: the minimum rise-then-fall in sample units to count as a peak. Too small = false positives from noise; too large = misses real peaks. Start with `2-3 * sigma(signal)`.
-- If the signal is noisy, pre-filter with [`Ema`](../../nexus-stats-core/docs/smoothing.md) or [`HampelF64`](../../nexus-stats-smoothing/docs/hampel.md) before feeding the detector.
+- If the signal is noisy, pre-filter with [`Ema`](../../nexus-stats-core/docs/smoothing.md) or [`Hampel`](../../nexus-stats-smoothing/docs/hampel.md) before feeding the detector.
 
 ## Caveats
 

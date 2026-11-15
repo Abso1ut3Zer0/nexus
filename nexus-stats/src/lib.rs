@@ -23,11 +23,11 @@
 //!
 //! ```rust,ignore
 //! // Requires `smoothing` feature
-//! use nexus_stats::smoothing::KamaF64;
+//! use nexus_stats::smoothing::Kama;
 //! // Requires `regression` feature
-//! use nexus_stats::regression::LinearRegressionF64;
+//! use nexus_stats::regression::LinearRegression;
 //! // Requires `detection` feature
-//! use nexus_stats::signal::AutocorrelationF64;
+//! use nexus_stats::signal::Autocorrelation;
 //! ```
 //!
 //! # Data Quality & Error Policy

@@ -7,14 +7,14 @@ Frame timing, stutter detection, and adaptive quality.
 ```rust
 use nexus_stats::Direction;
 use nexus_stats::smoothing::Ema;
-use nexus_stats::detection::AdaptiveThresholdF64;
+use nexus_stats::detection::AdaptiveThreshold;
 use nexus_stats::monitoring::PeakHold;
 
 // Smooth FPS display (don't show every fluctuation)
 let mut frame_ema = Ema::builder().alpha(0.05).build().unwrap();
 
 // Detect stutters (frame time spikes)
-let mut stutter = AdaptiveThresholdF64::builder()
+let mut stutter = AdaptiveThreshold::builder()
     .span(60)           // ~1 second at 60fps
     .z_threshold(2.0)   // 2σ above recent average
     .min_samples(30)
@@ -43,13 +43,13 @@ let worst = worst_frame.update(dt_ms);
 ```rust
 use nexus_stats::Direction;
 use nexus_stats::smoothing::Ema;
-use nexus_stats::detection::TrendAlertF64;
+use nexus_stats::detection::TrendAlert;
 
 // Track frame budget utilization: smoothed fraction of the 16.67ms budget
 let mut budget = Ema::builder().span(30).build().unwrap();
 
 // Track trend (is performance getting worse?)
-let mut trend = TrendAlertF64::builder()
+let mut trend = TrendAlert::builder()
     .alpha(0.2).beta(0.1).trend_threshold(0.1).build().unwrap();
 
 let utilization = frame_time_ms / target_frame_time_ms;

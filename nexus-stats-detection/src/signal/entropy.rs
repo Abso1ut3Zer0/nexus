@@ -27,34 +27,34 @@ use alloc::vec;
 /// # Examples
 ///
 /// ```
-/// use nexus_stats_detection::signal::EntropyF64;
+/// use nexus_stats_detection::signal::Entropy;
 ///
 /// // Uniform distribution over 4 categories → maximum entropy
-/// let mut e = EntropyF64::builder().bins(4).build().unwrap();
+/// let mut e = Entropy::builder().bins(4).build().unwrap();
 /// for i in 0..400u32 { e.update(i as usize % 4); }
 /// let h = e.entropy().unwrap();
 /// // ln(4) ≈ 1.386
 /// assert!((h - 1.386).abs() < 0.01);
 /// ```
 #[derive(Debug, Clone)]
-pub struct EntropyF64 {
+pub struct Entropy {
     counts: Box<[u64]>,
     bins: usize,
     total: u64,
 }
 
-/// Builder for [`EntropyF64`].
+/// Builder for [`Entropy`].
 #[derive(Debug, Clone)]
-pub struct EntropyF64Builder {
+pub struct EntropyBuilder {
     bins: Option<usize>,
 }
 
-impl EntropyF64 {
+impl Entropy {
     /// Creates a builder.
     #[inline]
     #[must_use]
-    pub fn builder() -> EntropyF64Builder {
-        EntropyF64Builder { bins: None }
+    pub fn builder() -> EntropyBuilder {
+        EntropyBuilder { bins: None }
     }
 
     /// Records an observation in the given category.
@@ -191,7 +191,7 @@ impl EntropyF64 {
     }
 }
 
-impl EntropyF64Builder {
+impl EntropyBuilder {
     /// Number of categories (required, >= 2).
     #[inline]
     #[must_use]
@@ -205,14 +205,14 @@ impl EntropyF64Builder {
     /// # Errors
     /// Returns `ConfigError` if bins is missing or < 2.
     #[inline]
-    pub fn build(self) -> Result<EntropyF64, nexus_stats_core::ConfigError> {
+    pub fn build(self) -> Result<Entropy, nexus_stats_core::ConfigError> {
         let bins = self
             .bins
             .ok_or(nexus_stats_core::ConfigError::Missing("bins"))?;
         if bins < 2 {
             return Err(nexus_stats_core::ConfigError::Invalid("bins must be >= 2"));
         }
-        Ok(EntropyF64 {
+        Ok(Entropy {
             counts: vec![0u64; bins].into_boxed_slice(),
             bins,
             total: 0,
@@ -226,7 +226,7 @@ mod tests {
 
     #[test]
     fn uniform_entropy_equals_ln_k() {
-        let mut e = EntropyF64::builder().bins(4).build().unwrap();
+        let mut e = Entropy::builder().bins(4).build().unwrap();
         for i in 0..4000u32 {
             e.update(i as usize % 4);
         }
@@ -240,7 +240,7 @@ mod tests {
 
     #[test]
     fn concentrated_entropy_zero() {
-        let mut e = EntropyF64::builder().bins(4).build().unwrap();
+        let mut e = Entropy::builder().bins(4).build().unwrap();
         for _ in 0..1000 {
             e.update(0);
         }
@@ -250,7 +250,7 @@ mod tests {
 
     #[test]
     fn binary_50_50() {
-        let mut e = EntropyF64::builder().bins(2).build().unwrap();
+        let mut e = Entropy::builder().bins(2).build().unwrap();
         for i in 0..2000u32 {
             e.update(i as usize % 2);
         }
@@ -264,7 +264,7 @@ mod tests {
 
     #[test]
     fn entropy_bits_conversion() {
-        let mut e = EntropyF64::builder().bins(2).build().unwrap();
+        let mut e = Entropy::builder().bins(2).build().unwrap();
         for i in 0..2000u32 {
             e.update(i as usize % 2);
         }
@@ -277,7 +277,7 @@ mod tests {
 
     #[test]
     fn surprise_rare_vs_common() {
-        let mut e = EntropyF64::builder().bins(2).build().unwrap();
+        let mut e = Entropy::builder().bins(2).build().unwrap();
         for _ in 0..990 {
             e.update(0);
         }
@@ -294,14 +294,14 @@ mod tests {
 
     #[test]
     fn surprise_unobserved_returns_none() {
-        let mut e = EntropyF64::builder().bins(4).build().unwrap();
+        let mut e = Entropy::builder().bins(4).build().unwrap();
         e.update(0);
         assert!(e.surprise(1).is_none());
     }
 
     #[test]
     fn probability_matches_counts() {
-        let mut e = EntropyF64::builder().bins(3).build().unwrap();
+        let mut e = Entropy::builder().bins(3).build().unwrap();
         for _ in 0..30 {
             e.update(0);
         }
@@ -318,7 +318,7 @@ mod tests {
 
     #[test]
     fn empty_returns_none() {
-        let e = EntropyF64::builder().bins(4).build().unwrap();
+        let e = Entropy::builder().bins(4).build().unwrap();
         assert!(e.entropy().is_none());
         assert!(e.entropy_bits().is_none());
         assert!(e.probability(0).is_none());
@@ -327,13 +327,13 @@ mod tests {
     #[test]
     #[should_panic(expected = "out of range")]
     fn observe_out_of_range_panics() {
-        let mut e = EntropyF64::builder().bins(4).build().unwrap();
+        let mut e = Entropy::builder().bins(4).build().unwrap();
         e.update(4);
     }
 
     #[test]
     fn category_count_tracks() {
-        let mut e = EntropyF64::builder().bins(3).build().unwrap();
+        let mut e = Entropy::builder().bins(3).build().unwrap();
         e.update(0);
         e.update(0);
         e.update(1);
@@ -345,13 +345,13 @@ mod tests {
 
     #[test]
     fn bins_accessor() {
-        let e = EntropyF64::builder().bins(8).build().unwrap();
+        let e = Entropy::builder().bins(8).build().unwrap();
         assert_eq!(e.bins(), 8);
     }
 
     #[test]
     fn reset_clears_state() {
-        let mut e = EntropyF64::builder().bins(4).build().unwrap();
+        let mut e = Entropy::builder().bins(4).build().unwrap();
         for i in 0..100 {
             e.update(i % 4);
         }
@@ -362,7 +362,7 @@ mod tests {
 
     #[test]
     fn builder_requires_bins() {
-        let result = EntropyF64::builder().build();
+        let result = Entropy::builder().build();
         assert!(matches!(
             result,
             Err(nexus_stats_core::ConfigError::Missing("bins"))
@@ -371,7 +371,7 @@ mod tests {
 
     #[test]
     fn builder_rejects_one_bin() {
-        let result = EntropyF64::builder().bins(1).build();
+        let result = Entropy::builder().bins(1).build();
         assert!(result.is_err());
     }
 }

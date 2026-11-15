@@ -26,7 +26,7 @@ let smoothed = ema.value().unwrap();
 
 **Use for:** the default single-signal smoother. Parameter selection is about half-life — see [umbrella parameter guide](../../nexus-stats/docs/guides/parameter-tuning.md).
 
-**Caveats:** lags trending signals. If your signal has drift, reach for [`HoltF64`](../../nexus-stats-smoothing/docs/holt.md) instead.
+**Caveats:** lags trending signals. If your signal has drift, reach for [`Holt`](../../nexus-stats-smoothing/docs/holt.md) instead.
 
 ---
 

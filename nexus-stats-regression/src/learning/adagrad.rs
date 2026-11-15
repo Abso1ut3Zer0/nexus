@@ -25,9 +25,9 @@ use alloc::vec;
 /// # Examples
 ///
 /// ```
-/// use nexus_stats_regression::learning::AdaGradF64;
+/// use nexus_stats_regression::learning::AdaGrad;
 ///
-/// let mut ag = AdaGradF64::builder()
+/// let mut ag = AdaGrad::builder()
 ///     .dimensions(2)
 ///     .learning_rate(0.5)
 ///     .build()
@@ -42,7 +42,7 @@ use alloc::vec;
 /// assert!(ag.parameters()[0].abs() < 0.1);
 /// ```
 #[derive(Debug, Clone)]
-pub struct AdaGradF64 {
+pub struct AdaGrad {
     params: Box<[f64]>,
     sum_sq_grad: Box<[f64]>,
     learning_rate: f64,
@@ -51,20 +51,20 @@ pub struct AdaGradF64 {
     count: u64,
 }
 
-/// Builder for [`AdaGradF64`].
+/// Builder for [`AdaGrad`].
 #[derive(Debug, Clone)]
-pub struct AdaGradF64Builder {
+pub struct AdaGradBuilder {
     dimensions: Option<usize>,
     learning_rate: Option<f64>,
     epsilon: Option<f64>,
 }
 
-impl AdaGradF64 {
+impl AdaGrad {
     /// Creates a builder.
     #[inline]
     #[must_use]
-    pub fn builder() -> AdaGradF64Builder {
-        AdaGradF64Builder {
+    pub fn builder() -> AdaGradBuilder {
+        AdaGradBuilder {
             dimensions: Option::None,
             learning_rate: Option::None,
             epsilon: Option::None,
@@ -183,7 +183,7 @@ impl AdaGradF64 {
     }
 }
 
-impl AdaGradF64Builder {
+impl AdaGradBuilder {
     /// Sets the number of parameter dimensions (required, >= 1).
     #[inline]
     #[must_use]
@@ -213,7 +213,7 @@ impl AdaGradF64Builder {
     /// # Errors
     /// Returns `ConfigError` if parameters are missing or invalid.
     #[inline]
-    pub fn build(self) -> Result<AdaGradF64, nexus_stats_core::ConfigError> {
+    pub fn build(self) -> Result<AdaGrad, nexus_stats_core::ConfigError> {
         let dims = self
             .dimensions
             .ok_or(nexus_stats_core::ConfigError::Missing("dimensions"))?;
@@ -236,7 +236,7 @@ impl AdaGradF64Builder {
                 "epsilon must be positive",
             ));
         }
-        Ok(AdaGradF64 {
+        Ok(AdaGrad {
             params: vec![0.0; dims].into_boxed_slice(),
             sum_sq_grad: vec![0.0; dims].into_boxed_slice(),
             learning_rate: lr,
@@ -253,7 +253,7 @@ mod tests {
 
     #[test]
     fn minimizes_quadratic() {
-        let mut ag = AdaGradF64::builder()
+        let mut ag = AdaGrad::builder()
             .dimensions(1)
             .learning_rate(1.0)
             .build()
@@ -271,7 +271,7 @@ mod tests {
     fn adapts_to_different_scales() {
         // Dimension 0 has 100x larger gradients than dimension 1.
         // AdaGrad should adapt per-coordinate.
-        let mut ag = AdaGradF64::builder()
+        let mut ag = AdaGrad::builder()
             .dimensions(2)
             .learning_rate(1.0)
             .build()
@@ -297,7 +297,7 @@ mod tests {
 
     #[test]
     fn accumulated_gradients_grow() {
-        let mut ag = AdaGradF64::builder()
+        let mut ag = AdaGrad::builder()
             .dimensions(2)
             .learning_rate(0.1)
             .build()
@@ -316,7 +316,7 @@ mod tests {
 
     #[test]
     fn rejects_nan_gradient() {
-        let mut ag = AdaGradF64::builder()
+        let mut ag = AdaGrad::builder()
             .dimensions(2)
             .learning_rate(0.1)
             .build()
@@ -331,7 +331,7 @@ mod tests {
 
     #[test]
     fn rejects_inf_gradient() {
-        let mut ag = AdaGradF64::builder()
+        let mut ag = AdaGrad::builder()
             .dimensions(1)
             .learning_rate(0.1)
             .build()
@@ -347,7 +347,7 @@ mod tests {
     #[test]
     #[should_panic(expected = "gradient length")]
     fn dimension_mismatch_panics() {
-        let mut ag = AdaGradF64::builder()
+        let mut ag = AdaGrad::builder()
             .dimensions(3)
             .learning_rate(0.1)
             .build()
@@ -358,7 +358,7 @@ mod tests {
 
     #[test]
     fn reset_clears_all() {
-        let mut ag = AdaGradF64::builder()
+        let mut ag = AdaGrad::builder()
             .dimensions(2)
             .learning_rate(0.1)
             .build()
@@ -375,16 +375,13 @@ mod tests {
 
     #[test]
     fn builder_rejects_zero_dimensions() {
-        let result = AdaGradF64::builder()
-            .dimensions(0)
-            .learning_rate(0.1)
-            .build();
+        let result = AdaGrad::builder().dimensions(0).learning_rate(0.1).build();
         assert!(result.is_err());
     }
 
     #[test]
     fn builder_rejects_negative_epsilon() {
-        let result = AdaGradF64::builder()
+        let result = AdaGrad::builder()
             .dimensions(2)
             .learning_rate(0.1)
             .epsilon(-1.0)
@@ -394,7 +391,7 @@ mod tests {
 
     #[test]
     fn default_epsilon() {
-        let ag = AdaGradF64::builder()
+        let ag = AdaGrad::builder()
             .dimensions(1)
             .learning_rate(0.1)
             .build()
@@ -405,7 +402,7 @@ mod tests {
 
     #[test]
     fn count_tracks_steps() {
-        let mut ag = AdaGradF64::builder()
+        let mut ag = AdaGrad::builder()
             .dimensions(1)
             .learning_rate(0.1)
             .build()
@@ -420,7 +417,7 @@ mod tests {
 
     #[test]
     fn builder_requires_dimensions() {
-        let result = AdaGradF64::builder().learning_rate(0.1).build();
+        let result = AdaGrad::builder().learning_rate(0.1).build();
         assert!(matches!(
             result,
             Err(nexus_stats_core::ConfigError::Missing("dimensions"))
@@ -429,7 +426,7 @@ mod tests {
 
     #[test]
     fn builder_requires_learning_rate() {
-        let result = AdaGradF64::builder().dimensions(2).build();
+        let result = AdaGrad::builder().dimensions(2).build();
         assert!(matches!(
             result,
             Err(nexus_stats_core::ConfigError::Missing("learning_rate"))

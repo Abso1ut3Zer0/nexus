@@ -4,7 +4,7 @@ Advanced control and frequency primitives for [nexus-stats](https://crates.io/cr
 
 ## Control Types
 
-- **PeakDetectorF64** — Peak detection with hysteresis
+- **PeakDetector<f64>** — Peak detection with hysteresis
 - **BoolWindow** — Sliding boolean window with bit-packed storage (requires `alloc`)
 
 ## Frequency Types
@@ -18,7 +18,7 @@ Advanced control and frequency primitives for [nexus-stats](https://crates.io/cr
 Enable the `control` feature on `nexus-stats` for unified import paths:
 
 ```rust
-use nexus_stats::control::PeakDetectorF64;
+use nexus_stats::control::PeakDetector;
 use nexus_stats::frequency::TopK;
 ```
 

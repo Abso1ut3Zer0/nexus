@@ -41,35 +41,6 @@ macro_rules! impl_mosum_update {
             })
         }
     };
-    (int, $ty:ty) => {
-        /// Feeds a sample. Returns shift direction once primed.
-        #[inline]
-        #[must_use]
-        pub fn update(&mut self, sample: $ty) -> Option<Direction> {
-            let target = self.target;
-            let head = self.head;
-            let window = self.window;
-            let sum = self.sum;
-            let deviation = sample - target;
-            let ring = self.ring_mut();
-            let new_sum = sum - ring[head] + deviation;
-            ring[head] = deviation;
-            self.sum = new_sum;
-            self.head = (head + 1) % window;
-            self.count += 1;
-
-            if self.count < self.min_samples {
-                return Option::None;
-            }
-            if self.sum > self.threshold {
-                Option::Some(Direction::Rising)
-            } else if self.sum < -self.threshold {
-                Option::Some(Direction::Falling)
-            } else {
-                Option::Some(Direction::Neutral)
-            }
-        }
-    };
 }
 
 #[cfg(feature = "alloc")]
@@ -270,10 +241,8 @@ macro_rules! impl_mosum {
 }
 
 #[cfg(feature = "alloc")]
-impl_mosum!(MosumF64, MosumF64Builder, f64, float, 0.0);
+impl_mosum!(Mosum, MosumBuilder, f64, float, 0.0);
 #[cfg(feature = "alloc")]
-impl_mosum!(MosumI64, MosumI64Builder, i64, int, 0);
-
 #[cfg(all(test, feature = "alloc"))]
 #[allow(clippy::float_cmp)]
 mod tests {
@@ -281,7 +250,7 @@ mod tests {
 
     #[test]
     fn no_detection_at_target() {
-        let mut mosum = MosumF64::builder(100.0)
+        let mut mosum = Mosum::builder(100.0)
             .window_size(10)
             .threshold(50.0)
             .build()
@@ -297,7 +266,7 @@ mod tests {
 
     #[test]
     fn detects_upward_spike() {
-        let mut mosum = MosumF64::builder(100.0)
+        let mut mosum = Mosum::builder(100.0)
             .window_size(10)
             .threshold(50.0)
             .build()
@@ -319,7 +288,7 @@ mod tests {
 
     #[test]
     fn transient_clears_after_window() {
-        let mut mosum = MosumF64::builder(100.0)
+        let mut mosum = Mosum::builder(100.0)
             .window_size(5)
             .threshold(40.0)
             .build()
@@ -344,7 +313,7 @@ mod tests {
     #[test]
     #[allow(clippy::float_cmp)]
     fn reset_clears_state() {
-        let mut mosum = MosumF64::builder(100.0)
+        let mut mosum = Mosum::builder(100.0)
             .window_size(10)
             .threshold(50.0)
             .build()
@@ -360,7 +329,7 @@ mod tests {
 
     #[test]
     fn clone_works() {
-        let mut mosum = MosumF64::builder(100.0)
+        let mut mosum = Mosum::builder(100.0)
             .window_size(5)
             .threshold(50.0)
             .build()
@@ -376,22 +345,8 @@ mod tests {
     }
 
     #[test]
-    fn i64_basic() {
-        let mut mosum = MosumI64::builder(1000)
-            .window_size(5)
-            .threshold(100)
-            .build()
-            .unwrap();
-
-        for _ in 0..5 {
-            let _ = mosum.update(1000);
-        }
-        assert_eq!(mosum.update(1000), Some(Direction::Neutral));
-    }
-
-    #[test]
     fn errors_without_threshold() {
-        let result = MosumF64::builder(100.0).window_size(10).build();
+        let result = Mosum::builder(100.0).window_size(10).build();
         assert!(matches!(
             result,
             Err(nexus_stats_core::ConfigError::Missing("threshold"))
@@ -400,7 +355,7 @@ mod tests {
 
     #[test]
     fn errors_without_window() {
-        let result = MosumF64::builder(100.0).threshold(50.0).build();
+        let result = Mosum::builder(100.0).threshold(50.0).build();
         assert!(matches!(
             result,
             Err(nexus_stats_core::ConfigError::Missing("window_size"))
@@ -409,7 +364,7 @@ mod tests {
 
     #[test]
     fn rejects_nan_and_inf() {
-        let mut mosum = MosumF64::builder(100.0)
+        let mut mosum = Mosum::builder(100.0)
             .window_size(10)
             .threshold(50.0)
             .build()

@@ -6,7 +6,7 @@ O(1) per update, 16-32 bytes, pure arithmetic.
 | Property | Value |
 |----------|-------|
 | Update cost | ~3 cycles |
-| Types | `BetaBinomialF64/F32`, `GammaPoissonF64/F32` |
+| Types | `BetaBinomial/F32`, `GammaPoisson/F32` |
 | Memory | 32 bytes (f64) |
 | Priming | After 1 observation |
 | Output | `mean()`, `variance()`, `credible_interval()` |
@@ -79,13 +79,13 @@ Posterior variance = α / β²
 ### Beta-Binomial
 
 ```rust
-use nexus_stats::estimation::BetaBinomialF64;
+use nexus_stats::estimation::BetaBinomial;
 
 // Uniform prior (no prior knowledge)
-let mut rate = BetaBinomialF64::new();
+let mut rate = BetaBinomial::new();
 
 // Informative prior (strong belief rate ≈ 0.7)
-let mut rate = BetaBinomialF64::with_prior(70.0, 30.0);
+let mut rate = BetaBinomial::with_prior(70.0, 30.0);
 
 // Observe outcomes:
 rate.observe(true);   // success
@@ -101,9 +101,9 @@ println!("95% CI: {:?}", rate.credible_interval(0.95));
 ### Gamma-Poisson
 
 ```rust
-use nexus_stats::estimation::GammaPoissonF64;
+use nexus_stats::estimation::GammaPoisson;
 
-let mut event_rate = GammaPoissonF64::new();
+let mut event_rate = GammaPoisson::new();
 
 // Observed 15 events in 3 seconds
 event_rate.observe(15, 3.0);
@@ -120,7 +120,7 @@ println!("95% CI: {:?}", event_rate.credible_interval(0.95));
 ### Monitoring — Error Rate with Confidence
 
 ```rust
-let mut errors = BetaBinomialF64::new();
+let mut errors = BetaBinomial::new();
 
 // Per request:
 errors.observe(request_succeeded);
@@ -136,7 +136,7 @@ if let Some((lo, hi)) = errors.credible_interval(0.95) {
 ### Networking — Packet Rate Estimation
 
 ```rust
-let mut packet_rate = GammaPoissonF64::new();
+let mut packet_rate = GammaPoisson::new();
 
 // Per measurement window (1 second):
 packet_rate.observe(packets_received, 1.0);

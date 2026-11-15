@@ -8,7 +8,7 @@ Granger causality.
 |----------|-------|
 | Update cost | ~14 cycles |
 | Memory | `2×bins³×8 + 2×bins²×8 + 2×lag×8` bytes (heap) |
-| Types | `TransferEntropyF64` |
+| Types | `TransferEntropy` |
 | Priming | After `lag + 1` paired observations |
 | Output | `te_x_to_y()`, `te_y_to_x()`, `net_flow()` — all `Option<f64>` |
 | Feature | `alloc` + (`std` or `libm`) |
@@ -75,9 +75,9 @@ TE(X→Y) query (O(bins³)):
 ## Configuration
 
 ```rust
-use nexus_stats::signal::TransferEntropyF64;
+use nexus_stats::signal::TransferEntropy;
 
-let mut te = TransferEntropyF64::builder()
+let mut te = TransferEntropy::builder()
     .bins(8)    // 8 categories per stream
     .lag(1)     // compare with 1 step ago
     .build()
@@ -141,7 +141,7 @@ first to find the peak lag, then use that as the `lag` parameter.
 
 ```rust
 // Which metric drives the other?
-let mut te = TransferEntropyF64::builder()
+let mut te = TransferEntropy::builder()
     .bins(8)
     .lag(1)
     .build()
@@ -157,7 +157,7 @@ te.observe(metric_a_bin, metric_b_bin);
 
 ```rust
 // Is high CPU causing high latency, or vice versa?
-let mut te = TransferEntropyF64::builder()
+let mut te = TransferEntropy::builder()
     .bins(4)
     .lag(2)
     .build()

@@ -11,7 +11,7 @@
 /// - Same as CUSUM but with better average detection delay
 /// - When CUSUM's sensitivity vs false alarm tradeoff isn't good enough
 #[derive(Debug, Clone)]
-pub struct ShiryaevRobertsF64 {
+pub struct ShiryaevRoberts {
     pre_mean: f64,
     post_mean: f64,
     variance: f64,
@@ -21,9 +21,9 @@ pub struct ShiryaevRobertsF64 {
     min_samples: u64,
 }
 
-/// Builder for [`ShiryaevRobertsF64`].
+/// Builder for [`ShiryaevRoberts`].
 #[derive(Debug, Clone)]
-pub struct ShiryaevRobertsF64Builder {
+pub struct ShiryaevRobertsBuilder {
     pre_mean: Option<f64>,
     post_mean: Option<f64>,
     variance: Option<f64>,
@@ -31,12 +31,12 @@ pub struct ShiryaevRobertsF64Builder {
     min_samples: u64,
 }
 
-impl ShiryaevRobertsF64 {
+impl ShiryaevRoberts {
     /// Creates a builder.
     #[inline]
     #[must_use]
-    pub fn builder() -> ShiryaevRobertsF64Builder {
-        ShiryaevRobertsF64Builder {
+    pub fn builder() -> ShiryaevRobertsBuilder {
+        ShiryaevRobertsBuilder {
             pre_mean: None,
             post_mean: None,
             variance: None,
@@ -107,7 +107,7 @@ impl ShiryaevRobertsF64 {
     }
 }
 
-impl ShiryaevRobertsF64Builder {
+impl ShiryaevRobertsBuilder {
     /// Pre-change (null hypothesis) mean.
     #[inline]
     #[must_use]
@@ -158,7 +158,7 @@ impl ShiryaevRobertsF64Builder {
     /// - Threshold must be positive.
     /// - Pre-change and post-change means must differ.
     #[inline]
-    pub fn build(self) -> Result<ShiryaevRobertsF64, nexus_stats_core::ConfigError> {
+    pub fn build(self) -> Result<ShiryaevRoberts, nexus_stats_core::ConfigError> {
         let pre_mean = self
             .pre_mean
             .ok_or(nexus_stats_core::ConfigError::Missing("pre_change_mean"))?;
@@ -188,7 +188,7 @@ impl ShiryaevRobertsF64Builder {
             ));
         }
 
-        Ok(ShiryaevRobertsF64 {
+        Ok(ShiryaevRoberts {
             pre_mean,
             post_mean,
             variance,
@@ -206,7 +206,7 @@ mod tests {
 
     #[test]
     fn no_detection_at_pre_change_mean() {
-        let mut sr = ShiryaevRobertsF64::builder()
+        let mut sr = ShiryaevRoberts::builder()
             .pre_change_mean(100.0)
             .post_change_mean(110.0)
             .variance(25.0)
@@ -222,7 +222,7 @@ mod tests {
 
     #[test]
     fn detects_shift_to_post_change_mean() {
-        let mut sr = ShiryaevRobertsF64::builder()
+        let mut sr = ShiryaevRoberts::builder()
             .pre_change_mean(100.0)
             .post_change_mean(110.0)
             .variance(25.0)
@@ -242,7 +242,7 @@ mod tests {
 
     #[test]
     fn statistic_grows_under_alternative() {
-        let mut sr = ShiryaevRobertsF64::builder()
+        let mut sr = ShiryaevRoberts::builder()
             .pre_change_mean(0.0)
             .post_change_mean(5.0)
             .variance(1.0)
@@ -260,7 +260,7 @@ mod tests {
 
     #[test]
     fn reset_clears_statistic() {
-        let mut sr = ShiryaevRobertsF64::builder()
+        let mut sr = ShiryaevRoberts::builder()
             .pre_change_mean(0.0)
             .post_change_mean(5.0)
             .variance(1.0)
@@ -281,7 +281,7 @@ mod tests {
 
     #[test]
     fn priming() {
-        let mut sr = ShiryaevRobertsF64::builder()
+        let mut sr = ShiryaevRoberts::builder()
             .pre_change_mean(0.0)
             .post_change_mean(5.0)
             .variance(1.0)
@@ -298,7 +298,7 @@ mod tests {
 
     #[test]
     fn errors_without_variance() {
-        let result = ShiryaevRobertsF64::builder()
+        let result = ShiryaevRoberts::builder()
             .pre_change_mean(0.0)
             .post_change_mean(5.0)
             .threshold(100.0)
@@ -311,7 +311,7 @@ mod tests {
 
     #[test]
     fn errors_on_equal_means() {
-        let result = ShiryaevRobertsF64::builder()
+        let result = ShiryaevRoberts::builder()
             .pre_change_mean(5.0)
             .post_change_mean(5.0)
             .variance(1.0)
@@ -325,7 +325,7 @@ mod tests {
 
     #[test]
     fn rejects_nan_and_inf() {
-        let mut sr = ShiryaevRobertsF64::builder()
+        let mut sr = ShiryaevRoberts::builder()
             .pre_change_mean(100.0)
             .post_change_mean(110.0)
             .variance(25.0)

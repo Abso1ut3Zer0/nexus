@@ -1,7 +1,7 @@
 # Spring — Critically Damped Chase
 
-**Types:** `SpringF64`
-**Import:** `use nexus_stats_smoothing::SpringF64;`
+**Types:** `Spring`
+**Import:** `use nexus_stats_smoothing::Spring;`
 **Feature flags:** None required.
 
 ## What it does
@@ -21,7 +21,7 @@ Not for: denoising a measurement (the spring has no input-noise awareness; you f
 ## API
 
 ```rust
-impl SpringF64 {
+impl Spring {
     pub fn new(smooth_time: f64) -> Result<Self, ConfigError>;
     pub fn update(&mut self, target: f64, dt: f64) -> Result<f64, DataError>;
     pub fn value(&self) -> f64;
@@ -36,10 +36,10 @@ impl SpringF64 {
 ## Example — smooth target following
 
 ```rust
-use nexus_stats_smoothing::SpringF64;
+use nexus_stats_smoothing::Spring;
 
 // 10-sample half-life. Pass dt=1.0 per update to measure time in samples.
-let mut spring = SpringF64::new(10.0).expect("smooth_time > 0");
+let mut spring = Spring::new(10.0).expect("smooth_time > 0");
 spring.reset_to(0.0);
 
 // Step change target 0 -> 100.

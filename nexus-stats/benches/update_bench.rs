@@ -15,21 +15,18 @@ use criterion::{Criterion, black_box, criterion_group, criterion_main};
 use nexus_stats::{
     control::{DeadBand, FirstDiff, Hysteresis, LevelCrossing, SecondDiff},
     detection::{
-        AdaptiveThresholdF64, BocpdF64, Cusum, DistDriftF64, RobustZScoreF64, ShiryaevRobertsF64,
-        TrendAlertF64,
+        AdaptiveThreshold, Bocpd, Cusum, DistDrift, RobustZScore, ShiryaevRoberts, TrendAlert,
     },
-    estimation::{Kalman2dF64, Kalman3dF64},
+    estimation::{Kalman2d, Kalman3d},
     learning::{
-        AdaGradF64, AdamF64, EpsilonGreedyF64, Exp3F64, LmsFilterF64, NlmsFilterF64, OnlineGdF64,
-        OnlineKMeansF64, RlsFilterF64, ThompsonBetaF64, ThompsonGammaF64, Ucb1F64,
+        AdaGrad, Adam, EpsilonGreedy, Exp3, LmsFilter, NlmsFilter, OnlineGd, OnlineKMeans,
+        RlsFilter, ThompsonBeta, ThompsonGamma, Ucb1,
     },
     monitoring::{Drawdown, ErrorRate, Jitter, RunningMax, RunningMin},
     normalization::{MinMaxNorm, ZScoreNorm},
-    regression::{
-        EwLinearRegressionF64, LinearRegressionF64, LogisticRegressionF64, PolynomialRegressionF64,
-    },
-    signal::{AutocorrelationF64, CrossCorrelationF64, EntropyF64, TransferEntropyF64},
-    smoothing::{AsymEma, Ema, HoltF64, Kalman1dF64, Slew, SpringF64},
+    regression::{EwLinearRegression, LinearRegression, LogisticRegression, PolynomialRegression},
+    signal::{Autocorrelation, CrossCorrelation, Entropy, TransferEntropy},
+    smoothing::{AsymEma, Ema, Holt, Kalman1d, Slew, Spring},
     statistics::{Covariance, Cvar, EwmaVar, HarmonicMean, Lpm, Moments, Percentile, Welford},
 };
 
@@ -120,7 +117,7 @@ fn bench_asym_ema(c: &mut Criterion) {
 
 fn bench_holt(c: &mut Criterion) {
     let mut rng = Lcg::new(42);
-    let mut h = HoltF64::builder()
+    let mut h = Holt::builder()
         .alpha(0.3)
         .beta(0.1)
         .min_samples(2)
@@ -129,7 +126,7 @@ fn bench_holt(c: &mut Criterion) {
     for _ in 0..1000 {
         let _ = h.update(rng.next_f64());
     }
-    c.bench_function("HoltF64::update", |b| {
+    c.bench_function("Holt::update", |b| {
         b.iter(|| h.update(black_box(rng.next_f64())).unwrap())
     });
 }
@@ -249,11 +246,11 @@ fn bench_slew(c: &mut Criterion) {
 
 fn bench_spring(c: &mut Criterion) {
     let mut rng = Lcg::new(42);
-    let mut s = SpringF64::new(0.1).unwrap();
+    let mut s = Spring::new(0.1).unwrap();
     for _ in 0..1000 {
         let _ = s.update(rng.next_f64(), 1.0);
     }
-    c.bench_function("SpringF64::update", |b| {
+    c.bench_function("Spring::update", |b| {
         b.iter(|| s.update(black_box(rng.next_f64()), black_box(1.0)))
     });
 }
@@ -330,7 +327,7 @@ fn bench_cusum(c: &mut Criterion) {
 
 fn bench_shiryaev_roberts(c: &mut Criterion) {
     let mut rng = Lcg::new(42);
-    let mut sr = ShiryaevRobertsF64::builder()
+    let mut sr = ShiryaevRoberts::builder()
         .pre_change_mean(50.0)
         .post_change_mean(51.0)
         .variance(1.0)
@@ -340,14 +337,14 @@ fn bench_shiryaev_roberts(c: &mut Criterion) {
     for _ in 0..1000 {
         let _ = sr.update(rng.next_f64());
     }
-    c.bench_function("ShiryaevRobertsF64::update", |b| {
+    c.bench_function("ShiryaevRoberts::update", |b| {
         b.iter(|| sr.update(black_box(rng.next_f64())).unwrap())
     });
 }
 
 fn bench_trend_alert(c: &mut Criterion) {
     let mut rng = Lcg::new(42);
-    let mut ta = TrendAlertF64::builder()
+    let mut ta = TrendAlert::builder()
         .alpha(0.3)
         .beta(0.1)
         .trend_threshold(5.0)
@@ -356,14 +353,14 @@ fn bench_trend_alert(c: &mut Criterion) {
     for _ in 0..1000 {
         let _ = ta.update(rng.next_f64());
     }
-    c.bench_function("TrendAlertF64::update", |b| {
+    c.bench_function("TrendAlert::update", |b| {
         b.iter(|| ta.update(black_box(rng.next_f64())).unwrap())
     });
 }
 
 fn bench_adaptive_threshold(c: &mut Criterion) {
     let mut rng = Lcg::new(42);
-    let mut at = AdaptiveThresholdF64::builder()
+    let mut at = AdaptiveThreshold::builder()
         .alpha(0.1)
         .z_threshold(3.0)
         .min_samples(20)
@@ -372,14 +369,14 @@ fn bench_adaptive_threshold(c: &mut Criterion) {
     for _ in 0..1000 {
         let _ = at.update(rng.next_f64());
     }
-    c.bench_function("AdaptiveThresholdF64::update", |b| {
+    c.bench_function("AdaptiveThreshold::update", |b| {
         b.iter(|| at.update(black_box(rng.next_f64())).unwrap())
     });
 }
 
 fn bench_robust_z(c: &mut Criterion) {
     let mut rng = Lcg::new(42);
-    let mut rz = RobustZScoreF64::builder()
+    let mut rz = RobustZScore::<f64>::builder()
         .alpha(0.1)
         .reject_threshold(3.0)
         .min_samples(5)
@@ -388,7 +385,7 @@ fn bench_robust_z(c: &mut Criterion) {
     for _ in 0..1000 {
         let _ = rz.update(rng.next_f64());
     }
-    c.bench_function("RobustZScoreF64::update", |b| {
+    c.bench_function("RobustZScore::<f64>::update", |b| {
         b.iter(|| rz.update(black_box(rng.next_f64())).unwrap())
     });
 }
@@ -415,19 +412,19 @@ fn bench_error_rate(c: &mut Criterion) {
 fn bench_autocorrelation(c: &mut Criterion) {
     let mut rng = Lcg::new(42);
 
-    let mut ac1 = AutocorrelationF64::builder().lag(1).build().unwrap();
+    let mut ac1 = Autocorrelation::builder().lag(1).build().unwrap();
     for _ in 0..1000 {
         let _ = ac1.update(rng.next_f64());
     }
-    c.bench_function("AutocorrelationF64::update (lag=1)", |b| {
+    c.bench_function("Autocorrelation::update (lag=1)", |b| {
         b.iter(|| ac1.update(black_box(rng.next_f64())).unwrap())
     });
 
-    let mut ac10 = AutocorrelationF64::builder().lag(10).build().unwrap();
+    let mut ac10 = Autocorrelation::builder().lag(10).build().unwrap();
     for _ in 0..1000 {
         let _ = ac10.update(rng.next_f64());
     }
-    c.bench_function("AutocorrelationF64::update (lag=10)", |b| {
+    c.bench_function("Autocorrelation::update (lag=10)", |b| {
         b.iter(|| ac10.update(black_box(rng.next_f64())).unwrap())
     });
 }
@@ -435,22 +432,22 @@ fn bench_autocorrelation(c: &mut Criterion) {
 fn bench_cross_correlation(c: &mut Criterion) {
     let mut rng = Lcg::new(42);
 
-    let mut cc1 = CrossCorrelationF64::builder().lag(1).build().unwrap();
+    let mut cc1 = CrossCorrelation::builder().lag(1).build().unwrap();
     for _ in 0..1000 {
         let _ = cc1.update(rng.next_f64(), rng.next_f64());
     }
-    c.bench_function("CrossCorrelationF64::update (lag=1)", |b| {
+    c.bench_function("CrossCorrelation::update (lag=1)", |b| {
         b.iter(|| {
             cc1.update(black_box(rng.next_f64()), black_box(rng.next_f64()))
                 .unwrap()
         })
     });
 
-    let mut cc10 = CrossCorrelationF64::builder().lag(10).build().unwrap();
+    let mut cc10 = CrossCorrelation::builder().lag(10).build().unwrap();
     for _ in 0..1000 {
         let _ = cc10.update(rng.next_f64(), rng.next_f64());
     }
-    c.bench_function("CrossCorrelationF64::update (lag=10)", |b| {
+    c.bench_function("CrossCorrelation::update (lag=10)", |b| {
         b.iter(|| {
             cc10.update(black_box(rng.next_f64()), black_box(rng.next_f64()))
                 .unwrap()
@@ -461,19 +458,19 @@ fn bench_cross_correlation(c: &mut Criterion) {
 fn bench_entropy(c: &mut Criterion) {
     let mut rng = Lcg::new(42);
 
-    let mut e4 = EntropyF64::builder().bins(4).build().unwrap();
+    let mut e4 = Entropy::builder().bins(4).build().unwrap();
     for _ in 0..1000 {
         e4.update((rng.next_f64() as usize) % 4);
     }
-    c.bench_function("EntropyF64::update (bins=4)", |b| {
+    c.bench_function("Entropy::update (bins=4)", |b| {
         b.iter(|| e4.update(black_box((rng.next_f64() as usize) % 4)))
     });
 
-    let mut e16 = EntropyF64::builder().bins(16).build().unwrap();
+    let mut e16 = Entropy::builder().bins(16).build().unwrap();
     for _ in 0..1000 {
         e16.update((rng.next_f64() as usize) % 16);
     }
-    c.bench_function("EntropyF64::update (bins=16)", |b| {
+    c.bench_function("Entropy::update (bins=16)", |b| {
         b.iter(|| e16.update(black_box((rng.next_f64() as usize) % 16)))
     });
 }
@@ -485,14 +482,11 @@ fn bench_entropy(c: &mut Criterion) {
 fn bench_linear_regression(c: &mut Criterion) {
     let mut rng = Lcg::new(42);
 
-    let mut lr = LinearRegressionF64::builder()
-        .intercept(true)
-        .build()
-        .unwrap();
+    let mut lr = LinearRegression::builder().intercept(true).build().unwrap();
     for i in 0..1000 {
         let _ = lr.update(i as f64, rng.next_f64());
     }
-    c.bench_function("LinearRegressionF64::update (intercept)", |b| {
+    c.bench_function("LinearRegression::update (intercept)", |b| {
         let mut x = 1000.0;
         b.iter(|| {
             x += 1.0;
@@ -500,14 +494,14 @@ fn bench_linear_regression(c: &mut Criterion) {
         })
     });
 
-    let mut lr_no = LinearRegressionF64::builder()
+    let mut lr_no = LinearRegression::builder()
         .intercept(false)
         .build()
         .unwrap();
     for i in 0..1000 {
         let _ = lr_no.update(i as f64, rng.next_f64());
     }
-    c.bench_function("LinearRegressionF64::update (no intercept)", |b| {
+    c.bench_function("LinearRegression::update (no intercept)", |b| {
         let mut x = 1000.0;
         b.iter(|| {
             x += 1.0;
@@ -520,7 +514,7 @@ fn bench_linear_regression(c: &mut Criterion) {
 
 fn bench_ew_linear_regression(c: &mut Criterion) {
     let mut rng = Lcg::new(42);
-    let mut lr = EwLinearRegressionF64::builder()
+    let mut lr = EwLinearRegression::builder()
         .alpha(0.05)
         .intercept(true)
         .build()
@@ -528,7 +522,7 @@ fn bench_ew_linear_regression(c: &mut Criterion) {
     for i in 0..1000 {
         let _ = lr.update(i as f64, rng.next_f64());
     }
-    c.bench_function("EwLinearRegressionF64::update (alpha=0.05)", |b| {
+    c.bench_function("EwLinearRegression::update (alpha=0.05)", |b| {
         let mut x = 1000.0;
         b.iter(|| {
             x += 1.0;
@@ -541,7 +535,7 @@ fn bench_polynomial_regression(c: &mut Criterion) {
     let mut rng = Lcg::new(42);
 
     for degree in [2, 3, 5] {
-        let mut pr = PolynomialRegressionF64::builder()
+        let mut pr = PolynomialRegression::builder()
             .degree(degree)
             .intercept(true)
             .build()
@@ -550,7 +544,7 @@ fn bench_polynomial_regression(c: &mut Criterion) {
             let _ = pr.update(i as f64 * 0.01, rng.next_f64());
         }
         c.bench_function(
-            &format!("PolynomialRegressionF64::update (deg={degree})"),
+            &format!("PolynomialRegression::update (deg={degree})"),
             |b| {
                 let mut x = 10.0;
                 b.iter(|| {
@@ -566,7 +560,7 @@ fn bench_transfer_entropy(c: &mut Criterion) {
     let mut rng = Lcg::new(42);
 
     for bins in [4usize, 8] {
-        let mut te = TransferEntropyF64::builder()
+        let mut te = TransferEntropy::builder()
             .bins(bins)
             .lag(1)
             .build()
@@ -577,7 +571,7 @@ fn bench_transfer_entropy(c: &mut Criterion) {
                 (rng.next_f64() as usize) % bins,
             );
         }
-        c.bench_function(&format!("TransferEntropyF64::update (bins={bins})"), |b| {
+        c.bench_function(&format!("TransferEntropy::update (bins={bins})"), |b| {
             b.iter(|| {
                 te.update(
                     black_box((rng.next_f64() as usize) % bins),
@@ -596,7 +590,7 @@ fn bench_lms_filter(c: &mut Criterion) {
     let mut rng = Lcg::new(42);
 
     for dims in [3, 10] {
-        let mut f = LmsFilterF64::builder()
+        let mut f = LmsFilter::builder()
             .dimensions(dims)
             .learning_rate(0.01)
             .build()
@@ -608,7 +602,7 @@ fn bench_lms_filter(c: &mut Criterion) {
             }
             let _ = f.update(&features, rng.next_f64());
         }
-        c.bench_function(&format!("LmsFilterF64::update (d={dims})"), |b| {
+        c.bench_function(&format!("LmsFilter::update (d={dims})"), |b| {
             b.iter(|| {
                 for v in &mut features {
                     *v = rng.next_feature();
@@ -624,7 +618,7 @@ fn bench_nlms_filter(c: &mut Criterion) {
     let mut rng = Lcg::new(42);
 
     for dims in [3, 10] {
-        let mut f = NlmsFilterF64::builder()
+        let mut f = NlmsFilter::builder()
             .dimensions(dims)
             .learning_rate(0.5)
             .build()
@@ -636,7 +630,7 @@ fn bench_nlms_filter(c: &mut Criterion) {
             }
             let _ = f.update(&features, rng.next_f64());
         }
-        c.bench_function(&format!("NlmsFilterF64::update (d={dims})"), |b| {
+        c.bench_function(&format!("NlmsFilter::update (d={dims})"), |b| {
             b.iter(|| {
                 for v in &mut features {
                     *v = rng.next_feature();
@@ -652,7 +646,7 @@ fn bench_rls_filter(c: &mut Criterion) {
     let mut rng = Lcg::new(42);
 
     for dims in [3, 5, 10] {
-        let mut f = RlsFilterF64::builder()
+        let mut f = RlsFilter::builder()
             .dimensions(dims)
             .forgetting_factor(0.99)
             .build()
@@ -664,7 +658,7 @@ fn bench_rls_filter(c: &mut Criterion) {
             }
             let _ = f.update(&features, rng.next_f64());
         }
-        c.bench_function(&format!("RlsFilterF64::update (d={dims})"), |b| {
+        c.bench_function(&format!("RlsFilter::update (d={dims})"), |b| {
             b.iter(|| {
                 for v in &mut features {
                     *v = rng.next_feature();
@@ -679,7 +673,7 @@ fn bench_rls_filter(c: &mut Criterion) {
 fn bench_logistic_regression(c: &mut Criterion) {
     let mut rng = Lcg::new(42);
     let dims = 5;
-    let mut lr = LogisticRegressionF64::builder()
+    let mut lr = LogisticRegression::builder()
         .dimensions(dims)
         .learning_rate(0.1)
         .build()
@@ -691,7 +685,7 @@ fn bench_logistic_regression(c: &mut Criterion) {
         }
         lr.update(&features, rng.next_f64() > 50.0);
     }
-    c.bench_function("LogisticRegressionF64::update (d=5)", |b| {
+    c.bench_function("LogisticRegression::update (d=5)", |b| {
         b.iter(|| {
             for v in &mut features {
                 *v = rng.next_feature();
@@ -704,7 +698,7 @@ fn bench_logistic_regression(c: &mut Criterion) {
 fn bench_online_kmeans(c: &mut Criterion) {
     let mut rng = Lcg::new(42);
     let dims = 5;
-    let mut km = OnlineKMeansF64::builder()
+    let mut km = OnlineKMeans::builder()
         .dimensions(dims)
         .clusters(3)
         .learning_rate(0.1)
@@ -717,7 +711,7 @@ fn bench_online_kmeans(c: &mut Criterion) {
         }
         km.update(&features);
     }
-    c.bench_function("OnlineKMeansF64::update (k=3, d=5)", |b| {
+    c.bench_function("OnlineKMeans::update (k=3, d=5)", |b| {
         b.iter(|| {
             for v in &mut features {
                 *v = rng.next_feature();
@@ -733,7 +727,7 @@ fn bench_online_kmeans(c: &mut Criterion) {
 
 fn bench_kalman1d(c: &mut Criterion) {
     let mut rng = Lcg::new(42);
-    let mut k = Kalman1dF64::builder()
+    let mut k = Kalman1d::builder()
         .process_noise(0.01)
         .measurement_noise(1.0)
         .build()
@@ -741,14 +735,14 @@ fn bench_kalman1d(c: &mut Criterion) {
     for _ in 0..1000 {
         let _ = k.update(rng.next_f64());
     }
-    c.bench_function("Kalman1dF64::update", |b| {
+    c.bench_function("Kalman1d::update", |b| {
         b.iter(|| k.update(black_box(rng.next_f64())).unwrap())
     });
 }
 
 fn bench_kalman2d(c: &mut Criterion) {
     let mut rng = Lcg::new(42);
-    let mut k = Kalman2dF64::builder()
+    let mut k = Kalman2d::builder()
         .process_noise([[0.01, 0.0], [0.0, 0.01]])
         .measurement_noise(1.0)
         .build()
@@ -758,7 +752,7 @@ fn bench_kalman2d(c: &mut Criterion) {
         let _ = k.update(rng.next_f64(), [1.0, 0.0]);
     }
 
-    c.bench_function("Kalman2dF64::predict+update", |b| {
+    c.bench_function("Kalman2d::predict+update", |b| {
         b.iter(|| {
             k.predict();
             k.update(black_box(rng.next_f64()), black_box([1.0, 0.0]))
@@ -766,7 +760,7 @@ fn bench_kalman2d(c: &mut Criterion) {
         })
     });
 
-    c.bench_function("Kalman2dF64::predict_with_dynamics", |b| {
+    c.bench_function("Kalman2d::predict_with_dynamics", |b| {
         b.iter(|| {
             k.predict_with_dynamics(black_box([[1.0, 1.0], [0.0, 1.0]]));
             k.update(black_box(rng.next_f64()), black_box([1.0, 0.0]))
@@ -777,7 +771,7 @@ fn bench_kalman2d(c: &mut Criterion) {
 
 fn bench_kalman3d(c: &mut Criterion) {
     let mut rng = Lcg::new(42);
-    let mut k = Kalman3dF64::builder()
+    let mut k = Kalman3d::builder()
         .process_noise([[0.01, 0.0, 0.0], [0.0, 0.01, 0.0], [0.0, 0.0, 0.01]])
         .measurement_noise(1.0)
         .build()
@@ -786,7 +780,7 @@ fn bench_kalman3d(c: &mut Criterion) {
         k.predict();
         let _ = k.update(rng.next_f64(), [1.0, 0.0, 0.0]);
     }
-    c.bench_function("Kalman3dF64::predict+update", |b| {
+    c.bench_function("Kalman3d::predict+update", |b| {
         b.iter(|| {
             k.predict();
             k.update(black_box(rng.next_f64()), black_box([1.0, 0.0, 0.0]))
@@ -803,7 +797,7 @@ fn bench_online_gd(c: &mut Criterion) {
     let mut rng = Lcg::new(42);
 
     for dims in [5, 20] {
-        let mut opt = OnlineGdF64::builder()
+        let mut opt = OnlineGd::builder()
             .dimensions(dims)
             .learning_rate(0.01)
             .build()
@@ -815,7 +809,7 @@ fn bench_online_gd(c: &mut Criterion) {
             }
             let _ = opt.step(&grad);
         }
-        c.bench_function(&format!("OnlineGdF64::step (d={dims})"), |b| {
+        c.bench_function(&format!("OnlineGd::step (d={dims})"), |b| {
             b.iter(|| {
                 for v in &mut grad {
                     *v = rng.next_feature();
@@ -830,7 +824,7 @@ fn bench_adagrad(c: &mut Criterion) {
     let mut rng = Lcg::new(42);
 
     for dims in [5, 20] {
-        let mut opt = AdaGradF64::builder()
+        let mut opt = AdaGrad::builder()
             .dimensions(dims)
             .learning_rate(0.1)
             .build()
@@ -842,7 +836,7 @@ fn bench_adagrad(c: &mut Criterion) {
             }
             let _ = opt.step(&grad);
         }
-        c.bench_function(&format!("AdaGradF64::step (d={dims})"), |b| {
+        c.bench_function(&format!("AdaGrad::step (d={dims})"), |b| {
             b.iter(|| {
                 for v in &mut grad {
                     *v = rng.next_feature();
@@ -857,7 +851,7 @@ fn bench_adam(c: &mut Criterion) {
     let mut rng = Lcg::new(42);
 
     for dims in [5, 20] {
-        let mut opt = AdamF64::builder()
+        let mut opt = Adam::builder()
             .dimensions(dims)
             .learning_rate(0.001)
             .build()
@@ -869,7 +863,7 @@ fn bench_adam(c: &mut Criterion) {
             }
             let _ = opt.step(&grad);
         }
-        c.bench_function(&format!("AdamF64::step (d={dims})"), |b| {
+        c.bench_function(&format!("Adam::step (d={dims})"), |b| {
             b.iter(|| {
                 for v in &mut grad {
                     *v = rng.next_feature();
@@ -888,7 +882,7 @@ fn bench_polynomial_coefficients(c: &mut Criterion) {
     let mut rng = Lcg::new(42);
 
     for degree in [2, 3, 5] {
-        let mut pr = PolynomialRegressionF64::builder()
+        let mut pr = PolynomialRegression::builder()
             .degree(degree)
             .intercept(true)
             .build()
@@ -897,7 +891,7 @@ fn bench_polynomial_coefficients(c: &mut Criterion) {
             let _ = pr.update(i as f64 * 0.01, rng.next_f64());
         }
         c.bench_function(
-            &format!("PolynomialRegressionF64::coefficients (deg={degree})"),
+            &format!("PolynomialRegression::coefficients (deg={degree})"),
             |b| b.iter(|| pr.coefficients()),
         );
     }
@@ -907,7 +901,7 @@ fn bench_transfer_entropy_query(c: &mut Criterion) {
     let mut rng = Lcg::new(42);
 
     for bins in [4usize, 8] {
-        let mut te = TransferEntropyF64::builder()
+        let mut te = TransferEntropy::builder()
             .bins(bins)
             .lag(1)
             .build()
@@ -918,20 +912,19 @@ fn bench_transfer_entropy_query(c: &mut Criterion) {
                 (rng.next_f64() as usize) % bins,
             );
         }
-        c.bench_function(
-            &format!("TransferEntropyF64::te_x_to_y (bins={bins})"),
-            |b| b.iter(|| te.te_x_to_y()),
-        );
+        c.bench_function(&format!("TransferEntropy::te_x_to_y (bins={bins})"), |b| {
+            b.iter(|| te.te_x_to_y())
+        });
     }
 }
 
 fn bench_entropy_query(c: &mut Criterion) {
     let mut rng = Lcg::new(42);
-    let mut e = EntropyF64::builder().bins(8).build().unwrap();
+    let mut e = Entropy::builder().bins(8).build().unwrap();
     for _ in 0..1000 {
         e.update((rng.next_f64() as usize) % 8);
     }
-    c.bench_function("EntropyF64::entropy (bins=8)", |b| b.iter(|| e.entropy()));
+    c.bench_function("Entropy::entropy (bins=8)", |b| b.iter(|| e.entropy()));
 }
 
 // ============================================================
@@ -941,12 +934,12 @@ fn bench_entropy_query(c: &mut Criterion) {
 fn bench_ucb1_select(c: &mut Criterion) {
     for k in [2, 5, 10, 25, 50] {
         let mut rng = Lcg::new(42);
-        let mut b = Ucb1F64::builder().arms(k).build().unwrap();
+        let mut b = Ucb1::builder().arms(k).build().unwrap();
         for _ in 0..(k * 100) {
             let arm = b.select();
             let _ = b.update(arm, rng.next_unit());
         }
-        c.bench_function(&format!("Ucb1F64::select (K={k})"), |bench| {
+        c.bench_function(&format!("Ucb1::select (K={k})"), |bench| {
             bench.iter(|| black_box(b.select()))
         });
     }
@@ -955,12 +948,12 @@ fn bench_ucb1_select(c: &mut Criterion) {
 fn bench_ucb1_update(c: &mut Criterion) {
     let mut rng = Lcg::new(42);
     for k in [2, 5, 10, 25, 50] {
-        let mut b = Ucb1F64::builder().arms(k).build().unwrap();
+        let mut b = Ucb1::builder().arms(k).build().unwrap();
         for _ in 0..(k * 100) {
             let arm = b.select();
             let _ = b.update(arm, rng.next_unit());
         }
-        c.bench_function(&format!("Ucb1F64::update (K={k})"), |bench| {
+        c.bench_function(&format!("Ucb1::update (K={k})"), |bench| {
             let mut arm = 0;
             bench.iter(|| {
                 arm = (arm + 1) % k;
@@ -974,12 +967,12 @@ fn bench_ucb1_update(c: &mut Criterion) {
 fn bench_ucb1_update_decay(c: &mut Criterion) {
     let mut rng = Lcg::new(42);
     for k in [2, 5, 10, 25, 50] {
-        let mut b = Ucb1F64::builder().arms(k).decay(0.99).build().unwrap();
+        let mut b = Ucb1::builder().arms(k).decay(0.99).build().unwrap();
         for _ in 0..(k * 100) {
             let arm = b.select();
             let _ = b.update(arm, rng.next_unit());
         }
-        c.bench_function(&format!("Ucb1F64::update decay=0.99 (K={k})"), |bench| {
+        c.bench_function(&format!("Ucb1::update decay=0.99 (K={k})"), |bench| {
             let mut arm = 0;
             bench.iter(|| {
                 arm = (arm + 1) % k;
@@ -993,12 +986,12 @@ fn bench_ucb1_update_decay(c: &mut Criterion) {
 fn bench_thompson_beta_select(c: &mut Criterion) {
     for k in [2, 5, 10, 25, 50] {
         let mut rng = Lcg::new(42);
-        let mut b = ThompsonBetaF64::builder().arms(k).build().unwrap();
+        let mut b = ThompsonBeta::builder().arms(k).build().unwrap();
         for _ in 0..(k * 100) {
             let arm = b.select(&mut || rng.next_unit());
             let _ = b.update(arm, rng.next_unit());
         }
-        c.bench_function(&format!("ThompsonBetaF64::select (K={k})"), |bench| {
+        c.bench_function(&format!("ThompsonBeta::select (K={k})"), |bench| {
             bench.iter(|| black_box(b.select(&mut || rng.next_unit())))
         });
     }
@@ -1007,12 +1000,12 @@ fn bench_thompson_beta_select(c: &mut Criterion) {
 fn bench_thompson_beta_update(c: &mut Criterion) {
     let mut rng = Lcg::new(42);
     for k in [2, 5, 10, 25, 50] {
-        let mut b = ThompsonBetaF64::builder().arms(k).build().unwrap();
+        let mut b = ThompsonBeta::builder().arms(k).build().unwrap();
         for _ in 0..(k * 100) {
             let arm = b.select(&mut || rng.next_unit());
             let _ = b.update(arm, rng.next_unit());
         }
-        c.bench_function(&format!("ThompsonBetaF64::update (K={k})"), |bench| {
+        c.bench_function(&format!("ThompsonBeta::update (K={k})"), |bench| {
             let mut arm = 0;
             bench.iter(|| {
                 arm = (arm + 1) % k;
@@ -1026,12 +1019,12 @@ fn bench_thompson_beta_update(c: &mut Criterion) {
 fn bench_thompson_gamma_select(c: &mut Criterion) {
     for k in [2, 5, 10, 25, 50] {
         let mut rng = Lcg::new(42);
-        let mut b = ThompsonGammaF64::builder().arms(k).build().unwrap();
+        let mut b = ThompsonGamma::builder().arms(k).build().unwrap();
         for _ in 0..(k * 100) {
             let arm = b.select(&mut || rng.next_unit());
             let _ = b.update(arm, rng.next_unit() + 0.01);
         }
-        c.bench_function(&format!("ThompsonGammaF64::select (K={k})"), |bench| {
+        c.bench_function(&format!("ThompsonGamma::select (K={k})"), |bench| {
             bench.iter(|| black_box(b.select(&mut || rng.next_unit())))
         });
     }
@@ -1040,7 +1033,7 @@ fn bench_thompson_gamma_select(c: &mut Criterion) {
 fn bench_epsilon_greedy_select(c: &mut Criterion) {
     for k in [2, 5, 10, 25, 50] {
         let mut rng = Lcg::new(42);
-        let mut b = EpsilonGreedyF64::builder()
+        let mut b = EpsilonGreedy::builder()
             .arms(k)
             .epsilon(0.1)
             .build()
@@ -1049,7 +1042,7 @@ fn bench_epsilon_greedy_select(c: &mut Criterion) {
             let arm = b.select(&mut || rng.next_unit());
             let _ = b.update(arm, rng.next_unit());
         }
-        c.bench_function(&format!("EpsilonGreedyF64::select (K={k})"), |bench| {
+        c.bench_function(&format!("EpsilonGreedy::select (K={k})"), |bench| {
             bench.iter(|| black_box(b.select(&mut || rng.next_unit())))
         });
     }
@@ -1058,12 +1051,12 @@ fn bench_epsilon_greedy_select(c: &mut Criterion) {
 fn bench_exp3_select(c: &mut Criterion) {
     for k in [2, 5, 10, 25, 50] {
         let mut rng = Lcg::new(42);
-        let mut b = Exp3F64::builder().arms(k).gamma(0.1).build().unwrap();
+        let mut b = Exp3::builder().arms(k).gamma(0.1).build().unwrap();
         for _ in 0..(k * 100) {
             let (arm, prob) = b.select(&mut || rng.next_unit());
             let _ = b.update(arm, rng.next_unit(), prob);
         }
-        c.bench_function(&format!("Exp3F64::select (K={k})"), |bench| {
+        c.bench_function(&format!("Exp3::select (K={k})"), |bench| {
             bench.iter(|| black_box(b.select(&mut || rng.next_unit())))
         });
     }
@@ -1127,7 +1120,7 @@ fn bench_minmax_norm(c: &mut Criterion) {
 
 fn bench_dist_drift_update(c: &mut Criterion) {
     let mut rng = Lcg::new(42);
-    let mut drift = DistDriftF64::builder()
+    let mut drift = DistDrift::builder()
         .num_bins(50)
         .min_val(0.0)
         .max_val(100.0)
@@ -1136,7 +1129,7 @@ fn bench_dist_drift_update(c: &mut Criterion) {
     for i in 0..1000u64 {
         drift.update_reference((i % 100) as f64).unwrap();
     }
-    c.bench_function("DistDriftF64::update (50 bins)", |b| {
+    c.bench_function("DistDrift::update (50 bins)", |b| {
         b.iter(|| {
             drift.update(black_box(rng.next_f64())).unwrap();
         });
@@ -1144,7 +1137,7 @@ fn bench_dist_drift_update(c: &mut Criterion) {
 }
 
 fn bench_bocpd_update(c: &mut Criterion) {
-    let mut bocpd = BocpdF64::builder()
+    let mut bocpd = Bocpd::builder()
         .max_run_length(200)
         .hazard_lambda(100.0)
         .build()
@@ -1153,7 +1146,7 @@ fn bench_bocpd_update(c: &mut Criterion) {
         bocpd.update(i as f64).unwrap();
     }
     let mut rng = Lcg::new(42);
-    c.bench_function("BocpdF64::update (W=200)", |b| {
+    c.bench_function("Bocpd::update (W=200)", |b| {
         b.iter(|| {
             bocpd.update(black_box(rng.next_f64())).unwrap();
         });

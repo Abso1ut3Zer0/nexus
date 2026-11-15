@@ -4,7 +4,7 @@
 // but with exponential decay on accumulators. Recent data dominates.
 // Degree and intercept are runtime-configured via builder.
 
-use super::polynomial_regression::CoefficientsF64;
+use super::polynomial_regression::Coefficients;
 use nexus_stats_core::math::MulAdd;
 
 /// Exponentially-weighted online polynomial regression.
@@ -22,14 +22,14 @@ use nexus_stats_core::math::MulAdd;
 /// # Examples
 ///
 /// ```
-/// use nexus_stats_regression::regression::EwPolynomialRegressionF64;
+/// use nexus_stats_regression::regression::EwPolynomialRegression;
 ///
-/// let mut r = EwPolynomialRegressionF64::builder().degree(2).alpha(0.05).build().unwrap();
+/// let mut r = EwPolynomialRegression::builder().degree(2).alpha(0.05).build().unwrap();
 /// for x in 0..200u64 { r.update(x as f64, 2.0 * x as f64); }
 /// assert!(r.is_primed());
 /// ```
 #[derive(Debug, Clone)]
-pub struct EwPolynomialRegressionF64 {
+pub struct EwPolynomialRegression {
     sum_x: [f64; 17],
     sum_xy: [f64; 9],
     sum_y2: f64,
@@ -41,20 +41,20 @@ pub struct EwPolynomialRegressionF64 {
     intercept: bool,
 }
 
-/// Builder for [`EwPolynomialRegressionF64`].
+/// Builder for [`EwPolynomialRegression`].
 #[derive(Debug, Clone)]
-pub struct EwPolynomialRegressionF64Builder {
+pub struct EwPolynomialRegressionBuilder {
     degree: Option<usize>,
     intercept: bool,
     alpha: Option<f64>,
 }
 
-impl EwPolynomialRegressionF64 {
+impl EwPolynomialRegression {
     /// Creates a builder.
     #[inline]
     #[must_use]
-    pub fn builder() -> EwPolynomialRegressionF64Builder {
-        EwPolynomialRegressionF64Builder {
+    pub fn builder() -> EwPolynomialRegressionBuilder {
+        EwPolynomialRegressionBuilder {
             degree: None,
             intercept: true,
             alpha: None,
@@ -93,7 +93,7 @@ impl EwPolynomialRegressionF64 {
 
     /// Solve for polynomial coefficients.
     #[must_use]
-    pub fn coefficients(&self) -> Option<CoefficientsF64> {
+    pub fn coefficients(&self) -> Option<Coefficients> {
         let dim = self.dim();
         if (self.effective_n as usize) < dim {
             return None;
@@ -114,7 +114,7 @@ impl EwPolynomialRegressionF64 {
             return None;
         }
 
-        let mut coeffs = CoefficientsF64 {
+        let mut coeffs = Coefficients {
             values: [0.0; 9],
             len: dim,
         };
@@ -210,7 +210,7 @@ impl EwPolynomialRegressionF64 {
     }
 }
 
-impl EwPolynomialRegressionF64Builder {
+impl EwPolynomialRegressionBuilder {
     /// Polynomial degree (1..=8). Required.
     #[inline]
     #[must_use]
@@ -240,7 +240,7 @@ impl EwPolynomialRegressionF64Builder {
     /// # Errors
     ///
     /// Returns errors if degree or alpha not set, or values out of range.
-    pub fn build(self) -> Result<EwPolynomialRegressionF64, nexus_stats_core::ConfigError> {
+    pub fn build(self) -> Result<EwPolynomialRegression, nexus_stats_core::ConfigError> {
         let degree = self
             .degree
             .ok_or(nexus_stats_core::ConfigError::Missing("degree"))?;
@@ -259,7 +259,7 @@ impl EwPolynomialRegressionF64Builder {
             ));
         }
 
-        Ok(EwPolynomialRegressionF64 {
+        Ok(EwPolynomialRegression {
             sum_x: [0.0; 17],
             sum_xy: [0.0; 9],
             sum_y2: 0.0,
@@ -279,7 +279,7 @@ mod tests {
 
     #[test]
     fn ew_linear_basic() {
-        let mut r = EwPolynomialRegressionF64::builder()
+        let mut r = EwPolynomialRegression::builder()
             .degree(1)
             .alpha(0.05)
             .build()
@@ -297,7 +297,7 @@ mod tests {
 
     #[test]
     fn ew_adapts_to_trend_change() {
-        let mut r = EwPolynomialRegressionF64::builder()
+        let mut r = EwPolynomialRegression::builder()
             .degree(1)
             .alpha(0.05)
             .build()
@@ -318,14 +318,14 @@ mod tests {
     #[test]
     fn ew_rejects_invalid_alpha() {
         assert!(
-            EwPolynomialRegressionF64::builder()
+            EwPolynomialRegression::builder()
                 .degree(1)
                 .alpha(0.0)
                 .build()
                 .is_err()
         );
         assert!(
-            EwPolynomialRegressionF64::builder()
+            EwPolynomialRegression::builder()
                 .degree(1)
                 .alpha(1.0)
                 .build()
@@ -336,22 +336,17 @@ mod tests {
     #[test]
     fn ew_rejects_missing() {
         assert!(
-            EwPolynomialRegressionF64::builder()
+            EwPolynomialRegression::builder()
                 .alpha(0.05)
                 .build()
                 .is_err()
         ); // missing degree
-        assert!(
-            EwPolynomialRegressionF64::builder()
-                .degree(1)
-                .build()
-                .is_err()
-        ); // missing alpha
+        assert!(EwPolynomialRegression::builder().degree(1).build().is_err()); // missing alpha
     }
 
     #[test]
     fn ew_predict() {
-        let mut r = EwPolynomialRegressionF64::builder()
+        let mut r = EwPolynomialRegression::builder()
             .degree(1)
             .alpha(0.05)
             .build()
@@ -365,7 +360,7 @@ mod tests {
 
     #[test]
     fn ew_reset() {
-        let mut r = EwPolynomialRegressionF64::builder()
+        let mut r = EwPolynomialRegression::builder()
             .degree(1)
             .alpha(0.05)
             .build()
@@ -381,7 +376,7 @@ mod tests {
 
     #[test]
     fn ew_effective_count() {
-        let mut r = EwPolynomialRegressionF64::builder()
+        let mut r = EwPolynomialRegression::builder()
             .degree(1)
             .alpha(0.05)
             .build()
@@ -398,7 +393,7 @@ mod tests {
 
     #[test]
     fn ew_quadratic() {
-        let r = EwPolynomialRegressionF64::builder()
+        let r = EwPolynomialRegression::builder()
             .degree(2)
             .alpha(0.05)
             .build()
@@ -408,7 +403,7 @@ mod tests {
 
     #[test]
     fn rejects_nan_and_inf() {
-        let mut r = EwPolynomialRegressionF64::builder()
+        let mut r = EwPolynomialRegression::builder()
             .degree(1)
             .alpha(0.05)
             .build()

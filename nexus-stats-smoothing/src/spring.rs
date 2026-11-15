@@ -10,7 +10,7 @@ use nexus_stats_core::math::MulAdd;
 /// - Smooth parameter transitions
 /// - Any "chase this value" without PID complexity
 #[derive(Debug, Clone)]
-pub struct SpringF64 {
+pub struct Spring {
     smooth_time: f64,
     omega: f64,
     value: f64,
@@ -18,7 +18,7 @@ pub struct SpringF64 {
     initialized: bool,
 }
 
-impl SpringF64 {
+impl Spring {
     /// Creates a new spring with the given smooth time.
     ///
     /// `smooth_time` controls how quickly the spring converges.
@@ -116,7 +116,7 @@ mod tests {
 
     #[test]
     fn converges_to_target() {
-        let mut s = SpringF64::new(0.5).unwrap();
+        let mut s = Spring::new(0.5).unwrap();
         let target = 100.0;
 
         for _ in 0..200 {
@@ -132,7 +132,7 @@ mod tests {
 
     #[test]
     fn no_overshoot() {
-        let mut s = SpringF64::new(0.5).unwrap();
+        let mut s = Spring::new(0.5).unwrap();
         let target = 100.0;
         s.update(0.0, 0.016).unwrap(); // initialize at 0
 
@@ -152,7 +152,7 @@ mod tests {
 
     #[test]
     fn variable_dt_stable() {
-        let mut s = SpringF64::new(1.0).unwrap();
+        let mut s = Spring::new(1.0).unwrap();
         let target = 50.0;
 
         // Large dt steps shouldn't explode
@@ -167,7 +167,7 @@ mod tests {
     #[test]
     #[allow(clippy::float_cmp)]
     fn reset_to() {
-        let mut s = SpringF64::new(0.5).unwrap();
+        let mut s = Spring::new(0.5).unwrap();
         s.update(100.0, 0.016).unwrap();
 
         s.reset_to(50.0);
@@ -178,14 +178,14 @@ mod tests {
     #[test]
     fn rejects_zero_smooth_time() {
         assert!(matches!(
-            SpringF64::new(0.0),
+            Spring::new(0.0),
             Err(nexus_stats_core::ConfigError::Invalid(_))
         ));
     }
 
     #[test]
     fn rejects_nan_and_inf() {
-        let mut s = SpringF64::new(0.5).unwrap();
+        let mut s = Spring::new(0.5).unwrap();
         // NaN target
         assert!(matches!(
             s.update(f64::NAN, 0.016),

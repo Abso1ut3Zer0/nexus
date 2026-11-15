@@ -1,7 +1,7 @@
 # HuberEMA — Outlier-Robust EMA
 
-**Type:** `HuberEmaF64`
-**Import:** `use nexus_stats_smoothing::HuberEmaF64;`
+**Type:** `HuberEma`
+**Import:** `use nexus_stats_smoothing::HuberEma;`
 **Feature flags:** None required.
 
 ## What it does
@@ -15,13 +15,13 @@ This is the Huber loss function's influence behavior applied to an online expone
 - **Mostly clean data with occasional shocks.** Fill ratios, latency under load, network throughput.
 - **You want all data to count,** just with bounded outlier influence — unlike a median, which throws information away.
 
-Not for: data that's routinely garbage (use `WindowedMedianF64` or `HampelF64`), data where the "outliers" are actually the signal (use plain `Ema`).
+Not for: data that's routinely garbage (use `WindowedMedian<f64>` or `Hampel`), data where the "outliers" are actually the signal (use plain `Ema`).
 
 ## API
 
 ```rust
-impl HuberEmaF64 {
-    pub fn builder() -> HuberEmaF64Builder;
+impl HuberEma {
+    pub fn builder() -> HuberEmaBuilder;
     pub fn update(&mut self, x: f64) -> Result<Option<f64>, DataError>;
     pub fn value(&self) -> Option<f64>;
     pub fn alpha(&self) -> f64;
@@ -31,26 +31,26 @@ impl HuberEmaF64 {
     pub fn reset(&mut self);
 }
 
-impl HuberEmaF64Builder {
+impl HuberEmaBuilder {
     pub fn alpha(self, alpha: f64) -> Self;
     pub fn halflife(self, halflife: f64) -> Self; // alternative to alpha
     pub fn delta(self, delta: f64) -> Self;       // clip threshold in units of x
     pub fn min_samples(self, n: u64) -> Self;
     pub fn seed(self, value: f64) -> Self;
-    pub fn build(self) -> Result<HuberEmaF64, ConfigError>;
+    pub fn build(self) -> Result<HuberEma, ConfigError>;
 }
 ```
 
 ## Example — robust latency tracker
 
 ```rust
-use nexus_stats_smoothing::HuberEmaF64;
+use nexus_stats_smoothing::HuberEma;
 
 // Request latencies (us). One of them is a GC pause spike.
 let latencies: [f64; 8] = [120.0, 125.0, 122.0, 130.0, 8500.0, 128.0, 124.0, 119.0];
 
 // Clip residuals to +/- 200us: GC spike contributes bounded, not full-weight.
-let mut robust = HuberEmaF64::builder()
+let mut robust = HuberEma::builder()
     .halflife(10.0)
     .delta(200.0)
     .build()

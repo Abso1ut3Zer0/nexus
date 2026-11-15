@@ -8,8 +8,8 @@ no matrix elimination.
 |----------|-------|
 | Update cost | ~6 cycles |
 | Memory | ~48 bytes |
-| Types | `LinearRegressionF64` |
-| EW types | `EwLinearRegressionF64` |
+| Types | `LinearRegression` |
+| EW types | `EwLinearRegression` |
 | Priming | 2 observations (with intercept), 1 (through origin) |
 | Output | `slope()`, `intercept_value()`, `r_squared()`, `predict(x)` |
 
@@ -107,16 +107,16 @@ less susceptible to this issue.
 ### OLS
 
 ```rust
-use nexus_stats::regression::LinearRegressionF64;
+use nexus_stats::regression::LinearRegression;
 
 // Standard: y = ax + b
-let mut r = LinearRegressionF64::new();
+let mut r = LinearRegression::new();
 
 // Through origin: y = ax
-let mut r = LinearRegressionF64::through_origin();
+let mut r = LinearRegression::through_origin();
 
 // Builder (for explicit config)
-let mut r = LinearRegressionF64::builder()
+let mut r = LinearRegression::builder()
     .intercept(false)
     .build()
     .unwrap();
@@ -125,9 +125,9 @@ let mut r = LinearRegressionF64::builder()
 ### Exponentially-Weighted
 
 ```rust
-use nexus_stats::regression::EwLinearRegressionF64;
+use nexus_stats::regression::EwLinearRegression;
 
-let mut r = EwLinearRegressionF64::builder()
+let mut r = EwLinearRegression::builder()
     .alpha(0.05)       // weight on new observation
     .intercept(true)   // default
     .build()
@@ -144,7 +144,7 @@ let mut r = EwLinearRegressionF64::builder()
 ### Trading — Price Trend
 
 ```rust
-let mut trend = LinearRegressionF64::new();
+let mut trend = LinearRegression::new();
 
 // Feed (sequence, price):
 for (i, price) in prices.enumerate() {
@@ -161,7 +161,7 @@ match trend.slope() {
 ### Monitoring — Latency Trend with Adaptation
 
 ```rust
-let mut trend = EwLinearRegressionF64::builder()
+let mut trend = EwLinearRegression::builder()
     .alpha(0.02)
     .build()
     .unwrap();
@@ -180,7 +180,7 @@ if let Some(slope) = trend.slope() {
 ### Science — Calibration Curve
 
 ```rust
-let mut cal = LinearRegressionF64::new();
+let mut cal = LinearRegression::new();
 
 for (reading, reference) in calibration_data {
     cal.update(reading, reference);
@@ -200,7 +200,7 @@ if let Some(r2) = cal.r_squared() {
 
 ```rust
 // "How many units per dollar?" — proportional relationship
-let mut r = LinearRegressionF64::through_origin();
+let mut r = LinearRegression::through_origin();
 
 for (dollars, units) in transactions {
     r.update(dollars, units);
@@ -226,7 +226,7 @@ Use EMA when you need a *smoothed current value*.
 
 | Operation | p50 |
 |-----------|-----|
-| `LinearRegressionF64::update` | ~6 cycles |
+| `LinearRegression::update` | ~6 cycles |
 | `slope()` query | ~5 cycles |
 | `r_squared()` query | ~8 cycles |
 | `predict(x)` query | ~6 cycles |

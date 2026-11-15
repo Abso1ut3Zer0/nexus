@@ -25,9 +25,9 @@ use super::sampling::f64_impl;
 /// # Examples
 ///
 /// ```
-/// use nexus_stats_regression::learning::ThompsonBetaF64;
+/// use nexus_stats_regression::learning::ThompsonBeta;
 ///
-/// let mut bandit = ThompsonBetaF64::builder()
+/// let mut bandit = ThompsonBeta::builder()
 ///     .arms(3)
 ///     .build()
 ///     .unwrap();
@@ -41,7 +41,7 @@ use super::sampling::f64_impl;
 /// bandit.update(arm, 1.0).unwrap();
 /// ```
 #[derive(Debug, Clone)]
-pub struct ThompsonBetaF64 {
+pub struct ThompsonBeta {
     alphas: Box<[f64]>,
     betas: Box<[f64]>,
     initial_alpha: f64,
@@ -52,9 +52,9 @@ pub struct ThompsonBetaF64 {
     min_samples: u64,
 }
 
-/// Builder for [`ThompsonBetaF64`].
+/// Builder for [`ThompsonBeta`].
 #[derive(Debug, Clone)]
-pub struct ThompsonBetaF64Builder {
+pub struct ThompsonBetaBuilder {
     arms: Option<usize>,
     initial_alpha: f64,
     initial_beta: f64,
@@ -62,12 +62,12 @@ pub struct ThompsonBetaF64Builder {
     min_samples: Option<u64>,
 }
 
-impl ThompsonBetaF64 {
+impl ThompsonBeta {
     /// Creates a builder.
     #[inline]
     #[must_use]
-    pub fn builder() -> ThompsonBetaF64Builder {
-        ThompsonBetaF64Builder {
+    pub fn builder() -> ThompsonBetaBuilder {
+        ThompsonBetaBuilder {
             arms: None,
             initial_alpha: 1.0,
             initial_beta: 1.0,
@@ -181,7 +181,7 @@ impl ThompsonBetaF64 {
     }
 }
 
-impl ThompsonBetaF64Builder {
+impl ThompsonBetaBuilder {
     /// Sets the number of arms (required, >= 2).
     #[inline]
     #[must_use]
@@ -224,7 +224,7 @@ impl ThompsonBetaF64Builder {
 
     /// Builds the bandit.
     #[inline]
-    pub fn build(self) -> Result<ThompsonBetaF64, nexus_stats_core::ConfigError> {
+    pub fn build(self) -> Result<ThompsonBeta, nexus_stats_core::ConfigError> {
         let arms = self
             .arms
             .ok_or(nexus_stats_core::ConfigError::Missing("arms"))?;
@@ -247,7 +247,7 @@ impl ThompsonBetaF64Builder {
             ));
         }
         let min_samples = self.min_samples.unwrap_or(arms as u64);
-        Ok(ThompsonBetaF64 {
+        Ok(ThompsonBeta {
             alphas: vec![self.initial_alpha; arms].into_boxed_slice(),
             betas: vec![self.initial_beta; arms].into_boxed_slice(),
             initial_alpha: self.initial_alpha,
@@ -276,7 +276,7 @@ mod tests {
 
     #[test]
     fn uniform_prior_explores() {
-        let bandit = ThompsonBetaF64::builder().arms(3).build().unwrap();
+        let bandit = ThompsonBeta::builder().arms(3).build().unwrap();
         let mut rng = make_rng(42);
         let mut counts = [0u32; 3];
         for _ in 0..300 {
@@ -290,7 +290,7 @@ mod tests {
 
     #[test]
     fn converges_to_best() {
-        let mut bandit = ThompsonBetaF64::builder().arms(3).build().unwrap();
+        let mut bandit = ThompsonBeta::builder().arms(3).build().unwrap();
         let mut rng = make_rng(42);
 
         for _ in 0..500 {
@@ -309,7 +309,7 @@ mod tests {
 
     #[test]
     fn binary_rewards() {
-        let mut bandit = ThompsonBetaF64::builder().arms(2).build().unwrap();
+        let mut bandit = ThompsonBeta::builder().arms(2).build().unwrap();
         for _ in 0..100 {
             bandit.update(0, 1.0).unwrap(); // always success
             bandit.update(1, 0.0).unwrap(); // always failure
@@ -321,7 +321,7 @@ mod tests {
 
     #[test]
     fn continuous_rewards() {
-        let mut bandit = ThompsonBetaF64::builder().arms(2).build().unwrap();
+        let mut bandit = ThompsonBeta::builder().arms(2).build().unwrap();
         for _ in 0..200 {
             bandit.update(0, 0.7).unwrap();
             bandit.update(1, 0.3).unwrap();
@@ -335,11 +335,7 @@ mod tests {
 
     #[test]
     fn decay_adapts() {
-        let mut bandit = ThompsonBetaF64::builder()
-            .arms(2)
-            .decay(0.95)
-            .build()
-            .unwrap();
+        let mut bandit = ThompsonBeta::builder().arms(2).decay(0.95).build().unwrap();
 
         // Phase 1: arm 0 is best
         for _ in 0..50 {
@@ -363,7 +359,7 @@ mod tests {
 
     #[test]
     fn reset_restores_prior() {
-        let mut bandit = ThompsonBetaF64::builder()
+        let mut bandit = ThompsonBeta::builder()
             .arms(2)
             .initial_alpha(2.0)
             .initial_beta(3.0)
@@ -385,7 +381,7 @@ mod tests {
 
     #[test]
     fn reward_out_of_range() {
-        let mut bandit = ThompsonBetaF64::builder().arms(2).build().unwrap();
+        let mut bandit = ThompsonBeta::builder().arms(2).build().unwrap();
         assert!(bandit.update(0, -0.1).is_err());
         assert!(bandit.update(0, 1.1).is_err());
         assert!(bandit.update(0, f64::NAN).is_err());
@@ -395,34 +391,22 @@ mod tests {
 
     #[test]
     fn builder_validation() {
-        assert!(ThompsonBetaF64::builder().arms(1).build().is_err());
+        assert!(ThompsonBeta::builder().arms(1).build().is_err());
         assert!(
-            ThompsonBetaF64::builder()
+            ThompsonBeta::builder()
                 .arms(2)
                 .initial_alpha(0.0)
                 .build()
                 .is_err()
         );
         assert!(
-            ThompsonBetaF64::builder()
+            ThompsonBeta::builder()
                 .arms(2)
                 .initial_beta(-1.0)
                 .build()
                 .is_err()
         );
-        assert!(
-            ThompsonBetaF64::builder()
-                .arms(2)
-                .decay(0.0)
-                .build()
-                .is_err()
-        );
-        assert!(
-            ThompsonBetaF64::builder()
-                .arms(2)
-                .decay(1.5)
-                .build()
-                .is_err()
-        );
+        assert!(ThompsonBeta::builder().arms(2).decay(0.0).build().is_err());
+        assert!(ThompsonBeta::builder().arms(2).decay(1.5).build().is_err());
     }
 }
