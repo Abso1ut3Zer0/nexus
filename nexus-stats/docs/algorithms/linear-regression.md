@@ -6,7 +6,7 @@ no matrix elimination.
 
 | Property | Value |
 |----------|-------|
-| Update cost | ~6 cycles |
+| Update cost | 20 cycles |
 | Memory | ~48 bytes |
 | Types | `LinearRegression` |
 | EW types | `EwLinearRegression` |
@@ -217,7 +217,7 @@ println!("rate: {:.2} units/$", r.slope().unwrap());
 | Answers | "What's the rate of change?" | "What's the current level?" |
 | Model | y = ax + b (parametric) | Weighted average (non-parametric) |
 | Memory | 48 bytes | 24 bytes |
-| Update cost | ~6 cycles | ~5 cycles |
+| Update cost | 20 cycles | 5 cycles |
 
 Use LinearRegression when you need the *trend direction and rate*.
 Use EMA when you need a *smoothed current value*.
@@ -226,9 +226,9 @@ Use EMA when you need a *smoothed current value*.
 
 | Operation | p50 |
 |-----------|-----|
-| `LinearRegression::update` | ~6 cycles |
-| `slope()` query | ~5 cycles |
-| `r_squared()` query | ~8 cycles |
-| `predict(x)` query | ~6 cycles |
+| `LinearRegression::update` | 20 cycles |
+| `slope()` query | 14 cycles |
+| `r_squared()` query | 18 cycles |
+| `predict(x)` query | 30 cycles |
 
 No matrix solve — all queries are direct formulas.

@@ -5,7 +5,7 @@ smoothing — this is a hard constraint, not a filter.
 
 | Property | Value |
 |----------|-------|
-| Update cost | ~3 cycles |
+| Update cost | 7 cycles |
 | Memory | ~16 bytes |
 | Types | `Slew<f64>`, `Slew<i64>` |
 | Output | Rate-limited value |
@@ -52,7 +52,7 @@ slew.update(10.0).unwrap();   // → 10.0 (within range, passes through)
 
 | Operation | p50 | p99 |
 |-----------|-----|-----|
-| `Slew::<f64>::update` | ~3 cycles | ~3 cycles |
+| `Slew::<f64>::update` | 7 cycles | 7 cycles |
 
 Clamps as `max(lo).min(hi)` (the sealed `Sample::clamp_to`), which compiles
 to a bare `maxsd`/`minsd` pair: branchless, and without the `lo <= hi`

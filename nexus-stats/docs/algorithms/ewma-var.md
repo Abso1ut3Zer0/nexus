@@ -5,7 +5,7 @@ variance. The RiskMetrics (JP Morgan 1996) pattern.
 
 | Property | Value |
 |----------|-------|
-| Update cost | ~12 cycles |
+| Update cost | 13 cycles |
 | Memory | ~24 bytes |
 | Types | `EwmaVar` |
 
@@ -48,4 +48,4 @@ if let Some((mean, var)) = ev.update(sample).unwrap() {
 
 | Operation | p50 | p99 |
 |-----------|-----|-----|
-| `EwmaVar::update` | 12 cycles | 30 cycles |
+| `EwmaVar::update` | 13 cycles | 14 cycles |

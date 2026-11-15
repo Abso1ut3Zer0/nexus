@@ -6,7 +6,7 @@ automatically when they leave the window.
 
 | Property | Value |
 |----------|-------|
-| Update cost | ~6 cycles |
+| Update cost | 5 cycles (window 64) |
 | Memory | ~N×8 bytes (ring buffer) |
 | Types | `Mosum` |
 | Requires | `alloc` feature (runtime window size) |
@@ -88,7 +88,7 @@ let mut burst = Mosum::builder(normal_rate)
 
 | Operation | p50 | p99 |
 |-----------|-----|-----|
-| `Mosum::update` (window=64) | 6 cycles | 7 cycles |
+| `Mosum::update` (window=64) | 5 cycles | 5 cycles |
 
 O(1) per update: add new deviation, subtract evicted deviation from
 running sum, compare against threshold. Stack-allocated ring buffer.

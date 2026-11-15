@@ -5,7 +5,7 @@
 
 | Property | Value |
 |----------|-------|
-| Update cost | ~6 cycles |
+| Update cost | 10 cycles |
 | Memory | ~N/8 bytes + counter |
 | Types | `BoolWindow` |
 | Requires | `alloc` feature |
@@ -63,7 +63,7 @@ if outcomes.failure_rate() > 0.5 && outcomes.count() >= 10 {
 
 | Operation | p50 | p99 |
 |-----------|-----|-----|
-| `BoolWindow::record` | 6 cycles | 11 cycles |
+| `BoolWindow::update` | 10 cycles | 10 cycles |
 
 Bit shift + OR + mask for the window rotation. Incremental failure
 count: subtract evicted bit, add new bit. No popcount on query.

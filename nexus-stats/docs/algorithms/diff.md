@@ -5,7 +5,7 @@ signal processing primitives.
 
 | Property | FirstDiff | SecondDiff |
 |----------|-----------|------------|
-| Update cost | ~2 cycles | ~2 cycles |
+| Update cost | 6 cycles | 6 cycles |
 | Memory | 8 bytes | 16 bytes |
 | Types | `FirstDiff<f64>`, `FirstDiff<i64>`, `SecondDiff<f64>`, `SecondDiff<i64>` | |
 | Output | `Option<T>` — None until 2nd/3rd sample |

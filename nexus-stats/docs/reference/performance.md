@@ -1,65 +1,68 @@
 # Performance Reference
 
-All measurements in CPU cycles (`rdtsc`), batch of 64 updates per sample,
-100k samples after 10k warmup, from `examples/perf_stats.rs` on an Intel Core
-Ultra 7 165U P-core, pinned (`taskset -c 0`), turbo disabled, best of three
-runs (minimum per row). Inputs are pseudo-random in a narrow band, except the
-threshold types (`DeadBand`, `Hysteresis`, `LevelCrossing`, `PeakDetector`),
-which see a slowly varying sawtooth so the branch is predictable, as a
-monitored signal is in practice; on white noise each flip costs a branch
-mispredict, about 20 cycles.
+All measurements are `rdtsc` ticks per update, batch of 64 updates per
+sample, 100k samples after 10k warmup, from `examples/perf_stats.rs` on an
+Intel Core Ultra 7 165U, pinned to a P-core (`taskset -c 0`) with turbo on,
+best of three runs (minimum per row). This is a developer laptop, not a perf
+lab, and `rdtsc` counts the constant 2.7 GHz TSC rather than core clocks, so
+read the numbers as estimates of relative cost, taken the same way as every
+earlier number in these docs. Inputs are pseudo-random in a narrow band,
+except the threshold types (`DeadBand`, `Hysteresis`, `LevelCrossing`,
+`PeakDetector`), which see a slowly varying sawtooth so the branch is
+predictable, as a monitored signal is in practice; on white noise each flip
+costs a branch mispredict, about 20 cycles.
 
 ## Per-Algorithm Cycle Counts
 
 | Algorithm | p50 | p99 | Notes |
 |-----------|-----|-----|-------|
 | **Change Detection** | | | |
-| Cusum | 5 | 7 | add/sub/max |
-| Mosum (window 64) | 6 | 7 | ring buffer |
-| ShiryaevRoberts | 17 | 41 | one `exp()` |
-| MultiGate | 12 | 17 | 3-gate + conditional EMA |
-| RobustZScore<f64> | 12 | 27 | EMA + MAD + freeze |
-| AdaptiveThreshold | ~15 | ~20 | EMA + Welford + z-score |
+| Cusum | 5 | 5 | add/sub/max |
+| Mosum (window 64) | 5 | 5 | ring buffer |
+| ShiryaevRoberts | 18 | 23 | one `exp()` |
+| MultiGate | 12 | 14 | 3-gate + conditional EMA |
+| RobustZScore<f64> | 12 | 13 | EMA + MAD + freeze |
+| AdaptiveThreshold | 6 | 7 | EMA + Welford + z-score |
 | **Smoothing** | | | |
 | Ema | 5 | 6 | mul_add (FMA) |
-| AsymEma | 11 | 12 | branch + mul_add |
-| Kama (window 10) | 16 | 25 | O(N) volatility recompute |
-| Kalman1d | 25 | 30 | 2x2 predict + update |
-| Holt | 11 | 12 | two smoothing steps |
-| Spring | 12 | 12 | Padé approximant |
-| WindowedMedian<f64> (window 32) | 136 | 195 | O(N) sorted array |
-| Slew<f64> | ~3 | ~3 | clamp (maxsd/minsd) |
+| AsymEma | 11 | 11 | branch + mul_add |
+| Kama (window 10) | 22 | 31 | O(N) volatility recompute |
+| Kalman1d | 29 | 32 | 2x2 predict + update |
+| Holt | 12 | 12 | two smoothing steps |
+| Spring | 18 | 18 | Padé approximant |
+| WindowedMedian<f64> (window 32) | 127 | 151 | O(N) sorted array |
+| Slew<f64> | 7 | 7 | clamp (maxsd/minsd) |
 | **Statistics** | | | |
-| Welford | 10 | 12 | one division |
+| Welford | 11 | 13 | one division |
 | Welford query | 9 | 10 | includes vsqrtsd |
-| EwmaVar | 12 | 30 | two mul_add |
-| Covariance | 12 | 40 | three accumulators |
-| HarmonicMean | ~5 | ~6 | one reciprocal |
+| EwmaVar | 13 | 14 | two mul_add |
+| Covariance | 10 | 11 | three accumulators |
+| HarmonicMean | 6 | 7 | one reciprocal |
 | **Monitoring** | | | |
 | Drawdown<f64> | 5 | 5 | compare + max |
-| RunningMin/Max<f64> | 5 | 5 | single comparison |
-| WindowedMax/Min<f64> | 9-10 | 12-34 | 3-sample promotion |
-| PeakHold<f64> | 7 | 9 | compare + decay |
-| MaxGauge<f64> | ~5 | ~5 | compare-and-swap |
-| Liveness | 6 | 20 | EMA + deadline |
-| EventRate | 6 | 9 | bit-shift EMA + inversion |
-| CoDel<i64> | 7 | 10 | first_above deadline (RFC 8289) |
+| RunningMin/Max<f64> | 4 | 5 | single comparison |
+| WindowedMax/Min<f64> | 8 | 10 | 3-sample promotion |
+| PeakHold<f64> | 8 | 10 | compare + decay |
+| MaxGauge<f64> | 6 | 6 | compare-and-swap |
+| Liveness | 6 | 7 | EMA + deadline |
+| EventRate | 6 | 6 | bit-shift EMA + inversion |
+| CoDel<i64> | 5 | 5 | first_above deadline (RFC 8289) |
 | PollSaturation::on_work | 5 | 6 | branchless (cmov selects, no jumps); 5 under mixed load too |
 | PollSaturation::on_idle | 1 | 1 | one byte store, no clock |
-| SojournSaturation::update | 6 | 7 | branchless: clamp, count, min, max, saturating total |
-| ErrorRate | ~6 | ~8 | EMA of outcomes |
-| TrendAlert | ~12 | ~18 | Holt + threshold |
-| Jitter<f64> | 6 | ~9 | EMA of deltas |
+| SojournSaturation::update | 6 | 6 | branchless: clamp, count, min, max, saturating total |
+| ErrorRate | 9 | 13 | EMA of outcomes |
+| TrendAlert | 13 | 14 | Holt + threshold |
+| Jitter<f64> | 7 | 8 | EMA of deltas |
 | **Frequency** | | | |
-| TopK<u64, 16> | 42 | 97 | linear scan |
+| TopK<u64, 16> | 45 | 50 | linear scan |
 | **Utilities** | | | |
-| BoolWindow (64) | 6 | 11 | bit manipulation |
-| Hysteresis<f64> | ~3 | ~3 | two comparisons |
-| DeadBand<f64> | ~2 | ~3 | one comparison |
-| Debounce | ~2 | ~2 | increment + compare |
-| FirstDiff/SecondDiff | ~2 | ~2 | subtraction |
-| LevelCrossing<f64> | ~2 | ~2 | one comparison |
-| PeakDetector<f64> | ~3 | ~3 | two comparisons |
+| BoolWindow (64) | 10 | 10 | bit manipulation |
+| Hysteresis<f64> | 2 | 2 | two comparisons |
+| DeadBand<f64> | 4 | 4 | one comparison |
+| Debounce | 5 | 5 | increment + compare |
+| FirstDiff/SecondDiff | 6 | 7 | subtraction |
+| LevelCrossing<f64> | 3 | 4 | one comparison |
+| PeakDetector<f64> | 3 | 4 | two comparisons |
 
 ## Memory Per Instance
 

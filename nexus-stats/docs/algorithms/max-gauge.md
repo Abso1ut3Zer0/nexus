@@ -5,7 +5,7 @@ resets when read. Designed for periodic scraping and alerting.
 
 | Property | Value |
 |----------|-------|
-| Update cost | ~5 cycles |
+| Update cost | 6 cycles |
 | Memory | ~8 bytes |
 | Types | `MaxGauge<f64>`, `MaxGauge<i64>` |
 | Error handling | Returns `Result<_, DataError>` on NaN/Inf input |
@@ -50,7 +50,7 @@ Netflix's Atlas telemetry uses this pattern for per-scrape max metrics.
 
 | Operation | p50 | p99 |
 |-----------|-----|-----|
-| `MaxGauge::<f64>::update` | ~5 cycles | ~5 cycles |
-| `MaxGauge::<f64>::take` | ~5 cycles | ~5 cycles |
+| `MaxGauge::<f64>::update` | 6 cycles | 6 cycles |
+| `MaxGauge::<f64>::update` + `take` | 6 cycles | 6 cycles |
 
 One comparison per update. `take()` reads + resets in one operation.

@@ -5,7 +5,7 @@ Prevents oscillation when a noisy signal hovers near a decision boundary.
 
 | Property | Value |
 |----------|-------|
-| Update cost | ~2-3 cycles |
+| Update cost | 2 cycles |
 | Memory | ~24 bytes |
 | Types | `Hysteresis<f64>`, `Hysteresis<i64>` |
 | Output | `bool` — current state (high/low) |
@@ -131,7 +131,7 @@ let use_high_detail = !lod.update(distance).unwrap();  // closer = lower value =
 
 | Operation | p50 | p99 |
 |-----------|-----|-----|
-| `Hysteresis::<f64>::update` | ~3 cycles | ~3 cycles |
+| `Hysteresis::<f64>::update` | 2 cycles | 2 cycles |
 
 One or two comparisons. The p99 in benchmarks may show higher due to
 branch misprediction when the input alternates above and below both

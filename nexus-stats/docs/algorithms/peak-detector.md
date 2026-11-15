@@ -5,7 +5,7 @@ configurable prominence threshold to filter noise.
 
 | Property | Value |
 |----------|-------|
-| Update cost | ~3 cycles |
+| Update cost | 3 cycles |
 | Memory | ~16 bytes |
 | Types | `PeakDetector<f64>`, `PeakDetector<i64>` |
 | Output | `Option<Peak>` — detected peak with value and direction |

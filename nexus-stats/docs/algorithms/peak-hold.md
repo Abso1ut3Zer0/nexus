@@ -5,7 +5,7 @@
 
 | Property | Value |
 |----------|-------|
-| Update cost | ~7 cycles |
+| Update cost | 8 cycles |
 | Memory | ~24 bytes |
 | Types | `PeakHold<f64>`, `PeakHold<i64>` |
 | Output | Current envelope value |
@@ -121,7 +121,7 @@ let mut meter = PeakHold::<f64>::builder()
 
 | Operation | p50 | p99 |
 |-----------|-----|-----|
-| `PeakHold::<f64>::update` | 7 cycles | 9 cycles |
+| `PeakHold::<f64>::update` | 8 cycles | 10 cycles |
 
 One comparison (new peak?), one conditional multiply (decay), one
 counter decrement (hold). No division, no transcendentals.

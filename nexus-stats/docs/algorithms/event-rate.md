@@ -5,7 +5,7 @@ per second is this source producing?"
 
 | Property | Value |
 |----------|-------|
-| Update cost | ~6 cycles |
+| Update cost | 6 cycles |
 | Memory | ~32 bytes |
 | Types | `EventRate` (`u64` ticks) |
 

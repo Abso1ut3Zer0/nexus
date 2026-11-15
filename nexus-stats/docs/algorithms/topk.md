@@ -5,7 +5,7 @@ Guarantees items above the `total/K` frequency threshold are tracked.
 
 | Property | Value |
 |----------|-------|
-| Update cost | ~42 cycles (K=16) |
+| Update cost | 45 cycles (K=16) |
 | Memory | K × (key + count) |
 | Types | `TopK<K: Eq + Hash + Clone, const CAP: usize>` |
 | Output | Sorted list of (key, count) pairs |
@@ -48,7 +48,7 @@ for (key, count) in &buf[..n] {
 
 | Operation | p50 | p99 |
 |-----------|-----|-----|
-| `TopK<u64, 16>::observe` | 42 cycles | 97 cycles |
+| `TopK<u64, 16>::update` | 45 cycles | 50 cycles |
 
 Linear scan over CAP entries. For CAP > 64, consider a min-heap variant.
 

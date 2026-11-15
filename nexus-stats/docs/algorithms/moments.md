@@ -7,7 +7,7 @@ Supports parallel merging.
 
 | Property | Value |
 |----------|-------|
-| Update cost | ~24 cycles |
+| Update cost | 23 cycles |
 | Memory | ~40 bytes (f64) |
 | Types | `Moments` |
 | Priming | Mean after 1, variance after 2, skewness after 3, kurtosis after 4 |
@@ -172,9 +172,9 @@ use a batch estimator with Bessel's correction.
 
 | Operation | p50 |
 |-----------|-----|
-| `Moments::update` | ~24 cycles |
-| `Moments::merge` | ~30 cycles |
-| `skewness()` query | ~15 cycles (includes `sqrt`) |
+| `Moments::update` | 23 cycles |
+| `Moments::merge` | 31 cycles |
+| `skewness()` query | 6 cycles (includes `sqrt`) |
 
 ## Academic Reference
 

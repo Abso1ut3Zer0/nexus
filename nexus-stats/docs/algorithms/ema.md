@@ -5,7 +5,7 @@ exponentially weighting recent samples more heavily than older ones.
 
 | Property | Value |
 |----------|-------|
-| Update cost | ~5 cycles |
+| Update cost | 5 cycles |
 | Memory | ~24 bytes |
 | Types | `Ema` |
 | Priming | Configurable via `min_samples` |

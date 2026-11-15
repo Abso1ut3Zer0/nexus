@@ -5,7 +5,7 @@ signal is, not where it is.
 
 | Property | Value |
 |----------|-------|
-| Update cost | ~6 cycles |
+| Update cost | 7 cycles |
 | Memory | ~24 bytes |
 | Types | `Jitter<f64>`, `Jitter<i64>` |
 | Output | `Option<T>` — smoothed jitter value |
@@ -40,4 +40,4 @@ if let Some(jitter) = j.update(latency).unwrap() {
 
 | Operation | p50 | p99 |
 |-----------|-----|-----|
-| `Jitter::<f64>::update` | 6 cycles | ~9 cycles |
+| `Jitter::<f64>::update` | 7 cycles | 8 cycles |

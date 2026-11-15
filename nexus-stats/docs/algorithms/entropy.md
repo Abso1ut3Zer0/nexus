@@ -4,7 +4,7 @@ Online Shannon entropy estimation. "How predictable is this signal?"
 
 | Property | Value |
 |----------|-------|
-| Update cost | ~3 cycles |
+| Update cost | 3 cycles |
 | Memory | `8×K + 8` bytes |
 | Types | `Entropy` |
 | Priming | After 1 observation |
@@ -153,9 +153,9 @@ information theory. Conversion: bits = nats / ln(2).
 
 | Operation | p50 |
 |-----------|-----|
-| `Entropy::observe` (bins=8) | ~3 cycles |
-| `entropy()` query (K=8) | ~20 cycles |
-| `surprise(cat)` query | ~8 cycles |
+| `Entropy::update` (bins=8) | 3 cycles |
+| `entropy()` query (K=8) | 103 cycles |
+| `surprise(cat)` query | 14 cycles |
 
 The update is a single integer increment. Query cost scales with K
 due to the sum over all categories.

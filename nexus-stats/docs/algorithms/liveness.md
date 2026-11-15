@@ -5,7 +5,7 @@ data source goes quiet.
 
 | Property | Value |
 |----------|-------|
-| Update cost | ~6 cycles |
+| Update cost | 6 cycles |
 | Memory | ~32 bytes |
 | Types | `Liveness` (`u64` ticks) |
 | Output | `bool` — true = alive, false = dead |
@@ -92,8 +92,8 @@ let mut heartbeat = Liveness::builder()
 
 | Operation | p50 | p99 |
 |-----------|-----|-----|
-| `Liveness::update` | 6 cycles | 20 cycles |
-| `Liveness::check` | ~3 cycles | ~3 cycles |
+| `Liveness::update` | 6 cycles | 7 cycles |
+| `Liveness::check` | 1 cycles | 1 cycles |
 
 `update()` includes one EMA update. `check()` is one subtraction +
 one comparison.
