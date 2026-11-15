@@ -67,7 +67,7 @@ impl BucketSummary {
 /// Tracks sum, count, first, last for each bucket. On close, the user
 /// reads whichever summary they need (mean, sum, count, change).
 /// No prediction logic — that's composition with `LaggedPredictor` or
-/// `EwLinearRegressionF64`.
+/// `EwLinearRegression`.
 ///
 /// # Examples
 ///

@@ -82,8 +82,8 @@ pub fn exp(x: f64) -> f64 {
 
 /// Natural logarithm.
 ///
-/// Requires `std` or `libm` feature. Types using this (`EntropyF64`,
-/// `TransferEntropyF64`) won't compile without one of these features.
+/// Requires `std` or `libm` feature. Types using this (`Entropy`,
+/// `TransferEntropy`) won't compile without one of these features.
 #[doc(hidden)]
 #[cfg(any(feature = "std", feature = "libm"))]
 #[inline]
