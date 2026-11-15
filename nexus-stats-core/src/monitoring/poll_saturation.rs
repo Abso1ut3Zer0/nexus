@@ -242,7 +242,7 @@ impl PollSaturation {
     /// Asserts that every input this monitor covers was polled and was
     /// empty. The floor becomes the stamp of the next unit of work.
     #[inline]
-    pub const fn on_idle(&mut self) {
+    pub fn on_idle(&mut self) {
         self.state = Self::AFTER_IDLE;
     }
 
@@ -298,7 +298,7 @@ impl PollSaturation {
     /// and `at` is ignored. Never calling this is sound; it only loosens
     /// the bound.
     #[inline]
-    pub const fn on_drained(&mut self, at: u64) {
+    pub fn on_drained(&mut self, at: u64) {
         if self.state & Self::FRESH != 0 {
             return;
         }
@@ -314,7 +314,7 @@ impl PollSaturation {
     /// count, an event. The floor and the current run carry over. A period
     /// that begins with the floor pending counts as having seen idle.
     #[inline]
-    pub const fn take(&mut self) -> PollSummary {
+    pub fn take(&mut self) -> PollSummary {
         let summary = PollSummary {
             messages_seen: self.messages_seen,
             messages_waited: self.messages_waited,
@@ -341,7 +341,7 @@ impl PollSaturation {
 
     /// As if freshly built. `budget` is kept.
     #[inline]
-    pub const fn reset(&mut self) {
+    pub fn reset(&mut self) {
         *self = Self::new(self.budget);
     }
 }
