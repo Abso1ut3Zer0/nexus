@@ -9,44 +9,52 @@
 // difference is `behind`. Everything reported is a count, a maximum or a
 // flag over `behind`, accumulated until the owner's timer calls `take`.
 //
-// State: one flag byte and ten `u64`, `repr(C)` so the fields touched by
+// State: one flag byte and nine `u64`, `repr(C)` so the fields touched by
 // every working poll share the first cache line.
 
-/// Values accumulated since the previous [`PollSaturation::take`].
+/// Summary of the polls since the previous [`PollSaturation::take`].
 ///
-/// Every field merges exactly across windows: sums add, maxima take the max,
-/// flags AND, `elapsed` adds. Merging sixty one-second windows gives the
-/// same result as one sixty-second window, so take at the alert cadence and
-/// merge for publishing.
+/// Covers every poll in that period, not one poll. When to snap is the
+/// caller's decision: on a timer (every millisecond, every second), on a
+/// count (every 1,000 messages), or on an event (the end of a burst). The
+/// type keeps no clock and has no opinion.
+///
+/// Every field merges exactly across summaries: sums add, maxima take the
+/// max, flags AND. Merging sixty one-second summaries gives the same result
+/// as one sixty-second summary, so snap at the alert cadence and merge for
+/// publishing.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub struct PollWindow {
-    /// Ticks since the previous `take`, or since construction.
-    pub elapsed: u64,
-    /// Messages taken.
-    pub msgs: u64,
-    /// Messages that waited: every message except the first unit of work
-    /// after an empty poll. Non-zero saturation.
-    pub queued: u64,
-    /// Messages taken with `behind > bound`. `over / msgs` is the fraction
-    /// that waited past the budget, weighted by message.
-    pub over: u64,
-    /// Most messages taken between two proofs of emptiness: the longest
-    /// busy period, in messages. Under a poll limit this is the depth
-    /// measure, an upper bound on the queue's high-water mark.
-    pub max_run: u64,
-    /// Largest `behind` returned by an `on_work` with `n > 0`, in ticks: the
-    /// longest stretch without catching up.
-    pub max_behind: u64,
+pub struct PollSummary {
+    /// Messages taken in the period.
+    pub messages_seen: u64,
+    /// Of those, the messages that waited for this thread: every message
+    /// except the first unit of work after an empty poll. Non-zero saturation.
+    pub messages_waited: u64,
+    /// Of those, the messages taken with `behind > budget`.
+    /// `messages_over_budget / messages_seen` is the fraction that waited past
+    /// the budget, weighted by message.
+    pub messages_over_budget: u64,
+    /// Most messages processed without once catching up (between two proofs
+    /// of emptiness). Under a poll limit this is the depth measure, an upper
+    /// bound on the queue's high-water mark.
+    pub max_backlog_messages: u64,
+    /// Largest `behind` returned by an `on_work` with `n > 0`, in the
+    /// caller's tick unit: the longest stretch without catching up.
+    pub max_behind_ticks: u64,
     /// Most messages returned by one poll. With polls that drain the input
     /// this is the queue-length high-water mark, and `<= 1` is healthy.
     /// Under a poll limit it pins at the limit and means "at least this
     /// deep".
-    pub max_batch: u64,
-    /// No empty poll in the window: utilization was 100%.
-    pub never_idle: bool,
-    /// No proof of emptiness in the window: the queue stood for the whole
-    /// window. CoDel's standing-queue rule with the window as the interval.
-    pub never_empty: bool,
+    pub max_messages_per_poll: u64,
+    /// No empty poll in the period: the thread never waited for input, so
+    /// utilization was 100%. Exact, not a heuristic.
+    pub is_fully_utilized: bool,
+    /// The input was never proven empty in the period, so the consumer never
+    /// caught up and the whole period lay inside one backlog. This is CoDel's
+    /// "standing queue" with the period as the interval. A batch poller can be
+    /// fully utilized without being backlogged: its short polls prove it
+    /// caught up at each poll.
+    pub is_backlogged: bool,
 }
 
 /// Consumer-side saturation from poll outcomes and the caller's clock.
@@ -64,15 +72,15 @@ pub struct PollWindow {
 /// Saturation of a consumer thread is work that has arrived for it and is
 /// waiting because the thread is busy (the USE method's "extra work which
 /// it can't service, often queued"). It has a count, how many are waiting,
-/// and a duration, how long each waited. This type reports both over a
-/// window: [`PollWindow::max_batch`] and [`PollWindow::max_run`] for the
-/// count; `behind`, [`PollWindow::max_behind`], [`PollWindow::queued`] and
-/// [`PollWindow::over`] for the duration. Read it beside the other two USE
-/// columns for the same thread:
+/// and a duration, how long each waited. This type reports both per
+/// `take` period: [`PollSummary::max_messages_per_poll`] and [`PollSummary::max_backlog_messages`]
+/// for the count; `behind`, [`PollSummary::max_behind_ticks`],
+/// [`PollSummary::messages_waited`] and [`PollSummary::messages_over_budget`] for the duration. Read
+/// it beside the other two USE columns for the same thread:
 ///
 /// | Column | Measure |
 /// |---|---|
-/// | Utilization | your sum of service time over [`PollWindow::elapsed`]; [`PollWindow::never_idle`] is exactly 100% |
+/// | Utilization | your sum of service time over the period; [`PollSummary::is_fully_utilized`] is exactly 100% |
 /// | Saturation | this type |
 /// | Errors | the transport's own counters: drops, gaps, disconnects |
 ///
@@ -99,25 +107,26 @@ pub struct PollWindow {
 /// is that observation made without one.
 ///
 /// Under a backlog with a poll limit every poll comes back full, no proof
-/// arrives, and `behind` and `max_run` grow until a short poll proves the
+/// arrives, and `behind` and `max_backlog_messages` grow until a short poll proves the
 /// consumer caught up. That growth is the signal.
 ///
-/// # Reading a window
+/// # Reading a summary
 ///
 /// With utilization from the caller beside it:
 ///
 /// | Utilization | Saturation | Meaning |
 /// |---|---|---|
-/// | low | `over == 0`, `max_batch <= 1` | healthy |
-/// | low | `over > 0` | bursts, hidden by averaging: absorb them (batch, defer non-critical work) |
-/// | `never_idle` | `over > 0` | capacity: split the consumer, move work off the thread |
-/// | not pegged | `never_empty` | service-time spikes keep a queue standing: find the slow path |
+/// | low | `messages_over_budget == 0`, `max_messages_per_poll <= 1` | healthy |
+/// | low | `messages_over_budget > 0` | bursts, hidden by averaging: absorb them (batch, defer non-critical work) |
+/// | `is_fully_utilized` | `messages_over_budget > 0` | capacity: split the consumer, move work off the thread |
+/// | not pegged | `is_backlogged` | service-time spikes keep a queue standing: find the slow path |
 /// | any | `behind == 0` on a message that was late | the delay was upstream, before it reached this input |
 ///
-/// Window length is the `take` cadence. Maxima survive any length; the
-/// `over / msgs` fraction is diluted by a long one. Take at the alert
-/// cadence (a second or less) and merge for publishing. Smoothing, if
-/// wanted, goes on the outputs once per window, not inside.
+/// The period is whatever you snap on: a timer, a message count, an event.
+/// Maxima survive any period length; the `messages_over_budget / messages_seen` fraction is diluted
+/// by a long one. Snap at the alert cadence (a second or less) and merge
+/// for publishing. Smoothing, if wanted, goes on the outputs once per
+/// summary, not inside.
 ///
 /// # Call-site rules
 ///
@@ -158,10 +167,10 @@ pub struct PollWindow {
 /// - If it returns `b`, every message from that poll arrived at most `b`
 ///   plus that slack before `now`.
 /// - Every message that arrived while the thread was working is in
-///   `queued`; every message older than `bound` plus slack at its `on_work`
-///   is in `over`.
-/// - Splitting any call sequence into windows and merging them gives the
-///   same `PollWindow` as one `take` at the end.
+///   `messages_waited`; every message older than `budget` plus slack at its
+///   `on_work` is in `messages_over_budget`.
+/// - Splitting any call sequence into periods and merging the summaries
+///   gives the same `PollSummary` as one `take` at the end.
 /// - `on_idle` reads no clock and performs one store.
 ///
 /// What it cannot do: `behind` is a bound, not the wait (with one message
@@ -183,48 +192,46 @@ pub struct PollWindow {
 pub struct PollSaturation {
     state: u8,
     floor: u64,
-    bound: u64,
-    run: u64,
-    msgs: u64,
-    queued: u64,
-    max_run: u64,
-    max_behind: u64,
-    over: u64,
-    max_batch: u64,
-    last_take: u64,
+    budget: u64,
+    backlog: u64,
+    messages_seen: u64,
+    messages_waited: u64,
+    max_backlog_messages: u64,
+    max_behind_ticks: u64,
+    messages_over_budget: u64,
+    max_messages_per_poll: u64,
 }
 
 impl PollSaturation {
     /// The floor is pending: an empty poll happened and no work has been
     /// stamped since. The next `on_work` stamp becomes the floor.
     const FRESH: u8 = 0b001;
-    /// An empty poll happened in this window.
+    /// An empty poll happened in this period.
     const IDLE_SEEN: u8 = 0b010;
-    /// The input was proven empty in this window.
+    /// The input was proven empty in this period.
     const PROOF_SEEN: u8 = 0b100;
     /// State right after an empty poll.
     const AFTER_IDLE: u8 = Self::FRESH | Self::IDLE_SEEN | Self::PROOF_SEEN;
 
-    /// Creates a monitor at tick `now`.
+    /// Creates a monitor.
     ///
-    /// `bound` is the `behind`, in ticks, above which a message counts
-    /// toward [`PollWindow::over`]. Starts as if an empty poll had just
-    /// happened.
+    /// `budget` is the `behind`, in ticks, above which a message counts
+    /// toward [`PollSummary::messages_over_budget`]: the wait you consider late. Starts as
+    /// if an empty poll had just happened.
     #[inline]
     #[must_use]
-    pub const fn new(now: u64, bound: u64) -> Self {
+    pub const fn new(budget: u64) -> Self {
         Self {
             state: Self::AFTER_IDLE,
             floor: 0,
-            bound,
-            run: 0,
-            msgs: 0,
-            queued: 0,
-            max_run: 0,
-            max_behind: 0,
-            over: 0,
-            max_batch: 0,
-            last_take: now,
+            budget,
+            backlog: 0,
+            messages_seen: 0,
+            messages_waited: 0,
+            max_backlog_messages: 0,
+            max_behind_ticks: 0,
+            messages_over_budget: 0,
+            max_messages_per_poll: 0,
         }
     }
 
@@ -245,36 +252,36 @@ impl PollSaturation {
     ///
     /// `n == 0` records work that is not a message (a timer, a publish). It
     /// consumes the first-after-idle exemption and can start a run, but
-    /// never changes `max_behind` or `max_batch`.
+    /// never changes `max_behind_ticks` or `max_messages_per_poll`.
     #[inline]
     pub const fn on_work(&mut self, now: u64, n: u64) -> u64 {
         let fresh = self.state & Self::FRESH != 0;
         let behind = if fresh {
             self.state &= !Self::FRESH;
             self.floor = now;
-            self.run = 0;
+            self.backlog = 0;
             0
         } else {
             now.saturating_sub(self.floor)
         };
 
-        self.run += n;
-        self.msgs += n;
+        self.backlog += n;
+        self.messages_seen += n;
         // The first unit of work after an empty poll did not wait; every
         // other message did.
-        self.queued += if fresh { n.saturating_sub(1) } else { n };
-        if behind > self.bound {
-            self.over += n;
+        self.messages_waited += if fresh { n.saturating_sub(1) } else { n };
+        if behind > self.budget {
+            self.messages_over_budget += n;
         }
-        if self.run > self.max_run {
-            self.max_run = self.run;
+        if self.backlog > self.max_backlog_messages {
+            self.max_backlog_messages = self.backlog;
         }
         if n > 0 {
-            if behind > self.max_behind {
-                self.max_behind = behind;
+            if behind > self.max_behind_ticks {
+                self.max_behind_ticks = behind;
             }
-            if n > self.max_batch {
-                self.max_batch = n;
+            if n > self.max_messages_per_poll {
+                self.max_messages_per_poll = n;
             }
         }
         behind
@@ -286,7 +293,7 @@ impl PollSaturation {
     /// Call it after the `on_work` calls for that poll, with a stamp no
     /// later than the moment the input was found empty (see the call-site
     /// rules). An `at` behind the current floor is ignored and does not
-    /// count as a proof for [`PollWindow::never_empty`]. While the floor is
+    /// count as a proof for [`PollSummary::is_backlogged`]. While the floor is
     /// pending after an empty poll, the pending floor is the later proof
     /// and `at` is ignored. Never calling this is sound; it only loosens
     /// the bound.
@@ -297,46 +304,45 @@ impl PollSaturation {
         }
         if at >= self.floor {
             self.floor = at;
-            self.run = 0;
+            self.backlog = 0;
             self.state |= Self::PROOF_SEEN;
         }
     }
 
-    /// Returns the window since the previous `take` and resets its
-    /// counters. The floor and the current run carry over. A window that
-    /// begins with the floor pending counts as having seen idle.
+    /// Returns the summary of the polls since the previous `take` and
+    /// resets the counters. When to call it is yours: a timer, a message
+    /// count, an event. The floor and the current run carry over. A period
+    /// that begins with the floor pending counts as having seen idle.
     #[inline]
-    pub const fn take(&mut self, now: u64) -> PollWindow {
-        let window = PollWindow {
-            elapsed: now.saturating_sub(self.last_take),
-            msgs: self.msgs,
-            queued: self.queued,
-            over: self.over,
-            max_run: self.max_run,
-            max_behind: self.max_behind,
-            max_batch: self.max_batch,
-            never_idle: self.state & Self::IDLE_SEEN == 0,
-            never_empty: self.state & Self::PROOF_SEEN == 0,
+    pub const fn take(&mut self) -> PollSummary {
+        let summary = PollSummary {
+            messages_seen: self.messages_seen,
+            messages_waited: self.messages_waited,
+            messages_over_budget: self.messages_over_budget,
+            max_backlog_messages: self.max_backlog_messages,
+            max_behind_ticks: self.max_behind_ticks,
+            max_messages_per_poll: self.max_messages_per_poll,
+            is_fully_utilized: self.state & Self::IDLE_SEEN == 0,
+            is_backlogged: self.state & Self::PROOF_SEEN == 0,
         };
-        self.last_take = now;
-        self.msgs = 0;
-        self.queued = 0;
-        self.over = 0;
-        self.max_run = 0;
-        self.max_behind = 0;
-        self.max_batch = 0;
+        self.messages_seen = 0;
+        self.messages_waited = 0;
+        self.messages_over_budget = 0;
+        self.max_backlog_messages = 0;
+        self.max_behind_ticks = 0;
+        self.max_messages_per_poll = 0;
         self.state = if self.state & Self::FRESH != 0 {
             Self::AFTER_IDLE
         } else {
             0
         };
-        window
+        summary
     }
 
-    /// As if freshly built at `now`. `bound` is kept.
+    /// As if freshly built. `budget` is kept.
     #[inline]
-    pub const fn reset(&mut self, now: u64) {
-        *self = Self::new(now, self.bound);
+    pub const fn reset(&mut self) {
+        *self = Self::new(self.budget);
     }
 }
 
@@ -344,21 +350,20 @@ impl PollSaturation {
 mod tests {
     use super::*;
 
-    const BOUND: u64 = 50;
+    const BUDGET: u64 = 50;
 
-    /// `window!(elapsed, msgs, queued, over, max_run, max_behind, max_batch, never_idle, never_empty)`
-    macro_rules! window {
-        ($e:expr, $m:expr, $q:expr, $o:expr, $r:expr, $b:expr, $n:expr, $ni:expr, $ne:expr) => {
-            PollWindow {
-                elapsed: $e,
-                msgs: $m,
-                queued: $q,
-                over: $o,
-                max_run: $r,
-                max_behind: $b,
-                max_batch: $n,
-                never_idle: $ni,
-                never_empty: $ne,
+    /// `summary!(seen, waited, over_budget, max_backlog, max_behind, max_per_poll, fully_utilized, backlogged)`
+    macro_rules! summary {
+        ($m:expr, $q:expr, $o:expr, $r:expr, $b:expr, $n:expr, $ni:expr, $ne:expr) => {
+            PollSummary {
+                messages_seen: $m,
+                messages_waited: $q,
+                messages_over_budget: $o,
+                max_backlog_messages: $r,
+                max_behind_ticks: $b,
+                max_messages_per_poll: $n,
+                is_fully_utilized: $ni,
+                is_backlogged: $ne,
             }
         };
     }
@@ -366,7 +371,7 @@ mod tests {
     // The worked trace from the ticket, field by field.
     #[test]
     fn worked_trace() {
-        let mut sat = PollSaturation::new(0, BOUND);
+        let mut sat = PollSaturation::new(BUDGET);
         sat.on_idle();
         assert_eq!(sat.on_work(100, 1), 0); // first after an empty poll: did not wait
         assert_eq!(sat.on_work(103, 1), 3); // arrived while the first was processed
@@ -375,59 +380,63 @@ mod tests {
         assert_eq!(sat.on_work(200, 3), 0); // three at once: two count as queued
         assert_eq!(sat.on_work(209, 2), 9);
         sat.on_drained(209); // that poll was short
-        assert_eq!(sat.on_work(290, 4), 81); // over the bound: all four count
+        assert_eq!(sat.on_work(290, 4), 81); // over the budget: all four count
 
-        let a = sat.take(290);
-        assert_eq!(a, window!(290, 12, 10, 4, 5, 81, 4, false, false));
+        let a = sat.take();
+        assert_eq!(a, summary!(12, 10, 4, 5, 81, 4, false, false));
 
         assert_eq!(sat.on_work(300, 1), 91); // the run carried across the window
-        let b = sat.take(1290);
-        assert_eq!(b, window!(1000, 1, 1, 1, 5, 91, 1, true, true));
+        let b = sat.take();
+        assert_eq!(b, summary!(1, 1, 1, 5, 91, 1, true, true));
     }
 
     #[test]
     fn first_after_idle_reads_zero_for_any_batch() {
         for n in [1u64, 2, 100] {
-            let mut sat = PollSaturation::new(0, BOUND);
+            let mut sat = PollSaturation::new(BUDGET);
             sat.on_idle();
             assert_eq!(sat.on_work(1_000, n), 0);
-            let w = sat.take(1_000);
-            assert_eq!(w.msgs, n);
-            assert_eq!(w.queued, n - 1, "only the first of the batch did not wait");
-            assert_eq!(w.over, 0);
-            assert_eq!(w.max_run, n);
-            assert_eq!(w.max_batch, n);
-            assert_eq!(w.max_behind, 0);
+            let w = sat.take();
+            assert_eq!(w.messages_seen, n);
+            assert_eq!(
+                w.messages_waited,
+                n - 1,
+                "only the first of the batch did not wait"
+            );
+            assert_eq!(w.messages_over_budget, 0);
+            assert_eq!(w.max_backlog_messages, n);
+            assert_eq!(w.max_messages_per_poll, n);
+            assert_eq!(w.max_behind_ticks, 0);
         }
     }
 
     // Non-message work consumes the exemption: the message after it waited.
     #[test]
     fn other_work_starts_a_run() {
-        let mut sat = PollSaturation::new(0, BOUND);
+        let mut sat = PollSaturation::new(BUDGET);
         sat.on_idle();
         assert_eq!(sat.on_work(10, 0), 0);
         assert_eq!(sat.on_work(70, 1), 60);
-        let w = sat.take(70);
-        assert_eq!(w, window!(70, 1, 1, 1, 1, 60, 1, false, false));
+        let w = sat.take();
+        assert_eq!(w, summary!(1, 1, 1, 1, 60, 1, false, false));
     }
 
     #[test]
     fn non_message_work_never_moves_the_maxima() {
-        let mut sat = PollSaturation::new(0, BOUND);
+        let mut sat = PollSaturation::new(BUDGET);
         sat.on_idle();
         assert_eq!(sat.on_work(10, 0), 0);
         assert_eq!(sat.on_work(500, 0), 490);
-        let w = sat.take(500);
-        assert_eq!(w.max_behind, 0);
-        assert_eq!(w.max_batch, 0);
-        assert_eq!(w.msgs, 0);
-        assert_eq!(w.over, 0);
+        let w = sat.take();
+        assert_eq!(w.max_behind_ticks, 0);
+        assert_eq!(w.max_messages_per_poll, 0);
+        assert_eq!(w.messages_seen, 0);
+        assert_eq!(w.messages_over_budget, 0);
     }
 
     #[test]
     fn stale_proof_is_ignored() {
-        let mut sat = PollSaturation::new(0, BOUND);
+        let mut sat = PollSaturation::new(BUDGET);
         sat.on_idle();
         assert_eq!(sat.on_work(100, 1), 0);
         sat.on_drained(40); // older than the floor
@@ -438,7 +447,7 @@ mod tests {
     // the caller can hold, so a drained proof while fresh changes nothing.
     #[test]
     fn proof_while_fresh_does_not_move_the_floor() {
-        let mut sat = PollSaturation::new(0, BOUND);
+        let mut sat = PollSaturation::new(BUDGET);
         sat.on_drained(50);
         assert_eq!(sat.on_work(100, 1), 0);
         assert_eq!(sat.on_work(110, 1), 10, "floor is 100, not 50");
@@ -446,7 +455,7 @@ mod tests {
 
     #[test]
     fn short_poll_proof_tightens_the_bound() {
-        let mut with = PollSaturation::new(0, BOUND);
+        let mut with = PollSaturation::new(BUDGET);
         let mut without = with.clone();
         for sat in [&mut with, &mut without] {
             sat.on_idle();
@@ -456,77 +465,81 @@ mod tests {
         with.on_drained(209);
         assert_eq!(without.on_work(290, 4), 90);
         assert_eq!(with.on_work(290, 4), 81);
-        assert_eq!(with.take(290).max_run, 5);
-        assert_eq!(without.take(290).max_run, 9, "no proof: one run of nine");
+        assert_eq!(with.take().max_backlog_messages, 5);
+        assert_eq!(
+            without.take().max_backlog_messages,
+            9,
+            "no proof: one run of nine"
+        );
     }
 
     // A proof stamped exactly at the floor adds no floor information but
     // is still a proof: the run restarts and the window has seen one.
     #[test]
     fn proof_at_the_floor_counts() {
-        let mut sat = PollSaturation::new(0, BOUND);
+        let mut sat = PollSaturation::new(BUDGET);
         sat.on_idle();
         sat.on_work(100, 1);
-        let _ = sat.take(100); // new window, floor 100, not fresh
+        let _ = sat.take(); // new window, floor 100, not fresh
         sat.on_drained(100);
         assert_eq!(sat.on_work(150, 1), 50);
-        let w = sat.take(150);
-        assert!(!w.never_empty);
-        assert_eq!(w.max_run, 1, "run restarted at the proof");
+        let w = sat.take();
+        assert!(!w.is_backlogged);
+        assert_eq!(w.max_backlog_messages, 1, "run restarted at the proof");
     }
 
     #[test]
     fn idle_is_idempotent() {
-        let mut sat = PollSaturation::new(0, BOUND);
+        let mut sat = PollSaturation::new(BUDGET);
         sat.on_idle();
         sat.on_idle();
         sat.on_idle();
         assert_eq!(sat.on_work(100, 1), 0);
-        let w = sat.take(100);
-        assert!(!w.never_idle);
-        assert!(!w.never_empty);
+        let w = sat.take();
+        assert!(!w.is_fully_utilized);
+        assert!(!w.is_backlogged);
     }
 
     // A backwards clock reads 0 and ignores proofs until it passes the
     // floor again. Blind, never a huge bound.
     #[test]
     fn backwards_clock_reads_zero_and_ignores_proofs() {
-        let mut sat = PollSaturation::new(0, BOUND);
+        let mut sat = PollSaturation::new(BUDGET);
         sat.on_idle();
         assert_eq!(sat.on_work(100, 1), 0);
         assert_eq!(sat.on_work(50, 1), 0);
         sat.on_drained(60); // behind the floor: ignored
         assert_eq!(sat.on_work(70, 1), 0);
         assert_eq!(sat.on_work(150, 1), 50, "measured from the floor of 100");
-        assert_eq!(sat.take(150).max_behind, 50);
+        assert_eq!(sat.take().max_behind_ticks, 50);
     }
 
     #[test]
-    fn empty_window_at_the_same_tick() {
-        let mut sat = PollSaturation::new(0, BOUND);
+    fn empty_period() {
+        let mut sat = PollSaturation::new(BUDGET);
         sat.on_idle();
         sat.on_work(100, 1);
-        let _ = sat.take(100);
-        let w = sat.take(100);
-        assert_eq!(w, window!(0, 0, 0, 0, 0, 0, 0, true, true));
+        let _ = sat.take();
+        let w = sat.take();
+        assert_eq!(w, summary!(0, 0, 0, 0, 0, 0, true, true));
     }
 
     // A window that begins with the floor pending counts as having seen
     // idle, so a consumer that is simply quiet never reads as pegged.
     #[test]
     fn window_beginning_idle_has_seen_idle() {
-        let mut sat = PollSaturation::new(0, BOUND);
+        let mut sat = PollSaturation::new(BUDGET);
         sat.on_idle();
-        let _ = sat.take(10);
-        let w = sat.take(20);
-        assert!(!w.never_idle);
-        assert!(!w.never_empty);
+        let _ = sat.take();
+        let w = sat.take();
+        assert!(!w.is_fully_utilized);
+        assert!(!w.is_backlogged);
         // Once work has been stamped, a window without an empty poll is pegged.
         sat.on_work(30, 1);
-        let _ = sat.take(30);
-        let w = sat.take(40);
-        assert!(w.never_idle);
-        assert!(w.never_empty);
+        let _ = sat.take();
+        let w = sat.take();
+        assert!(w.is_fully_utilized);
+        assert!(w.is_backlogged);
     }
 
     // Documents the per-message accounting trap: the proof stamp must not be
@@ -534,47 +547,47 @@ mod tests {
     // a standing queue.
     #[test]
     fn earlier_proof_stamp_is_the_r7_trap() {
-        let mut sat = PollSaturation::new(0, BOUND);
+        let mut sat = PollSaturation::new(BUDGET);
         sat.on_idle();
         sat.on_work(101, 1);
-        let _ = sat.take(101);
+        let _ = sat.take();
         sat.on_drained(100); // stamped before the work it describes
-        let w = sat.take(200);
-        assert!(w.never_empty);
-        assert!(w.never_idle);
+        let w = sat.take();
+        assert!(w.is_backlogged);
+        assert!(w.is_fully_utilized);
     }
 
     #[test]
     fn max_batch_pins_at_the_limit_and_max_run_keeps_growing() {
-        let mut sat = PollSaturation::new(0, BOUND);
+        let mut sat = PollSaturation::new(BUDGET);
         sat.on_idle();
         assert_eq!(sat.on_work(0, 10), 0);
         assert_eq!(sat.on_work(10, 10), 10);
         assert_eq!(sat.on_work(20, 10), 20);
-        let w = sat.take(30);
-        assert_eq!(w.max_batch, 10);
-        assert_eq!(w.max_run, 30);
-        assert_eq!(w.queued, 29);
+        let w = sat.take();
+        assert_eq!(w.max_messages_per_poll, 10);
+        assert_eq!(w.max_backlog_messages, 30);
+        assert_eq!(w.messages_waited, 29);
     }
 
     #[test]
     fn reset_equals_fresh() {
-        let mut sat = PollSaturation::new(0, BOUND);
+        let mut sat = PollSaturation::new(BUDGET);
         sat.on_idle();
         sat.on_work(100, 5);
         sat.on_work(200, 5);
-        sat.reset(500);
-        let mut fresh = PollSaturation::new(500, BOUND);
+        sat.reset();
+        let mut fresh = PollSaturation::new(BUDGET);
         assert_eq!(sat.on_work(600, 2), fresh.on_work(600, 2));
         assert_eq!(sat.on_work(700, 2), fresh.on_work(700, 2));
-        assert_eq!(sat.take(700), fresh.take(700));
+        assert_eq!(sat.take(), fresh.take());
     }
 
     #[test]
-    fn layout_is_two_cache_lines_with_the_flag_first() {
-        assert_eq!(core::mem::size_of::<PollSaturation>(), 88);
+    fn layout_is_eighty_bytes_with_the_flag_first() {
+        assert_eq!(core::mem::size_of::<PollSaturation>(), 80);
         assert_eq!(core::mem::align_of::<PollSaturation>(), 8);
-        assert_eq!(core::mem::size_of::<PollWindow>(), 64);
+        assert_eq!(core::mem::size_of::<PollSummary>(), 56);
     }
 
     // Teeth: a false proof while a message is pending breaks the bound.
@@ -582,7 +595,7 @@ mod tests {
     #[test]
     fn false_proof_breaks_the_bound() {
         // Message 0 arrives at 0, message 1 at 5; service time 10.
-        let mut honest = PollSaturation::new(0, BOUND);
+        let mut honest = PollSaturation::new(BUDGET);
         let mut lying = honest.clone();
         assert_eq!(honest.on_work(0, 1), 0);
         assert_eq!(lying.on_work(0, 1), 0);
@@ -599,7 +612,7 @@ mod proptests {
     use proptest::prelude::*;
     use std::collections::VecDeque;
 
-    const BOUND: u64 = 50;
+    const BUDGET: u64 = 50;
     const IDLE_COST: u64 = 1;
 
     /// One recorded call, replayable into any number of monitors.
@@ -635,15 +648,14 @@ mod proptests {
     struct Run {
         calls: Vec<Call>,
         obs: Vec<Obs>,
-        window: PollWindow,
-        end: u64,
+        summary: PollSummary,
     }
 
     /// A single FIFO server over one input. `arrivals` are absolute ticks,
     /// non-decreasing; `service[i]` is message `i`'s processing time.
     fn simulate(arrivals: &[u64], service: &[u64], shape: Shape, proofs: bool) -> Run {
         let total = arrivals.len();
-        let mut sat = PollSaturation::new(0, BOUND);
+        let mut sat = PollSaturation::new(BUDGET);
         let mut calls = Vec::new();
         let mut obs = Vec::new();
         let mut queue: VecDeque<usize> = VecDeque::new();
@@ -735,53 +747,48 @@ mod proptests {
                 }
             }
         }
-        let end = t;
-        let window = sat.take(end);
+        let summary = sat.take();
         Run {
             calls,
             obs,
-            window,
-            end,
+            summary,
         }
     }
 
-    /// Replays `calls` into a fresh monitor, taking a window before each call
-    /// index in `takes` (sorted) and once more at `end`.
-    fn replay(calls: &[Call], takes: &[usize], end: u64) -> Vec<PollWindow> {
-        let mut sat = PollSaturation::new(0, BOUND);
+    /// Replays `calls` into a fresh monitor, taking a summary before each
+    /// call index in `takes` (sorted) and once more at the end.
+    fn replay(calls: &[Call], takes: &[usize]) -> Vec<PollSummary> {
+        let mut sat = PollSaturation::new(BUDGET);
         let mut out = Vec::new();
-        let mut now = 0u64;
         let mut ti = 0usize;
         for (i, call) in calls.iter().enumerate() {
             while ti < takes.len() && takes[ti] == i {
-                out.push(sat.take(now));
+                out.push(sat.take());
                 ti += 1;
             }
             match *call {
                 Call::Idle => sat.on_idle(),
-                Call::Work { now: w, n } => {
-                    now = w;
-                    let _ = sat.on_work(w, n);
+                Call::Work { now, n } => {
+                    let _ = sat.on_work(now, n);
                 }
                 Call::Drained { at } => sat.on_drained(at),
             }
         }
-        out.push(sat.take(end));
+        out.push(sat.take());
         out
     }
 
     /// The merge rule the docs promise: sums add, maxima max, flags AND.
-    fn merge(a: PollWindow, b: PollWindow) -> PollWindow {
-        PollWindow {
-            elapsed: a.elapsed + b.elapsed,
-            msgs: a.msgs + b.msgs,
-            queued: a.queued + b.queued,
-            over: a.over + b.over,
-            max_run: a.max_run.max(b.max_run),
-            max_behind: a.max_behind.max(b.max_behind),
-            max_batch: a.max_batch.max(b.max_batch),
-            never_idle: a.never_idle && b.never_idle,
-            never_empty: a.never_empty && b.never_empty,
+    fn merge(a: PollSummary, b: PollSummary) -> PollSummary {
+        PollSummary {
+            messages_seen: a.messages_seen + b.messages_seen,
+            messages_waited: a.messages_waited + b.messages_waited,
+            messages_over_budget: a.messages_over_budget + b.messages_over_budget,
+            max_backlog_messages: a.max_backlog_messages.max(b.max_backlog_messages),
+            max_behind_ticks: a.max_behind_ticks.max(b.max_behind_ticks),
+            max_messages_per_poll: a.max_messages_per_poll.max(b.max_messages_per_poll),
+            is_fully_utilized: a.is_fully_utilized && b.is_fully_utilized,
+            is_backlogged: a.is_backlogged && b.is_backlogged,
         }
     }
 
@@ -797,7 +804,7 @@ mod proptests {
         idle_after_two_empty: bool,
     ) -> usize {
         let total = arrivals.len();
-        let mut sat = PollSaturation::new(0, BOUND);
+        let mut sat = PollSaturation::new(BUDGET);
         let mut violations = 0usize;
         let mut pos = 0usize; // messages consumed
         let mut boundary_passed = 0usize; // boundaries already consumed
@@ -866,7 +873,7 @@ mod proptests {
         k: usize,
         idle_rule_full_pass: bool,
     ) -> usize {
-        let mut sat = PollSaturation::new(0, BOUND);
+        let mut sat = PollSaturation::new(BUDGET);
         let mut violations = 0usize;
         let (mut ia, mut ib) = (0usize, 0usize);
         let mut t = 0u64;
@@ -995,15 +1002,15 @@ mod proptests {
                     prop_assert!(o.age <= o.slack);
                 }
                 if o.age > o.slack { truth_queued += 1; }
-                if o.age > BOUND + o.slack { truth_over += 1; }
+                if o.age > BUDGET + o.slack { truth_over += 1; }
             }
-            let w = run.window;
-            prop_assert_eq!(w.msgs, run.obs.len() as u64);
-            prop_assert!(w.queued >= truth_queued);
-            prop_assert!(w.over >= truth_over);
-            prop_assert!(w.queued <= w.msgs);
-            prop_assert!(w.over <= w.msgs);
-            prop_assert!(w.max_batch <= w.msgs.max(1));
+            let w = run.summary;
+            prop_assert_eq!(w.messages_seen, run.obs.len() as u64);
+            prop_assert!(w.messages_waited >= truth_queued);
+            prop_assert!(w.messages_over_budget >= truth_over);
+            prop_assert!(w.messages_waited <= w.messages_seen);
+            prop_assert!(w.messages_over_budget <= w.messages_seen);
+            prop_assert!(w.max_messages_per_poll <= w.messages_seen.max(1));
         }
 
         // P4 merge: any split, merged, equals one take.
@@ -1011,8 +1018,8 @@ mod proptests {
         fn windows_merge_exactly((arrivals, service) in traffic(), shape in shape(), cuts in prop::collection::btree_set(0usize..400, 0..6)) {
             let run = simulate(&arrivals, &service, shape, true);
             let takes: Vec<usize> = cuts.into_iter().filter(|&c| c < run.calls.len()).collect();
-            let single = replay(&run.calls, &[], run.end);
-            let split = replay(&run.calls, &takes, run.end);
+            let single = replay(&run.calls, &[]);
+            let split = replay(&run.calls, &takes);
             let merged = split.into_iter().reduce(merge).unwrap();
             prop_assert_eq!(merged, single[0]);
         }
@@ -1027,7 +1034,7 @@ mod proptests {
             for (a, b) in with.obs.iter().zip(&without.obs) {
                 prop_assert!(b.behind >= a.behind);
             }
-            prop_assert!(without.window.max_run >= with.window.max_run);
+            prop_assert!(without.summary.max_backlog_messages >= with.summary.max_backlog_messages);
         }
 
         // P7 segmented source: idle only after two consecutive empty polls.

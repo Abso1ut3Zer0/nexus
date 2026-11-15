@@ -64,7 +64,7 @@ pinned to a single core.
 | Simple (EMA, CUSUM, Drawdown, etc.) | 16-56 bytes |
 | Welford, Covariance | 24-48 bytes |
 | Windowed types (3-sample Nichols') | 48 bytes |
-| PollSaturation (`repr(C)`: flag byte + ten `u64`) | 88 bytes |
+| PollSaturation (`repr(C)`: flag byte + nine `u64`) | 80 bytes |
 | Ring buffer types (MOSUM<N>) | N × 8 bytes |
 | WindowedMedian<N> | 2 × N × 8 bytes |
 | TopK<K, CAP> | CAP × (sizeof(K) + 8) bytes |

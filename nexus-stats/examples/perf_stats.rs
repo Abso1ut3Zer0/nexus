@@ -264,7 +264,7 @@ fn bench_liveness_u64(samples: &mut [u64]) {
 /// Steady working polls (the floor is not pending): the full `on_work` path
 /// with a compare against `bound`, the maxima and the counters.
 fn bench_poll_saturation_on_work(samples: &mut [u64]) {
-    let mut sat = PollSaturation::new(0, 50);
+    let mut sat = PollSaturation::new(50);
     let mut rng = 12345u64;
     let mut t = 0u64;
     for _ in 0..WARMUP {
@@ -280,12 +280,12 @@ fn bench_poll_saturation_on_work(samples: &mut [u64]) {
         let end = rdtsc_end();
         *s = (end - start) / BATCH;
     }
-    black_box(sat.take(t));
+    black_box(sat.take());
 }
 
 /// The idle spin: one flag store, no clock.
 fn bench_poll_saturation_on_idle(samples: &mut [u64]) {
-    let mut sat = PollSaturation::new(0, 50);
+    let mut sat = PollSaturation::new(50);
     for s in samples.iter_mut() {
         let start = rdtsc_start();
         for _ in 0..BATCH {
@@ -294,7 +294,7 @@ fn bench_poll_saturation_on_idle(samples: &mut [u64]) {
         let end = rdtsc_end();
         *s = (end - start) / BATCH;
     }
-    black_box(sat.take(1));
+    black_box(sat.take());
 }
 
 fn bench_mosum_f64(samples: &mut [u64]) {
