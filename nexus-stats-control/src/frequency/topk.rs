@@ -1,8 +1,11 @@
+use alloc::boxed::Box;
+use alloc::vec::Vec;
+
 /// Space-Saving algorithm for top-K frequent item tracking.
 ///
-/// Tracks the `CAP` most frequent items in a stream with bounded memory.
-/// Uses a fixed-size array with linear scan — efficient for typical
-/// CAP values (10-100).
+/// Tracks the `capacity` most frequent items in a stream with bounded memory:
+/// a table sized once at construction, scanned linearly on every update.
+/// Efficient for the usual capacities (10 to 100). Requires `alloc`.
 ///
 /// # Use Cases
 /// - "What are the top 10 symbols by message volume?"
@@ -11,12 +14,12 @@
 ///
 /// # Accuracy
 ///
-/// Guaranteed: if an item's true count exceeds `total / CAP`, it will
-/// be tracked. Reported counts may overestimate by at most `total / CAP`
-/// (the overcount property).
+/// Guaranteed: if an item's true count exceeds `total / capacity`, it will
+/// be tracked. Reported counts may overestimate by at most
+/// `total / capacity` (the overcount property).
 #[derive(Debug, Clone)]
-pub struct TopK<K: Eq + Clone, const CAP: usize> {
-    entries: [Option<Entry<K>>; CAP],
+pub struct TopK<K: Eq + Clone> {
+    entries: Box<[Option<Entry<K>>]>,
     len: usize,
     total: u64,
 }
@@ -27,20 +30,34 @@ struct Entry<K> {
     count: u64,
 }
 
-impl<K: Eq + Clone, const CAP: usize> TopK<K, CAP> {
-    /// Creates a new empty tracker.
+impl<K: Eq + Clone> TopK<K> {
+    /// Creates an empty tracker with room for `capacity` keys.
     ///
-    /// # Panics
+    /// # Errors
     ///
-    /// CAP must be > 0.
+    /// `ConfigError::Invalid` if `capacity` is zero.
     #[inline]
-    pub fn new() -> Self {
-        assert!(CAP > 0, "TopK capacity must be > 0");
-        Self {
-            entries: core::array::from_fn(|_| None),
+    pub fn new(capacity: usize) -> Result<Self, nexus_stats_core::ConfigError> {
+        if capacity == 0 {
+            return Err(nexus_stats_core::ConfigError::Invalid(
+                "TopK capacity must be > 0",
+            ));
+        }
+        Ok(Self {
+            entries: (0..capacity)
+                .map(|_| None)
+                .collect::<Vec<_>>()
+                .into_boxed_slice(),
             len: 0,
             total: 0,
-        }
+        })
+    }
+
+    /// Number of keys the table can hold.
+    #[inline]
+    #[must_use]
+    pub fn capacity(&self) -> usize {
+        self.entries.len()
     }
 
     /// Updates with an observation of the given key.
@@ -61,7 +78,7 @@ impl<K: Eq + Clone, const CAP: usize> TopK<K, CAP> {
         }
 
         // Not tracked — add if space available
-        if self.len < CAP {
+        if self.len < self.entries.len() {
             self.entries[self.len] = Some(Entry { key, count: 1 });
             self.len += 1;
             return;
@@ -88,7 +105,7 @@ impl<K: Eq + Clone, const CAP: usize> TopK<K, CAP> {
 
     /// Returns the tracked items sorted by estimated frequency (descending).
     ///
-    /// The returned slice length is `min(CAP, unique keys observed)`.
+    /// The returned slice length is `min(capacity, unique keys observed)`.
     /// Counts may overestimate — see the overcount property.
     #[inline]
     pub fn top(&self, buf: &mut [(K, u64)]) -> usize {
@@ -152,25 +169,18 @@ impl<K: Eq + Clone, const CAP: usize> TopK<K, CAP> {
     }
 }
 
-impl<K: Eq + Clone, const CAP: usize> Default for TopK<K, CAP> {
-    /// Creates a new empty tracker.
-    ///
-    /// # Panics
-    ///
-    /// CAP must be > 0.
-    #[inline]
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
+    fn zero_capacity_is_rejected() {
+        assert!(TopK::<u32>::new(0).is_err());
+    }
+
+    #[test]
     fn empty() {
-        let tk: TopK<u32, 5> = TopK::new();
+        let tk: TopK<u32> = TopK::new(5).unwrap();
         assert_eq!(tk.total(), 0);
         assert_eq!(tk.len(), 0);
         assert!(tk.is_empty());
@@ -178,7 +188,7 @@ mod tests {
 
     #[test]
     fn tracks_single_key() {
-        let mut tk: TopK<&str, 5> = TopK::new();
+        let mut tk: TopK<&str> = TopK::new(5).unwrap();
         tk.update("BTC");
         tk.update("BTC");
         tk.update("BTC");
@@ -189,7 +199,7 @@ mod tests {
 
     #[test]
     fn tracks_multiple_keys() {
-        let mut tk: TopK<&str, 5> = TopK::new();
+        let mut tk: TopK<&str> = TopK::new(5).unwrap();
         tk.update("BTC");
         tk.update("ETH");
         tk.update("BTC");
@@ -205,7 +215,7 @@ mod tests {
 
     #[test]
     fn top_returns_sorted() {
-        let mut tk: TopK<&str, 5> = TopK::new();
+        let mut tk: TopK<&str> = TopK::new(5).unwrap();
         tk.update("SOL");
         for _ in 0..5 {
             tk.update("BTC");
@@ -224,7 +234,7 @@ mod tests {
 
     #[test]
     fn eviction_replaces_minimum() {
-        let mut tk: TopK<u32, 3> = TopK::new();
+        let mut tk: TopK<u32> = TopK::new(3).unwrap();
 
         // Fill the table
         tk.update(1); // count=1
@@ -248,7 +258,7 @@ mod tests {
     fn overcount_property() {
         // After eviction, the new entry's count is evicted_count + 1
         // This means counts may overestimate but never underestimate
-        let mut tk: TopK<u32, 2> = TopK::new();
+        let mut tk: TopK<u32> = TopK::new(2).unwrap();
 
         tk.update(1); // count=1
         tk.update(2); // count=1
@@ -261,13 +271,13 @@ mod tests {
 
     #[test]
     fn unknown_key_returns_zero() {
-        let tk: TopK<u32, 5> = TopK::new();
+        let tk: TopK<u32> = TopK::new(5).unwrap();
         assert_eq!(tk.count_of(&42), 0);
     }
 
     #[test]
     fn reset_clears_all() {
-        let mut tk: TopK<u32, 5> = TopK::new();
+        let mut tk: TopK<u32> = TopK::new(5).unwrap();
         tk.update(1);
         tk.update(2);
 
@@ -280,7 +290,7 @@ mod tests {
 
     #[test]
     fn string_keys() {
-        let mut tk: TopK<u64, 10> = TopK::new();
+        let mut tk: TopK<u64> = TopK::new(10).unwrap();
         for i in 0..100 {
             tk.update(i % 10);
         }

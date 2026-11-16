@@ -30,7 +30,7 @@ PeakDetector, FlexProportion, and DecayAccum can be used in a bare-metal `no_std
 
 - **PeakDetector**: O(1) per sample, tens of cycles.
 - **BoolWindow**: O(1) per update (bitmask over a fixed window).
-- **TopK**: Space-Saving algorithm — O(K) memory, O(log K) per update.
+- **TopK**: Space-Saving algorithm — O(K) memory, O(K) per update (one linear scan).
 - **FlexProportion**: O(1) per update, integer arithmetic.
 - **DecayAccum**: O(1) per update including the exp decay.
 

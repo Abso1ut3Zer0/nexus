@@ -234,6 +234,11 @@ on `f32` accumulation for speed, measure: the hot path gains a convert.
 - **`Slew<f64>`** clamps with `max().min()` instead of `clamp()`: identical
   for finite inputs, without the `lo <= hi` assertion.
 - **Normalizers** accumulate in `f64` for both `T` (above).
+- **`TopK<K, CAP>` is `TopK<K>`** with the capacity given at construction:
+  `TopK::new(capacity)` returns `Result` (zero is rejected), `capacity()`
+  reads it back, and the `Default` impl is gone. The table is one boxed
+  slice allocated in `new`, so `TopK` now needs the `alloc` feature, like
+  every other runtime-sized type. The last const generic in the family.
 
 Fixes in the same release that change reported numbers, each with its own
 CHANGELOG entry in `nexus-stats-core`:

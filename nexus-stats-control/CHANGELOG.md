@@ -14,6 +14,12 @@ contained.
 
 - **No numeric suffixes** (the stats major, [#773](https://github.com/Abso1ut3Zer0/nexus/issues/773)): `BoolWindow`, `TopK`, `FlexProportion*`
   were already plain; the decay accumulator is `DecayAccum` (`u64` ticks; see Removed).
+- **`TopK<K>` takes its capacity at runtime:** `TopK::new(capacity) ->
+  Result<Self, ConfigError>` (zero rejected) and `capacity()`, replacing
+  `TopK<K, const CAP: usize>` with `new()` and its `Default` impl. The table
+  is one boxed slice allocated in `new`, so the type now sits behind the
+  `alloc` feature with the other runtime-sized types. No const generic is
+  left in the stats crates.
 - **`PeakDetector<T>`** replaces `PeakDetectorF64` / `PeakDetectorI64`: one
   generic type bounded by `nexus_stats_core::Sample` (`f64`, `i64`) returning
   `Peak<T>`. `update` returns `Result` for `f64` and the option directly for

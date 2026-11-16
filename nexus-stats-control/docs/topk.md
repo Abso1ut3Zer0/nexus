@@ -22,8 +22,9 @@ Not for: exact frequency counts with bounded error on minor items — use a full
 ## API
 
 ```rust
-impl<K: Eq + Clone, const CAP: usize> TopK<K, CAP> {
-    pub fn new() -> Self;            // CAP slots, fixed at compile time
+impl<K: Eq + Clone> TopK<K> {
+    pub fn new(capacity: usize) -> Result<Self, ConfigError>;  // the table is boxed once, here
+    pub fn capacity(&self) -> usize;
     pub fn update(&mut self, key: K);
     pub fn top(&self, buf: &mut [(K, u64)]) -> usize;
     pub fn count_of(&self, key: &K) -> u64;
@@ -41,7 +42,7 @@ impl<K: Eq + Clone, const CAP: usize> TopK<K, CAP> {
 ```rust
 use nexus_stats_control::frequency::TopK;
 
-let mut top: TopK<&'static str> = TopK::new();
+let mut top: TopK<&'static str> = TopK::new(16).unwrap();
 
 // Stream of trade events.
 let events = ["BTC-USD", "ETH-USD", "BTC-USD", "SOL-USD",

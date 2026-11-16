@@ -91,7 +91,7 @@
 //! | Feature | Default | Enables |
 //! |---------|---------|---------|
 //! | `std` | yes | `WallClock`, `sqrt`/`exp` intrinsics; implies `alloc` |
-//! | `alloc` | no (implied by `std`) | Mosum, Kama, Hampel, WindowedMedian, BoolWindow, the correlations and entropies, adaptive filters, optimizers, bandits |
+//! | `alloc` | no (implied by `std`) | Mosum, Kama, Hampel, WindowedMedian, BoolWindow, TopK, the correlations and entropies, adaptive filters, optimizers, bandits |
 //! | `libm` | no | Pure Rust `sqrt`/`exp` fallback for `no_std` (enables ShiryaevRoberts, AdaptiveThreshold, HalfLife, ...) |
 //! | `smoothing` | no | Advanced smoothing types (Holt, Kama, Spring, Kalman1d, WindowedMedian, ...) |
 //! | `detection` | no | Advanced detection + signal analysis (implies `smoothing`) |
