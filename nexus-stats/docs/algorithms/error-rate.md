@@ -62,4 +62,4 @@ if let Some(Condition::Degraded) = er.update(false) {
 
 | Operation | p50 | p99 |
 |-----------|-----|-----|
-| `ErrorRate::update` | 7 cycles | 10 cycles |
+| `ErrorRate::update` | 7 cycles | 9 cycles |

@@ -47,7 +47,7 @@ if let Some(r) = cov.correlation() {
 
 | Operation | p50 | p99 |
 |-----------|-----|-----|
-| `Covariance::update` | 11 cycles | 11 cycles |
-| `correlation()` query | 6 cycles (includes sqrt) |
+| `Covariance::update` | 11 cycles | 12 cycles |
+| `correlation()` query | 7 cycles (includes sqrt) |
 
 Three running accumulators (M2_x, M2_y, C) updated per paired sample.

@@ -20,7 +20,7 @@ use nexus_stats::{
         SecondDiff,
     },
     detection::{
-        AdaptiveThreshold, Adwin, Cusum, DistributionShift, Mosum, MultiGate, PageHinkley,
+        AdaptiveThreshold, Adwin, Bocpd, Cusum, DistributionShift, Mosum, MultiGate, PageHinkley,
         RobustZScore, ShiryaevRoberts, TrendAlert,
     },
     estimation::{
@@ -989,6 +989,27 @@ fn bench_page_hinkley_f64(samples: &mut [u64]) {
         }
         let end = rdtsc_end();
         black_box(p.count());
+        *s = (end - start) / BATCH;
+    }
+}
+
+fn bench_bocpd_f64(samples: &mut [u64]) {
+    let mut b = Bocpd::builder()
+        .max_run_length(64)
+        .hazard_lambda(250.0)
+        .build()
+        .unwrap();
+    let mut rng = 12345u64;
+    for _ in 0..WARMUP {
+        let _ = b.update(90.0 + (next_val(&mut rng) % 20) as f64);
+    }
+    for s in samples.iter_mut() {
+        let start = rdtsc_start();
+        for _ in 0..BATCH {
+            let _ = b.update(black_box(90.0 + (next_val(&mut rng) % 20) as f64));
+        }
+        let end = rdtsc_end();
+        black_box(b.count());
         *s = (end - start) / BATCH;
     }
 }
@@ -2251,6 +2272,8 @@ fn main() {
     print_row("DistributionShift::update", &mut buf);
     bench_adwin_f64(&mut buf);
     print_row("Adwin::update", &mut buf);
+    bench_bocpd_f64(&mut buf);
+    print_row("Bocpd(64)::update", &mut buf);
     bench_adaptive_threshold_f64(&mut buf);
     print_row("AdaptiveThreshold::update", &mut buf);
 

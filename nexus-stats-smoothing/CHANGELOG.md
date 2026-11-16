@@ -31,6 +31,10 @@ contained.
 - **`WindowedMedian::new` returns `Result<Self, ConfigError>`** (zero window
   rejected) like every sibling constructor, instead of panicking. Holt,
   HuberEma and Kalman1d reject `min_samples(0)`.
+- **`WindowedMedian` and `Kama` store their rings as `Box<[T]>`.** The
+  raw-pointer rings, the manual `Drop` / `Clone` and the `unsafe impl Send`
+  are gone; both types are `Sync` as well as `Send` now. Same API, same
+  codegen. `Kama` drops a field it stored but never read.
 
 ### Fixed
 

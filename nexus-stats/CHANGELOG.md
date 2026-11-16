@@ -55,6 +55,13 @@ one naming convention across the family. Migration guide:
   `HitRate`/`Amihud` rates return `Option`; `RobustZScore::mean_abs_dev`
   (was `mad`) with the `sqrt(2/π)` scale; `ShiryaevRoberts` saturates at `1e300`.
   See the per-crate CHANGELOGs and `docs/guides/migrating-to-7.md` § 4.
+- **Storage pass from the code-quality audit (3 of 4).** `WindowedMedian`,
+  `Kama`, `BoolWindow` and `Mosum` store their rings as `Box<[T]>` (no raw
+  pointers, manual `Drop` / `Clone` or `unsafe impl Send`; all four are `Sync`
+  now). `Bocpd` has no `unsafe` and drops a redundant per-run counter. `Adwin`
+  pre-sizes its bucket levels, so memory is fixed at build for every type.
+  `LaggedPredictor` uses a fixed ring; `Hurst` no longer reallocates at its
+  first full window. No API changes.
 
 ### Removed
 
@@ -82,6 +89,9 @@ one naming convention across the family. Migration guide:
 - **`WindowedMedian::mad()` allocated and sorted a scratch `Vec` per call**,
   which made every `Hampel::update` allocate. Now one vectorized O(N) count
   over the sorted window: no allocation, no sort, same value.
+- **`full,libm` without `alloc` compiled with warnings.** The umbrella `signal`
+  and `learning` modules re-exported subcrate modules that are empty without
+  `alloc`; both are gated on `alloc` now, matching every type they contain.
 
 ### Docs
 
@@ -96,8 +106,7 @@ one naming convention across the family. Migration guide:
   "every primitive is O(1) per update, fixed memory after construction"; the
   window and dimension types (`WindowedMedian`, `Kama`, `Hampel`, `Bocpd`,
   `RlsFilter`, `OnlineCovariance`, `OnlineKMeans`, `QuantileNorm`) are
-  O(window) or O(d²) and `Adwin`'s bucket list grows O(log n), as their own
-  pages already said. The module tables name every exported type with its
+  O(window) or O(d²), as their own pages already said. The module tables name every exported type with its
   feature gate (`alloc`, `std|libm`), list the `normalization` module, and
   name `FirstDiff`/`SecondDiff` where they said `Diff`.
 

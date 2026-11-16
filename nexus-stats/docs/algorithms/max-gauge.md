@@ -50,7 +50,7 @@ Netflix's Atlas telemetry uses this pattern for per-scrape max metrics.
 
 | Operation | p50 | p99 |
 |-----------|-----|-----|
-| `MaxGauge::<f64>::update` | 6 cycles | 6 cycles |
-| `MaxGauge::<f64>::update` + `take` | 6 cycles | 6 cycles |
+| `MaxGauge::<f64>::update` | 6 cycles | 7 cycles |
+| `MaxGauge::<f64>::update` + `take` | 6 cycles | 7 cycles |
 
 One comparison per update. `take()` reads + resets in one operation.

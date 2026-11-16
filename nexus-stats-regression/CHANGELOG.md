@@ -31,6 +31,9 @@ contained.
 - **Float slices are the caller's to validate** (features, Kalman `h`):
   debug-asserted, as in every mainstream numeric library; the scalar
   `check_finite` policy is unchanged.
+- **`LaggedPredictor` keeps its estimate history in a fixed ring**
+  (`Box<[f64]>`) instead of a `VecDeque`: no `expect` and no deque bookkeeping
+  on the update path. Same API, same results.
 
 ### Fixed
 

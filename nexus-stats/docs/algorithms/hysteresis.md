@@ -131,7 +131,7 @@ let use_high_detail = !lod.update(distance).unwrap();  // closer = lower value =
 
 | Operation | p50 | p99 |
 |-----------|-----|-----|
-| `Hysteresis::<f64>::update` | 2 cycles | 2 cycles |
+| `Hysteresis::<f64>::update` | 2 cycles | 3 cycles |
 
 One or two comparisons. The p99 in benchmarks may show higher due to
 branch misprediction when the input alternates above and below both

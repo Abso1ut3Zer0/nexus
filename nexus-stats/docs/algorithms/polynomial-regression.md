@@ -8,7 +8,7 @@ For linear regression (degree 1), see [LinearRegression](linear-regression.md)
 
 | Property | Value |
 |----------|-------|
-| Update cost | 14 cycles (quadratic), 23 cycles (degree 4) |
+| Update cost | 16 cycles (quadratic), 25 cycles (degree 4) |
 | Memory | ~208 bytes (fixed, independent of degree) |
 | Types | `PolynomialRegression` |
 | EW types | `EwPolynomialRegression` |
@@ -254,10 +254,10 @@ Internally fits ln(y) = ln(a) + b·ln(x).
 | Operation | p50 |
 |-----------|-----|
 | `PolynomialRegression::update` (linear) | 11 cycles |
-| `PolynomialRegression::update` (quadratic) | 17 cycles |
-| `coefficients()` (linear, 2×2 solve) | 81 cycles |
-| `coefficients()` (quadratic, 3×3 solve) | 132 cycles |
-| `predict(x)` | 145 cycles (re-solves + evaluates) |
+| `PolynomialRegression::update` (quadratic) | 16 cycles |
+| `coefficients()` (linear, 2×2 solve) | 79 cycles |
+| `coefficients()` (quadratic, 3×3 solve) | 140 cycles |
+| `predict(x)` | 146 cycles (re-solves + evaluates) |
 
 `update()` cost scales with degree (computing powers of x).
 `coefficients()` cost scales with degree³ (Gaussian elimination).

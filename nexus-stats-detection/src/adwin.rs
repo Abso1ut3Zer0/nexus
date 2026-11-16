@@ -1,6 +1,6 @@
 extern crate alloc;
-use alloc::vec;
-use alloc::vec::Vec;
+use alloc::boxed::Box;
+use alloc::collections::VecDeque;
 use nexus_stats_core::DataError;
 
 #[derive(Debug, Clone, Copy)]
@@ -9,68 +9,87 @@ struct Bucket {
     count: u64,
 }
 
+/// Levels of the exponential histogram: level `k` holds buckets of `2^k`
+/// samples. A `u64` sample count never needs more than 64 levels, and a level
+/// never holds more than `max_buckets + 1` buckets (`compress` merges two as
+/// soon as it does), so the whole structure is allocated once at build and
+/// never touches the allocator again.
+const MAX_LEVELS: usize = u64::BITS as usize;
+
 #[derive(Debug, Clone)]
 struct BucketList {
-    levels: Vec<Vec<Bucket>>,
+    /// `levels[k]`, front = oldest. Only `levels[..top]` can be non-empty.
+    levels: Box<[VecDeque<Bucket>]>,
+    top: usize,
     max_buckets: usize,
 }
 
 impl BucketList {
     fn new(max_buckets: usize) -> Self {
         Self {
-            levels: vec![Vec::new()],
+            levels: (0..MAX_LEVELS)
+                .map(|_| VecDeque::with_capacity(max_buckets + 1))
+                .collect(),
+            top: 1,
             max_buckets,
         }
     }
 
     fn insert(&mut self, value: f64) {
-        self.levels[0].push(Bucket {
+        self.levels[0].push_back(Bucket {
             total: value,
             count: 1,
         });
         self.compress();
     }
 
+    /// Carry: while a level holds more than `max_buckets`, its two oldest
+    /// buckets merge into one bucket of the next level. Each level is visited
+    /// at most once per insert.
     fn compress(&mut self) {
-        for level in 0.. {
-            if level >= self.levels.len() {
+        let mut level = 0;
+        while level + 1 < MAX_LEVELS && self.levels[level].len() > self.max_buckets {
+            // `len > max_buckets >= 2`, so both pops succeed.
+            let (Some(b2), Some(b1)) = (
+                self.levels[level].pop_front(),
+                self.levels[level].pop_front(),
+            ) else {
                 break;
+            };
+            let merged = Bucket {
+                total: b1.total + b2.total,
+                count: b1.count + b2.count,
+            };
+            level += 1;
+            if level == self.top {
+                self.top += 1;
             }
-            if self.levels[level].len() <= self.max_buckets {
-                break;
-            }
-
-            if level + 1 >= self.levels.len() {
-                self.levels.push(Vec::new());
-            }
-
-            let b2 = self.levels[level].remove(0);
-            let b1 = self.levels[level].remove(0);
-            let merged = Self::merge_buckets(b1, b2);
-            self.levels[level + 1].push(merged);
+            self.levels[level].push_back(merged);
         }
     }
 
-    fn merge_buckets(a: Bucket, b: Bucket) -> Bucket {
-        Bucket {
-            total: a.total + b.total,
-            count: a.count + b.count,
-        }
+    /// Removes and returns the oldest bucket: the front of the highest
+    /// non-empty level.
+    fn drop_oldest(&mut self) -> Option<Bucket> {
+        self.levels[..self.top]
+            .iter_mut()
+            .rev()
+            .find_map(VecDeque::pop_front)
     }
 
-    fn drop_oldest(&mut self) -> u64 {
-        for level in (0..self.levels.len()).rev() {
-            if !self.levels[level].is_empty() {
-                let removed = self.levels[level].remove(0);
-                return removed.count;
-            }
-        }
-        0
+    /// Buckets from oldest to newest.
+    fn iter_oldest_first(&self) -> impl Iterator<Item = &Bucket> {
+        self.levels[..self.top]
+            .iter()
+            .rev()
+            .flat_map(VecDeque::iter)
     }
 
     fn reset(&mut self) {
-        self.levels.clear();
-        self.levels.push(Vec::new());
+        for level in &mut self.levels[..self.top] {
+            level.clear();
+        }
+        self.top = 1;
     }
 }
 
@@ -80,7 +99,9 @@ impl BucketList {
 /// Detects distribution changes by testing all possible splits via
 /// Hoeffding bound. Automatically shrinks the window on detection.
 ///
-/// O(log n) amortized per update, O(log n) memory.
+/// O(log n) amortized per update (one carry chain, one scan of the
+/// buckets on a cut). Memory is fixed at build: 64 levels of
+/// `max_buckets + 1` buckets.
 ///
 /// Bifet & Gavalda, 2007.
 ///
@@ -113,7 +134,8 @@ impl BucketList {
 /// ```
 #[derive(Debug, Clone)]
 pub struct Adwin {
-    delta: f64,
+    /// `ln(4 / delta)`: the Hoeffding bound's only use of `delta`, computed once.
+    ln_4_over_delta: f64,
     buckets: BucketList,
     total: f64,
     width: u64,
@@ -174,32 +196,26 @@ impl Adwin {
             let mut sum0: f64 = 0.0;
             let mut found_cut = false;
 
-            'outer: for level in (0..self.buckets.levels.len()).rev() {
-                for bi in 0..self.buckets.levels[level].len() {
-                    let b = &self.buckets.levels[level][bi];
-                    n0 += b.count;
-                    sum0 += b.total;
+            for b in self.buckets.iter_oldest_first() {
+                n0 += b.count;
+                sum0 += b.total;
 
-                    let n1 = self.width - n0;
-                    if n0 == 0 || n1 == 0 {
-                        continue;
-                    }
+                let n1 = self.width - n0;
+                if n1 == 0 {
+                    break;
+                }
 
-                    let sum1 = self.total - sum0;
-                    let mean0 = sum0 / n0 as f64;
-                    let mean1 = sum1 / n1 as f64;
-                    let diff = (mean0 - mean1).abs();
+                let sum1 = self.total - sum0;
+                let mean0 = sum0 / n0 as f64;
+                let mean1 = sum1 / n1 as f64;
+                let diff = (mean0 - mean1).abs();
 
-                    let m = 1.0 / n0 as f64 + 1.0 / n1 as f64;
-                    let dd = self.delta;
-                    let eps = nexus_stats_core::math::sqrt(
-                        0.5 * m * nexus_stats_core::math::ln(4.0 / dd),
-                    );
+                let m = 1.0 / n0 as f64 + 1.0 / n1 as f64;
+                let eps = nexus_stats_core::math::sqrt(0.5 * m * self.ln_4_over_delta);
 
-                    if diff >= eps {
-                        found_cut = true;
-                        break 'outer;
-                    }
+                if diff >= eps {
+                    found_cut = true;
+                    break;
                 }
             }
 
@@ -207,25 +223,17 @@ impl Adwin {
                 break;
             }
 
-            let removed = self.buckets.drop_oldest();
-            if removed == 0 {
+            let Some(removed) = self.buckets.drop_oldest() else {
                 break;
-            }
-
-            self.width -= removed;
-
-            let new_total_f64 = {
-                let mut s = 0.0_f64;
-                for level in &self.buckets.levels {
-                    for b in level {
-                        s += b.total;
-                    }
-                }
-                s
             };
-            self.total = new_total_f64;
-
+            self.width -= removed.count;
+            self.total -= removed.total;
             changed = true;
+        }
+
+        if changed {
+            // Re-sum once per shrink so the running total does not drift.
+            self.total = self.buckets.iter_oldest_first().map(|b| b.total).sum();
         }
 
         changed
@@ -312,7 +320,7 @@ impl AdwinBuilder {
         let delta = self
             .delta
             .ok_or(nexus_stats_core::ConfigError::Missing("delta"))?;
-        if delta <= 0.0 || delta >= 1.0 || delta.is_nan() {
+        if !nexus_stats_core::math::in_unit_interval(delta) {
             return Err(nexus_stats_core::ConfigError::Invalid(
                 "ADWIN delta must be in (0, 1)",
             ));
@@ -324,7 +332,7 @@ impl AdwinBuilder {
         }
 
         Ok(Adwin {
-            delta,
+            ln_4_over_delta: nexus_stats_core::math::ln(4.0 / delta),
             buckets: BucketList::new(self.max_buckets),
             total: 0.0,
             width: 0,

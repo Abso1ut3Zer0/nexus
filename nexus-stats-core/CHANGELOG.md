@@ -179,6 +179,9 @@ contained.
   interval, driving the accumulator negative (Liveness already re-anchored).
 - `OnlineCovariance::covariance(i, j)` only `debug_assert`ed its indices; an
   out-of-range query returned another cell in release. It panics, per policy.
+- **`Hurst` allocated once more at its first full window.** `update` pushed
+  before popping, so the deque briefly held `window_size + 1` values, one past
+  its reservation, and grew on the first wrap. It pops first now.
 
 ### Docs
 

@@ -1,255 +1,198 @@
+use alloc::boxed::Box;
+
 use nexus_stats_core::Direction;
 
-/// Generates the MOSUM update method — float variant validates input,
-/// integer variant passes through without validation.
-#[cfg(feature = "alloc")]
-macro_rules! impl_mosum_update {
-    (float, $ty:ty) => {
-        /// Feeds a sample. Returns shift direction once primed.
-        ///
-        /// # Errors
-        ///
-        /// Returns `DataError::NotANumber` if the sample is NaN, or
-        /// `DataError::Infinite` if the sample is infinite.
-        #[inline]
-        pub fn update(
-            &mut self,
-            sample: $ty,
-        ) -> Result<Option<Direction>, nexus_stats_core::DataError> {
-            check_finite!(sample);
-            let target = self.target;
-            let head = self.head;
-            let window = self.window;
-            let sum = self.sum;
-            let deviation = sample - target;
-            let ring = self.ring_mut();
-            let new_sum = sum - ring[head] + deviation;
-            ring[head] = deviation;
-            self.sum = new_sum;
-            self.head = head + 1;
-            if self.head == window {
-                self.head = 0;
-            }
-            self.count += 1;
-
-            if self.count < self.min_samples {
-                return Ok(Option::None);
-            }
-            Ok(if self.sum > self.threshold {
-                Option::Some(Direction::Rising)
-            } else if self.sum < -self.threshold {
-                Option::Some(Direction::Falling)
-            } else {
-                Option::Some(Direction::Neutral)
-            })
-        }
-    };
+/// MOSUM: Moving Sum change detector.
+///
+/// Windowed complement to CUSUM. Detects transient shifts (spikes) rather
+/// than persistent ones: a ring holds the deviations `sample - target` of the
+/// last `window` samples, and the detector reports `Rising` or `Falling` when
+/// their sum crosses `±threshold`, `Neutral` otherwise. A transient that
+/// leaves the window stops counting.
+///
+/// O(1) per update. The ring (one `f64` per window slot) is allocated once in
+/// `build()`; no allocation after construction. Requires the `alloc` feature.
+#[derive(Clone)]
+pub struct Mosum {
+    target: f64,
+    threshold: f64,
+    ring: Box<[f64]>,
+    head: usize,
+    sum: f64,
+    count: u64,
+    min_samples: u64,
 }
 
-#[cfg(feature = "alloc")]
-macro_rules! impl_mosum {
-    ($name:ident, $builder:ident, $ty:ty, $kind:tt, $zero:expr) => {
-        /// MOSUM — Moving Sum change detector.
-        ///
-        /// Windowed complement to CUSUM. Detects transient shifts (spikes)
-        /// rather than persistent shifts. Uses a ring buffer of deviations
-        /// from target and tests whether their sum exceeds a threshold.
-        ///
-        /// The ring buffer is heap-allocated once during `build()` — no
-        /// allocation after construction.
-        ///
-        /// Requires the `alloc` feature.
-        pub struct $name {
-            target: $ty,
-            threshold: $ty,
-            buffer: *mut $ty,
-            window: usize,
-            head: usize,
-            sum: $ty,
-            count: u64,
-            min_samples: u64,
-        }
-
-        // SAFETY: buffer is exclusively owned, T is Copy + Send
-        unsafe impl Send for $name {}
-
-        impl $name {
-            #[inline]
-            fn ring(&self) -> &[$ty] {
-                // SAFETY: buffer allocated with capacity `window`, all elements initialized
-                unsafe { core::slice::from_raw_parts(self.buffer, self.window) }
-            }
-
-            #[inline]
-            fn ring_mut(&mut self) -> &mut [$ty] {
-                // SAFETY: buffer exclusively owned, all elements initialized
-                unsafe { core::slice::from_raw_parts_mut(self.buffer, self.window) }
-            }
-        }
-
-        /// Builder for [`
-        #[doc = stringify!($name)]
-        /// `].
-        #[derive(Debug, Clone)]
-        pub struct $builder {
-            target: $ty,
-            window: Option<usize>,
-            threshold: Option<$ty>,
-            min_samples: Option<u64>,
-        }
-
-        impl $name {
-            /// Creates a builder with the target (expected baseline mean).
-            #[inline]
-            #[must_use]
-            pub fn builder(target: $ty) -> $builder {
-                $builder {
-                    target,
-                    window: Option::None,
-                    threshold: Option::None,
-                    min_samples: Option::None,
-                }
-            }
-
-            impl_mosum_update!($kind, $ty);
-
-            /// Current moving sum of deviations.
-            #[inline]
-            #[must_use]
-            pub fn sum(&self) -> $ty { self.sum }
-
-            /// Window size.
-            #[inline]
-            #[must_use]
-            pub fn window_size(&self) -> usize { self.window }
-
-            /// Number of samples processed.
-            #[inline]
-            #[must_use]
-            pub fn count(&self) -> u64 { self.count }
-
-            /// Whether the window is full and detection is active.
-            #[inline]
-            #[must_use]
-            pub fn is_primed(&self) -> bool { self.count >= self.min_samples }
-
-            /// Resets to empty state. Parameters unchanged.
-            #[inline]
-            pub fn reset(&mut self) {
-                self.ring_mut().fill($zero);
-                self.head = 0;
-                self.sum = $zero;
-                self.count = 0;
-            }
-        }
-
-        impl Drop for $name {
-            fn drop(&mut self) {
-                // SAFETY: buffer was allocated by Vec::with_capacity(window).
-                // T is Copy so no element drops needed. Reclaim the allocation.
-                unsafe {
-                    let _ = alloc::vec::Vec::from_raw_parts(self.buffer, 0, self.window);
-                }
-            }
-        }
-
-        impl Clone for $name {
-            fn clone(&self) -> Self {
-                let mut vec = alloc::vec![$zero; self.window];
-                vec.copy_from_slice(self.ring());
-                let mut cloned = core::mem::ManuallyDrop::new(vec);
-                let buffer = cloned.as_mut_ptr();
-                Self {
-                    target: self.target,
-                    threshold: self.threshold,
-                    buffer,
-                    window: self.window,
-                    head: self.head,
-                    sum: self.sum,
-                    count: self.count,
-                    min_samples: self.min_samples,
-                }
-            }
-        }
-
-        impl core::fmt::Debug for $name {
-            fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-                f.debug_struct(stringify!($name))
-                    .field("window", &self.window)
-                    .field("count", &self.count)
-                    .field("sum", &self.sum)
-                    .finish()
-            }
-        }
-
-        impl $builder {
-            /// Window size (number of samples in the ring buffer).
-            #[inline]
-            #[must_use]
-            pub fn window_size(mut self, n: usize) -> Self {
-                self.window = Option::Some(n);
-                self
-            }
-
-            /// Decision threshold.
-            #[inline]
-            #[must_use]
-            pub fn threshold(mut self, threshold: $ty) -> Self {
-                self.threshold = Option::Some(threshold);
-                self
-            }
-
-            /// Minimum samples before detection activates. Default: window size.
-            #[inline]
-            #[must_use]
-            pub fn min_samples(mut self, min: u64) -> Self {
-                self.min_samples = Option::Some(min);
-                self
-            }
-
-            /// Builds the MOSUM detector.
-            ///
-            /// # Errors
-            ///
-            /// - Window size must have been set and > 0.
-            /// - Threshold must have been set and positive.
-            #[inline]
-            pub fn build(self) -> Result<$name, nexus_stats_core::ConfigError> {
-                let window = self.window.ok_or(nexus_stats_core::ConfigError::Missing("window_size"))?;
-                if window == 0 {
-                    return Err(nexus_stats_core::ConfigError::Invalid("window_size must be > 0"));
-                }
-                let threshold = self.threshold.ok_or(nexus_stats_core::ConfigError::Missing("threshold"))?;
-                if !(self.target as f64).is_finite() {
-                    return Err(nexus_stats_core::ConfigError::Invalid("target must be finite"));
-                }
-                if !nexus_stats_core::math::positive_finite(threshold as f64) {
-                    return Err(nexus_stats_core::ConfigError::Invalid("threshold must be positive"));
-                }
-                let min_samples = self.min_samples.unwrap_or(window as u64);
-
-                let mut vec = core::mem::ManuallyDrop::new(alloc::vec![$zero; window]);
-                let buffer = vec.as_mut_ptr();
-
-                Ok($name {
-                    target: self.target,
-                    threshold,
-                    buffer,
-                    window,
-                    head: 0,
-                    sum: $zero,
-                    count: 0,
-                    min_samples,
-                })
-            }
-        }
-    };
+/// Builder for [`Mosum`].
+#[derive(Debug, Clone)]
+pub struct MosumBuilder {
+    target: f64,
+    window: Option<usize>,
+    threshold: Option<f64>,
+    min_samples: Option<u64>,
 }
 
-#[cfg(feature = "alloc")]
-impl_mosum!(Mosum, MosumBuilder, f64, float, 0.0);
-#[cfg(feature = "alloc")]
-#[cfg(all(test, feature = "alloc"))]
+impl Mosum {
+    /// Creates a builder with the target (expected baseline mean).
+    #[inline]
+    #[must_use]
+    pub fn builder(target: f64) -> MosumBuilder {
+        MosumBuilder {
+            target,
+            window: None,
+            threshold: None,
+            min_samples: None,
+        }
+    }
+
+    /// Feeds a sample. Returns the shift direction once primed.
+    ///
+    /// # Errors
+    ///
+    /// Returns `DataError::NotANumber` if the sample is NaN, or
+    /// `DataError::Infinite` if the sample is infinite.
+    #[inline]
+    pub fn update(
+        &mut self,
+        sample: f64,
+    ) -> Result<Option<Direction>, nexus_stats_core::DataError> {
+        check_finite!(sample);
+        let head = self.head;
+        let deviation = sample - self.target;
+        let evicted = core::mem::replace(&mut self.ring[head], deviation);
+        self.sum = self.sum - evicted + deviation;
+        self.head = head + 1;
+        if self.head == self.ring.len() {
+            self.head = 0;
+        }
+        self.count += 1;
+
+        if self.count < self.min_samples {
+            return Ok(None);
+        }
+        Ok(Some(if self.sum > self.threshold {
+            Direction::Rising
+        } else if self.sum < -self.threshold {
+            Direction::Falling
+        } else {
+            Direction::Neutral
+        }))
+    }
+
+    /// Current moving sum of deviations.
+    #[inline]
+    #[must_use]
+    pub fn sum(&self) -> f64 {
+        self.sum
+    }
+
+    /// Window size.
+    #[inline]
+    #[must_use]
+    pub fn window_size(&self) -> usize {
+        self.ring.len()
+    }
+
+    /// Number of samples processed.
+    #[inline]
+    #[must_use]
+    pub fn count(&self) -> u64 {
+        self.count
+    }
+
+    /// Whether `min_samples` have been seen and detection is active.
+    #[inline]
+    #[must_use]
+    pub fn is_primed(&self) -> bool {
+        self.count >= self.min_samples
+    }
+
+    /// Resets to the empty state. Parameters unchanged.
+    #[inline]
+    pub fn reset(&mut self) {
+        self.ring.fill(0.0);
+        self.head = 0;
+        self.sum = 0.0;
+        self.count = 0;
+    }
+}
+
+impl core::fmt::Debug for Mosum {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("Mosum")
+            .field("window", &self.ring.len())
+            .field("count", &self.count)
+            .field("sum", &self.sum)
+            .finish()
+    }
+}
+
+impl MosumBuilder {
+    /// Window size (number of samples in the ring). Required.
+    #[inline]
+    #[must_use]
+    pub fn window_size(mut self, n: usize) -> Self {
+        self.window = Some(n);
+        self
+    }
+
+    /// Decision threshold on the moving sum. Required, positive.
+    #[inline]
+    #[must_use]
+    pub fn threshold(mut self, threshold: f64) -> Self {
+        self.threshold = Some(threshold);
+        self
+    }
+
+    /// Minimum samples before detection activates. Default: window size.
+    #[inline]
+    #[must_use]
+    pub fn min_samples(mut self, min: u64) -> Self {
+        self.min_samples = Some(min);
+        self
+    }
+
+    /// Builds the MOSUM detector.
+    ///
+    /// # Errors
+    ///
+    /// `ConfigError::Missing` if the window or threshold is unset;
+    /// `ConfigError::Invalid` for a zero window, a non-finite target or a
+    /// threshold that is not positive and finite.
+    pub fn build(self) -> Result<Mosum, nexus_stats_core::ConfigError> {
+        let window = self
+            .window
+            .ok_or(nexus_stats_core::ConfigError::Missing("window_size"))?;
+        if window == 0 {
+            return Err(nexus_stats_core::ConfigError::Invalid(
+                "window_size must be > 0",
+            ));
+        }
+        let threshold = self
+            .threshold
+            .ok_or(nexus_stats_core::ConfigError::Missing("threshold"))?;
+        if !self.target.is_finite() {
+            return Err(nexus_stats_core::ConfigError::Invalid(
+                "target must be finite",
+            ));
+        }
+        if !nexus_stats_core::math::positive_finite(threshold) {
+            return Err(nexus_stats_core::ConfigError::Invalid(
+                "threshold must be positive",
+            ));
+        }
+        Ok(Mosum {
+            target: self.target,
+            threshold,
+            ring: alloc::vec![0.0; window].into_boxed_slice(),
+            head: 0,
+            sum: 0.0,
+            count: 0,
+            min_samples: self.min_samples.unwrap_or(window as u64),
+        })
+    }
+}
+#[cfg(test)]
 #[allow(clippy::float_cmp)]
 mod tests {
     use super::*;

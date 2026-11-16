@@ -5,10 +5,10 @@ Fixed-memory, zero-allocation streaming statistics for real-time systems.
 Scalar primitives are O(1) per update; window and dimension types
 (`WindowedMedian`, `Kama`, `Hampel`, `Bocpd`, `RlsFilter`, `OnlineCovariance`,
 `OnlineKMeans`, `QuantileNorm`) cost O(window) or O(d²) and say so on their
-page. Memory is fixed after construction, except `Adwin`, whose bucket list
-grows O(log n). The crates are `no_std`; types marked *(alloc)* or
-*(std|libm)* in the tables below need those features. Designed for event
-loops, trading systems, and anywhere you need statistics without latency jitter.
+page. Memory is fixed after construction. The crates are `no_std`; types
+marked *(alloc)* or *(std|libm)* in the tables below need those features.
+Designed for event loops, trading systems, and anywhere you need statistics
+without latency jitter.
 
 ## Quick Start
 
@@ -64,7 +64,8 @@ for deep-dives on each algorithm.
 | `RobustZScore<f64>` | MAD-based outlier scoring with estimator freeze | 8 |
 | `AdaptiveThreshold` | Z-score anomalies with self-learning baseline | 7 |
 | `PageHinkley` | Sequential mean drift (Page-Hinkley test) | 6 |
-| `Adwin` | Adaptive window distribution change (ADWIN) | 68 |
+| `Adwin` | Adaptive window distribution change (ADWIN) | 63 |
+| `Bocpd` | Bayesian online change-point detection, run-length posterior (max run 64) | 3545 |
 
 ### Smoothing & Filtering
 
@@ -72,12 +73,12 @@ for deep-dives on each algorithm.
 |------|-----------------|-----|
 | `Ema` | Exponential moving average | 5 |
 | `AsymEma` | Different alpha for rising vs falling | 12 |
-| `Kama` | Kaufman adaptive MA (adapts to trend/noise) | 15 |
+| `Kama` | Kaufman adaptive MA (adapts to trend/noise) | 14 |
 | `Kalman1d` | 1D Kalman filter with velocity tracking | 26 |
 | `Holt` | Double exponential (level + trend) | 11 |
 | `Spring` | Critically damped spring (smooth target chasing) | 13 |
 | `Slew<f64>` | Hard rate-of-change clamp | 8 |
-| `WindowedMedian<f64>` | Robust median filter (outlier-immune) | 81 |
+| `WindowedMedian<f64>` | Robust median filter (outlier-immune) | 78 |
 
 ### Statistics
 

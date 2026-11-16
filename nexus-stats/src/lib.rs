@@ -6,7 +6,7 @@
 //! 60+ algorithms. Scalar types are O(1) per update; window and dimension types
 //! (`WindowedMedian`, `Kama`, `Hampel`, `Bocpd`, `RlsFilter`, `OnlineCovariance`,
 //! `OnlineKMeans`, `QuantileNorm`) cost O(window) or O(d²) and say so on their page.
-//! Memory is fixed after construction, except `Adwin` (O(log n) bucket list).
+//! Memory is fixed after construction.
 //! Core types are `no_std` compatible; types marked *(std)* require the `std` feature,
 //! *(alloc)* require `alloc`, and *(std|libm)* require either `std` or `libm`.
 //!
@@ -81,10 +81,10 @@
 //! |---------|--------|----------|
 //! | `smoothing` | `smoothing` | + Holt, Spring, Kalman1d, ConditionalEma, HuberEma, Kama *(alloc)*, Hampel *(alloc)*, WindowedMedian *(alloc)* |
 //! | `detection` | `detection` | + Mosum, ShiryaevRoberts, AdaptiveThreshold, RobustZScore, TrendAlert, MultiGate, PageHinkley, Adwin, Bocpd, DistDrift |
-//! | `detection` | `signal` | Autocorrelation, CrossCorrelation, Entropy, TransferEntropy, PredictiveInfoBound |
+//! | `detection` + `alloc` | `signal` | Autocorrelation, CrossCorrelation, Entropy *(std\|libm)*, TransferEntropy *(std\|libm)*, PredictiveInfoBound *(std\|libm)* |
 //! | `detection` | `estimation` | + SprtBernoulli, SprtGaussian |
 //! | `regression` | `regression` | LinearRegression, PolynomialRegression, EwLinearRegression, EwPolynomialRegression, ExponentialRegression, LogarithmicRegression, PowerRegression (+ `Ew*`), LogisticRegression, KyleLambda, LaggedPredictor, SignalDecayCurve |
-//! | `regression` | `learning` | LmsFilter, NlmsFilter, RlsFilter, HuberRegression, OnlineKMeans, OnlineGd, AdaGrad, Adam, Ucb1, ThompsonBeta, ThompsonGamma, EpsilonGreedy, Exp3 |
+//! | `regression` + `alloc` | `learning` | LmsFilter, NlmsFilter, RlsFilter, HuberRegression, OnlineKMeans, OnlineGd, AdaGrad, Adam, Ucb1, ThompsonBeta, ThompsonGamma, EpsilonGreedy, Exp3 |
 //! | `regression` | `estimation` | + Kalman2d, Kalman3d, BetaBinomial, GammaPoisson |
 //! | `control` | `control` | + PeakDetector, BoolWindow *(alloc)* |
 //! | `control` | `frequency` | FlexProportionGlobal, FlexProportionLocal, TopK *(alloc)*, DecayAccum *(std\|libm)* |
@@ -176,7 +176,7 @@ pub mod control {
 /// Signal analysis and information theory.
 ///
 /// Requires the `detection` feature.
-#[cfg(feature = "detection")]
+#[cfg(all(feature = "detection", feature = "alloc"))]
 pub mod signal {
     pub use nexus_stats_detection::signal::*;
 }
@@ -205,7 +205,7 @@ pub mod regression {
 /// Adaptive filters, online learning, and optimization.
 ///
 /// Requires the `regression` feature.
-#[cfg(feature = "regression")]
+#[cfg(all(feature = "regression", feature = "alloc"))]
 pub mod learning {
     pub use nexus_stats_regression::learning::*;
 }

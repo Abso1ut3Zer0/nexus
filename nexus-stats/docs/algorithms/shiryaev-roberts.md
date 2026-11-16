@@ -5,7 +5,7 @@ detection delay among all sequential procedures.
 
 | Property | Value |
 |----------|-------|
-| Update cost | 17 cycles |
+| Update cost | 18 cycles |
 | Memory | ~24 bytes |
 | Types | `ShiryaevRoberts` |
 | Output | `Option<bool>` — true when change detected |
@@ -52,7 +52,7 @@ Currently assumes normal distribution for the likelihood ratio.
 
 | Operation | p50 | p99 |
 |-----------|-----|-----|
-| `ShiryaevRoberts::update` | 18 cycles | 22 cycles |
+| `ShiryaevRoberts::update` | 18 cycles | 21 cycles |
 
 Dominated by one `exp()` call for the likelihood ratio computation.
 

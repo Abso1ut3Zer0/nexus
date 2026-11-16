@@ -40,6 +40,8 @@ contained.
 - `PeakDetector::new` rejects an infinite prominence; `BoolWindow` counts
   failures in `usize` (its capacity type), so a window above `u32::MAX`
   cannot overflow the counter.
+- **`BoolWindow` stores its bits as `Box<[u64]>`:** no raw pointer, manual
+  `Drop` / `Clone` or `unsafe impl Send`; the type is `Sync` now. Same API.
 
 ### Fixed
 

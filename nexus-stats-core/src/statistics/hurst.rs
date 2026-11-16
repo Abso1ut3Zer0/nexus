@@ -61,10 +61,12 @@ impl Hurst {
         check_finite!(value);
 
         self.count += 1;
-        self.window.push_back(value);
-        if self.window.len() > self.window_size {
+        // Pop first: pushing first holds `window_size + 1` values for a
+        // moment, one past the reservation, and reallocates at the first wrap.
+        if self.window.len() == self.window_size {
             self.window.pop_front();
         }
+        self.window.push_back(value);
 
         Ok(())
     }

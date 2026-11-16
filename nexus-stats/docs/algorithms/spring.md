@@ -120,7 +120,7 @@ let sy = cam_y.update(player_y, dt).unwrap();
 
 | Operation | p50 | p99 |
 |-----------|-----|-----|
-| `Spring::update` | 13 cycles | 14 cycles |
+| `Spring::update` | 13 cycles | 13 cycles |
 
 ~10 floating-point ops. No transcendentals (Padé approximant avoids
 `exp()`). Consistent timing — no data-dependent branches.

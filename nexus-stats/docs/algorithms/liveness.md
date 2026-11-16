@@ -92,8 +92,8 @@ let mut heartbeat = Liveness::builder()
 
 | Operation | p50 | p99 |
 |-----------|-----|-----|
-| `Liveness::update` | 7 cycles | 16 cycles |
-| `Liveness::check` | 1 cycles | 1 cycles |
+| `Liveness::update` | 7 cycles | 8 cycles |
+| `Liveness::check` | 1 cycles | 2 cycles |
 
 `update()` includes one EMA update. `check()` is one subtraction +
 one comparison.

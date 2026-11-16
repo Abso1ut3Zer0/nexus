@@ -48,7 +48,7 @@ for (key, count) in &buf[..n] {
 
 | Operation | p50 | p99 |
 |-----------|-----|-----|
-| `TopK::update` (16 slots) | 36 cycles | 44 cycles |
+| `TopK::update` (16 slots) | 36 cycles | 43 cycles |
 
 Linear scan over `capacity` entries. Above a few dozen, consider a min-heap variant.
 

@@ -217,7 +217,7 @@ println!("rate: {:.2} units/$", r.slope().unwrap());
 | Answers | "What's the rate of change?" | "What's the current level?" |
 | Model | y = ax + b (parametric) | Weighted average (non-parametric) |
 | Memory | 48 bytes | 24 bytes |
-| Update cost | 7 cycles | 5 cycles |
+| Update cost | 7 cycles | 6 cycles |
 
 Use LinearRegression when you need the *trend direction and rate*.
 Use EMA when you need a *smoothed current value*.
@@ -227,8 +227,8 @@ Use EMA when you need a *smoothed current value*.
 | Operation | p50 |
 |-----------|-----|
 | `LinearRegression::update` | 7 cycles |
-| `slope()` query | 4 cycles |
-| `r_squared()` query | 15 cycles |
+| `slope()` query | 5 cycles |
+| `r_squared()` query | 14 cycles |
 | `predict(x)` query | 7 cycles |
 
 No matrix solve — all queries are direct formulas.

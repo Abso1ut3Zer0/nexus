@@ -65,6 +65,6 @@ if let Some((level, trend)) = holt.update(sample).unwrap() {
 
 | Operation | p50 | p99 |
 |-----------|-----|-----|
-| `Holt::update` | 11 cycles | 11 cycles |
+| `Holt::update` | 11 cycles | 12 cycles |
 
 Two multiply-adds per update (fused on targets with `+fma`). No division, no transcendentals.

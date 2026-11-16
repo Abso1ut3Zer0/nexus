@@ -5,7 +5,7 @@ from streaming data with controlled error rates and minimal samples.
 
 | Property | Value |
 |----------|-------|
-| Update cost | 18 cycles |
+| Update cost | 17 cycles |
 | Memory | 48-88 bytes |
 | Types | `SprtBernoulli`, `SprtGaussian` |
 | Priming | Immediate (can decide after 1 observation) |
@@ -174,8 +174,8 @@ Use SPRT for experiments, CUSUM for alerting.
 
 | Operation | p50 |
 |-----------|-----|
-| `SprtBernoulli::update` | 18 cycles |
-| `SprtGaussian::update` | 8 cycles |
+| `SprtBernoulli::update` | 17 cycles |
+| `SprtGaussian::update` | 7 cycles |
 | Builder (one-time) | ~50 cycles (includes ln) |
 
 ## Academic Reference

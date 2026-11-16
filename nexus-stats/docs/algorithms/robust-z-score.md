@@ -6,7 +6,7 @@ WindowedMedian (O(1) vs O(N)), more robust than AdaptiveThreshold
 
 | Property | Value |
 |----------|-------|
-| Update cost | 8 cycles |
+| Update cost | 7 cycles |
 | Memory | ~32 bytes |
 | Types | `RobustZScore<f64>`, `RobustZScore<f32>` |
 | Output | `Option<f64>` — modified z-score |
@@ -54,4 +54,4 @@ if let Some(z) = rz.update(sample).unwrap() {
 
 | Operation | p50 | p99 |
 |-----------|-----|-----|
-| `RobustZScore::<f64>::update` | 8 cycles | 8 cycles |
+| `RobustZScore::<f64>::update` | 7 cycles | 8 cycles |

@@ -5,7 +5,7 @@ for circuit breakers.
 
 | Property | Value |
 |----------|-------|
-| Update cost | 5 cycles |
+| Update cost | 6 cycles |
 | Memory | ~24 bytes |
 | Types | `Drawdown<f64>`, `Drawdown<i64>` |
 | Output | Current drawdown value |
@@ -55,6 +55,6 @@ Zero config — just create and update. Implements `Default`.
 
 | Operation | p50 | p99 |
 |-----------|-----|-----|
-| `Drawdown::<f64>::update` | 5 cycles | 6 cycles |
+| `Drawdown::<f64>::update` | 6 cycles | 6 cycles |
 
 One comparison + one conditional update. Pure arithmetic.
