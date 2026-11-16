@@ -5,7 +5,7 @@ exponential smoothing. Signals when the trend component exceeds a threshold.
 
 | Property | Value |
 |----------|-------|
-| Update cost | 11 cycles |
+| Update cost | 10 cycles |
 | Memory | ~40 bytes |
 | Types | `TrendAlert` |
 | Output | `Option<Direction>` — `Neutral`, `Rising`, or `Falling` |
@@ -60,4 +60,4 @@ Supports both absolute and relative thresholds.
 
 | Operation | p50 | p99 |
 |-----------|-----|-----|
-| `TrendAlert::update` | 11 cycles | 11 cycles |
+| `TrendAlert::update` | 10 cycles | 11 cycles |

@@ -150,7 +150,7 @@ samples (tick counts, queue depths) to `f64` at the call site.
 |-----------|-----|
 | `Autocorrelation::update` (lag=1) | 12 cycles |
 | `Autocorrelation::update` (lag=10) | 13 cycles |
-| `correlation()` query | 7 cycles |
+| `correlation()` query | 6 cycles |
 
 The update cost is dominated by the Welford mean/variance update
 (one division). Buffer management is a single array write + modular

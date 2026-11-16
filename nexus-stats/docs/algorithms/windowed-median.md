@@ -5,7 +5,7 @@ Robust to outliers — the median ignores them entirely.
 
 | Property | Value |
 |----------|-------|
-| Update cost | 78 cycles (N=32) |
+| Update cost | 79 cycles (N=32) |
 | Memory | ~2×N×8 bytes |
 | Types | `WindowedMedian<f64>`, `WindowedMedian<i64>` |
 | Requires | `alloc` feature (runtime window size) |
@@ -67,7 +67,7 @@ if let Some(z) = median.modified_z_score(sample) {
 
 | Operation | p50 | p99 |
 |-----------|-----|-----|
-| `WindowedMedian::<f64>::update` (N=32) | 78 cycles | 95 cycles |
+| `WindowedMedian::<f64>::update` (N=32) | 79 cycles | 85 cycles |
 | `median()` query | O(1) | — |
 | `mad()` query (N=32) | 44 cycles | 51 cycles |
 

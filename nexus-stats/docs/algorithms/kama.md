@@ -95,7 +95,7 @@ if let Some(er) = price_kama.efficiency_ratio() {
 
 | Operation | p50 | p99 |
 |-----------|-----|-----|
-| `Kama::update` (window=10) | 14 cycles | 14 cycles |
+| `Kama::update` (window=10) | 14 cycles | 17 cycles |
 
 O(N) volatility recompute per update. For N=10, that's 9 subtractions
 + absolute values. Negligible for typical window sizes.

@@ -5,7 +5,7 @@ O(1) per update, 16-32 bytes, pure arithmetic.
 
 | Property | Value |
 |----------|-------|
-| Update cost | 12 cycles |
+| Update cost | 13 cycles |
 | Types | `BetaBinomial`, `GammaPoisson` |
 | Memory | 32 bytes (f64) |
 | Priming | After 1 observation |
@@ -160,6 +160,6 @@ numbers for monitoring, not statistical inference at small n.
 
 | Operation | p50 |
 |-----------|-----|
-| `update()` | 12 cycles |
-| `mean()` | 2 cycles |
-| `credible_interval()` | 9 cycles (includes sqrt + rational approx) |
+| `update()` | 13 cycles |
+| `mean()` | 3 cycles |
+| `credible_interval()` | 10 cycles (includes sqrt + rational approx) |

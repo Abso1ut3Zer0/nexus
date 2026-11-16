@@ -5,7 +5,7 @@ Online Pearson correlation between two streams at multiple lags.
 
 | Property | Value |
 |----------|-------|
-| Update cost | 26 cycles (LAG=10) |
+| Update cost | 30 cycles (LAG=10) |
 | Memory | `16×LAG + 48` bytes |
 | Types | `CrossCorrelation` |
 | Priming | After `LAG + 2` paired observations |
@@ -154,6 +154,6 @@ confirm directionality.
 
 | Operation | p50 |
 |-----------|-----|
-| `CrossCorrelation::update` (lag=10) | 26 cycles |
-| `correlation(lag)` query | 10 cycles (includes `sqrt`) |
-| `peak_lag()` query | 29 cycles (scans all lags) |
+| `CrossCorrelation::update` (lag=10) | 30 cycles |
+| `correlation(lag)` query | 9 cycles (includes `sqrt`) |
+| `peak_lag()` query | 31 cycles (scans all lags) |

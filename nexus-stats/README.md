@@ -64,8 +64,8 @@ for deep-dives on each algorithm.
 | `RobustZScore<f64>` | MAD-based outlier scoring with estimator freeze | 8 |
 | `AdaptiveThreshold` | Z-score anomalies with self-learning baseline | 7 |
 | `PageHinkley` | Sequential mean drift (Page-Hinkley test) | 6 |
-| `Adwin` | Adaptive window distribution change (ADWIN) | 63 |
-| `Bocpd` | Bayesian online change-point detection, run-length posterior (max run 64) | 3545 |
+| `Adwin` | Adaptive window distribution change (ADWIN) | 64 |
+| `Bocpd` | Bayesian online change-point detection, run-length posterior (max run 64) | 3720 |
 
 ### Smoothing & Filtering
 
@@ -78,7 +78,7 @@ for deep-dives on each algorithm.
 | `Holt` | Double exponential (level + trend) | 11 |
 | `Spring` | Critically damped spring (smooth target chasing) | 13 |
 | `Slew<f64>` | Hard rate-of-change clamp | 8 |
-| `WindowedMedian<f64>` | Robust median filter (outlier-immune) | 78 |
+| `WindowedMedian<f64>` | Robust median filter (outlier-immune) | 79 |
 
 ### Statistics
 

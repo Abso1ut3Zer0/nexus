@@ -5,7 +5,7 @@ exponentially weighting recent samples more heavily than older ones.
 
 | Property | Value |
 |----------|-------|
-| Update cost | 6 cycles |
+| Update cost | 5 cycles |
 | Memory | ~24 bytes |
 | Types | `Ema` |
 | Priming | Configurable via `min_samples` |
@@ -233,7 +233,7 @@ if let (Some(slow), Some(fast_val)) = (baseline.update(x).unwrap(), fast.update(
 
 | Operation | p50 | p99 |
 |-----------|-----|-----|
-| `Ema::update` | 6 cycles | 6 cycles |
+| `Ema::update` | 5 cycles | 6 cycles |
 
 `update` is one multiply-add (a fused FMA instruction when the target has
 `+fma`, else `a * b + c`) plus the priming count.

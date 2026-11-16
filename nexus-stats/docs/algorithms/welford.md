@@ -6,7 +6,7 @@ Chan's algorithm.
 
 | Property | Value |
 |----------|-------|
-| Update cost | 14 cycles |
+| Update cost | 13 cycles |
 | Memory | ~24 bytes |
 | Types | `Welford` |
 | Priming | Mean after 1 sample, variance after 2 |
@@ -154,8 +154,8 @@ for w in &per_worker {
 
 | Operation | p50 | p99 |
 |-----------|-----|-----|
-| `Welford::update` | 14 cycles | 14 cycles |
-| `Welford::std_dev` query | 6 cycles | 8 cycles |
+| `Welford::update` | 13 cycles | 13 cycles |
+| `Welford::std_dev` query | 7 cycles | 7 cycles |
 
 The update includes one division (`delta / count`). The `std_dev()` query
 includes one `sqrt` (hardware `vsqrtsd`, ~13 cycles latency but pipelined).
