@@ -6,8 +6,9 @@ Scalar primitives are O(1) per update; window and dimension types
 (`WindowedMedian`, `Kama`, `Hampel`, `Bocpd`, `RlsFilter`, `OnlineCovariance`,
 `OnlineKMeans`, `QuantileNorm`) cost O(window) or O(d²) and say so on their
 page. Memory is fixed after construction, except `Adwin`, whose bucket list
-grows O(log n). Everything is `no_std` compatible. Designed for event loops,
-trading systems, and anywhere you need statistics without latency jitter.
+grows O(log n). The crates are `no_std`; types marked *(alloc)* or
+*(std|libm)* in the tables below need those features. Designed for event
+loops, trading systems, and anywhere you need statistics without latency jitter.
 
 ## Quick Start
 
