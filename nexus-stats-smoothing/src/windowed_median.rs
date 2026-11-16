@@ -89,6 +89,7 @@ impl<T: Sample> WindowedMedian<T> {
                 sorted[insert_pos] = sample;
             } else {
                 let insert_pos = remove_pos + rank_le(&sorted[remove_pos + 1..len], sample);
+                // Empty when the sample lands in the vacated slot itself.
                 sorted.copy_within(remove_pos + 1..=insert_pos, remove_pos);
                 sorted[insert_pos] = sample;
             }
@@ -559,10 +560,12 @@ mod tests {
         let _ = wm.quantile(1.5);
     }
 
-    /// `mad()` against the textbook definition (sort the absolute deviations,
-    /// take their median) for every window length, odd and even, with ties.
+    /// Median, extremes and `mad()` against a sorted copy of the window (MAD by
+    /// the textbook definition: sort the absolute deviations, take their
+    /// median) for every window length, odd and even, growing and full, with
+    /// plenty of ties.
     #[test]
-    fn mad_matches_sorted_deviations_for_every_window_length() {
+    fn matches_a_sorted_copy_for_every_window_length() {
         let mut rng = 0x9E37_79B9_7F4A_7C15u64;
         for window in 1..=40 {
             let mut wm = WindowedMedian::<f64>::new(window);
@@ -587,7 +590,7 @@ mod tests {
                 let median_f = if len % 2 == 1 {
                     recent[len / 2] as f64
                 } else {
-                    (recent[len / 2 - 1] as f64 + recent[len / 2] as f64) / 2.0
+                    f64::midpoint(recent[len / 2 - 1] as f64, recent[len / 2] as f64)
                 };
                 let mut dev_i: Vec<i64> = recent.iter().map(|&v| (v - median_i).abs()).collect();
                 dev_i.sort_unstable();
@@ -604,11 +607,35 @@ mod tests {
                 let mad_f = if len % 2 == 1 {
                     dev_f[len / 2]
                 } else {
-                    (dev_f[len / 2 - 1] + dev_f[len / 2]) / 2.0
+                    f64::midpoint(dev_f[len / 2 - 1], dev_f[len / 2])
                 };
+                assert_eq!(wi.median(), Some(median_i), "i64 window {window} len {len}");
+                assert_eq!(wm.median(), Some(median_f), "f64 window {window} len {len}");
+                assert_eq!(wm.quantile(0.0), Some(recent[0] as f64));
+                assert_eq!(wm.quantile(1.0), Some(recent[len - 1] as f64));
                 assert_eq!(wi.mad(), Some(mad_i), "i64 window {window} len {len}");
                 assert_eq!(wm.mad(), Some(mad_f), "f64 window {window} len {len}");
             }
         }
+    }
+
+    /// The new sample lands exactly where the evicted one was, from above
+    /// (`evicted < sample <= next`) and from below (`prev <= sample < evicted`):
+    /// the shift is empty and the slot is simply overwritten.
+    #[test]
+    fn sample_landing_in_the_vacated_slot() {
+        let mut wm = WindowedMedian::<f64>::new(3);
+        for x in [1.0, 5.0, 9.0] {
+            wm.update(x).unwrap();
+        }
+        // Evicts 1.0; 3.0 sits before 5.0, i.e. in slot 0 where 1.0 was.
+        wm.update(3.0).unwrap();
+        assert_eq!(wm.median(), Some(5.0));
+        assert_eq!(wm.quantile(0.0), Some(3.0));
+        // Evicts 5.0; 4.0 sits after 3.0, i.e. in slot 1 where 5.0 was.
+        wm.update(4.0).unwrap();
+        assert_eq!(wm.median(), Some(4.0));
+        assert_eq!(wm.quantile(0.0), Some(3.0));
+        assert_eq!(wm.quantile(1.0), Some(9.0));
     }
 }

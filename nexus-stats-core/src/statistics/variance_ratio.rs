@@ -288,4 +288,46 @@ mod tests {
         let mut vr = VarianceRatio::builder().q(5).alpha(0.05).build().unwrap();
         assert!(vr.update(f64::INFINITY).is_err());
     }
+
+    /// Against the definition computed from a plain history `Vec`: the 1-period
+    /// and q-period returns feed two `EwmaVar`s exactly as the type does, so
+    /// the ratio must match step by step, including when it is `None`.
+    #[test]
+    fn matches_the_definition_on_a_history_vec() {
+        let q = 5usize;
+        let alpha = 0.1;
+        let mut vr = VarianceRatio::builder().q(q).alpha(alpha).build().unwrap();
+        let mut short = EwmaVar::builder().alpha(alpha).build().unwrap();
+        let mut long = EwmaVar::builder().alpha(alpha).build().unwrap();
+        let mut history: Vec<f64> = Vec::new();
+        for t in 0..300u32 {
+            let v = (f64::from(t) * 0.37)
+                .sin()
+                .mul_add(3.0, f64::from(t) * 0.02);
+            vr.update(v).unwrap();
+            history.push(v);
+            let len = history.len();
+            if len >= 2 {
+                let _ = short.update(v - history[len - 2]).unwrap();
+            }
+            if len > q {
+                let _ = long.update(v - history[len - 1 - q]).unwrap();
+            }
+            let expected = match (short.variance(), long.variance()) {
+                (Some(var1), Some(var_q)) if var1 > 0.0 => Some(var_q / (q as f64 * var1)),
+                _ => None,
+            };
+            match (vr.variance_ratio(), expected) {
+                (None, None) => {}
+                (Some(got), Some(want)) => {
+                    assert!(
+                        (got - want).abs() <= 1e-12 * want.abs().max(1.0),
+                        "t={t}: {got} vs {want}"
+                    );
+                }
+                (got, want) => panic!("t={t}: got {got:?}, expected {want:?}"),
+            }
+        }
+        assert!(vr.is_primed());
+    }
 }

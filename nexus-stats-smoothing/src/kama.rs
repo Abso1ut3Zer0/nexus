@@ -424,4 +424,52 @@ mod tests {
         ));
         assert_eq!(kama.count(), 0);
     }
+
+    /// Value and efficiency ratio against the formula computed on a plain
+    /// history `Vec`, step by step, through several wraps of the ring.
+    #[test]
+    fn matches_the_formula_on_a_history_vec() {
+        let n = 7usize;
+        let mut kama = Kama::builder()
+            .window_size(n)
+            .fast_span(2)
+            .slow_span(30)
+            .build()
+            .unwrap();
+        let fast_sc = 2.0 / 3.0;
+        let slow_sc = 2.0 / 31.0;
+        let mut history: Vec<f64> = Vec::new();
+        let mut value = 0.0;
+        for t in 0..60u32 {
+            let x = (f64::from(t) * 0.7).sin().mul_add(5.0, f64::from(t) * 0.3);
+            let got = kama.update(x).unwrap();
+            history.push(x);
+            if history.len() <= n {
+                value = x;
+                assert_eq!(kama.efficiency_ratio(), None);
+            } else {
+                let recent = &history[history.len() - n..];
+                let volatility: f64 = recent.windows(2).map(|w| (w[1] - w[0]).abs()).sum();
+                let direction = (x - recent[0]).abs();
+                let er = if volatility > 0.0 {
+                    direction / volatility
+                } else {
+                    0.0
+                };
+                let sc = er * (fast_sc - slow_sc) + slow_sc;
+                value = (sc * sc).fma(x - value, value);
+                let got_er = kama.efficiency_ratio().unwrap();
+                assert!((got_er - er).abs() <= 1e-12, "t={t}: er {got_er} vs {er}");
+            }
+            if history.len() >= n {
+                let got = got.unwrap();
+                assert!(
+                    (got - value).abs() <= 1e-12 * value.abs().max(1.0),
+                    "t={t}: value {got} vs {value}"
+                );
+            } else {
+                assert_eq!(got, None);
+            }
+        }
+    }
 }

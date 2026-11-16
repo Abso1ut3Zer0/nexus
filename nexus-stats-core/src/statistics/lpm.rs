@@ -68,10 +68,9 @@ impl Lpm {
         // Clamp instead of branching: for a return stream around the target,
         // `shortfall > 0` is a coin flip for the branch predictor. A zero
         // shortfall adds zero for every order.
-        let shortfall = self.target - sample;
-        let shortfall = if shortfall > 0.0 { shortfall } else { 0.0 };
+        let shortfall = (self.target - sample).max(0.0);
         match self.order {
-            0 => self.sum += f64::from(u8::from(shortfall > 0.0)),
+            0 => self.sum += crate::math::indicator(shortfall > 0.0),
             1 => self.sum += shortfall,
             2 => self.sum += shortfall * shortfall,
             d => {

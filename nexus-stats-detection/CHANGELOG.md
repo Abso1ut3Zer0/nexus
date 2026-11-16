@@ -22,8 +22,8 @@ contained.
   boundary type for `f32` feature pipelines, no longer an `f32` accumulator.
 - **Hot-path pass before release.** `Autocorrelation`, `CrossCorrelation`,
   `TransferEntropy` and `Mosum` advance their ring index with a compare
-  instead of a division; `CrossCorrelation` walks the two halves of its ring
-  as contiguous slices, removing the per-lag `% lag` from its inner loop.
+  instead of a division; `CrossCorrelation` walks its ring newest-first
+  through one iterator, removing the per-lag `% lag` from its inner loop.
   `PageHinkley` tracks its running extrema with selects instead of branches.
 
 ### Removed
