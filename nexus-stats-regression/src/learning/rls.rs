@@ -209,7 +209,8 @@ impl RlsFilter {
         self.count
     }
 
-    /// Returns the P matrix diagonal (covariance estimates).
+    /// Returns the P matrix, d×d row-major: the parameter covariance estimate
+    /// (`p[i * d + i]` is the variance of weight `i`).
     #[inline]
     #[must_use]
     pub fn covariance(&self) -> &[f64] {

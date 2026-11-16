@@ -47,6 +47,9 @@ use alloc::vec;
 /// let (arm, prob) = bandit.select(&mut rng);
 /// bandit.update(arm, 0.8, prob).unwrap();
 /// ```
+///
+/// `Exp3` is `!Sync`: `select` takes `&self` but writes an internal scratch
+/// buffer, so share it across threads through `&mut` (or one per thread).
 #[derive(Debug)]
 pub struct Exp3 {
     log_weights: Box<[f64]>,
@@ -106,9 +109,14 @@ impl Exp3 {
     pub fn select(&self, rng: &mut impl FnMut() -> f64) -> (usize, f64) {
         let k = self.num_arms as f64;
         let gamma = self.gamma;
+        // Drawn before the scratch borrow below: `rng` is caller code, and
+        // nothing of the caller's may run while that borrow is live.
+        let u = rng();
 
-        // SAFETY: scratch is a write-only cache derived from log_weights.
-        // No reference escapes this method and select() is not reentrant.
+        // SAFETY: `scratch` is touched only inside this method, the borrow
+        // never escapes it, and no caller code runs while it is live (the
+        // only callback, `rng`, was already drawn), so no second borrow of
+        // the cell can be created. The `UnsafeCell` is why `Exp3` is `!Sync`.
         let scratch = unsafe { &mut *self.scratch.get() };
 
         let max_lw = self
@@ -126,7 +134,6 @@ impl Exp3 {
 
         let scale = (1.0 - gamma) / sum_exp;
         let gamma_over_k = gamma / k;
-        let u = rng();
         let mut cumulative = 0.0;
 
         // CDF sampling from cached exp values — no exp() calls

@@ -2,9 +2,12 @@
 
 Fixed-memory, zero-allocation streaming statistics for real-time systems.
 
-Every primitive is O(1) per update, fixed memory after construction, and
-`no_std` compatible. Designed for event loops, trading systems, and
-anywhere you need statistics without latency jitter.
+Scalar primitives are O(1) per update; window and dimension types
+(`WindowedMedian`, `Kama`, `Hampel`, `Bocpd`, `RlsFilter`, `OnlineCovariance`,
+`OnlineKMeans`, `QuantileNorm`) cost O(window) or O(d²) and say so on their
+page. Memory is fixed after construction, except `Adwin`, whose bucket list
+grows O(log n). Everything is `no_std` compatible. Designed for event loops,
+trading systems, and anywhere you need statistics without latency jitter.
 
 ## Quick Start
 

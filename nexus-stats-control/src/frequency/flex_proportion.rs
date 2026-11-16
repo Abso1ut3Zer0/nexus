@@ -125,7 +125,8 @@ impl FlexProportionGlobal {
         self.events
     }
 
-    /// Current decay period: how many times the counts have halved.
+    /// Current decay period: how many times the counts have halved. `reset`
+    /// advances it by 64, so locals from before the reset read as zero.
     #[inline]
     #[must_use]
     pub fn period(&self) -> u64 {
@@ -155,10 +156,15 @@ impl FlexProportionGlobal {
 
     /// Clears the population. Locals that belonged to it read as zero until
     /// they are updated again, and should be reset or dropped alongside.
+    ///
+    /// The period jumps forward by 64 rather than back to zero: a local
+    /// reads `events >> (global.period - local.period)` and zero once that
+    /// gap reaches 64, so every existing local is zero by construction, and
+    /// no later growth of the global can land on a stale local's period.
     #[inline]
     pub fn reset(&mut self) {
         self.events = 0;
-        self.period = 0;
+        self.period += u64::from(u64::BITS);
         self.since_period = 0;
         self.count = 0;
     }
@@ -340,7 +346,7 @@ mod tests {
         global.reset();
         a.reset();
         assert_eq!(global.count(), 0);
-        assert_eq!(global.period(), 0);
+        assert_eq!(global.events(), 0);
         assert_eq!(a.fraction(&global), 0.0);
         global.update(&mut a);
         assert_eq!(a.fraction(&global), 1.0);
@@ -363,6 +369,37 @@ mod tests {
         global.update(&mut stale);
         assert_eq!(stale.events(&global), 1);
         assert_eq!(global.events(), 4);
+    }
+
+    /// A reset taken before the first halving used to leave the stale
+    /// local on the same period as the fresh global, handing its old count
+    /// straight back as current.
+    #[test]
+    fn reset_inside_period_zero_does_not_hand_back_stale_counts() {
+        let mut global = FlexProportionGlobal::new(10).unwrap();
+        let mut stale = FlexProportionLocal::new();
+        let mut fresh = FlexProportionLocal::new();
+        feed(&mut global, &mut stale, 5); // still period 0
+        global.reset();
+        feed(&mut global, &mut fresh, 3);
+        assert_eq!(stale.events(&global), 0);
+        assert_eq!(stale.fraction(&global), 0.0);
+        assert_eq!(fresh.fraction(&global), 1.0);
+    }
+
+    /// The global regrowing to the stale local's old period number must
+    /// not revive it either.
+    #[test]
+    fn stale_local_stays_zero_when_the_global_regrows() {
+        let mut global = FlexProportionGlobal::new(10).unwrap();
+        let mut stale = FlexProportionLocal::new();
+        let mut fresh = FlexProportionLocal::new();
+        feed(&mut global, &mut stale, 55); // period 5
+        global.reset();
+        feed(&mut global, &mut fresh, 55); // five more halvings
+        assert_eq!(stale.events(&global), 0);
+        assert_eq!(stale.fraction(&global), 0.0);
+        assert_eq!(fresh.fraction(&global), 1.0);
     }
 
     #[test]

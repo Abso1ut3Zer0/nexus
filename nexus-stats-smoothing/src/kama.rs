@@ -6,13 +6,16 @@ use nexus_stats_core::math::MulAdd;
 /// the alpha increases (fast response). In noisy/choppy markets,
 /// the alpha decreases (slow response).
 ///
-/// The efficiency ratio = |direction| / volatility, where:
-/// - direction = price_now - price_N_ago
-/// - volatility = sum of |price_i - price_{i-1}| over N periods
+/// The efficiency ratio = |direction| / volatility over the window's N
+/// samples, where:
+/// - direction = |newest - oldest|
+/// - volatility = sum of |price_i - price_{i-1}| over the N-1 intervals
 ///
 /// The window size is specified at runtime via the builder. The ring
 /// buffer is heap-allocated once during `build()` — no allocation
-/// after construction.
+/// after construction. Each update is O(window): the volatility sum is
+/// recomputed over the window rather than kept as a running total, so it
+/// cannot drift.
 ///
 /// # Use Cases
 /// - Adaptive smoothing that auto-tunes to market conditions

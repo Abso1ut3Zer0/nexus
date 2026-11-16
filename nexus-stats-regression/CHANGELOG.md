@@ -23,6 +23,14 @@ contained.
   `EwPowerRegression::predict` called `f64::powf` directly, which only exists
   with `std`; they now use `nexus_stats_core::math::powf` (`libm::pow` under
   `libm`).
+- **`Exp3::select` could alias its scratch buffer from safe code.** The
+  caller's `rng` closure ran while the `&mut` into the internal `UnsafeCell`
+  scratch was live, so a closure that re-entered `select` on the same
+  `&Exp3` created a second `&mut` to the same memory. The random draw now
+  happens before the borrow, so no caller code runs while it is live. The
+  type doc states that `Exp3` is `!Sync`.
+- **`RlsFilter::covariance` doc** said "P matrix diagonal"; it returns the
+  full d×d row-major matrix, and now says so.
 
 ## [2.0.0] — 2026-05-28
 

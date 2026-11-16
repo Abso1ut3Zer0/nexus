@@ -167,6 +167,7 @@ contained.
   update ([#763](https://github.com/Abso1ut3Zer0/nexus/issues/763)).
 - `nexus-stats-core/docs` rewritten against the shipped API: the `Instant`
   types it described never existed.
+- `Hurst` states its cost: O(1) per `update`, O(window) per `hurst()` query.
 
 ## [3.0.1] — 2026-06-05
 

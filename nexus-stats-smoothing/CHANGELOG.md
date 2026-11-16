@@ -24,8 +24,7 @@ contained.
   (`quantile` was `f64` only). Construct as `WindowedMedian::<i64>::new(n)`.
 - **Hot-path pass before release.** `WindowedMedian::update` ranks the
   evicted and the new sample with a vectorized linear count up to 64
-  elements (a binary search above that; neither has a data-dependent jump)
-  and shifts with one `copy_within`, leaving no `unsafe` in the update path;
+  elements (a binary search above that) and shifts with one `copy_within`;
   the ring index advances with a compare instead of a division. `Kama`
   indexes its ring by the head it already carried instead of
   `count % window`, and `Hampel::update` has no `unwrap` left.
@@ -41,6 +40,10 @@ contained.
   allocation, no sort, no data-dependent branch, same value (tested against
   the sorted definition for every window length up to 40). `mad()` at N=32:
   341 → 48 ticks; `Hampel(21)::update` 250 → 96.
+- Docs: the crate doc claimed O(1) per update for every type; the windowed
+  types (`WindowedMedian`, `Kama`, `Hampel`) are O(window) and the doc now
+  says so. `Kama`'s doc states its per-update cost and the N-1 intervals its
+  volatility spans; the types table lists `ConditionalEma`.
 
 ## [2.0.0] — 2026-05-28
 

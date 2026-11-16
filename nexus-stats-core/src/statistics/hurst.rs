@@ -8,7 +8,8 @@ use alloc::collections::VecDeque;
 ///
 /// This is intended for bucket-level updates (e.g., per-bar), not
 /// tick-by-tick data, since R/S analysis requires a reasonable
-/// sample size to be meaningful.
+/// sample size to be meaningful. `update` is O(1); the `hurst()` query
+/// is O(window).
 ///
 /// # Examples
 ///
