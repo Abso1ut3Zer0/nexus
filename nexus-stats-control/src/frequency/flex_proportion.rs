@@ -207,15 +207,15 @@ impl FlexProportionLocal {
     }
 
     /// The count this local would hold once reconciled to `period`: halved
-    /// once per elapsed period, zero past 63 of them. The kernel's
+    /// once per elapsed period, zero past 63 of them. A local that is
+    /// *ahead* of the period belongs to a population that was reset since it
+    /// was last touched; its count is stale and reads as zero. The kernel's
     /// `fprop_reflect_period_single`, without the write.
     #[inline]
     fn events_at(&self, period: u64) -> u64 {
-        let elapsed = period.saturating_sub(self.period);
-        if elapsed >= u64::BITS as u64 {
-            0
-        } else {
-            self.events >> elapsed
+        match period.checked_sub(self.period) {
+            Some(elapsed) if elapsed < u64::BITS as u64 => self.events >> elapsed,
+            _ => 0,
         }
     }
 
@@ -344,6 +344,25 @@ mod tests {
         assert_eq!(a.fraction(&global), 0.0);
         global.update(&mut a);
         assert_eq!(a.fraction(&global), 1.0);
+    }
+
+    #[test]
+    fn local_from_before_a_global_reset_reads_zero_and_restarts() {
+        let mut global = FlexProportionGlobal::new(10).unwrap();
+        let mut stale = FlexProportionLocal::new();
+        let mut fresh = FlexProportionLocal::new();
+        feed(&mut global, &mut stale, 55); // period 5
+        global.reset();
+        // Not touched since the reset: zero, not a clamped 1.0.
+        assert_eq!(stale.events(&global), 0);
+        assert_eq!(stale.fraction(&global), 0.0);
+        feed(&mut global, &mut fresh, 3);
+        assert_eq!(stale.fraction(&global), 0.0);
+        assert_eq!(fresh.fraction(&global), 1.0);
+        // Its first update after the reset starts it from scratch.
+        global.update(&mut stale);
+        assert_eq!(stale.events(&global), 1);
+        assert_eq!(global.events(), 4);
     }
 
     #[test]

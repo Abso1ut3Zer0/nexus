@@ -5,7 +5,7 @@ From the Linux kernel's `lib/flex_proportions.c`.
 
 | Property | Value |
 |----------|-------|
-| Update cost | O(1) per event |
+| Update cost | 5 cycles (8 locals, round-robin) |
 | Memory | 40 bytes global + 16 bytes per local |
 | Types | `FlexProportionGlobal`, `FlexProportionLocal` |
 

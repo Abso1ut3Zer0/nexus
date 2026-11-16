@@ -22,7 +22,7 @@ Not for: top-K over an unbounded key space (use `TopK`). Not for: time-weighted 
 
 ```rust
 impl FlexProportionGlobal {
-    pub fn new(half_life_events: u64) -> Result<Self, ConfigError>;
+    pub fn new(half_life_events: u64) -> Result<Self, nexus_stats_core::ConfigError>;
     pub fn update(&mut self, local: &mut FlexProportionLocal);   // one event, attributed to `local`
     pub fn events(&self) -> u64;        // decayed population count (the denominator)
     pub fn period(&self) -> u64;        // how many times the counts have halved
