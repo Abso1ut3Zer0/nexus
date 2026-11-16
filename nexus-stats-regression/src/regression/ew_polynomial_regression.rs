@@ -258,6 +258,14 @@ impl EwPolynomialRegressionBuilder {
                 "alpha must be in (0, 1) exclusive",
             ));
         }
+        // The effective sample size approaches 1/alpha from below and must
+        // reach the number of coefficients for the fit to prime at all.
+        let dim = (degree + usize::from(self.intercept)) as f64;
+        if alpha >= 1.0 / dim {
+            return Err(nexus_stats_core::ConfigError::Invalid(
+                "alpha must be below 1/(number of coefficients) or the fit never primes",
+            ));
+        }
 
         Ok(EwPolynomialRegression {
             sum_x: [0.0; 17],

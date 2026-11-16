@@ -121,10 +121,17 @@ impl RlsFilter {
             xpx = features[i].fma(self.scratch_px[i], xpx);
         }
 
-        // k[i] = px[i] / (lambda + xpx)
-        // Epsilon floor prevents NaN if P degrades numerically.
+        // k[i] = px[i] / (lambda + xpx). P is positive-definite, so the
+        // denominator is at least lambda; anything else means P has degraded
+        // (or a NaN got in): restore P and skip the step rather than apply a
+        // fabricated gain.
+        let denom = lambda + xpx;
+        if !nexus_stats_core::math::positive_finite(denom) {
+            self.reset_covariance();
+            return Ok(());
+        }
         // Reciprocal: one division outside the loop instead of d inside.
-        let inv_denom = 1.0 / (lambda + xpx).max(f64::EPSILON);
+        let inv_denom = 1.0 / denom;
         for i in 0..d {
             self.scratch_k[i] = self.scratch_px[i] * inv_denom;
         }
@@ -298,14 +305,21 @@ impl RlsFilterBuilder {
                 "dimensions must be >= 1",
             ));
         }
-        if lambda <= 0.0 || lambda > 1.0 {
+        if !(lambda > 0.0 && lambda <= 1.0) {
             return Err(nexus_stats_core::ConfigError::Invalid(
                 "forgetting_factor must be in (0, 1]",
             ));
         }
-        if delta <= 0.0 {
+        if !nexus_stats_core::math::positive_finite(delta) {
             return Err(nexus_stats_core::ConfigError::Invalid(
                 "initial_covariance must be positive",
+            ));
+        }
+        if let Some(max) = self.max_covariance
+            && (!nexus_stats_core::math::positive_finite(max) || max <= delta)
+        {
+            return Err(nexus_stats_core::ConfigError::Invalid(
+                "max_covariance must be finite and greater than initial_covariance",
             ));
         }
 

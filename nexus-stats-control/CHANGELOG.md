@@ -37,6 +37,9 @@ contained.
   with a compare instead of a division. `TopK` keeps its live entries in a
   `Vec` sized once at construction instead of `Box<[Option<Entry>]>`, so
   the scan no longer tests a discriminant per slot. API unchanged.
+- `PeakDetector::new` rejects an infinite prominence; `BoolWindow` counts
+  failures in `usize` (its capacity type), so a window above `u32::MAX`
+  cannot overflow the counter.
 
 ### Fixed
 

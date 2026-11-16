@@ -28,6 +28,9 @@ contained.
   the ring index advances with a compare instead of a division. `Kama`
   indexes its ring by the head it already carried instead of
   `count % window`, and `Hampel::update` has no `unwrap` left.
+- **`WindowedMedian::new` returns `Result<Self, ConfigError>`** (zero window
+  rejected) like every sibling constructor, instead of panicking. Holt,
+  HuberEma and Kalman1d reject `min_samples(0)`.
 
 ### Fixed
 

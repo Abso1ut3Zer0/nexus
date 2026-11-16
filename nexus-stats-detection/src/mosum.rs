@@ -220,7 +220,10 @@ macro_rules! impl_mosum {
                     return Err(nexus_stats_core::ConfigError::Invalid("window_size must be > 0"));
                 }
                 let threshold = self.threshold.ok_or(nexus_stats_core::ConfigError::Missing("threshold"))?;
-                if threshold <= $zero {
+                if !(self.target as f64).is_finite() {
+                    return Err(nexus_stats_core::ConfigError::Invalid("target must be finite"));
+                }
+                if !nexus_stats_core::math::positive_finite(threshold as f64) {
                     return Err(nexus_stats_core::ConfigError::Invalid("threshold must be positive"));
                 }
                 let min_samples = self.min_samples.unwrap_or(window as u64);

@@ -230,6 +230,11 @@ impl Kalman1dBuilder {
     /// - Both must be positive.
     #[inline]
     pub fn build(self) -> Result<Kalman1d, nexus_stats_core::ConfigError> {
+        if self.min_samples == 0 {
+            return Err(nexus_stats_core::ConfigError::Invalid(
+                "min_samples must be >= 1",
+            ));
+        }
         let q = self
             .q
             .ok_or(nexus_stats_core::ConfigError::Missing("process_noise"))?;

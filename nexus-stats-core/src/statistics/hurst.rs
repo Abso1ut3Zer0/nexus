@@ -76,7 +76,7 @@ impl Hurst {
     #[must_use]
     pub fn hurst(&self) -> Option<f64> {
         let n = self.window.len();
-        if n < 20 {
+        if n < self.window_size {
             return None;
         }
 
@@ -153,7 +153,7 @@ impl Hurst {
     #[inline]
     #[must_use]
     pub fn is_primed(&self) -> bool {
-        self.window.len() >= 20
+        self.window.len() >= self.window_size
     }
 
     /// Reset all state.
@@ -236,23 +236,22 @@ mod tests {
     }
 
     #[test]
-    fn not_primed_before_20() {
-        let mut h = Hurst::builder().window_size(100).build().unwrap();
+    fn primes_at_the_configured_window_not_at_a_fixed_count() {
+        let mut h = Hurst::builder().window_size(20).build().unwrap();
         for i in 0..19 {
             h.update(i as f64).unwrap();
         }
         assert!(!h.is_primed());
         assert!(h.hurst().is_none());
-    }
-
-    #[test]
-    fn primed_at_20() {
-        let mut h = Hurst::builder().window_size(100).build().unwrap();
-        for i in 0..20 {
-            h.update(i as f64).unwrap();
-        }
+        h.update(19.0).unwrap();
         assert!(h.is_primed());
         assert!(h.hurst().is_some());
+
+        let mut wide = Hurst::builder().window_size(100).build().unwrap();
+        for i in 0..20 {
+            wide.update(i as f64).unwrap();
+        }
+        assert!(!wide.is_primed(), "a 100-sample window is not primed at 20");
     }
 
     #[test]

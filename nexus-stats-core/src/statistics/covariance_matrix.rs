@@ -115,12 +115,19 @@ impl OnlineCovariance {
     /// Returns `None` if fewer than 2 observations have been fed
     /// (covariance is undefined with fewer than 2 data points).
     #[inline]
+    ///
+    /// # Panics
+    ///
+    /// Panics if `i` or `j` is not below the dimension.
     #[must_use]
     pub fn covariance(&self, i: usize, j: usize) -> Option<f64> {
         if !self.is_primed() {
             return None;
         }
-        debug_assert!(i < self.dim && j < self.dim);
+        assert!(
+            i < self.dim && j < self.dim,
+            "covariance index out of range"
+        );
         Some(self.cov[i * self.dim + j])
     }
 

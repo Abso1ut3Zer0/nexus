@@ -1,6 +1,7 @@
 extern crate alloc;
 use alloc::boxed::Box;
 use alloc::vec;
+use nexus_stats_core::math::MulAdd;
 
 use super::sampling::f64_impl;
 
@@ -109,8 +110,8 @@ impl ThompsonBeta {
     #[inline]
     pub fn update(&mut self, arm: usize, reward: f64) -> Result<(), nexus_stats_core::DataError> {
         check_finite!(reward);
-        if reward < 0.0 || reward > 1.0 {
-            return Err(nexus_stats_core::DataError::Negative);
+        if !(0.0..=1.0).contains(&reward) {
+            return Err(nexus_stats_core::DataError::OutOfRange);
         }
         assert!(
             arm < self.num_arms,
@@ -120,9 +121,13 @@ impl ThompsonBeta {
 
         if self.decay < 1.0 {
             let decay = self.decay;
+            // Decay toward the prior, not toward zero: an arm that is never
+            // pulled forgets its evidence but keeps its prior, so its posterior
+            // never collapses to a point mass (or a 0/0 draw).
+            let (pa, pb) = (self.initial_alpha, self.initial_beta);
             for (a, b) in self.alphas.iter_mut().zip(self.betas.iter_mut()) {
-                *a *= decay;
-                *b *= decay;
+                *a = (*a - pa).fma(decay, pa);
+                *b = (*b - pb).fma(decay, pb);
             }
         }
 

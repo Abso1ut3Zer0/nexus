@@ -216,6 +216,20 @@ impl<T: Sample> JitterBuilder<T> {
         let config = self
             .ema
             .ok_or(crate::ConfigError::Missing(T::EMA_CONFIG_NAME))?;
+        // One sample has no deviation, so an unseeded Jitter cannot report
+        // before its second; a seed supplies the deviation and may prime at one.
+        let seeded = self.seed_value.is_some() && self.seed_jitter.is_some();
+        let floor = if seeded { 1 } else { 2 };
+        if self.min_samples < floor {
+            return Err(crate::ConfigError::Invalid(
+                "Jitter min_samples must be >= 2 unseeded, >= 1 seeded",
+            ));
+        }
+        if let (Some(v), Some(j)) = (self.seed_value, self.seed_jitter)
+            && (!v.is_finite() || !j.is_finite())
+        {
+            return Err(crate::ConfigError::Invalid("Jitter seed must be finite"));
+        }
         let mut deviation = T::Ema::new(config)?;
         let mut mean = T::Ema::new(config)?;
         let (last_sample, count) = match (self.seed_value, self.seed_jitter) {

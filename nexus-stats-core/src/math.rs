@@ -235,6 +235,30 @@ pub fn indicator(b: bool) -> f64 {
     f64::from(u8::from(b))
 }
 
+/// `true` for a finite value strictly greater than zero; `false` for NaN.
+///
+/// The builders' validation idiom: `x <= 0.0` is `false` for NaN and lets it
+/// through, this does not.
+#[inline]
+#[must_use]
+pub fn positive_finite(x: f64) -> bool {
+    x.is_finite() && x > 0.0
+}
+
+/// `true` for a finite value greater than or equal to zero; `false` for NaN.
+#[inline]
+#[must_use]
+pub fn nonnegative_finite(x: f64) -> bool {
+    x.is_finite() && x >= 0.0
+}
+
+/// `true` for a value strictly inside `(0, 1)`; `false` for NaN.
+#[inline]
+#[must_use]
+pub fn in_unit_interval(x: f64) -> bool {
+    x > 0.0 && x < 1.0
+}
+
 #[cfg(test)]
 mod tests {
     #[cfg(any(feature = "std", feature = "libm"))]

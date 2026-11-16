@@ -279,7 +279,7 @@ fn bench_hysteresis(c: &mut Criterion) {
 
 fn bench_level_crossing(c: &mut Criterion) {
     let mut rng = Lcg::new(42);
-    let mut l = LevelCrossing::<f64>::new(50.0);
+    let mut l = LevelCrossing::<f64>::new(50.0).unwrap();
     for _ in 0..1000 {
         l.update(rng.next_f64());
     }

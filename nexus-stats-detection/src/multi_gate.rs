@@ -253,6 +253,24 @@ impl MultiGateBuilder {
                 "alpha must be in (0, 1)",
             ));
         }
+        if !nexus_stats_core::math::positive_finite(hard_limit) {
+            return Err(nexus_stats_core::ConfigError::Invalid(
+                "hard_limit must be positive and finite",
+            ));
+        }
+        if !nexus_stats_core::math::positive_finite(suspect_z) {
+            return Err(nexus_stats_core::ConfigError::Invalid(
+                "suspect_z must be positive and finite",
+            ));
+        }
+        if self
+            .unusual_spread_mult
+            .is_some_and(|m| !nexus_stats_core::math::positive_finite(m))
+        {
+            return Err(nexus_stats_core::ConfigError::Invalid(
+                "unusual_spread_mult must be positive and finite",
+            ));
+        }
 
         Ok(MultiGate {
             alpha,

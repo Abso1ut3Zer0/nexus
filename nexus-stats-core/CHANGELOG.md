@@ -61,6 +61,27 @@ contained.
   `VarianceRatio` keeps the last `q` values in a fixed ring (`Box<[f64]>`)
   instead of a `VecDeque`. Same results; no `div` and fewer unpredictable
   jumps on the update path.
+- **Construction validation is NaN-safe and complete.** `math::positive_finite`,
+  `nonnegative_finite` and `in_unit_interval` replace the sign-only tests that
+  let NaN through; `Cusum` validates target, slack, thresholds and seeds, and
+  `reset_with_target` returns `Result` (target 0 with default thresholds is
+  rejected instead of installing a threshold of zero). `min_samples(0)` is
+  rejected by Ema, EwmaVar, BipowerVariation, Lpm, RollSpread, and Jitter needs
+  2 unseeded; seeds must be finite; Lpm `order` is capped at 16; Liveness and
+  EventRate spans at 2^62. `WindowedMedian`-style bare or panicking
+  constructors return `Result`: `LevelCrossing::new`,
+  `DistributionShiftBuilder::build`, `BipowerVariationBuilder::build`,
+  `Welford::from_parts`.
+- **`DataError::OutOfRange`** for finite inputs outside a method's range.
+  `HarmonicMean::update` returns it for a non-positive sample instead of
+  panicking; the `DataError` doc states the three-way policy.
+- **`HitRate::hit_rate` / `ew_hit_rate` and `Amihud::illiq` return `Option`:**
+  a rate over zero observations is undefined, not 0.0. `Amihud` rejects
+  negative volume with `Negative`, skips zero volume without advancing
+  `count`, and propagates an overflowed ratio instead of discarding it.
+- `Percentile::min_samples()` is public; `QuantileNorm` reads its grid's
+  priming need from it instead of re-deriving the formula. `Hurst` primes at
+  its configured window.
 
 ### Removed
 
@@ -154,6 +175,10 @@ contained.
   an explicit seeded flag ([#763](https://github.com/Abso1ut3Zer0/nexus/issues/763)).
 - `no_std` without `libm` compiles again (an unused `halflife` field in the
   `HitRate` builder); the `TwoScaleRv` rustdoc no longer emits broken links.
+- `EventRate` folded a backwards or wrapped timestamp step as a negative
+  interval, driving the accumulator negative (Liveness already re-anchored).
+- `OnlineCovariance::covariance(i, j)` only `debug_assert`ed its indices; an
+  out-of-range query returned another cell in release. It panics, per policy.
 
 ### Docs
 

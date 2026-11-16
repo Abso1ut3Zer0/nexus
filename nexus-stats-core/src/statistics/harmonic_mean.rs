@@ -32,13 +32,14 @@ impl HarmonicMean {
     /// Returns `DataError::NotANumber` if the sample is NaN, or
     /// `DataError::Infinite` if the sample is infinite.
     ///
-    /// # Panics
-    ///
-    /// Panics if sample is zero or negative.
+    /// Returns `DataError::OutOfRange` if the sample is zero or negative: the
+    /// harmonic mean is defined for positive values only.
     #[inline]
     pub fn update(&mut self, sample: f64) -> Result<(), crate::DataError> {
         check_finite!(sample);
-        assert!(sample > 0.0, "harmonic mean requires positive values");
+        if sample <= 0.0 {
+            return Err(crate::DataError::OutOfRange);
+        }
         self.count += 1;
         self.reciprocal_sum += 1.0 / sample;
         Ok(())
@@ -150,10 +151,13 @@ mod tests {
     }
 
     #[test]
-    #[should_panic(expected = "positive values")]
-    fn panics_on_zero() {
+    fn rejects_zero_and_negative_without_touching_state() {
         let mut hm = HarmonicMean::new();
-        hm.update(0.0).unwrap();
+        hm.update(2.0).unwrap();
+        assert_eq!(hm.update(0.0), Err(crate::DataError::OutOfRange));
+        assert_eq!(hm.update(-1.0), Err(crate::DataError::OutOfRange));
+        assert_eq!(hm.count(), 1);
+        assert_eq!(hm.mean(), Some(2.0));
     }
 
     #[test]

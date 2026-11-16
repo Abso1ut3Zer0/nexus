@@ -7,7 +7,7 @@ use nexus_stats_core::DataError;
 ///
 /// Estimates I(X; Y) from joint and marginal frequency counts
 /// over equi-width bins. Miller-Madow bias correction adjusts
-/// for finite-sample underestimation.
+/// for finite-sample bias.
 ///
 /// O(K²) per query (K = bin count). O(1) per update.
 ///
@@ -127,8 +127,12 @@ impl PredictiveInfoBound {
             }
         }
 
-        let occupied = self.count_occupied_cells() as f64;
-        let correction = (occupied - 1.0) / (2.0 * n);
+        // Miller-Madow: each plug-in entropy is biased low by (K - 1) / 2N, so
+        // I = H(X) + H(Y) - H(X,Y) is biased HIGH by (Kx + Ky - Kxy - 1) / 2N.
+        let kx = self.marginal_x.iter().filter(|&&c| c > 0).count() as f64;
+        let ky = self.marginal_y.iter().filter(|&&c| c > 0).count() as f64;
+        let kxy = self.count_occupied_cells() as f64;
+        let correction = (kx + ky - kxy - 1.0) / (2.0 * n);
         Some(mi + correction)
     }
 

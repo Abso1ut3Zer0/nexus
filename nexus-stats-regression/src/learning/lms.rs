@@ -176,7 +176,7 @@ impl LmsFilterBuilder {
                 "dimensions must be >= 1",
             ));
         }
-        if lr <= 0.0 {
+        if !nexus_stats_core::math::positive_finite(lr) {
             return Err(nexus_stats_core::ConfigError::Invalid(
                 "learning_rate must be positive",
             ));
@@ -377,12 +377,12 @@ impl NlmsFilterBuilder {
                 "dimensions must be >= 1",
             ));
         }
-        if lr <= 0.0 {
+        if !nexus_stats_core::math::positive_finite(lr) {
             return Err(nexus_stats_core::ConfigError::Invalid(
                 "learning_rate must be positive",
             ));
         }
-        if eps <= 0.0 {
+        if !nexus_stats_core::math::positive_finite(eps) {
             return Err(nexus_stats_core::ConfigError::Invalid(
                 "epsilon must be positive",
             ));

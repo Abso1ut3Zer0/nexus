@@ -204,8 +204,9 @@ impl<T: Float> QuantileNormBuilder<T> {
         for i in 1..=resolution {
             let p = i as f64 / denom;
             quantile_points.push(p);
-            grid.push(Percentile::new(p)?);
-            max_min_samples = max_min_samples.max(adaptive_min_samples(p));
+            let estimator = Percentile::new(p)?;
+            max_min_samples = max_min_samples.max(estimator.min_samples());
+            grid.push(estimator);
         }
 
         let min_samples = self
@@ -222,16 +223,6 @@ impl<T: Float> QuantileNormBuilder<T> {
             _sample: PhantomData,
         })
     }
-}
-
-/// Samples a P² estimator at quantile `p` needs before it is trustworthy.
-#[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
-fn adaptive_min_samples(p: f64) -> u64 {
-    let denom = p * (1.0 - p);
-    if denom <= 0.0 {
-        return 1000;
-    }
-    ((1.0 / denom) as u64).max(5)
 }
 
 #[cfg(test)]

@@ -149,28 +149,46 @@ impl Cusum {
 
     /// Resets and updates the target mean.
     ///
-    /// If slack or threshold were not explicitly set by the user,
-    /// they are recomputed from the new target using the defaults
-    /// (5% and 50% of target respectively).
+    /// If slack or threshold were not explicitly set by the user, they are
+    /// recomputed from the new target using the defaults (5% and 50% of
+    /// target respectively).
+    ///
+    /// # Errors
+    ///
+    /// `ConfigError::Invalid` if the target is not finite, or if it is zero
+    /// while a threshold is left to its default (which would be zero and fire
+    /// on any deviation). The detector is left unchanged on error.
     #[inline]
-    pub fn reset_with_target(&mut self, new_target: f64) {
+    pub fn reset_with_target(&mut self, new_target: f64) -> Result<(), crate::ConfigError> {
+        if !new_target.is_finite() {
+            return Err(crate::ConfigError::Invalid("target must be finite"));
+        }
+        let slack = CusumBuilder::default_slack(new_target);
+        let threshold = CusumBuilder::default_threshold(new_target);
+        let default_threshold_in_use =
+            !self.threshold_upper_explicit || !self.threshold_lower_explicit;
+        if default_threshold_in_use && !crate::math::positive_finite(threshold) {
+            return Err(crate::ConfigError::Invalid(
+                "default threshold is zero for target 0; set thresholds explicitly",
+            ));
+        }
         self.target = new_target;
         self.upper = 0.0;
         self.lower = 0.0;
         self.count = 0;
-
         if !self.slack_upper_explicit {
-            self.slack_upper = CusumBuilder::default_slack(new_target);
+            self.slack_upper = slack;
         }
         if !self.slack_lower_explicit {
-            self.slack_lower = CusumBuilder::default_slack(new_target);
+            self.slack_lower = slack;
         }
         if !self.threshold_upper_explicit {
-            self.threshold_upper = CusumBuilder::default_threshold(new_target);
+            self.threshold_upper = threshold;
         }
         if !self.threshold_lower_explicit {
-            self.threshold_lower = CusumBuilder::default_threshold(new_target);
+            self.threshold_lower = threshold;
         }
+        Ok(())
     }
 
     /// The target (expected baseline mean).
@@ -230,22 +248,25 @@ impl Cusum {
         threshold_upper: f64,
         threshold_lower: f64,
     ) -> Result<(), crate::ConfigError> {
-        if slack_upper < 0.0 {
+        if !target.is_finite() {
+            return Err(crate::ConfigError::Invalid("target must be finite"));
+        }
+        if !crate::math::nonnegative_finite(slack_upper) {
             return Err(crate::ConfigError::Invalid(
                 "slack_upper must be non-negative",
             ));
         }
-        if slack_lower < 0.0 {
+        if !crate::math::nonnegative_finite(slack_lower) {
             return Err(crate::ConfigError::Invalid(
                 "slack_lower must be non-negative",
             ));
         }
-        if threshold_upper <= 0.0 {
+        if !crate::math::positive_finite(threshold_upper) {
             return Err(crate::ConfigError::Invalid(
                 "threshold_upper must be positive",
             ));
         }
-        if threshold_lower <= 0.0 {
+        if !crate::math::positive_finite(threshold_lower) {
             return Err(crate::ConfigError::Invalid(
                 "threshold_lower must be positive",
             ));
@@ -398,27 +419,35 @@ impl CusumBuilder {
             .threshold_lower
             .unwrap_or_else(|| Self::default_threshold(self.target));
 
-        if slack_upper < 0.0 {
+        if !crate::math::nonnegative_finite(slack_upper) {
             return Err(crate::ConfigError::Invalid(
                 "slack_upper must be non-negative",
             ));
         }
-        if slack_lower < 0.0 {
+        if !crate::math::nonnegative_finite(slack_lower) {
             return Err(crate::ConfigError::Invalid(
                 "slack_lower must be non-negative",
             ));
         }
-        if threshold_upper <= 0.0 {
+        if !crate::math::positive_finite(threshold_upper) {
             return Err(crate::ConfigError::Invalid(
                 "threshold_upper must be positive",
             ));
         }
-        if threshold_lower <= 0.0 {
+        if !crate::math::positive_finite(threshold_lower) {
             return Err(crate::ConfigError::Invalid(
                 "threshold_lower must be positive",
             ));
         }
 
+        if !self.target.is_finite() {
+            return Err(crate::ConfigError::Invalid("target must be finite"));
+        }
+        if self.seed_upper.is_some_and(|s| !s.is_finite())
+            || self.seed_lower.is_some_and(|s| !s.is_finite())
+        {
+            return Err(crate::ConfigError::Invalid("seed values must be finite"));
+        }
         let seeded = self.seed_upper.is_some() || self.seed_lower.is_some();
         let initial_count = if seeded { self.min_samples } else { 0 };
 
@@ -575,7 +604,7 @@ mod tests {
         let original_slack = cusum.slack_upper();
         let original_threshold = cusum.threshold_upper();
 
-        cusum.reset_with_target(200.0);
+        cusum.reset_with_target(200.0).unwrap();
 
         // Defaults should scale with new target
         assert!(cusum.slack_upper() > original_slack);
@@ -591,7 +620,7 @@ mod tests {
             .build()
             .unwrap();
 
-        cusum.reset_with_target(200.0);
+        cusum.reset_with_target(200.0).unwrap();
 
         // Explicit values should not change
         assert_eq!(cusum.slack_upper(), 10.0);

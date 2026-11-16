@@ -10,10 +10,13 @@ use nexus_stats_core::math::MulAdd;
 /// Freezes the estimator when the z-score exceeds a reject threshold,
 /// preventing outliers from corrupting the baseline.
 ///
-/// Modified z-score: `0.6745 * (x - ema) / ema_abs_dev`
+/// Robust z-score: `sqrt(2/π) * (x - ema) / ema_abs_dev`.
 ///
-/// The constant 0.6745 is the 0.75th quantile of the standard normal,
-/// making MAD comparable to standard deviation for normal distributions.
+/// The scale is an EMA of the *mean* absolute deviation about the EMA (there
+/// is no sorted window, so no median). For normal data `E|X - μ| = σ·sqrt(2/π)`,
+/// so scaling by `sqrt(2/π) ≈ 0.798` makes the score comparable to a standard
+/// z-score. (The 0.6745 that goes with a *median* absolute deviation would
+/// understate it by 15%.)
 ///
 /// # Use Cases
 /// - Outlier detection robust to contamination
@@ -59,8 +62,9 @@ pub struct RobustZScoreBuilder<T: Float> {
     _sample: PhantomData<T>,
 }
 
-/// Scales a median absolute deviation to a standard deviation for normal data.
-const MAD_CONSTANT: f64 = 0.6745;
+/// `sqrt(2/π)`: the mean absolute deviation of a normal variable in units of
+/// its standard deviation, so `(x - μ) / (MeanAD / sqrt(2/π))` is a z-score.
+const MEAN_ABS_DEV_TO_Z: f64 = 0.797_884_560_802_865_4;
 
 impl<T: Float> RobustZScore<T> {
     /// Creates a builder.
@@ -98,7 +102,7 @@ impl<T: Float> RobustZScore<T> {
 
         let abs_dev = (x - self.ema).abs();
         self.last_z = if self.ema_abs_dev > 0.0 {
-            MAD_CONSTANT * (x - self.ema) / self.ema_abs_dev
+            MEAN_ABS_DEV_TO_Z * (x - self.ema) / self.ema_abs_dev
         } else {
             0.0
         };
@@ -128,10 +132,11 @@ impl<T: Float> RobustZScore<T> {
         self.is_primed().then(|| T::from_f64(self.ema))
     }
 
-    /// Current smoothed absolute deviation, or `None` until primed.
+    /// Current smoothed mean absolute deviation about the EMA, or `None`
+    /// until primed.
     #[inline]
     #[must_use]
-    pub fn mad(&self) -> Option<T> {
+    pub fn mean_abs_dev(&self) -> Option<T> {
         self.is_primed().then(|| T::from_f64(self.ema_abs_dev))
     }
 
@@ -214,7 +219,7 @@ impl<T: Float> RobustZScoreBuilder<T> {
                 "alpha must be in (0, 1)",
             ));
         }
-        if reject <= 0.0 {
+        if !nexus_stats_core::math::positive_finite(reject) {
             return Err(nexus_stats_core::ConfigError::Invalid(
                 "reject_threshold must be positive",
             ));
@@ -402,5 +407,31 @@ mod tests {
             nexus_stats_core::DataError::Infinite
         );
         assert_eq!(rz.count(), 0);
+    }
+
+    /// On normal data the scale must be sqrt(2/π)·σ and the score a z-score:
+    /// Irwin-Hall (sum of 12 uniforms minus 6) has mean 0 and variance 1.
+    #[test]
+    fn scale_and_score_are_calibrated_for_normal_data() {
+        let mut rng = 0x9E37_79B9_7F4A_7C15u64;
+        let mut uniform = || {
+            rng ^= rng << 13;
+            rng ^= rng >> 7;
+            rng ^= rng << 17;
+            (rng >> 11) as f64 / (1u64 << 53) as f64
+        };
+        let mut rz = RobustZScore::<f64>::builder()
+            .alpha(0.002)
+            .reject_threshold(100.0)
+            .build()
+            .unwrap();
+        for _ in 0..200_000 {
+            let x: f64 = (0..12).map(|_| uniform()).sum::<f64>() - 6.0;
+            rz.update(x).unwrap();
+        }
+        let scale = rz.mean_abs_dev().unwrap();
+        assert!((scale - 0.7979).abs() < 0.03, "mean abs dev {scale}");
+        let z = rz.update(3.0).unwrap().unwrap();
+        assert!((z - 3.0).abs() < 0.3, "z-score of a 3σ sample: {z}");
     }
 }

@@ -214,6 +214,9 @@ impl LivenessBuilder {
         if requested < 1 {
             return Err(crate::ConfigError::Invalid("Liveness span must be >= 1"));
         }
+        if requested > (1u64 << 62) {
+            return Err(crate::ConfigError::Invalid("Liveness span must be <= 2^62"));
+        }
         if self.deadline_multiple.is_none() && self.deadline_absolute.is_none() {
             return Err(crate::ConfigError::Invalid("Liveness requires a deadline"));
         }

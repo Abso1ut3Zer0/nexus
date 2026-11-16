@@ -33,11 +33,11 @@ impl<T: Sample> PeakDetector<T> {
     ///
     /// # Errors
     ///
-    /// Returns `ConfigError::Invalid` if `prominence` is negative or NaN.
+    /// Returns `ConfigError::Invalid` if `prominence` is negative, NaN or infinite.
     #[inline]
     #[allow(clippy::neg_cmp_op_on_partial_ord)]
     pub fn new(prominence: T) -> Result<Self, nexus_stats_core::ConfigError> {
-        if !(prominence >= T::ZERO) {
+        if !(prominence >= T::ZERO) || !prominence.is_finite() {
             return Err(nexus_stats_core::ConfigError::Invalid(
                 "prominence must be non-negative",
             ));

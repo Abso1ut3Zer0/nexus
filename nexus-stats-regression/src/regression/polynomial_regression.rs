@@ -70,25 +70,31 @@ impl core::ops::Index<usize> for Coefficients {
 /// Returns `true` if the solve succeeded (non-singular).
 /// On success, `rhs` contains the solution.
 pub(crate) fn gauss_solve_f64(dim: usize, a: &mut [[f64; 9]; 9], b: &mut [f64; 9]) -> bool {
+    // Singularity is judged relative to the matrix scale: the normal equations'
+    // entries grow as n·x^(2d), so an absolute pivot floor would call large-x
+    // problems regular and small-x ones singular. NaN anywhere fails the
+    // `>` tests below and reports singular instead of leaking out.
+    let mut scale = 0.0f64;
+    for row in a.iter().take(dim) {
+        for &v in row.iter().take(dim) {
+            scale = scale.max(v.abs());
+        }
+    }
+    if !nexus_stats_core::math::positive_finite(scale) {
+        return false;
+    }
+    let tol = scale * f64::EPSILON * dim as f64;
     for col in 0..dim {
         let mut max_row = col;
-        let mut max_val = if a[col][col] < 0.0 {
-            -(a[col][col])
-        } else {
-            a[col][col]
-        };
+        let mut max_val = a[col][col].abs();
         for row in (col + 1)..dim {
-            let v = if a[row][col] < 0.0 {
-                -(a[row][col])
-            } else {
-                a[row][col]
-            };
+            let v = a[row][col].abs();
             if v > max_val {
                 max_val = v;
                 max_row = row;
             }
         }
-        if max_val < 1e-14 {
+        if max_val.is_nan() || max_val <= tol {
             return false;
         }
         if max_row != col {
@@ -109,7 +115,7 @@ pub(crate) fn gauss_solve_f64(dim: usize, a: &mut [[f64; 9]; 9], b: &mut [f64; 9
         }
         b[i] /= a[i][i];
     }
-    true
+    b.iter().take(dim).all(|v| v.is_finite())
 }
 
 /// Online polynomial regression via sufficient statistics.
@@ -560,5 +566,32 @@ mod tests {
             Err(nexus_stats_core::DataError::Infinite)
         );
         assert_eq!(r.count(), 0);
+    }
+
+    /// Constant x is rank-deficient at any scale: the old absolute pivot floor
+    /// called it regular at |x| ~ 1e3 and returned garbage coefficients.
+    #[test]
+    fn constant_x_is_singular_at_any_scale() {
+        for x in [1.0e-3, 1.0, 1.0e3, 1.0e6] {
+            let mut pr = PolynomialRegression::builder().degree(2).build().unwrap();
+            for i in 0..50 {
+                pr.update(x, f64::from(i)).unwrap();
+            }
+            assert!(pr.coefficients().is_none(), "x = {x}");
+        }
+    }
+
+    /// Well-posed small-x data is regular: the old floor (1e-14) called a
+    /// cubic on return-scale x singular.
+    #[test]
+    fn small_x_cubic_is_regular() {
+        let mut pr = PolynomialRegression::builder().degree(3).build().unwrap();
+        for i in 0..200 {
+            let x = (f64::from(i) - 100.0) * 1.0e-4;
+            pr.update(x, 2.0 * x * x * x - x).unwrap();
+        }
+        let c = pr.coefficients().unwrap();
+        assert!((c.values[3] - 2.0).abs() < 1e-6, "{:?}", c.values);
+        assert!((c.values[1] + 1.0).abs() < 1e-6, "{:?}", c.values);
     }
 }

@@ -196,7 +196,7 @@ for &load in &cpu_samples {
 
 ### What it does
 
-Maintains streaming estimates of the median and MAD (median absolute deviation). Computes `z = 0.6745 * (x - median) / MAD`. The factor `0.6745` makes MAD ≈ stddev under Gaussian data, so the score reads in standard-deviation units regardless of the data's actual distribution.
+Maintains an EMA of the level and an EMA of the mean absolute deviation about it (no sorted window, so no median). Computes `z = sqrt(2/π) * (x - ema) / ema_abs_dev`: for Gaussian data `E|X - μ| = σ·sqrt(2/π)`, so the factor `sqrt(2/π) ≈ 0.798` puts the score in standard-deviation units. The scale only moves when a sample is accepted (`|z|` below the reject threshold), so outliers cannot inflate it.
 
 Robust to up to ~50% corruption — unlike AdaptiveThreshold, whose variance estimate gets polluted by the very outliers you're trying to detect.
 

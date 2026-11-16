@@ -158,7 +158,7 @@ impl Exp3 {
     /// # Errors
     ///
     /// Returns `DataError` if reward is NaN, infinite, or outside [0, 1],
-    /// or if prob is NaN, infinite, or <= 0.
+    /// or if prob is NaN, infinite, or outside (0, 1].
     ///
     /// # Panics
     ///
@@ -171,12 +171,12 @@ impl Exp3 {
         prob: f64,
     ) -> Result<(), nexus_stats_core::DataError> {
         check_finite!(reward);
-        if reward < 0.0 || reward > 1.0 {
-            return Err(nexus_stats_core::DataError::Negative);
+        if !(0.0..=1.0).contains(&reward) {
+            return Err(nexus_stats_core::DataError::OutOfRange);
         }
         check_finite!(prob);
-        if prob <= 0.0 {
-            return Err(nexus_stats_core::DataError::Negative);
+        if !(prob > 0.0 && prob <= 1.0) {
+            return Err(nexus_stats_core::DataError::OutOfRange);
         }
         assert!(
             arm < self.num_arms,

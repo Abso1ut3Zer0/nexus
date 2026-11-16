@@ -179,15 +179,22 @@ impl BipowerVariationBuilder {
 
     /// Builds the bipower variation tracker.
     #[inline]
-    pub fn build(self) -> BipowerVariation {
-        BipowerVariation {
+    ///
+    /// # Errors
+    ///
+    /// `ConfigError::Invalid` if `min_samples` is 0.
+    pub fn build(self) -> Result<BipowerVariation, crate::ConfigError> {
+        if self.min_samples == 0 {
+            return Err(crate::ConfigError::Invalid("min_samples must be >= 1"));
+        }
+        Ok(BipowerVariation {
             sum_bv: 0.0,
             sum_rv: 0.0,
             prev_abs_diff: 0.0,
             prev_price: 0.0,
             count: 0,
             min_samples: self.min_samples,
-        }
+        })
     }
 }
 
@@ -249,7 +256,7 @@ mod tests {
             bv.update(p).unwrap();
         }
         // diffs: 1, -2, 3 -> sum_sq = 1+4+9 = 14, n = 3 -> RV = 14/3
-        let min_bv = BipowerVariation::builder().min_samples(2).build();
+        let min_bv = BipowerVariation::builder().min_samples(2).build().unwrap();
         let mut bv2 = min_bv;
         for &p in &prices {
             bv2.update(p).unwrap();
@@ -264,7 +271,7 @@ mod tests {
 
     #[test]
     fn bv_scaling() {
-        let mut bv = BipowerVariation::builder().min_samples(4).build();
+        let mut bv = BipowerVariation::builder().min_samples(4).build().unwrap();
         let prices = [100.0, 101.0, 99.0, 102.0, 100.0];
         for &p in &prices {
             bv.update(p).unwrap();

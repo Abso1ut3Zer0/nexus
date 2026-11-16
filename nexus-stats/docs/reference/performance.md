@@ -25,7 +25,7 @@ costs a branch mispredict, about 20 cycles.
 | **Change Detection** | | | |
 | Cusum | 6 | 6 | add/sub/max |
 | Mosum (window 64) | 5 | 6 | ring buffer |
-| ShiryaevRoberts | 17 | 20 | one `exp()` |
+| ShiryaevRoberts | 18 | 22 | one `exp()` |
 | MultiGate | 8 | 8 | 3-gate + conditional EMA |
 | RobustZScore<f64> | 8 | 8 | EMA + MAD + freeze |
 | AdaptiveThreshold | 7 | 7 | EMA + Welford + z-score |

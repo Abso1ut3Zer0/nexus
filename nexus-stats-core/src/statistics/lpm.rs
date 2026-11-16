@@ -171,7 +171,14 @@ impl LpmBuilder {
             return Err(crate::ConfigError::Invalid("target must be finite"));
         }
         let order = self.order.ok_or(crate::ConfigError::Missing("order"))?;
-
+        if order > 16 {
+            return Err(crate::ConfigError::Invalid(
+                "order must be <= 16 (each update costs O(order) multiplies)",
+            ));
+        }
+        if self.min_samples == 0 {
+            return Err(crate::ConfigError::Invalid("min_samples must be >= 1"));
+        }
         Ok(Lpm {
             sum: 0.0,
             count: 0,

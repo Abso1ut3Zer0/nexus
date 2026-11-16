@@ -214,6 +214,14 @@ macro_rules! impl_percentile {
                 self.count >= self.min_samples
             }
 
+            /// Observations needed before the estimate is reported: 5, or
+            /// `1 / (p (1 - p))` for extreme percentiles (100 for p = 0.99).
+            #[inline]
+            #[must_use]
+            pub fn min_samples(&self) -> u64 {
+                self.min_samples
+            }
+
             /// Current minimum observed value, or `None` if empty.
             ///
             /// Before priming (< 5 observations), scans the buffered samples.

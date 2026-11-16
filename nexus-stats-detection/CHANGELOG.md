@@ -25,6 +25,23 @@ contained.
   instead of a division; `CrossCorrelation` walks its ring newest-first
   through one iterator, removing the per-lag `% lag` from its inner loop.
   `PageHinkley` tracks its running extrema with selects instead of branches.
+- **Builders are NaN-safe:** MultiGate validates `hard_limit`, `suspect_z` and
+  `unusual_spread_mult`; RobustZScore, AdaptiveThreshold, Mosum and
+  ShiryaevRoberts use finite-and-positive tests where `<= 0.0` let NaN build a
+  detector that stayed `Neutral` forever.
+- **`RobustZScore` scales by `sqrt(2/π)` and `mad()` is `mean_abs_dev()`.**
+  The spread estimate is an EMA of the *mean* absolute deviation; the 0.6745
+  that goes with a median absolute deviation understated every z-score by 15%
+  (a 3.5σ reject threshold was really 4.1σ). A calibration test on normal data
+  pins both the scale and the score.
+- **`ShiryaevRoberts` saturates R at `1e300`.** Under a sustained alternative
+  the statistic overflowed to `+inf`, after which one large opposite sample
+  made it NaN and `update` returned `Some(false)` for the rest of the process
+  life. The ceiling is one `min` per update (log space would cost three
+  transcendental calls); `statistic()` is always finite.
+- **`AdaptiveThreshold::seed(mean, std_dev)` seeds the spread.** The `std_dev`
+  was stored and never read; it now pre-loads the Welford as two samples, and
+  `min_samples` is capped at 2 when seeded instead of silently overwritten.
 
 ### Removed
 
@@ -47,6 +64,11 @@ contained.
   an `exp_sum` / `ln_inplace` parity test over all tail lengths run on a new
   `+avx2,+fma` CI leg. Default-target builds were never affected. The module
   doc said `+avx2`; it says `+avx2,+fma`.
+- **`PredictiveInfoBound` applied the Miller-Madow correction with the wrong
+  sign**, adding `(K - 1)/2N` where the mutual-information correction is
+  `(Kx + Ky - Kxy - 1)/2N` (usually negative): the estimate moved away from
+  the truth. The doc described the bias as an underestimate; it is the other
+  way.
 
 ## [2.0.0] — 2026-05-28
 
