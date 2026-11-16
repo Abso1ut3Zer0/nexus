@@ -84,7 +84,7 @@ examples.
 
 ### Frequency & Counting
 - [TopK](algorithms/topk.md) — Space-Saving top-K frequent items
-- [FlexibleProportions](algorithms/flex-proportion.md) — Per-entity fraction tracking
+- [FlexProportion](algorithms/flex-proportion.md) — Each key's share of a decaying event count
 - [DecayingAccumulator](algorithms/decay-accum.md) — Event-driven score with time decay
 
 ### Utilities

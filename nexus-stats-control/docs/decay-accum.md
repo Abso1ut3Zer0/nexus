@@ -69,6 +69,6 @@ let mut hotness = DecayAccum::new(30.0).unwrap();
 
 ## Cross-references
 
-- [`FlexProportion`](flex-proportion.md) — per-entity event-count share without time decay.
+- [`FlexProportion`](flex-proportion.md) — each key's share of a count that decays per event, not per unit time.
 - [`EventRate`](../../nexus-stats-core/docs/monitoring.md#eventrate) — smoothed event rate rather than decaying score.
 - [`PeakHold<f64>`](../../nexus-stats-core/docs/monitoring.md#peakhold) — peak envelope with decay (for values, not counts).

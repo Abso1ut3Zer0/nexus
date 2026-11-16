@@ -26,7 +26,7 @@ use nexus_stats::{
     estimation::{
         BetaBinomial, Decision, GammaPoisson, Kalman2d, Kalman3d, SprtBernoulli, SprtGaussian,
     },
-    frequency::TopK,
+    frequency::{FlexProportionGlobal, FlexProportionLocal, TopK},
     learning::{
         AdaGrad, Adam, EpsilonGreedy, Exp3, LmsFilter, NlmsFilter, OnlineGd, OnlineKMeans,
         RlsFilter, ThompsonBeta, ThompsonGamma, Ucb1,
@@ -2016,6 +2016,26 @@ fn bench_online_kmeans_k3_d5(samples: &mut [u64]) {
     }
 }
 
+fn bench_flex_proportion(samples: &mut [u64]) {
+    let mut global = FlexProportionGlobal::new(1_000).unwrap();
+    let mut locals = [FlexProportionLocal::new(); 8];
+    let mut rng = 12345u64;
+    for _ in 0..WARMUP {
+        let i = (next_val(&mut rng) % 8) as usize;
+        global.update(&mut locals[i]);
+    }
+    for s in samples.iter_mut() {
+        let start = rdtsc_start();
+        for _ in 0..BATCH {
+            let i = black_box((next_val(&mut rng) % 8) as usize);
+            global.update(&mut locals[i]);
+        }
+        let end = rdtsc_end();
+        black_box(locals[0].fraction(&global));
+        *s = (end - start) / BATCH;
+    }
+}
+
 // ============================================================================
 // Bandits — parameterized by K
 // ============================================================================
@@ -2303,6 +2323,8 @@ fn main() {
     print_header();
     bench_topk(&mut buf);
     print_row("TopK(16)::update", &mut buf);
+    bench_flex_proportion(&mut buf);
+    print_row("FlexProportionGlobal::update", &mut buf);
 
     section("Statistics & Signal Analysis");
     print_header();

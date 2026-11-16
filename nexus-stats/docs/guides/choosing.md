@@ -147,7 +147,7 @@ type with timestamps, or `PollSaturation`, which is weighted per message.
 
 - Top K most frequent items → [**TopK**](../algorithms/topk.md)
   - Space-Saving algorithm. Fixed memory.
-- What % of total is each entity? → [**FlexibleProportions**](../algorithms/flex-proportion.md)
+- What share of recent events went to each key? → [**FlexProportion**](../algorithms/flex-proportion.md)
   - Per-entity fraction with lazy decay. Shard balancing.
 - How active is this entity recently? → [**DecayingAccumulator**](../algorithms/decay-accum.md)
   - Event-driven score with time decay. Activity/heat scoring.

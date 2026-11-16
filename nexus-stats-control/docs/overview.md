@@ -7,7 +7,7 @@
 - **PeakDetector** — detects local maxima (or minima) with a prominence threshold.
 - **BoolWindow** — rolling pass/fail rate over a fixed-count sliding window.
 - **TopK** — Space-Saving top-K frequent items tracker (approximate, O(K) memory).
-- **FlexProportion** — per-entity fraction-of-total tracker (for leaderboards, load shares).
+- **FlexProportion** — each key's share of a decaying event count (load shares, venue shares).
 - **DecayAccum** — event-driven score that exponentially decays with real time between events.
 
 These all share the ecosystem conventions: O(1) update, fixed memory after construction, no allocation on the hot path.
@@ -48,7 +48,7 @@ Think of `nexus-stats-core::control` as "pointwise decisions" and this crate as 
 | control | `PeakDetector<f64>` | "Where are the local maxima?" |
 | control | `BoolWindow` | "What fraction of the last N were true?" |
 | control | `TopK<K>` | "Who are the heavy hitters?" |
-| control | `FlexProportion` | "What's entity X's share?" |
+| control | `FlexProportionGlobal` / `FlexProportionLocal` | "What's key X's share of recent events?" |
 | control | `DecayAccum` | "What's this entity's decaying score?" |
 
 ## Cross-references

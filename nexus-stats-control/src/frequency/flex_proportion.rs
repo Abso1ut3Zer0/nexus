@@ -1,160 +1,231 @@
-/// Global event counter with decay for proportion tracking.
+//! Flexible proportions: each local's share of a decaying global count,
+//! after the Linux kernel's `lib/flex_proportions.c`.
+
+use nexus_stats_core::ConfigError;
+
+/// The global side of a flexible-proportion pair: a decaying event count and
+/// the current decay period. One per population; it drives every
+/// [`FlexProportionLocal`] that belongs to it.
 ///
-/// Users create one `FlexProportionGlobal` and multiple `FlexProportionEntity`
-/// instances. Each entity tracks its share of the global total with temporal
-/// decay — old activity fades, recent activity dominates.
+/// After the Linux kernel's `fprop_global` (`lib/flex_proportions.c`), where
+/// it apportions dirty pages among cgroups. Every `half_life_events` updates
+/// the period advances and the global count halves; a local halves the same
+/// number of times, lazily, the next time it is touched. `local / global` is
+/// therefore each local's share of *recent* events, and the shares of all
+/// locals sum to one (up to the integer halving). The kernel advances the
+/// period from a timer; here the period is event-driven, which keeps the type
+/// clock-free and deterministic.
 ///
-/// # Usage
+/// # Protocol
 ///
-/// The user is responsible for calling `global.update()` once per event.
-/// Entities take the current period as a plain `u64` — no mutable reference
-/// to the global is needed.
+/// One call per event, on the global, naming the local it belongs to; queries
+/// go through the local with a reference to its global:
 ///
-/// ```ignore
-/// let mut global = FlexProportionGlobal::new(1000);
-/// let mut entity_a = FlexProportionEntity::new();
+/// ```
+/// use nexus_stats_control::frequency::{FlexProportionGlobal, FlexProportionLocal};
 ///
-/// // Record an event for entity A
-/// global.update();
-/// entity_a.update(global.period());
+/// let mut global = FlexProportionGlobal::new(1_000).unwrap(); // half-life: 1000 events
+/// let mut venue_a = FlexProportionLocal::new();
+/// let mut venue_b = FlexProportionLocal::new();
 ///
-/// // Query fraction
-/// let frac = entity_a.fraction(global.total(), global.period());
+/// for _ in 0..300 {
+///     global.update(&mut venue_a);
+/// }
+/// global.update(&mut venue_b);
+///
+/// let share_a = venue_a.fraction(&global); // about 300 / 301
+/// let share_b = venue_b.fraction(&global); // about 1 / 301
+/// assert!((share_a + share_b - 1.0).abs() < 1e-9);
 /// ```
 ///
-/// # Use Cases
-/// - "What fraction of total traffic goes to each venue?"
-/// - Fair-share scheduling input
-/// - Dynamic load distribution tracking
+/// Store locals wherever the keys live (a map, an array, a struct field);
+/// they borrow nothing from the global. 40 bytes for the global, 16 per
+/// local; O(1) per update and per query; no allocation; `no_std`.
+///
+/// # Weighting clock
+///
+/// Per `update` call: the half-life is counted in events, not time. A quiet
+/// population keeps its last shares until events arrive.
 #[derive(Debug, Clone)]
 pub struct FlexProportionGlobal {
-    total: u64,
-    half_life: u64,
+    /// Decayed event count: halved once per period.
+    events: u64,
+    /// Current decay period.
     period: u64,
+    /// Events per period.
+    half_life: u64,
+    /// Events recorded since the period last advanced.
+    since_period: u64,
+    /// Updates ever recorded (not decayed).
+    count: u64,
 }
 
-/// Per-entity event counter for proportion tracking.
+/// The local side of a flexible-proportion pair: one per tracked key (a
+/// venue, a shard, a client). Holds its decayed event count and the period
+/// it was last reconciled to.
 ///
-/// Decoupled from the global tracker — takes plain values instead of
-/// references. The user calls `global.update()` separately.
-#[derive(Debug, Clone)]
-pub struct FlexProportionEntity {
-    count: u64,
+/// After the kernel's `fprop_local_single`. Plain data (`Copy`): keep it in
+/// a map or an array; it holds no reference to the global. Feed events
+/// through [`FlexProportionGlobal::update`] and read the share with
+/// [`fraction`](Self::fraction).
+#[derive(Debug, Clone, Copy, Default)]
+pub struct FlexProportionLocal {
+    /// Decayed event count as of `period`.
+    events: u64,
+    /// Period `events` was last reconciled to.
     period: u64,
 }
 
 impl FlexProportionGlobal {
-    /// Creates a new global tracker.
+    /// Creates a global with the given half-life in events: every
+    /// `half_life_events` updates, every count in the population halves.
     ///
-    /// `half_life_events` is the number of global events after which old
-    /// contributions decay by half.
+    /// # Errors
+    ///
+    /// `ConfigError::Invalid` if `half_life_events` is zero.
     #[inline]
-    pub fn new(half_life_events: u64) -> Result<Self, nexus_stats_core::ConfigError> {
+    pub fn new(half_life_events: u64) -> Result<Self, ConfigError> {
         if half_life_events == 0 {
-            return Err(nexus_stats_core::ConfigError::Invalid(
-                "half_life_events must be positive",
-            ));
+            return Err(ConfigError::Invalid("half_life_events must be positive"));
         }
         Ok(Self {
-            total: 0,
-            half_life: half_life_events,
+            events: 0,
             period: 0,
+            half_life: half_life_events,
+            since_period: 0,
+            count: 0,
         })
     }
 
-    /// Updates the global event count. Call this once per event, before
-    /// updating the entity.
+    /// Records one event attributed to `local`.
+    ///
+    /// Reconciles the local to the current period, counts the event on both
+    /// sides, and advances the period (halving the global count) once
+    /// `half_life_events` events have been recorded in it. The kernel's
+    /// `__fprop_inc_single` plus an event-driven `fprop_new_period`.
     #[inline]
-    pub fn update(&mut self) {
-        self.total += 1;
-        if self.total.is_multiple_of(self.half_life) {
+    pub fn update(&mut self, local: &mut FlexProportionLocal) {
+        local.reflect(self.period);
+        local.events += 1;
+        self.events += 1;
+        self.count += 1;
+        self.since_period += 1;
+        if self.since_period == self.half_life {
+            self.events >>= 1;
             self.period += 1;
+            self.since_period = 0;
         }
     }
 
-    /// Total global events recorded.
+    /// Decayed event count of the whole population: the denominator of every
+    /// local's fraction.
     #[inline]
     #[must_use]
-    pub fn total(&self) -> u64 {
-        self.total
+    pub fn events(&self) -> u64 {
+        self.events
     }
 
-    /// Current decay period.
+    /// Current decay period: how many times the counts have halved.
     #[inline]
     #[must_use]
     pub fn period(&self) -> u64 {
         self.period
     }
-}
 
-impl FlexProportionEntity {
-    /// Creates a new entity tracker.
+    /// Events per period, as configured.
     #[inline]
     #[must_use]
-    pub fn new() -> Self {
-        Self {
-            count: 0,
-            period: 0,
-        }
+    pub fn half_life_events(&self) -> u64 {
+        self.half_life
     }
 
-    /// Records an event for this entity.
-    ///
-    /// Pass the current global period (from `global.period()`). The entity
-    /// applies decay catch-up if the period has advanced, then increments
-    /// its count.
-    ///
-    /// **Important:** Call `global.update()` separately — this method does
-    /// NOT update the global tracker.
-    #[inline]
-    pub fn update(&mut self, current_period: u64) {
-        while self.period < current_period {
-            self.count /= 2;
-            self.period += 1;
-        }
-        self.count += 1;
-    }
-
-    /// Fraction of global total attributed to this entity (0.0 to 1.0).
-    ///
-    /// Pass the current global total and period. Returns 0.0 if total is zero.
-    #[inline]
-    #[must_use]
-    pub fn fraction(&self, total: u64, current_period: u64) -> f64 {
-        if total == 0 {
-            return 0.0;
-        }
-
-        // Decay count to current period
-        let mut count = self.count;
-        let mut period = self.period;
-        while period < current_period {
-            count /= 2;
-            period += 1;
-        }
-
-        count as f64 / total as f64
-    }
-
-    /// This entity's current (possibly decayed) event count.
+    /// Updates recorded since construction or the last `reset`, undecayed.
     #[inline]
     #[must_use]
     pub fn count(&self) -> u64 {
         self.count
     }
 
-    /// Resets this entity's count.
+    /// Whether at least one event has been recorded.
+    #[inline]
+    #[must_use]
+    pub fn is_primed(&self) -> bool {
+        self.count > 0
+    }
+
+    /// Clears the population. Locals that belonged to it read as zero until
+    /// they are updated again, and should be reset or dropped alongside.
     #[inline]
     pub fn reset(&mut self) {
-        self.count = 0;
+        self.events = 0;
         self.period = 0;
+        self.since_period = 0;
+        self.count = 0;
     }
 }
 
-impl Default for FlexProportionEntity {
+impl FlexProportionLocal {
+    /// Creates an empty local.
     #[inline]
-    fn default() -> Self {
-        Self::new()
+    #[must_use]
+    pub const fn new() -> Self {
+        Self {
+            events: 0,
+            period: 0,
+        }
+    }
+
+    /// This local's share of `global`'s recent events, `0.0` to `1.0`; `0.0`
+    /// while the population is empty.
+    ///
+    /// The kernel's `fprop_fraction_single`: the local's count, decayed to
+    /// the global's period, over the global's count, clamped so that integer
+    /// halving can never report more than one.
+    #[inline]
+    #[must_use]
+    pub fn fraction(&self, global: &FlexProportionGlobal) -> f64 {
+        let den = global.events;
+        if den == 0 {
+            return 0.0;
+        }
+        let num = self.events_at(global.period).min(den);
+        num as f64 / den as f64
+    }
+
+    /// This local's decayed event count, as of `global`'s current period.
+    #[inline]
+    #[must_use]
+    pub fn events(&self, global: &FlexProportionGlobal) -> u64 {
+        self.events_at(global.period)
+    }
+
+    /// Clears this local.
+    #[inline]
+    pub fn reset(&mut self) {
+        self.events = 0;
+        self.period = 0;
+    }
+
+    /// The count this local would hold once reconciled to `period`: halved
+    /// once per elapsed period, zero past 63 of them. The kernel's
+    /// `fprop_reflect_period_single`, without the write.
+    #[inline]
+    fn events_at(&self, period: u64) -> u64 {
+        let elapsed = period.saturating_sub(self.period);
+        if elapsed >= u64::BITS as u64 {
+            0
+        } else {
+            self.events >> elapsed
+        }
+    }
+
+    /// Reconciles this local to `period`.
+    #[inline]
+    fn reflect(&mut self, period: u64) {
+        if self.period != period {
+            self.events = self.events_at(period);
+            self.period = period;
+        }
     }
 }
 
@@ -162,93 +233,122 @@ impl Default for FlexProportionEntity {
 mod tests {
     use super::*;
 
-    #[test]
-    fn single_entity_full_share() {
-        let mut global = FlexProportionGlobal::new(100).unwrap();
-        let mut entity = FlexProportionEntity::new();
-
-        for _ in 0..50 {
-            global.update();
-            entity.update(global.period());
+    fn feed(global: &mut FlexProportionGlobal, local: &mut FlexProportionLocal, n: usize) {
+        for _ in 0..n {
+            global.update(local);
         }
-
-        let frac = entity.fraction(global.total(), global.period());
-        assert!(frac > 0.0, "single entity should have positive fraction");
-    }
-
-    #[test]
-    fn equal_entities_equal_share() {
-        let mut global = FlexProportionGlobal::new(1000).unwrap();
-        let mut e1 = FlexProportionEntity::new();
-        let mut e2 = FlexProportionEntity::new();
-
-        for _ in 0..100 {
-            global.update();
-            e1.update(global.period());
-            global.update();
-            e2.update(global.period());
-        }
-
-        let f1 = e1.fraction(global.total(), global.period());
-        let f2 = e2.fraction(global.total(), global.period());
-        assert!(
-            (f1 - f2).abs() < 0.1,
-            "equal entities should have equal fraction: {f1} vs {f2}"
-        );
-    }
-
-    #[test]
-    fn new_entity_ramps_up() {
-        let mut global = FlexProportionGlobal::new(100).unwrap();
-        let mut old = FlexProportionEntity::new();
-
-        for _ in 0..50 {
-            global.update();
-            old.update(global.period());
-        }
-
-        let mut new = FlexProportionEntity::new();
-        for _ in 0..10 {
-            global.update();
-            new.update(global.period());
-        }
-
-        let f_new = new.fraction(global.total(), global.period());
-        assert!(f_new > 0.0, "new entity should have some fraction");
-    }
-
-    #[test]
-    #[allow(clippy::float_cmp)]
-    fn empty_global() {
-        let global = FlexProportionGlobal::new(100).unwrap();
-        let entity = FlexProportionEntity::new();
-        assert_eq!(entity.fraction(global.total(), global.period()), 0.0);
-    }
-
-    #[test]
-    fn reset_entity() {
-        let mut global = FlexProportionGlobal::new(100).unwrap();
-        let mut entity = FlexProportionEntity::new();
-
-        for _ in 0..20 {
-            global.update();
-            entity.update(global.period());
-        }
-        entity.reset();
-        assert_eq!(entity.count(), 0);
-    }
-
-    #[test]
-    fn default_entity() {
-        let entity = FlexProportionEntity::default();
-        assert_eq!(entity.count(), 0);
     }
 
     #[test]
     fn rejects_zero_half_life() {
-        assert!(matches!(
-            FlexProportionGlobal::new(0),
-            Err(nexus_stats_core::ConfigError::Invalid(_))
-        ));
+        assert!(FlexProportionGlobal::new(0).is_err());
+    }
+
+    #[test]
+    fn empty_population_reads_zero() {
+        let global = FlexProportionGlobal::new(10).unwrap();
+        let local = FlexProportionLocal::new();
+        assert_eq!(local.fraction(&global), 0.0);
+        assert_eq!(local.events(&global), 0);
+        assert!(!global.is_primed());
+    }
+
+    #[test]
+    fn sole_local_holds_the_whole_share_across_many_half_lives() {
+        // The defect in the previous implementation: the global never decayed,
+        // so this read 0.5 after one half-life and 0.01 after a hundred.
+        let mut global = FlexProportionGlobal::new(100).unwrap();
+        let mut only = FlexProportionLocal::new();
+        for half_lives in 1..=200 {
+            feed(&mut global, &mut only, 100);
+            assert_eq!(global.period(), half_lives);
+            assert_eq!(only.fraction(&global), 1.0, "after {half_lives} half-lives");
+        }
+        assert_eq!(global.count(), 20_000);
+        assert!(
+            global.events() < 400,
+            "the global count stays bounded: {}",
+            global.events()
+        );
+    }
+
+    #[test]
+    fn equal_locals_split_evenly_and_sum_to_one() {
+        let mut global = FlexProportionGlobal::new(64).unwrap();
+        let mut a = FlexProportionLocal::new();
+        let mut b = FlexProportionLocal::new();
+        for _ in 0..5_000 {
+            global.update(&mut a);
+            global.update(&mut b);
+        }
+        let (fa, fb) = (a.fraction(&global), b.fraction(&global));
+        assert!((fa - 0.5).abs() < 0.02, "a = {fa}");
+        assert!((fb - 0.5).abs() < 0.02, "b = {fb}");
+        assert!(fa + fb <= 1.0 && fa + fb > 0.97, "sum = {}", fa + fb);
+    }
+
+    #[test]
+    fn idle_local_decays_while_the_active_one_takes_over() {
+        let mut global = FlexProportionGlobal::new(100).unwrap();
+        let mut a = FlexProportionLocal::new();
+        let mut b = FlexProportionLocal::new();
+        feed(&mut global, &mut a, 1_000); // a owns the first ten half-lives
+        assert_eq!(a.fraction(&global), 1.0);
+        feed(&mut global, &mut b, 1_000); // then b owns the next ten
+        assert!(a.fraction(&global) < 0.01, "a = {}", a.fraction(&global));
+        assert!(b.fraction(&global) > 0.99, "b = {}", b.fraction(&global));
+        // a was never touched during b's run: its count was decayed on read only.
+        assert!(a.events(&global) <= 1);
+    }
+
+    #[test]
+    fn ramp_up_is_gradual_and_monotone() {
+        let mut global = FlexProportionGlobal::new(100).unwrap();
+        let mut old = FlexProportionLocal::new();
+        let mut new = FlexProportionLocal::new();
+        feed(&mut global, &mut old, 1_000);
+        let mut last = 0.0;
+        for step in 0..10 {
+            feed(&mut global, &mut new, 100);
+            let f = new.fraction(&global);
+            assert!(f >= last, "share must not shrink: {f} after {last}");
+            if step < 5 {
+                assert!(f > last, "share must grow early on: {f} after {last}");
+            }
+            last = f;
+        }
+        // After ten half-lives the old local's count has halved to nothing.
+        assert!(last > 0.95 && last <= 1.0, "new = {last}");
+    }
+
+    #[test]
+    fn a_local_left_for_64_periods_reads_zero() {
+        let mut global = FlexProportionGlobal::new(1).unwrap(); // one event per period
+        let mut a = FlexProportionLocal::new();
+        let mut b = FlexProportionLocal::new();
+        feed(&mut global, &mut a, 1_000);
+        feed(&mut global, &mut b, 70);
+        assert_eq!(a.events(&global), 0);
+        assert_eq!(a.fraction(&global), 0.0);
+    }
+
+    #[test]
+    fn reset_clears_both_sides() {
+        let mut global = FlexProportionGlobal::new(10).unwrap();
+        let mut a = FlexProportionLocal::new();
+        feed(&mut global, &mut a, 25);
+        global.reset();
+        a.reset();
+        assert_eq!(global.count(), 0);
+        assert_eq!(global.period(), 0);
+        assert_eq!(a.fraction(&global), 0.0);
+        global.update(&mut a);
+        assert_eq!(a.fraction(&global), 1.0);
+    }
+
+    #[test]
+    fn default_local_is_empty() {
+        let global = FlexProportionGlobal::new(10).unwrap();
+        assert_eq!(FlexProportionLocal::default().events(&global), 0);
     }
 }

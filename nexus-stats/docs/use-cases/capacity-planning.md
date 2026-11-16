@@ -5,21 +5,18 @@ Load distribution analysis, trend forecasting, and shard balancing.
 ## Recipe: Load Distribution Across Shards
 
 ```rust
-use nexus_stats::frequency::{FlexProportionGlobal, FlexProportionEntity};
+use nexus_stats::frequency::{FlexProportionGlobal, FlexProportionLocal};
 
 // Track what % of traffic each shard handles
 let mut global = FlexProportionGlobal::new(100_000).unwrap(); // half-life: 100k events
-let mut per_shard: Vec<FlexProportionEntity> = (0..num_shards)
-    .map(|_| FlexProportionEntity::new())
-    .collect();
+let mut per_shard = vec![FlexProportionLocal::new(); num_shards];
 
-// On each event routed to shard i: the global first, then the shard with the global's period
-global.update();
-per_shard[shard_id].update(global.period());
+// On each event routed to shard i:
+global.update(&mut per_shard[shard_id]);
 
 // Periodic capacity review:
 for (i, shard) in per_shard.iter().enumerate() {
-    let pct = shard.fraction(global.total(), global.period());
+    let pct = shard.fraction(&global);
     if pct > 0.30 {
         log::warn!("shard {i} handles {:.0}% of traffic — consider rebalancing", pct * 100.0);
     }
@@ -65,7 +62,7 @@ for (sym, count) in hot.top() {
 
 | Primitive | Role |
 |-----------|------|
-| [FlexibleProportions](../algorithms/flex-proportion.md) | Per-entity traffic fraction |
+| [FlexProportion](../algorithms/flex-proportion.md) | Per-shard share of recent traffic |
 | [Kalman1D](../algorithms/kalman1d.md) | Load forecasting with trend |
 | [Holt](../algorithms/holt.md) | Simpler trend forecasting |
 | [TopK](../algorithms/topk.md) | Hottest items |

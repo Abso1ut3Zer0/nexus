@@ -83,7 +83,7 @@
 //! | `regression` | `learning` | LmsFilter, NlmsFilter, RlsFilter, HuberRegression, OnlineKMeans, OnlineGd, AdaGrad, Adam, Ucb1, ThompsonBeta, ThompsonGamma, EpsilonGreedy, Exp3 |
 //! | `regression` | `estimation` | + Kalman2d, Kalman3d, BetaBinomial, GammaPoisson |
 //! | `control` | `control` | + PeakDetector, BoolWindow |
-//! | `control` | `frequency` | TopK, FlexProportionGlobal, FlexProportionEntity, DecayAccum |
+//! | `control` | `frequency` | TopK, FlexProportionGlobal, FlexProportionLocal, DecayAccum |
 //! | `full` | all | Everything above |
 //!
 //! # Features

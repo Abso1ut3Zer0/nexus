@@ -1,96 +1,97 @@
-# FlexibleProportions — Per-Entity Fraction Tracking
+# FlexProportion — Each Key's Share of a Decaying Count
 
-**"What % of total does entity X contribute?"** with lazy per-entity decay.
-From Linux kernel `lib/flex_proportions.c`.
+**"What fraction of recent events went to X?"** with lazy per-key decay.
+From the Linux kernel's `lib/flex_proportions.c`.
 
 | Property | Value |
 |----------|-------|
 | Update cost | O(1) per event |
-| Memory | ~16 bytes per entity + ~16 bytes global |
-| Types | `FlexProportionGlobal`, `FlexProportionEntity` |
+| Memory | 40 bytes global + 16 bytes per local |
+| Types | `FlexProportionGlobal`, `FlexProportionLocal` |
 
 ## What It Does
 
-Tracks a global event stream and per-entity contributions. Each entity's
-fraction decays over time — recent activity matters more than old.
+One global counts every event of a population and advances a decay period
+every `half_life_events`, halving its count. Each local holds one key's count
+and halves it the same number of times, lazily, when next touched. The share
+`local / global` is therefore a share of *recent* events, and the shares sum
+to one.
 
 ```
-  Global events: 1000 total
-  Entity A: 400 recent events → 40%
-  Entity B: 350 recent events → 35%
-  Entity C: 250 recent events → 25%
+  Half-life 1000 events, three venues:
 
-  After Entity A goes quiet:
-  Entity A: fraction decays toward 0%
-  Entity B and C: fractions increase proportionally
+  Venue A: 400 of the last ~1000 → 40%
+  Venue B: 350                   → 35%
+  Venue C: 250                   → 25%
+
+  A goes quiet: its count halves every 1000 events, on read, while B and C
+  keep theirs; A's share decays toward 0% and B's and C's grow to fill it.
 ```
 
-**Lazy decay:** Per-entity counters only decay when queried. If you have
-1000 entities but only check 3, you pay for 3 decays — not 1000.
+**Lazy decay:** idle locals cost nothing. If you track 1000 keys but query
+3, you pay for 3 reconciliations, not 1000.
 
 ## Configuration
 
 ```rust
+use nexus_stats::frequency::{FlexProportionGlobal, FlexProportionLocal};
+
 let mut global = FlexProportionGlobal::new(1000).unwrap();  // half-life: 1000 events
+let mut venue_a = FlexProportionLocal::new();
+let mut venue_b = FlexProportionLocal::new();
 
-let mut entity_a = FlexProportionEntity::new();
-let mut entity_b = FlexProportionEntity::new();
-
-// On each event: the global first, then the responsible entity with the global's period
-global.update();
-entity_a.update(global.period());
+// One call per event, on the global, naming the local it belongs to:
+global.update(&mut venue_a);
 
 // Query:
-let pct_a = entity_a.fraction(global.total(), global.period());  // 0.0 to 1.0
+let share_a = venue_a.fraction(&global);  // 0.0 to 1.0
 ```
 
 ## Examples
 
 ### Trading — Shard Load Balancing
 ```rust
-// Track which symbols generate most traffic for capacity planning
+// Which symbols generate most traffic, for capacity planning
 let mut global = FlexProportionGlobal::new(100_000).unwrap();
-let mut per_symbol: HashMap<Symbol, FlexProportionEntity> = ...;
+let mut per_symbol: HashMap<Symbol, FlexProportionLocal> = ...;
 
 // On each market data message:
-global.update();
-per_symbol.get_mut(&symbol).unwrap().update(global.period());
+global.update(per_symbol.entry(symbol).or_default());
 
-// Periodically check distribution:
-for (sym, entity) in &per_symbol {
-    let pct = entity.fraction(global.total(), global.period());
-    if pct > 0.20 { /* this symbol is >20% of traffic */ }
+// Periodically check the distribution:
+for (sym, local) in &per_symbol {
+    let share = local.fraction(&global);
+    if share > 0.20 { /* this symbol is >20% of recent traffic */ }
 }
 ```
 
 ### SRE — Service Traffic Distribution
 ```rust
-// Which endpoints consume the most resources?
+// Which endpoints take the most requests?
 let mut global = FlexProportionGlobal::new(50_000).unwrap();
-let mut per_endpoint: HashMap<String, FlexProportionEntity> = HashMap::new();
+let mut per_endpoint: HashMap<String, FlexProportionLocal> = HashMap::new();
 
 // On each request:
-global.update();
-per_endpoint.entry(endpoint.clone())
-    .or_insert_with(FlexProportionEntity::new)
-    .update(global.period());
+global.update(per_endpoint.entry(endpoint.clone()).or_default());
 
 // Review: which endpoint is heaviest?
-for (ep, entity) in &per_endpoint {
-    let pct = entity.fraction(global.total(), global.period());
-    if pct > 0.25 { log::warn!("{ep} handles {:.0}% of traffic", pct * 100.0); }
+for (ep, local) in &per_endpoint {
+    let share = local.fraction(&global);
+    if share > 0.25 { log::warn!("{ep} handles {:.0}% of recent traffic", share * 100.0); }
 }
 ```
 
 ## Performance
 
-O(1) per event and per query. The lazy decay catch-up is O(1) — it
-applies the decay exponent for the elapsed periods in one computation.
+O(1) per event and per query. Reconciling an idle local is one shift by the
+number of elapsed periods (zero past 63), not a loop.
 
 ## Background
 
-Linux kernel implementation: `lib/flex_proportions.c`. Used for dirty page
-throttling — tracking what fraction of dirty pages each cgroup is responsible for.
+Linux kernel implementation: `lib/flex_proportions.c`, used for dirty-page
+throttling: what fraction of dirty pages each cgroup is responsible for. The
+kernel advances the period from a timer; this port advances it every
+`half_life_events` events, so it needs no clock and replays deterministically.
 
-Note: decay is coarse-grained (halving every N events). For smooth exponential
-decay, use [DecayingAccumulator](decay-accum.md) instead.
+Note: decay is coarse-grained (halving every period). For smooth exponential
+decay in time, use [DecayAccum](decay-accum.md) instead.
