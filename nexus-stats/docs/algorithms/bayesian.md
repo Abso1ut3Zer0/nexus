@@ -162,4 +162,4 @@ numbers for monitoring, not statistical inference at small n.
 |-----------|-----|
 | `update()` | 13 cycles |
 | `mean()` | 3 cycles |
-| `credible_interval()` | 11 cycles (includes sqrt + rational approx) |
+| `credible_interval()` | 10 cycles (includes sqrt + rational approx) |

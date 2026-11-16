@@ -166,7 +166,10 @@ impl TransferEntropy {
         // Store in circular buffer (overwrites oldest when full)
         self.hist_x[self.head] = x_bin;
         self.hist_y[self.head] = y_bin;
-        self.head = (self.head + 1) % self.lag;
+        self.head += 1;
+        if self.head == self.lag {
+            self.head = 0;
+        }
         if self.filled < self.lag {
             self.filled += 1;
         }

@@ -106,20 +106,28 @@ impl CrossCorrelation {
         // Lag 0: exact Welford co-moment (old_delta_a * new_residual_b)
         self.cross_m[0] += da_old * db_new;
 
-        // Lags 1..lag-1: use buffered A values (approximate,
-        // error is O(1/n) per step — fine for streaming)
-        if self.count > 1 {
-            let filled = (self.count - 1).min(lag as u64) as usize;
-            for k in 1..filled.min(lag) {
-                let idx = (self.head + lag - k) % lag;
-                let a_lagged = self.buffer_a[idx];
-                self.cross_m[k] += (a_lagged - self.mean_a) * db_new;
-            }
+        // Lags 1..lag-1: use buffered A values (approximate, error is O(1/n)
+        // per step, fine for streaming). A from k steps ago sits k slots
+        // behind `head`, wrapping at 0: split the ring at `head` and walk
+        // each half backwards, no per-lag modulo.
+        let n_lags = (self.count - 1).min(lag as u64).saturating_sub(1) as usize;
+        let head = self.head;
+        let mean_a = self.mean_a;
+        let (recent, older) = self.buffer_a.split_at(head);
+        let (cross_recent, cross_older) = self.cross_m[1..=n_lags].split_at_mut(n_lags.min(head));
+        for (c, &a_lagged) in cross_recent.iter_mut().zip(recent.iter().rev()) {
+            *c += (a_lagged - mean_a) * db_new;
+        }
+        for (c, &a_lagged) in cross_older.iter_mut().zip(older.iter().rev()) {
+            *c += (a_lagged - mean_a) * db_new;
         }
 
         // Store A in circular buffer
-        self.buffer_a[self.head] = a;
-        self.head = (self.head + 1) % lag;
+        self.buffer_a[head] = a;
+        self.head = head + 1;
+        if self.head == lag {
+            self.head = 0;
+        }
         Ok(())
     }
 

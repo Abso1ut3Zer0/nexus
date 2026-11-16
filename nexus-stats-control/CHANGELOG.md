@@ -33,6 +33,10 @@ contained.
   generic type bounded by `nexus_stats_core::Sample` (`f64`, `i64`) returning
   `Peak<T>`. `update` returns `Result` for `f64` and the option directly for
   `i64`. Construct as `PeakDetector::<i64>::new(prominence)`.
+- **Hot-path pass before release.** `BoolWindow` advances its ring index
+  with a compare instead of a division. `TopK` keeps its live entries in a
+  `Vec` sized once at construction instead of `Box<[Option<Entry>]>`, so
+  the scan no longer tests a discriminant per slot. API unchanged.
 
 ### Fixed
 

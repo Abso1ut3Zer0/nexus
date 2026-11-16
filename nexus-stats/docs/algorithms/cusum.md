@@ -5,7 +5,7 @@ mean of a streaming process.
 
 | Property | Value |
 |----------|-------|
-| Update cost | 5 cycles |
+| Update cost | 6 cycles |
 | Memory | ~56 bytes |
 | Types | `Cusum` |
 | Priming | Configurable via `min_samples` |
@@ -305,7 +305,7 @@ if let Some(Direction::Rising) = cusum.update(sample) {
 
 | Operation | p50 | p99 |
 |-----------|-----|-----|
-| `Cusum::update` | 5 cycles | 5 cycles |
+| `Cusum::update` | 6 cycles | 6 cycles |
 
 No branches beyond the `max(0, x)` clamp. No division, no transcendentals.
 

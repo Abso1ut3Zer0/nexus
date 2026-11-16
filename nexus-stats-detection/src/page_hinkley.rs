@@ -83,12 +83,17 @@ impl PageHinkley {
         self.sum_pos += sample - self.mean - self.alpha;
         self.sum_neg += sample - self.mean + self.alpha;
 
-        if self.sum_pos < self.min_pos {
-            self.min_pos = self.sum_pos;
-        }
-        if self.sum_neg > self.max_neg {
-            self.max_neg = self.sum_neg;
-        }
+        // Selects, not branches: these extrema move often while the mean drifts.
+        self.min_pos = if self.sum_pos < self.min_pos {
+            self.sum_pos
+        } else {
+            self.min_pos
+        };
+        self.max_neg = if self.sum_neg > self.max_neg {
+            self.sum_neg
+        } else {
+            self.max_neg
+        };
 
         if !self.is_primed() {
             return Ok(false);

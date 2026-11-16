@@ -34,6 +34,19 @@ one naming convention across the family. Migration guide:
 - `DeadBand<T>::new` returns `Result`; `PeakHold` restarts its hold on a
   sample equal to the decayed peak. The core CHANGELOG has the rest of the
   behavior changes.
+- **Hot-path pass before release.** Every `update` in the README tables had
+  its assembly read once. Ring indices advance with a compare instead of a
+  division (`Autocorrelation`, `CrossCorrelation`, `TransferEntropy`,
+  `Mosum`, `Kama`, `BoolWindow`, `TwoScaleRv`, `VarianceRatio`,
+  `WindowedMedian`); extrema and sign tests use selects instead of branches
+  (`Drawdown`, `RunningMax`, `RunningMin`, `PageHinkley`, `Lpm`, `HitRate`);
+  `WindowedMedian::update` ranks by vectorized count; `TopK` and `VarianceRatio`
+  drop their `Option` slots and `VecDeque`. On the reference machine
+  (rdtsc ticks, p50): `WindowedMedian(32)::update` 149 → 81,
+  `Hampel(21)::update` 250 → 96, `CrossCorrelation(10)::update` 54 → 30,
+  `Kama(10)::update` 24 → 15, `TopK(16)::update` 45 → 36,
+  `BoolWindow(64)::update` 11 → 6. Numbers in the README and
+  `docs/reference/performance.md` regenerated.
 
 ### Removed
 
@@ -58,6 +71,9 @@ one naming convention across the family. Migration guide:
   `Liveness` deadlines ([#760](https://github.com/Abso1ut3Zer0/nexus/issues/760)),
   `PeakHold<f64>` negative-only streams and `Jitter<f64>` seeding
   ([#763](https://github.com/Abso1ut3Zer0/nexus/issues/763)).
+- **`WindowedMedian::mad()` allocated and sorted a scratch `Vec` per call**,
+  which made every `Hampel::update` allocate. Now one vectorized O(N) count
+  over the sorted window: no allocation, no sort, same value.
 
 ### Docs
 

@@ -91,7 +91,10 @@ impl BoolWindow {
         failures += fail_bit as u32;
 
         self.failures = failures;
-        self.head = (head + 1) % capacity;
+        self.head = head + 1;
+        if self.head == capacity {
+            self.head = 0;
+        }
         if count < capacity as u64 {
             self.count = count + 1;
         }

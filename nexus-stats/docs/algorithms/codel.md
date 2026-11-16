@@ -189,7 +189,7 @@ when the mean processing time has shifted (e.g., downstream got slower).
 
 | Operation | p50 | p99 |
 |-----------|-----|-----|
-| `CoDel::<i64>::update` | 5 cycles | 5 cycles |
+| `CoDel::<i64>::update` | 5 cycles | 6 cycles |
 
 One comparison against the target and one against the armed deadline per
 update; no windowed minimum. The integer path avoids float conversion

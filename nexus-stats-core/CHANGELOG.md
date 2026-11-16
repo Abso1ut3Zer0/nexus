@@ -51,6 +51,16 @@ contained.
   `cargo build --release`. The crate's shim now fuses in the first case and
   computes `a * b + c` in the second. Results on the two paths differ in
   the last bit; results within one build are deterministic as before.
+- **Hot-path pass before release.** `Drawdown`, `RunningMax` and `RunningMin`
+  update their extremum with a select instead of a branch (a new peak is a
+  coin flip for the predictor in a trending series); `Drawdown` seeds its
+  internal peak at `T::MIN`, so the first sample needs no special case.
+  `HitRate` folds its four sign compares into flags, `Lpm` clamps the
+  shortfall instead of branching on it, `TwoScaleRv` and `VarianceRatio`
+  advance their ring index with a compare instead of a division, and
+  `VarianceRatio` keeps the last `q` values in a fixed ring (`Box<[f64]>`)
+  instead of a `VecDeque`. Same results; no `div` and fewer unpredictable
+  jumps on the update path.
 
 ### Removed
 

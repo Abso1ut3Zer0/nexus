@@ -3,7 +3,8 @@ use nexus_stats_core::Sample;
 /// Windowed median with runtime-configured window size (requires `alloc` feature).
 ///
 /// Maintains a ring buffer and an insertion-sorted shadow array
-/// for O(N) update with O(1) median/quartile queries.
+/// for O(N) update with O(1) median/quartile queries and an O(N),
+/// allocation-free [`mad`](Self::mad).
 ///
 /// # Use Cases
 /// - Robust central tendency (median is outlier-resistant)
@@ -73,119 +74,33 @@ impl<T: Sample> WindowedMedian<T> {
         let len = (self.count as usize).min(self.window);
         let head = self.head;
         let window = self.window;
-        // SAFETY: both buffers allocated with capacity `window`, all elements initialized,
-        // exclusively owned. We need both slices simultaneously plus scalar fields.
-        let ring = unsafe { core::slice::from_raw_parts_mut(self.ring, window) };
-        // SAFETY: same as above for sorted buffer.
-        let sorted = unsafe { core::slice::from_raw_parts_mut(self.sorted, window) };
+        let evicted = core::mem::replace(&mut self.ring_mut()[head], sample);
+        let sorted = self.sorted_mut();
 
-        if self.count >= window as u64 {
-            let evicted = ring[head];
-            ring[head] = sample;
-
-            // Find removal position (where the evicted value is)
-            let remove_pos = {
-                let mut lo = 0;
-                let mut hi = len;
-                while lo < hi {
-                    let mid = lo + (hi - lo) / 2;
-                    if sorted[mid] < evicted {
-                        lo = mid + 1;
-                    } else {
-                        hi = mid;
-                    }
-                }
-                lo
-            };
-
-            // Find insertion position for new sample in the (len-1) array
-            // that would exist after removal. Adjust search range based on
-            // removal position to search the correct virtual array.
-            let insert_pos = if sample <= evicted {
-                // New value goes left of or at remove position
-                let mut lo = 0;
-                let mut hi = remove_pos;
-                while lo < hi {
-                    let mid = lo + (hi - lo) / 2;
-                    if sorted[mid] <= sample {
-                        lo = mid + 1;
-                    } else {
-                        hi = mid;
-                    }
-                }
-                lo
+        if len == window {
+            // Where the evicted value sits in the sorted shadow.
+            let remove_pos = rank_lt(&sorted[..len], evicted);
+            // The sample lands on the side of `remove_pos` it compares to, so
+            // rank it within that side as it looks once the evicted value is
+            // gone, then close the gap with one memmove.
+            if sample <= evicted {
+                let insert_pos = rank_le(&sorted[..remove_pos], sample);
+                sorted.copy_within(insert_pos..remove_pos, insert_pos + 1);
+                sorted[insert_pos] = sample;
             } else {
-                // New value goes right of remove position — search in
-                // the portion after remove_pos (these shift left by 1)
-                let mut lo = remove_pos;
-                let mut hi = len - 1;
-                while lo < hi {
-                    let mid = lo + (hi - lo) / 2;
-                    // After removal, sorted[mid] becomes sorted[mid+1]
-                    if sorted[mid + 1] <= sample {
-                        lo = mid + 1;
-                    } else {
-                        hi = mid;
-                    }
-                }
-                lo
-            };
-
-            // Single-pass shift using ptr::copy (memmove)
-            let ptr = sorted.as_mut_ptr();
-            match remove_pos.cmp(&insert_pos) {
-                core::cmp::Ordering::Less => {
-                    // Shift left: elements between remove_pos and insert_pos
-                    // SAFETY: remove_pos < insert_pos < len, all in bounds
-                    unsafe {
-                        core::ptr::copy(
-                            ptr.add(remove_pos + 1),
-                            ptr.add(remove_pos),
-                            insert_pos - remove_pos,
-                        );
-                    }
-                    sorted[insert_pos] = sample;
-                }
-                core::cmp::Ordering::Greater => {
-                    // Shift right: elements between insert_pos and remove_pos
-                    // SAFETY: insert_pos < remove_pos < len, all in bounds
-                    unsafe {
-                        core::ptr::copy(
-                            ptr.add(insert_pos),
-                            ptr.add(insert_pos + 1),
-                            remove_pos - insert_pos,
-                        );
-                    }
-                    sorted[insert_pos] = sample;
-                }
-                core::cmp::Ordering::Equal => {
-                    // Same position — just overwrite
-                    sorted[remove_pos] = sample;
-                }
+                let insert_pos = remove_pos + rank_le(&sorted[remove_pos + 1..len], sample);
+                sorted.copy_within(remove_pos + 1..=insert_pos, remove_pos);
+                sorted[insert_pos] = sample;
             }
         } else {
-            ring[head] = sample;
-
-            let insert_pos = {
-                let mut lo = 0;
-                let mut hi = len;
-                while lo < hi {
-                    let mid = lo + (hi - lo) / 2;
-                    if sorted[mid] <= sample {
-                        lo = mid + 1;
-                    } else {
-                        hi = mid;
-                    }
-                }
-                lo
-            };
-            for i in (insert_pos..len).rev() {
-                sorted[i + 1] = sorted[i];
-            }
+            let insert_pos = rank_le(&sorted[..len], sample);
+            sorted.copy_within(insert_pos..len, insert_pos + 1);
             sorted[insert_pos] = sample;
         }
-
-        self.head = (head + 1) % window;
+        self.head = head + 1;
+        if self.head == window {
+            self.head = 0;
+        }
         self.count += 1;
     }
 
@@ -234,23 +149,23 @@ impl<T: Sample> WindowedMedian<T> {
     }
 
     /// Median Absolute Deviation (MAD), or `None` if empty.
+    ///
+    /// O(N), allocation-free and branch-free: the deviations are never
+    /// materialized or sorted. The `k + 1` points nearest the median are
+    /// consecutive in sorted order, so the `k`-th deviation is the tightest
+    /// such window, found with one vectorized count.
     #[inline]
     #[must_use]
     pub fn mad(&self) -> Option<T> {
         let median = self.median()?;
         let len = self.current_len();
-        let sorted = self.sorted();
-        let mut deviations = alloc::vec![T::ZERO; self.window];
-        for i in 0..len {
-            let d = sorted[i] - median;
-            deviations[i] = if d < T::ZERO { T::ZERO - d } else { d };
-        }
-        deviations[..len]
-            .sort_unstable_by(|a, b| a.partial_cmp(b).unwrap_or(core::cmp::Ordering::Equal));
+        let sorted = &self.sorted()[..len];
+        let mid = len / 2;
+        let upper = kth_deviation(sorted, median, mid);
         if len % 2 == 1 {
-            Some(deviations[len / 2])
+            Some(upper)
         } else {
-            Some(T::midpoint(deviations[len / 2 - 1], deviations[len / 2]))
+            Some(T::midpoint(kth_deviation(sorted, median, mid - 1), upper))
         }
     }
 
@@ -394,6 +309,63 @@ impl WindowedMedian<i64> {
     pub fn update(&mut self, sample: i64) {
         self.fold(sample);
     }
+}
+
+/// Up to this many elements a vectorized linear count beats a binary search:
+/// the compares are independent, where each search step waits on the load
+/// before it. Measured on x86_64 (SSE2 baseline): linear wins at 64 (99 vs
+/// 115 ticks per update) and loses at 128 (139 vs 131).
+const LINEAR_RANK_MAX: usize = 64;
+
+/// Number of elements `< x` in a sorted slice: the index of the first `>= x`.
+#[inline]
+fn rank_lt<T: Sample>(sorted: &[T], x: T) -> usize {
+    if sorted.len() <= LINEAR_RANK_MAX {
+        sorted.iter().filter(|&&v| v < x).count()
+    } else {
+        sorted.partition_point(|&v| v < x)
+    }
+}
+
+/// Number of elements `<= x` in a sorted slice: the index of the first `> x`.
+#[inline]
+fn rank_le<T: Sample>(sorted: &[T], x: T) -> usize {
+    if sorted.len() <= LINEAR_RANK_MAX {
+        sorted.iter().filter(|&&v| v <= x).count()
+    } else {
+        sorted.partition_point(|&v| v <= x)
+    }
+}
+
+/// The `k`-th smallest (0-based) absolute deviation from `median` over a
+/// sorted, non-empty slice with `k < sorted.len()`.
+///
+/// The `k + 1` points nearest the median are `k + 1` consecutive sorted
+/// points, so the answer is the tightest such window:
+/// `min over a of max(median - s[a], s[a + k] - median)`. The left term falls
+/// and the right term rises with `a`, so the minimum sits where they cross.
+/// The crossover is a count of the positions where the right term is still
+/// below the left one: independent compares, no dependency chain and no
+/// data-dependent branch.
+#[inline]
+fn kth_deviation<T: Sample>(sorted: &[T], median: T, k: usize) -> T {
+    let last = sorted.len() - 1 - k;
+    let cross = (0..=last)
+        .filter(|&a| sorted[a + k] - median < median - sorted[a])
+        .count();
+    // At `cross` the right term dominates, one before it the left one does;
+    // a side that does not exist cannot be the minimum.
+    let right = if cross <= last {
+        sorted[cross + k] - median
+    } else {
+        T::MAX
+    };
+    let left = if cross > 0 {
+        median - sorted[cross - 1]
+    } else {
+        T::MAX
+    };
+    if right <= left { right } else { left }
 }
 
 #[cfg(test)]
@@ -585,5 +557,58 @@ mod tests {
         let mut wm = WindowedMedian::<f64>::new(5);
         wm.update(1.0).unwrap();
         let _ = wm.quantile(1.5);
+    }
+
+    /// `mad()` against the textbook definition (sort the absolute deviations,
+    /// take their median) for every window length, odd and even, with ties.
+    #[test]
+    fn mad_matches_sorted_deviations_for_every_window_length() {
+        let mut rng = 0x9E37_79B9_7F4A_7C15u64;
+        for window in 1..=40 {
+            let mut wm = WindowedMedian::<f64>::new(window);
+            let mut wi = WindowedMedian::<i64>::new(window);
+            let mut history = Vec::new();
+            for _ in 0..window * 3 {
+                rng ^= rng << 13;
+                rng ^= rng >> 7;
+                rng ^= rng << 17;
+                let x = (rng % 7) as i64;
+                wm.update(x as f64).unwrap();
+                wi.update(x);
+                history.push(x);
+                let len = history.len().min(window);
+                let mut recent: Vec<i64> = history[history.len() - len..].to_vec();
+                recent.sort_unstable();
+                let median_i = if len % 2 == 1 {
+                    recent[len / 2]
+                } else {
+                    i64::midpoint(recent[len / 2 - 1], recent[len / 2])
+                };
+                let median_f = if len % 2 == 1 {
+                    recent[len / 2] as f64
+                } else {
+                    (recent[len / 2 - 1] as f64 + recent[len / 2] as f64) / 2.0
+                };
+                let mut dev_i: Vec<i64> = recent.iter().map(|&v| (v - median_i).abs()).collect();
+                dev_i.sort_unstable();
+                let mut dev_f: Vec<f64> = recent
+                    .iter()
+                    .map(|&v| (v as f64 - median_f).abs())
+                    .collect();
+                dev_f.sort_by(f64::total_cmp);
+                let mad_i = if len % 2 == 1 {
+                    dev_i[len / 2]
+                } else {
+                    i64::midpoint(dev_i[len / 2 - 1], dev_i[len / 2])
+                };
+                let mad_f = if len % 2 == 1 {
+                    dev_f[len / 2]
+                } else {
+                    (dev_f[len / 2 - 1] + dev_f[len / 2]) / 2.0
+                };
+                assert_eq!(wi.mad(), Some(mad_i), "i64 window {window} len {len}");
+                assert_eq!(wm.mad(), Some(mad_f), "f64 window {window} len {len}");
+            }
+        }
     }
 }

@@ -70,8 +70,11 @@ impl Hampel {
             return Ok(x);
         }
 
-        let median = self.median.median().unwrap();
-        let mad = self.median.mad().unwrap();
+        // Both are `None` only for an empty window, which `is_primed` rules out.
+        let (Some(median), Some(mad)) = (self.median.median(), self.median.mad()) else {
+            self.value = x;
+            return Ok(x);
+        };
         let sigma = self.mad_scale * mad;
 
         // If MAD is zero (constant window), pass through

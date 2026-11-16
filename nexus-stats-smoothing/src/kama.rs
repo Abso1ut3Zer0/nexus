@@ -80,21 +80,14 @@ impl Kama {
     pub fn update(&mut self, sample: f64) -> Result<Option<f64>, nexus_stats_core::DataError> {
         check_finite!(sample);
         let n = self.window;
-        let idx = (self.count as usize) % n;
-        // SAFETY: idx is in [0, window), buffer exclusively owned
-        unsafe {
-            *self.ring.add(idx) = sample;
+        let idx = self.head;
+        self.ring_mut()[idx] = sample;
+        // The slot after the newest sample holds the oldest one.
+        self.head = idx + 1;
+        if self.head == n {
+            self.head = 0;
         }
         self.count += 1;
-
-        if self.count == 1 {
-            self.value = sample;
-            return if self.count >= self.min_samples {
-                Ok(Some(self.value))
-            } else {
-                Ok(None)
-            };
-        }
 
         if self.count <= n as u64 {
             self.value = sample;
@@ -105,14 +98,13 @@ impl Kama {
             };
         }
 
-        // Window is full — compute ER from the ring buffer
-        // SAFETY: buffer allocated with capacity `window`, all initialized
-        let ring = unsafe { core::slice::from_raw_parts(self.ring, n) };
+        // Window is full: compute ER from the ring buffer.
+        let ring = self.ring();
 
-        // The ring is ordered: oldest at (idx+1)%n, newest at idx.
+        // The ring is ordered: oldest at head, newest at idx (just written).
         // Split into two contiguous slices to avoid modular indexing
         // per iteration, enabling SIMD vectorization.
-        let oldest = (idx + 1) % n;
+        let oldest = self.head;
 
         // Compute volatility: sum of |consecutive differences| in ring order
         let mut volatility = 0.0;
@@ -175,8 +167,12 @@ impl Kama {
         if self.count <= n as u64 {
             return None;
         }
-        let newest_idx = ((self.count - 1) as usize) % n;
-        let oldest_idx = (self.count as usize) % n;
+        let oldest_idx = self.head;
+        let newest_idx = if oldest_idx == 0 {
+            n - 1
+        } else {
+            oldest_idx - 1
+        };
         let ring = self.ring();
         let direction = (ring[newest_idx] - ring[oldest_idx]).abs();
         if self.volatility_sum > 0.0 {

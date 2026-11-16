@@ -33,7 +33,7 @@ impl<T: Sample> Drawdown<T> {
     #[must_use]
     pub const fn new() -> Self {
         Self {
-            peak: T::ZERO,
+            peak: T::MIN,
             current: T::ZERO,
             worst: T::ZERO,
             count: 0,
@@ -86,7 +86,7 @@ impl<T: Sample> Drawdown<T> {
     /// Resets to empty state.
     #[inline]
     pub fn reset(&mut self) {
-        self.peak = T::ZERO;
+        self.peak = T::MIN;
         self.current = T::ZERO;
         self.worst = T::ZERO;
         self.count = 0;
@@ -97,13 +97,16 @@ impl<T: Sample> Drawdown<T> {
     fn fold(&mut self, sample: T) -> T {
         self.count += 1;
         self.current = sample;
-        if self.count == 1 || sample > self.peak {
-            self.peak = sample;
-        }
+        // Selects, not branches: in a trending series a new peak is a coin
+        // flip for the branch predictor. `peak` starts at `T::MIN`, so the
+        // first sample wins without a special case.
+        self.peak = if sample > self.peak {
+            sample
+        } else {
+            self.peak
+        };
         let dd = self.peak - self.current;
-        if dd > self.worst {
-            self.worst = dd;
-        }
+        self.worst = if dd > self.worst { dd } else { self.worst };
         dd
     }
 }

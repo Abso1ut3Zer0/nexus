@@ -6,7 +6,7 @@ utility functions in game development.
 
 | Property | Value |
 |----------|-------|
-| Update cost | 12 cycles |
+| Update cost | 13 cycles |
 | Memory | ~16 bytes |
 | Types | `Spring` |
 | Output | Current smoothed value |
@@ -120,7 +120,7 @@ let sy = cam_y.update(player_y, dt).unwrap();
 
 | Operation | p50 | p99 |
 |-----------|-----|-----|
-| `Spring::update` | 12 cycles | 12 cycles |
+| `Spring::update` | 13 cycles | 14 cycles |
 
 ~10 floating-point ops. No transcendentals (Padé approximant avoids
 `exp()`). Consistent timing — no data-dependent branches.

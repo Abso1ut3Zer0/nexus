@@ -55,6 +55,6 @@ Zero config — just create and update. Implements `Default`.
 
 | Operation | p50 | p99 |
 |-----------|-----|-----|
-| `Drawdown::<f64>::update` | 5 cycles | 5 cycles |
+| `Drawdown::<f64>::update` | 5 cycles | 6 cycles |
 
 One comparison + one conditional update. Pure arithmetic.

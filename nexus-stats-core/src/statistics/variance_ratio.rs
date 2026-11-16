@@ -1,4 +1,5 @@
-use alloc::collections::VecDeque;
+use alloc::boxed::Box;
+use alloc::vec;
 
 use crate::statistics::EwmaVar;
 
@@ -37,7 +38,9 @@ pub struct VarianceRatio {
     q: usize,
     short_var: EwmaVar,
     long_var: EwmaVar,
-    buffer: VecDeque<f64>,
+    /// The last `q` values; the slot at `head` is the oldest.
+    ring: Box<[f64]>,
+    head: usize,
     prev: f64,
     count: u64,
 }
@@ -70,8 +73,6 @@ impl VarianceRatio {
     #[inline]
     pub fn update(&mut self, value: f64) -> Result<(), crate::DataError> {
         check_finite!(value);
-
-        self.buffer.push_back(value);
         self.count += 1;
 
         if self.count >= 2 {
@@ -80,13 +81,16 @@ impl VarianceRatio {
             let _ = self.short_var.update(ret1)?;
         }
 
-        if self.buffer.len() > self.q + 1 {
-            self.buffer.pop_front();
+        // The slot at `head` holds the value from q steps ago once q + 1
+        // values have been seen.
+        let value_q_ago = self.ring[self.head];
+        self.ring[self.head] = value;
+        self.head += 1;
+        if self.head == self.q {
+            self.head = 0;
         }
-
-        // q-period return (need q+1 values in buffer)
-        if self.buffer.len() == self.q + 1 {
-            let ret_q = value - self.buffer[0];
+        if self.count > self.q as u64 {
+            let ret_q = value - value_q_ago;
             let _ = self.long_var.update(ret_q)?;
         }
 
@@ -149,7 +153,8 @@ impl VarianceRatio {
     pub fn reset(&mut self) {
         self.short_var.reset();
         self.long_var.reset();
-        self.buffer.clear();
+        self.ring.fill(0.0);
+        self.head = 0;
         self.prev = 0.0;
         self.count = 0;
     }
@@ -189,14 +194,12 @@ impl VarianceRatioBuilder {
         let short_var = EwmaVar::builder().alpha(alpha).build()?;
         let long_var = EwmaVar::builder().alpha(alpha).build()?;
 
-        let mut buffer = VecDeque::new();
-        buffer.reserve_exact(q + 1);
-
         Ok(VarianceRatio {
             q,
             short_var,
             long_var,
-            buffer,
+            ring: vec![0.0; q].into_boxed_slice(),
+            head: 0,
             prev: 0.0,
             count: 0,
         })

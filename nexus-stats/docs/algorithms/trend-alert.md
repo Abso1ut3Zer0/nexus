@@ -60,4 +60,4 @@ Supports both absolute and relative thresholds.
 
 | Operation | p50 | p99 |
 |-----------|-----|-----|
-| `TrendAlert::update` | 10 cycles | 10 cycles |
+| `TrendAlert::update` | 10 cycles | 11 cycles |

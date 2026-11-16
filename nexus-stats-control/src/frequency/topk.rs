@@ -1,4 +1,3 @@
-use alloc::boxed::Box;
 use alloc::vec::Vec;
 
 /// Space-Saving algorithm for top-K frequent item tracking.
@@ -19,8 +18,8 @@ use alloc::vec::Vec;
 /// `total / capacity` (the overcount property).
 #[derive(Debug, Clone)]
 pub struct TopK<K: Eq + Clone> {
-    entries: Box<[Option<Entry<K>>]>,
-    len: usize,
+    entries: Vec<Entry<K>>,
+    capacity: usize,
     total: u64,
 }
 
@@ -44,11 +43,8 @@ impl<K: Eq + Clone> TopK<K> {
             ));
         }
         Ok(Self {
-            entries: (0..capacity)
-                .map(|_| None)
-                .collect::<Vec<_>>()
-                .into_boxed_slice(),
-            len: 0,
+            entries: Vec::with_capacity(capacity),
+            capacity,
             total: 0,
         })
     }
@@ -57,7 +53,7 @@ impl<K: Eq + Clone> TopK<K> {
     #[inline]
     #[must_use]
     pub fn capacity(&self) -> usize {
-        self.entries.len()
+        self.capacity
     }
 
     /// Updates with an observation of the given key.
@@ -69,38 +65,33 @@ impl<K: Eq + Clone> TopK<K> {
     pub fn update(&mut self, key: K) {
         self.total += 1;
 
-        // Check if already tracked
-        for e in self.entries[..self.len].iter_mut().flatten() {
-            if e.key == key {
-                e.count += 1;
-                return;
-            }
-        }
-
-        // Not tracked — add if space available
-        if self.len < self.entries.len() {
-            self.entries[self.len] = Some(Entry { key, count: 1 });
-            self.len += 1;
+        // Already tracked: bump it.
+        if let Some(e) = self.entries.iter_mut().find(|e| e.key == key) {
+            e.count += 1;
             return;
         }
 
-        // Table full — find minimum and evict
+        // Not tracked: take a free slot while there is one. The table is
+        // sized once; `push` never reallocates below `capacity`.
+        if self.entries.len() < self.capacity {
+            self.entries.push(Entry { key, count: 1 });
+            return;
+        }
+
+        // Table full: evict the minimum. The new key inherits its count plus
+        // one (Space-Saving property), so it is never under-estimated.
         let mut min_idx = 0;
         let mut min_count = u64::MAX;
-        for (i, entry) in self.entries.iter().enumerate() {
-            if let Some(e) = entry
-                && e.count < min_count
-            {
+        for (i, e) in self.entries.iter().enumerate() {
+            if e.count < min_count {
                 min_count = e.count;
                 min_idx = i;
             }
         }
-
-        // Replace minimum with new key, count = min_count + 1 (Space-Saving property)
-        self.entries[min_idx] = Some(Entry {
+        self.entries[min_idx] = Entry {
             key,
             count: min_count + 1,
-        });
+        };
     }
 
     /// Returns the tracked items sorted by estimated frequency (descending).
@@ -109,32 +100,23 @@ impl<K: Eq + Clone> TopK<K> {
     /// Counts may overestimate — see the overcount property.
     #[inline]
     pub fn top(&self, buf: &mut [(K, u64)]) -> usize {
-        let n = self.len.min(buf.len());
-
-        // Collect entries
-        let mut count = 0;
-        for e in self.entries[..self.len].iter().flatten() {
-            if count < n {
-                buf[count] = (e.key.clone(), e.count);
-                count += 1;
-            }
+        let n = self.entries.len().min(buf.len());
+        for (slot, e) in buf.iter_mut().zip(&self.entries) {
+            *slot = (e.key.clone(), e.count);
         }
-
         // Sort by count descending
-        buf[..count].sort_unstable_by(|a, b| b.1.cmp(&a.1));
-        count
+        buf[..n].sort_unstable_by(|a, b| b.1.cmp(&a.1));
+        n
     }
 
     /// Estimated count for a specific key. Returns 0 if not tracked.
     #[inline]
     #[must_use]
     pub fn count_of(&self, key: &K) -> u64 {
-        for e in self.entries[..self.len].iter().flatten() {
-            if e.key == *key {
-                return e.count;
-            }
-        }
-        0
+        self.entries
+            .iter()
+            .find(|e| e.key == *key)
+            .map_or(0, |e| e.count)
     }
 
     /// Total observations recorded.
@@ -148,23 +130,20 @@ impl<K: Eq + Clone> TopK<K> {
     #[inline]
     #[must_use]
     pub fn len(&self) -> usize {
-        self.len
+        self.entries.len()
     }
 
     /// Whether any keys are tracked.
     #[inline]
     #[must_use]
     pub fn is_empty(&self) -> bool {
-        self.len == 0
+        self.entries.is_empty()
     }
 
     /// Resets to empty state.
     #[inline]
     pub fn reset(&mut self) {
-        for entry in &mut self.entries {
-            *entry = None;
-        }
-        self.len = 0;
+        self.entries.clear();
         self.total = 0;
     }
 }

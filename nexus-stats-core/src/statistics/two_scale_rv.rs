@@ -94,8 +94,9 @@ impl TwoScaleRv {
             self.n_slow += 1;
         }
 
-        self.write_idx = (self.write_idx + 1) % self.k;
-        if self.write_idx == 0 {
+        self.write_idx += 1;
+        if self.write_idx == self.k {
+            self.write_idx = 0;
             self.filled = true;
         }
 

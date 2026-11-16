@@ -5,7 +5,7 @@ rates gives the wrong answer.
 
 | Property | Value |
 |----------|-------|
-| Update cost | 7 cycles |
+| Update cost | 6 cycles |
 | Memory | ~16 bytes |
 | Types | `HarmonicMean` |
 | Output | `Option<T>` — harmonic mean once primed |
@@ -61,6 +61,6 @@ assert!((hm.mean().unwrap() - 1.818).abs() < 0.01);
 
 | Operation | p50 | p99 |
 |-----------|-----|-----|
-| `HarmonicMean::update` | 7 cycles | 7 cycles |
+| `HarmonicMean::update` | 6 cycles | 7 cycles |
 
 One reciprocal (division) + one addition per update.

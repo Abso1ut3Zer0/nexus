@@ -5,7 +5,7 @@ Guarantees items above the `total/K` frequency threshold are tracked.
 
 | Property | Value |
 |----------|-------|
-| Update cost | 42 cycles (K=16) |
+| Update cost | 36 cycles (K=16) |
 | Memory | K × (key + count) |
 | Types | `TopK<K>` for `K: Eq + Clone`; capacity at construction (`alloc`) |
 | Output | Sorted list of (key, count) pairs |
@@ -48,9 +48,9 @@ for (key, count) in &buf[..n] {
 
 | Operation | p50 | p99 |
 |-----------|-----|-----|
-| `TopK::update` (16 slots) | 42 cycles | 46 cycles |
+| `TopK::update` (16 slots) | 36 cycles | 44 cycles |
 
-Linear scan over CAP entries. For CAP > 64, consider a min-heap variant.
+Linear scan over `capacity` entries. Above a few dozen, consider a min-heap variant.
 
 ## Academic Reference
 
