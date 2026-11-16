@@ -181,8 +181,8 @@ the lag, use transfer entropy to confirm which signal drives which.
 | Operation | p50 |
 |-----------|-----|
 | `update` (bins=8, lag=1) | 14 cycles |
-| `te_x_to_y()` query (bins=8) | 9667 cycles |
-| `net_flow()` query (bins=8) | 19542 cycles |
+| `te_x_to_y()` query (bins=8) | 10033 cycles |
+| `net_flow()` query (bins=8) | 20070 cycles |
 
 The update is O(1) — table lookups and increments. The query is
 O(bins³) due to iterating the joint frequency table.

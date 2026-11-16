@@ -161,5 +161,5 @@ numbers for monitoring, not statistical inference at small n.
 | Operation | p50 |
 |-----------|-----|
 | `update()` | 13 cycles |
-| `mean()` | 2 cycles |
-| `credible_interval()` | 9 cycles (includes sqrt + rational approx) |
+| `mean()` | 3 cycles |
+| `credible_interval()` | 11 cycles (includes sqrt + rational approx) |

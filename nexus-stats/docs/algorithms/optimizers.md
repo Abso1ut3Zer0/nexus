@@ -212,9 +212,9 @@ Dimension mismatch (gradient length != dimensions) panics.
 
 | Operation | p50 (d=10) |
 |-----------|-----------|
-| `OnlineGd::step` | 49 cycles |
-| `AdaGrad::step` | 58 cycles |
-| `Adam::step` | 209 cycles |
+| `OnlineGd::step` | 50 cycles |
+| `AdaGrad::step` | 59 cycles |
+| `Adam::step` | 213 cycles |
 
 These are cheap — the cost is in computing the gradient, not
 applying it.

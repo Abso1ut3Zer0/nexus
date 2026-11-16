@@ -55,6 +55,26 @@ jobs:
     - uses: dtolnay/rust-toolchain@1.94.0
     - name: Verify MSRV
       run: cargo build --workspace
+  stats-features:
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v4
+    - uses: dtolnay/rust-toolchain@1.94.0
+    - name: nexus-stats crates under every feature combination
+      run: |
+        set -e
+        for c in nexus-stats-core nexus-stats-smoothing nexus-stats-detection nexus-stats-control nexus-stats-regression; do
+          cargo check -p $c --no-default-features
+          cargo check -p $c --no-default-features --features alloc
+          cargo check -p $c --no-default-features --features std
+        done
+        for c in nexus-stats-core nexus-stats-detection nexus-stats-control nexus-stats-regression; do
+          cargo check -p $c --no-default-features --features libm
+          cargo check -p $c --no-default-features --features alloc,libm
+        done
+        cargo check -p nexus-stats --no-default-features --features libm
+        cargo check -p nexus-stats --no-default-features --features full,alloc,libm
+        cargo check -p nexus-stats --no-default-features --features std,full
 
   test-avx2:
     runs-on: ubuntu-latest

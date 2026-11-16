@@ -1,3 +1,7 @@
+// Input generation is plain arithmetic on purpose: on the default x86_64
+// target `mul_add` is a call into compiler-builtins, which would land inside
+// the timed region.
+#![allow(clippy::suboptimal_flops)]
 //! Cycles-per-update benchmark for all nexus-stats primitives.
 //!
 //! Batches 64 updates per measurement to amortize rdtsc overhead (~20 cycles).
@@ -1172,7 +1176,7 @@ fn bench_linear_regression_f64(samples: &mut [u64]) {
     let mut x = 1.0f64;
     for _ in 0..WARMUP {
         x += 1.0;
-        r.update(x, 2.0f64.mul_add(x, (next_val(&mut rng) % 20) as f64))
+        r.update(x, 2.0 * x + (next_val(&mut rng) % 20) as f64)
             .unwrap();
     }
     for s in samples.iter_mut() {
@@ -1181,7 +1185,7 @@ fn bench_linear_regression_f64(samples: &mut [u64]) {
             x += 1.0;
             r.update(
                 black_box(x),
-                black_box(2.0f64.mul_add(x, (next_val(&mut rng) % 20) as f64)),
+                black_box(2.0 * x + (next_val(&mut rng) % 20) as f64),
             )
             .unwrap();
         }
@@ -1197,7 +1201,7 @@ fn bench_ew_linear_regression_f64(samples: &mut [u64]) {
     let mut x = 1.0f64;
     for _ in 0..WARMUP {
         x += 1.0;
-        r.update(x, 2.0f64.mul_add(x, (next_val(&mut rng) % 20) as f64))
+        r.update(x, 2.0 * x + (next_val(&mut rng) % 20) as f64)
             .unwrap();
     }
     for s in samples.iter_mut() {
@@ -1206,7 +1210,7 @@ fn bench_ew_linear_regression_f64(samples: &mut [u64]) {
             x += 1.0;
             r.update(
                 black_box(x),
-                black_box(2.0f64.mul_add(x, (next_val(&mut rng) % 20) as f64)),
+                black_box(2.0 * x + (next_val(&mut rng) % 20) as f64),
             )
             .unwrap();
         }
@@ -1222,7 +1226,7 @@ fn bench_polynomial_regression_f64(samples: &mut [u64]) {
     let mut x = 1.0f64;
     for _ in 0..WARMUP {
         x += 1.0;
-        r.update(x, x.mul_add(x, (next_val(&mut rng) % 20) as f64))
+        r.update(x, x * x + (next_val(&mut rng) % 20) as f64)
             .unwrap();
     }
     for s in samples.iter_mut() {
@@ -1231,7 +1235,7 @@ fn bench_polynomial_regression_f64(samples: &mut [u64]) {
             x += 1.0;
             r.update(
                 black_box(x),
-                black_box(x.mul_add(x, (next_val(&mut rng) % 20) as f64)),
+                black_box(x * x + (next_val(&mut rng) % 20) as f64),
             )
             .unwrap();
         }
@@ -1251,7 +1255,7 @@ fn bench_ew_polynomial_regression_f64(samples: &mut [u64]) {
     let mut x = 1.0f64;
     for _ in 0..WARMUP {
         x += 1.0;
-        r.update(x, x.mul_add(x, (next_val(&mut rng) % 20) as f64))
+        r.update(x, x * x + (next_val(&mut rng) % 20) as f64)
             .unwrap();
     }
     for s in samples.iter_mut() {
@@ -1260,7 +1264,7 @@ fn bench_ew_polynomial_regression_f64(samples: &mut [u64]) {
             x += 1.0;
             r.update(
                 black_box(x),
-                black_box(x.mul_add(x, (next_val(&mut rng) % 20) as f64)),
+                black_box(x * x + (next_val(&mut rng) % 20) as f64),
             )
             .unwrap();
         }
@@ -1829,7 +1833,7 @@ fn bench_polynomial_update(samples: &mut [u64], degree: usize) {
     let mut x = 1.0f64;
     for _ in 0..WARMUP {
         x += 1.0;
-        r.update(x, x.mul_add(x, (next_val(&mut rng) % 20) as f64))
+        r.update(x, x * x + (next_val(&mut rng) % 20) as f64)
             .unwrap();
     }
     for s in samples.iter_mut() {
@@ -1838,7 +1842,7 @@ fn bench_polynomial_update(samples: &mut [u64], degree: usize) {
             x += 1.0;
             r.update(
                 black_box(x),
-                black_box(x.mul_add(x, (next_val(&mut rng) % 20) as f64)),
+                black_box(x * x + (next_val(&mut rng) % 20) as f64),
             )
             .unwrap();
         }
@@ -1857,7 +1861,7 @@ fn bench_polynomial_query(samples: &mut [u64], degree: usize, predict: bool) {
     let mut x = 1.0f64;
     for _ in 0..WARMUP {
         x += 1.0;
-        r.update(x, x.mul_add(x, (next_val(&mut rng) % 20) as f64))
+        r.update(x, x * x + (next_val(&mut rng) % 20) as f64)
             .unwrap();
     }
     for s in samples.iter_mut() {
@@ -1904,7 +1908,7 @@ fn warm_covariance() -> Covariance {
     let mut rng = 12345u64;
     for _ in 0..WARMUP {
         let x = 90.0 + (next_val(&mut rng) % 20) as f64;
-        let y = x.mul_add(2.0, (next_val(&mut rng) % 5) as f64);
+        let y = x * 2.0 + (next_val(&mut rng) % 5) as f64;
         cov.update(x, y).unwrap();
     }
     cov
@@ -1915,7 +1919,7 @@ fn warm_cross_correlation() -> CrossCorrelation {
     let mut rng = 12345u64;
     for _ in 0..WARMUP {
         let x = 90.0 + (next_val(&mut rng) % 20) as f64;
-        let y = x.mul_add(2.0, (next_val(&mut rng) % 5) as f64);
+        let y = x * 2.0 + (next_val(&mut rng) % 5) as f64;
         let _ = cc.update(x, y);
     }
     cc
@@ -1947,7 +1951,7 @@ fn warm_linear_regression() -> LinearRegression {
     let mut x = 1.0f64;
     for _ in 0..WARMUP {
         x += 1.0;
-        r.update(x, 2.0f64.mul_add(x, (next_val(&mut rng) % 20) as f64))
+        r.update(x, 2.0 * x + (next_val(&mut rng) % 20) as f64)
             .unwrap();
     }
     r

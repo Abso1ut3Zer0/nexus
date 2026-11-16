@@ -313,7 +313,7 @@ impl PowerRegression {
         let intercept = self.inner.intercept_value()?;
         let slope = self.inner.slope()?;
         let a = nexus_stats_core::math::exp(intercept);
-        let result = a * x.powf(slope);
+        let result = a * nexus_stats_core::math::powf(x, slope);
         Some(result)
     }
 
@@ -622,7 +622,7 @@ impl EwPowerRegression {
         let intercept = self.inner.intercept_value()?;
         let slope = self.inner.slope()?;
         let a = nexus_stats_core::math::exp(intercept);
-        let result = a * x.powf(slope);
+        let result = a * nexus_stats_core::math::powf(x, slope);
         Some(result)
     }
 

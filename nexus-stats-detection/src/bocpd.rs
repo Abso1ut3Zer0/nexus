@@ -1,5 +1,6 @@
 extern crate alloc;
 use alloc::boxed::Box;
+use nexus_stats_core::math::MulAdd;
 use nexus_stats_core::math::{exp, ln, ln_gamma};
 
 use crate::simd_math;
@@ -506,7 +507,7 @@ impl BocpdBuilder {
                 let rf = r as f64;
                 let kn = pk + rf;
                 let inv_kn = 1.0 / kn;
-                let an = rf.mul_add(0.5, pa);
+                let an = rf.fma(0.5, pa);
 
                 lng_base[r] = ln_gamma(an + 0.5) - ln_gamma(an) - half_ln_pi;
                 mu_a[r] = pk * pm * inv_kn;

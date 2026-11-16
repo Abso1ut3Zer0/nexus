@@ -17,6 +17,13 @@ contained.
   `RlsFilter`, `Ucb1F64` → `Ucb1`, `OnlineKMeansF64` → `OnlineKMeans`, and
   so on; builders follow.
 
+### Fixed
+
+- **`no_std` + `libm` builds again.** `PowerRegression::predict` and
+  `EwPowerRegression::predict` called `f64::powf` directly, which only exists
+  with `std`; they now use `nexus_stats_core::math::powf` (`libm::pow` under
+  `libm`).
+
 ## [2.0.0] — 2026-05-28
 
 ### Removed

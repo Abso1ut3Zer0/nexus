@@ -27,6 +27,11 @@ contained.
   no integer count-stream caller for MOSUM; autocorrelation is fractional.
   Use `Mosum` and `Autocorrelation` on `f64`.
 
+### Fixed
+
+- **`alloc` + `libm` without `std` builds again.** `Bocpd` called
+  `f64::mul_add` directly; it now uses the core fused-multiply-add shim.
+
 ## [2.0.0] — 2026-05-28
 
 ### Removed

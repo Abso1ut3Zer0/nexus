@@ -149,7 +149,7 @@ samples (tick counts, queue depths) to `f64` at the call site.
 | Operation | p50 |
 |-----------|-----|
 | `Autocorrelation::update` (lag=1) | 11 cycles |
-| `Autocorrelation::update` (lag=10) | 12 cycles |
+| `Autocorrelation::update` (lag=10) | 13 cycles |
 | `correlation()` query | 6 cycles |
 
 The update cost is dominated by the Welford mean/variance update

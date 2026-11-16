@@ -56,66 +56,66 @@ for deep-dives on each algorithm.
 | `Cusum` | Persistent mean shifts (up or down) | 5 |
 | `Mosum` | Transient spikes within a window | 5 |
 | `ShiryaevRoberts` | Mean shifts with optimal detection delay | 18 |
-| `MultiGate` | Graded anomalies: Accept/Unusual/Suspect/Reject | 12 |
-| `RobustZScore<f64>` | MAD-based outlier scoring with estimator freeze | 12 |
+| `MultiGate` | Graded anomalies: Accept/Unusual/Suspect/Reject | 8 |
+| `RobustZScore<f64>` | MAD-based outlier scoring with estimator freeze | 7 |
 | `AdaptiveThreshold` | Z-score anomalies with self-learning baseline | 6 |
 | `PageHinkley` | Sequential mean drift (Page-Hinkley test) | 5 |
-| `Adwin` | Adaptive window distribution change (ADWIN) | 68 |
+| `Adwin` | Adaptive window distribution change (ADWIN) | 70 |
 
 ### Smoothing & Filtering
 
 | Type | What It Computes | p50 |
 |------|-----------------|-----|
 | `Ema` | Exponential moving average | 5 |
-| `AsymEma` | Different alpha for rising vs falling | 11 |
-| `Kama` | Kaufman adaptive MA (adapts to trend/noise) | 22 |
-| `Kalman1d` | 1D Kalman filter with velocity tracking | 29 |
-| `Holt` | Double exponential (level + trend) | 12 |
-| `Spring` | Critically damped spring (smooth target chasing) | 18 |
+| `AsymEma` | Different alpha for rising vs falling | 10 |
+| `Kama` | Kaufman adaptive MA (adapts to trend/noise) | 21 |
+| `Kalman1d` | 1D Kalman filter with velocity tracking | 22 |
+| `Holt` | Double exponential (level + trend) | 9 |
+| `Spring` | Critically damped spring (smooth target chasing) | 12 |
 | `Slew<f64>` | Hard rate-of-change clamp | 7 |
-| `WindowedMedian<f64>` | Robust median filter (outlier-immune) | 127 |
+| `WindowedMedian<f64>` | Robust median filter (outlier-immune) | 131 |
 
 ### Statistics
 
 | Type | What It Computes | p50 |
 |------|-----------------|-----|
 | `Welford` | Online mean, variance, std dev (Chan's merge) | 11 |
-| `Moments` | Online skewness & kurtosis (Pébay, 2008). Merge support | 23 |
-| `EwmaVar` | Exponentially weighted variance | 13 |
+| `Moments` | Online skewness & kurtosis (Pébay, 2008). Merge support | 24 |
+| `EwmaVar` | Exponentially weighted variance | 6 |
 | `Covariance` | Online covariance + Pearson correlation | 10 |
-| `HarmonicMean` | Correct average for rates/throughputs | 6 |
+| `HarmonicMean` | Correct average for rates/throughputs | 7 |
 | `BipowerVariation` | Jump-robust volatility (BV vs RV) | 6 |
-| `RollSpread` *(std\|libm)* | Implicit bid-ask spread from autocovariance | 8 |
+| `RollSpread` *(std\|libm)* | Implicit bid-ask spread from autocovariance | 6 |
 | `TwoScaleRv` *(alloc, std\|libm)* | Noise-corrected realized variance | 8 |
 
 ### Regression
 
 | Type | What It Computes | p50 |
 |------|-----------------|-----|
-| `LinearRegression` | Online OLS linear fit (`y = ax + b`) | 20 |
-| `EwLinearRegression` | Exponentially-weighted linear fit | 37 |
-| `PolynomialRegression` | Online polynomial fit (`.builder().degree(2)`, `.degree(3)`, ...) | 20 |
-| `EwPolynomialRegression` | Exponentially-weighted polynomial fit | 74 |
-| `ExponentialRegression` | Exponential fit (`y = ae^(bx)`) | 29 |
-| `LogarithmicRegression` | Logarithmic fit (`y = a·ln(x) + b`) | 27 |
-| `PowerRegression` | Power law fit (`y = ax^b`) | 37 |
+| `LinearRegression` | Online OLS linear fit (`y = ax + b`) | 7 |
+| `EwLinearRegression` | Exponentially-weighted linear fit | 7 |
+| `PolynomialRegression` | Online polynomial fit (`.builder().degree(2)`, `.degree(3)`, ...) | 15 |
+| `EwPolynomialRegression` | Exponentially-weighted polynomial fit | 20 |
+| `ExponentialRegression` | Exponential fit (`y = ae^(bx)`) | 20 |
+| `LogarithmicRegression` | Logarithmic fit (`y = a·ln(x) + b`) | 17 |
+| `PowerRegression` | Power law fit (`y = ax^b`) | 28 |
 
 ### Multi-Armed Bandits *(alloc, std|libm)*
 
 | Type | What It Does | p50 (`select`, 10 arms) |
 |------|-------------|-----|
-| `Ucb1` | UCB1 — deterministic explore/exploit | 73 |
-| `ThompsonBeta` | Thompson Sampling — Beta prior for [0,1] rewards | 1076 |
-| `ThompsonGamma` | Thompson Sampling — Gamma prior for positive rewards | 547 |
-| `EpsilonGreedy` | ε-greedy — simplest bandit baseline | 31 |
-| `Exp3` | EXP3 — adversarial bandit (no stochastic assumption) | 172 |
+| `Ucb1` | UCB1 — deterministic explore/exploit | 75 |
+| `ThompsonBeta` | Thompson Sampling — Beta prior for [0,1] rewards | 1107 |
+| `ThompsonGamma` | Thompson Sampling — Gamma prior for positive rewards | 557 |
+| `EpsilonGreedy` | ε-greedy — simplest bandit baseline | 32 |
+| `Exp3` | EXP3 — adversarial bandit (no stochastic assumption) | 178 |
 
 ### Signal Analysis
 
 | Type | What It Computes | p50 |
 |------|-----------------|-----|
 | `Autocorrelation` | Self-correlation at fixed lag (trending vs reverting) | 11 |
-| `CrossCorrelation` | Two-stream correlation with lead/lag detection | 46 |
+| `CrossCorrelation` | Two-stream correlation with lead/lag detection | 47 |
 
 ### Information Theory *(std\|libm)*
 
@@ -123,32 +123,32 @@ for deep-dives on each algorithm.
 |------|-----------------|-----|
 | `Entropy` | Shannon entropy over K categories | 3 |
 | `TransferEntropy` *(alloc, std\|libm)* | Directed information flow (Granger causality) | 14 |
-| `PredictiveInfoBound` *(alloc, std\|libm)* | Binned mutual information I(X;Y) with Miller-Madow | 23 |
+| `PredictiveInfoBound` *(alloc, std\|libm)* | Binned mutual information I(X;Y) with Miller-Madow | 24 |
 
 ### Monitoring
 
 | Type | What It Tracks | p50 |
 |------|---------------|-----|
 | `Drawdown<f64>` | Peak-to-trough decline, max drawdown | 5 |
-| `RunningMin<f64>` / `RunningMax<f64>` | All-time extrema | 4 |
-| `WindowedMax<f64>` / `WindowedMin<f64>` | Sliding window extrema (Nichols'/BBR) | 8 |
+| `RunningMin<f64>` / `RunningMax<f64>` | All-time extrema | 5 |
+| `WindowedMax<f64>` / `WindowedMin<f64>` | Sliding window extrema (Nichols'/BBR) | 9 |
 | `PeakHold<f64>` | Peak envelope with hold + decay | 8 |
 | `MaxGauge<f64>` | Reset-on-read maximum (Netflix pattern) | 6 |
-| `Liveness` | Source alive/dead detection | 6 |
+| `Liveness` | Source alive/dead detection | 7 |
 | `EventRate` | Smoothed events per unit time | 6 |
 | `CoDel<i64>` | Queue backpressure detection (CoDel-inspired) | 5 |
 | `PollSaturation` | Consumer-side saturation from poll outcomes: `on_work` / `on_idle` | 5 / 1 |
 | `SojournSaturation` | Consumer saturation from stamped queue sojourn, exact per message | 6 |
-| `ErrorRate` | Failure rate with weighted severity | 9 |
-| `TrendAlert` | Trend direction (Stable/Rising/Falling) | 13 |
-| `Jitter<f64>` | Signal variability measurement | 7 |
-| `HawkesIntensity` *(std\|libm)* | Self-exciting point process intensity | 17 |
+| `ErrorRate` | Failure rate with weighted severity | 7 |
+| `TrendAlert` | Trend direction (Stable/Rising/Falling) | 10 |
+| `Jitter<f64>` | Signal variability measurement | 6 |
+| `HawkesIntensity` *(std\|libm)* | Self-exciting point process intensity | 15 |
 
 ### Frequency & Scoring
 
 | Type | What It Tracks | p50 |
 |------|---------------|-----|
-| `TopK<K, CAP>` | Space-Saving top-K frequent items | 45 |
+| `TopK<K, CAP>` | Space-Saving top-K frequent items | 46 |
 | `FlexProportionGlobal/Entity` | Per-entity fraction with lazy decay | O(1) |
 | `DecayAccum` | Event-driven score with time decay (`u64` ticks) | O(1) |
 
@@ -223,7 +223,11 @@ All measurements are `rdtsc` ticks per update on an Intel Core Ultra 7 165U,
 pinned to a P-core (`taskset -c 0`) with turbo on, best of three runs, batch of
 64 updates per sample to amortize timing overhead. A developer laptop, not a
 perf lab: read them as estimates of relative cost, taken the same way as every
-earlier number here. Full tables, including p99:
+earlier number here. Built for the default x86_64 target, where
+multiply-adds are computed as `a * b + c`; with `-C target-cpu=native` (or
+`+fma`) they become single FMA instructions, which changes results in the
+last bit and costs about the same. Full tables,
+including p99:
 [`docs/reference/performance.md`](docs/reference/performance.md).
 
 ```bash

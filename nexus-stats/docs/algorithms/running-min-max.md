@@ -5,7 +5,7 @@ per update. Zero configuration.
 
 | Property | Value |
 |----------|-------|
-| Update cost | 4 cycles |
+| Update cost | 5 cycles |
 | Memory | ~16 bytes |
 | Types | `RunningMax<f64>`, `RunningMax<i64>`, `RunningMin<f64>`, `RunningMin<i64>` |
 | Output | `Option<T>` — None until first sample |

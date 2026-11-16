@@ -52,7 +52,7 @@ slew.update(10.0).unwrap();   // → 10.0 (within range, passes through)
 
 | Operation | p50 | p99 |
 |-----------|-----|-----|
-| `Slew::<f64>::update` | 7 cycles | 7 cycles |
+| `Slew::<f64>::update` | 7 cycles | 8 cycles |
 
 Clamps as `max(lo).min(hi)` (the sealed `Sample::clamp_to`), which compiles
 to a bare `maxsd`/`minsd` pair: branchless, and without the `lo <= hi`

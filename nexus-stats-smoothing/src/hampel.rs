@@ -1,6 +1,7 @@
 //! Hampel filter — three-zone outlier handling.
 
 use crate::WindowedMedian;
+use nexus_stats_core::math::MulAdd;
 
 /// Hampel filter — soft outlier filter with three zones.
 ///
@@ -88,7 +89,7 @@ impl Hampel {
             // Winsorize — shrink toward median
             // Linear interpolation between x (at inner) and median (at outer)
             let t = (z - self.inner_threshold) / (self.outer_threshold - self.inner_threshold);
-            (median - x).mul_add(t, x)
+            (median - x).fma(t, x)
         } else {
             // Reject — replace with median
             median

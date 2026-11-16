@@ -175,7 +175,7 @@ Use SPRT for experiments, CUSUM for alerting.
 | Operation | p50 |
 |-----------|-----|
 | `SprtBernoulli::update` | 19 cycles |
-| `SprtGaussian::update` | 7 cycles |
+| `SprtGaussian::update` | 8 cycles |
 | Builder (one-time) | ~50 cycles (includes ln) |
 
 ## Academic Reference

@@ -1,5 +1,6 @@
 //! Streaming d×d covariance matrix with exponential weighting.
 
+use crate::math::MulAdd;
 use alloc::vec;
 use alloc::vec::Vec;
 
@@ -103,7 +104,7 @@ impl OnlineCovariance {
         // Restore means: new_mean = old_mean + alpha * delta = (obs - delta) + alpha * delta
         //                         = obs - delta * (1 - alpha)
         for i in 0..d {
-            self.means[i] = (-self.means[i]).mul_add(one_minus_alpha, observation[i]);
+            self.means[i] = (-self.means[i]).fma(one_minus_alpha, observation[i]);
         }
 
         Ok(())
