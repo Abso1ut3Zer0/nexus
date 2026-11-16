@@ -14,6 +14,15 @@ contained.
 
 - **No numeric suffixes** (the stats major, [#773](https://github.com/Abso1ut3Zer0/nexus/issues/773)): `BoolWindow`, `TopK`, `FlexProportion*`
   were already plain; the decay accumulator is `DecayAccum` (`u64` ticks; see Removed).
+- **FlexProportion is a port of the kernel algorithm, with the kernel's
+  names.** `FlexProportionEntity` is `FlexProportionLocal` (`fprop_global` /
+  `fprop_local_single`), and the global owns the one mutating call:
+  `global.update(&mut local)` records an event for that local, and the local
+  answers `fraction(&global)` and `events(&global)`. The old protocol
+  (`global.update(); local.update(global.period()); local.fraction(total,
+  period)`) let a local be fed another population's values with no error.
+  `FlexProportionLocal` is `Copy` and `Default`; the global gains `events()`,
+  `half_life_events()`, `count()`, `is_primed()`.
 - **`TopK<K>` takes its capacity at runtime:** `TopK::new(capacity) ->
   Result<Self, ConfigError>` (zero rejected) and `capacity()`, replacing
   `TopK<K, const CAP: usize>` with `new()` and its `Default` impl. The table
@@ -24,6 +33,14 @@ contained.
   generic type bounded by `nexus_stats_core::Sample` (`f64`, `i64`) returning
   `Peak<T>`. `update` returns `Result` for `f64` and the option directly for
   `i64`. Construct as `PeakDetector::<i64>::new(prominence)`.
+
+### Fixed
+
+- **FlexProportion shares decayed to zero.** The global total never halved
+  while every local's count did, so a key receiving every single event read
+  a 0.5 share after one half-life and 0.01 after a hundred. As in the kernel,
+  the global count now halves at each period and the locals halve to match
+  on their next touch; shares sum to one and a sole key reads 1.0 forever.
 
 ### Removed
 

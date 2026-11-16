@@ -15,7 +15,7 @@ The base control primitives (`DeadBand`, `Hysteresis`, `Debounce`, `LevelCrossin
 - [PeakDetector](peak-detector.md) — Local maxima / minima with prominence filtering.
 - [BoolWindow](bool-window.md) — Rolling pass/fail rate over a fixed-count window.
 - [TopK](topk.md) — Space-Saving top-K frequent-items tracker.
-- [FlexProportion](flex-proportion.md) — Per-entity fraction tracking.
+- [FlexProportion](flex-proportion.md) — Each key's share of a decaying event count.
 - [DecayAccum](decay-accum.md) — Event-driven score with time decay.
 
 ## Algorithms
@@ -25,7 +25,7 @@ The base control primitives (`DeadBand`, `Hysteresis`, `Debounce`, `LevelCrossin
 | `PeakDetector<f64>` / `PeakDetector<i64>` | `control` | — | Local maxima above a prominence threshold |
 | `BoolWindow` | `control` | `alloc` | Rolling pass/fail fraction |
 | `TopK<K>` | `frequency` | `alloc` | Top-K frequent items (Space-Saving) |
-| `FlexProportionGlobal` + `FlexProportionEntity` | `frequency` | — | Per-entity share of a streaming count |
+| `FlexProportionGlobal` + `FlexProportionLocal` | `frequency` | — | Each key's share of a decaying event count |
 | `DecayAccum` | `frequency` | — | Score that decays with time between events |
 
 ## Cross-references

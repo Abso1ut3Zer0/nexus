@@ -76,4 +76,4 @@ Capacity is the one knob. Rule of thumb: set capacity to `2-10 * K` if you want 
 ## Cross-references
 
 - [`DecayAccum`](decay-accum.md) — per-entity decaying score (alternative to Space-Saving for time-weighted rank).
-- [`FlexProportion`](flex-proportion.md) — per-entity fraction of total, not top-K.
+- [`FlexProportion`](flex-proportion.md) — each known key's share of recent events, not top-K.

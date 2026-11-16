@@ -10,7 +10,7 @@ Advanced control and frequency primitives for [nexus-stats](https://crates.io/cr
 ## Frequency Types
 
 - **TopK** — Top-K frequency tracking
-- **FlexProportion** — Flexible proportion tracking
+- **FlexProportionGlobal / FlexProportionLocal** — Each key's share of a decaying event count (kernel `flex_proportions`)
 - **DecayAccum** — Exponential decay accumulator, `u64` ticks (requires `std` or `libm`)
 
 ## Usage

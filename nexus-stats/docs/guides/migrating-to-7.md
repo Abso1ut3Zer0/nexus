@@ -234,6 +234,12 @@ on `f32` accumulation for speed, measure: the hot path gains a convert.
 - **`Slew<f64>`** clamps with `max().min()` instead of `clamp()`: identical
   for finite inputs, without the `lo <= hi` assertion.
 - **Normalizers** accumulate in `f64` for both `T` (above).
+- **`FlexProportionEntity` is `FlexProportionLocal`**, the kernel's name, and
+  the protocol changed with the algorithm fix below: `global.update(&mut
+  local)` records an event (one call, was `global.update()` plus
+  `local.update(global.period())`), and `local.fraction(&global)` reads the
+  share (was `local.fraction(global.total(), global.period())`). The global's
+  `total()` is `events()`.
 - **`TopK<K, CAP>` is `TopK<K>`** with the capacity given at construction:
   `TopK::new(capacity)` returns `Result` (zero is rejected), `capacity()`
   reads it back, and the `Default` impl is gone. The table is one boxed
@@ -254,6 +260,9 @@ CHANGELOG entry in `nexus-stats-core`:
 - `PeakHold<f64>` seeds from the first sample (a negative-only stream reported
   `0.0`); `Jitter<f64>` honors a seed under `min_samples(1)`
   ([#763](https://github.com/Abso1ut3Zer0/nexus/issues/763)).
+- `FlexProportion` shares no longer decay toward zero: the global count now
+  halves at every period like the locals do, as in the kernel. A key with
+  every event reads 1.0 instead of 0.5 after one half-life.
 
 ## 5. Checklist
 

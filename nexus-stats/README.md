@@ -149,7 +149,7 @@ for deep-dives on each algorithm.
 | Type | What It Tracks | p50 |
 |------|---------------|-----|
 | `TopK<K>` *(alloc)* | Space-Saving top-K frequent items | 42 |
-| `FlexProportionGlobal/Entity` | Per-entity fraction with lazy decay | O(1) |
+| `FlexProportionGlobal` / `FlexProportionLocal` | Each key's share of a decaying event count | 5 |
 | `DecayAccum` | Event-driven score with time decay (`u64` ticks) | O(1) |
 
 ### Utilities
