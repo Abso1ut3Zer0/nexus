@@ -23,7 +23,7 @@ When you have uniform time between samples, a plain EMA is simpler and cheaper.
 
 ```rust
 impl DecayAccum {
-    pub fn new(half_life: f64) -> Result<Self, ConfigError>;
+    pub fn new(half_life: f64) -> Result<Self, nexus_stats_core::ConfigError>;
     pub fn update(&mut self, /* event magnitude, current time */) -> /* current score */;
     pub fn reset(&mut self);
     // score / time-of-last-update accessors — see source

@@ -22,7 +22,7 @@ When you want EW decay rather than a hard window, use [`ErrorRate`](../../nexus-
 
 ```rust
 impl BoolWindow {
-    pub fn new(sample_count: usize) -> Result<Self, ConfigError>;
+    pub fn new(sample_count: usize) -> Result<Self, nexus_stats_core::ConfigError>;
     pub fn update(&mut self, success: bool);
     pub fn count(&self) -> u64;           // total updates fed
     pub fn reset(&mut self);
