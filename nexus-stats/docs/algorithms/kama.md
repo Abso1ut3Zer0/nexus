@@ -5,7 +5,7 @@ response when trending, heavy smoothing when noisy. Used by quant shops.
 
 | Property | Value |
 |----------|-------|
-| Update cost | 22 cycles (window 10) |
+| Update cost | 21 cycles (window 10) |
 | Memory | ~N×8 bytes (lookback buffer) |
 | Types | `Kama` |
 | Requires | `alloc` feature (runtime window size) |
@@ -95,7 +95,7 @@ if let Some(er) = price_kama.efficiency_ratio() {
 
 | Operation | p50 | p99 |
 |-----------|-----|-----|
-| `Kama::update` (window=10) | 22 cycles | 31 cycles |
+| `Kama::update` (window=10) | 21 cycles | 22 cycles |
 
 O(N) volatility recompute per update. For N=10, that's 9 subtractions
 + absolute values. Negligible for typical window sizes.

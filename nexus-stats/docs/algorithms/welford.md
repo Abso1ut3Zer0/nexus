@@ -155,7 +155,7 @@ for w in &per_worker {
 | Operation | p50 | p99 |
 |-----------|-----|-----|
 | `Welford::update` | 11 cycles | 13 cycles |
-| `Welford::std_dev` query | 6 cycles | 6 cycles |
+| `Welford::std_dev` query | 7 cycles | 8 cycles |
 
 The update includes one division (`delta / count`). The `std_dev()` query
 includes one `sqrt` (hardware `vsqrtsd`, ~13 cycles latency but pipelined).

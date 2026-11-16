@@ -24,7 +24,10 @@ Ranges from 0 (pure noise) to 1 (straight trend).
 low-pass filter. `EMA = α × x + (1-α) × EMA`.
 
 **FMA** — Fused Multiply-Add. Hardware instruction that computes `a × b + c`
-in one operation with one rounding. Used by Rust's `f64::mul_add`.
+in one operation with one rounding. nexus-stats emits it only when the target
+has the `fma` feature (`-C target-cpu=native` or `-C target-feature=+fma`);
+elsewhere multiply-adds are computed as `a * b + c`, because on such targets
+Rust's `f64::mul_add` is a library call.
 
 **Halflife** — Number of samples for the EMA weight to decay by 50%.
 `α = 1 - exp(-ln2 / halflife)`.

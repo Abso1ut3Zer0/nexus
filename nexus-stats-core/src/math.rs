@@ -98,6 +98,22 @@ pub fn ln(x: f64) -> f64 {
     }
 }
 
+/// `x` raised to the power `y`.
+///
+/// Requires `std` or `libm` feature.
+#[cfg(any(feature = "std", feature = "libm"))]
+#[inline]
+pub fn powf(x: f64, y: f64) -> f64 {
+    #[cfg(feature = "std")]
+    {
+        x.powf(y)
+    }
+    #[cfg(all(not(feature = "std"), feature = "libm"))]
+    {
+        libm::pow(x, y)
+    }
+}
+
 /// Natural logarithm (f32).
 ///
 /// Requires `std` or `libm` feature.
@@ -165,55 +181,61 @@ pub fn ln_gamma(x: f64) -> f64 {
     0.5 * ln(2.0 * core::f64::consts::PI) + (x + 0.5) * ln(t) - t + ln(sum)
 }
 
-/// Trait providing `fma` (fused multiply-add) across all feature configurations.
+/// Multiply-add: `self * b + c`, fused when the target does it in one
+/// instruction.
 ///
-/// With `std`: uses hardware FMA intrinsic.
-/// With `libm`: uses `libm::fma` / `libm::fmaf`.
-/// Without either: falls back to `a * b + c` (no fusion, but correct).
+/// Rust's `f64::mul_add` is an FMA instruction only when the target has the
+/// feature (x86_64 with `-C target-cpu=native` or `-C target-feature=+fma`;
+/// always on aarch64). Without it, LLVM lowers `mul_add` to a call into
+/// compiler-builtins' software `fma`, which costs more than the arithmetic
+/// it replaces. So this shim fuses when `std` is available and the target
+/// has FMA, and otherwise computes `self * b + c` with two roundings. The
+/// two differ in the last bit; neither path ever calls out.
 #[doc(hidden)]
 pub trait MulAdd {
-    /// Fused multiply-add: `self * b + c`.
+    /// `self * b + c`, fused when the target has FMA.
     fn fma(self, b: Self, c: Self) -> Self;
 }
 
-impl MulAdd for f64 {
-    #[inline]
-    fn fma(self, b: f64, c: f64) -> f64 {
-        #[cfg(feature = "std")]
-        {
-            self.mul_add(b, c)
+#[cfg(all(feature = "std", any(target_feature = "fma", target_arch = "aarch64")))]
+macro_rules! impl_mul_add {
+    ($t:ty) => {
+        impl MulAdd for $t {
+            #[inline(always)]
+            fn fma(self, b: $t, c: $t) -> $t {
+                self.mul_add(b, c)
+            }
         }
-        #[cfg(all(not(feature = "std"), feature = "libm"))]
-        {
-            libm::fma(self, b, c)
-        }
-        #[cfg(not(any(feature = "std", feature = "libm")))]
-        {
-            self * b + c
-        }
-    }
+    };
 }
 
-impl MulAdd for f32 {
-    #[inline]
-    fn fma(self, b: f32, c: f32) -> f32 {
-        #[cfg(feature = "std")]
-        {
-            self.mul_add(b, c)
+#[cfg(not(all(feature = "std", any(target_feature = "fma", target_arch = "aarch64"))))]
+macro_rules! impl_mul_add {
+    ($t:ty) => {
+        impl MulAdd for $t {
+            // The lint's suggestion is the software-fma call this path exists
+            // to avoid.
+            #[allow(clippy::suboptimal_flops)]
+            #[inline(always)]
+            fn fma(self, b: $t, c: $t) -> $t {
+                self * b + c
+            }
         }
-        #[cfg(all(not(feature = "std"), feature = "libm"))]
-        {
-            libm::fmaf(self, b, c)
-        }
-        #[cfg(not(any(feature = "std", feature = "libm")))]
-        {
-            self * b + c
-        }
-    }
+    };
 }
+
+impl_mul_add!(f64);
+impl_mul_add!(f32);
 
 #[cfg(test)]
 mod tests {
+    #[cfg(any(feature = "std", feature = "libm"))]
+    #[test]
+    fn powf_matches_integer_powers() {
+        assert!((powf(2.0, 10.0) - 1024.0).abs() < 1e-9);
+        assert!((powf(9.0, 0.5) - 3.0).abs() < 1e-12);
+    }
+
     #[cfg(any(feature = "std", feature = "libm"))]
     use super::*;
 

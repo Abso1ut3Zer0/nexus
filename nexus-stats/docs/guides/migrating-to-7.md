@@ -191,7 +191,10 @@ wm.update(now, 3.5).unwrap();        // f64: Result
 ```
 
 Code that works over both forms names the bound:
-`fn drain<T: Sample>(dd: &mut Drawdown<T>)`. `Sample` and `Float` are
+`fn drain<T: Sample>(dd: &mut Drawdown<T>)`. Through the bound you can call
+the shared surface (constructors, builders, `count`, `is_primed`, `reset`,
+the getters); `update` and the other per-instantiation methods need a
+concrete `T`, since their signatures differ. `Sample` and `Float` are
 exported from `nexus_stats` and `nexus_stats_core`; they are sealed (`f64` /
 `i64` and `f64` / `f32` only), so you name them, you never implement them.
 

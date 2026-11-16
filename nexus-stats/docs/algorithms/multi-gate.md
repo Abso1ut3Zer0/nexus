@@ -5,7 +5,7 @@ standard for filtering bad data in real-time systems.
 
 | Property | Value |
 |----------|-------|
-| Update cost | 12 cycles |
+| Update cost | 8 cycles |
 | Memory | ~56 bytes |
 | Types | `MultiGate` |
 | Priming | Configurable via `min_samples` |
@@ -103,7 +103,7 @@ let mut sensor = MultiGate::builder()
 
 | Operation | p50 | p99 |
 |-----------|-----|-----|
-| `MultiGate::update` | 12 cycles | 14 cycles |
+| `MultiGate::update` | 8 cycles | 9 cycles |
 
 Three gate checks + conditional EMA update. The conditional update
 (freeze on reject) adds no cost on the Accept path.

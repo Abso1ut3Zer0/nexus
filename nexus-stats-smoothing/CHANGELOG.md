@@ -23,6 +23,11 @@ contained.
   `mad`, `iqr` and `modified_z_score` are available on both instantiations
   (`quantile` was `f64` only). Construct as `WindowedMedian::<i64>::new(n)`.
 
+### Fixed
+
+- **`alloc` without `std` builds again.** `Hampel` called `f64::mul_add`
+  directly; it now uses the core fused-multiply-add shim.
+
 ## [2.0.0] — 2026-05-28
 
 ### Removed

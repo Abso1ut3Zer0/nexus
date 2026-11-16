@@ -10,65 +10,6 @@ contained.
 
 ## [Unreleased]
 
-### Fixed
-
-- **`PeakHold<f64>`** returned `0.0` for a negative-only stream because the
-  peak started at zero; it now seeds from the first sample, as the integer
-  form always did ([#763](https://github.com/Abso1ut3Zer0/nexus/issues/763)).
-- **`Jitter<f64>`** discarded a seeded jitter under `min_samples(1)`, since
-  seeded state was inferred from the sample count; the smoother now carries
-  an explicit seeded flag ([#763](https://github.com/Abso1ut3Zer0/nexus/issues/763)).
-- `no_std` without `libm` compiles again (an unused `halflife` field in the
-  `HitRate` builder); the `TwoScaleRv` rustdoc no longer emits broken links.
-
-### Docs
-
-- Every monitoring type states its **weighting clock** (per `update` call, per
-  event with its timestamp, the caller's timestamps, or none) and the module
-  docs carry the rule: never update a per-call type from a loop whose
-  iteration time depends on the quantity being measured
-  ([#762](https://github.com/Abso1ut3Zer0/nexus/issues/762)). `EventRate`
-  documents that one stamp per batch breaks it and what to use instead;
-  `WindowedMax` / `WindowedMin` document that the accessors reflect the last
-  update ([#763](https://github.com/Abso1ut3Zer0/nexus/issues/763)).
-- `nexus-stats-core/docs` rewritten against the shipped API: the `Instant`
-  types it described never existed.
-
-- **`WindowedMin*` / `WindowedMax*`** departed from the kernel `win_minmax`
-  algorithm they cite: a choice was replaced by age before its value was
-  compared, and sub-windows were `window / 3` instead of the kernel's quarter
-  and half with the "no distinct choice yet" guard. On stationary input the
-  reported extremum disagreed with an exact window on 11 to 22% of updates
-  (1 to 2% for the kernel algorithm), always in the direction of a max too
-  low or a min too high. All six variants now share a literal port of
-  `minmax_running_max` / `minmax_running_min` / `minmax_subwin_update`.
-  Affects `CoDel*` through `min_sojourn()` and any delay baseline built on
-  `WindowedMin` ([#758](https://github.com/Abso1ut3Zer0/nexus/issues/758)).
-- **`CoDelI64` / `CoDelF64`** reported `Degraded` on a single sample above
-  target. RFC 8289 requires sojourn to stay above target for a whole
-  interval. Both now implement the RFC's `first_above_time` rule directly:
-  a sample above target arms a deadline at `now + window`, a sample at or
-  below target disarms it, and only a sample above target at or after the
-  deadline is `Degraded`. One timestamp of state; the windowed minimum the
-  old composition relied on (and its own inaccuracy, #758) is gone.
-  `window` is the RFC's interval. `CoDelF64::build` now rejects a
-  non-finite target ([#759](https://github.com/Abso1ut3Zer0/nexus/issues/759)).
-
-- **`LivenessI64` / `LivenessU64`**: two defects. `update()` folded the gap
-  into the smoothed interval before testing it, which made the test
-  `dt <= m * (old + (dt - old) / 2^k)`; that is always true once
-  `deadline_multiple >= 2^k` (for example span 7 with multiple 8), so
-  `update()` could never report dead and otherwise disagreed with `check()`
-  by one interval. It now judges each gap against the interval as it stood
-  before the event, then folds. With both deadlines configured the absolute
-  one was ignored; a gap is now dead if it exceeds either. Also: until a
-  positive gap has been seen only the absolute deadline judges (from both
-  `update()` and `check()`); a timestamp at or behind the previous one is
-  alive in both variants and is no longer folded into the estimate, where a
-  large backwards step could drive it negative and make the next real gap
-  read dead; and the multiple product saturates
-  ([#760](https://github.com/Abso1ut3Zer0/nexus/issues/760)).
-
 ### Changed
 
 - **One naming convention, no numeric suffixes** (the stats major, [#773](https://github.com/Abso1ut3Zer0/nexus/issues/773)).
@@ -101,21 +42,30 @@ contained.
   current sample as before. `jitter_ratio()` is available on `Jitter<i64>`.
 - **`Jitter<i64>` and `Jitter<f64>` share one builder:** `span(n)` on both;
   `alpha` and `halflife` on `f64` only; `effective_span()` on `i64` only.
+- **Fused multiply-add is used only when the target has FMA.** Rust's
+  `f64::mul_add` is an FMA instruction only with the `fma` target feature
+  (`-C target-cpu=native` / `-C target-feature=+fma`; always on aarch64);
+  elsewhere LLVM lowers it to a call into compiler-builtins' software `fma`,
+  which cost the FMA-heavy types (the regressions, the adaptive filters,
+  `EwmaVar`, `Moments`) 3 to 5 times their arithmetic on a default
+  `cargo build --release`. The crate's shim now fuses in the first case and
+  computes `a * b + c` in the second. Results on the two paths differ in
+  the last bit; results within one build are deterministic as before.
 
 ### Removed
 
 - **`SaturationF64`** ([#761](https://github.com/Abso1ut3Zer0/nexus/issues/761)):
   an EMA of a caller-supplied utilization fraction against an unvalidated
-  threshold, identical to `ErrorRateF64::update_weighted`. Smooth the
+  threshold, identical to `ErrorRate::update_weighted`. Smooth the
   fraction with `Ema` and compare, or use `PollSaturation` /
   `SojournSaturation` for a consumer thread's saturation.
 - **`LivenessI64`, `EventRateI64`**: ticks are `u64` (the `clock` module's
   contract). `Liveness` and `EventRate` are the former `U64` types.
 - **`update_i64(timestamp: i64, ..)`** on the windowed extrema and CoDel:
   cast at the call site.
-- **`CoDelI64::min_sojourn()` / `CoDelF64::min_sojourn()`** — the detector
-  no longer keeps a windowed minimum. No caller in the workspace; a minor
-  per this crate's policy on narrowly scoped breaks.
+- **`CoDel::min_sojourn()`**: the RFC 8289 detector no longer keeps a
+  windowed minimum (see Fixed). Keep a `WindowedMin<i64>` beside it if you
+  report one.
 - **`LivenessF64`**: `f64` timestamps lose precision past 2^52; `Liveness` takes `u64` ticks.
 
 ### Added
@@ -144,6 +94,69 @@ contained.
   exactly as a plain fold (an empty period is the identity of every field).
   Negative sojourns (clock skew) clamp to zero
   ([#770](https://github.com/Abso1ut3Zer0/nexus/issues/770)).
+
+### Fixed
+
+- **`no_std` + `alloc` without `std` or `libm` builds again.** `OnlineCovariance`
+  called `f64::mul_add` directly, which only exists with `std`; it now goes
+  through the same fused-multiply-add shim as the rest of the crate (`a * b +
+  c` without a math provider). `math::powf` is added for the sub-crates.
+- **`WindowedMin<T>` / `WindowedMax<T>`** departed from the kernel `win_minmax`
+  algorithm they cite: a choice was replaced by age before its value was
+  compared, and sub-windows were `window / 3` instead of the kernel's quarter
+  and half with the "no distinct choice yet" guard. On stationary input the
+  reported extremum disagreed with an exact window on 11 to 22% of updates
+  (1 to 2% for the kernel algorithm), always in the direction of a max too
+  low or a min too high. Both instantiations now share a literal port of
+  `minmax_running_max` / `minmax_running_min` / `minmax_subwin_update`.
+  Affected `CoDel` through its former `min_sojourn()` and any delay baseline built on
+  `WindowedMin` ([#758](https://github.com/Abso1ut3Zer0/nexus/issues/758)).
+- **`CoDel<T>`** reported `Degraded` on a single sample above
+  target. RFC 8289 requires sojourn to stay above target for a whole
+  interval. It now implements the RFC's `first_above_time` rule directly:
+  a sample above target arms a deadline at `now + window`, a sample at or
+  below target disarms it, and only a sample above target at or after the
+  deadline is `Degraded`. One timestamp of state; the windowed minimum the
+  old composition relied on (and its own inaccuracy, #758) is gone.
+  `window` is the RFC's interval. `CoDelBuilder<f64>::build` now rejects a
+  non-finite target ([#759](https://github.com/Abso1ut3Zer0/nexus/issues/759)).
+
+- **`Liveness`**: two defects. `update()` folded the gap
+  into the smoothed interval before testing it, which made the test
+  `dt <= m * (old + (dt - old) / 2^k)`; that is always true once
+  `deadline_multiple >= 2^k` (for example span 7 with multiple 8), so
+  `update()` could never report dead and otherwise disagreed with `check()`
+  by one interval. It now judges each gap against the interval as it stood
+  before the event, then folds. With both deadlines configured the absolute
+  one was ignored; a gap is now dead if it exceeds either. Also: until a
+  positive gap has been seen only the absolute deadline judges (from both
+  `update()` and `check()`); a timestamp at or behind the previous one is
+  alive and is no longer folded into the estimate, where a
+  large backwards step could drive it negative and make the next real gap
+  read dead; and the multiple product saturates
+  ([#760](https://github.com/Abso1ut3Zer0/nexus/issues/760)).
+
+- **`PeakHold<f64>`** returned `0.0` for a negative-only stream because the
+  peak started at zero; it now seeds from the first sample, as the integer
+  form always did ([#763](https://github.com/Abso1ut3Zer0/nexus/issues/763)).
+- **`Jitter<f64>`** discarded a seeded jitter under `min_samples(1)`, since
+  seeded state was inferred from the sample count; the smoother now carries
+  an explicit seeded flag ([#763](https://github.com/Abso1ut3Zer0/nexus/issues/763)).
+- `no_std` without `libm` compiles again (an unused `halflife` field in the
+  `HitRate` builder); the `TwoScaleRv` rustdoc no longer emits broken links.
+
+### Docs
+
+- Every monitoring type states its **weighting clock** (per `update` call, per
+  event with its timestamp, the caller's timestamps, or none) and the module
+  docs carry the rule: never update a per-call type from a loop whose
+  iteration time depends on the quantity being measured
+  ([#762](https://github.com/Abso1ut3Zer0/nexus/issues/762)). `EventRate`
+  documents that one stamp per batch breaks it and what to use instead;
+  `WindowedMax` / `WindowedMin` document that the accessors reflect the last
+  update ([#763](https://github.com/Abso1ut3Zer0/nexus/issues/763)).
+- `nexus-stats-core/docs` rewritten against the shipped API: the `Instant`
+  types it described never existed.
 
 ## [3.0.1] — 2026-06-05
 

@@ -154,7 +154,7 @@ information theory. Conversion: bits = nats / ln(2).
 | Operation | p50 |
 |-----------|-----|
 | `Entropy::update` (bins=8) | 3 cycles |
-| `entropy()` query (K=8) | 103 cycles |
+| `entropy()` query (K=8) | 106 cycles |
 | `surprise(cat)` query | 14 cycles |
 
 The update is a single integer increment. Query cost scales with K

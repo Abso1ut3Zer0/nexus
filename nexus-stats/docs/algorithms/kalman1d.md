@@ -6,7 +6,7 @@ noise — reactive when uncertain, stable when confident.
 
 | Property | Value |
 |----------|-------|
-| Update cost | 29 cycles |
+| Update cost | 22 cycles |
 | Memory | ~56 bytes |
 | Types | `Kalman1d` |
 | Priming | Configurable via `min_samples` |
@@ -121,7 +121,7 @@ if let Some((current, trend)) = load.update(cpu_percent).unwrap() {
 
 | Operation | p50 | p99 |
 |-----------|-----|-----|
-| `Kalman1d::update` | 29 cycles | 32 cycles |
+| `Kalman1d::update` | 22 cycles | 27 cycles |
 
 2x2 matrix predict + update. ~15 multiplies + ~10 adds + 1 division.
-Uses `mul_add` (FMA) on the hot path.
+Uses multiply-adds on the hot path (fused into FMA only on targets with `+fma`).

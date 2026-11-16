@@ -4,7 +4,7 @@
 
 | Property | Value |
 |----------|-------|
-| Update cost | 9 cycles |
+| Update cost | 7 cycles |
 | Memory | ~32 bytes |
 | Types | `ErrorRate` |
 | Output | `Option<Condition>` — `Normal` or `Degraded` |
@@ -62,4 +62,4 @@ if let Some(Condition::Degraded) = er.update(false) {
 
 | Operation | p50 | p99 |
 |-----------|-----|-----|
-| `ErrorRate::update` | 9 cycles | 13 cycles |
+| `ErrorRate::update` | 7 cycles | 9 cycles |
