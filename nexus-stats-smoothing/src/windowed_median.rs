@@ -48,24 +48,27 @@ impl<T: Sample> WindowedMedian<T> {
 
     /// Creates a new windowed median tracker with the given window size.
     ///
-    /// # Panics
+    /// # Errors
     ///
-    /// Window size must be > 0.
+    /// `ConfigError::Invalid` if the window size is 0.
     #[inline]
-    #[must_use]
-    pub fn new(window_size: usize) -> Self {
-        assert!(window_size > 0, "window size must be > 0");
+    pub fn new(window_size: usize) -> Result<Self, nexus_stats_core::ConfigError> {
+        if window_size == 0 {
+            return Err(nexus_stats_core::ConfigError::Invalid(
+                "window size must be > 0",
+            ));
+        }
         let mut ring_vec = core::mem::ManuallyDrop::new(alloc::vec![T::ZERO; window_size]);
         let ring = ring_vec.as_mut_ptr();
         let mut sorted_vec = core::mem::ManuallyDrop::new(alloc::vec![T::ZERO; window_size]);
         let sorted = sorted_vec.as_mut_ptr();
-        Self {
+        Ok(Self {
             ring,
             sorted,
             window: window_size,
             head: 0,
             count: 0,
-        }
+        })
     }
 
     /// The insertion/eviction step, shared by every instantiation.
@@ -376,7 +379,7 @@ mod tests {
 
     #[test]
     fn basic() {
-        let mut wm = WindowedMedian::<f64>::new(5);
+        let mut wm = WindowedMedian::<f64>::new(5).unwrap();
         for &v in &[3.0, 1.0, 4.0, 1.0, 5.0] {
             wm.update(v).unwrap();
         }
@@ -385,7 +388,7 @@ mod tests {
 
     #[test]
     fn reset() {
-        let mut wm = WindowedMedian::<f64>::new(5);
+        let mut wm = WindowedMedian::<f64>::new(5).unwrap();
         for &v in &[1.0, 2.0, 3.0] {
             wm.update(v).unwrap();
         }
@@ -396,21 +399,21 @@ mod tests {
 
     #[test]
     fn empty() {
-        let wm = WindowedMedian::<f64>::new(10);
+        let wm = WindowedMedian::<f64>::new(10).unwrap();
         assert!(wm.median().is_none());
         assert!(wm.mad().is_none());
     }
 
     #[test]
     fn single_sample() {
-        let mut wm = WindowedMedian::<f64>::new(10);
+        let mut wm = WindowedMedian::<f64>::new(10).unwrap();
         wm.update(42.0).unwrap();
         assert_eq!(wm.median(), Some(42.0));
     }
 
     #[test]
     fn known_median_odd() {
-        let mut wm = WindowedMedian::<f64>::new(5);
+        let mut wm = WindowedMedian::<f64>::new(5).unwrap();
         for &v in &[3.0, 1.0, 4.0, 1.0, 5.0] {
             wm.update(v).unwrap();
         }
@@ -420,7 +423,7 @@ mod tests {
 
     #[test]
     fn known_median_even() {
-        let mut wm = WindowedMedian::<f64>::new(4);
+        let mut wm = WindowedMedian::<f64>::new(4).unwrap();
         for &v in &[1.0, 3.0, 5.0, 7.0] {
             wm.update(v).unwrap();
         }
@@ -430,7 +433,7 @@ mod tests {
 
     #[test]
     fn mad_correctness() {
-        let mut wm = WindowedMedian::<f64>::new(5);
+        let mut wm = WindowedMedian::<f64>::new(5).unwrap();
         for &v in &[1.0, 2.0, 3.0, 4.0, 5.0] {
             wm.update(v).unwrap();
         }
@@ -441,7 +444,7 @@ mod tests {
 
     #[test]
     fn iqr() {
-        let mut wm = WindowedMedian::<f64>::new(8);
+        let mut wm = WindowedMedian::<f64>::new(8).unwrap();
         for &v in &[1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0] {
             wm.update(v).unwrap();
         }
@@ -453,7 +456,7 @@ mod tests {
 
     #[test]
     fn modified_z_score() {
-        let mut wm = WindowedMedian::<f64>::new(5);
+        let mut wm = WindowedMedian::<f64>::new(5).unwrap();
         for &v in &[1.0, 2.0, 3.0, 4.0, 5.0] {
             wm.update(v).unwrap();
         }
@@ -464,7 +467,7 @@ mod tests {
 
     #[test]
     fn window_rolls() {
-        let mut wm = WindowedMedian::<f64>::new(3);
+        let mut wm = WindowedMedian::<f64>::new(3).unwrap();
         wm.update(10.0).unwrap();
         wm.update(20.0).unwrap();
         wm.update(30.0).unwrap();
@@ -478,7 +481,7 @@ mod tests {
 
     #[test]
     fn i64_basic() {
-        let mut wm = WindowedMedian::<i64>::new(5);
+        let mut wm = WindowedMedian::<i64>::new(5).unwrap();
         for v in [3, 1, 4, 1, 5] {
             wm.update(v);
         }
@@ -487,7 +490,7 @@ mod tests {
 
     #[test]
     fn priming() {
-        let mut wm = WindowedMedian::<f64>::new(5);
+        let mut wm = WindowedMedian::<f64>::new(5).unwrap();
         for _ in 0..4 {
             wm.update(1.0).unwrap();
             assert!(!wm.is_primed());
@@ -498,7 +501,7 @@ mod tests {
 
     #[test]
     fn rejects_nan_and_inf() {
-        let mut wm = WindowedMedian::<f64>::new(5);
+        let mut wm = WindowedMedian::<f64>::new(5).unwrap();
         assert!(matches!(
             wm.update(f64::NAN),
             Err(nexus_stats_core::DataError::NotANumber)
@@ -516,7 +519,7 @@ mod tests {
 
     #[test]
     fn quantile_matches_median() {
-        let mut wm = WindowedMedian::<f64>::new(5);
+        let mut wm = WindowedMedian::<f64>::new(5).unwrap();
         for &v in &[3.0, 1.0, 4.0, 1.0, 5.0] {
             wm.update(v).unwrap();
         }
@@ -526,7 +529,7 @@ mod tests {
 
     #[test]
     fn quantile_extremes() {
-        let mut wm = WindowedMedian::<f64>::new(5);
+        let mut wm = WindowedMedian::<f64>::new(5).unwrap();
         for &v in &[10.0, 20.0, 30.0, 40.0, 50.0] {
             wm.update(v).unwrap();
         }
@@ -537,7 +540,7 @@ mod tests {
 
     #[test]
     fn quantile_75th() {
-        let mut wm = WindowedMedian::<f64>::new(5);
+        let mut wm = WindowedMedian::<f64>::new(5).unwrap();
         for &v in &[10.0, 20.0, 30.0, 40.0, 50.0] {
             wm.update(v).unwrap();
         }
@@ -548,14 +551,14 @@ mod tests {
 
     #[test]
     fn quantile_empty_returns_none() {
-        let wm = WindowedMedian::<f64>::new(5);
+        let wm = WindowedMedian::<f64>::new(5).unwrap();
         assert!(wm.quantile(0.5).is_none());
     }
 
     #[test]
     #[should_panic(expected = "quantile must be in [0.0, 1.0]")]
     fn quantile_out_of_range() {
-        let mut wm = WindowedMedian::<f64>::new(5);
+        let mut wm = WindowedMedian::<f64>::new(5).unwrap();
         wm.update(1.0).unwrap();
         let _ = wm.quantile(1.5);
     }
@@ -568,8 +571,8 @@ mod tests {
     fn matches_a_sorted_copy_for_every_window_length() {
         let mut rng = 0x9E37_79B9_7F4A_7C15u64;
         for window in (1..=40).chain([65, 128]) {
-            let mut wm = WindowedMedian::<f64>::new(window);
-            let mut wi = WindowedMedian::<i64>::new(window);
+            let mut wm = WindowedMedian::<f64>::new(window).unwrap();
+            let mut wi = WindowedMedian::<i64>::new(window).unwrap();
             let mut history = Vec::new();
             for _ in 0..window * 3 {
                 rng ^= rng << 13;
@@ -624,7 +627,7 @@ mod tests {
     /// the shift is empty and the slot is simply overwritten.
     #[test]
     fn sample_landing_in_the_vacated_slot() {
-        let mut wm = WindowedMedian::<f64>::new(3);
+        let mut wm = WindowedMedian::<f64>::new(3).unwrap();
         for x in [1.0, 5.0, 9.0] {
             wm.update(x).unwrap();
         }

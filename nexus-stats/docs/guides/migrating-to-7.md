@@ -264,6 +264,57 @@ CHANGELOG entry in `nexus-stats-core`:
   halves at every period like the locals do, as in the kernel. A key with
   every event reads 1.0 instead of 0.5 after one half-life.
 
+### Construction validation (code-quality audit, second PR)
+
+- Builders reject NaN and infinite parameters everywhere; the old `x <= 0.0`
+  tests let NaN through (Cusum, MultiGate, RobustZScore, AdaptiveThreshold,
+  Mosum, ShiryaevRoberts, LMS/NLMS, RLS, Kalman2d/3d, logistic regression).
+- `min_samples(0)` is rejected (`is_primed()` was true before any sample and
+  getters reported `Some(0.0)`): Ema, EwmaVar, BipowerVariation, Lpm,
+  RollSpread, Holt, HuberEma, Kalman1d; `Jitter` needs 2 unseeded.
+- Fallible constructors return `Result<_, ConfigError>` instead of panicking or
+  returning a bare type: `WindowedMedian::new`, `LevelCrossing::new`,
+  `DistributionShiftBuilder::build`, `BipowerVariationBuilder::build`,
+  `Welford::from_parts`, `Cusum::reset_with_target`. Infallible builders stay
+  bare; that is the rule.
+- EW regressions reject `alpha >= 1 / (number of coefficients)`: such a fit
+  could never prime (`effective_n` approaches `1/alpha` from below).
+- `RlsFilter`'s `max_covariance` must be finite and above `initial_covariance`.
+
+### Data policy
+
+- `DataError::OutOfRange` is new: `HarmonicMean::update` returns it for a
+  non-positive sample instead of panicking; ThompsonBeta/Exp3 use it for a
+  reward outside `[0, 1]` (and Exp3 for `prob` outside `(0, 1]`),
+  ThompsonGamma for a non-positive reward. `Negative` is kept for strictly
+  negative inputs (Amihud volume, GammaPoisson exposure).
+- `HitRate::hit_rate` / `ew_hit_rate` and `Amihud::illiq` return `Option<f64>`
+  (`None` before any observation; a rate over nothing is not zero).
+- Float *slices* (features, observation vectors) are the caller's to validate:
+  `debug_assert!`ed only, as in every mainstream numeric library.
+
+### Numerics
+
+- `PolynomialRegression` / `EwPolynomialRegression` judge singularity relative
+  to the matrix scale and never return NaN coefficients; `LinearRegression` /
+  `EwLinearRegression` return `None` for (nearly) constant x instead of a
+  rounding-noise slope.
+- `ShiryaevRoberts` saturates its statistic at `1e300` instead of overflowing
+  to `+inf`, turning NaN and reporting `false` forever.
+- `RobustZScore` scales by `sqrt(2/π)` (its spread is a *mean* absolute
+  deviation, not a median one); `mad()` is `mean_abs_dev()`.
+- `PredictiveInfoBound` applies the Miller-Madow correction with the right
+  sign (`(Kx + Ky - Kxy - 1) / 2N`, usually negative).
+- ThompsonBeta/ThompsonGamma decay toward the prior, not toward zero, so an
+  un-pulled arm never degenerates; `beta_sample` has no `0.5` sentinel.
+- Kalman2d/3d: a non-positive innovation covariance restores P and skips the
+  measurement instead of applying a `1/EPSILON` gain; P is re-symmetrized
+  after every update. `RlsFilter` does the same for its denominator.
+- `EventRate` re-anchors on a backwards timestamp like `Liveness` does.
+- `AdaptiveThreshold::seed(mean, std_dev)` now seeds the spread estimate
+  (the `std_dev` was stored and ignored).
+- `Hurst` primes at its configured window, not at a fixed 20 samples.
+
 ## 5. Checklist
 
 1. Replace the names in tables 1 and 2, builders included.

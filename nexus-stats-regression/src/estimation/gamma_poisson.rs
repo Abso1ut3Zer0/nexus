@@ -103,11 +103,15 @@ impl GammaPoisson {
     ///
     /// # Errors
     ///
-    /// Returns `DataError::NotANumber` if the exposure is NaN, or
-    /// `DataError::Infinite` if the exposure is infinite.
+    /// Returns `DataError::NotANumber` if the exposure is NaN,
+    /// `DataError::Infinite` if it is infinite, and `DataError::Negative` if
+    /// it is negative (the posterior rate would go negative).
     #[inline]
     pub fn update(&mut self, count: u64, exposure: f64) -> Result<(), nexus_stats_core::DataError> {
         check_finite!(exposure);
+        if exposure < 0.0 {
+            return Err(nexus_stats_core::DataError::Negative);
+        }
         self.alpha += count as f64;
         self.beta += exposure;
         Ok(())

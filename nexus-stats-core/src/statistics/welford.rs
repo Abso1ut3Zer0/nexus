@@ -33,10 +33,27 @@ impl Welford {
     ///
     /// `m2` is the sum of squared deviations from the mean
     /// (`variance * (count - 1)` for sample variance).
+    ///
+    /// # Errors
+    ///
+    /// `ConfigError::Invalid` if `mean` is not finite, `m2` is negative or not
+    /// finite, or `count` is zero with a non-zero `mean` or `m2`.
     #[inline]
-    #[must_use]
-    pub const fn from_parts(count: u64, mean: f64, m2: f64) -> Self {
-        Self { count, mean, m2 }
+    pub fn from_parts(count: u64, mean: f64, m2: f64) -> Result<Self, crate::ConfigError> {
+        if !mean.is_finite() {
+            return Err(crate::ConfigError::Invalid("mean must be finite"));
+        }
+        if !crate::math::nonnegative_finite(m2) {
+            return Err(crate::ConfigError::Invalid(
+                "m2 must be non-negative and finite",
+            ));
+        }
+        if count == 0 && (mean != 0.0 || m2 != 0.0) {
+            return Err(crate::ConfigError::Invalid(
+                "count 0 cannot carry a mean or m2",
+            ));
+        }
+        Ok(Self { count, mean, m2 })
     }
 
     /// Feeds a sample.
@@ -347,7 +364,7 @@ mod tests {
         let mean = w.mean().unwrap();
         let m2 = w.variance().unwrap() * (count - 1) as f64;
 
-        let w2 = Welford::from_parts(count, mean, m2);
+        let w2 = Welford::from_parts(count, mean, m2).unwrap();
         assert_eq!(w2.count(), count);
         assert!((w2.mean().unwrap() - mean).abs() < 1e-10);
         assert!((w2.variance().unwrap() - w.variance().unwrap()).abs() < 1e-10);
@@ -453,5 +470,14 @@ mod proptests {
             let var_scale = whole_var.abs().max(1.0);
             prop_assert!((merged_var - whole_var).abs() <= 1e-6 * var_scale);
         }
+    }
+
+    #[test]
+    fn from_parts_rejects_garbage() {
+        assert!(Welford::from_parts(3, f64::NAN, 1.0).is_err());
+        assert!(Welford::from_parts(3, 1.0, -1.0).is_err());
+        assert!(Welford::from_parts(3, 1.0, f64::INFINITY).is_err());
+        assert!(Welford::from_parts(0, 1.0, 0.0).is_err());
+        assert!(Welford::from_parts(0, 0.0, 0.0).is_ok());
     }
 }

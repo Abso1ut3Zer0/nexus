@@ -1,6 +1,7 @@
 extern crate alloc;
 use alloc::boxed::Box;
 use alloc::vec;
+use nexus_stats_core::math::MulAdd;
 
 use super::sampling::f64_impl;
 
@@ -110,7 +111,7 @@ impl ThompsonGamma {
     pub fn update(&mut self, arm: usize, reward: f64) -> Result<(), nexus_stats_core::DataError> {
         check_finite!(reward);
         if reward <= 0.0 {
-            return Err(nexus_stats_core::DataError::Negative);
+            return Err(nexus_stats_core::DataError::OutOfRange);
         }
         assert!(
             arm < self.num_arms,
@@ -120,9 +121,11 @@ impl ThompsonGamma {
 
         if self.decay < 1.0 {
             let decay = self.decay;
+            // Decay toward the prior, not toward zero (see ThompsonBeta).
+            let (ps, pr) = (self.initial_shape, self.initial_rate);
             for (s, r) in self.shapes.iter_mut().zip(self.rates.iter_mut()) {
-                *s *= decay;
-                *r *= decay;
+                *s = (*s - ps).fma(decay, ps);
+                *r = (*r - pr).fma(decay, pr);
             }
         }
 

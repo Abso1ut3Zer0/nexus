@@ -593,7 +593,7 @@ fn bench_multi_gate_f64(samples: &mut [u64]) {
 }
 
 fn bench_windowed_median_f64(samples: &mut [u64]) {
-    let mut wm = WindowedMedian::<f64>::new(32);
+    let mut wm = WindowedMedian::<f64>::new(32).unwrap();
     let mut rng = 12345u64;
     for _ in 0..WARMUP {
         let _ = wm.update(90.0 + (next_val(&mut rng) % 20) as f64);
@@ -1028,7 +1028,7 @@ fn bench_dead_band_f64(samples: &mut [u64]) {
 }
 
 fn bench_level_crossing_f64(samples: &mut [u64]) {
-    let mut l = LevelCrossing::<f64>::new(100.0);
+    let mut l = LevelCrossing::<f64>::new(100.0).unwrap();
     let mut rng = 12345u64;
     for _ in 0..WARMUP {
         let _ = l.update(next_saw(&mut rng));
@@ -1901,7 +1901,7 @@ fn bench_feed<T>(samples: &mut [u64], state: &mut T, mut update: impl FnMut(&mut
 }
 
 fn warm_windowed_median(window: usize) -> WindowedMedian<f64> {
-    let mut wm = WindowedMedian::<f64>::new(window);
+    let mut wm = WindowedMedian::<f64>::new(window).unwrap();
     let mut rng = 12345u64;
     for _ in 0..WARMUP {
         let _ = wm.update(90.0 + (next_val(&mut rng) % 20) as f64);
@@ -2244,7 +2244,7 @@ fn main() {
     print_row("ShiryaevRoberts::update", &mut buf);
     bench_page_hinkley_f64(&mut buf);
     print_row("PageHinkley::update", &mut buf);
-    let mut ds = DistributionShift::builder().build();
+    let mut ds = DistributionShift::builder().build().unwrap();
     bench_feed(&mut buf, &mut ds, |d, v| {
         let _ = d.update(v);
     });

@@ -20,7 +20,7 @@ Not for: signals where you need mean semantics (Welford), or where the window la
 
 ```rust
 impl WindowedMedian<f64> {
-    pub fn new(window_size: usize) -> Self;
+    pub fn new(window_size: usize) -> Result<Self, nexus_stats_core::ConfigError>;  // zero rejected
     pub fn update(&mut self, sample: f64) -> Result<(), DataError>;
     pub fn median(&self) -> Option<f64>;
     pub fn count(&self) -> u64;
@@ -40,7 +40,7 @@ let latencies: [f64; 12] = [
 ];
 
 // 11-sample window. With 3 spikes out of 11, median stays clean (< 50% corruption).
-let mut med = WindowedMedian::<f64>::new(11);
+let mut med = WindowedMedian::<f64>::new(11).unwrap();
 
 for &us in &latencies {
     med.update(us).unwrap();

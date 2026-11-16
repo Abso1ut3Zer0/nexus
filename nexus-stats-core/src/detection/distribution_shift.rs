@@ -16,7 +16,8 @@ use crate::statistics::Moments;
 ///
 /// let mut det = DistributionShift::builder()
 ///     .fast_window(50)
-///     .build();
+///     .build()
+///     .unwrap();
 ///
 /// // Feed normal-looking data
 /// for i in 0..200 {
@@ -151,20 +152,21 @@ impl DistributionShiftBuilder {
 
     /// Build the detector.
     ///
-    /// # Panics
+    /// # Errors
     ///
-    /// Panics if `fast_window` is 0.
-    pub fn build(self) -> DistributionShift {
+    /// `ConfigError::Invalid` if `fast_window` is 0.
+    pub fn build(self) -> Result<DistributionShift, crate::ConfigError> {
         let fast_window = self.fast_window.unwrap_or(50);
-        assert!(fast_window > 0, "fast_window must be > 0");
-
-        DistributionShift {
+        if fast_window == 0 {
+            return Err(crate::ConfigError::Invalid("fast_window must be > 0"));
+        }
+        Ok(DistributionShift {
             fast: Moments::new(),
             slow: Moments::new(),
             fast_window,
             fast_count: 0,
             count: 0,
-        }
+        })
     }
 }
 
@@ -174,7 +176,10 @@ mod tests {
 
     #[test]
     fn stable_distribution_no_shift() {
-        let mut det = DistributionShift::builder().fast_window(100).build();
+        let mut det = DistributionShift::builder()
+            .fast_window(100)
+            .build()
+            .unwrap();
 
         // Feed uniform-ish data — both trackers see the same distribution.
         for i in 0..500 {
@@ -191,7 +196,10 @@ mod tests {
 
     #[test]
     fn fat_tail_shift_detected() {
-        let mut det = DistributionShift::builder().fast_window(50).build();
+        let mut det = DistributionShift::builder()
+            .fast_window(50)
+            .build()
+            .unwrap();
 
         // Feed mild data for a while to establish baseline.
         for i in 0..200 {
@@ -228,7 +236,10 @@ mod tests {
 
     #[test]
     fn is_shifted_threshold() {
-        let mut det = DistributionShift::builder().fast_window(100).build();
+        let mut det = DistributionShift::builder()
+            .fast_window(100)
+            .build()
+            .unwrap();
 
         // Same distribution everywhere → not shifted at reasonable threshold.
         for i in 0..500 {
@@ -241,7 +252,10 @@ mod tests {
 
     #[test]
     fn not_primed_before_4() {
-        let mut det = DistributionShift::builder().fast_window(100).build();
+        let mut det = DistributionShift::builder()
+            .fast_window(100)
+            .build()
+            .unwrap();
         det.update(1.0).unwrap();
         det.update(2.0).unwrap();
         det.update(3.0).unwrap();
@@ -250,7 +264,10 @@ mod tests {
 
     #[test]
     fn primed_after_4() {
-        let mut det = DistributionShift::builder().fast_window(100).build();
+        let mut det = DistributionShift::builder()
+            .fast_window(100)
+            .build()
+            .unwrap();
         for i in 0..5 {
             det.update(i as f64).unwrap();
         }
@@ -260,7 +277,10 @@ mod tests {
 
     #[test]
     fn reset_clears_state() {
-        let mut det = DistributionShift::builder().fast_window(50).build();
+        let mut det = DistributionShift::builder()
+            .fast_window(50)
+            .build()
+            .unwrap();
         for i in 0..100 {
             det.update(i as f64).unwrap();
         }
@@ -271,13 +291,19 @@ mod tests {
 
     #[test]
     fn nan_rejected() {
-        let mut det = DistributionShift::builder().fast_window(50).build();
+        let mut det = DistributionShift::builder()
+            .fast_window(50)
+            .build()
+            .unwrap();
         assert!(det.update(f64::NAN).is_err());
     }
 
     #[test]
     fn inf_rejected() {
-        let mut det = DistributionShift::builder().fast_window(50).build();
+        let mut det = DistributionShift::builder()
+            .fast_window(50)
+            .build()
+            .unwrap();
         assert!(det.update(f64::INFINITY).is_err());
     }
 }

@@ -107,14 +107,19 @@ impl Kalman2d {
         // Innovation: y = obs - H*x
         let y = observation - h[0] * self.state[0] - h[1] * self.state[1];
 
-        // Innovation covariance: S = H*P*H' + R
-        // Epsilon floor prevents NaN if P degrades numerically.
-        let s = (h[0] * h[0] * self.p[0]
+        // Innovation covariance: S = H*P*H' + R. With P positive semi-definite
+        // and R > 0 this is at least R; anything else means P has degraded (or a
+        // NaN got in): restore P and skip the measurement rather than apply a
+        // gain of 1/EPSILON.
+        let s = h[0] * h[0] * self.p[0]
             + h[0] * h[1] * self.p[1]
             + h[1] * h[0] * self.p[2]
             + h[1] * h[1] * self.p[3]
-            + self.r)
-            .max(f64::EPSILON);
+            + self.r;
+        if !nexus_stats_core::math::positive_finite(s) {
+            self.p = self.initial_p;
+            return Ok(());
+        }
 
         // Kalman gain: K = P*H' / S
         let s_inv = 1.0 / s;
@@ -131,6 +136,10 @@ impl Kalman2d {
         self.p[1] = (1.0 - k0 * h[0]) * old_p[1] + (-k0 * h[1]) * old_p[3];
         self.p[2] = (-k1 * h[0]) * old_p[0] + (1.0 - k1 * h[1]) * old_p[2];
         self.p[3] = (-k1 * h[0]) * old_p[1] + (1.0 - k1 * h[1]) * old_p[3];
+        // Keep P symmetric: the (I - KH)P form drifts asymmetric under rounding.
+        let off = 0.5 * (self.p[1] + self.p[2]);
+        self.p[1] = off;
+        self.p[2] = off;
 
         self.last_innovation = Some(y);
         self.last_innovation_var = Some(s);
@@ -283,9 +292,18 @@ impl Kalman2dBuilder {
             .measurement_noise
             .ok_or(nexus_stats_core::ConfigError::Missing("measurement_noise"))?;
 
-        if r <= 0.0 {
+        if !nexus_stats_core::math::positive_finite(r) {
             return Err(nexus_stats_core::ConfigError::Invalid(
                 "measurement_noise must be positive",
+            ));
+        }
+        let finite = |m: &[[f64; 2]; 2]| m.iter().flatten().all(|v| v.is_finite());
+        if !finite(&q_mat)
+            || !finite(&self.initial_covariance)
+            || !self.initial_state.iter().all(|v| v.is_finite())
+        {
+            return Err(nexus_stats_core::ConfigError::Invalid(
+                "process_noise, initial_covariance and initial_state must be finite",
             ));
         }
 

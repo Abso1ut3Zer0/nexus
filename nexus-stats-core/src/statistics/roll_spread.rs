@@ -195,9 +195,14 @@ impl RollSpreadBuilder {
     #[inline]
     pub fn build(self) -> Result<RollSpread, crate::ConfigError> {
         let alpha = self.alpha.ok_or(crate::ConfigError::Missing("alpha"))?;
-        if alpha <= 0.0 || alpha >= 1.0 || !alpha.is_finite() {
+        if !crate::math::in_unit_interval(alpha) {
             return Err(crate::ConfigError::Invalid(
                 "RollSpread alpha must be in (0, 1)",
+            ));
+        }
+        if self.min_samples == 0 {
+            return Err(crate::ConfigError::Invalid(
+                "RollSpread min_samples must be >= 1",
             ));
         }
 

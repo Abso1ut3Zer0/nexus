@@ -123,15 +123,20 @@ impl Kalman3d {
         }
         let y = observation - hx;
 
-        // Innovation covariance: S = H*P*H' + R
-        // Epsilon floor prevents NaN if P degrades numerically.
+        // Innovation covariance: S = H*P*H' + R. With P positive semi-definite
+        // and R > 0 this is at least R; anything else means P has degraded (or a
+        // NaN got in): restore P and skip the measurement rather than apply a
+        // gain of 1/EPSILON.
         let mut s = self.r;
         for i in 0..3 {
             for j in 0..3 {
                 s += h[i] * self.p[i * 3 + j] * h[j];
             }
         }
-        s = s.max(f64::EPSILON);
+        if !nexus_stats_core::math::positive_finite(s) {
+            self.p = self.initial_p;
+            return Ok(());
+        }
 
         // Kalman gain: K = P*H' / S
         let s_inv = 1.0 / s;
@@ -160,6 +165,12 @@ impl Kalman3d {
                 }
                 self.p[i * 3 + j] = sum;
             }
+        }
+        // Keep P symmetric: the (I - KH)P form drifts asymmetric under rounding.
+        for (a, b) in [(1, 3), (2, 6), (5, 7)] {
+            let off = 0.5 * (self.p[a] + self.p[b]);
+            self.p[a] = off;
+            self.p[b] = off;
         }
 
         self.last_innovation = Some(y);
@@ -316,9 +327,18 @@ impl Kalman3dBuilder {
             .measurement_noise
             .ok_or(nexus_stats_core::ConfigError::Missing("measurement_noise"))?;
 
-        if r <= 0.0 {
+        if !nexus_stats_core::math::positive_finite(r) {
             return Err(nexus_stats_core::ConfigError::Invalid(
                 "measurement_noise must be positive",
+            ));
+        }
+        let finite = |m: &[[f64; 3]; 3]| m.iter().flatten().all(|v| v.is_finite());
+        if !finite(&q_mat)
+            || !finite(&self.initial_covariance)
+            || !self.initial_state.iter().all(|v| v.is_finite())
+        {
+            return Err(nexus_stats_core::ConfigError::Invalid(
+                "process_noise, initial_covariance and initial_state must be finite",
             ));
         }
 

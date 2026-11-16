@@ -19,7 +19,7 @@ pub struct BoolWindow {
     capacity: usize,
     head: usize,
     count: u64,
-    failures: u32,
+    failures: usize,
 }
 
 // SAFETY: buffer is exclusively owned, u64 is Copy + Send
@@ -80,7 +80,7 @@ impl BoolWindow {
         let mut failures = self.failures;
 
         // Branchless eviction: decrement failures if evicting a failure bit
-        let was_failure = ((bits[word] >> bit) & 1) as u32;
+        let was_failure = ((bits[word] >> bit) & 1) as usize;
         if count >= capacity as u64 {
             failures -= was_failure;
         }
@@ -88,7 +88,7 @@ impl BoolWindow {
         // Branchless write: clear the bit, then conditionally set it
         let fail_bit = (!success) as u64;
         bits[word] = (bits[word] & !mask) | (fail_bit << bit);
-        failures += fail_bit as u32;
+        failures += fail_bit as usize;
 
         self.failures = failures;
         self.head = head + 1;
@@ -121,7 +121,7 @@ impl BoolWindow {
     /// Number of failures in the current window.
     #[inline]
     #[must_use]
-    pub fn failures(&self) -> u32 {
+    pub fn failures(&self) -> usize {
         self.failures
     }
 

@@ -206,7 +206,7 @@ impl HampelBuilder {
         }
 
         Ok(Hampel {
-            median: WindowedMedian::<f64>::new(self.window_size),
+            median: WindowedMedian::<f64>::new(self.window_size)?,
             inner_threshold: self.inner_threshold,
             outer_threshold: self.outer_threshold,
             mad_scale: self.mad_scale,

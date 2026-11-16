@@ -6,8 +6,9 @@ Scalar primitives are O(1) per update; window and dimension types
 (`WindowedMedian`, `Kama`, `Hampel`, `Bocpd`, `RlsFilter`, `OnlineCovariance`,
 `OnlineKMeans`, `QuantileNorm`) cost O(window) or O(d²) and say so on their
 page. Memory is fixed after construction, except `Adwin`, whose bucket list
-grows O(log n). Everything is `no_std` compatible. Designed for event loops,
-trading systems, and anywhere you need statistics without latency jitter.
+grows O(log n). The crates are `no_std`; types marked *(alloc)* or
+*(std|libm)* in the tables below need those features. Designed for event
+loops, trading systems, and anywhere you need statistics without latency jitter.
 
 ## Quick Start
 
@@ -58,7 +59,7 @@ for deep-dives on each algorithm.
 |------|----------------|-----|
 | `Cusum` | Persistent mean shifts (up or down) | 6 |
 | `Mosum` | Transient spikes within a window | 5 |
-| `ShiryaevRoberts` | Mean shifts with optimal detection delay | 17 |
+| `ShiryaevRoberts` | Mean shifts with optimal detection delay | 18 |
 | `MultiGate` | Graded anomalies: Accept/Unusual/Suspect/Reject | 8 |
 | `RobustZScore<f64>` | MAD-based outlier scoring with estimator freeze | 8 |
 | `AdaptiveThreshold` | Z-score anomalies with self-learning baseline | 7 |
@@ -97,8 +98,8 @@ for deep-dives on each algorithm.
 |------|-----------------|-----|
 | `LinearRegression` | Online OLS linear fit (`y = ax + b`) | 7 |
 | `EwLinearRegression` | Exponentially-weighted linear fit | 7 |
-| `PolynomialRegression` | Online polynomial fit (`.builder().degree(2)`, `.degree(3)`, ...) | 14 |
-| `EwPolynomialRegression` | Exponentially-weighted polynomial fit | 20 |
+| `PolynomialRegression` | Online polynomial fit (`.builder().degree(2)`, `.degree(3)`, ...) | 17 |
+| `EwPolynomialRegression` | Exponentially-weighted polynomial fit | 17 |
 | `ExponentialRegression` | Exponential fit (`y = ae^(bx)`) | 19 |
 | `LogarithmicRegression` | Logarithmic fit (`y = a·ln(x) + b`) | 17 |
 | `PowerRegression` | Power law fit (`y = ax^b`) | 27 |

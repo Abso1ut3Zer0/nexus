@@ -205,6 +205,18 @@ macro_rules! impl_ewma_var {
                         "EWMA variance alpha must be in (0, 1)",
                     ));
                 }
+                if self.min_samples == 0 {
+                    return Err(crate::ConfigError::Invalid(
+                        "EWMA variance min_samples must be >= 1",
+                    ));
+                }
+                if let (Some(m), Some(v)) = (self.seed_mean, self.seed_variance) {
+                    if !(m as f64).is_finite() || !crate::math::nonnegative_finite(v as f64) {
+                        return Err(crate::ConfigError::Invalid(
+                            "EWMA variance seed needs a finite mean and a non-negative finite variance",
+                        ));
+                    }
+                }
 
                 let (mean, variance, count) = match (self.seed_mean, self.seed_variance) {
                     (Some(m), Some(v)) => (m, v, self.min_samples),

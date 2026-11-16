@@ -138,7 +138,8 @@ pub mod smoothing {
 
 /// Change detection and anomaly detection.
 ///
-/// `Cusum` and `DistributionShift` are always available. Advanced types (`Mosum`, `ShiryaevRoberts`,
+/// `Cusum` is always available and `DistributionShift` needs `std` or `libm`
+/// (no `detection` feature). Advanced types (`Mosum`, `ShiryaevRoberts`,
 /// `AdaptiveThreshold`, `RobustZScore`, `TrendAlert`, `MultiGate`,
 /// `PageHinkley`, `Adwin`, `Bocpd`, `DistDrift`) require the `detection`
 /// feature.

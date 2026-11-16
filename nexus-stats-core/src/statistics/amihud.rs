@@ -17,7 +17,7 @@ use crate::smoothing::Ema;
 ///     .unwrap();
 ///
 /// amihud.update(0.01, 1_000_000.0).unwrap(); // 1% return, $1M volume
-/// let illiq = amihud.illiq();
+/// let illiq = amihud.illiq().unwrap();
 /// assert!(illiq > 0.0);
 /// ```
 #[derive(Debug, Clone)]
@@ -43,33 +43,36 @@ impl Amihud {
     /// Feed an absolute return and dollar volume for one period.
     ///
     /// `abs_return` should be the absolute value of the return (e.g., `|r|`).
-    /// `dollar_volume` must be positive.
+    /// A `dollar_volume` of zero means no trading happened: the period is
+    /// skipped and `count()` does not advance, so a caller can tell.
     ///
     /// # Errors
     ///
-    /// Returns `DataError` if either value is NaN or infinite.
+    /// Returns `DataError::NotANumber` / `Infinite` if either value is NaN or
+    /// infinite, `DataError::Negative` for a negative volume, and
+    /// `DataError::Infinite` if the ratio itself overflows.
     #[inline]
     pub fn update(&mut self, abs_return: f64, dollar_volume: f64) -> Result<(), crate::DataError> {
         check_finite!(abs_return);
         check_finite!(dollar_volume);
-
-        if dollar_volume <= 0.0 {
-            // Zero or negative volume is not a data error — it means no
-            // trading happened. Skip the observation silently.
+        if dollar_volume < 0.0 {
+            return Err(crate::DataError::Negative);
+        }
+        if dollar_volume == 0.0 {
             return Ok(());
         }
-
-        self.count += 1;
         let ratio = abs_return / dollar_volume;
-        let _ = self.ema.update(ratio);
+        self.ema.update(ratio)?;
+        self.count += 1;
         Ok(())
     }
 
-    /// Current ILLIQ ratio (EMA of |return| / volume).
+    /// Current ILLIQ ratio (EMA of |return| / volume), or `None` before the
+    /// first positive-volume period.
     #[inline]
     #[must_use]
-    pub fn illiq(&self) -> f64 {
-        self.ema.value().unwrap_or(0.0)
+    pub fn illiq(&self) -> Option<f64> {
+        self.ema.value()
     }
 
     /// Number of valid observations (positive-volume periods).
@@ -134,7 +137,7 @@ mod tests {
     fn basic_illiq() {
         let mut a = Amihud::builder().alpha(0.1).build().unwrap();
         a.update(0.01, 1_000_000.0).unwrap();
-        let illiq = a.illiq();
+        let illiq = a.illiq().unwrap();
         assert!(illiq > 0.0);
         assert!((illiq - 1e-8).abs() < 1e-10);
     }
@@ -150,10 +153,10 @@ mod tests {
         }
 
         assert!(
-            illiquid.illiq() > liquid.illiq(),
+            illiquid.illiq().unwrap() > liquid.illiq().unwrap(),
             "illiquid ({}) should have higher ILLIQ than liquid ({})",
-            illiquid.illiq(),
-            liquid.illiq()
+            illiquid.illiq().unwrap(),
+            liquid.illiq().unwrap()
         );
     }
 

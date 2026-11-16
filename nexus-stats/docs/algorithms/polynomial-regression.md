@@ -254,10 +254,10 @@ Internally fits ln(y) = ln(a) + b·ln(x).
 | Operation | p50 |
 |-----------|-----|
 | `PolynomialRegression::update` (linear) | 11 cycles |
-| `PolynomialRegression::update` (quadratic) | 14 cycles |
-| `coefficients()` (linear, 2×2 solve) | 72 cycles |
-| `coefficients()` (quadratic, 3×3 solve) | 136 cycles |
-| `predict(x)` | 133 cycles (re-solves + evaluates) |
+| `PolynomialRegression::update` (quadratic) | 17 cycles |
+| `coefficients()` (linear, 2×2 solve) | 81 cycles |
+| `coefficients()` (quadratic, 3×3 solve) | 132 cycles |
+| `predict(x)` | 145 cycles (re-solves + evaluates) |
 
 `update()` cost scales with degree (computing powers of x).
 `coefficients()` cost scales with degree³ (Gaussian elimination).

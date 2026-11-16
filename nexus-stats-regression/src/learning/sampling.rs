@@ -57,8 +57,11 @@ pub(super) mod f64_impl {
         let x = gamma_sample(alpha, rng);
         let y = gamma_sample(beta, rng);
         let sum = x + y;
+        // Both gamma draws underflowing to zero needs shapes far below any
+        // prior this crate accepts; if it ever happens, the posterior mean is
+        // the honest answer, not a constant.
         if sum == 0.0 {
-            return 0.5;
+            return alpha / (alpha + beta);
         }
         x / sum
     }

@@ -56,7 +56,12 @@ impl EventRate {
 
         let dt = timestamp.wrapping_sub(self.last_timestamp) as i64;
         self.last_timestamp = timestamp;
-
+        // A backwards step, or one that does not fit in i64, carries no
+        // interval information: re-anchor and leave the estimate alone, as
+        // Liveness does. Folding it would drive the accumulator negative.
+        if dt <= 0 {
+            return;
+        }
         if self.initialized {
             let dt_shifted = (dt as i128) << self.shift;
             self.acc += (dt_shifted - self.acc) >> self.shift;
@@ -149,6 +154,11 @@ impl EventRateBuilder {
         let requested = self.span.ok_or(crate::ConfigError::Missing("span"))?;
         if requested < 1 {
             return Err(crate::ConfigError::Invalid("EventRate span must be >= 1"));
+        }
+        if requested > (1u64 << 62) {
+            return Err(crate::ConfigError::Invalid(
+                "EventRate span must be <= 2^62",
+            ));
         }
 
         let effective = crate::smoothing::ema::next_power_of_two_minus_one(requested);
@@ -250,5 +260,18 @@ mod tests {
     fn effective_span_rounds_up() {
         let er = EventRate::builder().span(10).build().unwrap();
         assert_eq!(er.effective_span(), 15);
+    }
+
+    #[test]
+    fn backwards_step_re_anchors_without_folding() {
+        let mut er = EventRate::builder().span(3).build().unwrap();
+        for t in [0u64, 100, 200, 300, 400] {
+            er.update(t);
+        }
+        let before = er.interval().unwrap();
+        er.update(50); // clock went backwards
+        assert_eq!(er.interval().unwrap(), before);
+        er.update(150); // 100 after the new anchor: the estimate stays sane
+        assert_eq!(er.interval().unwrap(), before);
     }
 }

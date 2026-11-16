@@ -21,15 +21,22 @@ pub struct LevelCrossing<T: Sample> {
 
 impl<T: Sample> LevelCrossing<T> {
     /// Creates a detector for the given threshold.
+    ///
+    /// # Errors
+    ///
+    /// `ConfigError::Invalid` if the threshold is NaN or infinite (a NaN
+    /// threshold would never be crossed).
     #[inline]
-    #[must_use]
-    pub fn new(threshold: T) -> Self {
-        Self {
+    pub fn new(threshold: T) -> Result<Self, crate::ConfigError> {
+        if !threshold.is_finite() {
+            return Err(crate::ConfigError::Invalid("threshold must be finite"));
+        }
+        Ok(Self {
             threshold,
             was_above: false,
             crossings: 0,
             initialized: false,
-        }
+        })
     }
 
     /// Total number of crossings seen.
@@ -93,13 +100,13 @@ mod tests {
 
     #[test]
     fn first_sample_no_crossing() {
-        let mut lc = LevelCrossing::<f64>::new(50.0);
+        let mut lc = LevelCrossing::<f64>::new(50.0).unwrap();
         assert!(!lc.update(30.0).unwrap());
     }
 
     #[test]
     fn upward_crossing() {
-        let mut lc = LevelCrossing::<f64>::new(50.0);
+        let mut lc = LevelCrossing::<f64>::new(50.0).unwrap();
         assert!(!lc.update(30.0).unwrap());
         assert!(lc.update(60.0).unwrap()); // crossed upward
         assert_eq!(lc.crossing_count(), 1);
@@ -107,7 +114,7 @@ mod tests {
 
     #[test]
     fn downward_crossing() {
-        let mut lc = LevelCrossing::<f64>::new(50.0);
+        let mut lc = LevelCrossing::<f64>::new(50.0).unwrap();
         assert!(!lc.update(60.0).unwrap());
         assert!(lc.update(40.0).unwrap()); // crossed downward
         assert_eq!(lc.crossing_count(), 1);
@@ -115,7 +122,7 @@ mod tests {
 
     #[test]
     fn multiple_crossings() {
-        let mut lc = LevelCrossing::<f64>::new(50.0);
+        let mut lc = LevelCrossing::<f64>::new(50.0).unwrap();
         let _ = lc.update(30.0).unwrap();
         let _ = lc.update(60.0).unwrap(); // cross 1
         let _ = lc.update(40.0).unwrap(); // cross 2
@@ -125,7 +132,7 @@ mod tests {
 
     #[test]
     fn no_crossing_same_side() {
-        let mut lc = LevelCrossing::<f64>::new(50.0);
+        let mut lc = LevelCrossing::<f64>::new(50.0).unwrap();
         let _ = lc.update(30.0).unwrap();
         assert!(!lc.update(40.0).unwrap()); // same side
         assert!(!lc.update(20.0).unwrap()); // same side
@@ -133,14 +140,14 @@ mod tests {
 
     #[test]
     fn i64_basic() {
-        let mut lc = LevelCrossing::<i64>::new(100);
+        let mut lc = LevelCrossing::<i64>::new(100).unwrap();
         assert!(!lc.update(50));
         assert!(lc.update(150)); // crossed
     }
 
     #[test]
     fn reset() {
-        let mut lc = LevelCrossing::<f64>::new(50.0);
+        let mut lc = LevelCrossing::<f64>::new(50.0).unwrap();
         let _ = lc.update(30.0).unwrap();
         let _ = lc.update(60.0).unwrap();
         lc.reset();
@@ -149,7 +156,7 @@ mod tests {
 
     #[test]
     fn rejects_nan_and_inf() {
-        let mut lc = LevelCrossing::<f64>::new(50.0);
+        let mut lc = LevelCrossing::<f64>::new(50.0).unwrap();
         assert_eq!(lc.update(f64::NAN), Err(crate::DataError::NotANumber));
         assert_eq!(lc.update(f64::INFINITY), Err(crate::DataError::Infinite));
         assert_eq!(

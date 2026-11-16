@@ -116,7 +116,11 @@ impl LinearRegression {
         if self.intercept {
             let n = self.count as f64;
             let denom = n.fma(self.sum_x2, -(self.sum_x * self.sum_x));
-            if denom == 0.0 {
+            // Zero to within the rounding of n accumulations of each of the two
+            // terms that cancelled (each carries ~EPS·n·Σx²): the x values are
+            // constant to within 2·sqrt(EPS) of their magnitude and the slope
+            // is undefined.
+            if denom <= 4.0 * f64::EPSILON * n * n * self.sum_x2 {
                 return None;
             }
             Some(n.fma(self.sum_xy, -(self.sum_x * self.sum_y)) / denom)
@@ -337,7 +341,11 @@ impl EwLinearRegression {
         if self.intercept {
             let n = self.effective_n;
             let denom = n.fma(self.sum_x2, -(self.sum_x * self.sum_x));
-            if denom == 0.0 {
+            // Zero to within the rounding of n accumulations of each of the two
+            // terms that cancelled (each carries ~EPS·n·Σx²): the x values are
+            // constant to within 2·sqrt(EPS) of their magnitude and the slope
+            // is undefined.
+            if denom <= 4.0 * f64::EPSILON * n * n * self.sum_x2 {
                 return None;
             }
             Some(n.fma(self.sum_xy, -(self.sum_x * self.sum_y)) / denom)
@@ -471,6 +479,14 @@ impl EwLinearRegressionBuilder {
         if !(alpha > 0.0 && alpha < 1.0) {
             return Err(nexus_stats_core::ConfigError::Invalid(
                 "alpha must be in (0, 1) exclusive",
+            ));
+        }
+        // The effective sample size approaches 1/alpha from below and must
+        // reach the number of coefficients for the fit to prime at all.
+        let dim = if self.intercept { 2.0 } else { 1.0 };
+        if alpha >= 1.0 / dim {
+            return Err(nexus_stats_core::ConfigError::Invalid(
+                "alpha must be below 1/(number of coefficients) or the fit never primes",
             ));
         }
 
@@ -684,5 +700,27 @@ mod tests {
             Err(nexus_stats_core::DataError::Infinite)
         );
         assert_eq!(r.count(), 0);
+    }
+
+    /// Constant x leaves the denominator at rounding scale, not exactly zero.
+    #[test]
+    fn constant_x_has_no_slope() {
+        let mut lr = LinearRegression::new();
+        for i in 0..100 {
+            lr.update(0.1, f64::from(i)).unwrap();
+        }
+        assert!(lr.slope().is_none());
+        assert!(lr.predict(0.1).is_none());
+        let mut ew = EwLinearRegression::builder().alpha(0.1).build().unwrap();
+        for i in 0..100 {
+            ew.update(0.1, f64::from(i)).unwrap();
+        }
+        assert!(ew.slope().is_none());
+    }
+
+    #[test]
+    fn ew_alpha_that_can_never_prime_is_rejected() {
+        assert!(EwLinearRegression::builder().alpha(0.5).build().is_err());
+        assert!(EwLinearRegression::builder().alpha(0.49).build().is_ok());
     }
 }

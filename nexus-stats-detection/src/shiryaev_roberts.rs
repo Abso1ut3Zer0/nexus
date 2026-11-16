@@ -68,8 +68,12 @@ impl ShiryaevRoberts {
         let midpoint = f64::midpoint(self.pre_mean, self.post_mean);
         let log_lr = delta_mean * (sample - midpoint) / self.variance;
 
-        // R = (1 + R) * exp(log_lr)
-        self.r = (1.0 + self.r) * nexus_stats_core::math::exp(log_lr);
+        // R = (1 + R) · exp(log_lr), saturating at R_MAX: a sustained
+        // alternative otherwise drives R to +inf, where one large opposite
+        // sample makes it NaN and `r > threshold` reads false for the rest
+        // of the process life. The clamp is one `min`; the alternative, log
+        // space, costs three transcendental calls per update.
+        self.r = ((1.0 + self.r) * nexus_stats_core::math::exp(log_lr)).min(R_MAX);
 
         if self.count < self.min_samples {
             return Ok(None);
@@ -78,7 +82,8 @@ impl ShiryaevRoberts {
         Ok(Some(self.r > self.threshold))
     }
 
-    /// Current R statistic value.
+    /// Current R statistic. Saturates at `1e300` under a long run of the
+    /// alternative instead of overflowing, so it is always finite.
     #[inline]
     #[must_use]
     pub fn statistic(&self) -> f64 {
@@ -172,12 +177,17 @@ impl ShiryaevRobertsBuilder {
             .threshold
             .ok_or(nexus_stats_core::ConfigError::Missing("threshold"))?;
 
-        if variance <= 0.0 {
+        if !(pre_mean.is_finite() && post_mean.is_finite()) {
+            return Err(nexus_stats_core::ConfigError::Invalid(
+                "means must be finite",
+            ));
+        }
+        if !nexus_stats_core::math::positive_finite(variance) {
             return Err(nexus_stats_core::ConfigError::Invalid(
                 "variance must be positive",
             ));
         }
-        if threshold <= 0.0 {
+        if !nexus_stats_core::math::positive_finite(threshold) {
             return Err(nexus_stats_core::ConfigError::Invalid(
                 "threshold must be positive",
             ));
@@ -199,6 +209,10 @@ impl ShiryaevRobertsBuilder {
         })
     }
 }
+
+/// Ceiling for the R statistic: far above any threshold anyone sets, far
+/// below f64::MAX, so `(1 + R) · exp(log_lr)` can never overflow.
+const R_MAX: f64 = 1e300;
 
 #[cfg(test)]
 mod tests {
@@ -346,5 +360,32 @@ mod tests {
             nexus_stats_core::DataError::Infinite
         );
         assert_eq!(sr.count(), 0);
+    }
+
+    /// A long run under the alternative used to overflow R to +inf, after
+    /// which one large opposite sample made it NaN and the detector reported
+    /// `false` forever. With the ceiling it stays finite and keeps working.
+    #[test]
+    fn survives_a_long_alternative_and_a_huge_reversal() {
+        let mut sr = ShiryaevRoberts::builder()
+            .pre_change_mean(0.0)
+            .post_change_mean(1.0)
+            .variance(1.0)
+            .threshold(100.0)
+            .build()
+            .unwrap();
+        let mut last = None;
+        for _ in 0..5000 {
+            last = sr.update(5.0).unwrap();
+        }
+        assert_eq!(last, Some(true));
+        assert!(sr.statistic().is_finite());
+        assert_eq!(sr.statistic(), 1e300);
+        // One huge opposite observation: finite, never NaN, and quiet.
+        assert_eq!(sr.update(-1.0e6), Ok(Some(false)));
+        assert!(sr.statistic().is_finite());
+        for _ in 0..100 {
+            assert_eq!(sr.update(0.0), Ok(Some(false)));
+        }
     }
 }

@@ -167,6 +167,11 @@ impl HuberEmaBuilder {
     ///
     /// Returns `ConfigError` if alpha or delta are not set or invalid.
     pub fn build(self) -> Result<HuberEma, nexus_stats_core::ConfigError> {
+        if self.min_samples == 0 {
+            return Err(nexus_stats_core::ConfigError::Invalid(
+                "min_samples must be >= 1",
+            ));
+        }
         let alpha = self
             .alpha
             .ok_or(nexus_stats_core::ConfigError::Missing("alpha or halflife"))?;

@@ -212,6 +212,12 @@ impl EmaBuilder {
         if !(alpha > 0.0 && alpha < 1.0) {
             return Err(crate::ConfigError::Invalid("EMA alpha must be in (0, 1)"));
         }
+        if self.min_samples == 0 {
+            return Err(crate::ConfigError::Invalid("EMA min_samples must be >= 1"));
+        }
+        if self.seed.is_some_and(|s| !s.is_finite()) {
+            return Err(crate::ConfigError::Invalid("EMA seed must be finite"));
+        }
 
         let (value, count) = self
             .seed

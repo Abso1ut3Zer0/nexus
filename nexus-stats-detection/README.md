@@ -7,7 +7,7 @@ Advanced change detection and signal analysis for [nexus-stats](https://crates.i
 - **Mosum** — Moving sum change detection (requires `alloc`)
 - **ShiryaevRoberts** — Shiryaev-Roberts change detection (requires `std` or `libm`)
 - **AdaptiveThreshold** — EMA + Welford adaptive threshold (requires `std` or `libm`)
-- **RobustZScore<f64>** — Median-based robust Z-score anomaly detection
+- **RobustZScore<f64>** — Robust z-score on an EMA of mean absolute deviation (outliers cannot inflate the scale)
 - **TrendAlert** — Holt-based trend alerting
 - **MultiGate** — Multi-threshold gating
 - **PageHinkley** — Sequential mean drift detection (Page-Hinkley test)

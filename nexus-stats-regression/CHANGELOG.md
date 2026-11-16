@@ -16,6 +16,21 @@ contained.
   plainly: `LinearRegressionF64` → `LinearRegression`, `RlsFilterF64` →
   `RlsFilter`, `Ucb1F64` → `Ucb1`, `OnlineKMeansF64` → `OnlineKMeans`, and
   so on; builders follow.
+- **Builders are NaN-safe and complete:** LMS/NLMS (`learning_rate`,
+  `epsilon`), RLS (`forgetting_factor`, `initial_covariance`, and
+  `max_covariance`, which must be finite and above `initial_covariance`),
+  Kalman2d/3d (`measurement_noise`, plus finite `process_noise`,
+  `initial_covariance`, `initial_state`) and logistic regression
+  (`learning_rate`) reject NaN where `<= 0.0` let it through.
+- **EW regressions reject `alpha >= 1/(number of coefficients)`:** the
+  effective sample size approaches `1/alpha` from below, so such a fit could
+  never prime and returned `None` forever.
+- **Range errors are `DataError::OutOfRange`**, not `Negative`: ThompsonBeta /
+  Exp3 reward outside `[0, 1]`, Exp3 `prob` outside `(0, 1]`, ThompsonGamma
+  non-positive reward. `GammaPoisson::update` rejects negative exposure.
+- **Float slices are the caller's to validate** (features, Kalman `h`):
+  debug-asserted, as in every mainstream numeric library; the scalar
+  `check_finite` policy is unchanged.
 
 ### Fixed
 
@@ -31,6 +46,24 @@ contained.
   type doc states that `Exp3` is `!Sync`.
 - **`RlsFilter::covariance` doc** said "P matrix diagonal"; it returns the
   full d×d row-major matrix, and now says so.
+- **Singular fits returned garbage.** `gauss_solve_f64` judged singularity
+  with an absolute `1e-14` pivot on an unscaled normal matrix (entries
+  `~ n·x^2d`): rank-deficient data at large |x| solved to nonsense, well-posed
+  small-|x| cubics were called singular, and NaN passed every test. It now
+  uses a relative tolerance, treats NaN as singular and checks the solution is
+  finite. `LinearRegression` / `EwLinearRegression` guarded on `denom == 0.0`,
+  which constant x never hits exactly; they use the rounding bound of the two
+  cancelled terms and return `None`.
+- **Thompson decay collapsed un-pulled arms.** Multiplying `(alpha, beta)` by
+  `decay` every update drove an un-pulled arm's posterior toward zero, where
+  `beta_sample` hit a fabricated `0.5` and the arm was always or never
+  selected (Gamma: `0/0`). Both bandits decay toward the prior; the sentinel
+  is gone.
+- **Kalman2d/3d `S.max(EPSILON)` masked a degraded or NaN covariance** into a
+  gain of `~1e15`; a non-positive innovation covariance now restores P and
+  skips the measurement, and P is re-symmetrized after every update (the
+  `(I-KH)P` form drifts asymmetric). `RlsFilter`'s denominator floor had the
+  same shape and gets the same treatment.
 
 ## [2.0.0] — 2026-05-28
 

@@ -84,7 +84,7 @@ Returns true when the input crosses a threshold (up or down). Counts crossings.
 ```rust
 use nexus_stats_core::control::LevelCrossing;
 
-let mut lc = LevelCrossing::<f64>::new(0.0); // zero crossing
+let mut lc = LevelCrossing::<f64>::new(0.0).unwrap(); // zero crossing
 for x in signal {
     if lc.update(x).unwrap() {
         println!("crossed zero");

@@ -156,7 +156,7 @@ macro_rules! impl_adaptive_threshold {
                 &mut self,
                 z: $ty,
             ) -> Result<(), nexus_stats_core::ConfigError> {
-                if z <= (0.0 as $ty) {
+                if !nexus_stats_core::math::positive_finite(z as f64) {
                     return Err(nexus_stats_core::ConfigError::Invalid(
                         "z_threshold must be positive",
                     ));
@@ -211,7 +211,10 @@ macro_rules! impl_adaptive_threshold {
                 self
             }
 
-            /// Pre-load baseline from calibration data, skipping warmup.
+            /// Pre-load the baseline from calibration data: the mean seeds the
+            /// EMA and `std_dev` seeds the spread estimate as two samples, so the
+            /// detector is primed after at most two updates (`min_samples` is
+            /// capped at 2 when seeded).
             #[inline]
             #[must_use]
             pub fn seed(mut self, mean: $ty, std_dev: $ty) -> Self {
@@ -237,7 +240,7 @@ macro_rules! impl_adaptive_threshold {
                         "alpha must be in (0, 1)",
                     ));
                 }
-                if self.z_threshold <= 0.0 as $ty {
+                if !nexus_stats_core::math::positive_finite(self.z_threshold as f64) {
                     return Err(nexus_stats_core::ConfigError::Invalid(
                         "z_threshold must be positive",
                     ));
@@ -253,18 +256,29 @@ macro_rules! impl_adaptive_threshold {
                     <$ema>::builder().alpha(alpha).min_samples(1).build()?
                 };
 
-                // Welford doesn't support seeding directly — if seeded, we
-                // set min_samples to allow immediate priming and accept that
-                // the first few std_dev estimates will be from the seed approximation.
-                let min_samples = if self.seed_mean.is_some() {
-                    2
-                } else {
-                    self.min_samples
+                // A seed stands in for two calibration samples with the given
+                // spread: the Welford starts at count 2 with m2 = std_dev², so
+                // std_dev() reproduces it, and priming comes at the smaller of
+                // 2 and min_samples.
+                let (welford, min_samples) = match (self.seed_mean, self.seed_std_dev) {
+                    (Some(mean), Some(std_dev)) => {
+                        if !nexus_stats_core::math::nonnegative_finite(std_dev as f64) {
+                            return Err(nexus_stats_core::ConfigError::Invalid(
+                                "seed std_dev must be non-negative and finite",
+                            ));
+                        }
+                        let sd = std_dev as f64;
+                        (
+                            <$welford>::from_parts(2, mean as f64, sd * sd)?,
+                            self.min_samples.min(2),
+                        )
+                    }
+                    _ => (<$welford>::new(), self.min_samples),
                 };
 
                 Ok($name {
                     ema,
-                    welford: <$welford>::new(),
+                    welford,
                     z_threshold: self.z_threshold,
                     last_z: 0.0 as $ty,
                     min_samples,

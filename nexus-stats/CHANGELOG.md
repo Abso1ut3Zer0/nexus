@@ -47,6 +47,14 @@ one naming convention across the family. Migration guide:
   `Kama(10)::update` 24 → 15, `TopK(16)::update` 45 → 36,
   `BoolWindow(64)::update` 11 → 6. Numbers in the README and
   `docs/reference/performance.md` regenerated.
+- **Construction validation and numerics pass from the code-quality audit
+  (second PR).** NaN-safe builders everywhere; `min_samples(0)` rejected;
+  `WindowedMedian::new`, `LevelCrossing::new`, `DistributionShift` and
+  `BipowerVariation` builders, `Welford::from_parts` and
+  `Cusum::reset_with_target` return `Result`; `DataError::OutOfRange`;
+  `HitRate`/`Amihud` rates return `Option`; `RobustZScore::mean_abs_dev`
+  (was `mad`) with the `sqrt(2/π)` scale; `ShiryaevRoberts` saturates at `1e300`.
+  See the per-crate CHANGELOGs and `docs/guides/migrating-to-7.md` § 4.
 
 ### Removed
 

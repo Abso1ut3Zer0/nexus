@@ -18,7 +18,7 @@ use crate::smoothing::Ema;
 ///
 /// // Correct prediction: both positive
 /// hr.update(1.0, 0.5).unwrap();
-/// assert!((hr.hit_rate() - 1.0).abs() < f64::EPSILON);
+/// assert!((hr.hit_rate().unwrap() - 1.0).abs() < f64::EPSILON);
 /// ```
 #[derive(Debug, Clone)]
 pub struct HitRate {
@@ -71,21 +71,20 @@ impl HitRate {
         Ok(())
     }
 
-    /// Cumulative hit rate (hits / total). Returns 0.0 if no observations.
+    /// Cumulative hit rate (hits / total), or `None` before any observation:
+    /// a rate over nothing is undefined, not zero.
     #[inline]
     #[must_use]
-    pub fn hit_rate(&self) -> f64 {
-        if self.total == 0 {
-            return 0.0;
-        }
-        self.hits as f64 / self.total as f64
+    pub fn hit_rate(&self) -> Option<f64> {
+        (self.total > 0).then(|| self.hits as f64 / self.total as f64)
     }
 
-    /// Exponentially weighted hit rate for recency.
+    /// Exponentially weighted hit rate for recency, or `None` before any
+    /// observation.
     #[inline]
     #[must_use]
-    pub fn ew_hit_rate(&self) -> f64 {
-        self.ew_hits.value().unwrap_or(0.0)
+    pub fn ew_hit_rate(&self) -> Option<f64> {
+        self.ew_hits.value()
     }
 
     /// Total number of observations.
@@ -169,8 +168,8 @@ mod tests {
         for _ in 0..100 {
             hr.update(1.0, 1.0).unwrap();
         }
-        assert!((hr.hit_rate() - 1.0).abs() < f64::EPSILON);
-        assert!(hr.ew_hit_rate() > 0.99);
+        assert!((hr.hit_rate().unwrap() - 1.0).abs() < f64::EPSILON);
+        assert!(hr.ew_hit_rate().unwrap() > 0.99);
     }
 
     #[test]
@@ -179,8 +178,8 @@ mod tests {
         for _ in 0..100 {
             hr.update(1.0, -1.0).unwrap();
         }
-        assert!(hr.hit_rate().abs() < f64::EPSILON);
-        assert!(hr.ew_hit_rate() < 0.01);
+        assert!(hr.hit_rate().unwrap().abs() < f64::EPSILON);
+        assert!(hr.ew_hit_rate().unwrap() < 0.01);
     }
 
     #[test]
@@ -194,16 +193,16 @@ mod tests {
                 hr.update(1.0, -1.0).unwrap();
             }
         }
-        assert!((hr.hit_rate() - 0.5).abs() < f64::EPSILON);
+        assert!((hr.hit_rate().unwrap() - 0.5).abs() < f64::EPSILON);
     }
 
     #[test]
     fn zero_treated_as_miss() {
         let mut hr = HitRate::builder().alpha(0.1).build().unwrap();
         hr.update(0.0, 1.0).unwrap();
-        assert!(hr.hit_rate().abs() < f64::EPSILON);
+        assert!(hr.hit_rate().unwrap().abs() < f64::EPSILON);
         hr.update(1.0, 0.0).unwrap();
-        assert!(hr.hit_rate().abs() < f64::EPSILON);
+        assert!(hr.hit_rate().unwrap().abs() < f64::EPSILON);
     }
 
     #[test]
@@ -220,7 +219,8 @@ mod tests {
         hr.reset();
         assert_eq!(hr.count(), 0);
         assert!(!hr.is_primed());
-        assert!(hr.hit_rate().abs() < f64::EPSILON);
+        assert!(hr.hit_rate().is_none());
+        assert!(hr.ew_hit_rate().is_none());
     }
 
     #[test]

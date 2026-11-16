@@ -52,7 +52,7 @@ Currently assumes normal distribution for the likelihood ratio.
 
 | Operation | p50 | p99 |
 |-----------|-----|-----|
-| `ShiryaevRoberts::update` | 17 cycles | 20 cycles |
+| `ShiryaevRoberts::update` | 18 cycles | 22 cycles |
 
 Dominated by one `exp()` call for the likelihood ratio computation.
 
