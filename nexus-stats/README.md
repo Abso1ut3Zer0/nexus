@@ -142,13 +142,13 @@ for deep-dives on each algorithm.
 | `ErrorRate` | Failure rate with weighted severity | 7 |
 | `TrendAlert` | Trend direction (Stable/Rising/Falling) | 10 |
 | `Jitter<f64>` | Signal variability measurement | 6 |
-| `HawkesIntensity` *(std\|libm)* | Self-exciting point process intensity | 15 |
+| `HawkesIntensity` *(std\|libm)* | Self-exciting point process intensity | 16 |
 
 ### Frequency & Scoring
 
 | Type | What It Tracks | p50 |
 |------|---------------|-----|
-| `TopK<K, CAP>` | Space-Saving top-K frequent items | 46 |
+| `TopK<K>` *(alloc)* | Space-Saving top-K frequent items | 42 |
 | `FlexProportionGlobal/Entity` | Per-entity fraction with lazy decay | O(1) |
 | `DecayAccum` | Event-driven score with time decay (`u64` ticks) | O(1) |
 
@@ -260,7 +260,7 @@ stats.update(sample).unwrap();
 |---------|---------|------|
 | `std` | yes | `WallClock`, hardware intrinsics for `sqrt`/`exp`; implies `alloc` |
 | `libm` | no | Pure Rust math fallback for `no_std` |
-| `alloc` | no (implied by `std`) | Runtime-sized windows (Mosum, WindowedMedian, Kama, BoolWindow), adaptive filters, optimizers |
+| `alloc` | no (implied by `std`) | Runtime-sized tables (Mosum, WindowedMedian, Kama, BoolWindow, TopK), adaptive filters, optimizers |
 
 One of `std` or `libm` must be enabled. Update hot paths never use
 transcendentals — `sqrt` and `exp` are only used in queries (`std_dev()`)

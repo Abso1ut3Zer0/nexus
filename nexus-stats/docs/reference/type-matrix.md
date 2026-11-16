@@ -116,7 +116,7 @@ See [Integer vs Float](../guides/integer-vs-float.md) for the caller rules and
 
 | Type | Numeric | Feature | Crate (module) |
 |------|---------|---------|----------------|
-| `TopK<K, const CAP: usize>` | any `K: Eq + Clone`, `u64` counts | — | control (`frequency`) |
+| `TopK<K>` | any `K: Eq + Clone`, `u64` counts | `alloc` | control (`frequency`) |
 | `FlexProportionGlobal`, `FlexProportionEntity` | `u64` counts | — | control (`frequency`) |
 | `DecayAccum` | `u64` ticks, `f64` weights | `std\|libm` | control (`frequency`) |
 

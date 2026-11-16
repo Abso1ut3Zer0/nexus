@@ -468,7 +468,7 @@ fn bench_shiryaev_roberts(samples: &mut [u64]) {
 }
 
 fn bench_topk(samples: &mut [u64]) {
-    let mut tk: TopK<u64, 16> = TopK::new();
+    let mut tk: TopK<u64> = TopK::new(16).unwrap();
     let mut rng = 12345u64;
     for _ in 0..WARMUP {
         tk.update(next_val(&mut rng) % 100);
@@ -2302,7 +2302,7 @@ fn main() {
     section("Frequency");
     print_header();
     bench_topk(&mut buf);
-    print_row("TopK<u64,16>::update", &mut buf);
+    print_row("TopK(16)::update", &mut buf);
 
     section("Statistics & Signal Analysis");
     print_header();

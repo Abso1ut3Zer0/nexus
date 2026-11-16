@@ -50,7 +50,7 @@ if let Some((current, trend)) = load.update(requests_per_sec).unwrap() {
 ```rust
 use nexus_stats::frequency::TopK;
 
-let mut hot: TopK<String, 10> = TopK::new();
+let mut hot: TopK<String> = TopK::new(10).unwrap();
 
 // On each market data message:
 hot.update(symbol.to_string());

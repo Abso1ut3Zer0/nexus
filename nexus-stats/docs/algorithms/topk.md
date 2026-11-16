@@ -5,9 +5,9 @@ Guarantees items above the `total/K` frequency threshold are tracked.
 
 | Property | Value |
 |----------|-------|
-| Update cost | 46 cycles (K=16) |
+| Update cost | 42 cycles (K=16) |
 | Memory | K × (key + count) |
-| Types | `TopK<K: Eq + Hash + Clone, const CAP: usize>` |
+| Types | `TopK<K>` for `K: Eq + Clone`; capacity at construction (`alloc`) |
 | Output | Sorted list of (key, count) pairs |
 
 ## What It Does
@@ -25,7 +25,7 @@ by at most `total / CAP`.
 ## Configuration
 
 ```rust
-let mut top: TopK<String, 16> = TopK::new();  // track top 16
+let mut top: TopK<String> = TopK::new(16).unwrap();  // track top 16
 
 top.update("BTC-USD".to_string());
 top.update("ETH-USD".to_string());
@@ -48,7 +48,7 @@ for (key, count) in &buf[..n] {
 
 | Operation | p50 | p99 |
 |-----------|-----|-----|
-| `TopK<u64, 16>::update` | 46 cycles | 49 cycles |
+| `TopK::update` (16 slots) | 42 cycles | 46 cycles |
 
 Linear scan over CAP entries. For CAP > 64, consider a min-heap variant.
 

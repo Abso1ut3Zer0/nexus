@@ -22,7 +22,7 @@ Not for: when all you need is "was the last value the max so far?" (use `Running
 
 ```rust
 impl PeakDetector<f64> {
-    pub fn new(prominence: f64) -> Result<Self, ConfigError>;
+    pub fn new(prominence: f64) -> Result<Self, nexus_stats_core::ConfigError>;
     pub fn update(&mut self, sample: f64) -> Result<Option<Peak<f64>>, DataError>;
     pub fn reset(&mut self);
 }

@@ -60,7 +60,7 @@ costs a branch mispredict, about 20 cycles.
 | TrendAlert | 10 | 10 | Holt + threshold |
 | Jitter<f64> | 6 | 7 | EMA of deltas |
 | **Frequency** | | | |
-| TopK<u64, 16> | 46 | 49 | linear scan |
+| TopK (16 slots) | 42 | 46 | linear scan |
 | **Utilities** | | | |
 | BoolWindow (64) | 10 | 10 | bit manipulation |
 | Hysteresis<f64> | 2 | 2 | two comparisons |
@@ -81,7 +81,7 @@ costs a branch mispredict, about 20 cycles.
 | SojournSaturation (budget + five `u64` + flag) | 56 bytes (64-bit) |
 | Ring buffer types (MOSUM, window N) | N × 8 bytes |
 | WindowedMedian (window N) | 2 × N × 8 bytes |
-| TopK<K, CAP> | CAP × (sizeof(K) + 8) bytes |
+| TopK<K> (capacity N) | N × (sizeof(K) + 8) bytes, boxed once at construction |
 
 ## Running Benchmarks
 
