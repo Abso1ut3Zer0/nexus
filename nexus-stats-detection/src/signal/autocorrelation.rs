@@ -92,7 +92,10 @@ impl Autocorrelation {
 
         // Store in circular buffer
         self.buffer[self.head] = sample;
-        self.head = (self.head + 1) % self.lag;
+        self.head += 1;
+        if self.head == self.lag {
+            self.head = 0;
+        }
         Ok(())
     }
 

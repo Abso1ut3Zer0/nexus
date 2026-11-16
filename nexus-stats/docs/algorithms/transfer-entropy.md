@@ -6,7 +6,7 @@ Granger causality.
 
 | Property | Value |
 |----------|-------|
-| Update cost | 14 cycles |
+| Update cost | 13 cycles |
 | Memory | `2×bins³×8 + 2×bins²×8 + 2×lag×8` bytes (heap) |
 | Types | `TransferEntropy` |
 | Priming | After `lag + 1` paired observations |
@@ -180,9 +180,9 @@ the lag, use transfer entropy to confirm which signal drives which.
 
 | Operation | p50 |
 |-----------|-----|
-| `update` (bins=8, lag=1) | 14 cycles |
-| `te_x_to_y()` query (bins=8) | 10033 cycles |
-| `net_flow()` query (bins=8) | 20070 cycles |
+| `update` (bins=8, lag=1) | 13 cycles |
+| `te_x_to_y()` query (bins=8) | 9991 cycles |
+| `net_flow()` query (bins=8) | 20101 cycles |
 
 The update is O(1) — table lookups and increments. The query is
 O(bins³) due to iterating the joint frequency table.

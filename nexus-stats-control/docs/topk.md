@@ -23,7 +23,7 @@ Not for: exact frequency counts with bounded error on minor items — use a full
 
 ```rust
 impl<K: Eq + Clone> TopK<K> {
-    pub fn new(capacity: usize) -> Result<Self, nexus_stats_core::ConfigError>;  // the table is boxed once
+    pub fn new(capacity: usize) -> Result<Self, nexus_stats_core::ConfigError>;  // the table is allocated once
     pub fn capacity(&self) -> usize;
     pub fn update(&mut self, key: K);
     pub fn top(&self, buf: &mut [(K, u64)]) -> usize;

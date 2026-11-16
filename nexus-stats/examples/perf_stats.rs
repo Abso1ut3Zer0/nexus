@@ -20,8 +20,8 @@ use nexus_stats::{
         SecondDiff,
     },
     detection::{
-        AdaptiveThreshold, Adwin, Cusum, Mosum, MultiGate, PageHinkley, RobustZScore,
-        ShiryaevRoberts, TrendAlert,
+        AdaptiveThreshold, Adwin, Cusum, DistributionShift, Mosum, MultiGate, PageHinkley,
+        RobustZScore, ShiryaevRoberts, TrendAlert,
     },
     estimation::{
         BetaBinomial, Decision, GammaPoisson, Kalman2d, Kalman3d, SprtBernoulli, SprtGaussian,
@@ -40,10 +40,10 @@ use nexus_stats::{
         LogarithmicRegression, LogisticRegression, PolynomialRegression, PowerRegression,
     },
     signal::{Autocorrelation, CrossCorrelation, Entropy, PredictiveInfoBound, TransferEntropy},
-    smoothing::{AsymEma, Ema, Holt, Kalman1d, Kama, Slew, Spring, WindowedMedian},
+    smoothing::{AsymEma, Ema, Hampel, Holt, Kalman1d, Kama, Slew, Spring, WindowedMedian},
     statistics::{
-        BipowerVariation, Covariance, EwmaVar, HarmonicMean, Moments, RollSpread, TwoScaleRv,
-        Welford,
+        Amihud, BipowerVariation, Covariance, Cvar, EwmaVar, HalfLife, HarmonicMean, HitRate,
+        Hurst, Lpm, Moments, Percentile, RollSpread, TwoScaleRv, VarianceRatio, Welford,
     },
 };
 
@@ -1883,6 +1883,32 @@ fn bench_polynomial_query(samples: &mut [u64], degree: usize, predict: bool) {
 // Phase 11: query costs (state warmed once, then the accessor in the loop)
 // ============================================================================
 
+/// Times `update` on the standard `90 + rng % 20` feed.
+fn bench_feed<T>(samples: &mut [u64], state: &mut T, mut update: impl FnMut(&mut T, f64)) {
+    let mut rng = 12345u64;
+    for _ in 0..WARMUP {
+        update(state, 90.0 + (next_val(&mut rng) % 20) as f64);
+    }
+    for s in samples.iter_mut() {
+        let start = rdtsc_start();
+        for _ in 0..BATCH {
+            update(state, 90.0 + (next_val(&mut rng) % 20) as f64);
+        }
+        let end = rdtsc_end();
+        black_box(&*state);
+        *s = (end - start) / BATCH;
+    }
+}
+
+fn warm_windowed_median(window: usize) -> WindowedMedian<f64> {
+    let mut wm = WindowedMedian::<f64>::new(window);
+    let mut rng = 12345u64;
+    for _ in 0..WARMUP {
+        let _ = wm.update(90.0 + (next_val(&mut rng) % 20) as f64);
+    }
+    wm
+}
+
 fn bench_query<T, R>(samples: &mut [u64], state: &T, query: impl Fn(&T) -> R) {
     for s in samples.iter_mut() {
         let start = rdtsc_start();
@@ -2218,6 +2244,11 @@ fn main() {
     print_row("ShiryaevRoberts::update", &mut buf);
     bench_page_hinkley_f64(&mut buf);
     print_row("PageHinkley::update", &mut buf);
+    let mut ds = DistributionShift::builder().build();
+    bench_feed(&mut buf, &mut ds, |d, v| {
+        let _ = d.update(v);
+    });
+    print_row("DistributionShift::update", &mut buf);
     bench_adwin_f64(&mut buf);
     print_row("Adwin::update", &mut buf);
     bench_adaptive_threshold_f64(&mut buf);
@@ -2229,6 +2260,11 @@ fn main() {
     print_row("Ema::update", &mut buf);
     bench_holt_f64(&mut buf);
     print_row("Holt::update", &mut buf);
+    let mut hampel = Hampel::builder().window_size(21).build().unwrap();
+    bench_feed(&mut buf, &mut hampel, |h, v| {
+        let _ = h.update(v);
+    });
+    print_row("Hampel(21)::update", &mut buf);
 
     section("Variance & Correlation");
     print_header();
@@ -2350,6 +2386,48 @@ fn main() {
     print_row("RollSpread::update", &mut buf);
     bench_two_scale_rv_f64(&mut buf);
     print_row("TwoScaleRv::update", &mut buf);
+    let mut pct = Percentile::new(0.99).unwrap();
+    bench_feed(&mut buf, &mut pct, |p, v| {
+        let _ = p.update(v);
+    });
+    print_row("Percentile(p99)::update", &mut buf);
+    let mut hit = HitRate::builder().alpha(0.05).build().unwrap();
+    bench_feed(&mut buf, &mut hit, |h, v| {
+        // Realized sign decorrelated from the predicted one: a cheap hash.
+        let realized = ((v as u64).wrapping_mul(0x9E37_79B9_7F4A_7C15) >> 60) as f64 - 7.5;
+        let _ = h.update(v - 100.0, realized);
+    });
+    print_row("HitRate::update", &mut buf);
+    let mut amihud = Amihud::builder().alpha(0.05).build().unwrap();
+    bench_feed(&mut buf, &mut amihud, |a, v| {
+        let _ = a.update(v * 1e-4, v * 1e3);
+    });
+    print_row("Amihud::update", &mut buf);
+    let mut hl = HalfLife::new();
+    bench_feed(&mut buf, &mut hl, |h, v| {
+        let _ = h.update(v);
+    });
+    print_row("HalfLife::update", &mut buf);
+    let mut vr = VarianceRatio::builder().q(5).alpha(0.01).build().unwrap();
+    bench_feed(&mut buf, &mut vr, |r, v| {
+        let _ = r.update(v);
+    });
+    print_row("VarianceRatio(5)::update", &mut buf);
+    let mut hurst = Hurst::builder().window_size(64).build().unwrap();
+    bench_feed(&mut buf, &mut hurst, |h, v| {
+        let _ = h.update(v);
+    });
+    print_row("Hurst(64)::update", &mut buf);
+    let mut lpm = Lpm::builder().target(100.0).order(2).build().unwrap();
+    bench_feed(&mut buf, &mut lpm, |l, v| {
+        let _ = l.update(v);
+    });
+    print_row("Lpm(2)::update", &mut buf);
+    let mut cvar = Cvar::builder().alpha(0.05).build().unwrap();
+    bench_feed(&mut buf, &mut cvar, |c, v| {
+        let _ = c.update(v);
+    });
+    print_row("Cvar::update", &mut buf);
 
     section("Regression");
     print_header();
@@ -2389,6 +2467,9 @@ fn main() {
     let ac = warm_autocorrelation(1);
     bench_query(&mut buf, &ac, Autocorrelation::correlation);
     print_row("Autocorrelation<1>::correlation", &mut buf);
+    let wm = warm_windowed_median(32);
+    bench_query(&mut buf, &wm, WindowedMedian::mad);
+    print_row("WindowedMedian(32)::mad", &mut buf);
     let cov = warm_covariance();
     bench_query(&mut buf, &cov, Covariance::correlation);
     print_row("Covariance::correlation", &mut buf);

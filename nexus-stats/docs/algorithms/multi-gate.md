@@ -103,7 +103,7 @@ let mut sensor = MultiGate::builder()
 
 | Operation | p50 | p99 |
 |-----------|-----|-----|
-| `MultiGate::update` | 8 cycles | 9 cycles |
+| `MultiGate::update` | 8 cycles | 8 cycles |
 
 Three gate checks + conditional EMA update. The conditional update
 (freeze on reject) adds no cost on the Accept path.

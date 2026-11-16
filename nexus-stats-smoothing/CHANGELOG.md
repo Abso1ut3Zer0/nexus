@@ -22,11 +22,25 @@ contained.
   for `f64` (NaN and infinity rejected) and nothing for `i64`. `quantile`,
   `mad`, `iqr` and `modified_z_score` are available on both instantiations
   (`quantile` was `f64` only). Construct as `WindowedMedian::<i64>::new(n)`.
+- **Hot-path pass before release.** `WindowedMedian::update` ranks the
+  evicted and the new sample with a vectorized linear count up to 64
+  elements (a binary search above that; neither has a data-dependent jump)
+  and shifts with one `copy_within`, leaving no `unsafe` in the update path;
+  the ring index advances with a compare instead of a division. `Kama`
+  indexes its ring by the head it already carried instead of
+  `count % window`, and `Hampel::update` has no `unwrap` left.
 
 ### Fixed
 
 - **`alloc` without `std` builds again.** `Hampel` called `f64::mul_add`
   directly; it now uses the core fused-multiply-add shim.
+- **`WindowedMedian::mad()` allocated and sorted a scratch `Vec` on every
+  call**, which made every `Hampel::update` allocate. The `k + 1` points
+  nearest the median are consecutive in sorted order, so the `k`-th deviation
+  is the tightest such window, found with one vectorized count: O(N), no
+  allocation, no sort, no data-dependent branch, same value (tested against
+  the sorted definition for every window length up to 40). `mad()` at N=32:
+  341 → 48 ticks; `Hampel(21)::update` 250 → 96.
 
 ## [2.0.0] — 2026-05-28
 

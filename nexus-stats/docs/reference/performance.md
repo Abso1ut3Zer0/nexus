@@ -23,46 +23,46 @@ costs a branch mispredict, about 20 cycles.
 | Algorithm | p50 | p99 | Notes |
 |-----------|-----|-----|-------|
 | **Change Detection** | | | |
-| Cusum | 5 | 5 | add/sub/max |
-| Mosum (window 64) | 5 | 5 | ring buffer |
-| ShiryaevRoberts | 18 | 21 | one `exp()` |
-| MultiGate | 8 | 9 | 3-gate + conditional EMA |
-| RobustZScore<f64> | 7 | 8 | EMA + MAD + freeze |
-| AdaptiveThreshold | 6 | 7 | EMA + Welford + z-score |
+| Cusum | 6 | 6 | add/sub/max |
+| Mosum (window 64) | 5 | 6 | ring buffer |
+| ShiryaevRoberts | 17 | 20 | one `exp()` |
+| MultiGate | 8 | 8 | 3-gate + conditional EMA |
+| RobustZScore<f64> | 8 | 8 | EMA + MAD + freeze |
+| AdaptiveThreshold | 7 | 7 | EMA + Welford + z-score |
 | **Smoothing** | | | |
-| Ema | 5 | 5 | one multiply-add |
-| AsymEma | 10 | 11 | branch + multiply-add |
-| Kama (window 10) | 21 | 22 | O(N) volatility recompute |
-| Kalman1d | 22 | 27 | 2x2 predict + update |
-| Holt | 9 | 10 | two smoothing steps |
-| Spring | 12 | 12 | Padé approximant |
-| WindowedMedian<f64> (window 32) | 131 | 147 | O(N) sorted array |
-| Slew<f64> | 7 | 8 | clamp (maxsd/minsd) |
+| Ema | 5 | 6 | one multiply-add |
+| AsymEma | 12 | 12 | branch + multiply-add |
+| Kama (window 10) | 15 | 16 | O(N) volatility recompute |
+| Kalman1d | 26 | 27 | 2x2 predict + update |
+| Holt | 11 | 11 | two smoothing steps |
+| Spring | 13 | 14 | Padé approximant |
+| WindowedMedian<f64> (window 32) | 81 | 89 | O(N) sorted array |
+| Slew<f64> | 8 | 8 | clamp (maxsd/minsd) |
 | **Statistics** | | | |
-| Welford | 11 | 13 | one division |
+| Welford | 13 | 13 | one division |
 | Welford query | 9 | 10 | includes vsqrtsd |
 | EwmaVar | 6 | 6 | two multiply-adds |
-| Covariance | 10 | 12 | three accumulators |
-| HarmonicMean | 7 | 7 | one reciprocal |
+| Covariance | 11 | 11 | three accumulators |
+| HarmonicMean | 6 | 7 | one reciprocal |
 | **Monitoring** | | | |
-| Drawdown<f64> | 5 | 5 | compare + max |
+| Drawdown<f64> | 5 | 6 | compare + max |
 | RunningMin/Max<f64> | 5 | 5 | single comparison |
 | WindowedMax/Min<f64> | 9 | 11 | 3-sample promotion |
 | PeakHold<f64> | 8 | 10 | compare + decay |
 | MaxGauge<f64> | 6 | 6 | compare-and-swap |
-| Liveness | 7 | 8 | EMA + deadline |
-| EventRate | 6 | 6 | bit-shift EMA + inversion |
-| CoDel<i64> | 5 | 5 | first_above deadline (RFC 8289) |
-| PollSaturation::on_work | 5 | 6 | branchless (cmov selects, no jumps); 5 under mixed load too |
+| Liveness | 7 | 16 | EMA + deadline |
+| EventRate | 7 | 7 | bit-shift EMA + inversion |
+| CoDel<i64> | 5 | 6 | first_above deadline (RFC 8289) |
+| PollSaturation::on_work | 6 | 6 | branchless (cmov selects, no jumps); 5 under mixed load too |
 | PollSaturation::on_idle | 1 | 1 | one byte store, no clock |
-| SojournSaturation::update | 6 | 7 | branchless: clamp, count, min, max, saturating total |
-| ErrorRate | 7 | 9 | EMA of outcomes |
-| TrendAlert | 10 | 10 | Holt + threshold |
-| Jitter<f64> | 6 | 7 | EMA of deltas |
+| SojournSaturation::update | 7 | 7 | branchless: clamp, count, min, max, saturating total |
+| ErrorRate | 7 | 10 | EMA of outcomes |
+| TrendAlert | 10 | 11 | Holt + threshold |
+| Jitter<f64> | 7 | 7 | EMA of deltas |
 | **Frequency** | | | |
-| TopK (16 slots) | 42 | 46 | linear scan |
+| TopK (16 slots) | 36 | 44 | linear scan |
 | **Utilities** | | | |
-| BoolWindow (64) | 10 | 10 | bit manipulation |
+| BoolWindow (64) | 6 | 6 | bit manipulation |
 | Hysteresis<f64> | 2 | 2 | two comparisons |
 | DeadBand<f64> | 4 | 4 | one comparison |
 | Debounce | 5 | 5 | increment + compare |

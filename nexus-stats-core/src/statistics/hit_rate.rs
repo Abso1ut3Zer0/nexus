@@ -60,14 +60,10 @@ impl HitRate {
         check_finite!(realized_direction);
 
         self.total += 1;
-        let is_hit = (predicted_direction > 0.0 && realized_direction > 0.0)
-            || (predicted_direction < 0.0 && realized_direction < 0.0);
+        let is_hit = same_sign(predicted_direction, realized_direction);
+        self.hits += u64::from(is_hit);
 
-        if is_hit {
-            self.hits += 1;
-        }
-
-        let hit_val = if is_hit { 1.0 } else { 0.0 };
+        let hit_val = crate::math::indicator(is_hit);
         // Ema::update returns Result<Option<f64>, DataError>, but 0.0/1.0
         // are always finite, so this cannot fail.
         let _ = self.ew_hits.update(hit_val);
@@ -151,6 +147,16 @@ impl HitRateBuilder {
             ew_hits,
         })
     }
+}
+
+/// Whether both values are strictly positive or both strictly negative.
+///
+/// Non-short-circuit on purpose: four flag tests instead of four jumps on
+/// data the branch predictor cannot learn.
+#[inline]
+#[allow(clippy::needless_bitwise_bool)]
+fn same_sign(a: f64, b: f64) -> bool {
+    ((a > 0.0) & (b > 0.0)) | ((a < 0.0) & (b < 0.0))
 }
 
 #[cfg(test)]

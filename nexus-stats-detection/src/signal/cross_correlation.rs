@@ -106,20 +106,23 @@ impl CrossCorrelation {
         // Lag 0: exact Welford co-moment (old_delta_a * new_residual_b)
         self.cross_m[0] += da_old * db_new;
 
-        // Lags 1..lag-1: use buffered A values (approximate,
-        // error is O(1/n) per step — fine for streaming)
-        if self.count > 1 {
-            let filled = (self.count - 1).min(lag as u64) as usize;
-            for k in 1..filled.min(lag) {
-                let idx = (self.head + lag - k) % lag;
-                let a_lagged = self.buffer_a[idx];
-                self.cross_m[k] += (a_lagged - self.mean_a) * db_new;
+        // Lags 1..lag-1 use the buffered A values (approximate: the error is
+        // O(1/n) per step, fine for streaming).
+        let filled = (self.count - 1).min(lag as u64) as usize;
+        if filled > 1 {
+            let mean_a = self.mean_a;
+            let lagged = newest_first(&self.buffer_a, self.head);
+            for (c, &a_lagged) in self.cross_m[1..filled].iter_mut().zip(lagged) {
+                *c += (a_lagged - mean_a) * db_new;
             }
         }
 
         // Store A in circular buffer
         self.buffer_a[self.head] = a;
-        self.head = (self.head + 1) % lag;
+        self.head += 1;
+        if self.head == lag {
+            self.head = 0;
+        }
         Ok(())
     }
 
@@ -279,6 +282,16 @@ impl CrossCorrelationBuilder {
     }
 }
 
+/// The ring's samples from the most recent (one step ago) back to the oldest.
+///
+/// `head` is the slot written next, so the most recent sample sits just
+/// before it and the oldest at `head` itself; no per-step modulo.
+#[inline]
+fn newest_first(ring: &[f64], head: usize) -> impl Iterator<Item = &f64> {
+    let (recent, older) = ring.split_at(head);
+    recent.iter().rev().chain(older.iter().rev())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -421,5 +434,17 @@ mod tests {
     fn builder_rejects_zero_lag() {
         let result = CrossCorrelation::builder().lag(0).build();
         assert!(result.is_err());
+    }
+
+    /// The first samples have no lagged partner yet: nothing to accumulate,
+    /// nothing to index.
+    #[test]
+    fn first_samples_have_no_lagged_terms() {
+        let mut cc = CrossCorrelation::builder().lag(3).build().unwrap();
+        cc.update(1.0, 2.0).unwrap();
+        assert!(cc.correlation(1).is_none());
+        cc.update(2.0, 4.0).unwrap();
+        assert!(cc.correlation(1).is_none());
+        assert_eq!(cc.count(), 2);
     }
 }

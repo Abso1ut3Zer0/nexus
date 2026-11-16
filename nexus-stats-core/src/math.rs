@@ -227,6 +227,14 @@ macro_rules! impl_mul_add {
 impl_mul_add!(f64);
 impl_mul_add!(f32);
 
+/// `1.0` for `true`, `0.0` for `false`, as a conversion rather than a select:
+/// a select between two float constants lowers to a jump on the predicate.
+#[inline]
+#[must_use]
+pub fn indicator(b: bool) -> f64 {
+    f64::from(u8::from(b))
+}
+
 #[cfg(test)]
 mod tests {
     #[cfg(any(feature = "std", feature = "libm"))]

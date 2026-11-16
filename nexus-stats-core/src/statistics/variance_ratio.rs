@@ -1,4 +1,5 @@
-use alloc::collections::VecDeque;
+use alloc::boxed::Box;
+use alloc::vec;
 
 use crate::statistics::EwmaVar;
 
@@ -37,7 +38,9 @@ pub struct VarianceRatio {
     q: usize,
     short_var: EwmaVar,
     long_var: EwmaVar,
-    buffer: VecDeque<f64>,
+    /// The last `q` values; the slot at `head` is the oldest.
+    ring: Box<[f64]>,
+    head: usize,
     prev: f64,
     count: u64,
 }
@@ -70,8 +73,6 @@ impl VarianceRatio {
     #[inline]
     pub fn update(&mut self, value: f64) -> Result<(), crate::DataError> {
         check_finite!(value);
-
-        self.buffer.push_back(value);
         self.count += 1;
 
         if self.count >= 2 {
@@ -80,13 +81,16 @@ impl VarianceRatio {
             let _ = self.short_var.update(ret1)?;
         }
 
-        if self.buffer.len() > self.q + 1 {
-            self.buffer.pop_front();
+        // The slot at `head` holds the value from q steps ago once q + 1
+        // values have been seen.
+        let value_q_ago = self.ring[self.head];
+        self.ring[self.head] = value;
+        self.head += 1;
+        if self.head == self.q {
+            self.head = 0;
         }
-
-        // q-period return (need q+1 values in buffer)
-        if self.buffer.len() == self.q + 1 {
-            let ret_q = value - self.buffer[0];
+        if self.count > self.q as u64 {
+            let ret_q = value - value_q_ago;
             let _ = self.long_var.update(ret_q)?;
         }
 
@@ -149,7 +153,8 @@ impl VarianceRatio {
     pub fn reset(&mut self) {
         self.short_var.reset();
         self.long_var.reset();
-        self.buffer.clear();
+        self.ring.fill(0.0);
+        self.head = 0;
         self.prev = 0.0;
         self.count = 0;
     }
@@ -189,14 +194,12 @@ impl VarianceRatioBuilder {
         let short_var = EwmaVar::builder().alpha(alpha).build()?;
         let long_var = EwmaVar::builder().alpha(alpha).build()?;
 
-        let mut buffer = VecDeque::new();
-        buffer.reserve_exact(q + 1);
-
         Ok(VarianceRatio {
             q,
             short_var,
             long_var,
-            buffer,
+            ring: vec![0.0; q].into_boxed_slice(),
+            head: 0,
             prev: 0.0,
             count: 0,
         })
@@ -284,5 +287,47 @@ mod tests {
     fn inf_rejected() {
         let mut vr = VarianceRatio::builder().q(5).alpha(0.05).build().unwrap();
         assert!(vr.update(f64::INFINITY).is_err());
+    }
+
+    /// Against the definition computed from a plain history `Vec`: the 1-period
+    /// and q-period returns feed two `EwmaVar`s exactly as the type does, so
+    /// the ratio must match step by step, including when it is `None`.
+    #[test]
+    fn matches_the_definition_on_a_history_vec() {
+        let q = 5usize;
+        let alpha = 0.1;
+        let mut vr = VarianceRatio::builder().q(q).alpha(alpha).build().unwrap();
+        let mut short = EwmaVar::builder().alpha(alpha).build().unwrap();
+        let mut long = EwmaVar::builder().alpha(alpha).build().unwrap();
+        let mut history: Vec<f64> = Vec::new();
+        for t in 0..300u32 {
+            let v = (f64::from(t) * 0.37)
+                .sin()
+                .mul_add(3.0, f64::from(t) * 0.02);
+            vr.update(v).unwrap();
+            history.push(v);
+            let len = history.len();
+            if len >= 2 {
+                let _ = short.update(v - history[len - 2]).unwrap();
+            }
+            if len > q {
+                let _ = long.update(v - history[len - 1 - q]).unwrap();
+            }
+            let expected = match (short.variance(), long.variance()) {
+                (Some(var1), Some(var_q)) if var1 > 0.0 => Some(var_q / (q as f64 * var1)),
+                _ => None,
+            };
+            match (vr.variance_ratio(), expected) {
+                (None, None) => {}
+                (Some(got), Some(want)) => {
+                    assert!(
+                        (got - want).abs() <= 1e-12 * want.abs().max(1.0),
+                        "t={t}: {got} vs {want}"
+                    );
+                }
+                (got, want) => panic!("t={t}: got {got:?}, expected {want:?}"),
+            }
+        }
+        assert!(vr.is_primed());
     }
 }

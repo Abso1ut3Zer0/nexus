@@ -66,9 +66,8 @@ impl<T: Sample> RunningMin<T> {
     #[inline]
     fn fold(&mut self, sample: T) -> T {
         self.count += 1;
-        if sample < self.min {
-            self.min = sample;
-        }
+        // A select, not a branch: a new extremum is unpredictable.
+        self.min = if sample < self.min { sample } else { self.min };
         self.min
     }
 }
@@ -168,9 +167,8 @@ impl<T: Sample> RunningMax<T> {
     #[inline]
     fn fold(&mut self, sample: T) -> T {
         self.count += 1;
-        if sample > self.max {
-            self.max = sample;
-        }
+        // A select, not a branch: a new extremum is unpredictable.
+        self.max = if sample > self.max { sample } else { self.max };
         self.max
     }
 }

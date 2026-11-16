@@ -65,19 +65,20 @@ impl Lpm {
     #[inline]
     pub fn update(&mut self, sample: f64) -> Result<(), crate::DataError> {
         check_finite!(sample);
-        let shortfall = self.target - sample;
-        if shortfall > 0.0 {
-            match self.order {
-                0 => self.sum += 1.0,
-                1 => self.sum += shortfall,
-                2 => self.sum += shortfall * shortfall,
-                d => {
-                    let mut power = shortfall;
-                    for _ in 1..d {
-                        power *= shortfall;
-                    }
-                    self.sum += power;
+        // Clamp instead of branching: for a return stream around the target,
+        // `shortfall > 0` is a coin flip for the branch predictor. A zero
+        // shortfall adds zero for every order.
+        let shortfall = (self.target - sample).max(0.0);
+        match self.order {
+            0 => self.sum += crate::math::indicator(shortfall > 0.0),
+            1 => self.sum += shortfall,
+            2 => self.sum += shortfall * shortfall,
+            d => {
+                let mut power = shortfall;
+                for _ in 1..d {
+                    power *= shortfall;
                 }
+                self.sum += power;
             }
         }
         self.count += 1;

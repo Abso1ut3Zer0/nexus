@@ -80,21 +80,14 @@ impl Kama {
     pub fn update(&mut self, sample: f64) -> Result<Option<f64>, nexus_stats_core::DataError> {
         check_finite!(sample);
         let n = self.window;
-        let idx = (self.count as usize) % n;
-        // SAFETY: idx is in [0, window), buffer exclusively owned
-        unsafe {
-            *self.ring.add(idx) = sample;
+        let idx = self.head;
+        self.ring_mut()[idx] = sample;
+        // The slot after the newest sample holds the oldest one.
+        self.head = idx + 1;
+        if self.head == n {
+            self.head = 0;
         }
         self.count += 1;
-
-        if self.count == 1 {
-            self.value = sample;
-            return if self.count >= self.min_samples {
-                Ok(Some(self.value))
-            } else {
-                Ok(None)
-            };
-        }
 
         if self.count <= n as u64 {
             self.value = sample;
@@ -105,14 +98,13 @@ impl Kama {
             };
         }
 
-        // Window is full — compute ER from the ring buffer
-        // SAFETY: buffer allocated with capacity `window`, all initialized
-        let ring = unsafe { core::slice::from_raw_parts(self.ring, n) };
+        // Window is full: compute ER from the ring buffer.
+        let ring = self.ring();
 
-        // The ring is ordered: oldest at (idx+1)%n, newest at idx.
+        // The ring is ordered: oldest at head, newest at idx (just written).
         // Split into two contiguous slices to avoid modular indexing
         // per iteration, enabling SIMD vectorization.
-        let oldest = (idx + 1) % n;
+        let oldest = self.head;
 
         // Compute volatility: sum of |consecutive differences| in ring order
         let mut volatility = 0.0;
@@ -175,8 +167,12 @@ impl Kama {
         if self.count <= n as u64 {
             return None;
         }
-        let newest_idx = ((self.count - 1) as usize) % n;
-        let oldest_idx = (self.count as usize) % n;
+        let oldest_idx = self.head;
+        let newest_idx = if oldest_idx == 0 {
+            n - 1
+        } else {
+            oldest_idx - 1
+        };
         let ring = self.ring();
         let direction = (ring[newest_idx] - ring[oldest_idx]).abs();
         if self.volatility_sum > 0.0 {
@@ -427,5 +423,53 @@ mod tests {
             Err(nexus_stats_core::DataError::Infinite)
         ));
         assert_eq!(kama.count(), 0);
+    }
+
+    /// Value and efficiency ratio against the formula computed on a plain
+    /// history `Vec`, step by step, through several wraps of the ring.
+    #[test]
+    fn matches_the_formula_on_a_history_vec() {
+        let n = 7usize;
+        let mut kama = Kama::builder()
+            .window_size(n)
+            .fast_span(2)
+            .slow_span(30)
+            .build()
+            .unwrap();
+        let fast_sc = 2.0 / 3.0;
+        let slow_sc = 2.0 / 31.0;
+        let mut history: Vec<f64> = Vec::new();
+        let mut value = 0.0;
+        for t in 0..60u32 {
+            let x = (f64::from(t) * 0.7).sin().mul_add(5.0, f64::from(t) * 0.3);
+            let got = kama.update(x).unwrap();
+            history.push(x);
+            if history.len() <= n {
+                value = x;
+                assert_eq!(kama.efficiency_ratio(), None);
+            } else {
+                let recent = &history[history.len() - n..];
+                let volatility: f64 = recent.windows(2).map(|w| (w[1] - w[0]).abs()).sum();
+                let direction = (x - recent[0]).abs();
+                let er = if volatility > 0.0 {
+                    direction / volatility
+                } else {
+                    0.0
+                };
+                let sc = er * (fast_sc - slow_sc) + slow_sc;
+                value = (sc * sc).fma(x - value, value);
+                let got_er = kama.efficiency_ratio().unwrap();
+                assert!((got_er - er).abs() <= 1e-12, "t={t}: er {got_er} vs {er}");
+            }
+            if history.len() >= n {
+                let got = got.unwrap();
+                assert!(
+                    (got - value).abs() <= 1e-12 * value.abs().max(1.0),
+                    "t={t}: value {got} vs {value}"
+                );
+            } else {
+                assert_eq!(got, None);
+            }
+        }
     }
 }

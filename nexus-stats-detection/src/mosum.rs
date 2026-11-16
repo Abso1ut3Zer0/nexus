@@ -26,7 +26,10 @@ macro_rules! impl_mosum_update {
             let new_sum = sum - ring[head] + deviation;
             ring[head] = deviation;
             self.sum = new_sum;
-            self.head = (head + 1) % window;
+            self.head = head + 1;
+            if self.head == window {
+                self.head = 0;
+            }
             self.count += 1;
 
             if self.count < self.min_samples {

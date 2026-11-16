@@ -5,7 +5,7 @@
 
 | Property | Value |
 |----------|-------|
-| Update cost | 9 cycles |
+| Update cost | 11 cycles |
 | Memory | ~32 bytes |
 | Types | `Holt` |
 | Priming | After 2 samples (needs 2 for initial trend) |
@@ -65,6 +65,6 @@ if let Some((level, trend)) = holt.update(sample).unwrap() {
 
 | Operation | p50 | p99 |
 |-----------|-----|-----|
-| `Holt::update` | 9 cycles | 10 cycles |
+| `Holt::update` | 11 cycles | 11 cycles |
 
 Two multiply-adds per update (fused on targets with `+fma`). No division, no transcendentals.

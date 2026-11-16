@@ -20,6 +20,11 @@ contained.
   `Float` generic (`f64`, `f32`) that takes and returns `T` but keeps its EMA
   baseline and absolute-deviation scale in `f64`, so the `f32` form is a
   boundary type for `f32` feature pipelines, no longer an `f32` accumulator.
+- **Hot-path pass before release.** `Autocorrelation`, `CrossCorrelation`,
+  `TransferEntropy` and `Mosum` advance their ring index with a compare
+  instead of a division; `CrossCorrelation` walks its ring newest-first
+  through one iterator, removing the per-lag `% lag` from its inner loop.
+  `PageHinkley` tracks its running extrema with selects instead of branches.
 
 ### Removed
 
