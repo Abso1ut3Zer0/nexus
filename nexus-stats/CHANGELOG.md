@@ -58,13 +58,16 @@ one naming convention across the family. Migration guide:
 - **Storage pass from the code-quality audit (3 of 4).** One fixed-capacity
   ring, `storage::Ring<T>` *(alloc)*, replaces the hand-rolled head-and-wrap
   buffers in `WindowedMedian`, `Kama`, `Mosum`, `Hurst`, `Autocorrelation`,
-  `CrossCorrelation` and `LaggedPredictor`; `BoolWindow` keeps its bit ring as
+  `CrossCorrelation`, `TransferEntropy` and `LaggedPredictor`; `BoolWindow`
+  keeps its bit ring as
   `Box<[u64]>`. No raw pointers, manual `Drop` / `Clone` or `unsafe impl Send`
   remain in storage, and the converted types are `Sync`. `Bocpd` has no
   `unsafe` and drops a redundant per-run counter. `Adwin` holds its bucket
   levels as fixed lanes in one allocation, so memory is fixed at build for
   every type. `OnlineCovariance` and `SignalDecayCurve` store boxed slices.
-  No API changes beyond the new `storage` module.
+  No API changes beyond the new `storage` module and one gating change: the
+  `signal` and `learning` modules exist only with `alloc` now (without it they
+  were empty), which `detection`- or `regression`-without-`alloc` builds see.
 
 ### Removed
 
@@ -112,6 +115,9 @@ one naming convention across the family. Migration guide:
   O(window) or O(d²), as their own pages already said. The module tables name every exported type with its
   feature gate (`alloc`, `std|libm`), list the `normalization` module, and
   name `FirstDiff`/`SecondDiff` where they said `Diff`.
+- Removed `docs/guides/runtime-vs-const.md`: it documented a `Mosum::<64>`
+  const-generic window that has not existed since the runtime-configuration
+  change, and claimed stack-allocated rings.
 
 ## [6.0.1] — 2026-06-05
 

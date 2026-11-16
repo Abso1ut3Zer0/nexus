@@ -136,8 +136,9 @@ contained.
   exposes storage order and head for callers that have established fullness
   and want the two runs without the test (`Kama`). One
   allocation at construction, one length, no `%`, and fullness is a flag set
-  in the wrap branch, so a push costs what a hand-rolled ring costs. Public so
-  callers can build their own windowed statistics on it.
+  in the wrap branch, so a push costs what a hand-rolled ring costs. Public
+  because the subcrates need it; shaped for them, not a general-purpose ring
+  buffer.
 
 ### Fixed
 

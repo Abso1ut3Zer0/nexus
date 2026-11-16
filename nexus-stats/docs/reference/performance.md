@@ -80,10 +80,10 @@ costs a branch mispredict, about 20 cycles.
 | Windowed types (3-sample Nichols') | 48 bytes |
 | PollSaturation (`repr(C)`: flag byte + nine `u64`) | 80 bytes (64-bit) |
 | SojournSaturation (budget + five `u64` + flag) | 56 bytes (64-bit) |
-| Ring buffer types (`storage::Ring`: Mosum, Kama, Hurst, window N) | N × 8 bytes + 16 (head, fill) |
+| Ring buffer types (`storage::Ring`: Mosum, Kama, Hurst, window N) | N × 8 bytes, plus 32 bytes of `Ring` metadata (slice pointer and length, head, full flag) |
 | WindowedMedian (window N) | 2 × N × 8 bytes |
 | Bocpd (max run N) | 11 × (N + 1) × 8 bytes (posterior, two sufficient statistics, two scratch rows, six precomputed tables) |
-| Adwin (max_buckets B) | 64 × (B + 1) × 16 bytes plus 64 deque headers, fixed at build |
+| Adwin (max_buckets B) | 64 × (B + 1) × 16 bytes in one allocation, plus 128 bytes of lane occupancies; fixed at build |
 | TopK<K> (capacity N) | N × (sizeof(K) + 8) bytes, boxed once at construction |
 
 ## Running Benchmarks

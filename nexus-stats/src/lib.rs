@@ -178,7 +178,8 @@ pub mod control {
 
 /// Signal analysis and information theory.
 ///
-/// Requires the `detection` feature.
+/// Requires the `detection` and `alloc` features: every type here holds a
+/// lag window or a frequency table.
 #[cfg(all(feature = "detection", feature = "alloc"))]
 pub mod signal {
     pub use nexus_stats_detection::signal::*;
@@ -207,7 +208,8 @@ pub mod regression {
 
 /// Adaptive filters, online learning, and optimization.
 ///
-/// Requires the `regression` feature.
+/// Requires the `regression` and `alloc` features: every type here holds
+/// runtime-sized weights or arms.
 #[cfg(all(feature = "regression", feature = "alloc"))]
 pub mod learning {
     pub use nexus_stats_regression::learning::*;

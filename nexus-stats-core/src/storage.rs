@@ -1,8 +1,12 @@
 //! Fixed-capacity storage shared by the windowed types.
 //!
-//! One allocation at construction, nothing after. The length lives in the
-//! slice and nowhere else, and the wrap is a compare, not a `%`: the two
-//! things that keep a ring's bounds checks folding on the hot path.
+//! Built for the nexus-stats crates, not as a general-purpose collection:
+//! the API is shaped by what the windowed statistics need on their hot paths
+//! (the evicted sample from `push`, the fill-returning `replace`, the
+//! storage-order `raw`), and it is public because the subcrates live in
+//! separate crates. One allocation at construction, nothing after. The length
+//! lives in the slice and nowhere else, and the wrap is a compare, not a `%`:
+//! the two things that keep a ring's bounds checks folding on the hot path.
 
 use alloc::boxed::Box;
 use alloc::vec;
@@ -10,7 +14,10 @@ use alloc::vec;
 use crate::ConfigError;
 
 /// Fixed-capacity ring of `Copy` samples: the newest sample overwrites the
-/// oldest.
+/// oldest. A sliding window, not a queue: there is no pop.
+///
+/// Shaped for the nexus-stats windowed types rather than as a general-purpose
+/// ring buffer; see the module docs.
 ///
 /// `push` hands back the sample it evicted once the ring is full, which is
 /// the "value from `capacity` steps ago" every lagged computation wants;
