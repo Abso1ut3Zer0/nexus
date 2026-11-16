@@ -74,6 +74,7 @@
 //! | [`monitoring`] | Drawdown, RunningMax, RunningMin, WindowedMax, WindowedMin, MaxGauge, PeakHold, CoDel, PollSaturation, SojournSaturation, Liveness, EventRate, Jitter, ErrorRate, HawkesIntensity *(std\|libm)* |
 //! | [`control`] | DeadBand, Hysteresis, Debounce, LevelCrossing, FirstDiff, SecondDiff |
 //! | [`normalization`] | MinMaxNorm, ZScoreNorm *(std\|libm)*, QuantileNorm *(alloc)* |
+//! | `storage` *(alloc)* | Ring, the fixed-capacity ring the windowed types share |
 //!
 //! ## Advanced (feature-gated, re-exported from subcrates)
 //!
@@ -158,6 +159,8 @@ pub use nexus_stats_core::statistics;
 
 /// Monitoring and health tracking.
 pub use nexus_stats_core::monitoring;
+#[cfg(feature = "alloc")]
+pub use nexus_stats_core::storage;
 
 /// Control, thresholding, and differencing.
 ///

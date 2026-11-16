@@ -64,8 +64,8 @@ for deep-dives on each algorithm.
 | `RobustZScore<f64>` | MAD-based outlier scoring with estimator freeze | 8 |
 | `AdaptiveThreshold` | Z-score anomalies with self-learning baseline | 7 |
 | `PageHinkley` | Sequential mean drift (Page-Hinkley test) | 6 |
-| `Adwin` | Adaptive window distribution change (ADWIN) | 64 |
-| `Bocpd` | Bayesian online change-point detection, run-length posterior (max run 64) | 3720 |
+| `Adwin` | Adaptive window distribution change (ADWIN) | 63 |
+| `Bocpd` | Bayesian online change-point detection, run-length posterior (max run 64) | 3637 |
 
 ### Smoothing & Filtering
 
@@ -73,12 +73,12 @@ for deep-dives on each algorithm.
 |------|-----------------|-----|
 | `Ema` | Exponential moving average | 5 |
 | `AsymEma` | Different alpha for rising vs falling | 12 |
-| `Kama` | Kaufman adaptive MA (adapts to trend/noise) | 14 |
+| `Kama` | Kaufman adaptive MA (adapts to trend/noise) | 15 |
 | `Kalman1d` | 1D Kalman filter with velocity tracking | 26 |
 | `Holt` | Double exponential (level + trend) | 11 |
 | `Spring` | Critically damped spring (smooth target chasing) | 13 |
 | `Slew<f64>` | Hard rate-of-change clamp | 8 |
-| `WindowedMedian<f64>` | Robust median filter (outlier-immune) | 79 |
+| `WindowedMedian<f64>` | Robust median filter (outlier-immune) | 80 |
 
 ### Statistics
 
@@ -120,7 +120,7 @@ for deep-dives on each algorithm.
 | Type | What It Computes | p50 |
 |------|-----------------|-----|
 | `Autocorrelation` | Self-correlation at fixed lag (trending vs reverting) | 12 |
-| `CrossCorrelation` | Two-stream correlation with lead/lag detection | 30 |
+| `CrossCorrelation` | Two-stream correlation with lead/lag detection | 28 |
 
 ### Information Theory *(std\|libm)*
 
@@ -164,7 +164,7 @@ for deep-dives on each algorithm.
 | `Debounce` | N consecutive events before triggering | 5 |
 | `DeadBand<f64>` | Suppress changes below threshold | 4 |
 | `Hysteresis<f64>` | Binary decision with different rising/falling thresholds | 2 |
-| `BoolWindow` | Sliding pass/fail rate over last N events | 6 |
+| `BoolWindow` | Sliding pass/fail rate over last N events | 5 |
 | `PeakDetector<f64>` | Local maxima/minima with prominence | 3 |
 | `LevelCrossing<f64>` | Threshold crossing counter | 3 |
 | `FirstDiff<f64>` | Discrete derivative (rate of change) | 6 |

@@ -55,13 +55,16 @@ one naming convention across the family. Migration guide:
   `HitRate`/`Amihud` rates return `Option`; `RobustZScore::mean_abs_dev`
   (was `mad`) with the `sqrt(2/π)` scale; `ShiryaevRoberts` saturates at `1e300`.
   See the per-crate CHANGELOGs and `docs/guides/migrating-to-7.md` § 4.
-- **Storage pass from the code-quality audit (3 of 4).** `WindowedMedian`,
-  `Kama`, `BoolWindow` and `Mosum` store their rings as `Box<[T]>` (no raw
-  pointers, manual `Drop` / `Clone` or `unsafe impl Send`; all four are `Sync`
-  now). `Bocpd` has no `unsafe` and drops a redundant per-run counter. `Adwin`
-  pre-sizes its bucket levels, so memory is fixed at build for every type.
-  `LaggedPredictor` uses a fixed ring; `Hurst` no longer reallocates at its
-  first full window. No API changes.
+- **Storage pass from the code-quality audit (3 of 4).** One fixed-capacity
+  ring, `storage::Ring<T>` *(alloc)*, replaces the hand-rolled head-and-wrap
+  buffers in `WindowedMedian`, `Kama`, `Mosum`, `Hurst`, `Autocorrelation`,
+  `CrossCorrelation` and `LaggedPredictor`; `BoolWindow` keeps its bit ring as
+  `Box<[u64]>`. No raw pointers, manual `Drop` / `Clone` or `unsafe impl Send`
+  remain in storage, and the converted types are `Sync`. `Bocpd` has no
+  `unsafe` and drops a redundant per-run counter. `Adwin` holds its bucket
+  levels as fixed lanes in one allocation, so memory is fixed at build for
+  every type. `OnlineCovariance` and `SignalDecayCurve` store boxed slices.
+  No API changes beyond the new `storage` module.
 
 ### Removed
 

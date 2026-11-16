@@ -1,6 +1,7 @@
 use alloc::boxed::Box;
 
 use nexus_stats_core::Sample;
+use nexus_stats_core::storage::Ring;
 
 /// Windowed median with runtime-configured window size (requires `alloc` feature).
 ///
@@ -14,13 +15,12 @@ use nexus_stats_core::Sample;
 /// - Modified z-score for non-normal distributions
 #[derive(Clone)]
 pub struct WindowedMedian<T: Sample> {
-    /// Samples in arrival order; `head` is the slot the next sample overwrites.
-    ring: Box<[T]>,
+    /// Samples in arrival order; `push` hands back the evicted one.
+    ring: Ring<T>,
     /// The same samples, sorted. Both buffers have the window's length;
     /// `sorted.len()` is the copy every accessor reads, so `is_primed` and
     /// `current_len` agree and the index checks fold against it.
     sorted: Box<[T]>,
-    head: usize,
     count: u64,
 }
 
@@ -37,12 +37,11 @@ impl<T: Sample> WindowedMedian<T> {
                 "window size must be > 0",
             ));
         }
-        let ring = alloc::vec![T::ZERO; window_size].into_boxed_slice();
+        let ring = Ring::new(window_size, T::ZERO)?;
         let sorted = alloc::vec![T::ZERO; window_size].into_boxed_slice();
         Ok(Self {
             ring,
             sorted,
-            head: 0,
             count: 0,
         })
     }
@@ -50,17 +49,11 @@ impl<T: Sample> WindowedMedian<T> {
     /// The insertion/eviction step, shared by every instantiation.
     #[inline]
     fn fold(&mut self, sample: T) {
-        let head = self.head;
-        let evicted = core::mem::replace(&mut self.ring[head], sample);
-        // The slice length is the window. Deriving `len` from it (not from a
-        // second copy) lets the `..len` slicing below fold its bounds checks.
         let sorted = &mut *self.sorted;
-        let window = sorted.len();
-        let len = self.count.min(window as u64) as usize;
-
-        if len == window {
-            // Where the evicted value sits in the sorted shadow.
-            let remove_pos = rank_lt(&sorted[..len], evicted);
+        if let Some(evicted) = self.ring.push(sample) {
+            // Full window: `sorted` is exactly the window, no `..len` view
+            // needed. Where the evicted value sits in the sorted shadow:
+            let remove_pos = rank_lt(sorted, evicted);
             // The sample lands on the side of `remove_pos` it compares to, so
             // rank it within that side as it looks once the evicted value is
             // gone, then close the gap with one memmove.
@@ -69,19 +62,17 @@ impl<T: Sample> WindowedMedian<T> {
                 sorted.copy_within(insert_pos..remove_pos, insert_pos + 1);
                 sorted[insert_pos] = sample;
             } else {
-                let insert_pos = remove_pos + rank_le(&sorted[remove_pos + 1..len], sample);
+                let insert_pos = remove_pos + rank_le(&sorted[remove_pos + 1..], sample);
                 // Empty when the sample lands in the vacated slot itself.
                 sorted.copy_within(remove_pos + 1..=insert_pos, remove_pos);
                 sorted[insert_pos] = sample;
             }
         } else {
+            // Filling: the shadow holds `len` sorted samples before this one.
+            let len = self.ring.len() - 1;
             let insert_pos = rank_le(&sorted[..len], sample);
             sorted.copy_within(insert_pos..len, insert_pos + 1);
             sorted[insert_pos] = sample;
-        }
-        self.head = head + 1;
-        if self.head == window {
-            self.head = 0;
         }
         self.count += 1;
     }
@@ -223,9 +214,8 @@ impl<T: Sample> WindowedMedian<T> {
     /// Resets to empty state.
     #[inline]
     pub fn reset(&mut self) {
-        self.ring.fill(T::ZERO);
+        self.ring.clear(T::ZERO);
         self.sorted.fill(T::ZERO);
-        self.head = 0;
         self.count = 0;
     }
 }

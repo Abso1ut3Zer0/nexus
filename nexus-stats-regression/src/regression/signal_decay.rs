@@ -1,3 +1,4 @@
+use alloc::boxed::Box;
 use alloc::vec::Vec;
 
 use crate::regression::LaggedPredictor;
@@ -33,8 +34,8 @@ use crate::regression::LaggedPredictor;
 /// ```
 #[derive(Debug, Clone)]
 pub struct SignalDecayCurve {
-    predictors: Vec<LaggedPredictor>,
-    lags: Vec<usize>,
+    predictors: Box<[LaggedPredictor]>,
+    lags: Box<[usize]>,
     count: u64,
 }
 
@@ -184,8 +185,8 @@ impl SignalDecayCurveBuilder {
         }
 
         Ok(SignalDecayCurve {
-            predictors,
-            lags,
+            predictors: predictors.into_boxed_slice(),
+            lags: lags.into_boxed_slice(),
             count: 0,
         })
     }

@@ -1,4 +1,4 @@
-use alloc::boxed::Box;
+use nexus_stats_core::storage::Ring;
 
 use nexus_stats_core::Direction;
 
@@ -10,14 +10,14 @@ use nexus_stats_core::Direction;
 /// their sum crosses `±threshold`, `Neutral` otherwise. A transient that
 /// leaves the window stops counting.
 ///
-/// O(1) per update. The ring (one `f64` per window slot) is allocated once in
-/// `build()`; no allocation after construction. Requires the `alloc` feature.
+/// O(1) per update. The ring (a [`Ring<f64>`], one slot per window sample) is
+/// allocated once in `build()`; nothing allocates after construction. Requires
+/// the `alloc` feature.
 #[derive(Clone)]
 pub struct Mosum {
     target: f64,
     threshold: f64,
-    ring: Box<[f64]>,
-    head: usize,
+    ring: Ring<f64>,
     sum: f64,
     count: u64,
     min_samples: u64,
@@ -57,14 +57,11 @@ impl Mosum {
         sample: f64,
     ) -> Result<Option<Direction>, nexus_stats_core::DataError> {
         check_finite!(sample);
-        let head = self.head;
         let deviation = sample - self.target;
-        let evicted = core::mem::replace(&mut self.ring[head], deviation);
+        // The evicted deviation leaves the sum. While the ring is filling the
+        // slot holds the 0.0 fill, which leaves the sum unchanged.
+        let evicted = self.ring.replace(deviation);
         self.sum = self.sum - evicted + deviation;
-        self.head = head + 1;
-        if self.head == self.ring.len() {
-            self.head = 0;
-        }
         self.count += 1;
 
         if self.count < self.min_samples {
@@ -90,7 +87,7 @@ impl Mosum {
     #[inline]
     #[must_use]
     pub fn window_size(&self) -> usize {
-        self.ring.len()
+        self.ring.capacity()
     }
 
     /// Number of samples processed.
@@ -110,8 +107,7 @@ impl Mosum {
     /// Resets to the empty state. Parameters unchanged.
     #[inline]
     pub fn reset(&mut self) {
-        self.ring.fill(0.0);
-        self.head = 0;
+        self.ring.clear(0.0);
         self.sum = 0.0;
         self.count = 0;
     }
@@ -120,7 +116,7 @@ impl Mosum {
 impl core::fmt::Debug for Mosum {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         f.debug_struct("Mosum")
-            .field("window", &self.ring.len())
+            .field("window", &self.ring.capacity())
             .field("count", &self.count)
             .field("sum", &self.sum)
             .finish()
@@ -184,8 +180,7 @@ impl MosumBuilder {
         Ok(Mosum {
             target: self.target,
             threshold,
-            ring: alloc::vec![0.0; window].into_boxed_slice(),
-            head: 0,
+            ring: Ring::new(window, 0.0)?,
             sum: 0.0,
             count: 0,
             min_samples: self.min_samples.unwrap_or(window as u64),

@@ -24,20 +24,20 @@ costs a branch mispredict, about 20 cycles.
 |-----------|-----|-----|-------|
 | **Change Detection** | | | |
 | Cusum | 6 | 6 | add/sub/max |
-| Mosum (window 64) | 5 | 6 | ring buffer |
+| Mosum (window 64) | 5 | 5 | ring buffer |
 | ShiryaevRoberts | 18 | 22 | one `exp()` |
 | MultiGate | 8 | 8 | 3-gate + conditional EMA |
 | RobustZScore<f64> | 8 | 8 | EMA + MAD + freeze |
 | AdaptiveThreshold | 7 | 7 | EMA + Welford + z-score |
-| Bocpd (max run 64) | 3720 | 4149 | three passes over the run-length posterior, SIMD `ln`/`exp` when built with `+avx2,+fma` |
+| Bocpd (max run 64) | 3637 | 4405 | three passes over the run-length posterior, SIMD `ln`/`exp` when built with `+avx2,+fma` |
 | **Smoothing** | | | |
 | Ema | 5 | 6 | one multiply-add |
 | AsymEma | 12 | 12 | branch + multiply-add |
-| Kama (window 10) | 14 | 17 | O(N) volatility recompute |
+| Kama (window 10) | 15 | 25 | O(N) volatility recompute |
 | Kalman1d | 26 | 27 | 2x2 predict + update |
 | Holt | 11 | 11 | two smoothing steps |
 | Spring | 13 | 14 | Padé approximant |
-| WindowedMedian<f64> (window 32) | 79 | 85 | O(N) sorted array |
+| WindowedMedian<f64> (window 32) | 80 | 99 | O(N) sorted array |
 | Slew<f64> | 8 | 8 | clamp (maxsd/minsd) |
 | **Statistics** | | | |
 | Welford | 13 | 13 | one division |
@@ -63,7 +63,7 @@ costs a branch mispredict, about 20 cycles.
 | **Frequency** | | | |
 | TopK (16 slots) | 36 | 44 | linear scan |
 | **Utilities** | | | |
-| BoolWindow (64) | 6 | 6 | bit manipulation |
+| BoolWindow (64) | 5 | 8 | bit manipulation |
 | Hysteresis<f64> | 2 | 2 | two comparisons |
 | DeadBand<f64> | 4 | 4 | one comparison |
 | Debounce | 5 | 5 | increment + compare |
@@ -80,7 +80,7 @@ costs a branch mispredict, about 20 cycles.
 | Windowed types (3-sample Nichols') | 48 bytes |
 | PollSaturation (`repr(C)`: flag byte + nine `u64`) | 80 bytes (64-bit) |
 | SojournSaturation (budget + five `u64` + flag) | 56 bytes (64-bit) |
-| Ring buffer types (MOSUM, window N) | N × 8 bytes |
+| Ring buffer types (`storage::Ring`: Mosum, Kama, Hurst, window N) | N × 8 bytes + 16 (head, fill) |
 | WindowedMedian (window N) | 2 × N × 8 bytes |
 | Bocpd (max run N) | 11 × (N + 1) × 8 bytes (posterior, two sufficient statistics, two scratch rows, six precomputed tables) |
 | Adwin (max_buckets B) | 64 × (B + 1) × 16 bytes plus 64 deque headers, fixed at build |

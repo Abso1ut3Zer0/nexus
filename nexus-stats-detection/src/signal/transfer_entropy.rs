@@ -12,6 +12,7 @@
 extern crate alloc;
 use alloc::boxed::Box;
 use alloc::vec;
+use nexus_stats_core::storage::Ring;
 
 /// Directed information flow estimator between two discretized streams.
 ///
@@ -84,13 +85,9 @@ pub struct TransferEntropy {
     /// Marginal counts: P(X_{t-LAG}, X_t) — flat bins² array.
     marginal_x: Box<[u64]>,
     /// Circular buffer for X history (LAG elements).
-    hist_x: Box<[usize]>,
+    hist_x: Ring<usize>,
     /// Circular buffer for Y history (LAG elements).
-    hist_y: Box<[usize]>,
-    /// Write position in history buffers.
-    head: usize,
-    /// Number of observations stored in history (saturates at LAG).
-    filled: usize,
+    hist_y: Ring<usize>,
     /// Number of discretization bins.
     bins: usize,
     /// Lookback depth.
@@ -142,11 +139,8 @@ impl TransferEntropy {
         assert!(x_bin < bins, "x_bin {x_bin} out of range (bins={bins})");
         assert!(y_bin < bins, "y_bin {y_bin} out of range (bins={bins})");
 
-        if self.filled >= self.lag {
-            // Retrieve values from LAG steps ago
-            let xp = self.hist_x[self.head];
-            let yp = self.hist_y[self.head];
-
+        // `push` hands back the bins from `lag` steps ago once the rings are full.
+        if let (Some(xp), Some(yp)) = (self.hist_x.push(x_bin), self.hist_y.push(y_bin)) {
             // TE(X→Y): joint[x_lagged][y_lagged][y_curr]
             let i = self.idx3(xp, yp, y_bin);
             self.joint_xy[i] += 1;
@@ -161,17 +155,6 @@ impl TransferEntropy {
             self.marginal_x[i] += 1;
 
             self.total += 1;
-        }
-
-        // Store in circular buffer (overwrites oldest when full)
-        self.hist_x[self.head] = x_bin;
-        self.hist_y[self.head] = y_bin;
-        self.head += 1;
-        if self.head == self.lag {
-            self.head = 0;
-        }
-        if self.filled < self.lag {
-            self.filled += 1;
         }
     }
 
@@ -244,10 +227,8 @@ impl TransferEntropy {
         self.joint_yx.fill(0);
         self.marginal_y.fill(0);
         self.marginal_x.fill(0);
-        self.hist_x.fill(0);
-        self.hist_y.fill(0);
-        self.head = 0;
-        self.filled = 0;
+        self.hist_x.clear(0);
+        self.hist_y.clear(0);
         self.total = 0;
     }
 
@@ -373,10 +354,8 @@ impl TransferEntropyBuilder {
             joint_yx: vec![0u64; bins_cu].into_boxed_slice(),
             marginal_y: vec![0u64; bins_sq].into_boxed_slice(),
             marginal_x: vec![0u64; bins_sq].into_boxed_slice(),
-            hist_x: vec![0usize; lag].into_boxed_slice(),
-            hist_y: vec![0usize; lag].into_boxed_slice(),
-            head: 0,
-            filled: 0,
+            hist_x: Ring::new(lag, 0)?,
+            hist_y: Ring::new(lag, 0)?,
             bins,
             lag,
             total: 0,
