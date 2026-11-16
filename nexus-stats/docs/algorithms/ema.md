@@ -235,7 +235,8 @@ if let (Some(slow), Some(fast_val)) = (baseline.update(x).unwrap(), fast.update(
 |-----------|-----|-----|
 | `Ema::update` | 5 cycles | 5 cycles |
 
-`update` is one `mul_add` (a single FMA instruction) plus the priming count.
+`update` is one multiply-add (a fused FMA instruction when the target has
+`+fma`, else `a * b + c`) plus the priming count.
 
 ## Academic Reference
 

@@ -67,4 +67,4 @@ if let Some((level, trend)) = holt.update(sample).unwrap() {
 |-----------|-----|-----|
 | `Holt::update` | 9 cycles | 10 cycles |
 
-Two `mul_add` operations per update. No division, no transcendentals.
+Two multiply-adds per update (fused on targets with `+fma`). No division, no transcendentals.

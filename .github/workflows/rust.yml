@@ -73,6 +73,8 @@ jobs:
           cargo check -p $c --no-default-features --features alloc,libm
         done
         cargo check -p nexus-stats --no-default-features --features libm
+        cargo check -p nexus-stats --no-default-features --features alloc,libm
+        cargo check -p nexus-stats --no-default-features --features full,libm
         cargo check -p nexus-stats --no-default-features --features full,alloc,libm
         cargo check -p nexus-stats --no-default-features --features std,full
 

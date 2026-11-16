@@ -58,7 +58,7 @@ let mut ema = AsymEma::builder()
 |-----------|-----|-----|
 | `AsymEma::update` | 10 cycles | 11 cycles |
 
-One branch (rising vs falling) + one `mul_add`. The branch is
+One branch (rising vs falling) + one multiply-add. The branch is
 well-predicted for signals with consistent direction.
 
 ## Background

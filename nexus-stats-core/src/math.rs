@@ -98,14 +98,10 @@ pub fn ln(x: f64) -> f64 {
     }
 }
 
-/// Natural logarithm (f32).
-///
-/// Requires `std` or `libm` feature.
-#[doc(hidden)]
-#[cfg(any(feature = "std", feature = "libm"))]
 /// `x` raised to the power `y`.
 ///
 /// Requires `std` or `libm` feature.
+#[cfg(any(feature = "std", feature = "libm"))]
 #[inline]
 pub fn powf(x: f64, y: f64) -> f64 {
     #[cfg(feature = "std")]
@@ -118,6 +114,10 @@ pub fn powf(x: f64, y: f64) -> f64 {
     }
 }
 
+/// Natural logarithm (f32).
+///
+/// Requires `std` or `libm` feature.
+#[doc(hidden)]
 #[cfg(any(feature = "std", feature = "libm"))]
 #[inline]
 pub fn ln_f32(x: f32) -> f32 {

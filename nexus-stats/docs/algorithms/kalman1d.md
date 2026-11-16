@@ -124,4 +124,4 @@ if let Some((current, trend)) = load.update(cpu_percent).unwrap() {
 | `Kalman1d::update` | 22 cycles | 27 cycles |
 
 2x2 matrix predict + update. ~15 multiplies + ~10 adds + 1 division.
-Uses `mul_add` (FMA) on the hot path.
+Uses multiply-adds on the hot path (fused into FMA only on targets with `+fma`).

@@ -30,8 +30,8 @@ costs a branch mispredict, about 20 cycles.
 | RobustZScore<f64> | 7 | 8 | EMA + MAD + freeze |
 | AdaptiveThreshold | 6 | 7 | EMA + Welford + z-score |
 | **Smoothing** | | | |
-| Ema | 5 | 5 | mul_add (FMA) |
-| AsymEma | 10 | 11 | branch + mul_add |
+| Ema | 5 | 5 | one multiply-add |
+| AsymEma | 10 | 11 | branch + multiply-add |
 | Kama (window 10) | 21 | 22 | O(N) volatility recompute |
 | Kalman1d | 22 | 27 | 2x2 predict + update |
 | Holt | 9 | 10 | two smoothing steps |
@@ -41,7 +41,7 @@ costs a branch mispredict, about 20 cycles.
 | **Statistics** | | | |
 | Welford | 11 | 13 | one division |
 | Welford query | 9 | 10 | includes vsqrtsd |
-| EwmaVar | 6 | 6 | two mul_add |
+| EwmaVar | 6 | 6 | two multiply-adds |
 | Covariance | 10 | 12 | three accumulators |
 | HarmonicMean | 7 | 7 | one reciprocal |
 | **Monitoring** | | | |
