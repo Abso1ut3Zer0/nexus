@@ -132,19 +132,20 @@ unsafe fn exp_f64x4(x: __m256d) -> __m256d {
         // FMA: r = -(k*C1 - x) then r = -(k*C2 - r) = r - k*C2
         let r = _mm256_fnmadd_pd(kf, c2, _mm256_fnmadd_pd(kf, c1, x));
 
-        // FMA Horner: t = r² * (P1 + r*(P2 + r*(P3 + r*(P4 + r*P5))))
+        // musl: c = r - r²·P(r²), with P a Horner polynomial in r² (not r),
+        // then exp(r) = 1 + r + r·c / (2 - c). Evaluating P in r, or using
+        // r²·P in place of c, drops the r²/2 term: an error of r²/2 on every
+        // reduced argument, 8% at |r| = ln(2)/2.
         let r2 = _mm256_mul_pd(r, r);
         let mut p = _mm256_set1_pd(EP5);
-        p = _mm256_fmadd_pd(p, r, _mm256_set1_pd(EP4));
-        p = _mm256_fmadd_pd(p, r, _mm256_set1_pd(EP3));
-        p = _mm256_fmadd_pd(p, r, _mm256_set1_pd(EP2));
-        p = _mm256_fmadd_pd(p, r, _mm256_set1_pd(EP1));
-        let t = _mm256_mul_pd(r2, p);
-
-        // musl reconstruction: exp(r) = 1 - ((r*t)/(t-2) - r)
-        let denom = _mm256_sub_pd(t, two);
-        let frac = _mm256_div_pd(_mm256_mul_pd(r, t), denom);
-        let exp_r = _mm256_sub_pd(one, _mm256_sub_pd(frac, r));
+        p = _mm256_fmadd_pd(p, r2, _mm256_set1_pd(EP4));
+        p = _mm256_fmadd_pd(p, r2, _mm256_set1_pd(EP3));
+        p = _mm256_fmadd_pd(p, r2, _mm256_set1_pd(EP2));
+        p = _mm256_fmadd_pd(p, r2, _mm256_set1_pd(EP1));
+        let c = _mm256_fnmadd_pd(r2, p, r);
+        let denom = _mm256_sub_pd(two, c);
+        let frac = _mm256_div_pd(_mm256_mul_pd(r, c), denom);
+        let exp_r = _mm256_add_pd(one, _mm256_add_pd(r, frac));
 
         // Scale by 2^k: set exponent bits
         let k_i = _mm256_cvtpd_epi32(kf);

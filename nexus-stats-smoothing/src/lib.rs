@@ -5,13 +5,15 @@
 //!
 //! This crate provides smoothing types that are separated from the core
 //! `nexus-stats` crate to keep the base dependency lightweight. All types
-//! follow the same streaming, zero-allocation, O(1)-per-update design.
+//! stream with fixed memory after construction; the EMA family is O(1) per
+//! update, the windowed types (`WindowedMedian`, `Kama`, `Hampel`) O(window).
 //!
 //! # Types
 //!
 //! | Type | Description | Feature |
 //! |------|-------------|---------|
 //! | [`Holt`] | Double exponential smoothing (level + trend) | — |
+//! | [`ConditionalEma`] | EMA that only folds samples flagged active | — |
 //! | [`Spring`] | Critically damped spring (chase without overshoot) | — |
 //! | [`Kalman1d`] | 1D Kalman filter (position + velocity) | — |
 //! | [`HuberEma`] | Outlier-robust EMA (bounded step per observation) | — |

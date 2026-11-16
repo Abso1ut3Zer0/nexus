@@ -11,7 +11,7 @@ pub struct Peak<T> {
 
 /// Peak detector — identifies local maxima and minima with prominence filtering.
 ///
-/// A peak is reported when the signal reverses direction by more than
+/// A peak is reported when the signal reverses direction by at least
 /// the prominence threshold. This filters out small oscillations.
 /// `PeakDetector<f64>` rejects NaN and infinity and returns `Result`;
 /// `PeakDetector<i64>` cannot fail.
@@ -105,8 +105,8 @@ impl<T: Sample> PeakDetector<T> {
 }
 
 impl PeakDetector<f64> {
-    /// Feeds a sample. Returns a peak when the signal has reversed by more
-    /// than the prominence since its last extreme.
+    /// Feeds a sample. Returns a peak when the signal has reversed by at
+    /// least the prominence since its last extreme.
     ///
     /// # Errors
     ///
@@ -123,8 +123,8 @@ impl PeakDetector<f64> {
 }
 
 impl PeakDetector<i64> {
-    /// Feeds a sample. Returns a peak when the signal has reversed by more
-    /// than the prominence since its last extreme.
+    /// Feeds a sample. Returns a peak when the signal has reversed by at
+    /// least the prominence since its last extreme.
     #[inline]
     pub fn update(&mut self, sample: i64) -> Option<Peak<i64>> {
         self.fold(sample)
@@ -229,5 +229,18 @@ mod tests {
             pd.update(f64::NEG_INFINITY),
             Err(nexus_stats_core::DataError::Infinite)
         );
+    }
+
+    /// The boundary is inclusive: a reversal of exactly the prominence fires.
+    #[test]
+    fn fires_at_exactly_the_prominence() {
+        let mut pd = PeakDetector::<i64>::new(5).unwrap();
+        pd.update(0);
+        pd.update(10);
+        assert!(pd.update(5).is_some(), "reversal of exactly 5 is a peak");
+        let mut pd = PeakDetector::<i64>::new(5).unwrap();
+        pd.update(0);
+        pd.update(10);
+        assert!(pd.update(6).is_none(), "reversal of 4 is not");
     }
 }

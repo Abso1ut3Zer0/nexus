@@ -3,7 +3,10 @@
 
 //! Fixed-memory, zero-allocation streaming statistics for real-time systems.
 //!
-//! 60+ algorithms, all O(1) per update (or O(d) for d-dimensional filters), fixed memory.
+//! 60+ algorithms. Scalar types are O(1) per update; window and dimension types
+//! (`WindowedMedian`, `Kama`, `Hampel`, `Bocpd`, `RlsFilter`, `OnlineCovariance`,
+//! `OnlineKMeans`, `QuantileNorm`) cost O(window) or O(d²) and say so on their page.
+//! Memory is fixed after construction, except `Adwin` (O(log n) bucket list).
 //! Core types are `no_std` compatible; types marked *(std)* require the `std` feature,
 //! *(alloc)* require `alloc`, and *(std|libm)* require either `std` or `libm`.
 //!
@@ -67,23 +70,24 @@
 //! |--------|----------|
 //! | [`smoothing`] | Ema, AsymEma, Slew |
 //! | [`detection`] | Cusum, DistributionShift *(std\|libm)* |
-//! | [`statistics`] | Welford, Moments, EwmaVar, Covariance, HarmonicMean, Percentile, BipowerVariation, RollSpread *(std\|libm)*, TwoScaleRv *(alloc, std\|libm)* |
+//! | [`statistics`] | Welford, Moments, EwmaVar, Covariance, HarmonicMean, Percentile, BipowerVariation, Cvar, Lpm, HitRate, Amihud, BucketAccumulator, HalfLife *(std\|libm)*, RollSpread *(std\|libm)*, Hurst *(alloc, std\|libm)*, TwoScaleRv *(alloc, std\|libm)*, OnlineCovariance *(alloc)*, VarianceRatio *(alloc)* |
 //! | [`monitoring`] | Drawdown, RunningMax, RunningMin, WindowedMax, WindowedMin, MaxGauge, PeakHold, CoDel, PollSaturation, SojournSaturation, Liveness, EventRate, Jitter, ErrorRate, HawkesIntensity *(std\|libm)* |
 //! | [`control`] | DeadBand, Hysteresis, Debounce, LevelCrossing, FirstDiff, SecondDiff |
+//! | [`normalization`] | MinMaxNorm, ZScoreNorm *(std\|libm)*, QuantileNorm *(alloc)* |
 //!
 //! ## Advanced (feature-gated, re-exported from subcrates)
 //!
 //! | Feature | Module | Contents |
 //! |---------|--------|----------|
-//! | `smoothing` | `smoothing` | + Holt, Kama, Spring, Kalman1d, ConditionalEma, HuberEma, Hampel, WindowedMedian |
+//! | `smoothing` | `smoothing` | + Holt, Spring, Kalman1d, ConditionalEma, HuberEma, Kama *(alloc)*, Hampel *(alloc)*, WindowedMedian *(alloc)* |
 //! | `detection` | `detection` | + Mosum, ShiryaevRoberts, AdaptiveThreshold, RobustZScore, TrendAlert, MultiGate, PageHinkley, Adwin, Bocpd, DistDrift |
 //! | `detection` | `signal` | Autocorrelation, CrossCorrelation, Entropy, TransferEntropy, PredictiveInfoBound |
 //! | `detection` | `estimation` | + SprtBernoulli, SprtGaussian |
 //! | `regression` | `regression` | LinearRegression, PolynomialRegression, EwLinearRegression, EwPolynomialRegression, ExponentialRegression, LogarithmicRegression, PowerRegression (+ `Ew*`), LogisticRegression, KyleLambda, LaggedPredictor, SignalDecayCurve |
 //! | `regression` | `learning` | LmsFilter, NlmsFilter, RlsFilter, HuberRegression, OnlineKMeans, OnlineGd, AdaGrad, Adam, Ucb1, ThompsonBeta, ThompsonGamma, EpsilonGreedy, Exp3 |
 //! | `regression` | `estimation` | + Kalman2d, Kalman3d, BetaBinomial, GammaPoisson |
-//! | `control` | `control` | + PeakDetector, BoolWindow |
-//! | `control` | `frequency` | TopK, FlexProportionGlobal, FlexProportionLocal, DecayAccum |
+//! | `control` | `control` | + PeakDetector, BoolWindow *(alloc)* |
+//! | `control` | `frequency` | FlexProportionGlobal, FlexProportionLocal, TopK *(alloc)*, DecayAccum *(std\|libm)* |
 //! | `full` | all | Everything above |
 //!
 //! # Features
@@ -123,8 +127,8 @@ pub use nexus_stats_core::feature_vector;
 /// Smoothing and filtering primitives.
 ///
 /// Core types (`Ema`, `AsymEma`, `Slew`) are always available. Advanced types
-/// (`Holt`, `Kama`, `Spring`, `Kalman1d`, `WindowedMedian`) require the `smoothing`
-/// feature.
+/// (`Holt`, `Spring`, `Kalman1d`, `ConditionalEma`, `HuberEma`, `Kama`, `Hampel`,
+/// `WindowedMedian`) require the `smoothing` feature.
 pub mod smoothing {
     pub use nexus_stats_core::smoothing::*;
 
@@ -134,7 +138,7 @@ pub mod smoothing {
 
 /// Change detection and anomaly detection.
 ///
-/// `Cusum` is always available. Advanced types (`Mosum`, `ShiryaevRoberts`,
+/// `Cusum` and `DistributionShift` are always available. Advanced types (`Mosum`, `ShiryaevRoberts`,
 /// `AdaptiveThreshold`, `RobustZScore`, `TrendAlert`, `MultiGate`,
 /// `PageHinkley`, `Adwin`, `Bocpd`, `DistDrift`) require the `detection`
 /// feature.
@@ -156,8 +160,9 @@ pub use nexus_stats_core::monitoring;
 
 /// Control, thresholding, and differencing.
 ///
-/// Core types (DeadBand, Hysteresis, Debounce, LevelCrossing, Diff) are
-/// always available. PeakDetector and BoolWindow require the `control` feature.
+/// Core types (`DeadBand`, `Hysteresis`, `Debounce`, `LevelCrossing`, `FirstDiff`,
+/// `SecondDiff`) are always available. `PeakDetector` and `BoolWindow` require the
+/// `control` feature.
 pub mod control {
     pub use nexus_stats_core::control::*;
 

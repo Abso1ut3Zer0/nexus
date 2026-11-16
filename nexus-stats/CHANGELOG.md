@@ -84,6 +84,14 @@ one naming convention across the family. Migration guide:
   builder options that never existed, unhandled `Result`s, removed types).
   `docs/algorithms/saturation.md` is replaced by `poll-saturation.md` and
   `sojourn-saturation.md`.
+- **The headline cost claim is honest now.** README and crate docs promised
+  "every primitive is O(1) per update, fixed memory after construction"; the
+  window and dimension types (`WindowedMedian`, `Kama`, `Hampel`, `Bocpd`,
+  `RlsFilter`, `OnlineCovariance`, `OnlineKMeans`, `QuantileNorm`) are
+  O(window) or O(d²) and `Adwin`'s bucket list grows O(log n), as their own
+  pages already said. The module tables name every exported type with its
+  feature gate (`alloc`, `std|libm`), list the `normalization` module, and
+  name `FirstDiff`/`SecondDiff` where they said `Diff`.
 
 ## [6.0.1] — 2026-06-05
 

@@ -42,8 +42,8 @@ impl DecayAccum {
     ///
     /// # Errors
     ///
-    /// Returns `DataError::NotANumber` if either argument is NaN, or
-    /// `DataError::Infinite` if either argument is infinite.
+    /// Returns `DataError::NotANumber` if `weight` is NaN, or
+    /// `DataError::Infinite` if it is infinite.
     #[inline]
     pub fn update(
         &mut self,

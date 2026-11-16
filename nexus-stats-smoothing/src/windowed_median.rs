@@ -567,7 +567,7 @@ mod tests {
     #[test]
     fn matches_a_sorted_copy_for_every_window_length() {
         let mut rng = 0x9E37_79B9_7F4A_7C15u64;
-        for window in 1..=40 {
+        for window in (1..=40).chain([65, 128]) {
             let mut wm = WindowedMedian::<f64>::new(window);
             let mut wi = WindowedMedian::<i64>::new(window);
             let mut history = Vec::new();

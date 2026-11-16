@@ -36,6 +36,17 @@ contained.
 
 - **`alloc` + `libm` without `std` builds again.** `Bocpd` called
   `f64::mul_add` directly; it now uses the core fused-multiply-add shim.
+- **The AVX2 `exp` kernel was wrong by r²/2 on every reduced argument.**
+  `simd_math::exp_sum` (used by `Bocpd` on `+avx2,+fma` builds) evaluated
+  musl's polynomial in `r` instead of `r²` and used `r²·P` where musl's
+  `c = r - r²·P(r²)` belongs, which drops the r²/2 term of `exp(r)`: an error
+  of up to 8% per term at |r| = ln(2)/2. Nothing caught it because the kernels
+  are compiled only under `+avx2,+fma`, no CI job set that for this crate, and
+  nothing compared them to the scalar kernels. The kernel now follows musl
+  exactly; a per-element parity test (4096 draws over the kernel's range) and
+  an `exp_sum` / `ln_inplace` parity test over all tail lengths run on a new
+  `+avx2,+fma` CI leg. Default-target builds were never affected. The module
+  doc said `+avx2`; it says `+avx2,+fma`.
 
 ## [2.0.0] — 2026-05-28
 

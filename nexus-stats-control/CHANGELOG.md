@@ -26,8 +26,8 @@ contained.
 - **`TopK<K>` takes its capacity at runtime:** `TopK::new(capacity) ->
   Result<Self, ConfigError>` (zero rejected) and `capacity()`, replacing
   `TopK<K, const CAP: usize>` with `new()` and its `Default` impl. The table
-  is one boxed slice allocated in `new`, so the type now sits behind the
-  `alloc` feature with the other runtime-sized types. No const generic is
+  is allocated once in `new`, so the type sits behind the `alloc` feature
+  with the other runtime-sized types. No const generic is
   left in the stats crates.
 - **`PeakDetector<T>`** replaces `PeakDetectorF64` / `PeakDetectorI64`: one
   generic type bounded by `nexus_stats_core::Sample` (`f64`, `i64`) returning
@@ -45,6 +45,15 @@ contained.
   a 0.5 share after one half-life and 0.01 after a hundred. As in the kernel,
   the global count now halves at each period and the locals halve to match
   on their next touch; shares sum to one and a sole key reads 1.0 forever.
+- **`FlexProportionGlobal::reset` could revive a stale local.** Resetting set
+  the period back to zero, so a local last touched in period 0 (or one whose
+  period the global later grew back into) read its old count as current and
+  `fraction` clamped it to 1.0. The period now jumps forward by 64 on reset,
+  which every stale local reads as zero by construction. Two tests cover
+  both shapes.
+- Docs: `PeakDetector` fires at a reversal of *at least* the prominence (the
+  code's `>=`); the docs said "more than". `DecayAccum::update`'s `# Errors`
+  described a float timestamp the method no longer takes.
 
 ### Removed
 
