@@ -1,4 +1,5 @@
 use nexus_stats_core::math::MulAdd;
+use nexus_stats_core::storage::Ring;
 
 /// KAMA — Kaufman Adaptive Moving Average.
 ///
@@ -21,34 +22,15 @@ use nexus_stats_core::math::MulAdd;
 /// - Adaptive smoothing that auto-tunes to market conditions
 /// - Noise-resistant trend following
 /// - Signal processing with variable noise levels
+#[derive(Clone)]
 pub struct Kama {
-    ring: *mut f64,
-    window: usize,
-    head: usize,
+    ring: Ring<f64>,
     value: f64,
-    fast_sc: f64,
     slow_sc: f64,
     sc_range: f64,
     volatility_sum: f64,
     count: u64,
     min_samples: u64,
-}
-
-// SAFETY: buffer is exclusively owned, f64 is Copy + Send
-unsafe impl Send for Kama {}
-
-impl Kama {
-    #[inline]
-    fn ring(&self) -> &[f64] {
-        // SAFETY: buffer allocated with capacity `window`, all elements initialized
-        unsafe { core::slice::from_raw_parts(self.ring, self.window) }
-    }
-
-    #[inline]
-    fn ring_mut(&mut self) -> &mut [f64] {
-        // SAFETY: buffer exclusively owned, all elements initialized
-        unsafe { core::slice::from_raw_parts_mut(self.ring, self.window) }
-    }
 }
 
 /// Builder for [`Kama`].
@@ -82,14 +64,8 @@ impl Kama {
     #[inline]
     pub fn update(&mut self, sample: f64) -> Result<Option<f64>, nexus_stats_core::DataError> {
         check_finite!(sample);
-        let n = self.window;
-        let idx = self.head;
-        self.ring_mut()[idx] = sample;
-        // The slot after the newest sample holds the oldest one.
-        self.head = idx + 1;
-        if self.head == n {
-            self.head = 0;
-        }
+        let n = self.ring.capacity();
+        self.ring.replace(sample);
         self.count += 1;
 
         if self.count <= n as u64 {
@@ -101,35 +77,26 @@ impl Kama {
             };
         }
 
-        // Window is full: compute ER from the ring buffer.
-        let ring = self.ring();
-
-        // The ring is ordered: oldest at head, newest at idx (just written).
-        // Split into two contiguous slices to avoid modular indexing
-        // per iteration, enabling SIMD vectorization.
-        let oldest = self.head;
-
-        // Compute volatility: sum of |consecutive differences| in ring order
-        let mut volatility = 0.0;
-
-        // Slice 1: oldest..end of buffer
+        // Window is full (count > n), so the raw storage order is the window
+        // split at `oldest`: `ring[oldest..]` then `ring[..oldest]`. Two
+        // contiguous runs, no modular indexing, and the |Δ| loops unroll; one
+        // bridge term joins the runs. (`as_slices` would re-test fullness and
+        // hand the loops select-derived bounds, which stopped the unrolling.)
+        let (ring, oldest) = self.ring.raw();
         let s1 = &ring[oldest..];
+        let s2 = &ring[..oldest];
+        let mut volatility = 0.0;
         for w in s1.windows(2) {
             volatility += (w[1] - w[0]).abs();
         }
-
-        // Bridge: last element of s1 to first element of s2
-        if oldest > 0 && !s1.is_empty() {
+        if oldest > 0 {
             volatility += (ring[0] - s1[s1.len() - 1]).abs();
         }
-
-        // Slice 2: start..oldest (the wrap-around portion)
-        let s2 = &ring[..oldest];
         for w in s2.windows(2) {
             volatility += (w[1] - w[0]).abs();
         }
 
-        // Direction: |newest - oldest|
+        // Direction: |newest - oldest|; the newest is `sample`.
         let direction = (sample - ring[oldest]).abs();
         self.volatility_sum = volatility;
         let er = if volatility > 0.0 {
@@ -141,7 +108,6 @@ impl Kama {
         // Smoothing constant: sc = (er * sc_range + slow)^2
         let sc = er * self.sc_range + self.slow_sc;
         let alpha = sc * sc;
-
         self.value = alpha.fma(sample - self.value, self.value);
 
         if self.count >= self.min_samples {
@@ -166,18 +132,11 @@ impl Kama {
     #[inline]
     #[must_use]
     pub fn efficiency_ratio(&self) -> Option<f64> {
-        let n = self.window;
-        if self.count <= n as u64 {
+        if self.count <= self.ring.capacity() as u64 {
             return None;
         }
-        let oldest_idx = self.head;
-        let newest_idx = if oldest_idx == 0 {
-            n - 1
-        } else {
-            oldest_idx - 1
-        };
-        let ring = self.ring();
-        let direction = (ring[newest_idx] - ring[oldest_idx]).abs();
+        let (oldest, newest) = (self.ring.oldest()?, self.ring.newest()?);
+        let direction = (newest - oldest).abs();
         if self.volatility_sum > 0.0 {
             Some(direction / self.volatility_sum)
         } else {
@@ -189,7 +148,7 @@ impl Kama {
     #[inline]
     #[must_use]
     pub fn window_size(&self) -> usize {
-        self.window
+        self.ring.capacity()
     }
 
     /// Number of samples processed.
@@ -209,8 +168,7 @@ impl Kama {
     /// Resets to uninitialized state.
     #[inline]
     pub fn reset(&mut self) {
-        self.ring_mut().fill(0.0);
-        self.head = 0;
+        self.ring.clear(0.0);
         self.value = 0.0;
         self.volatility_sum = 0.0;
         self.count = 0;
@@ -279,18 +237,14 @@ impl KamaBuilder {
         }
         let min_samples = self.min_samples.unwrap_or(window as u64);
 
-        let mut vec = core::mem::ManuallyDrop::new(alloc::vec![0.0f64; window]);
-        let ring = vec.as_mut_ptr();
+        let ring = Ring::new(window, 0.0)?;
 
         let fast_sc = 2.0 / (self.fast_span as f64 + 1.0);
         let slow_sc = 2.0 / (self.slow_span as f64 + 1.0);
 
         Ok(Kama {
             ring,
-            window,
-            head: 0,
             value: 0.0,
-            fast_sc,
             slow_sc,
             sc_range: fast_sc - slow_sc,
             volatility_sum: 0.0,
@@ -300,41 +254,10 @@ impl KamaBuilder {
     }
 }
 
-impl Drop for Kama {
-    fn drop(&mut self) {
-        // SAFETY: buffer was allocated by Vec with capacity `window`.
-        // f64 is Copy so no element drops needed. Reclaim the allocation.
-        unsafe {
-            let _ = alloc::vec::Vec::from_raw_parts(self.ring, 0, self.window);
-        }
-    }
-}
-
-impl Clone for Kama {
-    fn clone(&self) -> Self {
-        let mut vec = alloc::vec![0.0f64; self.window];
-        vec.copy_from_slice(self.ring());
-        let mut cloned = core::mem::ManuallyDrop::new(vec);
-        let ring = cloned.as_mut_ptr();
-        Self {
-            ring,
-            window: self.window,
-            head: self.head,
-            value: self.value,
-            fast_sc: self.fast_sc,
-            slow_sc: self.slow_sc,
-            sc_range: self.sc_range,
-            volatility_sum: self.volatility_sum,
-            count: self.count,
-            min_samples: self.min_samples,
-        }
-    }
-}
-
 impl core::fmt::Debug for Kama {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         f.debug_struct("Kama")
-            .field("window", &self.window)
+            .field("window", &self.ring.capacity())
             .field("count", &self.count)
             .field("value", &self.value)
             .finish()

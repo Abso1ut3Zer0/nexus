@@ -1,4 +1,7 @@
+use alloc::boxed::Box;
+
 use nexus_stats_core::Sample;
+use nexus_stats_core::storage::Ring;
 
 /// Windowed median with runtime-configured window size (requires `alloc` feature).
 ///
@@ -10,42 +13,18 @@ use nexus_stats_core::Sample;
 /// - Robust central tendency (median is outlier-resistant)
 /// - IQR-based anomaly detection
 /// - Modified z-score for non-normal distributions
+#[derive(Clone)]
 pub struct WindowedMedian<T: Sample> {
-    ring: *mut T,
-    sorted: *mut T,
-    window: usize,
-    head: usize,
+    /// Samples in arrival order; `push` hands back the evicted one.
+    ring: Ring<T>,
+    /// The same samples, sorted. Both buffers have the window's length;
+    /// `sorted.len()` is the copy every accessor reads, so `is_primed` and
+    /// `current_len` agree and the index checks fold against it.
+    sorted: Box<[T]>,
     count: u64,
 }
 
-// SAFETY: both buffers are exclusively owned; `T` is a `Copy` primitive and `Send`.
-unsafe impl<T: Sample> Send for WindowedMedian<T> {}
-
 impl<T: Sample> WindowedMedian<T> {
-    #[inline]
-    fn ring(&self) -> &[T] {
-        // SAFETY: buffer allocated with capacity `window`, all elements initialized
-        unsafe { core::slice::from_raw_parts(self.ring, self.window) }
-    }
-
-    #[inline]
-    fn ring_mut(&mut self) -> &mut [T] {
-        // SAFETY: buffer exclusively owned, all elements initialized
-        unsafe { core::slice::from_raw_parts_mut(self.ring, self.window) }
-    }
-
-    #[inline]
-    fn sorted(&self) -> &[T] {
-        // SAFETY: buffer allocated with capacity `window`, all elements initialized
-        unsafe { core::slice::from_raw_parts(self.sorted, self.window) }
-    }
-
-    #[inline]
-    fn sorted_mut(&mut self) -> &mut [T] {
-        // SAFETY: buffer exclusively owned, all elements initialized
-        unsafe { core::slice::from_raw_parts_mut(self.sorted, self.window) }
-    }
-
     /// Creates a new windowed median tracker with the given window size.
     ///
     /// # Errors
@@ -58,15 +37,11 @@ impl<T: Sample> WindowedMedian<T> {
                 "window size must be > 0",
             ));
         }
-        let mut ring_vec = core::mem::ManuallyDrop::new(alloc::vec![T::ZERO; window_size]);
-        let ring = ring_vec.as_mut_ptr();
-        let mut sorted_vec = core::mem::ManuallyDrop::new(alloc::vec![T::ZERO; window_size]);
-        let sorted = sorted_vec.as_mut_ptr();
+        let ring = Ring::new(window_size, T::ZERO)?;
+        let sorted = alloc::vec![T::ZERO; window_size].into_boxed_slice();
         Ok(Self {
             ring,
             sorted,
-            window: window_size,
-            head: 0,
             count: 0,
         })
     }
@@ -74,15 +49,11 @@ impl<T: Sample> WindowedMedian<T> {
     /// The insertion/eviction step, shared by every instantiation.
     #[inline]
     fn fold(&mut self, sample: T) {
-        let len = (self.count as usize).min(self.window);
-        let head = self.head;
-        let window = self.window;
-        let evicted = core::mem::replace(&mut self.ring_mut()[head], sample);
-        let sorted = self.sorted_mut();
-
-        if len == window {
-            // Where the evicted value sits in the sorted shadow.
-            let remove_pos = rank_lt(&sorted[..len], evicted);
+        let sorted = &mut *self.sorted;
+        if let Some(evicted) = self.ring.push(sample) {
+            // Full window: `sorted` is exactly the window, no `..len` view
+            // needed. Where the evicted value sits in the sorted shadow:
+            let remove_pos = rank_lt(sorted, evicted);
             // The sample lands on the side of `remove_pos` it compares to, so
             // rank it within that side as it looks once the evicted value is
             // gone, then close the gap with one memmove.
@@ -91,26 +62,24 @@ impl<T: Sample> WindowedMedian<T> {
                 sorted.copy_within(insert_pos..remove_pos, insert_pos + 1);
                 sorted[insert_pos] = sample;
             } else {
-                let insert_pos = remove_pos + rank_le(&sorted[remove_pos + 1..len], sample);
+                let insert_pos = remove_pos + rank_le(&sorted[remove_pos + 1..], sample);
                 // Empty when the sample lands in the vacated slot itself.
                 sorted.copy_within(remove_pos + 1..=insert_pos, remove_pos);
                 sorted[insert_pos] = sample;
             }
         } else {
+            // Filling: the shadow holds `len` sorted samples before this one.
+            let len = self.ring.len() - 1;
             let insert_pos = rank_le(&sorted[..len], sample);
             sorted.copy_within(insert_pos..len, insert_pos + 1);
             sorted[insert_pos] = sample;
-        }
-        self.head = head + 1;
-        if self.head == window {
-            self.head = 0;
         }
         self.count += 1;
     }
 
     #[inline]
     fn current_len(&self) -> usize {
-        (self.count as usize).min(self.window)
+        self.count.min(self.sorted.len() as u64) as usize
     }
 
     /// Median value, or `None` if empty.
@@ -121,7 +90,9 @@ impl<T: Sample> WindowedMedian<T> {
         if len == 0 {
             return None;
         }
-        let sorted = self.sorted();
+        // Index through the `..len` view: LLVM folds `len / 2 < len` but not
+        // the same index against the full buffer when `len` came from a min.
+        let sorted = &self.sorted[..len];
         if len % 2 == 1 {
             Some(sorted[len / 2])
         } else {
@@ -147,7 +118,7 @@ impl<T: Sample> WindowedMedian<T> {
         if len == 0 {
             return None;
         }
-        let sorted = &self.sorted()[..len];
+        let sorted = &self.sorted[..len];
         let idx = ((len - 1) as f64 * q) as usize;
         Some(sorted[idx])
     }
@@ -163,7 +134,7 @@ impl<T: Sample> WindowedMedian<T> {
     pub fn mad(&self) -> Option<T> {
         let median = self.median()?;
         let len = self.current_len();
-        let sorted = &self.sorted()[..len];
+        let sorted = &self.sorted[..len];
         let mid = len / 2;
         let upper = kth_deviation(sorted, median, mid);
         if len % 2 == 1 {
@@ -181,7 +152,7 @@ impl<T: Sample> WindowedMedian<T> {
         if len < 4 {
             None
         } else {
-            Some(self.sorted()[len / 4])
+            Some(self.sorted[..len][len / 4])
         }
     }
 
@@ -193,7 +164,7 @@ impl<T: Sample> WindowedMedian<T> {
         if len < 4 {
             None
         } else {
-            Some(self.sorted()[3 * len / 4])
+            Some(self.sorted[..len][3 * len / 4])
         }
     }
 
@@ -223,7 +194,7 @@ impl<T: Sample> WindowedMedian<T> {
     #[inline]
     #[must_use]
     pub fn window_size(&self) -> usize {
-        self.window
+        self.sorted.len()
     }
 
     /// Number of samples processed.
@@ -237,56 +208,22 @@ impl<T: Sample> WindowedMedian<T> {
     #[inline]
     #[must_use]
     pub fn is_primed(&self) -> bool {
-        self.count >= self.window as u64
+        self.count >= self.sorted.len() as u64
     }
 
     /// Resets to empty state.
     #[inline]
     pub fn reset(&mut self) {
-        self.ring_mut().fill(T::ZERO);
-        self.sorted_mut().fill(T::ZERO);
-        self.head = 0;
+        self.ring.clear(T::ZERO);
+        self.sorted.fill(T::ZERO);
         self.count = 0;
-    }
-}
-
-impl<T: Sample> Drop for WindowedMedian<T> {
-    fn drop(&mut self) {
-        // SAFETY: both buffers were allocated by Vec with capacity `window`.
-        // `T` is Copy so no element drops are needed. Reclaim the allocations.
-        unsafe {
-            let _ = alloc::vec::Vec::from_raw_parts(self.ring, 0, self.window);
-            let _ = alloc::vec::Vec::from_raw_parts(self.sorted, 0, self.window);
-        }
-    }
-}
-
-impl<T: Sample> Clone for WindowedMedian<T> {
-    fn clone(&self) -> Self {
-        let mut ring_vec = alloc::vec![T::ZERO; self.window];
-        ring_vec.copy_from_slice(self.ring());
-        let mut ring_md = core::mem::ManuallyDrop::new(ring_vec);
-        let ring = ring_md.as_mut_ptr();
-
-        let mut sorted_vec = alloc::vec![T::ZERO; self.window];
-        sorted_vec.copy_from_slice(self.sorted());
-        let mut sorted_md = core::mem::ManuallyDrop::new(sorted_vec);
-        let sorted = sorted_md.as_mut_ptr();
-
-        Self {
-            ring,
-            sorted,
-            window: self.window,
-            head: self.head,
-            count: self.count,
-        }
     }
 }
 
 impl<T: Sample> core::fmt::Debug for WindowedMedian<T> {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         f.debug_struct("WindowedMedian")
-            .field("window", &self.window)
+            .field("window", &self.sorted.len())
             .field("count", &self.count)
             .finish()
     }

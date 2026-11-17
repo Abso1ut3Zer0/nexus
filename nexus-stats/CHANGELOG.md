@@ -55,6 +55,19 @@ one naming convention across the family. Migration guide:
   `HitRate`/`Amihud` rates return `Option`; `RobustZScore::mean_abs_dev`
   (was `mad`) with the `sqrt(2/π)` scale; `ShiryaevRoberts` saturates at `1e300`.
   See the per-crate CHANGELOGs and `docs/guides/migrating-to-7.md` § 4.
+- **Storage pass from the code-quality audit (3 of 4).** One fixed-capacity
+  ring, `storage::Ring<T>` *(alloc)*, replaces the hand-rolled head-and-wrap
+  buffers in `WindowedMedian`, `Kama`, `Mosum`, `Hurst`, `Autocorrelation`,
+  `CrossCorrelation`, `TransferEntropy` and `LaggedPredictor`; `BoolWindow`
+  keeps its bit ring as
+  `Box<[u64]>`. No raw pointers, manual `Drop` / `Clone` or `unsafe impl Send`
+  remain in storage, and the converted types are `Sync`. `Bocpd` has no
+  `unsafe` and drops a redundant per-run counter. `Adwin` holds its bucket
+  levels as fixed lanes in one allocation, so memory is fixed at build for
+  every type. `OnlineCovariance` and `SignalDecayCurve` store boxed slices.
+  No API changes beyond the new `storage` module and one gating change: the
+  `signal` and `learning` modules exist only with `alloc` now (without it they
+  were empty), which `detection`- or `regression`-without-`alloc` builds see.
 
 ### Removed
 
@@ -82,6 +95,9 @@ one naming convention across the family. Migration guide:
 - **`WindowedMedian::mad()` allocated and sorted a scratch `Vec` per call**,
   which made every `Hampel::update` allocate. Now one vectorized O(N) count
   over the sorted window: no allocation, no sort, same value.
+- **`full,libm` without `alloc` compiled with warnings.** The umbrella `signal`
+  and `learning` modules re-exported subcrate modules that are empty without
+  `alloc`; both are gated on `alloc` now, matching every type they contain.
 
 ### Docs
 
@@ -96,10 +112,12 @@ one naming convention across the family. Migration guide:
   "every primitive is O(1) per update, fixed memory after construction"; the
   window and dimension types (`WindowedMedian`, `Kama`, `Hampel`, `Bocpd`,
   `RlsFilter`, `OnlineCovariance`, `OnlineKMeans`, `QuantileNorm`) are
-  O(window) or O(d²) and `Adwin`'s bucket list grows O(log n), as their own
-  pages already said. The module tables name every exported type with its
+  O(window) or O(d²), as their own pages already said. The module tables name every exported type with its
   feature gate (`alloc`, `std|libm`), list the `normalization` module, and
   name `FirstDiff`/`SecondDiff` where they said `Diff`.
+- Removed `docs/guides/runtime-vs-const.md`: it documented a `Mosum::<64>`
+  const-generic window that has not existed since the runtime-configuration
+  change, and claimed stack-allocated rings.
 
 ## [6.0.1] — 2026-06-05
 

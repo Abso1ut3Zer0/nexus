@@ -1,8 +1,8 @@
 //! Streaming d×d covariance matrix with exponential weighting.
 
 use crate::math::MulAdd;
+use alloc::boxed::Box;
 use alloc::vec;
-use alloc::vec::Vec;
 
 /// Streaming d×d covariance matrix with exponential weighting.
 ///
@@ -16,8 +16,8 @@ use alloc::vec::Vec;
 /// - Feature correlation monitoring
 #[derive(Debug, Clone)]
 pub struct OnlineCovariance {
-    cov: Vec<f64>,
-    means: Vec<f64>,
+    cov: Box<[f64]>,
+    means: Box<[f64]>,
     dim: usize,
     alpha: f64,
     count: u64,
@@ -251,8 +251,8 @@ impl OnlineCovarianceBuilder {
         }
 
         Ok(OnlineCovariance {
-            cov: vec![0.0; dim * dim],
-            means: vec![0.0; dim],
+            cov: vec![0.0; dim * dim].into_boxed_slice(),
+            means: vec![0.0; dim].into_boxed_slice(),
             dim,
             alpha,
             count: 0,

@@ -1,3 +1,5 @@
+use alloc::boxed::Box;
+
 /// Fixed-size sliding window of boolean outcomes.
 ///
 /// Uses a heap-allocated array of `u64` words with incremental failure
@@ -13,31 +15,16 @@
 /// - Recent error ratio for circuit breaker input
 ///
 /// Requires the `alloc` feature.
+#[derive(Clone)]
 pub struct BoolWindow {
-    bits: *mut u64,
-    words: usize,
+    bits: Box<[u64]>,
     capacity: usize,
     head: usize,
     count: u64,
     failures: usize,
 }
 
-// SAFETY: buffer is exclusively owned, u64 is Copy + Send
-unsafe impl Send for BoolWindow {}
-
 impl BoolWindow {
-    #[inline]
-    fn ring(&self) -> &[u64] {
-        // SAFETY: buffer allocated with capacity `words`, all elements initialized
-        unsafe { core::slice::from_raw_parts(self.bits, self.words) }
-    }
-
-    #[inline]
-    fn ring_mut(&mut self) -> &mut [u64] {
-        // SAFETY: buffer exclusively owned, all elements initialized
-        unsafe { core::slice::from_raw_parts_mut(self.bits, self.words) }
-    }
-
     /// Creates a new empty window with the given sample capacity.
     #[inline]
     pub fn new(sample_count: usize) -> Result<Self, nexus_stats_core::ConfigError> {
@@ -46,12 +33,9 @@ impl BoolWindow {
                 "BoolWindow capacity must be > 0",
             ));
         }
-        let words = sample_count.div_ceil(64);
-        let mut vec = core::mem::ManuallyDrop::new(alloc::vec![0u64; words]);
-        let bits = vec.as_mut_ptr();
+        let bits = alloc::vec![0u64; sample_count.div_ceil(64)].into_boxed_slice();
         Ok(Self {
             bits,
-            words,
             capacity: sample_count,
             head: 0,
             count: 0,
@@ -75,11 +59,10 @@ impl BoolWindow {
         let word = head / 64;
         let bit = head % 64;
         let mask = 1u64 << bit;
-        // SAFETY: buffer allocated with capacity `words`, all elements initialized, exclusively owned
-        let bits = unsafe { core::slice::from_raw_parts_mut(self.bits, self.words) };
+        let bits = &mut self.bits;
         let mut failures = self.failures;
 
-        // Branchless eviction: decrement failures if evicting a failure bit
+        // Eviction: give back the failure the evicted slot held, if any.
         let was_failure = ((bits[word] >> bit) & 1) as usize;
         if count >= capacity as u64 {
             failures -= was_failure;
@@ -142,37 +125,10 @@ impl BoolWindow {
     /// Resets to empty state.
     #[inline]
     pub fn reset(&mut self) {
-        self.ring_mut().fill(0);
+        self.bits.fill(0);
         self.head = 0;
         self.count = 0;
         self.failures = 0;
-    }
-}
-
-impl Drop for BoolWindow {
-    fn drop(&mut self) {
-        // SAFETY: buffer was allocated by Vec with capacity `words`.
-        // u64 is Copy so no element drops needed. Reclaim the allocation.
-        unsafe {
-            let _ = alloc::vec::Vec::from_raw_parts(self.bits, 0, self.words);
-        }
-    }
-}
-
-impl Clone for BoolWindow {
-    fn clone(&self) -> Self {
-        let mut vec = alloc::vec![0u64; self.words];
-        vec.copy_from_slice(self.ring());
-        let mut cloned = core::mem::ManuallyDrop::new(vec);
-        let bits = cloned.as_mut_ptr();
-        Self {
-            bits,
-            words: self.words,
-            capacity: self.capacity,
-            head: self.head,
-            count: self.count,
-            failures: self.failures,
-        }
     }
 }
 

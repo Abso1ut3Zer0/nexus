@@ -23,6 +23,10 @@ mod feature_vector;
 /// Clock trait and implementations.
 pub mod clock;
 
+/// Fixed-capacity storage shared by the windowed types (`alloc`).
+#[cfg(feature = "alloc")]
+pub mod storage;
+
 pub use enums::{Condition, ConfigError, DataError, Direction};
 
 /// The numeric types the generic monitors accept. Sealed: named as bounds,

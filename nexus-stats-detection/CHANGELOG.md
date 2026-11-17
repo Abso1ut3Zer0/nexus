@@ -42,6 +42,22 @@ contained.
 - **`AdaptiveThreshold::seed(mean, std_dev)` seeds the spread.** The `std_dev`
   was stored and never read; it now pre-loads the Welford as two samples, and
   `min_samples` is capped at 2 when seeded instead of silently overwritten.
+- **`Mosum` is a plain struct** on `nexus_stats_core::storage::Ring` (the macro
+  that also generated the removed `MosumI64` is gone): no `unsafe`, `Sync` now.
+  `Autocorrelation` and `CrossCorrelation` use the same `Ring` instead of their
+  own head-and-wrap buffers. Same API, same results.
+- **`Bocpd` has no `unsafe`.** Its three raw-pointer loops are slice loops over
+  `[..active]` views, which fold the bounds checks against the slice length and
+  vectorize the same way; the per-run sample count, which always equals the run
+  length, is no longer stored; the posterior normalization uses the SIMD
+  `exp_sum` kernel.
+- **`Adwin` memory is fixed at build.** The bucket levels are 64 fixed lanes
+  of `max_buckets + 1` slots in one allocation (one lane per power of two a
+  `u64` count can reach), so nothing allocates after construction and the cut
+  test scans contiguous memory; `ln(4/δ)` is computed once at build instead of
+  once per bucket per cut test; the running total is re-summed once per shrink
+  instead of once per dropped bucket. `max_buckets` must be below 65535. Same
+  decisions, same API.
 
 ### Removed
 

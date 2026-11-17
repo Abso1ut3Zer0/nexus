@@ -122,7 +122,6 @@ Domain-specific recipes showing how to compose primitives for real problems.
 - [Integer vs Float](guides/integer-vs-float.md) — Which types have an `i64` form, and the caller rules for the generics
 - [Migrating to 7.0](guides/migrating-to-7.md) — 6.x → 7.0: rename map, generics, removed types, behavior changes
 - [no_std Usage](guides/no-std.md) — Embedded and kernel use cases
-- [Runtime vs Const Generic](guides/runtime-vs-const.md) — alloc feature flag explained
 
 ## Reference
 

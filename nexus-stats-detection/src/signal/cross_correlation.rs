@@ -15,6 +15,7 @@
 extern crate alloc;
 use alloc::boxed::Box;
 use alloc::vec;
+use nexus_stats_core::storage::Ring;
 
 /// Online cross-correlation between two streams at multiple lags.
 ///
@@ -51,10 +52,9 @@ use alloc::vec;
 /// ```
 #[derive(Debug, Clone)]
 pub struct CrossCorrelation {
-    buffer_a: Box<[f64]>,
+    ring_a: Ring<f64>,
     cross_m: Box<[f64]>,
     lag: usize,
-    head: usize,
     count: u64,
     mean_a: f64,
     mean_b: f64,
@@ -111,18 +111,13 @@ impl CrossCorrelation {
         let filled = (self.count - 1).min(lag as u64) as usize;
         if filled > 1 {
             let mean_a = self.mean_a;
-            let lagged = newest_first(&self.buffer_a, self.head);
+            let lagged = self.ring_a.iter().rev();
             for (c, &a_lagged) in self.cross_m[1..filled].iter_mut().zip(lagged) {
                 *c += (a_lagged - mean_a) * db_new;
             }
         }
 
-        // Store A in circular buffer
-        self.buffer_a[self.head] = a;
-        self.head += 1;
-        if self.head == lag {
-            self.head = 0;
-        }
+        self.ring_a.push(a);
         Ok(())
     }
 
@@ -234,9 +229,8 @@ impl CrossCorrelation {
     /// Resets to empty state. Configuration and buffer allocations preserved.
     #[inline]
     pub fn reset(&mut self) {
-        self.buffer_a.fill(0.0);
+        self.ring_a.clear(0.0);
         self.cross_m.fill(0.0);
-        self.head = 0;
         self.count = 0;
         self.mean_a = 0.0;
         self.mean_b = 0.0;
@@ -269,10 +263,9 @@ impl CrossCorrelationBuilder {
             return Err(nexus_stats_core::ConfigError::Invalid("lag must be >= 1"));
         }
         Ok(CrossCorrelation {
-            buffer_a: vec![0.0; lag].into_boxed_slice(),
+            ring_a: Ring::new(lag, 0.0)?,
             cross_m: vec![0.0; lag].into_boxed_slice(),
             lag,
-            head: 0,
             count: 0,
             mean_a: 0.0,
             mean_b: 0.0,
@@ -280,16 +273,6 @@ impl CrossCorrelationBuilder {
             m2_b: 0.0,
         })
     }
-}
-
-/// The ring's samples from the most recent (one step ago) back to the oldest.
-///
-/// `head` is the slot written next, so the most recent sample sits just
-/// before it and the oldest at `head` itself; no per-step modulo.
-#[inline]
-fn newest_first(ring: &[f64], head: usize) -> impl Iterator<Item = &f64> {
-    let (recent, older) = ring.split_at(head);
-    recent.iter().rev().chain(older.iter().rev())
 }
 
 #[cfg(test)]

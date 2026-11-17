@@ -11,8 +11,8 @@
 // r(k) = cross_m / m2 — the 1/N normalization cancels.
 
 extern crate alloc;
-use alloc::boxed::Box;
-use alloc::vec;
+
+use nexus_stats_core::storage::Ring;
 
 /// Online autocorrelation at a configurable lag.
 ///
@@ -43,9 +43,8 @@ use alloc::vec;
 /// ```
 #[derive(Debug, Clone)]
 pub struct Autocorrelation {
-    buffer: Box<[f64]>,
+    ring: Ring<f64>,
     lag: usize,
-    head: usize,
     count: u64,
     mean: f64,
     m2: f64,
@@ -83,18 +82,13 @@ impl Autocorrelation {
         let delta2 = sample - self.mean;
         self.m2 += delta * delta2;
 
-        // Cross-moment: accumulate (x_new - mean)(x_lagged - mean)
-        // once we have at least lag+1 observations
-        if self.count > self.lag as u64 {
-            let x_lagged = self.buffer[self.head];
+        // Cross-moment: accumulate (x_new - mean)(x_lagged - mean) once the
+        // ring is full, i.e. from the (lag + 1)-th observation. The slot
+        // `replace` hands back is exactly the sample from `lag` steps ago.
+        let was_full = self.ring.is_full();
+        let x_lagged = self.ring.replace(sample);
+        if was_full {
             self.cross_m += (sample - self.mean) * (x_lagged - self.mean);
-        }
-
-        // Store in circular buffer
-        self.buffer[self.head] = sample;
-        self.head += 1;
-        if self.head == self.lag {
-            self.head = 0;
         }
         Ok(())
     }
@@ -156,8 +150,7 @@ impl Autocorrelation {
     /// Resets to empty state. Configuration and buffer allocation preserved.
     #[inline]
     pub fn reset(&mut self) {
-        self.buffer.fill(0.0);
-        self.head = 0;
+        self.ring.clear(0.0);
         self.count = 0;
         self.mean = 0.0;
         self.m2 = 0.0;
@@ -187,9 +180,8 @@ impl AutocorrelationBuilder {
             return Err(nexus_stats_core::ConfigError::Invalid("lag must be >= 1"));
         }
         Ok(Autocorrelation {
-            buffer: vec![0.0; lag].into_boxed_slice(),
+            ring: Ring::new(lag, 0.0)?,
             lag,
-            head: 0,
             count: 0,
             mean: 0.0,
             m2: 0.0,

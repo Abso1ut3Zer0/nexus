@@ -82,6 +82,8 @@ contained.
 - `Percentile::min_samples()` is public; `QuantileNorm` reads its grid's
   priming need from it instead of re-deriving the formula. `Hurst` primes at
   its configured window.
+- `OnlineCovariance` stores its matrix and means as `Box<[f64]>` (fixed at
+  build) instead of `Vec`.
 
 ### Removed
 
@@ -125,6 +127,18 @@ contained.
   exactly as a plain fold (an empty period is the identity of every field).
   Negative sojourns (clock skew) clamp to zero
   ([#770](https://github.com/Abso1ut3Zer0/nexus/issues/770)).
+- **`storage::Ring<T>`** *(alloc)*: the fixed-capacity overwrite ring every
+  windowed type now shares (`Hurst` here; `Mosum`, `Kama`, `WindowedMedian`,
+  `Autocorrelation`, `CrossCorrelation`, `LaggedPredictor` in the subcrates).
+  `push` returns the evicted sample once the ring is full, `replace` returns
+  the slot's previous content unconditionally (the fill while filling),
+  `as_slices` / `iter` walk the contents oldest-first at any fill, and `raw`
+  exposes storage order and head for callers that have established fullness
+  and want the two runs without the test (`Kama`). One
+  allocation at construction, one length, no `%`, and fullness is a flag set
+  in the wrap branch, so a push costs what a hand-rolled ring costs. Public
+  because the subcrates need it; shaped for them, not a general-purpose ring
+  buffer.
 
 ### Fixed
 
@@ -179,6 +193,10 @@ contained.
   interval, driving the accumulator negative (Liveness already re-anchored).
 - `OnlineCovariance::covariance(i, j)` only `debug_assert`ed its indices; an
   out-of-range query returned another cell in release. It panics, per policy.
+- **`Hurst` allocated once more at its first full window.** `update` pushed
+  before popping, so the deque briefly held `window_size + 1` values, one past
+  its reservation, and grew on the first wrap. The window is a `storage::Ring`
+  now: fixed at build, no deque.
 
 ### Docs
 

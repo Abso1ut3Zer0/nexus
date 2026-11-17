@@ -164,8 +164,11 @@ pub fn ln_inplace(buf: &mut [f64]) {
     let len = buf.len();
     let mut i = 0;
 
-    // SAFETY: AVX2+FMA availability guaranteed by target_feature cfg.
-    // All values in buf are positive (guaranteed by BOCPD: a > 0, b > 0).
+    // SAFETY: this module is compiled only with AVX2+FMA enabled (the cfg on
+    // `mod avx2`), so the intrinsics exist on this target. Each load and
+    // store covers `buf[i..i + 4]`, in bounds because the loop runs while
+    // `i + 4 <= len`. Positive input is a correctness contract of the kernel
+    // (the caller feeds a > 0, b > 0), not a safety one.
     unsafe {
         while i + 4 <= len {
             let v = _mm256_loadu_pd(buf.as_ptr().add(i));
@@ -187,7 +190,10 @@ pub fn exp_sum(buf: &[f64], offset: f64) -> f64 {
     let mut i = 0;
     let mut sum: f64;
 
-    // SAFETY: AVX2+FMA availability guaranteed by target_feature cfg.
+    // SAFETY: this module is compiled only with AVX2+FMA enabled (the cfg on
+    // `mod avx2`), so the intrinsics exist on this target. The 16-wide loop
+    // loads `buf[i..i + 16]` while `i + 16 <= len` and the 4-wide drain
+    // loads `buf[i..i + 4]` while `i + 4 <= len`, so every load is in bounds.
     unsafe {
         let offset_v = _mm256_set1_pd(offset);
         // 4 independent accumulators to hide exp latency (~20 cycle throughput).

@@ -1,4 +1,4 @@
-use alloc::collections::VecDeque;
+use crate::storage::Ring;
 
 /// Rolling Hurst exponent via rescaled range (R/S) analysis.
 ///
@@ -32,8 +32,7 @@ use alloc::collections::VecDeque;
 /// ```
 #[derive(Debug, Clone)]
 pub struct Hurst {
-    window: VecDeque<f64>,
-    window_size: usize,
+    window: Ring<f64>,
     count: u64,
 }
 
@@ -61,10 +60,7 @@ impl Hurst {
         check_finite!(value);
 
         self.count += 1;
-        self.window.push_back(value);
-        if self.window.len() > self.window_size {
-            self.window.pop_front();
-        }
+        self.window.push(value);
 
         Ok(())
     }
@@ -75,10 +71,10 @@ impl Hurst {
     /// or if the standard deviation is zero.
     #[must_use]
     pub fn hurst(&self) -> Option<f64> {
-        let n = self.window.len();
-        if n < self.window_size {
+        if !self.window.is_full() {
             return None;
         }
+        let n = self.window.capacity();
 
         // Compute mean
         let sum: f64 = self.window.iter().sum();
@@ -105,7 +101,7 @@ impl Hurst {
         let mut max_cum = f64::NEG_INFINITY;
         let mut min_cum = f64::INFINITY;
 
-        for &x in &self.window {
+        for &x in self.window.iter() {
             cum_dev += x - mean;
             if cum_dev > max_cum {
                 max_cum = cum_dev;
@@ -153,12 +149,12 @@ impl Hurst {
     #[inline]
     #[must_use]
     pub fn is_primed(&self) -> bool {
-        self.window.len() >= self.window_size
+        self.window.is_full()
     }
 
     /// Reset all state.
     pub fn reset(&mut self) {
-        self.window.clear();
+        self.window.clear(0.0);
         self.count = 0;
     }
 }
@@ -185,12 +181,8 @@ impl HurstBuilder {
                 "window_size must be >= 20 for meaningful R/S analysis",
             ));
         }
-        let mut window = VecDeque::new();
-        window.reserve_exact(window_size);
-
         Ok(Hurst {
-            window,
-            window_size,
+            window: Ring::new(window_size, 0.0)?,
             count: 0,
         })
     }

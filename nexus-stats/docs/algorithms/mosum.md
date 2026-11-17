@@ -88,7 +88,8 @@ let mut burst = Mosum::builder(normal_rate)
 
 | Operation | p50 | p99 |
 |-----------|-----|-----|
-| `Mosum::update` (window=64) | 5 cycles | 6 cycles |
+| `Mosum::update` (window=64) | 5 cycles | 5 cycles |
 
 O(1) per update: add new deviation, subtract evicted deviation from
-running sum, compare against threshold. Stack-allocated ring buffer.
+running sum, compare against threshold. The ring (`storage::Ring<f64>`) is
+allocated once in `build()`; nothing allocates after construction.

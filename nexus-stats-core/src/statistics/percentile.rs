@@ -207,7 +207,8 @@ macro_rules! impl_percentile {
             /// Whether enough data has been collected for reliable estimates.
             ///
             /// More observations are needed for extreme percentiles.
-            /// p=0.50 requires 5, p=0.99 requires 100, p=0.999 requires 1000.
+            /// `1 / (p (1 - p))`, floored at 5: p=0.50 requires 5, p=0.99 requires
+            /// 101, p=0.999 requires 1001.
             #[inline]
             #[must_use]
             pub fn is_primed(&self) -> bool {
@@ -215,7 +216,7 @@ macro_rules! impl_percentile {
             }
 
             /// Observations needed before the estimate is reported: 5, or
-            /// `1 / (p (1 - p))` for extreme percentiles (100 for p = 0.99).
+            /// `1 / (p (1 - p))` for extreme percentiles (101 for p = 0.99).
             #[inline]
             #[must_use]
             pub fn min_samples(&self) -> u64 {

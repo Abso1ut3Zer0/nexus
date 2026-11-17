@@ -5,7 +5,7 @@ use nexus_stats_core::math::{exp, ln, ln_gamma};
 
 use crate::simd_math;
 
-// Precomputed per-r constants; valid because suf_count[r] == r.
+// Precomputed per-r constants; valid because run length r holds exactly r observations.
 #[derive(Debug, Clone)]
 struct Precomputed {
     lng_base: Box<[f64]>,
@@ -47,7 +47,6 @@ struct Precomputed {
 #[derive(Debug, Clone)]
 pub struct Bocpd {
     log_posterior: Box<[f64]>,
-    suf_count: Box<[u64]>,
     suf_mean: Box<[f64]>,
     suf_sum_sq: Box<[f64]>,
     scratch: Box<[f64]>,
@@ -91,7 +90,7 @@ fn logsumexp_slice(values: &[f64]) -> f64 {
     if max == f64::NEG_INFINITY {
         return f64::NEG_INFINITY;
     }
-    max + ln(values.iter().map(|&v| exp(v - max)).sum::<f64>())
+    max + ln(simd_math::exp_sum(values, max))
 }
 
 impl Bocpd {
@@ -122,7 +121,6 @@ impl Bocpd {
 
         if self.active == 0 {
             self.log_posterior[0] = 0.0;
-            self.suf_count[0] = 0;
             self.suf_mean[0] = 0.0;
             self.suf_sum_sq[0] = 0.0;
             self.active = 1;
@@ -139,32 +137,25 @@ impl Bocpd {
         #[allow(clippy::suboptimal_flops)]
         {
             // Pass 1: a[r] = nu_d*beta_n, b[r] = a + dx^2.
-            // SAFETY: r < self.active <= self.max_run_length + 1.
-            // All arrays allocated with capacity max_run_length + 1.
-            // Raw pointers hoisted outside loop so LLVM sees them as
-            // loop-invariant and can auto-vectorize (writes through &mut self
-            // force base pointer reloads otherwise).
-            unsafe {
-                let p_mu_a = self.pre.mu_a.as_ptr();
-                let p_mu_b = self.pre.mu_b.as_ptr();
-                let p_beta_c = self.pre.beta_c.as_ptr();
-                let p_nu_d = self.pre.nu_d.as_ptr();
-                let p_sm = self.suf_mean.as_ptr();
-                let p_ssq = self.suf_sum_sq.as_ptr();
-                let p_sc = self.scratch.as_mut_ptr();
-                let p_sc2 = self.scratch2.as_mut_ptr();
-                let prior_mu = self.prior_mu;
-                let prior_beta = self.prior_beta;
-
-                for r in 0..self.active {
-                    let sm = *p_sm.add(r);
-                    let mu_n = *p_mu_a.add(r) + *p_mu_b.add(r) * sm;
-                    let diff = sm - prior_mu;
-                    let beta_n = prior_beta + *p_ssq.add(r) * 0.5 + *p_beta_c.add(r) * diff * diff;
-                    let a = *p_nu_d.add(r) * beta_n;
+            // Every array is sliced to `active` once, up front: the slices
+            // are distinct allocations (noalias), equal in length to the loop
+            // bound, so the bounds checks fold and the loop vectorizes
+            // without raw pointers.
+            {
+                let active = self.active;
+                let (prior_mu, prior_beta) = (self.prior_mu, self.prior_beta);
+                let (mu_a, mu_b) = (&self.pre.mu_a[..active], &self.pre.mu_b[..active]);
+                let (beta_c, nu_d) = (&self.pre.beta_c[..active], &self.pre.nu_d[..active]);
+                let (sm, ssq) = (&self.suf_mean[..active], &self.suf_sum_sq[..active]);
+                let (sc, sc2) = (&mut self.scratch[..active], &mut self.scratch2[..active]);
+                for r in 0..active {
+                    let mu_n = mu_a[r] + mu_b[r] * sm[r];
+                    let diff = sm[r] - prior_mu;
+                    let beta_n = prior_beta + ssq[r] * 0.5 + beta_c[r] * diff * diff;
+                    let a = nu_d[r] * beta_n;
                     let dx = sample - mu_n;
-                    *p_sc.add(r) = a;
-                    *p_sc2.add(r) = a + dx * dx;
+                    sc[r] = a;
+                    sc2[r] = a + dx * dx;
                 }
             }
 
@@ -174,23 +165,16 @@ impl Bocpd {
 
             // Pass 3: combine and find CP mass max.
             let mut max_cp_term = f64::NEG_INFINITY;
-            // SAFETY: same invariant as Pass 1.
-            unsafe {
-                let p_alpha = self.pre.alpha.as_ptr();
-                let p_lng = self.pre.lng_base.as_ptr();
-                let p_sc = self.scratch.as_mut_ptr();
-                let p_sc2 = self.scratch2.as_ptr();
-                let p_lp = self.log_posterior.as_ptr();
+            {
+                let active = self.active;
                 let log_hazard = self.log_hazard;
-
-                for r in 0..self.active {
-                    let alpha_r = *p_alpha.add(r);
-                    let log_pred =
-                        *p_lng.add(r) + alpha_r * *p_sc.add(r) - (alpha_r + 0.5) * *p_sc2.add(r);
-
-                    *p_sc.add(r) = log_pred;
-
-                    let term = *p_lp.add(r) + log_pred + log_hazard;
+                let (alpha, lng) = (&self.pre.alpha[..active], &self.pre.lng_base[..active]);
+                let (lp, sc2) = (&self.log_posterior[..active], &self.scratch2[..active]);
+                let sc = &mut self.scratch[..active];
+                for r in 0..active {
+                    let log_pred = lng[r] + alpha[r] * sc[r] - (alpha[r] + 0.5) * sc2[r];
+                    sc[r] = log_pred;
+                    let term = lp[r] + log_pred + log_hazard;
                     if term > max_cp_term {
                         max_cp_term = term;
                     }
@@ -202,15 +186,12 @@ impl Bocpd {
             cp_terms = if max_cp_term == f64::NEG_INFINITY {
                 f64::NEG_INFINITY
             } else {
-                // SAFETY: same invariant as Pass 1.
-                unsafe {
-                    let p_lp = self.log_posterior.as_ptr();
-                    let p_sc = self.scratch.as_ptr();
-                    let p_sc2 = self.scratch2.as_mut_ptr();
+                {
+                    let active = self.active;
                     let log_hazard = self.log_hazard;
-
-                    for r in 0..self.active {
-                        *p_sc2.add(r) = *p_lp.add(r) + *p_sc.add(r) + log_hazard;
+                    let (lp, sc) = (&self.log_posterior[..active], &self.scratch[..active]);
+                    for (t, (&p, &s)) in self.scratch2[..active].iter_mut().zip(lp.iter().zip(sc)) {
+                        *t = p + s + log_hazard;
                     }
                 }
                 let sum = simd_math::exp_sum(&self.scratch2[..self.active], max_cp_term);
@@ -245,8 +226,8 @@ impl Bocpd {
             cap + 1
         };
         let total = logsumexp_slice(&self.scratch[..new_active]);
-        for r in 0..new_active {
-            self.scratch[r] -= total;
+        for v in &mut self.scratch[..new_active] {
+            *v -= total;
         }
 
         // Step 4: copy scratch → log_posterior
@@ -259,19 +240,18 @@ impl Bocpd {
             cap
         };
         for r in (0..suf_limit).rev() {
-            self.suf_count[r + 1] = self.suf_count[r];
+            // Run length r holds exactly r observations, so slot r + 1 holds
+            // r + 1 once this sample is folded in: no count array needed.
             self.suf_mean[r + 1] = self.suf_mean[r];
             self.suf_sum_sq[r + 1] = self.suf_sum_sq[r];
 
-            let n = self.suf_count[r + 1] + 1;
+            let n = (r + 1) as f64;
             let delta = sample - self.suf_mean[r + 1];
-            self.suf_mean[r + 1] += delta / n as f64;
+            self.suf_mean[r + 1] += delta / n;
             self.suf_sum_sq[r + 1] += delta * (sample - self.suf_mean[r + 1]);
-            self.suf_count[r + 1] = n;
         }
 
         // Initialize r=0 with empty stats (new run)
-        self.suf_count[0] = 0;
         self.suf_mean[0] = 0.0;
         self.suf_sum_sq[0] = 0.0;
 
@@ -374,9 +354,6 @@ impl Bocpd {
     pub fn reset(&mut self) {
         for v in &mut *self.log_posterior {
             *v = f64::NEG_INFINITY;
-        }
-        for v in &mut *self.suf_count {
-            *v = 0;
         }
         for v in &mut *self.suf_mean {
             *v = 0.0;
@@ -529,7 +506,6 @@ impl BocpdBuilder {
 
         Ok(Bocpd {
             log_posterior: alloc::vec![f64::NEG_INFINITY; size].into_boxed_slice(),
-            suf_count: alloc::vec![0u64; size].into_boxed_slice(),
             suf_mean: alloc::vec![0.0f64; size].into_boxed_slice(),
             suf_sum_sq: alloc::vec![0.0f64; size].into_boxed_slice(),
             scratch: alloc::vec![f64::NEG_INFINITY; size].into_boxed_slice(),

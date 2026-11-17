@@ -1,4 +1,4 @@
-use alloc::collections::VecDeque;
+use nexus_stats_core::storage::Ring;
 
 use crate::regression::EwLinearRegression;
 
@@ -33,8 +33,8 @@ use crate::regression::EwLinearRegression;
 /// ```
 #[derive(Debug, Clone)]
 pub struct LaggedPredictor {
-    lag: usize,
-    history: VecDeque<f64>,
+    /// The last `lag` estimates; `push` hands back the one made `lag` updates ago.
+    ring: Ring<f64>,
     regression: EwLinearRegression,
     count: u64,
 }
@@ -75,14 +75,11 @@ impl LaggedPredictor {
         check_finite!(estimate);
         check_finite!(realized);
 
-        self.history.push_back(estimate);
+        // Once `lag` estimates are in flight, `push` hands back the one made
+        // `lag` updates ago: the prediction that `realized` grades.
+        let lagged = self.ring.push(estimate);
         self.count += 1;
-
-        if self.history.len() > self.lag {
-            let lagged_estimate = self
-                .history
-                .pop_front()
-                .expect("history non-empty: checked len > lag");
+        if let Some(lagged_estimate) = lagged {
             self.regression.update(lagged_estimate, realized)?;
         }
 
@@ -114,7 +111,7 @@ impl LaggedPredictor {
     #[inline]
     #[must_use]
     pub fn lag(&self) -> usize {
-        self.lag
+        self.ring.capacity()
     }
 
     /// Total number of observations fed.
@@ -133,7 +130,7 @@ impl LaggedPredictor {
 
     /// Reset all state (ring buffer and regression).
     pub fn reset(&mut self) {
-        self.history.clear();
+        self.ring.clear(0.0);
         self.regression.reset();
         self.count = 0;
     }
@@ -189,12 +186,8 @@ impl LaggedPredictorBuilder {
 
         let regression = EwLinearRegression::builder().alpha(alpha).build()?;
 
-        let mut history = VecDeque::new();
-        history.reserve_exact(lag);
-
         Ok(LaggedPredictor {
-            lag,
-            history,
+            ring: Ring::new(lag, 0.0)?,
             regression,
             count: 0,
         })
