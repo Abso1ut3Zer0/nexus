@@ -523,4 +523,13 @@ mod tests {
             "a reset restores the initial covariance, got {p}"
         );
     }
+
+    /// Features are the caller's contract (debug-asserted, not a `DataError`).
+    #[cfg(debug_assertions)]
+    #[test]
+    #[should_panic(expected = "features must be finite")]
+    fn nan_feature_panics_in_debug() {
+        let mut filter = RlsFilter::builder().dimensions(2).build().unwrap();
+        let _ = filter.update(&[f64::NAN, 1.0], 1.0);
+    }
 }

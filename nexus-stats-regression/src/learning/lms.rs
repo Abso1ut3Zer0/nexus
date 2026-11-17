@@ -583,4 +583,29 @@ mod tests {
         );
         assert_eq!(filter.count(), 0);
     }
+
+    /// Features are the caller's contract (debug-asserted, not a `DataError`).
+    #[cfg(debug_assertions)]
+    #[test]
+    #[should_panic(expected = "features must be finite")]
+    fn lms_nan_feature_panics_in_debug() {
+        let mut filter = LmsFilter::builder()
+            .dimensions(2)
+            .learning_rate(0.01)
+            .build()
+            .unwrap();
+        let _ = filter.update(&[f64::NAN, 1.0], 1.0);
+    }
+
+    #[cfg(debug_assertions)]
+    #[test]
+    #[should_panic(expected = "features must be finite")]
+    fn nlms_inf_feature_panics_in_debug() {
+        let mut filter = NlmsFilter::builder()
+            .dimensions(2)
+            .learning_rate(0.5)
+            .build()
+            .unwrap();
+        let _ = filter.update(&[1.0, f64::INFINITY], 1.0);
+    }
 }

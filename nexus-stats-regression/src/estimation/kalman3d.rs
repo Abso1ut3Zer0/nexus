@@ -595,4 +595,18 @@ mod tests {
         assert!((s[1] - 3.0).abs() < 1e-12, "v += a dt, got {}", s[1]);
         assert!((s[2] - 2.0).abs() < 1e-12, "a unchanged, got {}", s[2]);
     }
+
+    /// The observation vector `h` is the caller's contract (debug-asserted);
+    /// only the measurement itself is data and gets a `DataError`.
+    #[cfg(debug_assertions)]
+    #[test]
+    #[should_panic(expected = "h must be finite")]
+    fn nan_h_panics_in_debug() {
+        let mut kf = Kalman3d::builder()
+            .process_noise(diagonal_q())
+            .measurement_noise(1.0)
+            .build()
+            .unwrap();
+        let _ = kf.update(1.0, [f64::NAN, 0.0, 0.0]);
+    }
 }

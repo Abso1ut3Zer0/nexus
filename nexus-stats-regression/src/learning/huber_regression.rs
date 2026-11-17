@@ -86,7 +86,11 @@ impl HuberRegression {
     ///
     /// # Errors
     ///
-    /// Returns `DataError` if any input is NaN or infinite.
+    /// Returns `DataError::NotANumber` if the target is NaN, or
+    /// `DataError::Infinite` if the target is infinite. Features are the
+    /// caller's to validate, as for every float slice in this crate (a
+    /// `debug_assert` checks them in debug builds); a per-element scan on the
+    /// update path would charge every call for a programmer error.
     pub fn update(
         &mut self,
         features: &[f64],
@@ -129,7 +133,13 @@ impl HuberRegression {
     /// Panics if `features.len() != dimensions`.
     #[must_use]
     pub fn predict(&self, features: &[f64]) -> f64 {
-        assert_eq!(features.len(), self.dim);
+        assert_eq!(
+            features.len(),
+            self.dim,
+            "features dimension ({}) != configured dim ({})",
+            features.len(),
+            self.dim,
+        );
         dot(features, &self.weights)
     }
 
@@ -352,5 +362,70 @@ mod tests {
                 .build()
                 .is_err()
         ); // missing delta
+    }
+
+    fn two_dim() -> HuberRegression {
+        HuberRegression::builder()
+            .dimensions(2)
+            .learning_rate(0.01)
+            .delta(1.0)
+            .build()
+            .unwrap()
+    }
+
+    /// The documented contract: the target is data and is rejected with the
+    /// state untouched.
+    #[test]
+    fn rejects_nan_target() {
+        let mut reg = two_dim();
+        reg.update(&[1.0, 2.0], 3.0).unwrap();
+        let before: Vec<f64> = reg.weights().to_vec();
+        assert_eq!(
+            reg.update(&[1.0, 2.0], f64::NAN),
+            Err(nexus_stats_core::DataError::NotANumber)
+        );
+        assert_eq!(reg.count(), 1);
+        assert_eq!(reg.weights(), &before[..]);
+    }
+
+    #[test]
+    fn rejects_inf_target() {
+        let mut reg = two_dim();
+        reg.update(&[1.0, 2.0], 3.0).unwrap();
+        let before: Vec<f64> = reg.weights().to_vec();
+        assert_eq!(
+            reg.update(&[1.0, 2.0], f64::INFINITY),
+            Err(nexus_stats_core::DataError::Infinite)
+        );
+        assert_eq!(
+            reg.update(&[1.0, 2.0], f64::NEG_INFINITY),
+            Err(nexus_stats_core::DataError::Infinite)
+        );
+        assert_eq!(reg.count(), 1);
+        assert_eq!(reg.weights(), &before[..]);
+    }
+
+    #[test]
+    #[should_panic(expected = "features dimension")]
+    fn dimension_mismatch_panics_on_update() {
+        let mut reg = two_dim();
+        let _ = reg.update(&[1.0], 1.0);
+    }
+
+    #[test]
+    #[should_panic(expected = "features dimension")]
+    fn dimension_mismatch_panics_on_predict() {
+        let reg = two_dim();
+        let _ = reg.predict(&[1.0, 2.0, 3.0]);
+    }
+
+    /// Features are the caller's contract: a non-finite feature is a
+    /// programmer error, caught by the debug assertion, not a `DataError`.
+    #[cfg(debug_assertions)]
+    #[test]
+    #[should_panic(expected = "features must be finite")]
+    fn nan_feature_panics_in_debug() {
+        let mut reg = two_dim();
+        let _ = reg.update(&[f64::NAN, 1.0], 1.0);
     }
 }

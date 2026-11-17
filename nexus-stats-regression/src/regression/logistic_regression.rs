@@ -351,4 +351,17 @@ mod tests {
         lr.update(&[1.0], false);
         assert_eq!(lr.count(), 2);
     }
+
+    /// Features are the caller's contract (debug-asserted).
+    #[cfg(debug_assertions)]
+    #[test]
+    #[should_panic(expected = "features must be finite")]
+    fn nan_feature_panics_in_debug() {
+        let mut lr = LogisticRegression::builder()
+            .dimensions(2)
+            .learning_rate(0.1)
+            .build()
+            .unwrap();
+        lr.update(&[f64::NAN, 1.0], true);
+    }
 }

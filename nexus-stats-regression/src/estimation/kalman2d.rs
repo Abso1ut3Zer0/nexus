@@ -591,4 +591,18 @@ mod tests {
         kf.predict_with_dynamics([[1.0, dt], [0.0, 1.0]]);
         assert!((kf.state()[0] - 12.0).abs() < 1e-12);
     }
+
+    /// The observation vector `h` is the caller's contract (debug-asserted);
+    /// only the measurement itself is data and gets a `DataError`.
+    #[cfg(debug_assertions)]
+    #[test]
+    #[should_panic(expected = "h must be finite")]
+    fn nan_h_panics_in_debug() {
+        let mut kf = Kalman2d::builder()
+            .process_noise([[0.01, 0.0], [0.0, 0.01]])
+            .measurement_noise(1.0)
+            .build()
+            .unwrap();
+        let _ = kf.update(1.0, [f64::NAN, 0.0]);
+    }
 }

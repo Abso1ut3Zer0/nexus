@@ -482,4 +482,13 @@ mod tests {
         let sum: u64 = (0..km.clusters()).map(|c| km.cluster_count(c)).sum();
         assert_eq!(sum, km.count());
     }
+
+    /// Features are the caller's contract (debug-asserted).
+    #[cfg(debug_assertions)]
+    #[test]
+    #[should_panic(expected = "features must be finite")]
+    fn nan_feature_panics_in_debug() {
+        let mut km = make(2, 2, 0.05);
+        let _ = km.update(&[f64::NAN, 0.0]);
+    }
 }
