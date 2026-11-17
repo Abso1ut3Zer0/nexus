@@ -120,10 +120,6 @@ contained.
   crate's filters and conjugate priors. `Hysteresis<i64>::update` and
   `LevelCrossing<i64>::update` are `#[must_use]` like their `f64` forms.
 
-### Fixed
-
-- **`feature_vector!` alignment soundness** ([#787](https://github.com/Abso1ut3Zer0/nexus/issues/787)): a `#[repr(packed)]` attribute from the caller lowered struct alignment to 1, so the safe `as_slice()` and `as_mut_slice()` could build a `&[f64]` from a misaligned pointer. A compile-time assertion now rejects any struct whose alignment falls below `f64`s.
-
 ### Removed
 
 - **`SaturationF64`** ([#761](https://github.com/Abso1ut3Zer0/nexus/issues/761)):
@@ -187,6 +183,7 @@ contained.
 
 ### Fixed
 
+- **`feature_vector!` alignment soundness** ([#787](https://github.com/Abso1ut3Zer0/nexus/issues/787)): a `#[repr(packed)]` attribute from the caller lowered struct alignment to 1, so the safe `as_slice()` and `as_mut_slice()` could build a `&[f64]` from a misaligned pointer. A compile-time assertion now rejects any struct whose alignment falls below that of `f64`.
 - **`no_std` + `alloc` without `std` or `libm` builds again.** `CovarianceMatrix`
   called `f64::mul_add` directly, which only exists with `std`; it now goes
   through the same fused-multiply-add shim as the rest of the crate (`a * b +

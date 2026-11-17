@@ -37,6 +37,17 @@
 ///     pub struct Packed { a, b }
 /// }
 /// ```
+///
+/// Partial packing that lowers the alignment below 8 is rejected the same way:
+///
+/// ```compile_fail,E0080
+/// use nexus_stats_core::feature_vector;
+///
+/// feature_vector! {
+///     #[repr(packed(4))]
+///     pub struct Packed4 { a, b }
+/// }
+/// ```
 #[macro_export]
 macro_rules! feature_vector {
     // Internal: default value or 0.0
