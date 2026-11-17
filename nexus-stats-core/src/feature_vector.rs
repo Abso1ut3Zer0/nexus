@@ -25,6 +25,18 @@
 /// assert_eq!(f.as_slice(), &[0.3, 1.5, -0.2]);
 /// assert_eq!(MarketFeatures::DIMENSIONS, 3);
 /// ```
+///
+/// The struct must keep `f64` alignment, so `#[repr(packed)]` is rejected at
+/// compile time (it would make `as_slice` hand out a misaligned `&[f64]`):
+///
+/// ```compile_fail,E0080
+/// use nexus_stats_core::feature_vector;
+///
+/// feature_vector! {
+///     #[repr(packed)]
+///     pub struct Packed { a, b }
+/// }
+/// ```
 #[macro_export]
 macro_rules! feature_vector {
     // Internal: default value or 0.0
@@ -121,6 +133,13 @@ macro_rules! feature_vector {
         const _: () = assert!(
             core::mem::size_of::<$name>() == core::mem::size_of::<f64>() * $name::DIMENSIONS,
             "feature_vector struct has unexpected padding"
+        );
+        // `as_slice` reinterprets the struct as `[f64; N]`, so it must also
+        // keep f64 alignment: a `#[repr(packed)]` among the caller's
+        // attributes adds no padding but lowers the alignment.
+        const _: () = assert!(
+            core::mem::align_of::<$name>() >= core::mem::align_of::<f64>(),
+            "feature_vector struct must keep f64 alignment; #[repr(packed)] is not supported"
         );
     };
 }
