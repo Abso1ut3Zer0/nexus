@@ -1,4 +1,3 @@
-extern crate alloc;
 use alloc::boxed::Box;
 
 /// Distribution drift metrics via reference/live histograms.
@@ -293,6 +292,7 @@ impl DistDriftBuilder {
     ///
     /// Returns `ConfigError` if required fields are missing, bins < 2,
     /// or min_val >= max_val.
+    #[inline]
     pub fn build(self) -> Result<DistDrift, nexus_stats_core::ConfigError> {
         let num_bins = self
             .num_bins

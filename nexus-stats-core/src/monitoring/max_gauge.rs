@@ -19,6 +19,7 @@ use crate::Sample;
 pub struct MaxGauge<T: Sample> {
     max: T,
     has_value: bool,
+    count: u64,
 }
 
 impl<T: Sample> MaxGauge<T> {
@@ -29,6 +30,7 @@ impl<T: Sample> MaxGauge<T> {
         Self {
             max: T::MIN,
             has_value: false,
+            count: 0,
         }
     }
 
@@ -52,15 +54,31 @@ impl<T: Sample> MaxGauge<T> {
         if self.has_value { Some(self.max) } else { None }
     }
 
+    /// Samples processed since construction or `reset`.
+    #[inline]
+    #[must_use]
+    pub fn count(&self) -> u64 {
+        self.count
+    }
+
+    /// Whether at least one sample has been seen.
+    #[inline]
+    #[must_use]
+    pub fn is_primed(&self) -> bool {
+        self.has_value
+    }
+
     /// Resets the gauge.
     #[inline]
     pub fn reset(&mut self) {
         self.max = T::MIN;
         self.has_value = false;
+        self.count = 0;
     }
 
     #[inline]
     fn fold(&mut self, sample: T) {
+        self.count += 1;
         if !self.has_value || sample > self.max {
             self.max = sample;
         }

@@ -271,7 +271,7 @@ All types share a common pattern:
 | `is_primed` | yes | yes | yes | yes | yes |
 | `reset` | yes | yes | yes | yes | yes |
 | `num_arms` | yes | yes | yes | yes | yes |
-| `total_pulls` | yes | yes | yes | yes | yes |
+| `count` | yes | yes | yes | yes | yes |
 
 UCB1 is the only type that doesn't need an RNG for selection.
 

@@ -82,8 +82,43 @@ contained.
 - `Percentile::min_samples()` is public; `QuantileNorm` reads its grid's
   priming need from it instead of re-deriving the formula. `Hurst` primes at
   its configured window.
-- `OnlineCovariance` stores its matrix and means as `Box<[f64]>` (fixed at
+- `CovarianceMatrix` stores its matrix and means as `Box<[f64]>` (fixed at
   build) instead of `Vec`.
+- **Shared kernels and surface consistency pass from the code-quality audit
+  (4 of 4).** Every type reports `count()` and `is_primed()` beside `reset()`
+  where the notion applies: `DeadBand`, `Slew`, `FirstDiff`, `SecondDiff`,
+  `LevelCrossing`, `Hysteresis`, `MaxGauge`, `PollSaturation` and
+  `SojournSaturation` gain both; `PeakHold`, `WindowedMax` / `WindowedMin`,
+  `BucketAccumulator` and `Covariance` gain `is_primed()`. Each type's rule
+  is its own (`Covariance` needs two samples, `FirstDiff` two, `SecondDiff`
+  three, the saturation monitors count messages). The `initialized` flags
+  behind `DeadBand`, `Slew`, `FirstDiff` and `LevelCrossing` are the counter
+  now; the update paths compile to the same code.
+- **`Debounce::count()` is the number of updates;** the run of consecutive
+  `true`s that `update` compares to the threshold is `consecutive()` (was
+  `count()`).
+- **Every builder with `alpha(a)` has `halflife(h)`** (`std` or `libm`):
+  `VarianceRatio` and `RollSpread` gain it, all of them computed by one
+  `math::alpha_from_halflife`. The missing-field error is
+  `ConfigError::Missing("alpha")` everywhere (`HitRate` said "alpha or
+  halflife"), the range test is `math::in_unit_interval` everywhere, and
+  `Hawkes` rejects a negative or non-finite `alpha`.
+- **Renames** (the audit's naming pass). `OnlineCovariance` →
+  `CovarianceMatrix` (and its builder); `WallClock` → `MonotonicClock` (it is
+  `Instant`-based; `EpochClock` is the wall clock); `CoDelBuilder::window(n)`
+  → `interval(n)`, RFC 8289's name; `BucketPolicy::WallTimeNanos(n)` →
+  `BucketPolicy::Ticks(n)` and `BucketAccumulator::update_at_raw` →
+  `update_at`, since the stamp is in any unit like every other time-aware
+  type.
+- **One copy of each kernel.** `Liveness` and `EventRate` run on the
+  `sample::ShiftEma` kernel (which gains `is_initialized()` and `reset()`);
+  `HalfLife` is a `Covariance` over consecutive pairs; `EwmaVar` and
+  `Percentile` are plain items (the `$ty` stamping macros are gone, as is the
+  never-called `math::check_finite` function; the `check_finite!` macro is
+  exported, doc-hidden, for the sibling crates). `math::dot`, `math::axpy`
+  and `math::upper_tail_z` (Abramowitz-Stegun 26.2.23) serve the regression
+  crate's filters and conjugate priors. `Hysteresis<i64>::update` and
+  `LevelCrossing<i64>::update` are `#[must_use]` like their `f64` forms.
 
 ### Removed
 
@@ -100,6 +135,7 @@ contained.
   windowed minimum (see Fixed). Keep a `WindowedMin<i64>` beside it if you
   report one.
 - **`LivenessF64`**: `f64` timestamps lose precision past 2^52; `Liveness` takes `u64` ticks.
+- **`HalfLifeBuilder`**: it had no knobs. `HalfLife::new()`.
 
 ### Added
 
@@ -139,10 +175,15 @@ contained.
   in the wrap branch, so a push costs what a hand-rolled ring costs. Public
   because the subcrates need it; shaped for them, not a general-purpose ring
   buffer.
+- `Covariance::variance_x()` / `variance_y()`: the marginal variances the
+  type already carries.
+- `Welford::m2()`: the sum of squared deviations, the `m2` of `from_parts`.
+- `math::alpha_from_halflife`, `math::dot`, `math::axpy`,
+  `math::upper_tail_z`.
 
 ### Fixed
 
-- **`no_std` + `alloc` without `std` or `libm` builds again.** `OnlineCovariance`
+- **`no_std` + `alloc` without `std` or `libm` builds again.** `CovarianceMatrix`
   called `f64::mul_add` directly, which only exists with `std`; it now goes
   through the same fused-multiply-add shim as the rest of the crate (`a * b +
   c` without a math provider). `math::powf` is added for the sub-crates.
@@ -159,11 +200,11 @@ contained.
 - **`CoDel<T>`** reported `Degraded` on a single sample above
   target. RFC 8289 requires sojourn to stay above target for a whole
   interval. It now implements the RFC's `first_above_time` rule directly:
-  a sample above target arms a deadline at `now + window`, a sample at or
+  a sample above target arms a deadline at `now + interval`, a sample at or
   below target disarms it, and only a sample above target at or after the
   deadline is `Degraded`. One timestamp of state; the windowed minimum the
   old composition relied on (and its own inaccuracy, #758) is gone.
-  `window` is the RFC's interval. `CoDelBuilder<f64>::build` now rejects a
+  the builder's `interval` is the RFC's. `CoDelBuilder<f64>::build` now rejects a
   non-finite target ([#759](https://github.com/Abso1ut3Zer0/nexus/issues/759)).
 
 - **`Liveness`**: two defects. `update()` folded the gap
@@ -191,7 +232,7 @@ contained.
   `HitRate` builder); the `TwoScaleRv` rustdoc no longer emits broken links.
 - `EventRate` folded a backwards or wrapped timestamp step as a negative
   interval, driving the accumulator negative (Liveness already re-anchored).
-- `OnlineCovariance::covariance(i, j)` only `debug_assert`ed its indices; an
+- `CovarianceMatrix::covariance(i, j)` only `debug_assert`ed its indices; an
   out-of-range query returned another cell in release. It panics, per policy.
 - **`Hurst` allocated once more at its first full window.** `update` pushed
   before popping, so the deque briefly held `window_size + 1` values, one past

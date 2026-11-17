@@ -1,4 +1,4 @@
-#![allow(clippy::suboptimal_flops, clippy::float_cmp)]
+use nexus_stats_core::math::MulAdd;
 
 /// 3-state Kalman filter with configurable observation model.
 ///
@@ -160,7 +160,7 @@ impl Kalman3d {
             for j in 0..3 {
                 let mut sum = 0.0;
                 for m in 0..3 {
-                    let ikh = if i == m { 1.0 } else { 0.0 } - k[i] * h[m];
+                    let ikh = k[i].fma(-h[m], if i == m { 1.0 } else { 0.0 });
                     sum += ikh * old_p[m * 3 + j];
                 }
                 self.p[i * 3 + j] = sum;
@@ -266,6 +266,13 @@ impl Kalman3d {
     #[must_use]
     pub fn count(&self) -> u64 {
         self.count
+    }
+
+    /// Whether at least one measurement has been folded in.
+    #[inline]
+    #[must_use]
+    pub fn is_primed(&self) -> bool {
+        self.count > 0
     }
 
     /// Resets to initial state and covariance.
@@ -565,5 +572,27 @@ mod tests {
             Err(nexus_stats_core::DataError::Infinite)
         );
         assert_eq!(kf.count(), 0);
+    }
+
+    /// `predict_with_dynamics` applies the caller's transition matrix: a
+    /// constant-acceleration model advances position and velocity.
+    #[test]
+    fn predict_with_dynamics_applies_the_transition() {
+        let mut kf = Kalman3d::builder()
+            .process_noise([[0.0; 3]; 3])
+            .measurement_noise(1.0)
+            .initial_state([0.0, 1.0, 2.0])
+            .build()
+            .unwrap();
+        let dt = 1.0;
+        kf.predict_with_dynamics([[1.0, dt, 0.5 * dt * dt], [0.0, 1.0, dt], [0.0, 0.0, 1.0]]);
+        let s = kf.state();
+        assert!(
+            (s[0] - 2.0).abs() < 1e-12,
+            "x += v dt + a dt²/2, got {}",
+            s[0]
+        );
+        assert!((s[1] - 3.0).abs() < 1e-12, "v += a dt, got {}", s[1]);
+        assert!((s[2] - 2.0).abs() < 1e-12, "a unchanged, got {}", s[2]);
     }
 }

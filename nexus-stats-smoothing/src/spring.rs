@@ -15,7 +15,8 @@ pub struct Spring {
     omega: f64,
     value: f64,
     velocity: f64,
-    initialized: bool,
+    /// Samples processed; the first one seeds the position.
+    count: u64,
 }
 
 impl Spring {
@@ -36,7 +37,7 @@ impl Spring {
             omega: 2.0 / smooth_time,
             value: 0.0,
             velocity: 0.0,
-            initialized: false,
+            count: 0,
         })
     }
 
@@ -52,9 +53,9 @@ impl Spring {
     pub fn update(&mut self, target: f64, dt: f64) -> Result<f64, nexus_stats_core::DataError> {
         check_finite!(target);
         check_finite!(dt);
-        if !self.initialized {
+        self.count += 1;
+        if self.count == 1 {
             self.value = target;
-            self.initialized = true;
             return Ok(target);
         }
 
@@ -93,12 +94,26 @@ impl Spring {
         self.velocity
     }
 
+    /// Samples processed since construction or `reset`.
+    #[inline]
+    #[must_use]
+    pub fn count(&self) -> u64 {
+        self.count
+    }
+
+    /// Whether at least one sample has been seen.
+    #[inline]
+    #[must_use]
+    pub fn is_primed(&self) -> bool {
+        self.count > 0
+    }
+
     /// Resets to uninitialized state.
     #[inline]
     pub fn reset(&mut self) {
         self.value = 0.0;
         self.velocity = 0.0;
-        self.initialized = false;
+        self.count = 0;
     }
 
     /// Resets to a specific value with zero velocity.
@@ -106,7 +121,7 @@ impl Spring {
     pub fn reset_to(&mut self, value: f64) {
         self.value = value;
         self.velocity = 0.0;
-        self.initialized = true;
+        self.count = 1;
     }
 }
 

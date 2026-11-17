@@ -36,6 +36,30 @@ contained.
   back the estimate from `lag` updates ago, no `expect`, no deque bookkeeping.
   `SignalDecayCurve` stores its predictors and lags as boxed slices. Same API,
   same results.
+- **The four count-based bandits share one arm bank.** `Ucb1`,
+  `EpsilonGreedy`, `ThompsonBeta` and `ThompsonGamma` keep their per-arm
+  pairs in one `pub(crate)` kernel: the same `arm >= num_arms` panic, the
+  same `decay` validation (`(0, 1]`, NaN rejected) and the same
+  decay-toward-reference step. No API change.
+- **`Exp3::select` takes `&mut self`.** The scratch buffer is a plain
+  `Box<[f64]>`; the `UnsafeCell` is gone with the `!Sync` caveat, and `Exp3`
+  is `Clone` and `Debug`.
+- **Renames.** `intercept_value()` → `intercept()` on `LinearRegression`,
+  `EwLinearRegression` and the transformed regressions (the builder flag keeps
+  `intercept(bool)`); the bandits' `total_pulls()` is gone, `count()` is the
+  same number.
+- **Every EW builder has `halflife(h)`** (`std` or `libm`):
+  `EwLinearRegression`, `EwPolynomialRegression`, `KyleLambda`,
+  `EwExponentialRegression`, `EwLogarithmicRegression`, `EwPowerRegression`.
+- **Builder validation uses the core predicates:** an infinite
+  `learning_rate`, `epsilon` or `weight_decay` (`Adam`) or prior parameter
+  (`BetaBinomial`, `GammaPoisson`) is rejected like NaN.
+- **`Coefficients::eval(x)`** evaluates the fitted polynomial;
+  `PolynomialRegression::predict` is `coefficients()?.eval(x)`. `Kalman2d`
+  and `Kalman3d` gain `is_primed()`.
+- **One copy of each kernel.** LMS, NLMS, RLS and Huber use `math::dot` /
+  `math::axpy`; `BetaBinomial` and `GammaPoisson` share
+  `math::upper_tail_z`. The existing tests pass unchanged.
 
 ### Fixed
 
@@ -46,9 +70,9 @@ contained.
 - **`Exp3::select` could alias its scratch buffer from safe code.** The
   caller's `rng` closure ran while the `&mut` into the internal `UnsafeCell`
   scratch was live, so a closure that re-entered `select` on the same
-  `&Exp3` created a second `&mut` to the same memory. The random draw now
-  happens before the borrow, so no caller code runs while it is live. The
-  type doc states that `Exp3` is `!Sync`.
+  `&Exp3` created a second `&mut` to the same memory. `select` now takes
+  `&mut self` and the scratch is a plain `Box<[f64]>`, so the borrow checker
+  enforces the exclusivity (see Changed).
 - **`RlsFilter::covariance` doc** said "P matrix diagonal"; it returns the
   full d×d row-major matrix, and now says so.
 - **Singular fits returned garbage.** `gauss_solve_f64` judged singularity

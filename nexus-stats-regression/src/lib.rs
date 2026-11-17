@@ -44,19 +44,8 @@
 
 #[cfg(feature = "alloc")]
 extern crate alloc;
-
-/// Validates that a float value is finite (not NaN, not Inf).
-macro_rules! check_finite {
-    ($val:expr) => {
-        if !$val.is_finite() {
-            return Err(if $val.is_nan() {
-                nexus_stats_core::DataError::NotANumber
-            } else {
-                nexus_stats_core::DataError::Infinite
-            });
-        }
-    };
-}
+#[macro_use]
+extern crate nexus_stats_core;
 
 /// State estimation and Bayesian inference.
 pub mod estimation;

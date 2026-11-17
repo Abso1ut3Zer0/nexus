@@ -179,6 +179,15 @@ impl RollSpreadBuilder {
         self
     }
 
+    /// Sets `alpha` from a half-life in samples: `1 - exp(-ln 2 / halflife)`.
+    #[cfg(any(feature = "std", feature = "libm"))]
+    #[inline]
+    #[must_use]
+    pub fn halflife(mut self, halflife: f64) -> Self {
+        self.alpha = Some(crate::math::alpha_from_halflife(halflife));
+        self
+    }
+
     /// Minimum prices before results are valid. Default: 30.
     #[inline]
     #[must_use]

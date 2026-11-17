@@ -117,7 +117,7 @@ let mut r = PolynomialRegression::builder()
 
 For linear regression (degree 1), use the dedicated
 [`LinearRegression`](linear-regression.md) type instead —
-smaller state, closed-form solve, `slope()`/`intercept_value()` API.
+smaller state, closed-form solve, `slope()`/`intercept()` API.
 
 ### Exponentially-weighted
 
@@ -237,7 +237,7 @@ Internally fits `ln(y) = ln(a) + bx` via linear regression.
 
 Internally fits y = a·z + b where z = ln(x).
 - `slope()` → a
-- `intercept_value()` → b
+- `intercept()` → b
 - `predict(x)` → a·ln(x) + b
 - Requires x > 0 — observations with x ≤ 0 are silently skipped
 

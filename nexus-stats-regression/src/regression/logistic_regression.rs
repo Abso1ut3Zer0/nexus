@@ -1,4 +1,3 @@
-extern crate alloc;
 use alloc::boxed::Box;
 use alloc::vec;
 use nexus_stats_core::math::MulAdd;

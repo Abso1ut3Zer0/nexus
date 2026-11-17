@@ -1,3 +1,5 @@
+use crate::sample::{EmaKernel, ShiftEma};
+
 /// Smoothed event rate tracker (unsigned integer timestamps).
 ///
 /// Uses a fixed-point bit-shift EMA of inter-arrival times, inverted
@@ -17,13 +19,11 @@
 /// over the period of a `PollSummary` instead.
 #[derive(Debug, Clone)]
 pub struct EventRate {
-    acc: i128,
-    shift: u32,
-    span: u64,
+    /// Smoothed inter-arrival gap (the kernel's shift EMA).
+    ema: ShiftEma,
     last_timestamp: u64,
     count: u64,
     min_samples: u64,
-    initialized: bool,
 }
 
 /// Builder for [`EventRate`].
@@ -62,13 +62,7 @@ impl EventRate {
         if dt <= 0 {
             return;
         }
-        if self.initialized {
-            let dt_shifted = (dt as i128) << self.shift;
-            self.acc += (dt_shifted - self.acc) >> self.shift;
-        } else {
-            self.acc = (dt as i128) << self.shift;
-            self.initialized = true;
-        }
+        self.ema.fold(dt);
     }
 
     /// Current smoothed event rate (events per unit time).
@@ -89,8 +83,8 @@ impl EventRate {
     #[inline]
     #[must_use]
     pub fn interval(&self) -> Option<u64> {
-        if self.count >= self.min_samples && self.initialized {
-            Some((self.acc >> self.shift) as u64)
+        if self.count >= self.min_samples && self.ema.is_initialized() {
+            Some(self.ema.value() as u64)
         } else {
             None
         }
@@ -100,7 +94,7 @@ impl EventRate {
     #[inline]
     #[must_use]
     pub fn effective_span(&self) -> u64 {
-        self.span
+        self.ema.span
     }
 
     /// Number of events recorded.
@@ -120,10 +114,9 @@ impl EventRate {
     /// Resets to uninitialized state.
     #[inline]
     pub fn reset(&mut self) {
-        self.acc = 0;
+        self.ema.reset();
         self.last_timestamp = 0;
         self.count = 0;
-        self.initialized = false;
     }
 }
 
@@ -161,17 +154,11 @@ impl EventRateBuilder {
             ));
         }
 
-        let effective = crate::smoothing::ema::next_power_of_two_minus_one(requested);
-        let shift = crate::smoothing::ema::log2_of_span_plus_one(effective);
-
         Ok(EventRate {
-            acc: 0,
-            shift,
-            span: effective,
+            ema: EmaKernel::new(requested)?,
             last_timestamp: 0,
             count: 0,
             min_samples: self.min_samples,
-            initialized: false,
         })
     }
 }

@@ -17,6 +17,7 @@ pub struct Hysteresis<T: Sample> {
     low: T,
     high: T,
     state: bool,
+    count: u64,
 }
 
 impl<T: Sample> Hysteresis<T> {
@@ -39,6 +40,7 @@ impl<T: Sample> Hysteresis<T> {
             low: low_threshold,
             high: high_threshold,
             state: false,
+            count: 0,
         })
     }
 
@@ -49,14 +51,30 @@ impl<T: Sample> Hysteresis<T> {
         self.state
     }
 
+    /// Samples processed since construction or `reset`.
+    #[inline]
+    #[must_use]
+    pub fn count(&self) -> u64 {
+        self.count
+    }
+
+    /// Whether at least one sample has been seen.
+    #[inline]
+    #[must_use]
+    pub fn is_primed(&self) -> bool {
+        self.count > 0
+    }
+
     /// Resets the state to `false`.
     #[inline]
     pub fn reset(&mut self) {
         self.state = false;
+        self.count = 0;
     }
 
     #[inline]
     fn fold(&mut self, sample: T) -> bool {
+        self.count += 1;
         if sample >= self.high {
             self.state = true;
         } else if sample <= self.low {
@@ -82,6 +100,7 @@ impl Hysteresis<f64> {
 
 impl Hysteresis<i64> {
     /// Feeds a sample. Returns the state after it.
+    #[must_use]
     #[inline]
     pub fn update(&mut self, sample: i64) -> bool {
         self.fold(sample)

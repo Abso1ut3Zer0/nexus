@@ -7,6 +7,14 @@
 //! separate crates. One allocation at construction, nothing after. The length
 //! lives in the slice and nowhere else, and the wrap is a compare, not a `%`:
 //! the two things that keep a ring's bounds checks folding on the hot path.
+//!
+//! Which storage for what, across the stats crates:
+//! - fixed at build and always full (coefficient tables, histograms): `Box<[T]>`;
+//! - fixed capacity, variable occupancy, element type with a natural fill:
+//!   `Ring` or a private cursor structure over `Box<[T]>` (ADWIN's lanes);
+//! - fixed capacity, variable occupancy, generic element with no fill (TopK's
+//!   keys): `Vec::with_capacity` with every push guarded by the bound, which
+//!   is the safe standard primitive for an uninitialized tail.
 
 use alloc::boxed::Box;
 use alloc::vec;

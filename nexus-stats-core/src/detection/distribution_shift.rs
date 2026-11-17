@@ -155,6 +155,7 @@ impl DistributionShiftBuilder {
     /// # Errors
     ///
     /// `ConfigError::Invalid` if `fast_window` is 0.
+    #[inline]
     pub fn build(self) -> Result<DistributionShift, crate::ConfigError> {
         let fast_window = self.fast_window.unwrap_or(50);
         if fast_window == 0 {
@@ -180,18 +181,16 @@ mod tests {
             .fast_window(100)
             .build()
             .unwrap();
-
-        // Feed uniform-ish data — both trackers see the same distribution.
-        for i in 0..500 {
+        // 537 samples: the fast window is mid-fill at the end, so the shift
+        // is defined (a multiple of the window would leave it just reset).
+        for i in 0..537 {
             det.update((i % 100) as f64).unwrap();
         }
-
-        if let Some(ks) = det.kurtosis_shift() {
-            assert!(
-                ks.abs() < 2.0,
-                "kurtosis shift should be small for stable data, got {ks}"
-            );
-        }
+        let ks = det.kurtosis_shift().expect("fast window holds 37 samples");
+        assert!(
+            ks.abs() < 2.0,
+            "kurtosis shift should be small for stable data, got {ks}"
+        );
     }
 
     #[test]
@@ -200,38 +199,30 @@ mod tests {
             .fast_window(50)
             .build()
             .unwrap();
-
-        // Feed mild data for a while to establish baseline.
+        // Mild baseline, then a fast window of outliers plus a partial one so
+        // the fast tracker is populated when queried.
         for i in 0..200 {
             det.update((i as f64) * 0.01).unwrap();
         }
-
-        // Now feed data with extreme outliers in the fast window.
-        for i in 0..50 {
+        for i in 0..80 {
             let val = if i % 5 == 0 { 1000.0 } else { 1.0 };
             det.update(val).unwrap();
         }
-
-        // The fast window should show heavier tails than the slow baseline.
-        // Verify we can actually observe the shift — either kurtosis or
-        // variance shift should be non-trivial after feeding outliers.
-        assert!(det.count() > 200);
-        if let Some(ks) = det.kurtosis_shift() {
-            // Outliers produce heavy tails — kurtosis shift should be positive
-            // and significant. The 1000.0 outliers every 5th sample create
-            // dramatically different kurtosis than the mild baseline.
-            assert!(
-                ks > 1.0,
-                "expected significant positive kurtosis shift from outliers, got {ks}"
-            );
-        }
-        if let Some(ss) = det.skewness_shift() {
-            // Outliers skew the distribution in the fast window.
-            assert!(
-                ss.abs() > 0.1,
-                "expected measurable skewness shift from outliers, got {ss}"
-            );
-        }
+        assert_eq!(det.count(), 280);
+        // The fast window holds 30 samples with one outlier in five; the slow
+        // baseline holds all 280 with one in eighteen. Rarer extremes mean a
+        // heavier tail, so the slow kurtosis is the larger one and the shift
+        // is large and negative: what matters is that it is large.
+        let ks = det.kurtosis_shift().expect("fast window holds 30 samples");
+        assert!(
+            ks.abs() > 1.0,
+            "expected a large kurtosis shift between the two windows, got {ks}"
+        );
+        let ss = det.skewness_shift().expect("fast window holds 30 samples");
+        assert!(
+            ss.abs() > 0.1,
+            "expected measurable skewness shift from outliers, got {ss}"
+        );
     }
 
     #[test]
@@ -240,14 +231,23 @@ mod tests {
             .fast_window(100)
             .build()
             .unwrap();
-
-        // Same distribution everywhere → not shifted at reasonable threshold.
-        for i in 0..500 {
+        // Same distribution everywhere, fast window mid-fill: not shifted.
+        for i in 0..537 {
             det.update((i % 50) as f64).unwrap();
         }
-
-        // With a high threshold, should not be shifted.
+        assert!(
+            det.kurtosis_shift().is_some(),
+            "the verdict must be a real reading"
+        );
         assert!(!det.is_shifted(100.0));
+        // A burst of outliers in the fast window is a shift at a sane threshold.
+        for i in 0..40 {
+            det.update(if i % 5 == 0 { 1000.0 } else { 1.0 }).unwrap();
+        }
+        assert!(
+            det.is_shifted(1.0),
+            "outlier burst must register as a shift"
+        );
     }
 
     #[test]

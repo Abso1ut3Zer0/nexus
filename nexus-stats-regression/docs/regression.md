@@ -14,7 +14,7 @@ impl LinearRegression {
     pub fn builder() -> LinearRegressionBuilder;
     pub fn update(&mut self, x: f64, y: f64) -> Result<(), DataError>;
     pub fn slope(&self) -> Option<f64>;
-    pub fn intercept_value(&self) -> Option<f64>;
+    pub fn intercept(&self) -> Option<f64>;
     pub fn predict(&self, x: f64) -> Option<f64>;
     pub fn is_primed(&self) -> bool;
     pub fn reset(&mut self);
@@ -36,7 +36,7 @@ for (ra, rb) in paired_returns {
 println!(
     "slope beta = {:.4}, intercept alpha = {:.4}",
     beta.slope().unwrap(),
-    beta.intercept_value().unwrap(),
+    beta.intercept().unwrap(),
 );
 
 // Fair value of B given A's return:

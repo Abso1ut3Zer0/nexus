@@ -162,10 +162,10 @@ impl AsymEmaBuilder {
         let alpha_down = self
             .alpha_down
             .ok_or(crate::ConfigError::Missing("alpha_down"))?;
-        if !(alpha_up > 0.0 && alpha_up < 1.0) {
+        if !crate::math::in_unit_interval(alpha_up) {
             return Err(crate::ConfigError::Invalid("alpha_up must be in (0, 1)"));
         }
-        if !(alpha_down > 0.0 && alpha_down < 1.0) {
+        if !crate::math::in_unit_interval(alpha_down) {
             return Err(crate::ConfigError::Invalid("alpha_down must be in (0, 1)"));
         }
 

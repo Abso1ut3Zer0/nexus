@@ -22,7 +22,7 @@ type over the sealed `Sample` trait, instantiated for `f64` and `i64`:
 Timestamps are a third kind. `Liveness`, `EventRate`, `PollSaturation`,
 `SojournSaturation`, `DecayAccum` and the `timestamp` argument of the
 windowed extrema and `CoDel` take `u64` ticks in any unit; use one clock for
-every stamp into one value (`clock::WallClock` is the `std` bridge from
+every stamp into one value (`clock::MonotonicClock` is the `std` bridge from
 `Instant`, see [no_std](no-std.md) for the rest).
 
 The normalizers (`ZScoreNorm<T>`, `MinMaxNorm<T>`, `QuantileNorm<T>`) and
@@ -55,7 +55,7 @@ use nexus_stats::monitoring::{CoDel, Drawdown};
 let mut dd = Drawdown::<i64>::new();             // turbofish on the constructor, or
 let mut dd2: Drawdown<f64> = Drawdown::new();    // a type annotation on the binding
 let mut qd = CoDel::<i64>::builder()
-    .target(50_000).window(100_000_000).build().unwrap();
+    .target(50_000).interval(100_000_000).build().unwrap();
 
 dd.update(42);                                    // i64: plain value
 dd2.update(42.0).unwrap();                        // f64: Result

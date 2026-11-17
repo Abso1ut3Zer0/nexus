@@ -1,9 +1,3 @@
-#![allow(
-    clippy::suboptimal_flops,
-    clippy::float_cmp,
-    clippy::neg_cmp_op_on_partial_ord
-)]
-
 /// Bayesian success rate estimator using the Beta-Binomial conjugate prior.
 ///
 /// Maintains a Beta(alpha, beta) posterior updated by observing binary
@@ -56,12 +50,12 @@ impl BetaBinomial {
     /// Both alpha and beta must be positive.
     #[inline]
     pub fn with_prior(alpha: f64, beta: f64) -> Result<Self, nexus_stats_core::ConfigError> {
-        if !(alpha > 0.0) {
+        if !nexus_stats_core::math::positive_finite(alpha) {
             return Err(nexus_stats_core::ConfigError::Invalid(
                 "alpha must be positive",
             ));
         }
-        if !(beta > 0.0) {
+        if !nexus_stats_core::math::positive_finite(beta) {
             return Err(nexus_stats_core::ConfigError::Invalid(
                 "beta must be positive",
             ));
@@ -152,11 +146,7 @@ impl BetaBinomial {
 
         let tail = (1.0 - confidence) / 2.0;
 
-        // Abramowitz & Stegun 26.2.23 rational approximation
-        let t = nexus_stats_core::math::sqrt(-2.0 * nexus_stats_core::math::ln(tail));
-        let z = t
-            - (2.515_517 + 0.802_853 * t + 0.010_328 * t * t)
-                / (1.0 + 1.432_788 * t + 0.189_269 * t * t + 0.001_308 * t * t * t);
+        let z = nexus_stats_core::math::upper_tail_z(tail);
 
         let mean = self.mean();
         let std_dev = nexus_stats_core::math::sqrt(self.variance());
@@ -252,12 +242,12 @@ impl BetaBinomialBuilder {
     /// Both alpha and beta must be positive.
     #[inline]
     pub fn build(self) -> Result<BetaBinomial, nexus_stats_core::ConfigError> {
-        if !(self.alpha > 0.0) {
+        if !nexus_stats_core::math::positive_finite(self.alpha) {
             return Err(nexus_stats_core::ConfigError::Invalid(
                 "alpha must be positive",
             ));
         }
-        if !(self.beta > 0.0) {
+        if !nexus_stats_core::math::positive_finite(self.beta) {
             return Err(nexus_stats_core::ConfigError::Invalid(
                 "beta must be positive",
             ));

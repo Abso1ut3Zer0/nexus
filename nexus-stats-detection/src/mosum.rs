@@ -155,6 +155,7 @@ impl MosumBuilder {
     /// `ConfigError::Missing` if the window or threshold is unset;
     /// `ConfigError::Invalid` for a zero window, a non-finite target or a
     /// threshold that is not positive and finite.
+    #[inline]
     pub fn build(self) -> Result<Mosum, nexus_stats_core::ConfigError> {
         let window = self
             .window
@@ -327,5 +328,30 @@ mod tests {
             nexus_stats_core::DataError::Infinite
         );
         assert_eq!(mosum.count(), 0);
+    }
+
+    /// `reset` leaves no residue: a replay of the same stream reports the
+    /// same sums and verdicts, including across the ring wrap.
+    #[test]
+    fn reset_then_replay_matches() {
+        let mut m = Mosum::builder(0.0)
+            .window_size(5)
+            .threshold(3.0)
+            .build()
+            .unwrap();
+        let stream = [
+            1.0, 2.0, -1.0, 0.5, 4.0, -3.0, 2.5, 1.5, -2.0, 6.0, 0.0, -1.0,
+        ];
+        let first: Vec<_> = stream
+            .iter()
+            .map(|&x| (m.update(x).unwrap(), m.sum().to_bits()))
+            .collect();
+        m.reset();
+        assert_eq!(m.count(), 0);
+        let second: Vec<_> = stream
+            .iter()
+            .map(|&x| (m.update(x).unwrap(), m.sum().to_bits()))
+            .collect();
+        assert_eq!(first, second);
     }
 }

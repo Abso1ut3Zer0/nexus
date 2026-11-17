@@ -139,7 +139,7 @@ impl Ema {
     /// Alpha must be in (0, 1) exclusive.
     #[inline]
     pub fn reconfigure_alpha(&mut self, alpha: f64) -> Result<(), crate::ConfigError> {
-        if !(alpha > 0.0 && alpha < 1.0) {
+        if !crate::math::in_unit_interval(alpha) {
             return Err(crate::ConfigError::Invalid("EMA alpha must be in (0, 1)"));
         }
         self.alpha = alpha;
@@ -164,8 +164,7 @@ impl EmaBuilder {
     #[must_use]
     #[cfg(any(feature = "std", feature = "libm"))]
     pub fn halflife(mut self, halflife: f64) -> Self {
-        let ln2 = core::f64::consts::LN_2;
-        let alpha = 1.0 - crate::math::exp(-ln2 / halflife);
+        let alpha = crate::math::alpha_from_halflife(halflife);
         self.alpha = Some(alpha);
         self
     }
@@ -209,7 +208,7 @@ impl EmaBuilder {
     #[inline]
     pub fn build(self) -> Result<Ema, crate::ConfigError> {
         let alpha = self.alpha.ok_or(crate::ConfigError::Missing("alpha"))?;
-        if !(alpha > 0.0 && alpha < 1.0) {
+        if !crate::math::in_unit_interval(alpha) {
             return Err(crate::ConfigError::Invalid("EMA alpha must be in (0, 1)"));
         }
         if self.min_samples == 0 {

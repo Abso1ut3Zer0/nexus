@@ -1,4 +1,3 @@
-extern crate alloc;
 use alloc::boxed::Box;
 use alloc::vec;
 use nexus_stats_core::DataError;
@@ -167,7 +166,7 @@ impl BucketList {
 ///
 /// // Stable signal — no detection
 /// for _ in 0..100 {
-///     assert!(!ad.update(5.0).unwrap());
+///     assert!(ad.update(5.0).unwrap() != Some(true));
 /// }
 /// ```
 #[derive(Debug, Clone)]
@@ -211,7 +210,10 @@ impl Adwin {
     ///
     /// Returns `DataError::NotANumber` if the sample is NaN, or
     /// `DataError::Infinite` if the sample is infinite.
-    pub fn update(&mut self, sample: f64) -> Result<bool, DataError> {
+    ///
+    /// `None` until `min_samples` samples have been seen (no verdict yet), then
+    /// `Some(true)` when a change is detected on this sample.
+    pub fn update(&mut self, sample: f64) -> Result<Option<bool>, DataError> {
         check_finite!(sample);
         self.count += 1;
         self.width += 1;
@@ -220,10 +222,10 @@ impl Adwin {
         self.total += sample;
 
         if !self.is_primed() {
-            return Ok(false);
+            return Ok(None);
         }
 
-        Ok(self.check_and_shrink())
+        Ok(Some(self.check_and_shrink()))
     }
 
     fn check_and_shrink(&mut self) -> bool {
@@ -359,6 +361,7 @@ impl AdwinBuilder {
     ///
     /// - Delta must have been set and be in (0, 1).
     /// - `max_buckets` must be >= 2.
+    #[inline]
     pub fn build(self) -> Result<Adwin, nexus_stats_core::ConfigError> {
         let delta = self
             .delta
@@ -403,7 +406,7 @@ mod tests {
             .unwrap();
 
         for _ in 0..500 {
-            assert!(!ad.update(10.0).unwrap());
+            assert!(ad.update(10.0).unwrap() != Some(true));
         }
     }
 
@@ -421,7 +424,7 @@ mod tests {
 
         let mut detected = false;
         for _ in 0..500 {
-            if ad.update(5.0).unwrap() {
+            if ad.update(5.0).unwrap() == Some(true) {
                 detected = true;
                 break;
             }
@@ -443,7 +446,7 @@ mod tests {
         let width_before = ad.width();
 
         for _ in 0..500 {
-            if ad.update(10.0).unwrap() {
+            if ad.update(10.0).unwrap() == Some(true) {
                 break;
             }
         }
@@ -495,10 +498,10 @@ mod tests {
         let mut sensitive_fired = 0u64;
         let mut conservative_fired = 0u64;
         for _ in 0..200 {
-            if sensitive.update(2.0).unwrap() && sensitive_fired == 0 {
+            if sensitive.update(2.0).unwrap() == Some(true) && sensitive_fired == 0 {
                 sensitive_fired = sensitive.count();
             }
-            if conservative.update(2.0).unwrap() && conservative_fired == 0 {
+            if conservative.update(2.0).unwrap() == Some(true) && conservative_fired == 0 {
                 conservative_fired = conservative.count();
             }
         }

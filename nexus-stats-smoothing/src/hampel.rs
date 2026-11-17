@@ -183,6 +183,7 @@ impl HampelBuilder {
     /// # Errors
     ///
     /// Returns `ConfigError` if thresholds are invalid.
+    #[inline]
     pub fn build(self) -> Result<Hampel, nexus_stats_core::ConfigError> {
         if self.inner_threshold <= 0.0 || !self.inner_threshold.is_finite() {
             return Err(nexus_stats_core::ConfigError::Invalid(

@@ -165,8 +165,7 @@ impl ErrorRateBuilder {
     #[must_use]
     #[cfg(any(feature = "std", feature = "libm"))]
     pub fn halflife(mut self, halflife: f64) -> Self {
-        let ln2 = core::f64::consts::LN_2;
-        self.alpha = Some(1.0 - crate::math::exp(-ln2 / halflife));
+        self.alpha = Some(crate::math::alpha_from_halflife(halflife));
         self
     }
 
@@ -207,7 +206,7 @@ impl ErrorRateBuilder {
         let threshold = self
             .threshold
             .ok_or(crate::ConfigError::Missing("threshold"))?;
-        if !(alpha > 0.0 && alpha < 1.0) {
+        if !crate::math::in_unit_interval(alpha) {
             return Err(crate::ConfigError::Invalid("alpha must be in (0, 1)"));
         }
         if threshold < 0.0 {

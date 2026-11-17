@@ -4,7 +4,7 @@
 //! Fixed-memory, zero-allocation streaming statistics for real-time systems.
 //!
 //! 60+ algorithms. Scalar types are O(1) per update; window and dimension types
-//! (`WindowedMedian`, `Kama`, `Hampel`, `Bocpd`, `RlsFilter`, `OnlineCovariance`,
+//! (`WindowedMedian`, `Kama`, `Hampel`, `Bocpd`, `RlsFilter`, `CovarianceMatrix`,
 //! `OnlineKMeans`, `QuantileNorm`) cost O(window) or O(d²) and say so on their page.
 //! Memory is fixed after construction.
 //! Core types are `no_std` compatible; types marked *(std)* require the `std` feature,
@@ -70,7 +70,7 @@
 //! |--------|----------|
 //! | [`smoothing`] | Ema, AsymEma, Slew |
 //! | [`detection`] | Cusum, DistributionShift *(std\|libm)* |
-//! | [`statistics`] | Welford, Moments, EwmaVar, Covariance, HarmonicMean, Percentile, BipowerVariation, Cvar, Lpm, HitRate, Amihud, BucketAccumulator, HalfLife *(std\|libm)*, RollSpread *(std\|libm)*, Hurst *(alloc, std\|libm)*, TwoScaleRv *(alloc, std\|libm)*, OnlineCovariance *(alloc)*, VarianceRatio *(alloc)* |
+//! | [`statistics`] | Welford, Moments, EwmaVar, Covariance, HarmonicMean, Percentile, BipowerVariation, Cvar, Lpm, HitRate, Amihud, BucketAccumulator, HalfLife *(std\|libm)*, RollSpread *(std\|libm)*, Hurst *(alloc, std\|libm)*, TwoScaleRv *(alloc, std\|libm)*, CovarianceMatrix *(alloc)*, VarianceRatio *(alloc)* |
 //! | [`monitoring`] | Drawdown, RunningMax, RunningMin, WindowedMax, WindowedMin, MaxGauge, PeakHold, CoDel, PollSaturation, SojournSaturation, Liveness, EventRate, Jitter, ErrorRate, HawkesIntensity *(std\|libm)* |
 //! | [`control`] | DeadBand, Hysteresis, Debounce, LevelCrossing, FirstDiff, SecondDiff |
 //! | [`normalization`] | MinMaxNorm, ZScoreNorm *(std\|libm)*, QuantileNorm *(alloc)* |
@@ -95,7 +95,7 @@
 //!
 //! | Feature | Default | Enables |
 //! |---------|---------|---------|
-//! | `std` | yes | `WallClock`, `sqrt`/`exp` intrinsics; implies `alloc` |
+//! | `std` | yes | `MonotonicClock`, `sqrt`/`exp` intrinsics; implies `alloc` |
 //! | `alloc` | no (implied by `std`) | Mosum, Kama, Hampel, WindowedMedian, BoolWindow, TopK, the correlations and entropies, adaptive filters, optimizers, bandits |
 //! | `libm` | no | Pure Rust `sqrt`/`exp` fallback for `no_std` (enables ShiryaevRoberts, AdaptiveThreshold, HalfLife, ...) |
 //! | `smoothing` | no | Advanced smoothing types (Holt, Kama, Spring, Kalman1d, WindowedMedian, ...) |

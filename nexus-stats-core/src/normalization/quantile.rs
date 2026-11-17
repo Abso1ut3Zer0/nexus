@@ -187,6 +187,7 @@ impl<T: Float> QuantileNormBuilder<T> {
     /// # Errors
     ///
     /// Returns `ConfigError` if resolution is missing or < 2.
+    #[inline]
     #[allow(clippy::cast_precision_loss)]
     pub fn build(self) -> Result<QuantileNorm<T>, crate::ConfigError> {
         let resolution = self

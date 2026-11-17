@@ -75,6 +75,10 @@ impl<K: Eq + Clone> TopK<K> {
         // sized once; `push` never reallocates below `capacity`.
         if self.entries.len() < self.capacity {
             self.entries.push(Entry { key, count: 1 });
+            debug_assert!(
+                self.entries.len() <= self.capacity,
+                "TopK table grew past its bound"
+            );
             return;
         }
 
@@ -98,6 +102,7 @@ impl<K: Eq + Clone> TopK<K> {
     ///
     /// The returned slice length is `min(capacity, unique keys observed)`.
     /// Counts may overestimate — see the overcount property.
+    #[must_use]
     #[inline]
     pub fn top(&self, buf: &mut [(K, u64)]) -> usize {
         let n = self.entries.len().min(buf.len());
@@ -119,13 +124,6 @@ impl<K: Eq + Clone> TopK<K> {
             .map_or(0, |e| e.count)
     }
 
-    /// Total observations recorded.
-    #[inline]
-    #[must_use]
-    pub fn total(&self) -> u64 {
-        self.total
-    }
-
     /// Number of distinct keys currently tracked.
     #[inline]
     #[must_use]
@@ -138,6 +136,20 @@ impl<K: Eq + Clone> TopK<K> {
     #[must_use]
     pub fn is_empty(&self) -> bool {
         self.entries.is_empty()
+    }
+
+    /// Samples processed since construction or `reset`.
+    #[inline]
+    #[must_use]
+    pub fn count(&self) -> u64 {
+        self.total
+    }
+
+    /// Whether at least one key has been counted.
+    #[inline]
+    #[must_use]
+    pub fn is_primed(&self) -> bool {
+        self.total > 0
     }
 
     /// Resets to empty state.
@@ -160,7 +172,7 @@ mod tests {
     #[test]
     fn empty() {
         let tk: TopK<u32> = TopK::new(5).unwrap();
-        assert_eq!(tk.total(), 0);
+        assert_eq!(tk.count(), 0);
         assert_eq!(tk.len(), 0);
         assert!(tk.is_empty());
     }
@@ -173,7 +185,7 @@ mod tests {
         tk.update("BTC");
 
         assert_eq!(tk.count_of(&"BTC"), 3);
-        assert_eq!(tk.total(), 3);
+        assert_eq!(tk.count(), 3);
     }
 
     #[test]
@@ -189,7 +201,7 @@ mod tests {
         assert_eq!(tk.count_of(&"BTC"), 3);
         assert_eq!(tk.count_of(&"ETH"), 2);
         assert_eq!(tk.count_of(&"SOL"), 1);
-        assert_eq!(tk.total(), 6);
+        assert_eq!(tk.count(), 6);
     }
 
     #[test]
@@ -261,7 +273,7 @@ mod tests {
         tk.update(2);
 
         tk.reset();
-        assert_eq!(tk.total(), 0);
+        assert_eq!(tk.count(), 0);
         assert_eq!(tk.len(), 0);
         assert!(tk.is_empty());
         assert_eq!(tk.count_of(&1), 0);
@@ -269,14 +281,18 @@ mod tests {
 
     #[test]
     fn string_keys() {
-        let mut tk: TopK<u64> = TopK::new(10).unwrap();
-        for i in 0..100 {
-            tk.update(i % 10);
+        let mut tk: TopK<&'static str> = TopK::new(3).unwrap();
+        for _ in 0..5 {
+            tk.update("btc");
         }
-        assert_eq!(tk.total(), 100);
-        // Each of the 10 keys should have count 10
-        for i in 0..10 {
-            assert_eq!(tk.count_of(&i), 10);
+        for _ in 0..3 {
+            tk.update("eth");
         }
+        tk.update("sol");
+        assert_eq!(tk.count(), 9);
+        assert_eq!(tk.count_of(&"btc"), 5);
+        assert_eq!(tk.count_of(&"eth"), 3);
+        assert_eq!(tk.count_of(&"sol"), 1);
+        assert_eq!(tk.count_of(&"doge"), 0);
     }
 }

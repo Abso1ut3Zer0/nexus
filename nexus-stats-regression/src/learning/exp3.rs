@@ -1,6 +1,7 @@
-extern crate alloc;
+use super::arm_bank::check_arm;
 use alloc::boxed::Box;
 use alloc::vec;
+use nexus_stats_core::math::MulAdd;
 
 /// EXP3 adversarial bandit.
 ///
@@ -48,31 +49,17 @@ use alloc::vec;
 /// bandit.update(arm, 0.8, prob).unwrap();
 /// ```
 ///
-/// `Exp3` is `!Sync`: `select` takes `&self` but writes an internal scratch
-/// buffer, so share it across threads through `&mut` (or one per thread).
-#[derive(Debug)]
+/// `select` takes `&mut self`: it fills a scratch buffer of arm weights that
+/// is allocated once at build.
+#[derive(Debug, Clone)]
 pub struct Exp3 {
     log_weights: Box<[f64]>,
-    scratch: core::cell::UnsafeCell<Box<[f64]>>,
+    scratch: Box<[f64]>,
     gamma: f64,
     eta: f64,
     total_pulls: u64,
     num_arms: usize,
     min_samples: u64,
-}
-
-impl Clone for Exp3 {
-    fn clone(&self) -> Self {
-        Self {
-            log_weights: self.log_weights.clone(),
-            scratch: core::cell::UnsafeCell::new(vec![0.0; self.num_arms].into_boxed_slice()),
-            gamma: self.gamma,
-            eta: self.eta,
-            total_pulls: self.total_pulls,
-            num_arms: self.num_arms,
-            min_samples: self.min_samples,
-        }
-    }
 }
 
 /// Builder for [`Exp3`].
@@ -105,19 +92,10 @@ impl Exp3 {
     /// Uses log-sum-exp with a cached scratch buffer to avoid
     /// recomputing exp() values during CDF sampling.
     #[must_use]
-    #[allow(clippy::suboptimal_flops)]
-    pub fn select(&self, rng: &mut impl FnMut() -> f64) -> (usize, f64) {
+    pub fn select(&mut self, rng: &mut impl FnMut() -> f64) -> (usize, f64) {
         let k = self.num_arms as f64;
         let gamma = self.gamma;
-        // Drawn before the scratch borrow below: `rng` is caller code, and
-        // nothing of the caller's may run while that borrow is live.
         let u = rng();
-
-        // SAFETY: `scratch` is touched only inside this method, the borrow
-        // never escapes it, and no caller code runs while it is live (the
-        // only callback, `rng`, was already drawn), so no second borrow of
-        // the cell can be created. The `UnsafeCell` is why `Exp3` is `!Sync`.
-        let scratch = unsafe { &mut *self.scratch.get() };
 
         let max_lw = self
             .log_weights
@@ -127,7 +105,7 @@ impl Exp3 {
 
         // Compute exp values into scratch, accumulate sum (K exp calls)
         let mut sum_exp = 0.0;
-        for (s, &lw) in scratch.iter_mut().zip(self.log_weights.iter()) {
+        for (s, &lw) in self.scratch.iter_mut().zip(self.log_weights.iter()) {
             *s = nexus_stats_core::math::exp(lw - max_lw);
             sum_exp += *s;
         }
@@ -137,8 +115,8 @@ impl Exp3 {
         let mut cumulative = 0.0;
 
         // CDF sampling from cached exp values — no exp() calls
-        for (i, &exp_w) in scratch.iter().enumerate() {
-            let p_i = exp_w * scale + gamma_over_k;
+        for (i, &exp_w) in self.scratch.iter().enumerate() {
+            let p_i = exp_w.fma(scale, gamma_over_k);
             cumulative += p_i;
             if u < cumulative {
                 return (i, p_i);
@@ -146,7 +124,7 @@ impl Exp3 {
         }
 
         let last = self.num_arms - 1;
-        let p_last = scratch[last] * scale + gamma_over_k;
+        let p_last = self.scratch[last].fma(scale, gamma_over_k);
         (last, p_last)
     }
 
@@ -178,11 +156,7 @@ impl Exp3 {
         if !(prob > 0.0 && prob <= 1.0) {
             return Err(nexus_stats_core::DataError::OutOfRange);
         }
-        assert!(
-            arm < self.num_arms,
-            "arm {arm} >= num_arms {}",
-            self.num_arms
-        );
+        check_arm(arm, self.num_arms);
 
         let k = self.num_arms as f64;
         self.log_weights[arm] += self.eta * reward / (k * prob);
@@ -223,13 +197,6 @@ impl Exp3 {
         for o in out.iter_mut() {
             *o = *o * scale + gamma_over_k;
         }
-    }
-
-    /// Total pulls across all arms.
-    #[inline]
-    #[must_use]
-    pub fn total_pulls(&self) -> u64 {
-        self.total_pulls
     }
 
     /// Number of arms.
@@ -320,7 +287,7 @@ impl Exp3Builder {
         let min_samples = self.min_samples.unwrap_or(arms as u64);
         Ok(Exp3 {
             log_weights: vec![0.0; arms].into_boxed_slice(),
-            scratch: core::cell::UnsafeCell::new(vec![0.0; arms].into_boxed_slice()),
+            scratch: vec![0.0; arms].into_boxed_slice(),
             gamma,
             eta,
             total_pulls: 0,
@@ -333,16 +300,7 @@ impl Exp3Builder {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    fn make_rng(seed: u64) -> impl FnMut() -> f64 {
-        let mut state = seed;
-        move || {
-            state = state
-                .wrapping_mul(6_364_136_223_846_793_005)
-                .wrapping_add(1_442_695_040_888_963_407);
-            (state >> 33) as f64 / (1u64 << 31) as f64
-        }
-    }
+    use crate::learning::sampling::test_rng as make_rng;
 
     #[test]
     fn uniform_start() {
@@ -448,7 +406,7 @@ mod tests {
         assert!(bandit.update(0, 0.5, 0.0).is_err());
         assert!(bandit.update(0, 0.5, -0.1).is_err());
         assert!(bandit.update(0, f64::NAN, 0.5).is_err());
-        assert_eq!(bandit.total_pulls(), 0);
+        assert_eq!(bandit.count(), 0);
     }
 
     #[test]
@@ -459,7 +417,7 @@ mod tests {
         bandit.update(1, 0.1, 0.4).unwrap();
         bandit.reset();
 
-        assert_eq!(bandit.total_pulls(), 0);
+        assert_eq!(bandit.count(), 0);
         let mut probs = vec![0.0; 3];
         bandit.probabilities(&mut probs);
         let expected = 1.0 / 3.0;
@@ -475,5 +433,26 @@ mod tests {
         assert!(Exp3::builder().arms(2).gamma(1.5).build().is_err());
         assert!(Exp3::builder().arms(2).gamma(0.1).eta(0.0).build().is_err());
         assert!(Exp3::builder().arms(2).build().is_err()); // missing gamma
+    }
+
+    /// Two bandits driven by the same seed make the same choices: selection
+    /// has no hidden entropy source.
+    #[test]
+    fn seeded_replay_is_deterministic() {
+        let mut a = Exp3::builder().arms(4).gamma(0.2).build().unwrap();
+        let mut b = Exp3::builder().arms(4).gamma(0.2).build().unwrap();
+        let (mut ra, mut rb) = (make_rng(7), make_rng(7));
+        for step in 0..200 {
+            let (arm_a, p_a) = a.select(&mut ra);
+            let (arm_b, p_b) = b.select(&mut rb);
+            assert_eq!(
+                (arm_a, p_a.to_bits()),
+                (arm_b, p_b.to_bits()),
+                "step {step}"
+            );
+            let reward = if arm_a == 1 { 0.9 } else { 0.1 };
+            a.update(arm_a, reward, p_a).unwrap();
+            b.update(arm_b, reward, p_b).unwrap();
+        }
     }
 }

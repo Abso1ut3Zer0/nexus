@@ -16,7 +16,8 @@ use crate::Sample;
 pub struct DeadBand<T: Sample> {
     threshold: T,
     last_reported: T,
-    initialized: bool,
+    /// Samples processed; the first one seeds the state.
+    count: u64,
 }
 
 impl<T: Sample> DeadBand<T> {
@@ -35,7 +36,7 @@ impl<T: Sample> DeadBand<T> {
         Ok(Self {
             threshold,
             last_reported: T::ZERO,
-            initialized: false,
+            count: 0,
         })
     }
 
@@ -43,25 +44,39 @@ impl<T: Sample> DeadBand<T> {
     #[inline]
     #[must_use]
     pub fn last_reported(&self) -> Option<T> {
-        if self.initialized {
+        if self.count > 0 {
             Some(self.last_reported)
         } else {
             None
         }
     }
 
+    /// Samples processed since construction or `reset`.
+    #[inline]
+    #[must_use]
+    pub fn count(&self) -> u64 {
+        self.count
+    }
+
+    /// Whether at least one sample has been seen.
+    #[inline]
+    #[must_use]
+    pub fn is_primed(&self) -> bool {
+        self.count > 0
+    }
+
     /// Resets to uninitialized state. The threshold is kept.
     #[inline]
     pub fn reset(&mut self) {
         self.last_reported = T::ZERO;
-        self.initialized = false;
+        self.count = 0;
     }
 
     #[inline]
     fn fold(&mut self, sample: T) -> Option<T> {
-        if !self.initialized || sample.further_than(self.last_reported, self.threshold) {
+        self.count += 1;
+        if self.count == 1 || sample.further_than(self.last_reported, self.threshold) {
             self.last_reported = sample;
-            self.initialized = true;
             Some(sample)
         } else {
             None

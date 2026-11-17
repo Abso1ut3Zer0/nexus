@@ -1,3 +1,5 @@
+use nexus_stats_core::math::MulAdd;
+
 // Online Polynomial Regression — Sufficient Statistics + Normal Equations
 //
 // Accumulates sums of powers of x and cross-products with y.
@@ -7,7 +9,6 @@
 // degree and intercept are runtime-configured via builder.
 
 // Normal equations with sums-of-powers can accumulate large values.
-#![allow(clippy::suboptimal_flops)]
 
 /// Polynomial coefficients returned by regression queries.
 ///
@@ -17,9 +18,31 @@
 pub struct Coefficients {
     pub(crate) values: [f64; 9],
     pub(crate) len: usize,
+    /// Whether `values[0]` is the constant term (else the fit has none and
+    /// `values[0]` multiplies `x`).
+    pub(crate) intercept: bool,
 }
 
 impl Coefficients {
+    /// Evaluates the fitted polynomial at `x` (O(degree)).
+    ///
+    /// `coefficients()` solves the normal equations; take it once and call
+    /// `eval` per point instead of `predict` when evaluating many points.
+    #[inline]
+    #[must_use]
+    pub fn eval(&self, x: f64) -> f64 {
+        // Power form, not Horner: the `y` and `x_pow` chains are independent,
+        // so at the degrees this type fits (<= 8) it is about half the
+        // latency of Horner's single dependent chain.
+        let mut y = 0.0;
+        let mut x_pow = if self.intercept { 1.0 } else { x };
+        for &c in &self.values[..self.len] {
+            y = c.fma(x_pow, y);
+            x_pow *= x;
+        }
+        y
+    }
+
     /// Coefficients as a slice.
     #[inline]
     #[must_use]
@@ -250,6 +273,7 @@ impl PolynomialRegression {
         let mut coeffs = Coefficients {
             values: [0.0; 9],
             len: dim,
+            intercept: self.intercept,
         };
         coeffs.values[..dim].copy_from_slice(&b[..dim]);
         Some(coeffs)
@@ -287,18 +311,13 @@ impl PolynomialRegression {
     }
 
     /// Predict y for a given x using current coefficients.
+    ///
+    /// Each call solves the normal equations (O(degree³)); to evaluate many
+    /// points take [`coefficients`](Self::coefficients) once and use
+    /// [`Coefficients::eval`].
     #[must_use]
     pub fn predict(&self, x: f64) -> Option<f64> {
-        let coeffs = self.coefficients()?;
-        let dim = self.dim();
-
-        let mut y = 0.0;
-        let mut x_pow = if self.intercept { 1.0 } else { x };
-        for i in 0..dim {
-            y += coeffs.values[i] * x_pow;
-            x_pow *= x;
-        }
-        Some(y)
+        Some(self.coefficients()?.eval(x))
     }
 
     /// Number of observations processed.
@@ -350,6 +369,7 @@ impl PolynomialRegressionBuilder {
     ///
     /// Returns `ConfigError::Missing` if degree not set.
     /// Returns `ConfigError::Invalid` if degree not in 1..=8.
+    #[inline]
     pub fn build(self) -> Result<PolynomialRegression, nexus_stats_core::ConfigError> {
         let degree = self
             .degree
@@ -392,7 +412,7 @@ mod tests {
         let mut r = quadratic();
         for x in -50..50 {
             let xf = x as f64;
-            r.update(xf, xf * xf - 3.0 * xf + 2.0).unwrap();
+            r.update(xf, xf.mul_add(xf, -(3.0 * xf)) + 2.0).unwrap();
         }
         let c = r.coefficients().unwrap();
         assert!((c[0] - 2.0).abs() < 1e-6, "c0 = {}", c[0]);
@@ -420,7 +440,7 @@ mod tests {
         let mut r = cubic();
         for x in -20..20 {
             let xf = x as f64;
-            let y = 0.5 * xf * xf * xf - 2.0 * xf * xf + xf - 1.0;
+            let y = (0.5 * xf * xf).mul_add(xf, -(2.0 * xf * xf)) + xf - 1.0;
             r.update(xf, y).unwrap();
         }
         let c = r.coefficients().unwrap();
@@ -485,7 +505,7 @@ mod tests {
         let mut r = quadratic();
         for x in -50..50 {
             let xf = x as f64;
-            r.update(xf, xf * xf - 3.0 * xf + 2.0).unwrap();
+            r.update(xf, xf.mul_add(xf, -(3.0 * xf)) + 2.0).unwrap();
         }
         let r2 = r.r_squared().unwrap();
         assert!((r2 - 1.0).abs() < 1e-10, "R² = {r2}");
@@ -588,7 +608,7 @@ mod tests {
         let mut pr = PolynomialRegression::builder().degree(3).build().unwrap();
         for i in 0..200 {
             let x = (f64::from(i) - 100.0) * 1.0e-4;
-            pr.update(x, 2.0 * x * x * x - x).unwrap();
+            pr.update(x, (2.0 * x * x).mul_add(x, -x)).unwrap();
         }
         let c = pr.coefficients().unwrap();
         assert!((c.values[3] - 2.0).abs() < 1e-6, "{:?}", c.values);

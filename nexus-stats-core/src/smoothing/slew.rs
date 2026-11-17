@@ -16,7 +16,8 @@ use crate::Sample;
 pub struct Slew<T: Sample> {
     max_rate: T,
     value: T,
-    initialized: bool,
+    /// Samples processed; the first one seeds the state.
+    count: u64,
 }
 
 impl<T: Sample> Slew<T> {
@@ -37,7 +38,7 @@ impl<T: Sample> Slew<T> {
         Ok(Self {
             max_rate,
             value: T::ZERO,
-            initialized: false,
+            count: 0,
         })
     }
 
@@ -48,18 +49,32 @@ impl<T: Sample> Slew<T> {
         self.value
     }
 
+    /// Samples processed since construction or `reset`.
+    #[inline]
+    #[must_use]
+    pub fn count(&self) -> u64 {
+        self.count
+    }
+
+    /// Whether at least one sample has been seen.
+    #[inline]
+    #[must_use]
+    pub fn is_primed(&self) -> bool {
+        self.count > 0
+    }
+
     /// Resets to uninitialized state. `max_rate` is kept.
     #[inline]
     pub fn reset(&mut self) {
         self.value = T::ZERO;
-        self.initialized = false;
+        self.count = 0;
     }
 
     #[inline]
     fn fold(&mut self, sample: T) -> T {
-        if !self.initialized {
+        self.count += 1;
+        if self.count == 1 {
             self.value = sample;
-            self.initialized = true;
             return sample;
         }
         self.value = sample.clamp_to(self.value - self.max_rate, self.value + self.max_rate);

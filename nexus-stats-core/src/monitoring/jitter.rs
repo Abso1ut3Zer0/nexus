@@ -212,6 +212,7 @@ impl<T: Sample> JitterBuilder<T> {
     /// no smoothing was configured;
     /// `ConfigError::Invalid` if it is out of range (alpha outside (0, 1),
     /// span below 1).
+    #[inline]
     pub fn build(self) -> Result<Jitter<T>, crate::ConfigError> {
         let config = self
             .ema
@@ -265,7 +266,7 @@ impl JitterBuilder<f64> {
     #[must_use]
     #[cfg(any(feature = "std", feature = "libm"))]
     pub fn halflife(mut self, halflife: f64) -> Self {
-        self.ema = Some(1.0 - crate::math::exp(-core::f64::consts::LN_2 / halflife));
+        self.ema = Some(crate::math::alpha_from_halflife(halflife));
         self
     }
 }

@@ -1,4 +1,3 @@
-extern crate alloc;
 use alloc::boxed::Box;
 use alloc::vec;
 use nexus_stats_core::DataError;
@@ -199,28 +198,14 @@ impl PredictiveInfoBound {
         self.joint.iter().filter(|&&c| c > 0).count() as u64
     }
 
+    #[inline]
     fn bin_x(&self, x: f64) -> usize {
-        let clamped = if x < self.x_min {
-            self.x_min
-        } else if x > self.x_max {
-            self.x_max
-        } else {
-            x
-        };
-        let idx = ((clamped - self.x_min) / self.x_width) as usize;
-        if idx >= self.bins { self.bins - 1 } else { idx }
+        equi_width_bin(x, self.x_min, self.x_max, self.x_width, self.bins)
     }
 
+    #[inline]
     fn bin_y(&self, y: f64) -> usize {
-        let clamped = if y < self.y_min {
-            self.y_min
-        } else if y > self.y_max {
-            self.y_max
-        } else {
-            y
-        };
-        let idx = ((clamped - self.y_min) / self.y_width) as usize;
-        if idx >= self.bins { self.bins - 1 } else { idx }
+        equi_width_bin(y, self.y_min, self.y_max, self.y_width, self.bins)
     }
 
     /// Total observations.
@@ -286,6 +271,7 @@ impl PredictiveInfoBoundBuilder {
     ///
     /// - `bins` must be in [2, 256].
     /// - `x_range` and `y_range` must have `max > min`, both finite.
+    #[inline]
     pub fn build(self) -> Result<PredictiveInfoBound, nexus_stats_core::ConfigError> {
         let bins = self
             .bins
@@ -343,6 +329,14 @@ impl PredictiveInfoBoundBuilder {
             min_samples,
         })
     }
+}
+
+/// Equi-width bin of `x` over `[min, max]`: clamped into range, the top edge
+/// folded into the last bin.
+#[inline]
+fn equi_width_bin(x: f64, min: f64, max: f64, width: f64, bins: usize) -> usize {
+    let idx = ((x.clamp(min, max) - min) / width) as usize;
+    if idx >= bins { bins - 1 } else { idx }
 }
 
 #[cfg(test)]
@@ -453,7 +447,13 @@ mod tests {
         }
 
         let mi = pib.mutual_information().unwrap();
-        assert!(mi > 0.0, "MI with correction should be positive, got {mi}");
+        // x == y over 4 equiprobable bins: plug-in MI = ln 4. The Miller-Madow
+        // term (Kx + Ky - Kxy - 1) / 2N = (4 + 4 - 4 - 1) / 40 = 0.075 is added.
+        let ln4 = nexus_stats_core::math::ln(4.0);
+        assert!(
+            mi > ln4 && mi < ln4 + 0.1,
+            "expected ln 4 + 0.075, got {mi}"
+        );
     }
 
     #[test]

@@ -3,7 +3,7 @@
 Fixed-memory, zero-allocation streaming statistics for real-time systems.
 
 Scalar primitives are O(1) per update; window and dimension types
-(`WindowedMedian`, `Kama`, `Hampel`, `Bocpd`, `RlsFilter`, `OnlineCovariance`,
+(`WindowedMedian`, `Kama`, `Hampel`, `Bocpd`, `RlsFilter`, `CovarianceMatrix`,
 `OnlineKMeans`, `QuantileNorm`) cost O(window) or O(d²) and say so on their
 page. Memory is fixed after construction. The crates are `no_std`; types
 marked *(alloc)* or *(std|libm)* in the tables below need those features.
@@ -193,7 +193,7 @@ The normalizers (`ZScoreNorm`, `MinMaxNorm`, `QuantileNorm`) and
 `T` but accumulate in `f64`, so the `f32` form is a boundary type for `f32`
 feature vectors. Time-aware types (`Liveness`, `EventRate`, `PollSaturation`,
 `SojournSaturation`, `DecayAccum`, the windowed extrema's timestamps) take
-`u64` ticks in any unit; `clock::WallClock` is the `std` bridge from
+`u64` ticks in any unit; `clock::MonotonicClock` is the `std` bridge from
 `Instant`. The full table is [`docs/reference/type-matrix.md`](docs/reference/type-matrix.md);
 upgrading from 6.x: [`docs/guides/migrating-to-7.md`](docs/guides/migrating-to-7.md).
 
@@ -263,7 +263,7 @@ stats.update(sample).unwrap();
 
 | Feature | Default | What |
 |---------|---------|------|
-| `std` | yes | `WallClock`, hardware intrinsics for `sqrt`/`exp`; implies `alloc` |
+| `std` | yes | `MonotonicClock`, hardware intrinsics for `sqrt`/`exp`; implies `alloc` |
 | `libm` | no | Pure Rust math fallback for `no_std` |
 | `alloc` | no (implied by `std`) | Runtime-sized tables (Mosum, WindowedMedian, Kama, BoolWindow, TopK), adaptive filters, optimizers |
 
@@ -275,7 +275,7 @@ and construction (`halflife()`).
 
 nexus-stats is split into five workspace crates for independent compilation and feature gating:
 
-- **nexus-stats-core** — shared traits, error types, clock (`Clock`, `WallClock`, `EpochClock`), and builder infrastructure
+- **nexus-stats-core** — shared traits, error types, clock (`Clock`, `MonotonicClock`, `EpochClock`), and builder infrastructure
 - **nexus-stats-smoothing** — EMA, KAMA, Kalman, Holt, Spring, Slew, WindowedMedian
 - **nexus-stats-detection** — CUSUM, MOSUM, Shiryaev-Roberts, MultiGate, RobustZScore, AdaptiveThreshold
 - **nexus-stats-regression** — Linear, polynomial, exponential, logarithmic, power regression

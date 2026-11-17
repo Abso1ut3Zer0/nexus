@@ -10,8 +10,7 @@
 //
 // r(k) = cross_m / m2 — the 1/N normalization cancels.
 
-extern crate alloc;
-
+use nexus_stats_core::statistics::Welford;
 use nexus_stats_core::storage::Ring;
 
 /// Online autocorrelation at a configurable lag.
@@ -45,9 +44,8 @@ use nexus_stats_core::storage::Ring;
 pub struct Autocorrelation {
     ring: Ring<f64>,
     lag: usize,
-    count: u64,
-    mean: f64,
-    m2: f64,
+    /// Running mean and M2 of the stream (the shared kernel).
+    stats: Welford,
     cross_m: f64,
 }
 
@@ -74,13 +72,9 @@ impl Autocorrelation {
     #[inline]
     pub fn update(&mut self, sample: f64) -> Result<(), nexus_stats_core::DataError> {
         check_finite!(sample);
-        self.count += 1;
-
-        // Welford update for running mean and variance
-        let delta = sample - self.mean;
-        self.mean += delta / self.count as f64;
-        let delta2 = sample - self.mean;
-        self.m2 += delta * delta2;
+        self.stats.update(sample)?;
+        // `update` succeeded, so the mean exists; the fallback is never taken.
+        let mean = self.stats.mean().unwrap_or(sample);
 
         // Cross-moment: accumulate (x_new - mean)(x_lagged - mean) once the
         // ring is full, i.e. from the (lag + 1)-th observation. The slot
@@ -88,7 +82,7 @@ impl Autocorrelation {
         let was_full = self.ring.is_full();
         let x_lagged = self.ring.replace(sample);
         if was_full {
-            self.cross_m += (sample - self.mean) * (x_lagged - self.mean);
+            self.cross_m += (sample - mean) * (x_lagged - mean);
         }
         Ok(())
     }
@@ -101,28 +95,31 @@ impl Autocorrelation {
     #[inline]
     #[must_use]
     pub fn correlation(&self) -> Option<f64> {
-        if self.count < (self.lag as u64 + 2) {
+        let count = self.stats.count();
+        if count < (self.lag as u64 + 2) {
             return None;
         }
-        if self.m2 == 0.0 {
+        let m2 = self.stats.m2();
+        if m2 == 0.0 {
             return None;
         }
         // cross_m accumulated over (count - lag) pairs,
         // m2 accumulated over (count - 1) samples.
         // Normalize both to get comparable per-observation values.
-        let n_pairs = (self.count - self.lag as u64) as f64;
-        let n_samples = (self.count - 1) as f64;
-        Some(self.cross_m * n_samples / (self.m2 * n_pairs))
+        let n_pairs = (count - self.lag as u64) as f64;
+        let n_samples = (count - 1) as f64;
+        Some(self.cross_m * n_samples / (m2 * n_pairs))
     }
 
     /// Raw autocovariance at the configured lag, or `None` if not primed.
     #[inline]
     #[must_use]
     pub fn covariance(&self) -> Option<f64> {
-        if self.count < (self.lag as u64 + 2) {
+        let count = self.stats.count();
+        if count < (self.lag as u64 + 2) {
             return None;
         }
-        let n_pairs = (self.count - self.lag as u64) as f64;
+        let n_pairs = (count - self.lag as u64) as f64;
         Some(self.cross_m / n_pairs)
     }
 
@@ -137,23 +134,21 @@ impl Autocorrelation {
     #[inline]
     #[must_use]
     pub fn count(&self) -> u64 {
-        self.count
+        self.stats.count()
     }
 
     /// Whether enough data has been collected (>= lag + 2).
     #[inline]
     #[must_use]
     pub fn is_primed(&self) -> bool {
-        self.count >= self.lag as u64 + 2
+        self.stats.count() >= self.lag as u64 + 2
     }
 
     /// Resets to empty state. Configuration and buffer allocation preserved.
     #[inline]
     pub fn reset(&mut self) {
         self.ring.clear(0.0);
-        self.count = 0;
-        self.mean = 0.0;
-        self.m2 = 0.0;
+        self.stats.reset();
         self.cross_m = 0.0;
     }
 }
@@ -182,9 +177,7 @@ impl AutocorrelationBuilder {
         Ok(Autocorrelation {
             ring: Ring::new(lag, 0.0)?,
             lag,
-            count: 0,
-            mean: 0.0,
-            m2: 0.0,
+            stats: Welford::new(),
             cross_m: 0.0,
         })
     }
@@ -309,5 +302,26 @@ mod tests {
     fn builder_rejects_zero_lag() {
         let result = Autocorrelation::builder().lag(0).build();
         assert!(result.is_err());
+    }
+
+    /// `reset` leaves no residue in the lag ring or the moments.
+    #[test]
+    fn reset_then_replay_matches() {
+        let mut ac = Autocorrelation::builder().lag(3).build().unwrap();
+        let stream = [1.0, 2.0, 3.0, 2.0, 1.0, 2.0, 3.0, 2.0, 1.0, 2.0, 3.0, 2.0];
+        let run = |ac: &mut Autocorrelation| -> Vec<Option<u64>> {
+            stream
+                .iter()
+                .map(|&x| {
+                    ac.update(x).unwrap();
+                    ac.correlation().map(f64::to_bits)
+                })
+                .collect()
+        };
+        let first = run(&mut ac);
+        ac.reset();
+        assert_eq!(ac.count(), 0);
+        let second = run(&mut ac);
+        assert_eq!(first, second);
     }
 }

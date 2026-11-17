@@ -115,8 +115,7 @@ impl HitRateBuilder {
     #[must_use]
     #[cfg(any(feature = "std", feature = "libm"))]
     pub fn halflife(mut self, halflife: f64) -> Self {
-        let ln2 = core::f64::consts::LN_2;
-        self.alpha = Some(1.0 - crate::math::exp(-ln2 / halflife));
+        self.alpha = Some(crate::math::alpha_from_halflife(halflife));
         self
     }
 
@@ -133,10 +132,9 @@ impl HitRateBuilder {
     /// # Errors
     ///
     /// Returns `ConfigError` if no smoothing factor was set.
+    #[inline]
     pub fn build(self) -> Result<HitRate, crate::ConfigError> {
-        let alpha = self
-            .alpha
-            .ok_or(crate::ConfigError::Missing("alpha or halflife"))?;
+        let alpha = self.alpha.ok_or(crate::ConfigError::Missing("alpha"))?;
 
         let ew_hits = Ema::builder().alpha(alpha).build()?;
 

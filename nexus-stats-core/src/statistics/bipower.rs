@@ -178,11 +178,11 @@ impl BipowerVariationBuilder {
     }
 
     /// Builds the bipower variation tracker.
-    #[inline]
     ///
     /// # Errors
     ///
     /// `ConfigError::Invalid` if `min_samples` is 0.
+    #[inline]
     pub fn build(self) -> Result<BipowerVariation, crate::ConfigError> {
         if self.min_samples == 0 {
             return Err(crate::ConfigError::Invalid("min_samples must be >= 1"));

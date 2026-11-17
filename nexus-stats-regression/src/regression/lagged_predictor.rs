@@ -104,7 +104,7 @@ impl LaggedPredictor {
     #[inline]
     #[must_use]
     pub fn intercept(&self) -> Option<f64> {
-        self.regression.intercept_value()
+        self.regression.intercept()
     }
 
     /// The lag (number of ticks between estimate and evaluation).
@@ -162,6 +162,7 @@ impl LaggedPredictorBuilder {
     ///
     /// Returns `ConfigError` if lag or halflife is missing, or if halflife
     /// produces an invalid alpha.
+    #[inline]
     pub fn build(self) -> Result<LaggedPredictor, nexus_stats_core::ConfigError> {
         let lag = self
             .lag
@@ -181,8 +182,7 @@ impl LaggedPredictorBuilder {
             ));
         }
 
-        let ln2 = core::f64::consts::LN_2;
-        let alpha = 1.0 - nexus_stats_core::math::exp(-ln2 / halflife);
+        let alpha = nexus_stats_core::math::alpha_from_halflife(halflife);
 
         let regression = EwLinearRegression::builder().alpha(alpha).build()?;
 
@@ -314,5 +314,29 @@ mod tests {
     fn zero_lag_rejected() {
         let result = LaggedPredictor::builder().lag(0).halflife(50.0).build();
         assert!(result.is_err());
+    }
+
+    /// `update(i, i)` fits any lag with slope 1; only the intercept tells the
+    /// lags apart. With estimate_t = realized_{t+3} and lag 3, the pairs line
+    /// up exactly (intercept 0); a lag off by one would read intercept ±1.
+    #[test]
+    fn lag_alignment_is_exact() {
+        let mut p = LaggedPredictor::builder()
+            .lag(3)
+            .halflife(100.0)
+            .build()
+            .unwrap();
+        for i in 0..400 {
+            let realized = i as f64;
+            let estimate_of_three_ahead = (i + 3) as f64;
+            p.update(estimate_of_three_ahead, realized).unwrap();
+        }
+        let slope = p.slope().unwrap();
+        let intercept = p.intercept().unwrap();
+        assert!((slope - 1.0).abs() < 1e-6, "slope {slope}");
+        assert!(
+            intercept.abs() < 1e-6,
+            "a misaligned lag would read ±1 here, got {intercept}"
+        );
     }
 }

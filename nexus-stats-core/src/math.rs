@@ -1,33 +1,18 @@
-/// Validates that a float value is finite (not NaN, not Inf).
-/// Returns `Err(DataError)` with the appropriate variant if invalid.
-/// Used at the top of every update method that accepts float input.
+/// Returns `Err(DataError::NotANumber)` / `Err(DataError::Infinite)` from the
+/// enclosing function when a float input is not finite. The first line of
+/// every `update` that takes a float, in this crate and the subcrates.
+#[doc(hidden)]
+#[macro_export]
 macro_rules! check_finite {
     ($val:expr) => {
         if !$val.is_finite() {
             return Err(if $val.is_nan() {
-                crate::DataError::NotANumber
+                $crate::DataError::NotANumber
             } else {
-                crate::DataError::Infinite
+                $crate::DataError::Infinite
             });
         }
     };
-}
-
-/// Validates that a float value is finite (not NaN, not Inf).
-///
-/// Returns `Err(DataError::NotANumber)` for NaN, `Err(DataError::Infinite)`
-/// for infinity, `Ok(())` for finite values.
-#[doc(hidden)]
-#[inline]
-pub fn check_finite(val: f64) -> Result<(), crate::DataError> {
-    if !val.is_finite() {
-        return Err(if val.is_nan() {
-            crate::DataError::NotANumber
-        } else {
-            crate::DataError::Infinite
-        });
-    }
-    Ok(())
 }
 
 /// f32 variant of [`check_finite`].
@@ -233,6 +218,62 @@ impl_mul_add!(f32);
 #[must_use]
 pub fn indicator(b: bool) -> f64 {
     f64::from(u8::from(b))
+}
+
+/// EMA weight for a half-life of `halflife` samples: `1 - exp(-ln 2 / halflife)`.
+///
+/// Builders validate `halflife > 0` before calling; the result is in `(0, 1)`.
+#[cfg(any(feature = "std", feature = "libm"))]
+#[inline]
+#[must_use]
+pub fn alpha_from_halflife(halflife: f64) -> f64 {
+    1.0 - exp(-core::f64::consts::LN_2 / halflife)
+}
+
+/// `z` such that `P(Z > z) = p` for a standard normal, for `p` in `(0, 0.5]`:
+/// the Abramowitz & Stegun 26.2.23 rational approximation (|error| < 4.5e-4).
+///
+/// Used for the two-sided credible intervals (`p = (1 - confidence) / 2`).
+#[cfg(any(feature = "std", feature = "libm"))]
+#[inline]
+#[must_use]
+pub fn upper_tail_z(p: f64) -> f64 {
+    let t = sqrt(-2.0 * ln(p));
+    let num = 0.010_328f64.fma(t, 0.802_853).fma(t, 2.515_517);
+    let den = 0.001_308f64.fma(t, 0.189_269).fma(t, 1.432_788).fma(t, 1.0);
+    t - num / den
+}
+
+/// Dot product `Σ a[i] · b[i]` as one fused chain (`fma` per term).
+///
+/// `b` is indexed by `a`'s length: one bounds check up front, and the loop
+/// count is `a.len()`. Pass the slice whose length the compiler can see
+/// first (a caller's feature slice rather than a boxed weight vector), and
+/// the loop unrolls to that length where it is a constant.
+///
+/// # Panics
+///
+/// If `b` is shorter than `a`.
+#[inline]
+#[must_use]
+pub fn dot(a: &[f64], b: &[f64]) -> f64 {
+    let b = &b[..a.len()];
+    a.iter().zip(b).fold(0.0, |acc, (&x, &y)| x.fma(y, acc))
+}
+
+/// `y[i] += alpha · x[i]` for every `i` (BLAS `axpy`), fused per element.
+///
+/// `y` is indexed by `x`'s length, like [`dot`].
+///
+/// # Panics
+///
+/// If `y` is shorter than `x`.
+#[inline]
+pub fn axpy(alpha: f64, x: &[f64], y: &mut [f64]) {
+    let y = &mut y[..x.len()];
+    for (yi, &xi) in y.iter_mut().zip(x) {
+        *yi = alpha.fma(xi, *yi);
+    }
 }
 
 /// `true` for a finite value strictly greater than zero; `false` for NaN.

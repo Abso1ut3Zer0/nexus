@@ -192,6 +192,15 @@ impl MultiGateBuilder {
         self
     }
 
+    /// Sets `alpha` from a half-life in samples: `1 - exp(-ln 2 / halflife)`.
+    #[cfg(any(feature = "std", feature = "libm"))]
+    #[inline]
+    #[must_use]
+    pub fn halflife(mut self, halflife: f64) -> Self {
+        self.alpha = Some(nexus_stats_core::math::alpha_from_halflife(halflife));
+        self
+    }
+
     /// Span for EMA smoothing.
     #[inline]
     #[must_use]
@@ -248,7 +257,7 @@ impl MultiGateBuilder {
         let suspect_z = self
             .suspect_z
             .ok_or(nexus_stats_core::ConfigError::Missing("suspect_z"))?;
-        if !(alpha > 0.0 && alpha < 1.0) {
+        if !nexus_stats_core::math::in_unit_interval(alpha) {
             return Err(nexus_stats_core::ConfigError::Invalid(
                 "alpha must be in (0, 1)",
             ));

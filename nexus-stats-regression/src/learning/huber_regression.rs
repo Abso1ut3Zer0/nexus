@@ -1,7 +1,6 @@
-extern crate alloc;
 use alloc::boxed::Box;
 use alloc::vec;
-use nexus_stats_core::math::MulAdd;
+use nexus_stats_core::math::{axpy, dot};
 
 /// Streaming linear regression with Huber loss.
 ///
@@ -100,21 +99,15 @@ impl HuberRegression {
             features.len(),
             self.dim,
         );
-        for &v in features {
-            check_finite!(v);
-        }
+        debug_assert!(
+            features.iter().all(|f| f.is_finite()),
+            "features must be finite"
+        );
         check_finite!(target);
 
         self.count += 1;
 
-        // Compute prediction: dot(weights, features)
-        let mut pred = 0.0f64;
-        for i in 0..self.dim {
-            pred = self.weights[i].fma(features[i], pred);
-        }
-
-        // Residual
-        let residual = target - pred;
+        let residual = target - dot(features, &self.weights);
 
         // Huber gradient
         let grad_scale = if residual.abs() <= self.delta {
@@ -124,10 +117,7 @@ impl HuberRegression {
         };
 
         // SGD update: w += lr * grad_scale * x
-        let step = self.lr * grad_scale;
-        for i in 0..self.dim {
-            self.weights[i] = step.fma(features[i], self.weights[i]);
-        }
+        axpy(self.lr * grad_scale, features, &mut self.weights);
 
         Ok(())
     }
@@ -140,11 +130,7 @@ impl HuberRegression {
     #[must_use]
     pub fn predict(&self, features: &[f64]) -> f64 {
         assert_eq!(features.len(), self.dim);
-        let mut pred = 0.0f64;
-        for i in 0..self.dim {
-            pred = self.weights[i].fma(features[i], pred);
-        }
-        pred
+        dot(features, &self.weights)
     }
 
     /// Current weight vector.
@@ -205,6 +191,7 @@ impl HuberRegressionBuilder {
     /// # Errors
     ///
     /// Returns `ConfigError` if any parameter is missing or invalid.
+    #[inline]
     pub fn build(self) -> Result<HuberRegression, nexus_stats_core::ConfigError> {
         let dim = self
             .dimensions

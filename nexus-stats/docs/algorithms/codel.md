@@ -65,7 +65,7 @@ CoDel along with the current timestamp.
 Internally, the `first_above_time` rule from RFC 8289 section 5.6:
 1. A sojourn at or below target **disarms** the deadline → `Condition::Normal`
 2. A sojourn above target with no deadline armed **arms** one at
-   `now + window` → `Condition::Normal` (waiting out the window)
+   `now + interval` → `Condition::Normal` (waiting out the window)
 3. A sojourn above target at or after the deadline → `Condition::Degraded`,
    and it stays `Degraded` until a sample at or below target disarms it
 
@@ -82,7 +82,7 @@ decide the response (slow producers, shed load, alert, etc.).
 ```rust
 let mut qd = CoDel::<i64>::builder()
     .target(100_000)       // 100μs target sojourn time
-    .window(1_000_000_000) // 1 second observation window (in nanoseconds)
+    .interval(1_000_000_000) // 1 second observation window (in nanoseconds)
     .min_samples(10)
     .build().unwrap();
 ```
@@ -92,14 +92,14 @@ let mut qd = CoDel::<i64>::builder()
 | Parameter | What | Default | Guidance |
 |-----------|------|---------|----------|
 | `target` | Max acceptable sojourn time | Required | Set to your latency budget |
-| `window` | Interval (ticks) | Required | How long sojourn must stay above target |
+| `interval` | Ticks | Required | How long sojourn must stay above target |
 | `min_samples` | Warmup | 1 | Set to 10+ for noisy startup |
 
 **Choosing target:** Your latency budget for queue wait time. If your
 end-to-end budget is 100μs and processing takes 60μs, the queue budget
 is 40μs. Set target to 40μs (40,000 ns).
 
-**Choosing window:** How long a standing queue must persist before you
+**Choosing interval:** How long a standing queue must persist before you
 act. Shorter = faster detection, more false alarms from bursts. Longer =
 more confident, slower response. 100ms-1s is typical.
 
@@ -111,7 +111,7 @@ more confident, slower response. 100ms-1s is typical.
 // Detect backpressure before Aeron buffers fill
 let mut qd = CoDel::<i64>::builder()
     .target(10_000)         // 10μs max queue wait
-    .window(100_000_000)    // 100ms observation window
+    .interval(100_000_000)    // 100ms observation window
     .min_samples(20)
     .build().unwrap();
 
@@ -135,7 +135,7 @@ match qd.update(now_ns as u64, sojourn_ns) {
 // Web server request queue monitoring
 let mut qd = CoDel::<i64>::builder()
     .target(5_000_000)       // 5ms max queue wait
-    .window(10_000_000_000)  // 10s window
+    .interval(10_000_000_000)  // 10s window
     .build().unwrap();
 
 // On each request completion:
@@ -151,7 +151,7 @@ if let Some(Condition::Degraded) = qd.update(now_ns, wait_ms) {
 // Detect when the render command queue backs up
 let mut qd = CoDel::<i64>::builder()
     .target(2_000)           // 2ms max command wait
-    .window(100_000_000)     // 100ms window
+    .interval(100_000_000)     // 100ms window
     .build().unwrap();
 ```
 
@@ -164,7 +164,7 @@ let mut qd = CoDel::<i64>::builder()
 ```rust
 // CoDel catches standing queues from stamped sojourn (latency-based)
 // PollSaturation bounds the wait from poll outcomes when there is no stamp
-let mut qd = CoDel::<i64>::builder().target(t).window(w).build().unwrap();
+let mut qd = CoDel::<i64>::builder().target(t).interval(w).build().unwrap();
 let mut sat = PollSaturation::new(budget);
 
 // On dequeue:

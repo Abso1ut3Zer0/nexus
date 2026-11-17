@@ -1,4 +1,3 @@
-extern crate alloc;
 use alloc::boxed::Box;
 use nexus_stats_core::math::MulAdd;
 use nexus_stats_core::math::{exp, ln, ln_gamma};
@@ -429,6 +428,7 @@ impl BocpdBuilder {
     ///
     /// Returns `ConfigError` if required fields are missing, max_run_length < 10,
     /// hazard_lambda <= 1.0, or prior parameters are non-positive.
+    #[inline]
     pub fn build(self) -> Result<Bocpd, nexus_stats_core::ConfigError> {
         let max_run_length = self
             .max_run_length

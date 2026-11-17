@@ -15,7 +15,7 @@ use alloc::vec;
 /// - Portfolio risk decomposition
 /// - Feature correlation monitoring
 #[derive(Debug, Clone)]
-pub struct OnlineCovariance {
+pub struct CovarianceMatrix {
     cov: Box<[f64]>,
     means: Box<[f64]>,
     dim: usize,
@@ -23,19 +23,19 @@ pub struct OnlineCovariance {
     count: u64,
 }
 
-/// Builder for [`OnlineCovariance`].
+/// Builder for [`CovarianceMatrix`].
 #[derive(Debug, Clone)]
-pub struct OnlineCovarianceBuilder {
+pub struct CovarianceMatrixBuilder {
     dim: Option<usize>,
     alpha: Option<f64>,
 }
 
-impl OnlineCovariance {
+impl CovarianceMatrix {
     /// Creates a builder.
     #[inline]
     #[must_use]
-    pub fn builder() -> OnlineCovarianceBuilder {
-        OnlineCovarianceBuilder {
+    pub fn builder() -> CovarianceMatrixBuilder {
+        CovarianceMatrixBuilder {
             dim: None,
             alpha: None,
         }
@@ -206,7 +206,7 @@ impl OnlineCovariance {
     }
 }
 
-impl OnlineCovarianceBuilder {
+impl CovarianceMatrixBuilder {
     /// Number of dimensions (required).
     #[inline]
     #[must_use]
@@ -220,7 +220,7 @@ impl OnlineCovarianceBuilder {
     #[inline]
     #[must_use]
     pub fn halflife(mut self, h: f64) -> Self {
-        let alpha = 1.0 - crate::math::exp(-core::f64::consts::LN_2 / h);
+        let alpha = crate::math::alpha_from_halflife(h);
         self.alpha = Some(alpha);
         self
     }
@@ -238,7 +238,8 @@ impl OnlineCovarianceBuilder {
     /// # Errors
     ///
     /// Returns `ConfigError` if dim or alpha are missing/invalid.
-    pub fn build(self) -> Result<OnlineCovariance, crate::ConfigError> {
+    #[inline]
+    pub fn build(self) -> Result<CovarianceMatrix, crate::ConfigError> {
         let dim = self.dim.ok_or(crate::ConfigError::Missing("dim"))?;
         if dim == 0 {
             return Err(crate::ConfigError::Invalid("dim must be > 0"));
@@ -246,11 +247,11 @@ impl OnlineCovarianceBuilder {
         let alpha = self
             .alpha
             .ok_or(crate::ConfigError::Missing("halflife or alpha"))?;
-        if !(alpha > 0.0 && alpha < 1.0) {
+        if !crate::math::in_unit_interval(alpha) {
             return Err(crate::ConfigError::Invalid("alpha must be in (0, 1)"));
         }
 
-        Ok(OnlineCovariance {
+        Ok(CovarianceMatrix {
             cov: vec![0.0; dim * dim].into_boxed_slice(),
             means: vec![0.0; dim].into_boxed_slice(),
             dim,
@@ -265,8 +266,8 @@ impl OnlineCovarianceBuilder {
 mod tests {
     use super::*;
 
-    fn basic_cov(dim: usize) -> OnlineCovariance {
-        OnlineCovariance::builder()
+    fn basic_cov(dim: usize) -> CovarianceMatrix {
+        CovarianceMatrix::builder()
             .dim(dim)
             .halflife(50.0)
             .build()
@@ -357,10 +358,10 @@ mod tests {
 
     #[test]
     fn invalid_config() {
-        assert!(OnlineCovariance::builder().alpha(0.1).build().is_err()); // missing dim
-        assert!(OnlineCovariance::builder().dim(2).build().is_err()); // missing alpha
+        assert!(CovarianceMatrix::builder().alpha(0.1).build().is_err()); // missing dim
+        assert!(CovarianceMatrix::builder().dim(2).build().is_err()); // missing alpha
         assert!(
-            OnlineCovariance::builder()
+            CovarianceMatrix::builder()
                 .dim(0)
                 .alpha(0.1)
                 .build()

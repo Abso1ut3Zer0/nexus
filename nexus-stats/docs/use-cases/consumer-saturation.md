@@ -32,10 +32,10 @@ poll shows you caught up. Healthy reads: `behind == 0`, polls returning
 ## Recipe: Spin Loop, One Message Per Poll
 
 ```rust
-use nexus_stats::clock::{Clock, WallClock};
+use nexus_stats::clock::{Clock, MonotonicClock};
 use nexus_stats::monitoring::PollSaturation;
 
-let clock = WallClock::new();                 // nanosecond ticks since construction
+let clock = MonotonicClock::new();                 // nanosecond ticks since construction
 let mut sat = PollSaturation::new(50_000);    // budget: 50 µs
 
 loop {
@@ -54,7 +54,7 @@ loop {
 ```
 
 The type never reads a clock. Ticks are whatever your stamps use;
-`WallClock` is the std bridge (nanoseconds since construction). The later
+`MonotonicClock` is the std bridge (nanoseconds since construction). The later
 recipes assume `clock` and `sat` from here.
 
 ## Recipe: Batch Poll with a Limit

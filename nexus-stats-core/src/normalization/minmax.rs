@@ -147,6 +147,7 @@ impl<T: Float> MinMaxNormBuilder<T> {
     /// # Errors
     ///
     /// Returns `ConfigError` if window is missing or zero.
+    #[inline]
     pub fn build(self) -> Result<MinMaxNorm<T>, crate::ConfigError> {
         let window = self.window.ok_or(crate::ConfigError::Missing("window"))?;
         Ok(MinMaxNorm {

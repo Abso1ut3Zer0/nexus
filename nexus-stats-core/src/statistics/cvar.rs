@@ -151,9 +151,10 @@ impl CvarBuilder {
     /// # Errors
     ///
     /// Returns `ConfigError` if alpha is missing or not in (0, 1).
+    #[inline]
     pub fn build(self) -> Result<Cvar, crate::ConfigError> {
         let alpha = self.alpha.ok_or(crate::ConfigError::Missing("alpha"))?;
-        if !(alpha > 0.0 && alpha < 1.0) {
+        if !crate::math::in_unit_interval(alpha) {
             return Err(crate::ConfigError::Invalid(
                 "alpha must be in (0, 1) exclusive",
             ));
@@ -217,13 +218,26 @@ mod tests {
     #[test]
     fn priming_phase() {
         let mut cv = Cvar::builder().alpha(0.05).build().unwrap();
-        for i in 1..=4 {
+        // The tail quantile primes at the P² rule `1 / (p (1 - p))`, not at a
+        // fixed count; the estimator says how many it needs.
+        let needed = cv.percentile.min_samples();
+        assert!(needed > 5, "a 5% tail needs more than the five markers");
+        for i in 1..needed {
             cv.update(i as f64).unwrap();
-            assert!(!cv.percentile.is_primed());
+            assert!(!cv.percentile.is_primed(), "not primed at {i} of {needed}");
             assert!(cv.cvar().is_none());
         }
-        // 5th sample primes the percentile estimator
-        cv.update(5.0).unwrap();
+        cv.update(needed as f64).unwrap();
+        assert!(cv.percentile.is_primed());
+        // CVaR also needs a sample in the tail, which only accrues once the
+        // quantile exists; the priming sample itself is not yet counted.
+        assert!(cv.cvar().is_none(), "no tail sample yet");
+        // Extreme samples on both sides guarantee a tail hit whichever tail
+        // the alpha names.
+        for i in 0..20 {
+            cv.update(if i % 2 == 0 { -1.0e6 } else { 1.0e6 }).unwrap();
+        }
+        assert!(cv.cvar().is_some(), "extreme samples land in the tail");
     }
 
     #[test]
@@ -232,18 +246,16 @@ mod tests {
         for _ in 0..200 {
             cv.update(42.0).unwrap();
         }
-        if let Some(cvar) = cv.cvar() {
-            assert!(
-                (cvar - 42.0).abs() < 1e-6,
-                "constant stream: CVaR should equal the constant, got {cvar}"
-            );
-        }
-        if let Some(var) = cv.var() {
-            assert!(
-                (var - 42.0).abs() < 1e-6,
-                "constant stream: VaR should equal the constant, got {var}"
-            );
-        }
+        let cvar = cv.cvar().expect("200 samples prime the estimator");
+        assert!(
+            (cvar - 42.0).abs() < 1e-6,
+            "constant stream: CVaR should equal the constant, got {cvar}"
+        );
+        let var = cv.var().expect("200 samples prime the estimator");
+        assert!(
+            (var - 42.0).abs() < 1e-6,
+            "constant stream: VaR should equal the constant, got {var}"
+        );
     }
 
     #[test]

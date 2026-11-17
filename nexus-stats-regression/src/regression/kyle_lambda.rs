@@ -87,7 +87,7 @@ impl KyleLambda {
     #[inline]
     #[must_use]
     pub fn intercept(&self) -> Option<f64> {
-        self.regression.intercept_value()
+        self.regression.intercept()
     }
 
     /// Number of observations.
@@ -120,11 +120,21 @@ impl KyleLambdaBuilder {
         self
     }
 
+    /// Sets `alpha` from a half-life in samples: `1 - exp(-ln 2 / halflife)`.
+    #[cfg(any(feature = "std", feature = "libm"))]
+    #[inline]
+    #[must_use]
+    pub fn halflife(mut self, halflife: f64) -> Self {
+        self.alpha = Some(nexus_stats_core::math::alpha_from_halflife(halflife));
+        self
+    }
+
     /// Build the Kyle lambda tracker.
     ///
     /// # Errors
     ///
     /// Returns `ConfigError` if alpha is missing or invalid.
+    #[inline]
     pub fn build(self) -> Result<KyleLambda, nexus_stats_core::ConfigError> {
         let alpha = self
             .alpha

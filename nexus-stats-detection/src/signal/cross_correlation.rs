@@ -12,7 +12,6 @@
 //
 // r_AB(k) = C_AB(k) / sqrt(Var(A) * Var(B))
 
-extern crate alloc;
 use alloc::boxed::Box;
 use alloc::vec;
 use nexus_stats_core::storage::Ring;

@@ -6,10 +6,9 @@
 // NLMS adapts the step size to the input power, making convergence
 // less sensitive to input scaling. Both are O(dims) per update.
 
-extern crate alloc;
 use alloc::boxed::Box;
 use alloc::vec;
-use nexus_stats_core::math::MulAdd;
+use nexus_stats_core::math::{axpy, dot};
 
 /// Least Mean Squares adaptive filter.
 ///
@@ -65,11 +64,7 @@ impl LmsFilter {
             features.len(),
             self.dims,
         );
-        let mut sum = 0.0;
-        for i in 0..self.dims {
-            sum = self.weights[i].fma(features[i], sum);
-        }
-        sum
+        dot(features, &self.weights)
     }
 
     /// Updates weights: w += lr * (target - predict(features)) * features.
@@ -94,10 +89,7 @@ impl LmsFilter {
         );
         let prediction = self.predict(features);
         let error = target - prediction;
-        let step = self.learning_rate * error;
-        for i in 0..self.dims {
-            self.weights[i] = step.fma(features[i], self.weights[i]);
-        }
+        axpy(self.learning_rate * error, features, &mut self.weights);
         self.count += 1;
         Ok(())
     }
@@ -246,11 +238,7 @@ impl NlmsFilter {
             features.len(),
             self.dims,
         );
-        let mut sum = 0.0;
-        for i in 0..self.dims {
-            sum = self.weights[i].fma(features[i], sum);
-        }
-        sum
+        dot(features, &self.weights)
     }
 
     /// Updates weights: w += (lr / (x·x + epsilon)) * (target - predict(features)) * features.
@@ -275,14 +263,9 @@ impl NlmsFilter {
         );
         let prediction = self.predict(features);
         let error = target - prediction;
-        let mut norm_sq = 0.0;
-        for i in 0..self.dims {
-            norm_sq = features[i].fma(features[i], norm_sq);
-        }
+        let norm_sq = dot(features, features);
         let step = (self.learning_rate / (norm_sq + self.epsilon)) * error;
-        for i in 0..self.dims {
-            self.weights[i] = step.fma(features[i], self.weights[i]);
-        }
+        axpy(step, features, &mut self.weights);
         self.count += 1;
         Ok(())
     }

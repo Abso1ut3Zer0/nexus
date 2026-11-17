@@ -1,10 +1,7 @@
+use nexus_stats_core::math::MulAdd;
+
 // neg_cmp_op_on_partial_ord: !(x > 0.0) intentionally rejects NaN,
 // unlike x <= 0.0 which passes NaN silently.
-#![allow(
-    clippy::suboptimal_flops,
-    clippy::float_cmp,
-    clippy::neg_cmp_op_on_partial_ord
-)]
 
 /// Result of a sequential test.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -131,6 +128,13 @@ impl SprtBernoulli {
         self.last_decision
     }
 
+    /// Whether at least one observation has been weighed.
+    #[inline]
+    #[must_use]
+    pub fn is_primed(&self) -> bool {
+        self.count > 0
+    }
+
     /// Resets log-likelihood and count. Configuration unchanged.
     #[inline]
     pub fn reset(&mut self) {
@@ -211,7 +215,7 @@ impl SprtBernoulliBuilder {
                 "null_rate and alt_rate must differ",
             ));
         }
-        if !(alpha > 0.0 && alpha < 1.0) {
+        if !nexus_stats_core::math::in_unit_interval(alpha) {
             return Err(nexus_stats_core::ConfigError::Invalid(
                 "alpha must be in (0, 1)",
             ));
@@ -312,8 +316,9 @@ impl SprtGaussian {
             return Ok(self.last_decision);
         }
 
-        self.log_likelihood +=
-            self.half_inv_var * self.mean_diff * (2.0 * value - self.null_mean - self.alt_mean);
+        self.log_likelihood += self.half_inv_var
+            * self.mean_diff
+            * (2.0f64.fma(value, -self.null_mean) - self.alt_mean);
         self.count += 1;
 
         let decision = if self.log_likelihood >= self.upper_bound {
@@ -365,6 +370,13 @@ impl SprtGaussian {
     #[must_use]
     pub fn decision(&self) -> Decision {
         self.last_decision
+    }
+
+    /// Whether at least one observation has been weighed.
+    #[inline]
+    #[must_use]
+    pub fn is_primed(&self) -> bool {
+        self.count > 0
     }
 
     /// Resets log-likelihood and count. Configuration unchanged.
@@ -444,7 +456,7 @@ impl SprtGaussianBuilder {
             .beta
             .ok_or(nexus_stats_core::ConfigError::Missing("beta"))?;
 
-        if !(variance > 0.0) {
+        if !nexus_stats_core::math::positive_finite(variance) {
             return Err(nexus_stats_core::ConfigError::Invalid(
                 "variance must be positive",
             ));
@@ -454,7 +466,7 @@ impl SprtGaussianBuilder {
                 "null_mean and alt_mean must differ",
             ));
         }
-        if !(alpha > 0.0 && alpha < 1.0) {
+        if !nexus_stats_core::math::in_unit_interval(alpha) {
             return Err(nexus_stats_core::ConfigError::Invalid(
                 "alpha must be in (0, 1)",
             ));

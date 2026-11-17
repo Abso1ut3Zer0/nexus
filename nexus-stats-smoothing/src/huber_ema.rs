@@ -127,11 +127,11 @@ impl HuberEmaBuilder {
     }
 
     /// Samples for weight to decay by half.
-    #[cfg(feature = "std")]
+    #[cfg(any(feature = "std", feature = "libm"))]
     #[inline]
     #[must_use]
     pub fn halflife(mut self, halflife: f64) -> Self {
-        let alpha = 1.0 - nexus_stats_core::math::exp(-core::f64::consts::LN_2 / halflife);
+        let alpha = nexus_stats_core::math::alpha_from_halflife(halflife);
         self.alpha = Some(alpha);
         self
     }
@@ -166,6 +166,7 @@ impl HuberEmaBuilder {
     /// # Errors
     ///
     /// Returns `ConfigError` if alpha or delta are not set or invalid.
+    #[inline]
     pub fn build(self) -> Result<HuberEma, nexus_stats_core::ConfigError> {
         if self.min_samples == 0 {
             return Err(nexus_stats_core::ConfigError::Invalid(
@@ -174,8 +175,8 @@ impl HuberEmaBuilder {
         }
         let alpha = self
             .alpha
-            .ok_or(nexus_stats_core::ConfigError::Missing("alpha or halflife"))?;
-        if !(alpha > 0.0 && alpha < 1.0) {
+            .ok_or(nexus_stats_core::ConfigError::Missing("alpha"))?;
+        if !nexus_stats_core::math::in_unit_interval(alpha) {
             return Err(nexus_stats_core::ConfigError::Invalid(
                 "alpha must be in (0, 1)",
             ));
@@ -299,5 +300,24 @@ mod tests {
         h.reset();
         assert_eq!(h.count(), 0);
         assert!(!h.is_primed());
+    }
+
+    #[test]
+    fn rejects_nan_and_inf() {
+        let mut h = basic_huber();
+        h.update(10.0).unwrap();
+        assert!(matches!(
+            h.update(f64::NAN),
+            Err(nexus_stats_core::DataError::NotANumber)
+        ));
+        assert!(matches!(
+            h.update(f64::INFINITY),
+            Err(nexus_stats_core::DataError::Infinite)
+        ));
+        assert!(matches!(
+            h.update(f64::NEG_INFINITY),
+            Err(nexus_stats_core::DataError::Infinite)
+        ));
+        assert_eq!(h.count(), 1, "rejected samples leave the state untouched");
     }
 }

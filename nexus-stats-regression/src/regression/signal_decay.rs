@@ -162,6 +162,7 @@ impl SignalDecayCurveBuilder {
     ///
     /// Returns `ConfigError` if lags or halflife is missing, or if any lag
     /// is zero.
+    #[inline]
     pub fn build(self) -> Result<SignalDecayCurve, nexus_stats_core::ConfigError> {
         let lags = self
             .lags

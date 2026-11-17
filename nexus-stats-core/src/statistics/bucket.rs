@@ -5,8 +5,9 @@ pub enum BucketPolicy {
     Count(u64),
     /// Close after accumulating this much volume.
     Volume(f64),
-    /// Close after this many nanoseconds (wall time as u64 nanos).
-    WallTimeNanos(u64),
+    /// Close once the stamps passed to `update_at` span this many ticks
+    /// (any unit; the caller's clock).
+    Ticks(u64),
 }
 
 /// Summary of a closed bucket.
@@ -171,8 +172,8 @@ impl BucketAccumulator {
         }
     }
 
-    /// Feed an observation with a raw `u64` timestamp in nanoseconds
-    /// (WallTime policy, `no_std` compatible).
+    /// Feed an observation stamped with the caller's `u64` ticks (any unit,
+    /// the `Ticks` policy).
     ///
     /// Returns `Some(summary)` when elapsed time reaches the threshold.
     ///
@@ -180,22 +181,22 @@ impl BucketAccumulator {
     ///
     /// Returns `DataError` if the value is NaN or infinite.
     #[inline]
-    pub fn update_at_raw(
+    pub fn update_at(
         &mut self,
         value: f64,
-        timestamp_nanos: u64,
+        timestamp: u64,
     ) -> Result<Option<BucketSummary>, crate::DataError> {
         check_finite!(value);
         self.accumulate(value);
 
         let should_close = match self.policy {
-            BucketPolicy::WallTimeNanos(duration_ns) => {
+            BucketPolicy::Ticks(duration) => {
                 if self.count == 1 {
                     // First observation — record start time.
-                    self.start_nanos = timestamp_nanos;
+                    self.start_nanos = timestamp;
                     false
                 } else {
-                    timestamp_nanos.saturating_sub(self.start_nanos) >= duration_ns
+                    timestamp.saturating_sub(self.start_nanos) >= duration
                 }
             }
             _ => false,
@@ -258,6 +259,13 @@ impl BucketAccumulator {
         self.sum
     }
 
+    /// Whether the open bucket holds at least one sample.
+    #[inline]
+    #[must_use]
+    pub fn is_primed(&self) -> bool {
+        self.count > 0
+    }
+
     /// Reset all state.
     pub fn reset(&mut self) {
         self.sum = 0.0;
@@ -283,6 +291,7 @@ impl BucketAccumulatorBuilder {
     /// # Errors
     ///
     /// Returns `ConfigError::Missing` if no policy was set.
+    #[inline]
     pub fn build(self) -> Result<BucketAccumulator, crate::ConfigError> {
         let policy = self.policy.ok_or(crate::ConfigError::Missing("policy"))?;
         Ok(BucketAccumulator {
@@ -347,16 +356,16 @@ mod tests {
     #[test]
     fn wall_time_raw_policy() {
         let mut bucket = BucketAccumulator::builder()
-            .policy(BucketPolicy::WallTimeNanos(1_000_000_000)) // 1 second
+            .policy(BucketPolicy::Ticks(1_000_000_000)) // 1 second
             .build()
             .unwrap();
 
         // First observation at t=0
-        assert!(bucket.update_at_raw(1.0, 0).unwrap().is_none());
+        assert!(bucket.update_at(1.0, 0).unwrap().is_none());
         // At t=500ms — not yet
-        assert!(bucket.update_at_raw(2.0, 500_000_000).unwrap().is_none());
+        assert!(bucket.update_at(2.0, 500_000_000).unwrap().is_none());
         // At t=1.1s — closes
-        let s = bucket.update_at_raw(3.0, 1_100_000_000).unwrap().unwrap();
+        let s = bucket.update_at(3.0, 1_100_000_000).unwrap().unwrap();
         assert_eq!(s.count(), 3);
         assert!((s.first() - 1.0).abs() < f64::EPSILON);
         assert!((s.last() - 3.0).abs() < f64::EPSILON);

@@ -117,6 +117,7 @@ impl EwPolynomialRegression {
         let mut coeffs = Coefficients {
             values: [0.0; 9],
             len: dim,
+            intercept: self.intercept,
         };
         coeffs.values[..dim].copy_from_slice(&b[..dim]);
         Some(coeffs)
@@ -235,11 +236,21 @@ impl EwPolynomialRegressionBuilder {
         self
     }
 
+    /// Sets `alpha` from a half-life in samples: `1 - exp(-ln 2 / halflife)`.
+    #[cfg(any(feature = "std", feature = "libm"))]
+    #[inline]
+    #[must_use]
+    pub fn halflife(mut self, halflife: f64) -> Self {
+        self.alpha = Some(nexus_stats_core::math::alpha_from_halflife(halflife));
+        self
+    }
+
     /// Builds the regression estimator.
     ///
     /// # Errors
     ///
     /// Returns errors if degree or alpha not set, or values out of range.
+    #[inline]
     pub fn build(self) -> Result<EwPolynomialRegression, nexus_stats_core::ConfigError> {
         let degree = self
             .degree
@@ -253,7 +264,7 @@ impl EwPolynomialRegressionBuilder {
                 "degree must be in 1..=8",
             ));
         }
-        if !(alpha > 0.0 && alpha < 1.0) {
+        if !nexus_stats_core::math::in_unit_interval(alpha) {
             return Err(nexus_stats_core::ConfigError::Invalid(
                 "alpha must be in (0, 1) exclusive",
             ));

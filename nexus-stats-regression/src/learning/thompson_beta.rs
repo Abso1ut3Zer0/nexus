@@ -1,8 +1,4 @@
-extern crate alloc;
-use alloc::boxed::Box;
-use alloc::vec;
-use nexus_stats_core::math::MulAdd;
-
+use super::arm_bank::{ArmBank, checked_decay};
 use super::sampling::f64_impl;
 
 /// Thompson Sampling with Beta prior.
@@ -43,14 +39,11 @@ use super::sampling::f64_impl;
 /// ```
 #[derive(Debug, Clone)]
 pub struct ThompsonBeta {
-    alphas: Box<[f64]>,
-    betas: Box<[f64]>,
+    /// Posterior parameters per arm (`a` = alphas, `b` = betas), plus the pull counter.
+    bank: ArmBank,
     initial_alpha: f64,
     initial_beta: f64,
     decay: f64,
-    total_pulls: u64,
-    num_arms: usize,
-    min_samples: u64,
 }
 
 /// Builder for [`ThompsonBeta`].
@@ -85,7 +78,7 @@ impl ThompsonBeta {
     pub fn select(&self, rng: &mut impl FnMut() -> f64) -> usize {
         let mut best_arm = 0;
         let mut best_sample = f64::NEG_INFINITY;
-        for (i, (&a, &b)) in self.alphas.iter().zip(self.betas.iter()).enumerate() {
+        for (i, (&a, &b)) in self.bank.a.iter().zip(self.bank.b.iter()).enumerate() {
             let sample = f64_impl::beta_sample(a, b, rng);
             if sample > best_sample {
                 best_sample = sample;
@@ -113,27 +106,15 @@ impl ThompsonBeta {
         if !(0.0..=1.0).contains(&reward) {
             return Err(nexus_stats_core::DataError::OutOfRange);
         }
-        assert!(
-            arm < self.num_arms,
-            "arm {arm} >= num_arms {}",
-            self.num_arms
-        );
-
+        self.bank.check_arm(arm);
         if self.decay < 1.0 {
-            let decay = self.decay;
             // Decay toward the prior, not toward zero: an arm that is never
             // pulled forgets its evidence but keeps its prior, so its posterior
             // never collapses to a point mass (or a 0/0 draw).
-            let (pa, pb) = (self.initial_alpha, self.initial_beta);
-            for (a, b) in self.alphas.iter_mut().zip(self.betas.iter_mut()) {
-                *a = (*a - pa).fma(decay, pa);
-                *b = (*b - pb).fma(decay, pb);
-            }
+            self.bank
+                .decay_toward(self.decay, self.initial_alpha, self.initial_beta);
         }
-
-        self.alphas[arm] += reward;
-        self.betas[arm] += 1.0 - reward;
-        self.total_pulls += 1;
+        self.bank.record(arm, reward, 1.0 - reward);
         Ok(())
     }
 
@@ -141,48 +122,35 @@ impl ThompsonBeta {
     #[inline]
     #[must_use]
     pub fn mean_reward(&self, arm: usize) -> f64 {
-        assert!(
-            arm < self.num_arms,
-            "arm {arm} >= num_arms {}",
-            self.num_arms
-        );
-        self.alphas[arm] / (self.alphas[arm] + self.betas[arm])
-    }
-
-    /// Total pulls across all arms.
-    #[inline]
-    #[must_use]
-    pub fn total_pulls(&self) -> u64 {
-        self.total_pulls
+        self.bank.check_arm(arm);
+        self.bank.a[arm] / (self.bank.a[arm] + self.bank.b[arm])
     }
 
     /// Number of arms.
     #[inline]
     #[must_use]
     pub fn num_arms(&self) -> usize {
-        self.num_arms
+        self.bank.arms()
     }
 
     /// Whether total pulls >= min_samples.
     #[inline]
     #[must_use]
     pub fn is_primed(&self) -> bool {
-        self.total_pulls >= self.min_samples
+        self.bank.is_primed()
     }
 
     /// Returns the number of updates performed.
     #[inline]
     #[must_use]
     pub fn count(&self) -> u64 {
-        self.total_pulls
+        self.bank.total_pulls
     }
 
     /// Resets alpha/beta to initial priors.
     #[inline]
     pub fn reset(&mut self) {
-        self.alphas.fill(self.initial_alpha);
-        self.betas.fill(self.initial_beta);
-        self.total_pulls = 0;
+        self.bank.reset(self.initial_alpha, self.initial_beta);
     }
 }
 
@@ -233,9 +201,6 @@ impl ThompsonBetaBuilder {
         let arms = self
             .arms
             .ok_or(nexus_stats_core::ConfigError::Missing("arms"))?;
-        if arms < 2 {
-            return Err(nexus_stats_core::ConfigError::Invalid("arms must be >= 2"));
-        }
         if self.initial_alpha <= 0.0 || !self.initial_alpha.is_finite() {
             return Err(nexus_stats_core::ConfigError::Invalid(
                 "initial_alpha must be positive and finite",
@@ -246,21 +211,13 @@ impl ThompsonBetaBuilder {
                 "initial_beta must be positive and finite",
             ));
         }
-        if self.decay <= 0.0 || self.decay > 1.0 || !self.decay.is_finite() {
-            return Err(nexus_stats_core::ConfigError::Invalid(
-                "decay must be in (0, 1]",
-            ));
-        }
+        let decay = checked_decay(self.decay)?;
         let min_samples = self.min_samples.unwrap_or(arms as u64);
         Ok(ThompsonBeta {
-            alphas: vec![self.initial_alpha; arms].into_boxed_slice(),
-            betas: vec![self.initial_beta; arms].into_boxed_slice(),
+            bank: ArmBank::new(arms, self.initial_alpha, self.initial_beta, min_samples)?,
             initial_alpha: self.initial_alpha,
             initial_beta: self.initial_beta,
-            decay: self.decay,
-            total_pulls: 0,
-            num_arms: arms,
-            min_samples,
+            decay,
         })
     }
 }
@@ -268,16 +225,7 @@ impl ThompsonBetaBuilder {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    fn make_rng(seed: u64) -> impl FnMut() -> f64 {
-        let mut state = seed;
-        move || {
-            state = state
-                .wrapping_mul(6_364_136_223_846_793_005)
-                .wrapping_add(1_442_695_040_888_963_407);
-            (state >> 33) as f64 / (1u64 << 31) as f64
-        }
-    }
+    use crate::learning::sampling::test_rng as make_rng;
 
     #[test]
     fn uniform_prior_explores() {
@@ -341,16 +289,14 @@ mod tests {
     #[test]
     fn decay_adapts() {
         let mut bandit = ThompsonBeta::builder().arms(2).decay(0.95).build().unwrap();
-
-        // Phase 1: arm 0 is best
+        // Phase 1: arm 0 is best (50 pairs).
         for _ in 0..50 {
             bandit.update(0, 1.0).unwrap();
             bandit.update(1, 0.0).unwrap();
         }
-        assert!(bandit.mean_reward(0) > bandit.mean_reward(1));
-
-        // Phase 2: arm 1 is best
-        for _ in 0..100 {
+        // Phase 2: arm 1 is best, but for only 30 pairs. Without decay arm 0
+        // still leads (50/80 vs 30/80); with decay the old evidence is gone.
+        for _ in 0..30 {
             bandit.update(0, 0.0).unwrap();
             bandit.update(1, 1.0).unwrap();
         }
@@ -375,7 +321,7 @@ mod tests {
         bandit.update(1, 0.0).unwrap();
         bandit.reset();
 
-        assert_eq!(bandit.total_pulls(), 0);
+        assert_eq!(bandit.count(), 0);
         let expected_mean = 2.0 / (2.0 + 3.0);
         assert!(
             (bandit.mean_reward(0) - expected_mean).abs() < 1e-12,
@@ -391,7 +337,7 @@ mod tests {
         assert!(bandit.update(0, 1.1).is_err());
         assert!(bandit.update(0, f64::NAN).is_err());
         assert!(bandit.update(0, f64::INFINITY).is_err());
-        assert_eq!(bandit.total_pulls(), 0);
+        assert_eq!(bandit.count(), 0);
     }
 
     #[test]

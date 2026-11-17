@@ -30,7 +30,7 @@ Most algorithms are pure arithmetic — no `sqrt` or `exp` needed:
 | Jitter<i64>, Liveness, EventRate, PollSaturation | No |
 | Welford (`std_dev()` query) | Yes (`sqrt`) |
 | ShiryaevRoberts | Yes (`exp`) |
-| EMA (`halflife()` constructor) | Yes (`exp`) |
+| `halflife()` on any builder | Yes (`exp`) |
 | Kalman1D, Spring | No (Padé approximant, no transcendentals) |
 
 If you only use algorithms that don't need math functions, you can

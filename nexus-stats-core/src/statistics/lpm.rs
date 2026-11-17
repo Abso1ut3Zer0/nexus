@@ -165,6 +165,7 @@ impl LpmBuilder {
     ///
     /// Returns `ConfigError` if target is missing/non-finite or
     /// order is missing.
+    #[inline]
     pub fn build(self) -> Result<Lpm, crate::ConfigError> {
         let target = self.target.ok_or(crate::ConfigError::Missing("target"))?;
         if !target.is_finite() {

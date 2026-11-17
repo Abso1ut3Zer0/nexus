@@ -120,6 +120,18 @@ impl Welford {
         }
     }
 
+    /// Sum of squared deviations from the running mean (the `m2` of
+    /// [`from_parts`](Self::from_parts)); `0.0` before any sample.
+    ///
+    /// `variance()` is `m2 / (count - 1)` and `population_variance()` is
+    /// `m2 / count`; callers that scale by a sample count themselves read
+    /// this instead of undoing that division.
+    #[inline]
+    #[must_use]
+    pub fn m2(&self) -> f64 {
+        self.m2
+    }
+
     /// Sample standard deviation, or `None` if < 2 samples.
     #[inline]
     #[must_use]

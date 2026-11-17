@@ -1,3 +1,5 @@
+use crate::sample::{EmaKernel, ShiftEma};
+
 /// Liveness detector (`u64` ticks) — fixed-point EMA of inter-arrival ticks.
 ///
 /// Uses kernel-style bit-shift arithmetic for the interval smoothing.
@@ -15,15 +17,15 @@
 /// Per event, using its timestamp. Each event must carry its own tick.
 #[derive(Debug, Clone)]
 pub struct Liveness {
-    acc: i128,
-    shift: u32,
-    span: u64,
+    /// Smoothed inter-arrival gap (the kernel's shift EMA).
+    ema: ShiftEma,
     last_timestamp: u64,
-    deadline_multiple: Option<u64>,
+    /// Converted from the builder's `u64` once, so `is_alive_with` does no
+    /// per-event conversion.
+    deadline_multiple: Option<i64>,
     deadline_absolute: Option<u64>,
     count: u64,
     min_samples: u64,
-    initialized: bool,
 }
 
 /// Builder for [`Liveness`].
@@ -74,14 +76,12 @@ impl Liveness {
         // then fold the gap in. Folding first makes the test
         // `dt <= m * (old + (dt - old) / 2^k)`, which is always true once
         // `m >= 2^k`, so the detector could never report dead.
-        let alive = if self.initialized {
-            let smoothed = (self.acc >> self.shift) as i64;
-            let dt_shifted = (dt as i128) << self.shift;
-            self.acc += (dt_shifted - self.acc) >> self.shift;
+        let alive = if self.ema.is_initialized() {
+            let smoothed = self.ema.value();
+            self.ema.fold(dt);
             self.is_alive_with(dt, Some(smoothed))
         } else {
-            self.acc = (dt as i128) << self.shift;
-            self.initialized = true;
+            self.ema.fold(dt);
             self.is_alive_with(dt, None)
         };
 
@@ -101,7 +101,7 @@ impl Liveness {
 
         let dt = now.wrapping_sub(self.last_timestamp) as i64;
         // No positive gap seen yet: only the absolute deadline can judge.
-        let smoothed = self.initialized.then(|| (self.acc >> self.shift) as i64);
+        let smoothed = self.ema.is_initialized().then(|| self.ema.value());
         self.is_alive_with(dt, smoothed)
     }
 
@@ -114,9 +114,7 @@ impl Liveness {
             return true;
         }
         let within_multiple = match (self.deadline_multiple, smoothed) {
-            (Some(multiple), Some(smoothed)) => {
-                dt <= smoothed.saturating_mul(i64::try_from(multiple).unwrap_or(i64::MAX))
-            }
+            (Some(multiple), Some(smoothed)) => dt <= smoothed.saturating_mul(multiple),
             _ => true,
         };
         let within_absolute = self
@@ -129,8 +127,8 @@ impl Liveness {
     #[inline]
     #[must_use]
     pub fn interval(&self) -> Option<i64> {
-        if self.count >= 2 && self.initialized {
-            Some((self.acc >> self.shift) as i64)
+        if self.count >= 2 && self.ema.is_initialized() {
+            Some(self.ema.value())
         } else {
             None
         }
@@ -140,7 +138,7 @@ impl Liveness {
     #[inline]
     #[must_use]
     pub fn effective_span(&self) -> u64 {
-        self.span
+        self.ema.span
     }
 
     /// Number of events recorded.
@@ -160,10 +158,9 @@ impl Liveness {
     /// Resets to uninitialized state.
     #[inline]
     pub fn reset(&mut self) {
-        self.acc = 0;
+        self.ema.reset();
         self.last_timestamp = 0;
         self.count = 0;
-        self.initialized = false;
     }
 }
 
@@ -221,19 +218,15 @@ impl LivenessBuilder {
             return Err(crate::ConfigError::Invalid("Liveness requires a deadline"));
         }
 
-        let effective = crate::smoothing::ema::next_power_of_two_minus_one(requested);
-        let shift = crate::smoothing::ema::log2_of_span_plus_one(effective);
-
         Ok(Liveness {
-            acc: 0,
-            shift,
-            span: effective,
+            ema: EmaKernel::new(requested)?,
             last_timestamp: 0,
-            deadline_multiple: self.deadline_multiple,
+            deadline_multiple: self
+                .deadline_multiple
+                .map(|m| i64::try_from(m).unwrap_or(i64::MAX)),
             deadline_absolute: self.deadline_absolute,
             count: 0,
             min_samples: self.min_samples,
-            initialized: false,
         })
     }
 }
