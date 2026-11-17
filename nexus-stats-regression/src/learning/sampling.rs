@@ -67,6 +67,18 @@ pub(super) mod f64_impl {
     }
 }
 
+/// Deterministic LCG in `[0, 1)` for the bandit tests.
+#[cfg(test)]
+pub(crate) fn test_rng(seed: u64) -> impl FnMut() -> f64 {
+    let mut state = seed;
+    move || {
+        state = state
+            .wrapping_mul(6_364_136_223_846_793_005)
+            .wrapping_add(1_442_695_040_888_963_407);
+        (state >> 33) as f64 / (1u64 << 31) as f64
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -104,13 +116,18 @@ mod tests {
         let shape = 5.0;
         let n = 10_000;
         let mut sum = 0.0;
+        let mut sum_sq = 0.0;
         for _ in 0..n {
             let x = f64_impl::gamma_sample(shape, &mut rng);
             assert!(x > 0.0, "gamma sample must be positive");
             sum += x;
+            sum_sq += x * x;
         }
         let mean = sum / n as f64;
         assert!((mean - shape).abs() < 0.3, "mean={mean}, expected ~{shape}");
+        // Gamma(shape, 1) has variance = shape; a constant sampler would read 0.
+        let var = sum_sq / n as f64 - mean * mean;
+        assert!((var - shape).abs() < 0.6, "var={var}, expected ~{shape}");
     }
 
     #[test]
@@ -144,14 +161,24 @@ mod tests {
         let beta = 5.0;
         let n = 10_000;
         let mut sum = 0.0;
+        let mut sum_sq = 0.0;
         for _ in 0..n {
-            sum += f64_impl::beta_sample(alpha, beta, &mut rng);
+            let x = f64_impl::beta_sample(alpha, beta, &mut rng);
+            sum += x;
+            sum_sq += x * x;
         }
         let mean = sum / n as f64;
         let expected = alpha / (alpha + beta);
         assert!(
             (mean - expected).abs() < 0.02,
             "mean={mean}, expected ~{expected}"
+        );
+        // Beta(2, 5) variance = ab / ((a+b)^2 (a+b+1)) = 10 / 392.
+        let var = sum_sq / n as f64 - mean * mean;
+        let expected_var = alpha * beta / ((alpha + beta).powi(2) * (alpha + beta + 1.0));
+        assert!(
+            (var - expected_var).abs() < 0.2 * expected_var,
+            "var={var}, expected ~{expected_var}"
         );
     }
 }

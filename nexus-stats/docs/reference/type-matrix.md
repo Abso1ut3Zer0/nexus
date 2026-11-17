@@ -13,7 +13,7 @@ Numeric forms:
 - **`f64`**: a plain name, one instantiation.
 - **`T: Sample`**: one generic type for `f64` and `i64` (`Drawdown<f64>`, `Drawdown<i64>`). `update` returns `Result` on `f64` (NaN and infinity rejected) and the plain value on `i64`. Name `T` at construction: `Drawdown::<i64>::new()`, `CoDel::<i64>::builder()`.
 - **`T: Float`**: one generic type for `f64` and `f32`; takes and returns `T`, accumulates in `f64`.
-- **`u64` ticks**: timestamps in any unit, the same clock for every stamp into one value; `clock::WallClock` is the `std` bridge from `Instant`.
+- **`u64` ticks**: timestamps in any unit, the same clock for every stamp into one value; `clock::MonotonicClock` is the `std` bridge from `Instant`.
 
 See [Integer vs Float](../guides/integer-vs-float.md) for the caller rules and
 [Migrating to 7.0](../guides/migrating-to-7.md) for the 6.x names.
@@ -59,7 +59,7 @@ See [Integer vs Float](../guides/integer-vs-float.md) for the caller rules and
 | `Moments` | `f64` | — | core (`statistics`) |
 | `EwmaVar` | `f64` | — | core (`statistics`) |
 | `Covariance` | `f64` | — | core (`statistics`) |
-| `OnlineCovariance` | `f64` | `alloc` | core (`statistics`) |
+| `CovarianceMatrix` | `f64` | `alloc` | core (`statistics`) |
 | `HarmonicMean` | `f64` | — | core (`statistics`) |
 | `Percentile` | `f64` | — | core (`statistics`) |
 | `Lpm` | `f64` | — | core (`statistics`) |
@@ -167,7 +167,7 @@ See [Integer vs Float](../guides/integer-vs-float.md) for the caller rules and
 
 | Type | What | Feature | Crate (module) |
 |------|------|---------|----------------|
-| `WallClock` | `u64` nanoseconds since construction, from `Instant` | `std` | core (`clock`) |
+| `MonotonicClock` | `u64` nanoseconds since construction, from `Instant` | `std` | core (`clock`) |
 | `EpochClock` | `u64` nanoseconds since the Unix epoch, from `SystemTime` | `std` | core (`clock`) |
 
 ## Feature-gated summary
@@ -176,4 +176,4 @@ See [Integer vs Float](../guides/integer-vs-float.md) for the caller rules and
 |---------|-----------------|
 | `std` (default) | Hardware `sqrt` / `exp` / `ln`, the clocks, and `alloc` |
 | `libm` | Pure Rust `sqrt` / `exp` / `ln` for `no_std`; the `std\|libm` rows above |
-| `alloc` | Runtime-sized windows and buffers: MOSUM, WindowedMedian, KAMA, Hampel, BoolWindow, the correlations and entropies, the adaptive filters, optimizers and bandits, Hurst, VarianceRatio, TwoScaleRv, OnlineCovariance, QuantileNorm |
+| `alloc` | Runtime-sized windows and buffers: MOSUM, WindowedMedian, KAMA, Hampel, BoolWindow, the correlations and entropies, the adaptive filters, optimizers and bandits, Hurst, VarianceRatio, TwoScaleRv, CovarianceMatrix, QuantileNorm |

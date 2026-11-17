@@ -178,11 +178,21 @@ impl VarianceRatioBuilder {
         self
     }
 
+    /// Sets `alpha` from a half-life in samples: `1 - exp(-ln 2 / halflife)`.
+    #[cfg(any(feature = "std", feature = "libm"))]
+    #[inline]
+    #[must_use]
+    pub fn halflife(mut self, halflife: f64) -> Self {
+        self.alpha = Some(crate::math::alpha_from_halflife(halflife));
+        self
+    }
+
     /// Build the variance ratio tracker.
     ///
     /// # Errors
     ///
     /// Returns `ConfigError` if q or alpha is missing/invalid.
+    #[inline]
     pub fn build(self) -> Result<VarianceRatio, crate::ConfigError> {
         let q = self.q.ok_or(crate::ConfigError::Missing("q"))?;
         if q < 2 {

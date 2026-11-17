@@ -1,8 +1,6 @@
-#![allow(clippy::suboptimal_flops, clippy::neg_cmp_op_on_partial_ord)]
-
-extern crate alloc;
 use alloc::boxed::Box;
 use alloc::vec;
+use nexus_stats_core::math::MulAdd;
 
 /// Adam optimizer — adaptive moment estimation with optional weight decay.
 ///
@@ -111,8 +109,10 @@ impl Adam {
         let one_minus_b1 = 1.0 - self.beta1;
         let one_minus_b2 = 1.0 - self.beta2;
         for i in 0..self.dims {
-            self.m[i] = self.beta1 * self.m[i] + one_minus_b1 * gradient[i];
-            self.v[i] = self.beta2 * self.v[i] + one_minus_b2 * gradient[i] * gradient[i];
+            self.m[i] = self.beta1.fma(self.m[i], one_minus_b1 * gradient[i]);
+            self.v[i] = self
+                .beta2
+                .fma(self.v[i], one_minus_b2 * gradient[i] * gradient[i]);
         }
 
         // Update power terms for bias correction
@@ -324,27 +324,27 @@ impl AdamBuilder {
                 "dimensions must be >= 1",
             ));
         }
-        if !(lr > 0.0) {
+        if !nexus_stats_core::math::positive_finite(lr) {
             return Err(nexus_stats_core::ConfigError::Invalid(
                 "learning_rate must be positive",
             ));
         }
-        if !(b1 > 0.0 && b1 < 1.0) {
+        if !nexus_stats_core::math::in_unit_interval(b1) {
             return Err(nexus_stats_core::ConfigError::Invalid(
                 "beta1 must be in (0, 1)",
             ));
         }
-        if !(b2 > 0.0 && b2 < 1.0) {
+        if !nexus_stats_core::math::in_unit_interval(b2) {
             return Err(nexus_stats_core::ConfigError::Invalid(
                 "beta2 must be in (0, 1)",
             ));
         }
-        if !(eps > 0.0) {
+        if !nexus_stats_core::math::positive_finite(eps) {
             return Err(nexus_stats_core::ConfigError::Invalid(
                 "epsilon must be positive",
             ));
         }
-        if !(wd >= 0.0) {
+        if !nexus_stats_core::math::nonnegative_finite(wd) {
             return Err(nexus_stats_core::ConfigError::Invalid(
                 "weight_decay must be non-negative",
             ));
@@ -412,7 +412,7 @@ mod tests {
             let p = adam.parameters();
             let x = p[0];
             let y = p[1];
-            let dx = -2.0 * (1.0 - x) - 400.0 * x * (y - x * x);
+            let dx = (-2.0f64).fma(1.0 - x, -(400.0 * x * (y - x * x)));
             let dy = 200.0 * (y - x * x);
             adam.step(&[dx, dy]).unwrap();
         }

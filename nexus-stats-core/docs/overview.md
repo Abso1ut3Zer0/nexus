@@ -49,7 +49,7 @@ pub enum ConfigError {
 
 ## Module Layout
 
-- `nexus_stats_core::statistics` — Welford, Moments, EwmaVar, Covariance, OnlineCovariance, HarmonicMean, Percentile, BucketAccumulator, Amihud, HitRate, HalfLife, Hurst, VarianceRatio.
+- `nexus_stats_core::statistics` — Welford, Moments, EwmaVar, Covariance, CovarianceMatrix, HarmonicMean, Percentile, BucketAccumulator, Amihud, HitRate, HalfLife, Hurst, VarianceRatio.
 - `nexus_stats_core::smoothing` — `Ema`, `AsymEma`, `Slew<f64>` / `Slew<i64>`.
 - `nexus_stats_core::monitoring` — Drawdown, RunningMax/Min, WindowedMax/Min, PeakHold, MaxGauge, Liveness, EventRate, CoDel, ErrorRate, Jitter, HawkesIntensity, PollSaturation, SojournSaturation.
 - `nexus_stats_core::detection` — CUSUM, DistributionShift.
@@ -83,7 +83,7 @@ nexus-stats-core = { version = "*", default-features = false, features = ["libm"
 nexus-stats-core = { version = "*", default-features = false, features = ["libm", "alloc"] }
 ```
 
-Time-aware types (`Liveness`, `EventRate`, `CoDel`, `Windowed*`) take `u64` ticks in any unit and work in `no_std`; `clock::WallClock` (std) is the bridge from `Instant`, producing nanoseconds since construction.
+Time-aware types (`Liveness`, `EventRate`, `CoDel`, `Windowed*`) take `u64` ticks in any unit and work in `no_std`; `clock::MonotonicClock` (std) is the bridge from `Instant`, producing nanoseconds since construction.
 
 ## Integer Variants
 

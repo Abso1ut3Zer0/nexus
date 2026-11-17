@@ -6,12 +6,6 @@
 //
 // 32 bytes per instance. Zero allocation.
 
-#![allow(
-    clippy::suboptimal_flops,
-    clippy::float_cmp,
-    clippy::neg_cmp_op_on_partial_ord
-)]
-
 /// Bayesian event rate estimator using the Gamma-Poisson conjugate prior.
 ///
 /// Maintains a Gamma posterior over the Poisson rate parameter.
@@ -83,10 +77,10 @@ impl GammaPoisson {
     /// Returns `ConfigError::Invalid` if `alpha <= 0` or `beta <= 0`.
     #[inline]
     pub fn with_prior(alpha: f64, beta: f64) -> Result<Self, nexus_stats_core::ConfigError> {
-        if !(alpha > 0.0) {
+        if !nexus_stats_core::math::positive_finite(alpha) {
             return Err(nexus_stats_core::ConfigError::Invalid("alpha must be > 0"));
         }
-        if !(beta > 0.0) {
+        if !nexus_stats_core::math::positive_finite(beta) {
             return Err(nexus_stats_core::ConfigError::Invalid("beta must be > 0"));
         }
         Ok(Self {
@@ -151,11 +145,7 @@ impl GammaPoisson {
 
         let tail = (1.0 - confidence) / 2.0;
 
-        // Abramowitz & Stegun rational approximation for inverse normal
-        let t = nexus_stats_core::math::sqrt(-2.0 * nexus_stats_core::math::ln(tail));
-        let z = t
-            - (2.515_517 + 0.802_853 * t + 0.010_328 * t * t)
-                / (1.0 + 1.432_788 * t + 0.189_269 * t * t + 0.001_308 * t * t * t);
+        let z = nexus_stats_core::math::upper_tail_z(tail);
 
         let std_dev = nexus_stats_core::math::sqrt(self.variance());
         let mean = self.rate();
@@ -231,10 +221,10 @@ impl GammaPoissonBuilder {
     /// Returns `ConfigError::Invalid` if alpha or beta are not positive.
     #[inline]
     pub fn build(self) -> Result<GammaPoisson, nexus_stats_core::ConfigError> {
-        if !(self.alpha > 0.0) {
+        if !nexus_stats_core::math::positive_finite(self.alpha) {
             return Err(nexus_stats_core::ConfigError::Invalid("alpha must be > 0"));
         }
-        if !(self.beta > 0.0) {
+        if !nexus_stats_core::math::positive_finite(self.beta) {
             return Err(nexus_stats_core::ConfigError::Invalid("beta must be > 0"));
         }
         Ok(GammaPoisson {

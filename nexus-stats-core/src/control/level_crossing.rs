@@ -16,7 +16,8 @@ pub struct LevelCrossing<T: Sample> {
     threshold: T,
     was_above: bool,
     crossings: u64,
-    initialized: bool,
+    /// Samples processed; the first one seeds the state.
+    count: u64,
 }
 
 impl<T: Sample> LevelCrossing<T> {
@@ -35,7 +36,7 @@ impl<T: Sample> LevelCrossing<T> {
             threshold,
             was_above: false,
             crossings: 0,
-            initialized: false,
+            count: 0,
         })
     }
 
@@ -46,20 +47,34 @@ impl<T: Sample> LevelCrossing<T> {
         self.crossings
     }
 
+    /// Samples processed since construction or `reset`.
+    #[inline]
+    #[must_use]
+    pub fn count(&self) -> u64 {
+        self.count
+    }
+
+    /// Whether a reference sample has been seen.
+    #[inline]
+    #[must_use]
+    pub fn is_primed(&self) -> bool {
+        self.count > 0
+    }
+
     /// Resets to uninitialized state. The threshold is kept.
     #[inline]
     pub fn reset(&mut self) {
         self.was_above = false;
         self.crossings = 0;
-        self.initialized = false;
+        self.count = 0;
     }
 
     #[inline]
     fn fold(&mut self, sample: T) -> bool {
+        self.count += 1;
         let is_above = sample >= self.threshold;
-        if !self.initialized {
+        if self.count == 1 {
             self.was_above = is_above;
-            self.initialized = true;
             return false;
         }
         if is_above == self.was_above {
@@ -88,6 +103,7 @@ impl LevelCrossing<f64> {
 
 impl LevelCrossing<i64> {
     /// Feeds a sample. Returns `true` if it crossed the threshold.
+    #[must_use]
     #[inline]
     pub fn update(&mut self, sample: i64) -> bool {
         self.fold(sample)

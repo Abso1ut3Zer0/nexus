@@ -1,7 +1,7 @@
-extern crate alloc;
 use alloc::boxed::Box;
 use alloc::vec;
 use nexus_stats_core::math::MulAdd;
+use nexus_stats_core::math::{axpy, dot};
 
 /// Recursive Least Squares adaptive filter.
 ///
@@ -66,11 +66,7 @@ impl RlsFilter {
             features.len(),
             self.dims,
         );
-        let mut sum = 0.0;
-        for i in 0..self.dims {
-            sum = self.weights[i].fma(features[i], sum);
-        }
-        sum
+        dot(features, &self.weights)
     }
 
     /// Updates weights using the Sherman-Morrison rank-1 update.
@@ -106,20 +102,15 @@ impl RlsFilter {
         let d = self.dims;
         let lambda = self.forgetting_factor;
 
-        // px[i] = Σ_j P[i][j] * x[j]
-        for i in 0..d {
-            let mut sum = 0.0;
-            for j in 0..d {
-                sum = self.p_matrix[i * d + j].fma(features[j], sum);
-            }
-            self.scratch_px[i] = sum;
+        // px = P·x, one fused dot per row.
+        for (px, row) in self
+            .scratch_px
+            .iter_mut()
+            .zip(self.p_matrix.chunks_exact(d))
+        {
+            *px = dot(features, row);
         }
-
-        // xpx = Σ x[i] * px[i]
-        let mut xpx = 0.0;
-        for i in 0..d {
-            xpx = features[i].fma(self.scratch_px[i], xpx);
-        }
+        let xpx = dot(features, &self.scratch_px);
 
         // k[i] = px[i] / (lambda + xpx). P is positive-definite, so the
         // denominator is at least lambda; anything else means P has degraded
@@ -132,43 +123,31 @@ impl RlsFilter {
         }
         // Reciprocal: one division outside the loop instead of d inside.
         let inv_denom = 1.0 / denom;
-        for i in 0..d {
-            self.scratch_k[i] = self.scratch_px[i] * inv_denom;
+        for (k, &px) in self.scratch_k.iter_mut().zip(&self.scratch_px) {
+            *k = px * inv_denom;
         }
 
-        // error = target - w·x
-        let mut prediction = 0.0;
-        for i in 0..d {
-            prediction = self.weights[i].fma(features[i], prediction);
-        }
-        let error = target - prediction;
+        // w += k · (target − w·x)
+        let error = target - dot(features, &self.weights);
+        axpy(error, &self.scratch_k, &mut self.weights);
 
-        // w += k * error
-        for i in 0..d {
-            self.weights[i] = self.scratch_k[i].fma(error, self.weights[i]);
-        }
-
-        // P[i][j] = (P[i][j] - k[i] * px[j]) / lambda
-        // Reciprocal: one division outside d² loop, multiply inside.
+        // P ← (P − k·pxᵀ) / λ, row by row; one division outside the d² loop.
         let inv_lambda = 1.0 / lambda;
-        for i in 0..d {
-            for j in 0..d {
-                self.p_matrix[i * d + j] = (-self.scratch_k[i])
-                    .fma(self.scratch_px[j], self.p_matrix[i * d + j])
-                    * inv_lambda;
+        for (row, &ki) in self.p_matrix.chunks_exact_mut(d).zip(&self.scratch_k) {
+            for (p, &pxj) in row.iter_mut().zip(&self.scratch_px) {
+                *p = (-ki).fma(pxj, *p) * inv_lambda;
             }
         }
 
         self.count += 1;
 
         if let Some(max) = self.max_covariance {
-            let mut max_diag = 0.0;
-            for i in 0..d {
-                let diag = self.p_matrix[i * d + i];
-                if diag > max_diag {
-                    max_diag = diag;
-                }
-            }
+            // The diagonal is every (d + 1)-th element of the row-major matrix.
+            let max_diag = self
+                .p_matrix
+                .iter()
+                .step_by(d + 1)
+                .fold(0.0, |m, &diag| if diag > m { diag } else { m });
             if max_diag > max {
                 self.reset_covariance();
             }
@@ -523,19 +502,34 @@ mod tests {
     fn max_covariance_auto_resets() {
         let mut rls = RlsFilter::builder()
             .dimensions(1)
-            .forgetting_factor(0.5) // aggressive forgetting
+            .forgetting_factor(0.5)
             .initial_covariance(100.0)
             .max_covariance(1e6)
             .build()
             .unwrap();
-
-        // Feed data that could cause P to grow
-        for i in 1..=1000u32 {
-            let x = i as f64;
-            rls.update(&[x], x).unwrap();
+        // Zero features carry no information, so each step only divides P by
+        // the forgetting factor: P doubles every update and would reach
+        // 100 * 2^30 ~ 1e11 without the guard.
+        for _ in 0..30 {
+            rls.update(&[0.0], 0.0).unwrap();
         }
-        // P diagonal should not exceed max_covariance
         let p = rls.covariance()[0];
-        assert!(p <= 1e6, "P should be bounded: {p}");
+        assert!(
+            p <= 1e6,
+            "P must be reset once it passes max_covariance: {p}"
+        );
+        assert!(
+            p >= 100.0,
+            "a reset restores the initial covariance, got {p}"
+        );
+    }
+
+    /// Features are the caller's contract (debug-asserted, not a `DataError`).
+    #[cfg(debug_assertions)]
+    #[test]
+    #[should_panic(expected = "features must be finite")]
+    fn nan_feature_panics_in_debug() {
+        let mut filter = RlsFilter::builder().dimensions(2).build().unwrap();
+        let _ = filter.update(&[f64::NAN, 1.0], 1.0);
     }
 }

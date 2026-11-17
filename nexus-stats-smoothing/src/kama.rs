@@ -398,4 +398,23 @@ mod tests {
             }
         }
     }
+
+    /// `reset` leaves no residue: a replay of the same stream reproduces the
+    /// same outputs bit for bit, including across the ring wrap.
+    #[test]
+    fn reset_then_replay_matches() {
+        let mut k = Kama::builder().window_size(4).build().unwrap();
+        let stream = [1.0, 3.0, 2.0, 5.0, 4.0, 6.0, 8.0, 7.0, 9.0, 12.0];
+        let first: Vec<_> = stream
+            .iter()
+            .map(|&x| k.update(x).unwrap().map(f64::to_bits))
+            .collect();
+        k.reset();
+        assert_eq!(k.count(), 0);
+        let second: Vec<_> = stream
+            .iter()
+            .map(|&x| k.update(x).unwrap().map(f64::to_bits))
+            .collect();
+        assert_eq!(first, second);
+    }
 }

@@ -45,6 +45,11 @@ impl Covariance {
         check_finite!(x);
         check_finite!(y);
         self.count += 1;
+        // One reciprocal and two multiplies, not two divisions: measured 2
+        // ticks faster here and 5 faster in `HalfLife`, which runs this per
+        // sample. (A consumer that chains more arithmetic onto the new means
+        // pays for the multiply instead; `CrossCorrelation` keeps its own
+        // lag-0 accumulators for that reason.)
         let inv_n = 1.0 / self.count as f64;
 
         let dx = x - self.mean_x;
@@ -90,6 +95,28 @@ impl Covariance {
             None
         } else {
             Some(self.mean_y)
+        }
+    }
+
+    /// Sample variance of X (N-1 denominator), or `None` if < 2 samples.
+    #[inline]
+    #[must_use]
+    pub fn variance_x(&self) -> Option<f64> {
+        if self.count < 2 {
+            None
+        } else {
+            Some(self.m2_x / (self.count - 1) as f64)
+        }
+    }
+
+    /// Sample variance of Y (N-1 denominator), or `None` if < 2 samples.
+    #[inline]
+    #[must_use]
+    pub fn variance_y(&self) -> Option<f64> {
+        if self.count < 2 {
+            None
+        } else {
+            Some(self.m2_y / (self.count - 1) as f64)
         }
     }
 
@@ -148,6 +175,13 @@ impl Covariance {
         self.mean_x = new_mean_x;
         self.mean_y = new_mean_y;
         self.count = combined;
+    }
+
+    /// Whether the covariance is defined (two samples seen).
+    #[inline]
+    #[must_use]
+    pub fn is_primed(&self) -> bool {
+        self.count >= 2
     }
 
     /// Resets to empty state.

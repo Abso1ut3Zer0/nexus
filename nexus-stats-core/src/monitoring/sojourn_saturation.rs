@@ -183,6 +183,20 @@ impl SojournSaturation {
         summary
     }
 
+    /// Samples processed since construction or `reset`.
+    #[inline]
+    #[must_use]
+    pub fn count(&self) -> u64 {
+        self.messages_seen
+    }
+
+    /// Whether at least one message has been measured.
+    #[inline]
+    #[must_use]
+    pub fn is_primed(&self) -> bool {
+        self.messages_seen > 0
+    }
+
     /// As if freshly built. `budget` is kept.
     #[inline]
     pub fn reset(&mut self) {

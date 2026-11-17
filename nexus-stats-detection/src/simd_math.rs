@@ -69,6 +69,7 @@ pub fn exp_sum(buf: &[f64], offset: f64) -> f64 {
 ))]
 mod parity {
     use super::{avx2, scalar};
+    use nexus_stats_core::math::MulAdd;
 
     const LENS: [usize; 8] = [0, 1, 3, 4, 7, 16, 21, 37];
 
@@ -80,7 +81,7 @@ mod parity {
     }
 
     fn close(a: f64, b: f64, rel: f64) -> bool {
-        (a - b).abs() <= rel.mul_add(b.abs(), 1e-14)
+        (a - b).abs() <= rel.fma(b.abs(), 1e-14)
     }
 
     #[test]
@@ -89,7 +90,7 @@ mod parity {
         for &len in &LENS {
             // 1e-300 ..= 1e300, log-uniform, plus the exact 1.0 that lands on ln = 0.
             let mut buf: Vec<f64> = (0..len)
-                .map(|_| 10f64.powf(uniform(&mut seed).mul_add(600.0, -300.0)))
+                .map(|_| 10f64.powf(uniform(&mut seed).fma(600.0, -300.0)))
                 .collect();
             if len > 2 {
                 buf[2] = 1.0;
@@ -111,7 +112,7 @@ mod parity {
         let mut seed = 0x2545_F491_4F6C_DD1Du64;
         let mut worst = (0.0f64, 0.0f64, 0.0f64, 0.0f64);
         for _ in 0..4096 {
-            let x = uniform(&mut seed).mul_add(700.0, -700.0);
+            let x = uniform(&mut seed).fma(700.0, -700.0);
             let got = avx2::exp_sum(&[x, x, x, x], 0.0) / 4.0;
             let want = nexus_stats_core::math::exp(x);
             let err = (got - want).abs() / want.abs().max(1e-300);
@@ -139,7 +140,7 @@ mod parity {
             for &len in &LENS {
                 // Offsets relative to the max, as BOCPD uses it: x - offset in [-span, 0].
                 let buf: Vec<f64> = (0..len)
-                    .map(|_| uniform(&mut seed).mul_add(span, -span))
+                    .map(|_| uniform(&mut seed).fma(span, -span))
                     .collect();
                 let offset = buf
                     .iter()

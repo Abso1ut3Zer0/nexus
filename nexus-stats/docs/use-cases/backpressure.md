@@ -22,7 +22,7 @@ use nexus_stats::monitoring::CoDel;
 // Detect standing queues via sojourn time
 let mut qd = CoDel::<i64>::builder()
     .target(10_000)          // 10μs acceptable queue wait
-    .window(100_000_000)     // 100ms observation window
+    .interval(100_000_000)     // 100ms observation window
     .min_samples(20)
     .build().unwrap();
 
@@ -54,7 +54,7 @@ use nexus_stats::smoothing::Ema;
 use nexus_stats::detection::TrendAlert;
 
 let mut queue_health = CoDel::<i64>::builder()
-    .target(10_000).window(100_000_000).build().unwrap();
+    .target(10_000).interval(100_000_000).build().unwrap();
 
 let mut cpu_util = Ema::builder().span(20).build().unwrap();  // smoothed CPU busy fraction
 

@@ -14,7 +14,8 @@ use crate::Sample;
 #[derive(Debug, Clone)]
 pub struct FirstDiff<T: Sample> {
     prev: T,
-    initialized: bool,
+    /// Samples processed; the first one seeds the state.
+    count: u64,
 }
 
 impl<T: Sample> FirstDiff<T> {
@@ -24,22 +25,36 @@ impl<T: Sample> FirstDiff<T> {
     pub const fn new() -> Self {
         Self {
             prev: T::ZERO,
-            initialized: false,
+            count: 0,
         }
+    }
+
+    /// Samples processed since construction or `reset`.
+    #[inline]
+    #[must_use]
+    pub fn count(&self) -> u64 {
+        self.count
+    }
+
+    /// Whether a difference is available (two samples seen).
+    #[inline]
+    #[must_use]
+    pub fn is_primed(&self) -> bool {
+        self.count >= 2
     }
 
     /// Resets to uninitialized state.
     #[inline]
     pub fn reset(&mut self) {
         self.prev = T::ZERO;
-        self.initialized = false;
+        self.count = 0;
     }
 
     #[inline]
     fn fold(&mut self, sample: T) -> Option<T> {
-        if !self.initialized {
+        self.count += 1;
+        if self.count == 1 {
             self.prev = sample;
-            self.initialized = true;
             return None;
         }
         let diff = sample - self.prev;
@@ -105,6 +120,13 @@ impl<T: Sample> SecondDiff<T> {
             prev1: T::ZERO,
             count: 0,
         }
+    }
+
+    /// Whether a second difference is available (three samples seen).
+    #[inline]
+    #[must_use]
+    pub fn is_primed(&self) -> bool {
+        self.count >= 3
     }
 
     /// Resets to uninitialized state.

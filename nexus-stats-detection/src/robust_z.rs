@@ -174,6 +174,15 @@ impl<T: Float> RobustZScoreBuilder<T> {
         self
     }
 
+    /// Sets `alpha` from a half-life in samples: `1 - exp(-ln 2 / halflife)`.
+    #[cfg(any(feature = "std", feature = "libm"))]
+    #[inline]
+    #[must_use]
+    pub fn halflife(mut self, halflife: f64) -> Self {
+        self.alpha = Some(nexus_stats_core::math::alpha_from_halflife(halflife));
+        self
+    }
+
     /// Smoothing span in samples: `alpha = 2 / (n + 1)`.
     #[inline]
     #[must_use]
@@ -207,6 +216,7 @@ impl<T: Float> RobustZScoreBuilder<T> {
     /// `ConfigError::Missing` if `alpha` (or `span`) or `reject_threshold`
     /// was not set; `ConfigError::Invalid` if alpha is outside (0, 1) or the
     /// threshold is not positive.
+    #[inline]
     pub fn build(self) -> Result<RobustZScore<T>, nexus_stats_core::ConfigError> {
         let alpha = self
             .alpha
@@ -214,7 +224,7 @@ impl<T: Float> RobustZScoreBuilder<T> {
         let reject = self
             .reject_threshold
             .ok_or(nexus_stats_core::ConfigError::Missing("reject_threshold"))?;
-        if !(alpha > 0.0 && alpha < 1.0) {
+        if !nexus_stats_core::math::in_unit_interval(alpha) {
             return Err(nexus_stats_core::ConfigError::Invalid(
                 "alpha must be in (0, 1)",
             ));

@@ -479,7 +479,7 @@ fn bench_topk(samples: &mut [u64]) {
             tk.update(next_val(&mut rng) % 100);
         }
         let end = rdtsc_end();
-        black_box(tk.total());
+        black_box(tk.count());
         *s = (end - start) / BATCH;
     }
 }
@@ -545,7 +545,7 @@ fn bench_event_rate_u64(samples: &mut [u64]) {
 fn bench_codel_i64(samples: &mut [u64]) {
     let mut qd = CoDel::<i64>::builder()
         .target(100)
-        .window(1000)
+        .interval(1000)
         .build()
         .unwrap();
     let mut rng = 12345u64;

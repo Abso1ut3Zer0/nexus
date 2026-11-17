@@ -61,6 +61,13 @@ impl<T: Sample> PeakHold<T> {
         self.count
     }
 
+    /// Whether at least one sample has been seen.
+    #[inline]
+    #[must_use]
+    pub fn is_primed(&self) -> bool {
+        self.count > 0
+    }
+
     /// Resets to empty state. Configuration is kept.
     #[inline]
     pub fn reset(&mut self) {
@@ -140,6 +147,7 @@ impl PeakHoldBuilder<f64> {
     ///
     /// `ConfigError::Missing` if `decay_rate` was not set;
     /// `ConfigError::Invalid` if it is outside (0, 1].
+    #[inline]
     pub fn build(self) -> Result<PeakHold<f64>, crate::ConfigError> {
         let rate = self
             .decay
@@ -163,6 +171,7 @@ impl PeakHoldBuilder<i64> {
     /// # Errors
     ///
     /// Never fails for `i64`; the `Result` keeps the builder shape uniform.
+    #[inline]
     pub fn build(self) -> Result<PeakHold<i64>, crate::ConfigError> {
         Ok(PeakHold {
             peak: 0,
@@ -227,7 +236,10 @@ mod tests {
             .unwrap();
         let _ = ph.update(100.0).unwrap();
         let v = ph.update(0.0).unwrap(); // decay immediately (no hold)
-        assert!(v < 100.0, "should have decayed, got {v}");
+        assert!(
+            (v - 90.0).abs() < 1e-9,
+            "one decay step of 0.9 from 100, got {v}"
+        );
     }
 
     #[test]

@@ -13,6 +13,8 @@ pub struct DecayAccum {
     last_time: u64,
     decay_constant: f64, // ln(2) / half_life
     initialized: bool,
+    /// Updates since construction or `reset` (`score()` does not count).
+    count: u64,
 }
 
 impl DecayAccum {
@@ -33,6 +35,7 @@ impl DecayAccum {
             last_time: 0,
             decay_constant: core::f64::consts::LN_2 / half_life,
             initialized: false,
+            count: 0,
         })
     }
 
@@ -53,6 +56,7 @@ impl DecayAccum {
         check_finite!(weight);
         self.apply_decay(timestamp);
         self.score += weight;
+        self.count += 1;
         Ok(())
     }
 
@@ -79,11 +83,26 @@ impl DecayAccum {
         }
     }
 
+    /// Samples processed since construction or `reset`.
+    #[inline]
+    #[must_use]
+    pub fn count(&self) -> u64 {
+        self.count
+    }
+
+    /// Whether at least one update has been applied.
+    #[inline]
+    #[must_use]
+    pub fn is_primed(&self) -> bool {
+        self.count > 0
+    }
+
     /// Resets to zero score.
     #[inline]
     pub fn reset(&mut self) {
         self.score = 0.0;
         self.initialized = false;
+        self.count = 0;
     }
 }
 
@@ -92,7 +111,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn accumulates_u64() {
+    fn accumulates() {
         let mut da = DecayAccum::new(10.0).unwrap();
         da.update(0, 1.0).unwrap();
         da.update(0, 1.0).unwrap();
@@ -101,7 +120,7 @@ mod tests {
     }
 
     #[test]
-    fn decays_over_time_u64() {
+    fn decays_over_time() {
         let mut da = DecayAccum::new(10.0).unwrap();
         da.update(0, 100.0).unwrap();
 
@@ -119,7 +138,7 @@ mod tests {
     }
 
     #[test]
-    fn lazy_evaluation_u64() {
+    fn lazy_evaluation() {
         let mut da = DecayAccum::new(10.0).unwrap();
         da.update(0, 100.0).unwrap();
         // No work done between calls
@@ -131,7 +150,7 @@ mod tests {
     }
 
     #[test]
-    fn reset_u64() {
+    fn reset() {
         let mut da = DecayAccum::new(10.0).unwrap();
         da.update(0, 100.0).unwrap();
         da.reset();
@@ -140,7 +159,7 @@ mod tests {
     }
 
     #[test]
-    fn rejects_zero_half_life_u64() {
+    fn rejects_zero_half_life() {
         assert!(matches!(
             DecayAccum::new(0.0),
             Err(nexus_stats_core::ConfigError::Invalid(_))
@@ -148,7 +167,7 @@ mod tests {
     }
 
     #[test]
-    fn rejects_invalid_weight_u64() {
+    fn rejects_invalid_weight() {
         let mut da = DecayAccum::new(10.0).unwrap();
         assert!(matches!(
             da.update(0, f64::NAN),

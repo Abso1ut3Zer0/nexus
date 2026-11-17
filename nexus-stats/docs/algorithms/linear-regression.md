@@ -11,7 +11,7 @@ no matrix elimination.
 | Types | `LinearRegression` |
 | EW types | `EwLinearRegression` |
 | Priming | 2 observations (with intercept), 1 (through origin) |
-| Output | `slope()`, `intercept_value()`, `r_squared()`, `predict(x)` |
+| Output | `slope()`, `intercept()`, `r_squared()`, `predict(x)` |
 
 ## What It Does
 
@@ -190,7 +190,7 @@ if let Some(r2) = cal.r_squared() {
     if r2 > 0.99 {
         // Good linear calibration
         let slope = cal.slope().unwrap();
-        let offset = cal.intercept_value().unwrap();
+        let offset = cal.intercept().unwrap();
         println!("calibration: y = {slope:.4}x + {offset:.4}");
     }
 }

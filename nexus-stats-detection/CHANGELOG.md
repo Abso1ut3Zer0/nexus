@@ -58,6 +58,19 @@ contained.
   once per bucket per cut test; the running total is re-summed once per shrink
   instead of once per dropped bucket. `max_buckets` must be below 65535. Same
   decisions, same API.
+- **`Adwin::update` and `PageHinkley::update` return
+  `Result<Option<bool>, DataError>`:** `Ok(None)` while the detector is
+  priming, where a `false` verdict could not be told from "no change yet".
+  Compare with `== Some(true)`.
+- **Builders accept a half-life wherever they accept an alpha:** `MultiGate`
+  and `RobustZScore` gain `halflife(h)` (`std` or `libm`). `SprtGaussian`
+  rejects an infinite `variance` (was sign-only). `SprtBernoulli` and
+  `SprtGaussian` gain `is_primed()`.
+- **One copy of each kernel.** `Autocorrelation` runs its mean and variance
+  on `Welford`; `AdaptiveThreshold` is a plain struct (the `$ty` stamping
+  macro is gone). The existing tests pass unchanged. (`CrossCorrelation` keeps
+  its own lag-0 accumulators: running them through `Covariance` cost its
+  update two ticks, measured.)
 
 ### Removed
 

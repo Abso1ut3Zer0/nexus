@@ -31,6 +31,8 @@ pub use online_kmeans::*;
 pub use rls::*;
 
 #[cfg(all(feature = "alloc", any(feature = "std", feature = "libm")))]
+mod arm_bank;
+#[cfg(all(feature = "alloc", any(feature = "std", feature = "libm")))]
 mod epsilon_greedy;
 #[cfg(all(feature = "alloc", any(feature = "std", feature = "libm")))]
 mod exp3;

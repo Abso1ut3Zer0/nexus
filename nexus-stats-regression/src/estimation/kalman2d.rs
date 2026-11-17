@@ -1,4 +1,4 @@
-#![allow(clippy::suboptimal_flops, clippy::float_cmp)]
+use nexus_stats_core::math::MulAdd;
 
 /// 2-state Kalman filter with configurable observation model.
 ///
@@ -66,22 +66,22 @@ impl Kalman2d {
     /// The existing `predict()` uses identity dynamics (F = I).
     pub fn predict_with_dynamics(&mut self, f: [[f64; 2]; 2]) {
         // x_new = F * x
-        let x0 = f[0][0] * self.state[0] + f[0][1] * self.state[1];
-        let x1 = f[1][0] * self.state[0] + f[1][1] * self.state[1];
+        let x0 = f[0][0].fma(self.state[0], f[0][1] * self.state[1]);
+        let x1 = f[1][0].fma(self.state[0], f[1][1] * self.state[1]);
         self.state = [x0, x1];
 
         // P_new = F * P * F' + Q
         // FP[i][j] = Σ_k F[i][k] * P[k*2+j]
-        let fp00 = f[0][0] * self.p[0] + f[0][1] * self.p[2];
-        let fp01 = f[0][0] * self.p[1] + f[0][1] * self.p[3];
-        let fp10 = f[1][0] * self.p[0] + f[1][1] * self.p[2];
-        let fp11 = f[1][0] * self.p[1] + f[1][1] * self.p[3];
+        let fp00 = f[0][0].fma(self.p[0], f[0][1] * self.p[2]);
+        let fp01 = f[0][0].fma(self.p[1], f[0][1] * self.p[3]);
+        let fp10 = f[1][0].fma(self.p[0], f[1][1] * self.p[2]);
+        let fp11 = f[1][0].fma(self.p[1], f[1][1] * self.p[3]);
 
         // (FP) * F' + Q
-        self.p[0] = fp00 * f[0][0] + fp01 * f[0][1] + self.q[0];
-        self.p[1] = fp00 * f[1][0] + fp01 * f[1][1] + self.q[1];
-        self.p[2] = fp10 * f[0][0] + fp11 * f[0][1] + self.q[2];
-        self.p[3] = fp10 * f[1][0] + fp11 * f[1][1] + self.q[3];
+        self.p[0] = fp00.fma(f[0][0], fp01 * f[0][1]) + self.q[0];
+        self.p[1] = fp00.fma(f[1][0], fp01 * f[1][1]) + self.q[1];
+        self.p[2] = fp10.fma(f[0][0], fp11 * f[0][1]) + self.q[2];
+        self.p[3] = fp10.fma(f[1][0], fp11 * f[1][1]) + self.q[3];
     }
 
     /// Incorporates a scalar observation with observation model H.
@@ -105,17 +105,19 @@ impl Kalman2d {
         check_finite!(observation);
         debug_assert!(h.iter().all(|v| v.is_finite()), "h must be finite");
         // Innovation: y = obs - H*x
-        let y = observation - h[0] * self.state[0] - h[1] * self.state[1];
+        let y = h[1].fma(-self.state[1], h[0].fma(-self.state[0], observation));
 
         // Innovation covariance: S = H*P*H' + R. With P positive semi-definite
         // and R > 0 this is at least R; anything else means P has degraded (or a
         // NaN got in): restore P and skip the measurement rather than apply a
         // gain of 1/EPSILON.
-        let s = h[0] * h[0] * self.p[0]
-            + h[0] * h[1] * self.p[1]
-            + h[1] * h[0] * self.p[2]
-            + h[1] * h[1] * self.p[3]
-            + self.r;
+        let s = (h[1] * h[1]).fma(
+            self.p[3],
+            (h[1] * h[0]).fma(
+                self.p[2],
+                (h[0] * h[0]).fma(self.p[0], h[0] * h[1] * self.p[1]),
+            ),
+        ) + self.r;
         if !nexus_stats_core::math::positive_finite(s) {
             self.p = self.initial_p;
             return Ok(());
@@ -123,8 +125,8 @@ impl Kalman2d {
 
         // Kalman gain: K = P*H' / S
         let s_inv = 1.0 / s;
-        let k0 = (self.p[0] * h[0] + self.p[1] * h[1]) * s_inv;
-        let k1 = (self.p[2] * h[0] + self.p[3] * h[1]) * s_inv;
+        let k0 = self.p[0].fma(h[0], self.p[1] * h[1]) * s_inv;
+        let k1 = self.p[2].fma(h[0], self.p[3] * h[1]) * s_inv;
 
         // State update: x = x + K*y
         self.state[0] += k0 * y;
@@ -132,10 +134,10 @@ impl Kalman2d {
 
         // Covariance update: P = (I - K*H) * P
         let old_p = self.p;
-        self.p[0] = (1.0 - k0 * h[0]) * old_p[0] + (-k0 * h[1]) * old_p[2];
-        self.p[1] = (1.0 - k0 * h[0]) * old_p[1] + (-k0 * h[1]) * old_p[3];
-        self.p[2] = (-k1 * h[0]) * old_p[0] + (1.0 - k1 * h[1]) * old_p[2];
-        self.p[3] = (-k1 * h[0]) * old_p[1] + (1.0 - k1 * h[1]) * old_p[3];
+        self.p[0] = (1.0 - k0 * h[0]).fma(old_p[0], (-k0 * h[1]) * old_p[2]);
+        self.p[1] = (1.0 - k0 * h[0]).fma(old_p[1], (-k0 * h[1]) * old_p[3]);
+        self.p[2] = (-k1 * h[0]).fma(old_p[0], (1.0 - k1 * h[1]) * old_p[2]);
+        self.p[3] = (-k1 * h[0]).fma(old_p[1], (1.0 - k1 * h[1]) * old_p[3]);
         // Keep P symmetric: the (I - KH)P form drifts asymmetric under rounding.
         let off = 0.5 * (self.p[1] + self.p[2]);
         self.p[1] = off;
@@ -231,6 +233,13 @@ impl Kalman2d {
     #[must_use]
     pub fn count(&self) -> u64 {
         self.count
+    }
+
+    /// Whether at least one measurement has been folded in.
+    #[inline]
+    #[must_use]
+    pub fn is_primed(&self) -> bool {
+        self.count > 0
     }
 
     /// Resets to initial state and covariance.
@@ -554,5 +563,46 @@ mod tests {
             Err(nexus_stats_core::DataError::Infinite)
         );
         assert_eq!(kf.count(), 0);
+    }
+
+    /// `predict_with_dynamics` applies the caller's transition matrix: a
+    /// constant-velocity model advances position by velocity * dt.
+    #[test]
+    fn predict_with_dynamics_applies_the_transition() {
+        let mut kf = Kalman2d::builder()
+            .process_noise([[0.0, 0.0], [0.0, 0.0]])
+            .measurement_noise(1.0)
+            .initial_state([10.0, 2.0])
+            .build()
+            .unwrap();
+        let dt = 0.5;
+        kf.predict_with_dynamics([[1.0, dt], [0.0, 1.0]]);
+        let s = kf.state();
+        assert!(
+            (s[0] - 11.0).abs() < 1e-12,
+            "position += velocity * dt, got {}",
+            s[0]
+        );
+        assert!(
+            (s[1] - 2.0).abs() < 1e-12,
+            "velocity unchanged, got {}",
+            s[1]
+        );
+        kf.predict_with_dynamics([[1.0, dt], [0.0, 1.0]]);
+        assert!((kf.state()[0] - 12.0).abs() < 1e-12);
+    }
+
+    /// The observation vector `h` is the caller's contract (debug-asserted);
+    /// only the measurement itself is data and gets a `DataError`.
+    #[cfg(debug_assertions)]
+    #[test]
+    #[should_panic(expected = "h must be finite")]
+    fn nan_h_panics_in_debug() {
+        let mut kf = Kalman2d::builder()
+            .process_noise([[0.01, 0.0], [0.0, 0.01]])
+            .measurement_noise(1.0)
+            .build()
+            .unwrap();
+        let _ = kf.update(1.0, [f64::NAN, 0.0]);
     }
 }

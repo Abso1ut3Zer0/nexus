@@ -28,7 +28,7 @@ use nexus_stats_core::DataError;
 ///
 /// // Stable signal — no detection
 /// for _ in 0..100 {
-///     assert!(!ph.update(10.0).unwrap());
+///     assert!(ph.update(10.0).unwrap() != Some(true));
 /// }
 /// ```
 #[derive(Debug, Clone)]
@@ -73,8 +73,11 @@ impl PageHinkley {
     ///
     /// Returns `DataError::NotANumber` if the sample is NaN, or
     /// `DataError::Infinite` if the sample is infinite.
+    ///
+    /// `None` until `min_samples` samples have been seen (no verdict yet), then
+    /// `Some(true)` when a change is detected on this sample.
     #[inline]
-    pub fn update(&mut self, sample: f64) -> Result<bool, DataError> {
+    pub fn update(&mut self, sample: f64) -> Result<Option<bool>, DataError> {
         check_finite!(sample);
         self.count += 1;
 
@@ -96,11 +99,13 @@ impl PageHinkley {
         };
 
         if !self.is_primed() {
-            return Ok(false);
+            return Ok(None);
         }
 
-        Ok(self.sum_pos - self.min_pos > self.threshold
-            || self.max_neg - self.sum_neg > self.threshold)
+        Ok(Some(
+            self.sum_pos - self.min_pos > self.threshold
+                || self.max_neg - self.sum_neg > self.threshold,
+        ))
     }
 
     /// Number of samples processed.
@@ -212,7 +217,7 @@ mod tests {
             .unwrap();
 
         for _ in 0..200 {
-            assert!(!ph.update(10.0).unwrap());
+            assert!(ph.update(10.0).unwrap() != Some(true));
         }
     }
 
@@ -231,7 +236,7 @@ mod tests {
 
         let mut detected = false;
         for _ in 0..200 {
-            if ph.update(20.0).unwrap() {
+            if ph.update(20.0).unwrap() == Some(true) {
                 detected = true;
                 break;
             }
@@ -254,7 +259,7 @@ mod tests {
 
         let mut detected = false;
         for _ in 0..200 {
-            if ph.update(10.0).unwrap() {
+            if ph.update(10.0).unwrap() == Some(true) {
                 detected = true;
                 break;
             }
@@ -286,10 +291,10 @@ mod tests {
         let mut sensitive_count = 0u64;
         let mut tolerant_count = 0u64;
         for _ in 0..100 {
-            if sensitive.update(12.0).unwrap() && sensitive_count == 0 {
+            if sensitive.update(12.0).unwrap() == Some(true) && sensitive_count == 0 {
                 sensitive_count = sensitive.count();
             }
-            if tolerant.update(12.0).unwrap() && tolerant_count == 0 {
+            if tolerant.update(12.0).unwrap() == Some(true) && tolerant_count == 0 {
                 tolerant_count = tolerant.count();
             }
         }
@@ -325,7 +330,7 @@ mod tests {
         assert!(!ph.is_primed());
 
         for _ in 0..19 {
-            assert!(!ph.update(10.0).unwrap());
+            assert!(ph.update(10.0).unwrap() != Some(true));
         }
     }
 

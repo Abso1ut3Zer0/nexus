@@ -57,6 +57,13 @@ impl<T: Sample> PeakDetector<T> {
         self.count
     }
 
+    /// Whether a reversal can be judged (two samples seen).
+    #[inline]
+    #[must_use]
+    pub fn is_primed(&self) -> bool {
+        self.count >= 2
+    }
+
     /// Resets to the initial state. `prominence` is kept.
     #[inline]
     pub fn reset(&mut self) {

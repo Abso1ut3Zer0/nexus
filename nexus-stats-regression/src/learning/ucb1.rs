@@ -1,6 +1,4 @@
-extern crate alloc;
-use alloc::boxed::Box;
-use alloc::vec;
+use super::arm_bank::{ArmBank, checked_decay};
 
 /// UCB1 multi-armed bandit.
 ///
@@ -40,13 +38,10 @@ use alloc::vec;
 /// ```
 #[derive(Debug, Clone)]
 pub struct Ucb1 {
-    counts: Box<[f64]>,
-    rewards: Box<[f64]>,
+    /// Pull counts (`a`) and reward sums (`b`) per arm, plus the pull counter.
+    bank: ArmBank,
     exploration: f64,
     decay: f64,
-    total_pulls: u64,
-    num_arms: usize,
-    min_samples: u64,
 }
 
 /// Builder for [`Ucb1`].
@@ -79,19 +74,19 @@ impl Ucb1 {
     #[must_use]
     #[allow(clippy::float_cmp)]
     pub fn select(&self) -> usize {
-        for (i, &c) in self.counts.iter().enumerate() {
+        for (i, &c) in self.bank.a.iter().enumerate() {
             if c == 0.0 {
                 return i;
             }
         }
 
-        let total_eff: f64 = self.counts.iter().copied().sum();
+        let total_eff: f64 = self.bank.a.iter().copied().sum();
         let ln_total = nexus_stats_core::math::ln(total_eff);
         let scaled_exp = self.exploration * nexus_stats_core::math::sqrt(ln_total);
 
         let mut best_arm = 0;
         let mut best_score = f64::NEG_INFINITY;
-        for (i, (&r, &c)) in self.rewards.iter().zip(self.counts.iter()).enumerate() {
+        for (i, (&r, &c)) in self.bank.b.iter().zip(self.bank.a.iter()).enumerate() {
             let inv_c = 1.0 / c;
             let mean = r * inv_c;
             let bonus = scaled_exp * nexus_stats_core::math::sqrt(inv_c);
@@ -119,23 +114,11 @@ impl Ucb1 {
     #[inline]
     pub fn update(&mut self, arm: usize, reward: f64) -> Result<(), nexus_stats_core::DataError> {
         check_finite!(reward);
-        assert!(
-            arm < self.num_arms,
-            "arm {arm} >= num_arms {}",
-            self.num_arms
-        );
-
+        self.bank.check_arm(arm);
         if self.decay < 1.0 {
-            let decay = self.decay;
-            for (c, r) in self.counts.iter_mut().zip(self.rewards.iter_mut()) {
-                *c *= decay;
-                *r *= decay;
-            }
+            self.bank.decay(self.decay);
         }
-
-        self.counts[arm] += 1.0;
-        self.rewards[arm] += reward;
-        self.total_pulls += 1;
+        self.bank.record(arm, 1.0, reward);
         Ok(())
     }
 
@@ -144,64 +127,47 @@ impl Ucb1 {
     #[must_use]
     #[allow(clippy::float_cmp)]
     pub fn mean_reward(&self, arm: usize) -> Option<f64> {
-        assert!(
-            arm < self.num_arms,
-            "arm {arm} >= num_arms {}",
-            self.num_arms
-        );
-        if self.counts[arm] == 0.0 {
+        self.bank.check_arm(arm);
+        if self.bank.a[arm] == 0.0 {
             return None;
         }
-        Some(self.rewards[arm] / self.counts[arm])
+        Some(self.bank.b[arm] / self.bank.a[arm])
     }
 
     /// Effective pull count for an arm (decayed).
     #[inline]
     #[must_use]
     pub fn pulls(&self, arm: usize) -> f64 {
-        assert!(
-            arm < self.num_arms,
-            "arm {arm} >= num_arms {}",
-            self.num_arms
-        );
-        self.counts[arm]
-    }
-
-    /// Total pulls across all arms (un-decayed counter).
-    #[inline]
-    #[must_use]
-    pub fn total_pulls(&self) -> u64 {
-        self.total_pulls
+        self.bank.check_arm(arm);
+        self.bank.a[arm]
     }
 
     /// Number of arms.
     #[inline]
     #[must_use]
     pub fn num_arms(&self) -> usize {
-        self.num_arms
+        self.bank.arms()
     }
 
     /// Whether all arms have been pulled at least once
-    /// and `total_pulls >= min_samples`.
+    /// and `count() >= min_samples`.
     #[inline]
     #[must_use]
     pub fn is_primed(&self) -> bool {
-        self.total_pulls >= self.min_samples && self.counts.iter().all(|&c| c > 0.0)
+        self.bank.is_primed() && self.bank.a.iter().all(|&c| c > 0.0)
     }
 
     /// Returns the number of updates performed.
     #[inline]
     #[must_use]
     pub fn count(&self) -> u64 {
-        self.total_pulls
+        self.bank.total_pulls
     }
 
     /// Resets all state, keeping configuration.
     #[inline]
     pub fn reset(&mut self) {
-        self.counts.fill(0.0);
-        self.rewards.fill(0.0);
-        self.total_pulls = 0;
+        self.bank.reset(0.0, 0.0);
     }
 }
 
@@ -244,28 +210,17 @@ impl Ucb1Builder {
         let arms = self
             .arms
             .ok_or(nexus_stats_core::ConfigError::Missing("arms"))?;
-        if arms < 2 {
-            return Err(nexus_stats_core::ConfigError::Invalid("arms must be >= 2"));
-        }
         if self.exploration <= 0.0 || !self.exploration.is_finite() {
             return Err(nexus_stats_core::ConfigError::Invalid(
                 "exploration must be positive and finite",
             ));
         }
-        if self.decay <= 0.0 || self.decay > 1.0 || !self.decay.is_finite() {
-            return Err(nexus_stats_core::ConfigError::Invalid(
-                "decay must be in (0, 1]",
-            ));
-        }
+        let decay = checked_decay(self.decay)?;
         let min_samples = self.min_samples.unwrap_or(arms as u64);
         Ok(Ucb1 {
-            counts: vec![0.0; arms].into_boxed_slice(),
-            rewards: vec![0.0; arms].into_boxed_slice(),
+            bank: ArmBank::new(arms, 0.0, 0.0, min_samples)?,
             exploration: self.exploration,
-            decay: self.decay,
-            total_pulls: 0,
-            num_arms: arms,
-            min_samples,
+            decay,
         })
     }
 }
@@ -316,9 +271,9 @@ mod tests {
 
         // UCB bonus for arm 1 after few pulls
         let early_bonus = {
-            let total: f64 = bandit.counts.iter().sum();
+            let total: f64 = bandit.bank.a.iter().sum();
             let ln_t = total.ln();
-            bandit.exploration * (ln_t / bandit.counts[1]).sqrt()
+            bandit.exploration * (ln_t / bandit.bank.a[1]).sqrt()
         };
 
         for _ in 0..100 {
@@ -329,9 +284,9 @@ mod tests {
         }
 
         let late_bonus = {
-            let total: f64 = bandit.counts.iter().sum();
+            let total: f64 = bandit.bank.a.iter().sum();
             let ln_t = total.ln();
-            bandit.exploration * (ln_t / bandit.counts[1]).sqrt()
+            bandit.exploration * (ln_t / bandit.bank.a[1]).sqrt()
         };
 
         assert!(
@@ -363,25 +318,22 @@ mod tests {
     #[test]
     fn decay_regime_shift() {
         let mut bandit = Ucb1::builder().arms(2).decay(0.9).build().unwrap();
-
-        // Phase 1: arm 0 is best
+        // Phase 1: arm 0 is best (50 pairs).
         for _ in 0..50 {
             bandit.update(0, 1.0).unwrap();
             bandit.update(1, 0.0).unwrap();
         }
-        assert!(
-            bandit.mean_reward(0).unwrap() > bandit.mean_reward(1).unwrap(),
-            "arm 0 should lead after phase 1"
-        );
-
-        // Phase 2: arm 1 is best
-        for _ in 0..100 {
+        // Phase 2: arm 1 is best, but for only 30 pairs. Without decay arm 0
+        // still leads (50/80 vs 30/80); with decay the old evidence is gone.
+        for _ in 0..30 {
             bandit.update(0, 0.0).unwrap();
             bandit.update(1, 1.0).unwrap();
         }
         assert!(
             bandit.mean_reward(1).unwrap() > bandit.mean_reward(0).unwrap(),
-            "arm 1 should lead after phase 2"
+            "arm 1 should lead after phase 2: arm0={:?}, arm1={:?}",
+            bandit.mean_reward(0),
+            bandit.mean_reward(1)
         );
     }
 
@@ -390,10 +342,10 @@ mod tests {
         let mut bandit = Ucb1::builder().arms(3).build().unwrap();
         bandit.update(0, 1.0).unwrap();
         bandit.update(1, 0.5).unwrap();
-        assert_eq!(bandit.total_pulls(), 2);
+        assert_eq!(bandit.count(), 2);
 
         bandit.reset();
-        assert_eq!(bandit.total_pulls(), 0);
+        assert_eq!(bandit.count(), 0);
         assert_eq!(bandit.mean_reward(0), None);
         assert_eq!(bandit.mean_reward(1), None);
     }
@@ -405,7 +357,7 @@ mod tests {
             bandit.update(0, f64::NAN),
             Err(nexus_stats_core::DataError::NotANumber)
         );
-        assert_eq!(bandit.total_pulls(), 0);
+        assert_eq!(bandit.count(), 0);
     }
 
     #[test]

@@ -1,3 +1,5 @@
+use crate::statistics::Covariance;
+
 /// Estimates mean-reversion half-life from lag-1 autocorrelation.
 ///
 /// Computes AC(1) using Welford-style online covariance between
@@ -24,15 +26,11 @@
 /// ```
 #[derive(Debug, Clone)]
 pub struct HalfLife {
-    // Welford-style accumulators for Cov(x_t, x_{t-1}) and Var(x_t).
-    // Using the standard online algorithm from Covariance.
-    n: u64,
-    mean_x: f64,    // running mean of x_t (current value)
-    mean_prev: f64, // running mean of x_{t-1} (previous value)
-    m2_x: f64,      // sum of (x_t - mean_x)² for variance
-    co_moment: f64, // sum of (x_t - mean_x)(x_{t-1} - mean_prev) for covariance
+    /// Cov(x_t, x_{t-1}) and Var(x_t) from the pairs seen so far.
+    pairs: Covariance,
     prev: f64,
-    count: u64, // total observations including first (which has no pair)
+    /// Total observations including the first (which has no pair).
+    count: u64,
 }
 
 impl Default for HalfLife {
@@ -47,22 +45,10 @@ impl HalfLife {
     #[must_use]
     pub const fn new() -> Self {
         Self {
-            n: 0,
-            mean_x: 0.0,
-            mean_prev: 0.0,
-            m2_x: 0.0,
-            co_moment: 0.0,
+            pairs: Covariance::new(),
             prev: 0.0,
             count: 0,
         }
-    }
-
-    /// Creates a builder (for consistency with other types, but this type
-    /// has no configuration parameters).
-    #[inline]
-    #[must_use]
-    pub fn builder() -> HalfLifeBuilder {
-        HalfLifeBuilder { _private: () }
     }
 
     /// Feed a value from the time series.
@@ -73,31 +59,10 @@ impl HalfLife {
     #[inline]
     pub fn update(&mut self, value: f64) -> Result<(), crate::DataError> {
         check_finite!(value);
-
         self.count += 1;
-
         if self.count >= 2 {
-            // We have a pair (prev, value). Update Welford-style covariance.
-            // x = current value (x_t), y = previous value (x_{t-1})
-            self.n += 1;
-            let n = self.n as f64;
-
-            let dx = value - self.mean_x;
-            let dy = self.prev - self.mean_prev;
-
-            self.mean_x += dx / n;
-            self.mean_prev += dy / n;
-
-            // Welford co-moment: OLD dx (before mean update) × (prev - NEW mean_prev).
-            // mean_prev was already updated on line 89, so this uses the new mean.
-            // Same pattern as Covariance::update.
-            let dx2 = value - self.mean_x;
-            self.co_moment += dx * (self.prev - self.mean_prev);
-
-            // Variance of x_t only
-            self.m2_x += dx * dx2;
+            self.pairs.update(value, self.prev)?;
         }
-
         self.prev = value;
         Ok(())
     }
@@ -110,14 +75,12 @@ impl HalfLife {
     #[inline]
     #[must_use]
     pub fn autocorrelation(&self) -> Option<f64> {
-        if self.n < 2 {
-            return None;
-        }
-        if self.m2_x <= 0.0 {
+        let var_x = self.pairs.variance_x()?;
+        if var_x <= 0.0 {
             return None;
         }
         // Both use N-1 denominator, which cancels in the ratio
-        Some(self.co_moment / self.m2_x)
+        Some(self.pairs.covariance()? / var_x)
     }
 
     /// Estimated half-life in number of observations.
@@ -145,31 +108,14 @@ impl HalfLife {
     #[inline]
     #[must_use]
     pub fn is_primed(&self) -> bool {
-        self.n >= 2
+        self.pairs.count() >= 2
     }
 
     /// Reset all state.
     pub fn reset(&mut self) {
-        self.n = 0;
-        self.mean_x = 0.0;
-        self.mean_prev = 0.0;
-        self.m2_x = 0.0;
-        self.co_moment = 0.0;
+        self.pairs.reset();
         self.prev = 0.0;
         self.count = 0;
-    }
-}
-
-/// Builder for [`HalfLife`].
-#[derive(Debug, Clone)]
-pub struct HalfLifeBuilder {
-    _private: (),
-}
-
-impl HalfLifeBuilder {
-    /// Build the estimator.
-    pub fn build(self) -> HalfLife {
-        HalfLife::new()
     }
 }
 

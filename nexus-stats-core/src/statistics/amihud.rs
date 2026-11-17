@@ -110,8 +110,7 @@ impl AmihudBuilder {
     #[must_use]
     #[cfg(any(feature = "std", feature = "libm"))]
     pub fn halflife(mut self, halflife: f64) -> Self {
-        let ln2 = core::f64::consts::LN_2;
-        self.alpha = Some(1.0 - crate::math::exp(-ln2 / halflife));
+        self.alpha = Some(crate::math::alpha_from_halflife(halflife));
         self
     }
 
@@ -120,6 +119,7 @@ impl AmihudBuilder {
     /// # Errors
     ///
     /// Returns `ConfigError` if alpha is missing or invalid.
+    #[inline]
     pub fn build(self) -> Result<Amihud, crate::ConfigError> {
         let alpha = self.alpha.ok_or(crate::ConfigError::Missing("alpha"))?;
 

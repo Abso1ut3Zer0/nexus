@@ -55,15 +55,15 @@ Three hot calls and one window read:
 ## Configuration
 
 ```rust
-use nexus_stats::clock::{Clock, WallClock};
+use nexus_stats::clock::{Clock, MonotonicClock};
 use nexus_stats::monitoring::PollSaturation;
 
-let clock = WallClock::new();                 // nanosecond ticks since construction
+let clock = MonotonicClock::new();                 // nanosecond ticks since construction
 let mut sat = PollSaturation::new(50_000);    // budget: 50 µs
 ```
 
 Ticks are whatever unit your stamps use; the type never reads a clock.
-`WallClock` is the std bridge (nanoseconds since construction), so the
+`MonotonicClock` is the std bridge (nanoseconds since construction), so the
 budget above is 50 µs. Two knobs, and only two:
 
 - **`budget`**: the wait you consider late. Messages whose `behind` exceeds
@@ -118,10 +118,10 @@ the same thread:
 ### Spin loop, one message per poll
 
 ```rust
-use nexus_stats::clock::{Clock, WallClock};
+use nexus_stats::clock::{Clock, MonotonicClock};
 use nexus_stats::monitoring::PollSaturation;
 
-let clock = WallClock::new();                 // nanosecond ticks since construction
+let clock = MonotonicClock::new();                 // nanosecond ticks since construction
 let mut sat = PollSaturation::new(50_000);    // budget: 50 µs
 
 loop {

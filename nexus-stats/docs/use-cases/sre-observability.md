@@ -51,7 +51,7 @@ impl ResourceMonitor {
         ResourceMonitor {
             utilization: Ema::builder().span(20).build().unwrap(),
             codel: CoDel::<i64>::builder()
-                .target(10_000).window(1_000_000_000).build().unwrap(),
+                .target(10_000).interval(1_000_000_000).build().unwrap(),
             error_rate: ErrorRate::builder()
                 .span(100).threshold(0.01).build().unwrap(),
         }

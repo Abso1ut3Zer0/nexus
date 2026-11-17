@@ -146,7 +146,7 @@ impl<T: Float> ZScoreNormBuilder<T> {
     #[inline]
     #[must_use]
     pub fn halflife(mut self, halflife: T) -> Self {
-        let alpha = 1.0 - crate::math::exp(-core::f64::consts::LN_2 / halflife.to_f64());
+        let alpha = crate::math::alpha_from_halflife(halflife.to_f64());
         self.alpha = Some(alpha);
         self
     }
@@ -182,6 +182,7 @@ impl<T: Float> ZScoreNormBuilder<T> {
     /// # Errors
     ///
     /// Returns `ConfigError` if alpha is missing or not in (0, 1).
+    #[inline]
     pub fn build(self) -> Result<ZScoreNorm<T>, crate::ConfigError> {
         let mut ewma = EwmaVar::builder();
         if let Some(a) = self.alpha {

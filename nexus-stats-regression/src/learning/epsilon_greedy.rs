@@ -1,6 +1,4 @@
-extern crate alloc;
-use alloc::boxed::Box;
-use alloc::vec;
+use super::arm_bank::{ArmBank, checked_decay};
 
 /// Epsilon-greedy multi-armed bandit.
 ///
@@ -41,13 +39,10 @@ use alloc::vec;
 /// ```
 #[derive(Debug, Clone)]
 pub struct EpsilonGreedy {
-    counts: Box<[f64]>,
-    rewards: Box<[f64]>,
+    /// Pull counts (`a`) and reward sums (`b`) per arm, plus the pull counter.
+    bank: ArmBank,
     epsilon: f64,
     decay: f64,
-    total_pulls: u64,
-    num_arms: usize,
-    min_samples: u64,
 }
 
 /// Builder for [`EpsilonGreedy`].
@@ -80,7 +75,7 @@ impl EpsilonGreedy {
     #[allow(clippy::float_cmp)]
     pub fn select(&self, rng: &mut impl FnMut() -> f64) -> usize {
         // Round-robin unpulled arms first
-        for (i, &c) in self.counts.iter().enumerate() {
+        for (i, &c) in self.bank.a.iter().enumerate() {
             if c == 0.0 {
                 return i;
             }
@@ -90,10 +85,10 @@ impl EpsilonGreedy {
         if coin < self.epsilon {
             // Explore: uniform random arm
             let r = rng();
-            let idx = (r * self.num_arms as f64) as usize;
+            let idx = (r * self.bank.arms() as f64) as usize;
             // Clamp to valid range (r could be very close to 1.0)
-            if idx >= self.num_arms {
-                self.num_arms - 1
+            if idx >= self.bank.arms() {
+                self.bank.arms() - 1
             } else {
                 idx
             }
@@ -101,7 +96,7 @@ impl EpsilonGreedy {
             // Exploit: best mean reward
             let mut best_arm = 0;
             let mut best_mean = f64::NEG_INFINITY;
-            for (i, (&r, &c)) in self.rewards.iter().zip(self.counts.iter()).enumerate() {
+            for (i, (&r, &c)) in self.bank.b.iter().zip(self.bank.a.iter()).enumerate() {
                 let mean = r / c;
                 if mean > best_mean {
                     best_mean = mean;
@@ -124,23 +119,11 @@ impl EpsilonGreedy {
     #[inline]
     pub fn update(&mut self, arm: usize, reward: f64) -> Result<(), nexus_stats_core::DataError> {
         check_finite!(reward);
-        assert!(
-            arm < self.num_arms,
-            "arm {arm} >= num_arms {}",
-            self.num_arms
-        );
-
+        self.bank.check_arm(arm);
         if self.decay < 1.0 {
-            let decay = self.decay;
-            for (c, r) in self.counts.iter_mut().zip(self.rewards.iter_mut()) {
-                *c *= decay;
-                *r *= decay;
-            }
+            self.bank.decay(self.decay);
         }
-
-        self.counts[arm] += 1.0;
-        self.rewards[arm] += reward;
-        self.total_pulls += 1;
+        self.bank.record(arm, 1.0, reward);
         Ok(())
     }
 
@@ -149,64 +132,47 @@ impl EpsilonGreedy {
     #[must_use]
     #[allow(clippy::float_cmp)]
     pub fn mean_reward(&self, arm: usize) -> Option<f64> {
-        assert!(
-            arm < self.num_arms,
-            "arm {arm} >= num_arms {}",
-            self.num_arms
-        );
-        if self.counts[arm] == 0.0 {
+        self.bank.check_arm(arm);
+        if self.bank.a[arm] == 0.0 {
             return None;
         }
-        Some(self.rewards[arm] / self.counts[arm])
+        Some(self.bank.b[arm] / self.bank.a[arm])
     }
 
     /// Effective pull count for an arm (decayed).
     #[inline]
     #[must_use]
     pub fn pulls(&self, arm: usize) -> f64 {
-        assert!(
-            arm < self.num_arms,
-            "arm {arm} >= num_arms {}",
-            self.num_arms
-        );
-        self.counts[arm]
-    }
-
-    /// Total pulls across all arms (un-decayed counter).
-    #[inline]
-    #[must_use]
-    pub fn total_pulls(&self) -> u64 {
-        self.total_pulls
+        self.bank.check_arm(arm);
+        self.bank.a[arm]
     }
 
     /// Number of arms.
     #[inline]
     #[must_use]
     pub fn num_arms(&self) -> usize {
-        self.num_arms
+        self.bank.arms()
     }
 
     /// Whether all arms have been pulled at least once
-    /// and `total_pulls >= min_samples`.
+    /// and `count() >= min_samples`.
     #[inline]
     #[must_use]
     pub fn is_primed(&self) -> bool {
-        self.total_pulls >= self.min_samples && self.counts.iter().all(|&c| c > 0.0)
+        self.bank.is_primed() && self.bank.a.iter().all(|&c| c > 0.0)
     }
 
     /// Returns the number of updates performed.
     #[inline]
     #[must_use]
     pub fn count(&self) -> u64 {
-        self.total_pulls
+        self.bank.total_pulls
     }
 
     /// Resets all state, keeping configuration.
     #[inline]
     pub fn reset(&mut self) {
-        self.counts.fill(0.0);
-        self.rewards.fill(0.0);
-        self.total_pulls = 0;
+        self.bank.reset(0.0, 0.0);
     }
 }
 
@@ -252,28 +218,17 @@ impl EpsilonGreedyBuilder {
         let epsilon = self
             .epsilon
             .ok_or(nexus_stats_core::ConfigError::Missing("epsilon"))?;
-        if arms < 2 {
-            return Err(nexus_stats_core::ConfigError::Invalid("arms must be >= 2"));
-        }
         if epsilon <= 0.0 || epsilon >= 1.0 || !epsilon.is_finite() {
             return Err(nexus_stats_core::ConfigError::Invalid(
                 "epsilon must be in (0, 1)",
             ));
         }
-        if self.decay <= 0.0 || self.decay > 1.0 || !self.decay.is_finite() {
-            return Err(nexus_stats_core::ConfigError::Invalid(
-                "decay must be in (0, 1]",
-            ));
-        }
+        let decay = checked_decay(self.decay)?;
         let min_samples = self.min_samples.unwrap_or(arms as u64);
         Ok(EpsilonGreedy {
-            counts: vec![0.0; arms].into_boxed_slice(),
-            rewards: vec![0.0; arms].into_boxed_slice(),
+            bank: ArmBank::new(arms, 0.0, 0.0, min_samples)?,
             epsilon,
-            decay: self.decay,
-            total_pulls: 0,
-            num_arms: arms,
-            min_samples,
+            decay,
         })
     }
 }
@@ -281,16 +236,7 @@ impl EpsilonGreedyBuilder {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    fn make_rng(seed: u64) -> impl FnMut() -> f64 {
-        let mut state = seed;
-        move || {
-            state = state
-                .wrapping_mul(6_364_136_223_846_793_005)
-                .wrapping_add(1_442_695_040_888_963_407);
-            (state >> 33) as f64 / (1u64 << 31) as f64
-        }
-    }
+    use crate::learning::sampling::test_rng as make_rng;
 
     #[test]
     fn explore_all_first() {
@@ -387,24 +333,22 @@ mod tests {
             .decay(0.9)
             .build()
             .unwrap();
-
-        // Phase 1: arm 0 best
+        // Phase 1: arm 0 is best (50 pairs).
         for _ in 0..50 {
             bandit.update(0, 1.0).unwrap();
             bandit.update(1, 0.0).unwrap();
         }
-        assert!(bandit.mean_reward(0).unwrap() > bandit.mean_reward(1).unwrap());
-
-        // Phase 2: arm 1 best
-        for _ in 0..100 {
+        // Phase 2: arm 1 is best, but for only 30 pairs. Without decay arm 0
+        // still leads (50/80 vs 30/80); with decay the old evidence is gone.
+        for _ in 0..30 {
             bandit.update(0, 0.0).unwrap();
             bandit.update(1, 1.0).unwrap();
         }
         assert!(
             bandit.mean_reward(1).unwrap() > bandit.mean_reward(0).unwrap(),
-            "should adapt: arm0={}, arm1={}",
-            bandit.mean_reward(0).unwrap(),
-            bandit.mean_reward(1).unwrap(),
+            "should adapt: arm0={:?}, arm1={:?}",
+            bandit.mean_reward(0),
+            bandit.mean_reward(1),
         );
     }
 
@@ -417,7 +361,7 @@ mod tests {
             .unwrap();
         bandit.update(0, 1.0).unwrap();
         bandit.reset();
-        assert_eq!(bandit.total_pulls(), 0);
+        assert_eq!(bandit.count(), 0);
         assert_eq!(bandit.mean_reward(0), None);
     }
 

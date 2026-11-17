@@ -37,6 +37,14 @@ contained.
   as well as `Send` now. Same API, same codegen (verified instruction for
   instruction on the Hampel hot loop). `Kama` drops a field it stored but
   never read.
+- **`Spring` has `count()` and `is_primed()`;** its `initialized` flag is the
+  counter. `HuberEma`'s missing-field error is `Missing("alpha")`.
+
+### Added
+
+- **`libm` feature** (forwards to `nexus-stats-core/libm`): the `halflife(h)`
+  builder option of `HuberEma` and `ConditionalEma` is available without
+  `std`. The umbrella's `libm` forwards here too.
 
 ### Fixed
 
@@ -53,6 +61,8 @@ contained.
   types (`WindowedMedian`, `Kama`, `Hampel`) are O(window) and the doc now
   says so. `Kama`'s doc states its per-update cost and the N-1 intervals its
   volatility spans; the types table lists `ConditionalEma`.
+- Docs: `ConditionalEma::active_fraction` says it reads `0.0` before any
+  sample.
 
 ## [2.0.0] — 2026-05-28
 

@@ -49,7 +49,11 @@ information. Builders follow their type: `EmaF64Builder` → `EmaBuilder`,
 | `LivenessU64` | `Liveness` |
 | `LpmF64` | `Lpm` |
 | `MomentsF64` | `Moments` |
-| `OnlineCovarianceF64` | `OnlineCovariance` |
+| `OnlineCovarianceF64` | `CovarianceMatrix` |
+| `WallClock` | `MonotonicClock` |
+| `CoDelBuilder::window(n)` | `interval(n)` |
+| `BucketPolicy::WallTimeNanos(n)` | `BucketPolicy::Ticks(n)` |
+| `BucketAccumulator::update_at_raw(v, t)` | `update_at(v, t)` |
 | `PercentileF64` | `Percentile` |
 | `RollSpreadF64` | `RollSpread` |
 | `TwoScaleRvF64` | `TwoScaleRv` |
@@ -92,6 +96,7 @@ information. Builders follow their type: `EmaF64Builder` → `EmaBuilder`,
 | 6.x | 7.0 |
 |-----|-----|
 | `DecayAccumU64` | `DecayAccum` |
+| `TopK::total()` | `TopK::count()` |
 
 ### nexus-stats-regression
 
@@ -127,6 +132,8 @@ information. Builders follow their type: `EmaF64Builder` → `EmaBuilder`,
 | `ThompsonBetaF64` | `ThompsonBeta` |
 | `ThompsonGammaF64` | `ThompsonGamma` |
 | `Ucb1F64` | `Ucb1` |
+| `intercept_value()` (linear, EW and transformed regressions) | `intercept()` |
+| `total_pulls()` on the bandits | `count()` |
 
 ## 2. Pairs become one generic type
 
@@ -222,6 +229,7 @@ on `f32` accumulation for speed, measure: the hot path gains a convert.
 | `AutocorrelationI64` | `Autocorrelation` on `f64` (correlation is fractional) ([#379](https://github.com/Abso1ut3Zer0/nexus/issues/379)) |
 | `DecayAccumF64` | `DecayAccum` (`u64` ticks) |
 | `update_i64(timestamp, ..)` on `WindowedMax`, `WindowedMin`, `CoDel` | `update(timestamp as u64, ..)` |
+| `HalfLifeBuilder` | `HalfLife::new()` (the builder had no knobs) |
 | `CoDel::min_sojourn()` | the detector no longer keeps a windowed minimum (it implements RFC 8289 directly); keep a `WindowedMin<i64>` beside it if you report one |
 
 ## 4. Behavior changes
@@ -315,10 +323,29 @@ CHANGELOG entry in `nexus-stats-core`:
   (the `std_dev` was stored and ignored).
 - `Hurst` primes at its configured window, not at a fixed 20 samples.
 
+### Surface consistency (code-quality audit, fourth PR)
+
+- **`Adwin::update` / `PageHinkley::update` return `Result<Option<bool>, _>`:**
+  `Ok(None)` while priming, `Ok(Some(changed))` after. Replace
+  `if det.update(x)? {` with `if det.update(x)? == Some(true) {`.
+- **`Debounce::count()` is the number of updates.** The consecutive-`true`
+  run that `update` compares to the threshold is `consecutive()`; rename
+  that call.
+- **`Exp3::select` takes `&mut self`** (it fills a scratch buffer); bind the
+  bandit mutably. `Exp3` is `Sync` and `Clone` now.
+- Additive, no action needed: `count()` / `is_primed()` on 24 more types,
+  `halflife(h)` on every builder that has `alpha(a)`,
+  `Covariance::variance_x` / `variance_y`, `Coefficients::eval`, and a
+  `libm` feature on `nexus-stats-smoothing` (the umbrella forwards it).
+
 ## 5. Checklist
 
 1. Replace the names in tables 1 and 2, builders included.
 2. Turbofish or annotate every constructor of a generic type.
 3. Replace the removed types from table 3.
 4. `cargo build`. What remains is section 4: `DeadBand::new` now returns
-   `Result`, and any `i64` `DeadBand` threshold changes type.
+   `Result`, any `i64` `DeadBand` threshold changes type, `Adwin` /
+   `PageHinkley` verdicts are `Option<bool>`, `Debounce::count()` is
+   `consecutive()`, `Exp3::select` needs a `&mut` bandit, and the method
+   renames in the section 1 tables (`intercept`, `count`, `interval`,
+   `update_at`).

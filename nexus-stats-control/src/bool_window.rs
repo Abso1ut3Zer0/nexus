@@ -83,6 +83,8 @@ impl BoolWindow {
         }
     }
 
+    /// An empty window reads `0.0`: no failure has been observed, which is
+    /// the right default for a breaker that must not trip before evidence.
     /// Failure rate over the window (0.0 to 1.0).
     #[inline]
     #[must_use]
@@ -120,6 +122,13 @@ impl BoolWindow {
     #[must_use]
     pub fn is_full(&self) -> bool {
         self.count >= self.capacity as u64
+    }
+
+    /// Whether the window is full (same as `is_full`).
+    #[inline]
+    #[must_use]
+    pub fn is_primed(&self) -> bool {
+        self.is_full()
     }
 
     /// Resets to empty state.

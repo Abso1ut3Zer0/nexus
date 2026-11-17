@@ -80,6 +80,7 @@ impl ConditionalEma {
         self.ema.value()
     }
 
+    /// Reads `0.0` before any sample: nothing has been active yet.
     /// Fraction of observations where the condition was active.
     #[inline]
     #[must_use]
@@ -131,10 +132,9 @@ impl ConditionalEmaBuilder {
     /// Samples for weight to decay by half.
     #[inline]
     #[must_use]
-    #[cfg(feature = "std")]
+    #[cfg(any(feature = "std", feature = "libm"))]
     pub fn halflife(mut self, halflife: f64) -> Self {
-        let ln2 = core::f64::consts::LN_2;
-        self.alpha = Some(1.0 - nexus_stats_core::math::exp(-ln2 / halflife));
+        self.alpha = Some(nexus_stats_core::math::alpha_from_halflife(halflife));
         self
     }
 
@@ -151,6 +151,7 @@ impl ConditionalEmaBuilder {
     /// # Errors
     ///
     /// Returns `ConfigError` if alpha is missing or invalid.
+    #[inline]
     pub fn build(self) -> Result<ConditionalEma, nexus_stats_core::ConfigError> {
         let alpha = self
             .alpha

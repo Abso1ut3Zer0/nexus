@@ -5,7 +5,6 @@
 // Maintains frequency counts over `bins` categories, computes entropy on query.
 // O(bins) for entropy query, O(1) for update.
 
-extern crate alloc;
 use alloc::boxed::Box;
 use alloc::vec;
 

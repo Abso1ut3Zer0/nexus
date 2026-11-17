@@ -98,7 +98,7 @@ use nexus_stats::{Condition, monitoring::CoDel};
 
 let mut qd = CoDel::<i64>::builder()
     .target(10_000)       // 10μs max wait
-    .window(100_000_000)  // 100ms observation
+    .interval(100_000_000)  // 100ms observation
     .build().unwrap();
 
 // At dequeue:

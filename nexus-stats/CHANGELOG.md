@@ -64,10 +64,32 @@ one naming convention across the family. Migration guide:
   remain in storage, and the converted types are `Sync`. `Bocpd` has no
   `unsafe` and drops a redundant per-run counter. `Adwin` holds its bucket
   levels as fixed lanes in one allocation, so memory is fixed at build for
-  every type. `OnlineCovariance` and `SignalDecayCurve` store boxed slices.
+  every type. `CovarianceMatrix` and `SignalDecayCurve` store boxed slices.
   No API changes beyond the new `storage` module and one gating change: the
   `signal` and `learning` modules exist only with `alloc` now (without it they
   were empty), which `detection`- or `regression`-without-`alloc` builds see.
+- **Shared kernels and surface consistency pass from the code-quality audit
+  (4 of 4).** Every type that primes reports `count()` and `is_primed()`
+  beside `reset()` (24 types gain one or both); every builder with
+  `alpha(a)` has `halflife(h)`; `Debounce::count()` counts updates and the
+  run length is `consecutive()`; `Adwin` / `PageHinkley::update` return
+  `Option<bool>` (`None` while priming); `Exp3::select` takes `&mut self`
+  and `Exp3` is `Sync`; `HalfLife::new()` replaces its empty builder. Under
+  the surface each algorithm exists once: the bandits share an arm bank,
+  `Liveness` / `EventRate` share the shift-EMA kernel, `HalfLife` is a
+  `Covariance`, `Autocorrelation` is a `Welford`, the adaptive filters share
+  `dot` / `axpy`, and the last three `$ty` stamping macros are plain structs.
+  Measured against the previous PR on every touched row of the perf harness:
+  parity within a tick, with `HalfLife` 13 → 8, `Percentile` 41 → 37 and
+  `RlsFilter` 133 → 92 ticks. See the per-crate CHANGELOGs and
+  `docs/guides/migrating-to-7.md` § 4.
+- **Renames** from the audit's naming pass: `OnlineCovariance` →
+  `CovarianceMatrix`, `WallClock` → `MonotonicClock`, `CoDelBuilder::window`
+  → `interval`, `BucketPolicy::WallTimeNanos` → `Ticks`,
+  `BucketAccumulator::update_at_raw` → `update_at`, `TopK::total` → `count`,
+  `intercept_value` → `intercept`, the bandits' `total_pulls` → `count`.
+- `libm` also enables `nexus-stats-smoothing/libm`, so `HuberEma` /
+  `ConditionalEma::halflife` exist on a `no_std` + `libm` build.
 
 ### Removed
 
@@ -75,7 +97,8 @@ one naming convention across the family. Migration guide:
   `LivenessF64`, `LivenessI64`, `EventRateI64`, `update_i64` on the windowed
   extrema and CoDel, `CoDel::min_sojourn` (core); `MosumI64`,
   `AutocorrelationI64` ([#379](https://github.com/Abso1ut3Zer0/nexus/issues/379),
-  detection); `DecayAccumF64` (control).
+  detection); `DecayAccumF64` (control); `HalfLifeBuilder` (core; it had no
+  knobs, use `HalfLife::new()`).
 
 ### Added
 
@@ -83,6 +106,12 @@ one naming convention across the family. Migration guide:
   and `SojournSaturation` / `SojournSummary` ([#770](https://github.com/Abso1ut3Zer0/nexus/issues/770)):
   a consumer thread's saturation from its poll outcomes, or from stamped
   queue sojourns.
+- `count()` / `is_primed()` where they were missing (see the 4-of-4 entry);
+  `halflife(h)` on `VarianceRatio`, `RollSpread`, `MultiGate`,
+  `RobustZScore`, `EwLinearRegression`, `EwPolynomialRegression`,
+  `KyleLambda` and the EW transformed regressions; `Covariance::variance_x` /
+  `variance_y`; `Welford::m2`; `Coefficients::eval`; `Debounce::consecutive`;
+  `nexus-stats-smoothing`'s `libm` feature.
 
 ### Fixed
 
@@ -111,7 +140,7 @@ one naming convention across the family. Migration guide:
 - **The headline cost claim is honest now.** README and crate docs promised
   "every primitive is O(1) per update, fixed memory after construction"; the
   window and dimension types (`WindowedMedian`, `Kama`, `Hampel`, `Bocpd`,
-  `RlsFilter`, `OnlineCovariance`, `OnlineKMeans`, `QuantileNorm`) are
+  `RlsFilter`, `CovarianceMatrix`, `OnlineKMeans`, `QuantileNorm`) are
   O(window) or O(d²), as their own pages already said. The module tables name every exported type with its
   feature gate (`alloc`, `std|libm`), list the `normalization` module, and
   name `FirstDiff`/`SecondDiff` where they said `Diff`.

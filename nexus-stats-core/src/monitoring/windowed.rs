@@ -99,6 +99,13 @@ impl<T: Sample> WindowedMax<T> {
         self.count
     }
 
+    /// Whether at least one sample has been seen.
+    #[inline]
+    #[must_use]
+    pub fn is_primed(&self) -> bool {
+        self.count > 0
+    }
+
     /// Resets to empty state. The window is kept.
     #[inline]
     pub fn reset(&mut self) {
@@ -214,6 +221,13 @@ impl<T: Sample> WindowedMin<T> {
     #[must_use]
     pub fn count(&self) -> u64 {
         self.count
+    }
+
+    /// Whether at least one sample has been seen.
+    #[inline]
+    #[must_use]
+    pub fn is_primed(&self) -> bool {
+        self.count > 0
     }
 
     /// Resets to empty state. The window is kept.
@@ -338,9 +352,13 @@ mod raw_tests {
     fn raw_max_expires() {
         let mut wm = WindowedMax::<f64>::new(10).unwrap();
         let _ = wm.update(0, 100.0).unwrap();
-        let _ = wm.update(5, 50.0).unwrap();
-        let result = wm.update(11, 60.0).unwrap();
-        assert!(result <= 60.0);
+        assert_eq!(
+            wm.update(5, 50.0).unwrap(),
+            100.0,
+            "100 still inside the window"
+        );
+        // t = 11: the 100 at t = 0 has aged out; 60 beats the surviving 50.
+        assert_eq!(wm.update(11, 60.0).unwrap(), 60.0);
     }
 
     #[test]

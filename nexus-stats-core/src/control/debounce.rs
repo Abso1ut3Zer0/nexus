@@ -11,6 +11,8 @@
 pub struct Debounce {
     threshold: u64,
     consecutive: u64,
+    /// Updates since construction or `reset`.
+    count: u64,
 }
 
 impl Debounce {
@@ -26,6 +28,7 @@ impl Debounce {
         Ok(Self {
             threshold,
             consecutive: 0,
+            count: 0,
         })
     }
 
@@ -34,6 +37,7 @@ impl Debounce {
     #[inline]
     #[must_use]
     pub fn update(&mut self, active: bool) -> bool {
+        self.count += 1;
         if active {
             self.consecutive += 1;
         } else {
@@ -45,14 +49,29 @@ impl Debounce {
     /// Current consecutive count.
     #[inline]
     #[must_use]
-    pub fn count(&self) -> u64 {
+    pub fn consecutive(&self) -> u64 {
         self.consecutive
+    }
+
+    /// Samples processed since construction or `reset`.
+    #[inline]
+    #[must_use]
+    pub fn count(&self) -> u64 {
+        self.count
+    }
+
+    /// Whether at least one update has been seen.
+    #[inline]
+    #[must_use]
+    pub fn is_primed(&self) -> bool {
+        self.count > 0
     }
 
     /// Resets the consecutive counter.
     #[inline]
     pub fn reset(&mut self) {
         self.consecutive = 0;
+        self.count = 0;
     }
 }
 
@@ -102,7 +121,7 @@ mod tests {
         let mut d = Debounce::new(2).unwrap();
         let _ = d.update(true);
         d.reset();
-        assert_eq!(d.count(), 0);
+        assert_eq!(d.consecutive(), 0);
     }
 
     #[test]

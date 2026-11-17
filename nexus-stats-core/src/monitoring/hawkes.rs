@@ -205,7 +205,7 @@ impl HawkesIntensityBuilder {
         }
 
         let alpha = self.alpha.ok_or(crate::ConfigError::Missing("alpha"))?;
-        if alpha < 0.0 || !alpha.is_finite() {
+        if !crate::math::nonnegative_finite(alpha) {
             return Err(crate::ConfigError::Invalid(
                 "Hawkes alpha must be non-negative and finite",
             ));

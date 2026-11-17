@@ -9,7 +9,6 @@
 // Joint frequency tables are heap-allocated (Box<[u64]>) because
 // BINS³ grows cubically. BINS and LAG are runtime-configured via builder.
 
-extern crate alloc;
 use alloc::boxed::Box;
 use alloc::vec;
 use nexus_stats_core::storage::Ring;
@@ -318,6 +317,7 @@ impl TransferEntropyBuilder {
     ///
     /// Returns `ConfigError::Missing` if `bins` or `lag` not set.
     /// Returns `ConfigError::Invalid` if `bins < 2` or `lag < 1`.
+    #[inline]
     pub fn build(self) -> Result<TransferEntropy, nexus_stats_core::ConfigError> {
         let bins = self
             .bins

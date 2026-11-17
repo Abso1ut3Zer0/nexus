@@ -578,4 +578,26 @@ mod tests {
         assert_eq!(wm.quantile(0.0), Some(3.0));
         assert_eq!(wm.quantile(1.0), Some(9.0));
     }
+
+    /// `reset` leaves no residue in the ring or the sorted shadow: a replay
+    /// reproduces every median and MAD, including across the wrap.
+    #[test]
+    fn reset_then_replay_matches() {
+        let mut w = WindowedMedian::<f64>::new(5).unwrap();
+        let stream = [5.0, 1.0, 9.0, 3.0, 7.0, 2.0, 8.0, 4.0, 6.0, 0.0, 10.0, 5.5];
+        let run = |w: &mut WindowedMedian<f64>| -> Vec<(Option<u64>, Option<u64>)> {
+            stream
+                .iter()
+                .map(|&x| {
+                    w.update(x).unwrap();
+                    (w.median().map(f64::to_bits), w.mad().map(f64::to_bits))
+                })
+                .collect()
+        };
+        let first = run(&mut w);
+        w.reset();
+        assert_eq!(w.count(), 0);
+        let second = run(&mut w);
+        assert_eq!(first, second);
+    }
 }

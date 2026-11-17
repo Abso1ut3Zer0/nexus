@@ -10,7 +10,7 @@ Streaming, fixed-memory, O(1)-per-update statistical primitives. Module path: `n
 | `Moments` | Mean, variance, skewness, kurtosis (Pebay 2008) | 5 words |
 | `EwmaVar` | Exponentially-weighted mean & variance | small, fixed |
 | `Covariance` | Online covariance + Pearson correlation | 5 words |
-| `OnlineCovariance` | N-dimensional covariance matrix | O(N²) |
+| `CovarianceMatrix` | N-dimensional covariance matrix | O(N²) |
 | `HarmonicMean` | Harmonic mean | 2 words |
 | `Percentile` | Online percentile (P² algorithm) | small, fixed |
 | `BucketAccumulator` | Bar-style OHLC / VWAP aggregation | small, fixed |
@@ -111,14 +111,14 @@ let corr = c.correlation().unwrap();
 
 ---
 
-## OnlineCovariance — N-dim covariance matrix
+## CovarianceMatrix — N-dim covariance matrix
 
 Builder-configured dimension `N`, streaming observation vectors of length `N`.
 
 ```rust
-use nexus_stats_core::statistics::OnlineCovariance;
+use nexus_stats_core::statistics::CovarianceMatrix;
 
-let mut cov = OnlineCovariance::builder().dim(3).build().unwrap();
+let mut cov = CovarianceMatrix::builder().dim(3).build().unwrap();
 for observation in observations {
     cov.update(&observation).unwrap();  // &[f64] of length 3
 }
@@ -227,7 +227,7 @@ Fits a linear regression `Δx_t = α + β*(x_{t-1} - μ)` in a streaming way. If
 
 ```rust
 use nexus_stats_core::statistics::HalfLife;
-let mut hl = HalfLife::builder().build();
+let mut hl = HalfLife::new();
 for spread in spreads { hl.update(spread).unwrap(); }
 
 if let Some(h) = hl.half_life() {

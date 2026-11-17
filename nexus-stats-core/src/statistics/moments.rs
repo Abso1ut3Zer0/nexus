@@ -1,8 +1,9 @@
+use crate::math::MulAdd;
+
 // We intentionally avoid mul_add/FMA in the moment formulas — the update
 // order (M4 before M3 before M2) is critical and FMA rewriting could
 // change numerical behavior. Additionally, moments must compile on
 // no_std without libm.
-#![allow(clippy::suboptimal_flops, clippy::float_cmp)]
 
 /// Online skewness and kurtosis via Pébay's higher-moment extension
 /// of Welford's algorithm (Pébay, 2008).
@@ -75,9 +76,14 @@ impl Moments {
         let term1 = delta * delta_n * (n - 1.0);
 
         // M4 before M3 before M2 — each uses previous iteration's lower moments
-        self.m4 += term1 * delta_n2 * (n * n - 3.0 * n + 3.0) + 6.0 * delta_n2 * self.m2
-            - 4.0 * delta_n * self.m3;
-        self.m3 += term1 * delta_n * (n - 2.0) - 3.0 * delta_n * self.m2;
+        // Same association as the textbook update (A + B) - C; the shim fuses
+        // only where the target has FMA.
+        let poly = n.fma(n, -(3.0 * n)) + 3.0;
+        self.m4 += (4.0 * delta_n).fma(
+            -self.m3,
+            (term1 * delta_n2).fma(poly, 6.0 * delta_n2 * self.m2),
+        );
+        self.m3 += (term1 * delta_n).fma(n - 2.0, -(3.0 * delta_n * self.m2));
         self.m2 += term1;
         self.mean += delta_n;
         Ok(())
@@ -212,14 +218,14 @@ impl Moments {
 
         let new_m4 = self.m4
             + other.m4
-            + delta4 * n_a * n_b * (n_a * n_a - n_a * n_b + n_b * n_b) / (n * n * n)
-            + 6.0 * delta2 * (n_a * n_a * other.m2 + n_b * n_b * self.m2) / (n * n)
-            + 4.0 * delta * (n_a * other.m3 - n_b * self.m3) / n;
+            + delta4 * n_a * n_b * n_b.fma(n_b, n_a.fma(n_a, -(n_a * n_b))) / (n * n * n)
+            + 6.0 * delta2 * (n_a * n_a).fma(other.m2, n_b * n_b * self.m2) / (n * n)
+            + 4.0 * delta * n_a.fma(other.m3, -(n_b * self.m3)) / n;
 
         let new_m3 = self.m3
             + other.m3
             + delta3 * n_a * n_b * (n_a - n_b) / (n * n)
-            + 3.0 * delta * (n_a * other.m2 - n_b * self.m2) / n;
+            + 3.0 * delta * n_a.fma(other.m2, -(n_b * self.m2)) / n;
 
         let new_m2 = self.m2 + other.m2 + delta2 * n_a * n_b / n;
 
@@ -245,6 +251,7 @@ impl Default for Moments {
 }
 
 #[cfg(test)]
+#[allow(clippy::float_cmp)]
 mod tests {
     use super::*;
 

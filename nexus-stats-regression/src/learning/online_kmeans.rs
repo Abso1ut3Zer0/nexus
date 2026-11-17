@@ -1,5 +1,4 @@
-// neg_cmp_op_on_partial_ord: !(x > 0.0) intentionally rejects NaN.
-#![allow(clippy::suboptimal_flops, clippy::neg_cmp_op_on_partial_ord)]
+// neg_cmp_op_on_partial_ord: !nexus_stats_core::math::positive_finite(x) intentionally rejects NaN.
 
 // Online K-Means Clustering
 //
@@ -10,7 +9,6 @@
 // F32 distances drift noticeably for dims > ~20 or when cluster centroids
 // are far apart.
 
-extern crate alloc;
 use alloc::boxed::Box;
 use alloc::vec;
 
@@ -300,7 +298,7 @@ impl OnlineKMeansBuilder {
                 "dimensions must be >= 1",
             ));
         }
-        if !(lr > 0.0) {
+        if !nexus_stats_core::math::positive_finite(lr) {
             return Err(nexus_stats_core::ConfigError::Invalid(
                 "learning_rate must be positive",
             ));
@@ -483,5 +481,14 @@ mod tests {
         // Sum of per-cluster counts matches total.
         let sum: u64 = (0..km.clusters()).map(|c| km.cluster_count(c)).sum();
         assert_eq!(sum, km.count());
+    }
+
+    /// Features are the caller's contract (debug-asserted).
+    #[cfg(debug_assertions)]
+    #[test]
+    #[should_panic(expected = "features must be finite")]
+    fn nan_feature_panics_in_debug() {
+        let mut km = make(2, 2, 0.05);
+        let _ = km.update(&[f64::NAN, 0.0]);
     }
 }

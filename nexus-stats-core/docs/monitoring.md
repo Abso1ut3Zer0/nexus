@@ -21,7 +21,7 @@ These types all answer "is this system healthy?" questions in O(1) with fixed me
 | `ErrorRate` | Error fraction tracker with alert conditions |
 | `Jitter<f64>` / `Jitter<i64>` | Inter-arrival / sample-to-sample variation |
 
-Time-aware types take `u64` ticks in any unit; `clock::WallClock` is the std bridge from `Instant` (nanoseconds since construction).
+Time-aware types take `u64` ticks in any unit; `clock::MonotonicClock` is the std bridge from `Instant` (nanoseconds since construction).
 
 ---
 
@@ -121,10 +121,10 @@ let peak = gauge.take();  // returns the max, resets to 0
 Detects "source hasn't sent anything in a while". A fixed-point EMA of inter-arrival ticks with a deadline: `update(tick)` on each event, `check(now)` from a timer to catch silence.
 
 ```rust
-use nexus_stats_core::clock::{Clock, WallClock};
+use nexus_stats_core::clock::{Clock, MonotonicClock};
 use nexus_stats_core::monitoring::Liveness;
 
-let clock = WallClock::new();                 // nanosecond ticks since construction
+let clock = MonotonicClock::new();                 // nanosecond ticks since construction
 let mut live = Liveness::builder()
     .span(15)
     .deadline_multiple(5)                     // dead after 5x the smoothed interval
@@ -165,7 +165,7 @@ use nexus_stats_core::monitoring::CoDel;
 
 let mut codel = CoDel::<i64>::builder()
     .target(50_000)          // 50 µs: sojourn above this is "delayed"
-    .window(100_000_000)     // 100 ms: standing if it stays above target this long
+    .interval(100_000_000)     // 100 ms: standing if it stays above target this long
     .build()
     .unwrap();
 let condition = codel.update(now, dequeued - enqueued);   // Option<Condition>

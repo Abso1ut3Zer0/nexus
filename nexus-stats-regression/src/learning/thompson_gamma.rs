@@ -1,8 +1,4 @@
-extern crate alloc;
-use alloc::boxed::Box;
-use alloc::vec;
-use nexus_stats_core::math::MulAdd;
-
+use super::arm_bank::{ArmBank, checked_decay};
 use super::sampling::f64_impl;
 
 /// Thompson Sampling with Gamma prior.
@@ -42,14 +38,11 @@ use super::sampling::f64_impl;
 /// ```
 #[derive(Debug, Clone)]
 pub struct ThompsonGamma {
-    shapes: Box<[f64]>,
-    rates: Box<[f64]>,
+    /// Posterior parameters per arm (`a` = shapes, `b` = rates), plus the pull counter.
+    bank: ArmBank,
     initial_shape: f64,
     initial_rate: f64,
     decay: f64,
-    total_pulls: u64,
-    num_arms: usize,
-    min_samples: u64,
 }
 
 /// Builder for [`ThompsonGamma`].
@@ -84,7 +77,7 @@ impl ThompsonGamma {
     pub fn select(&self, rng: &mut impl FnMut() -> f64) -> usize {
         let mut best_arm = 0;
         let mut best_sample = f64::NEG_INFINITY;
-        for (i, (&shape, &rate)) in self.shapes.iter().zip(self.rates.iter()).enumerate() {
+        for (i, (&shape, &rate)) in self.bank.a.iter().zip(self.bank.b.iter()).enumerate() {
             let g = f64_impl::gamma_sample(shape, rng);
             let sample = g / rate;
             if sample > best_sample {
@@ -113,25 +106,15 @@ impl ThompsonGamma {
         if reward <= 0.0 {
             return Err(nexus_stats_core::DataError::OutOfRange);
         }
-        assert!(
-            arm < self.num_arms,
-            "arm {arm} >= num_arms {}",
-            self.num_arms
-        );
-
+        self.bank.check_arm(arm);
         if self.decay < 1.0 {
-            let decay = self.decay;
-            // Decay toward the prior, not toward zero (see ThompsonBeta).
-            let (ps, pr) = (self.initial_shape, self.initial_rate);
-            for (s, r) in self.shapes.iter_mut().zip(self.rates.iter_mut()) {
-                *s = (*s - ps).fma(decay, ps);
-                *r = (*r - pr).fma(decay, pr);
-            }
+            // Decay toward the prior, not toward zero: an arm that is never
+            // pulled forgets its evidence but keeps its prior, so its posterior
+            // never collapses to a point mass (or a 0/0 draw).
+            self.bank
+                .decay_toward(self.decay, self.initial_shape, self.initial_rate);
         }
-
-        self.shapes[arm] += reward;
-        self.rates[arm] += 1.0;
-        self.total_pulls += 1;
+        self.bank.record(arm, reward, 1.0);
         Ok(())
     }
 
@@ -139,48 +122,35 @@ impl ThompsonGamma {
     #[inline]
     #[must_use]
     pub fn mean_reward(&self, arm: usize) -> f64 {
-        assert!(
-            arm < self.num_arms,
-            "arm {arm} >= num_arms {}",
-            self.num_arms
-        );
-        self.shapes[arm] / self.rates[arm]
-    }
-
-    /// Total pulls across all arms.
-    #[inline]
-    #[must_use]
-    pub fn total_pulls(&self) -> u64 {
-        self.total_pulls
+        self.bank.check_arm(arm);
+        self.bank.a[arm] / self.bank.b[arm]
     }
 
     /// Number of arms.
     #[inline]
     #[must_use]
     pub fn num_arms(&self) -> usize {
-        self.num_arms
+        self.bank.arms()
     }
 
     /// Whether total pulls >= min_samples.
     #[inline]
     #[must_use]
     pub fn is_primed(&self) -> bool {
-        self.total_pulls >= self.min_samples
+        self.bank.is_primed()
     }
 
     /// Returns the number of updates performed.
     #[inline]
     #[must_use]
     pub fn count(&self) -> u64 {
-        self.total_pulls
+        self.bank.total_pulls
     }
 
     /// Resets shape/rate to initial priors.
     #[inline]
     pub fn reset(&mut self) {
-        self.shapes.fill(self.initial_shape);
-        self.rates.fill(self.initial_rate);
-        self.total_pulls = 0;
+        self.bank.reset(self.initial_shape, self.initial_rate);
     }
 }
 
@@ -231,9 +201,6 @@ impl ThompsonGammaBuilder {
         let arms = self
             .arms
             .ok_or(nexus_stats_core::ConfigError::Missing("arms"))?;
-        if arms < 2 {
-            return Err(nexus_stats_core::ConfigError::Invalid("arms must be >= 2"));
-        }
         if self.initial_shape <= 0.0 || !self.initial_shape.is_finite() {
             return Err(nexus_stats_core::ConfigError::Invalid(
                 "initial_shape must be positive and finite",
@@ -244,21 +211,13 @@ impl ThompsonGammaBuilder {
                 "initial_rate must be positive and finite",
             ));
         }
-        if self.decay <= 0.0 || self.decay > 1.0 || !self.decay.is_finite() {
-            return Err(nexus_stats_core::ConfigError::Invalid(
-                "decay must be in (0, 1]",
-            ));
-        }
+        let decay = checked_decay(self.decay)?;
         let min_samples = self.min_samples.unwrap_or(arms as u64);
         Ok(ThompsonGamma {
-            shapes: vec![self.initial_shape; arms].into_boxed_slice(),
-            rates: vec![self.initial_rate; arms].into_boxed_slice(),
+            bank: ArmBank::new(arms, self.initial_shape, self.initial_rate, min_samples)?,
             initial_shape: self.initial_shape,
             initial_rate: self.initial_rate,
-            decay: self.decay,
-            total_pulls: 0,
-            num_arms: arms,
-            min_samples,
+            decay,
         })
     }
 }
@@ -266,16 +225,7 @@ impl ThompsonGammaBuilder {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    fn make_rng(seed: u64) -> impl FnMut() -> f64 {
-        let mut state = seed;
-        move || {
-            state = state
-                .wrapping_mul(6_364_136_223_846_793_005)
-                .wrapping_add(1_442_695_040_888_963_407);
-            (state >> 33) as f64 / (1u64 << 31) as f64
-        }
-    }
+    use crate::learning::sampling::test_rng as make_rng;
 
     #[test]
     fn explores_with_weak_prior() {
@@ -332,22 +282,23 @@ mod tests {
             .decay(0.95)
             .build()
             .unwrap();
-
-        // Phase 1: arm 0 higher reward
+        // Phase 1: arm 0 is best (50 pairs).
         for _ in 0..50 {
-            bandit.update(0, 5.0).unwrap();
+            bandit.update(0, 1.0).unwrap();
+            bandit.update(1, 0.1).unwrap();
+        }
+        // Phase 2: arm 1 is best, for only 30 pairs. Without decay arm 0
+        // still leads on total reward; with decay the old evidence is gone.
+        for _ in 0..30 {
+            bandit.update(0, 0.1).unwrap();
             bandit.update(1, 1.0).unwrap();
         }
-
-        // Phase 2: arm 1 higher reward
-        for _ in 0..100 {
-            bandit.update(0, 1.0).unwrap();
-            bandit.update(1, 5.0).unwrap();
-        }
-
-        // With decay, arm 1's higher recent rewards should dominate
-        // shape/rate for arm 1 should reflect recent high rewards
-        assert!(bandit.mean_reward(1) > 0.0);
+        assert!(
+            bandit.mean_reward(1) > bandit.mean_reward(0),
+            "should adapt: arm0={}, arm1={}",
+            bandit.mean_reward(0),
+            bandit.mean_reward(1),
+        );
     }
 
     #[test]
@@ -355,7 +306,7 @@ mod tests {
         let mut bandit = ThompsonGamma::builder().arms(2).build().unwrap();
         assert!(bandit.update(0, -1.0).is_err());
         assert!(bandit.update(0, 0.0).is_err());
-        assert_eq!(bandit.total_pulls(), 0);
+        assert_eq!(bandit.count(), 0);
     }
 
     #[test]
@@ -370,7 +321,7 @@ mod tests {
         bandit.update(0, 5.0).unwrap();
         bandit.reset();
 
-        assert_eq!(bandit.total_pulls(), 0);
+        assert_eq!(bandit.count(), 0);
         let expected = 2.0 / 3.0;
         assert!(
             (bandit.mean_reward(0) - expected).abs() < 1e-12,

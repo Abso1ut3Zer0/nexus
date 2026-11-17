@@ -174,6 +174,7 @@ impl HurstBuilder {
     ///
     /// Returns `ConfigError::Invalid` if window_size < 20 (minimum for
     /// meaningful R/S analysis).
+    #[inline]
     pub fn build(self) -> Result<Hurst, crate::ConfigError> {
         let window_size = self.window_size.unwrap_or(100);
         if window_size < 20 {

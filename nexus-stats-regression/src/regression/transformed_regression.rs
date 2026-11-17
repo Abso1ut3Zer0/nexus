@@ -72,9 +72,7 @@ impl ExponentialRegression {
     /// Scale factor `a = e^(intercept)`, or `None` if not primed.
     #[must_use]
     pub fn scale(&self) -> Option<f64> {
-        self.inner
-            .intercept_value()
-            .map(nexus_stats_core::math::exp)
+        self.inner.intercept().map(nexus_stats_core::math::exp)
     }
 
     /// R² in log-space.
@@ -179,8 +177,8 @@ impl LogarithmicRegression {
 
     /// Intercept (constant term b), or `None` if not primed.
     #[must_use]
-    pub fn intercept_value(&self) -> Option<f64> {
-        self.inner.intercept_value()
+    pub fn intercept(&self) -> Option<f64> {
+        self.inner.intercept()
     }
 
     /// R² goodness of fit.
@@ -293,9 +291,7 @@ impl PowerRegression {
     /// Scale factor `a = e^(intercept)`, or `None` if not primed.
     #[must_use]
     pub fn scale(&self) -> Option<f64> {
-        self.inner
-            .intercept_value()
-            .map(nexus_stats_core::math::exp)
+        self.inner.intercept().map(nexus_stats_core::math::exp)
     }
 
     /// R² in log-log space.
@@ -310,7 +306,7 @@ impl PowerRegression {
         if x <= 0.0 {
             return None;
         }
-        let intercept = self.inner.intercept_value()?;
+        let intercept = self.inner.intercept()?;
         let slope = self.inner.slope()?;
         let a = nexus_stats_core::math::exp(intercept);
         let result = a * nexus_stats_core::math::powf(x, slope);
@@ -395,9 +391,7 @@ impl EwExponentialRegression {
     /// Scale factor `a = e^(intercept)`.
     #[must_use]
     pub fn scale(&self) -> Option<f64> {
-        self.inner
-            .intercept_value()
-            .map(nexus_stats_core::math::exp)
+        self.inner.intercept().map(nexus_stats_core::math::exp)
     }
 
     /// R² in log-space.
@@ -442,7 +436,17 @@ impl EwExponentialRegressionBuilder {
         self
     }
 
+    /// Sets `alpha` from a half-life in samples: `1 - exp(-ln 2 / halflife)`.
+    #[cfg(any(feature = "std", feature = "libm"))]
+    #[inline]
+    #[must_use]
+    pub fn halflife(mut self, halflife: f64) -> Self {
+        self.alpha = Some(nexus_stats_core::math::alpha_from_halflife(halflife));
+        self
+    }
+
     /// Builds the estimator.
+    #[inline]
     pub fn build(self) -> Result<EwExponentialRegression, nexus_stats_core::ConfigError> {
         let alpha = self
             .alpha
@@ -497,8 +501,8 @@ impl EwLogarithmicRegression {
 
     /// Intercept.
     #[must_use]
-    pub fn intercept_value(&self) -> Option<f64> {
-        self.inner.intercept_value()
+    pub fn intercept(&self) -> Option<f64> {
+        self.inner.intercept()
     }
 
     /// R².
@@ -545,7 +549,17 @@ impl EwLogarithmicRegressionBuilder {
         self
     }
 
+    /// Sets `alpha` from a half-life in samples: `1 - exp(-ln 2 / halflife)`.
+    #[cfg(any(feature = "std", feature = "libm"))]
+    #[inline]
+    #[must_use]
+    pub fn halflife(mut self, halflife: f64) -> Self {
+        self.alpha = Some(nexus_stats_core::math::alpha_from_halflife(halflife));
+        self
+    }
+
     /// Build.
+    #[inline]
     pub fn build(self) -> Result<EwLogarithmicRegression, nexus_stats_core::ConfigError> {
         let alpha = self
             .alpha
@@ -602,9 +616,7 @@ impl EwPowerRegression {
     /// Scale `a = e^(intercept)`.
     #[must_use]
     pub fn scale(&self) -> Option<f64> {
-        self.inner
-            .intercept_value()
-            .map(nexus_stats_core::math::exp)
+        self.inner.intercept().map(nexus_stats_core::math::exp)
     }
 
     /// R² in log-log space.
@@ -619,7 +631,7 @@ impl EwPowerRegression {
         if x <= 0.0 {
             return None;
         }
-        let intercept = self.inner.intercept_value()?;
+        let intercept = self.inner.intercept()?;
         let slope = self.inner.slope()?;
         let a = nexus_stats_core::math::exp(intercept);
         let result = a * nexus_stats_core::math::powf(x, slope);
@@ -654,7 +666,17 @@ impl EwPowerRegressionBuilder {
         self
     }
 
+    /// Sets `alpha` from a half-life in samples: `1 - exp(-ln 2 / halflife)`.
+    #[cfg(any(feature = "std", feature = "libm"))]
+    #[inline]
+    #[must_use]
+    pub fn halflife(mut self, halflife: f64) -> Self {
+        self.alpha = Some(nexus_stats_core::math::alpha_from_halflife(halflife));
+        self
+    }
+
     /// Build.
+    #[inline]
     pub fn build(self) -> Result<EwPowerRegression, nexus_stats_core::ConfigError> {
         let alpha = self
             .alpha
@@ -720,7 +742,7 @@ mod tests {
         }
         let slope = r.slope().unwrap();
         assert!((slope - 3.0).abs() < 1e-6, "slope = {slope}");
-        let intercept = r.intercept_value().unwrap();
+        let intercept = r.intercept().unwrap();
         assert!((intercept - 1.0).abs() < 1e-6, "intercept = {intercept}");
     }
 

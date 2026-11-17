@@ -1,242 +1,211 @@
 use crate::math::MulAdd;
-macro_rules! impl_ewma_var {
-    ($(#[$struct_meta:meta])* $vis:vis $name:ident, $(#[$builder_meta:meta])* $bvis:vis $builder:ident, $ty:ty) => {
-        /// EWMA Variance — Exponentially Weighted Moving Average with variance tracking.
-        ///
-        /// Tracks both the exponentially smoothed mean and variance of a streaming
-        /// signal. Based on the RiskMetrics (JP Morgan, 1996) pattern.
-        ///
-        /// # Use Cases
-        /// - Volatility tracking
-        /// - Adaptive thresholds (mean ± k * std_dev)
-        /// - Regime detection (variance spike = regime change)
-        #[derive(Debug, Clone)]
-        $(#[$struct_meta])*
-        $vis struct $name {
-            alpha: $ty,
-            one_minus_alpha: $ty,
-            mean: $ty,
-            variance: $ty,
-            count: u64,
-            min_samples: u64,
-        }
-
-        /// Builder for [`
-        #[doc = stringify!($name)]
-        /// `].
-        #[derive(Debug, Clone)]
-        $(#[$builder_meta])*
-        $bvis struct $builder {
-            alpha: Option<$ty>,
-            min_samples: u64,
-            seed_mean: Option<$ty>,
-            seed_variance: Option<$ty>,
-        }
-
-        $(#[$struct_meta])*
-        impl $name {
-            /// Creates a builder.
-            #[inline]
-            #[must_use]
-            pub fn builder() -> $builder {
-                $builder {
-                    alpha: Option::None,
-                    min_samples: 2,
-                    seed_mean: Option::None,
-                    seed_variance: Option::None,
-                }
-            }
-
-            /// Feeds a sample. Returns `(mean, variance)` once primed.
-            ///
-            /// # Errors
-            ///
-            /// Returns `DataError::NotANumber` if the sample is NaN, or
-            /// `DataError::Infinite` if the sample is infinite.
-            #[inline]
-            pub fn update(&mut self, sample: $ty) -> Result<Option<($ty, $ty)>, crate::DataError> {
-                check_finite!(sample);
-                self.count += 1;
-
-                if self.count == 1 {
-                    self.mean = sample;
-                    self.variance = 0.0 as $ty;
-                } else {
-                    let diff = sample - self.mean;
-                    self.mean = self.alpha.fma(sample, self.one_minus_alpha * self.mean);
-                    let diff2 = sample - self.mean;
-                    self.variance = self
-                        .alpha
-                        .fma(diff * diff2, self.one_minus_alpha * self.variance);
-                }
-
-                if self.count >= self.min_samples {
-                    Ok(Option::Some((self.mean, self.variance)))
-                } else {
-                    Ok(Option::None)
-                }
-            }
-
-            /// Current smoothed mean, or `None` if not primed.
-            #[inline]
-            #[must_use]
-            pub fn mean(&self) -> Option<$ty> {
-                if self.count >= self.min_samples {
-                    Option::Some(self.mean)
-                } else {
-                    Option::None
-                }
-            }
-
-            /// Current exponentially weighted variance, or `None` if not primed.
-            #[inline]
-            #[must_use]
-            pub fn variance(&self) -> Option<$ty> {
-                if self.count >= self.min_samples {
-                    Option::Some(self.variance)
-                } else {
-                    Option::None
-                }
-            }
-
-            /// Current exponentially weighted standard deviation, or `None` if not primed.
-            #[inline]
-            #[must_use]
-            #[cfg(any(feature = "std", feature = "libm"))]
-            pub fn std_dev(&self) -> Option<$ty> {
-                self.variance().map(|v| {
-                    #[allow(clippy::cast_possible_truncation)]
-                    {
-                        crate::math::sqrt(v as f64) as $ty
-                    }
-                })
-            }
-
-            /// The smoothing factor alpha.
-            #[inline]
-            #[must_use]
-            pub fn alpha(&self) -> $ty {
-                self.alpha
-            }
-
-            /// Number of samples processed.
-            #[inline]
-            #[must_use]
-            pub fn count(&self) -> u64 {
-                self.count
-            }
-
-            /// Whether the EWMA has reached `min_samples`.
-            #[inline]
-            #[must_use]
-            pub fn is_primed(&self) -> bool {
-                self.count >= self.min_samples
-            }
-
-            /// Resets to uninitialized state. Parameters unchanged.
-            #[inline]
-            pub fn reset(&mut self) {
-                self.mean = 0.0 as $ty;
-                self.variance = 0.0 as $ty;
-                self.count = 0;
-            }
-        }
-
-        $(#[$builder_meta])*
-        impl $builder {
-            /// Direct smoothing factor. Must be in (0, 1) exclusive.
-            #[inline]
-            #[must_use]
-            pub fn alpha(mut self, alpha: $ty) -> Self {
-                self.alpha = Option::Some(alpha);
-                self
-            }
-
-            /// Samples for weight to decay by half.
-            #[inline]
-            #[must_use]
-            #[cfg(any(feature = "std", feature = "libm"))]
-            pub fn halflife(mut self, halflife: $ty) -> Self {
-                let ln2 = core::f64::consts::LN_2 as $ty;
-                let alpha = 1.0 as $ty - crate::math::exp((-ln2 / halflife) as f64) as $ty;
-                self.alpha = Option::Some(alpha);
-                self
-            }
-
-            /// Number of samples for center of mass (pandas convention).
-            #[inline]
-            #[must_use]
-            pub fn span(mut self, n: u64) -> Self {
-                let alpha = 2.0 as $ty / (n as $ty + 1.0 as $ty);
-                self.alpha = Option::Some(alpha);
-                self
-            }
-
-            /// Minimum samples before values are valid. Default: 2.
-            #[inline]
-            #[must_use]
-            pub fn min_samples(mut self, min: u64) -> Self {
-                self.min_samples = min;
-                self
-            }
-
-            /// Pre-loads the mean and variance from calibration data.
-            ///
-            /// When seeded, `is_primed()` returns true immediately.
-            #[inline]
-            #[must_use]
-            pub fn seed(mut self, mean: $ty, variance: $ty) -> Self {
-                self.seed_mean = Option::Some(mean);
-                self.seed_variance = Option::Some(variance);
-                self
-            }
-
-            /// Builds the EWMA variance tracker.
-            ///
-            /// # Errors
-            ///
-            /// - Alpha must have been set.
-            /// - Alpha must be in (0, 1) exclusive.
-            #[inline]
-            pub fn build(self) -> Result<$name, crate::ConfigError> {
-                let alpha = self.alpha.ok_or(crate::ConfigError::Missing("alpha"))?;
-                if !(alpha > 0.0 as $ty && alpha < 1.0 as $ty) {
-                    return Err(crate::ConfigError::Invalid(
-                        "EWMA variance alpha must be in (0, 1)",
-                    ));
-                }
-                if self.min_samples == 0 {
-                    return Err(crate::ConfigError::Invalid(
-                        "EWMA variance min_samples must be >= 1",
-                    ));
-                }
-                if let (Some(m), Some(v)) = (self.seed_mean, self.seed_variance) {
-                    if !(m as f64).is_finite() || !crate::math::nonnegative_finite(v as f64) {
-                        return Err(crate::ConfigError::Invalid(
-                            "EWMA variance seed needs a finite mean and a non-negative finite variance",
-                        ));
-                    }
-                }
-
-                let (mean, variance, count) = match (self.seed_mean, self.seed_variance) {
-                    (Some(m), Some(v)) => (m, v, self.min_samples),
-                    _ => (0.0 as $ty, 0.0 as $ty, 0),
-                };
-
-                Ok($name {
-                    alpha,
-                    one_minus_alpha: 1.0 as $ty - alpha,
-                    mean,
-                    variance,
-                    count,
-                    min_samples: self.min_samples,
-                })
-            }
-        }
-    };
+/// EWMA Variance — Exponentially Weighted Moving Average with variance tracking.
+///
+/// Tracks both the exponentially smoothed mean and variance of a streaming
+/// signal. Based on the RiskMetrics (JP Morgan, 1996) pattern.
+///
+/// # Use Cases
+/// - Volatility tracking
+/// - Adaptive thresholds (mean ± k * std_dev)
+/// - Regime detection (variance spike = regime change)
+#[derive(Debug, Clone)]
+pub struct EwmaVar {
+    alpha: f64,
+    one_minus_alpha: f64,
+    mean: f64,
+    variance: f64,
+    count: u64,
+    min_samples: u64,
 }
-
-impl_ewma_var!(pub EwmaVar, pub EwmaVarBuilder, f64);
+/// Builder for [`
+#[doc = stringify!(EwmaVar)]
+/// `].
+#[derive(Debug, Clone)]
+pub struct EwmaVarBuilder {
+    alpha: Option<f64>,
+    min_samples: u64,
+    seed_mean: Option<f64>,
+    seed_variance: Option<f64>,
+}
+impl EwmaVar {
+    /// Creates a builder.
+    #[inline]
+    #[must_use]
+    pub fn builder() -> EwmaVarBuilder {
+        EwmaVarBuilder {
+            alpha: None,
+            min_samples: 2,
+            seed_mean: None,
+            seed_variance: None,
+        }
+    }
+    /// Feeds a sample. Returns `(mean, variance)` once primed.
+    ///
+    /// # Errors
+    ///
+    /// Returns `DataError::NotANumber` if the sample is NaN, or
+    /// `DataError::Infinite` if the sample is infinite.
+    #[inline]
+    pub fn update(&mut self, sample: f64) -> Result<Option<(f64, f64)>, crate::DataError> {
+        check_finite!(sample);
+        self.count += 1;
+        if self.count == 1 {
+            self.mean = sample;
+            self.variance = 0.0;
+        } else {
+            let diff = sample - self.mean;
+            self.mean = self.alpha.fma(sample, self.one_minus_alpha * self.mean);
+            let diff2 = sample - self.mean;
+            self.variance = self
+                .alpha
+                .fma(diff * diff2, self.one_minus_alpha * self.variance);
+        }
+        if self.count >= self.min_samples {
+            Ok(Some((self.mean, self.variance)))
+        } else {
+            Ok(None)
+        }
+    }
+    /// Current smoothed mean, or `None` if not primed.
+    #[inline]
+    #[must_use]
+    pub fn mean(&self) -> Option<f64> {
+        if self.count >= self.min_samples {
+            Some(self.mean)
+        } else {
+            None
+        }
+    }
+    /// Current exponentially weighted variance, or `None` if not primed.
+    #[inline]
+    #[must_use]
+    pub fn variance(&self) -> Option<f64> {
+        if self.count >= self.min_samples {
+            Some(self.variance)
+        } else {
+            None
+        }
+    }
+    /// Current exponentially weighted standard deviation, or `None` if not primed.
+    #[inline]
+    #[must_use]
+    #[cfg(any(feature = "std", feature = "libm"))]
+    pub fn std_dev(&self) -> Option<f64> {
+        self.variance().map(|v| {
+            #[allow(clippy::cast_possible_truncation)]
+            {
+                crate::math::sqrt(v)
+            }
+        })
+    }
+    /// The smoothing factor alpha.
+    #[inline]
+    #[must_use]
+    pub fn alpha(&self) -> f64 {
+        self.alpha
+    }
+    /// Number of samples processed.
+    #[inline]
+    #[must_use]
+    pub fn count(&self) -> u64 {
+        self.count
+    }
+    /// Whether the EWMA has reached `min_samples`.
+    #[inline]
+    #[must_use]
+    pub fn is_primed(&self) -> bool {
+        self.count >= self.min_samples
+    }
+    /// Resets to uninitialized state. Parameters unchanged.
+    #[inline]
+    pub fn reset(&mut self) {
+        self.mean = 0.0;
+        self.variance = 0.0;
+        self.count = 0;
+    }
+}
+impl EwmaVarBuilder {
+    /// Direct smoothing factor. Must be in (0, 1) exclusive.
+    #[inline]
+    #[must_use]
+    pub fn alpha(mut self, alpha: f64) -> Self {
+        self.alpha = Some(alpha);
+        self
+    }
+    /// Samples for weight to decay by half.
+    #[inline]
+    #[must_use]
+    #[cfg(any(feature = "std", feature = "libm"))]
+    pub fn halflife(mut self, halflife: f64) -> Self {
+        let alpha = crate::math::alpha_from_halflife(halflife);
+        self.alpha = Some(alpha);
+        self
+    }
+    /// Number of samples for center of mass (pandas convention).
+    #[inline]
+    #[must_use]
+    pub fn span(mut self, n: u64) -> Self {
+        let alpha = 2.0 / (n as f64 + 1.0);
+        self.alpha = Some(alpha);
+        self
+    }
+    /// Minimum samples before values are valid. Default: 2.
+    #[inline]
+    #[must_use]
+    pub fn min_samples(mut self, min: u64) -> Self {
+        self.min_samples = min;
+        self
+    }
+    /// Pre-loads the mean and variance from calibration data.
+    ///
+    /// When seeded, `is_primed()` returns true immediately.
+    #[inline]
+    #[must_use]
+    pub fn seed(mut self, mean: f64, variance: f64) -> Self {
+        self.seed_mean = Some(mean);
+        self.seed_variance = Some(variance);
+        self
+    }
+    /// Builds the EWMA variance tracker.
+    ///
+    /// # Errors
+    ///
+    /// - Alpha must have been set.
+    /// - Alpha must be in (0, 1) exclusive.
+    #[inline]
+    pub fn build(self) -> Result<EwmaVar, crate::ConfigError> {
+        let alpha = self.alpha.ok_or(crate::ConfigError::Missing("alpha"))?;
+        if !crate::math::in_unit_interval(alpha) {
+            return Err(crate::ConfigError::Invalid(
+                "EWMA variance alpha must be in (0, 1)",
+            ));
+        }
+        if self.min_samples == 0 {
+            return Err(crate::ConfigError::Invalid(
+                "EWMA variance min_samples must be >= 1",
+            ));
+        }
+        if let (Some(m), Some(v)) = (self.seed_mean, self.seed_variance)
+            && (!m.is_finite() || !crate::math::nonnegative_finite(v))
+        {
+            return Err(crate::ConfigError::Invalid(
+                "EWMA variance seed needs a finite mean and a non-negative finite variance",
+            ));
+        }
+        let (mean, variance, count) = match (self.seed_mean, self.seed_variance) {
+            (Some(m), Some(v)) => (m, v, self.min_samples),
+            _ => (0.0, 0.0, 0),
+        };
+        Ok(EwmaVar {
+            alpha,
+            one_minus_alpha: 1.0 - alpha,
+            mean,
+            variance,
+            count,
+            min_samples: self.min_samples,
+        })
+    }
+}
 
 #[cfg(test)]
 mod tests {

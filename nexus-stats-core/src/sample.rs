@@ -110,7 +110,7 @@ pub struct AlphaEma {
 impl EmaKernel<f64> for AlphaEma {
     #[inline]
     fn new(alpha: f64) -> Result<Self, crate::ConfigError> {
-        if !(alpha > 0.0 && alpha < 1.0) {
+        if !crate::math::in_unit_interval(alpha) {
             return Err(crate::ConfigError::Invalid("alpha must be in (0, 1)"));
         }
         Ok(Self {
@@ -155,6 +155,22 @@ pub struct ShiftEma {
     /// The span actually used, `2^k - 1`.
     pub span: u64,
     initialized: bool,
+}
+
+impl ShiftEma {
+    /// Whether a sample has been folded since construction or `reset`.
+    #[inline]
+    #[must_use]
+    pub fn is_initialized(&self) -> bool {
+        self.initialized
+    }
+
+    /// Forgets every sample; the span is kept.
+    #[inline]
+    pub fn reset(&mut self) {
+        self.acc = 0;
+        self.initialized = false;
+    }
 }
 
 impl EmaKernel<i64> for ShiftEma {

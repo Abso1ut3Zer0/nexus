@@ -24,7 +24,7 @@ let mut reg = LinearRegression::new();
 reg.update(x, y)?;            // feed observations
 let y_hat = reg.predict(x0);  // query
 reg.slope();                  // Option<f64>
-reg.intercept_value();        // Option<f64>
+reg.intercept();        // Option<f64>
 ```
 
 Multi-feature learners:

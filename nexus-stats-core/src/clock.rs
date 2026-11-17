@@ -72,7 +72,7 @@ impl Clock for EpochClock {
 }
 
 #[cfg(feature = "std")]
-mod wall {
+mod monotonic {
     use std::time::Instant;
 
     /// Wall-clock time source producing nanosecond timestamps.
@@ -83,20 +83,20 @@ mod wall {
     /// # Examples
     ///
     /// ```
-    /// use nexus_stats_core::clock::WallClock;
+    /// use nexus_stats_core::clock::MonotonicClock;
     /// use nexus_stats_core::clock::Clock;
     ///
-    /// let clock = WallClock::new();
+    /// let clock = MonotonicClock::new();
     /// let t0 = clock.stamp();
     /// // ... do work ...
     /// let t1 = clock.stamp();
     /// assert!(t1 >= t0);
     /// ```
-    pub struct WallClock {
+    pub struct MonotonicClock {
         epoch: Instant,
     }
 
-    impl WallClock {
+    impl MonotonicClock {
         /// Creates a new wall clock anchored to `Instant::now()`.
         pub fn new() -> Self {
             Self {
@@ -110,13 +110,13 @@ mod wall {
         }
     }
 
-    impl Default for WallClock {
+    impl Default for MonotonicClock {
         fn default() -> Self {
             Self::new()
         }
     }
 
-    impl super::Clock for WallClock {
+    impl super::Clock for MonotonicClock {
         #[inline]
         fn stamp(&self) -> u64 {
             self.epoch.elapsed().as_nanos() as u64
@@ -125,7 +125,7 @@ mod wall {
 }
 
 #[cfg(feature = "std")]
-pub use wall::WallClock;
+pub use monotonic::MonotonicClock;
 
 #[cfg(test)]
 mod tests {
@@ -162,7 +162,7 @@ mod tests {
     #[cfg(feature = "std")]
     #[test]
     fn wall_clock_monotonic() {
-        let c = WallClock::new();
+        let c = MonotonicClock::new();
         let t0 = c.stamp();
         let t1 = c.stamp();
         assert!(t1 >= t0);
@@ -171,7 +171,7 @@ mod tests {
     #[cfg(feature = "std")]
     #[test]
     fn wall_clock_default() {
-        let c = WallClock::default();
+        let c = MonotonicClock::default();
         let _ = c.stamp();
     }
 }

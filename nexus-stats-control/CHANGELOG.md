@@ -42,6 +42,13 @@ contained.
   cannot overflow the counter.
 - **`BoolWindow` stores its bits as `Box<[u64]>`:** no raw pointer, manual
   `Drop` / `Clone` or `unsafe impl Send`; the type is `Sync` now. Same API.
+- **`count()` / `is_primed()` where they were missing.** `DecayAccum` gains
+  both (`count` is updates since construction or `reset`; `score()` does not
+  count); `TopK` gains `is_primed()` and its `total()` is `count()`;
+  `PeakDetector` and `BoolWindow` gain `is_primed()` (`BoolWindow`'s is
+  `is_full()`). `TopK::top()` is `#[must_use]`, and a debug assertion checks
+  that the table never exceeds its capacity.
+- Docs: `BoolWindow::failure_rate` says an empty window reads `0.0`.
 
 ### Fixed
 

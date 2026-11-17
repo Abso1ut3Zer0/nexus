@@ -3,8 +3,6 @@
 // Minimal state (5 accumulators, ~48 bytes) with direct 2×2 solve.
 // No loops, no Gaussian elimination — just arithmetic.
 
-#![allow(clippy::float_cmp)]
-
 use nexus_stats_core::math::MulAdd;
 
 /// Online linear regression with closed-form solve.
@@ -134,7 +132,7 @@ impl LinearRegression {
 
     /// Intercept value, or `None` if not primed or no intercept.
     #[must_use]
-    pub fn intercept_value(&self) -> Option<f64> {
+    pub fn intercept(&self) -> Option<f64> {
         if !self.intercept {
             return None;
         }
@@ -180,7 +178,7 @@ impl LinearRegression {
     pub fn predict(&self, x: f64) -> Option<f64> {
         let slope = self.slope()?;
         if self.intercept {
-            let intercept = self.intercept_value()?;
+            let intercept = self.intercept()?;
             Some(slope.fma(x, intercept))
         } else {
             Some(slope * x)
@@ -237,6 +235,7 @@ impl LinearRegressionBuilder {
     }
 
     /// Builds the regression.
+    #[inline]
     pub fn build(self) -> Result<LinearRegression, nexus_stats_core::ConfigError> {
         Ok(LinearRegression {
             sum_x: 0.0,
@@ -359,7 +358,7 @@ impl EwLinearRegression {
 
     /// Intercept value, or `None` if not primed or no intercept.
     #[must_use]
-    pub fn intercept_value(&self) -> Option<f64> {
+    pub fn intercept(&self) -> Option<f64> {
         if !self.intercept {
             return None;
         }
@@ -399,7 +398,7 @@ impl EwLinearRegression {
     pub fn predict(&self, x: f64) -> Option<f64> {
         let slope = self.slope()?;
         if self.intercept {
-            let intercept = self.intercept_value()?;
+            let intercept = self.intercept()?;
             Some(slope.fma(x, intercept))
         } else {
             Some(slope * x)
@@ -463,6 +462,15 @@ impl EwLinearRegressionBuilder {
         self
     }
 
+    /// Sets `alpha` from a half-life in samples: `1 - exp(-ln 2 / halflife)`.
+    #[cfg(any(feature = "std", feature = "libm"))]
+    #[inline]
+    #[must_use]
+    pub fn halflife(mut self, halflife: f64) -> Self {
+        self.alpha = Some(nexus_stats_core::math::alpha_from_halflife(halflife));
+        self
+    }
+
     /// Whether to include the constant term. Default: `true`.
     #[inline]
     #[must_use]
@@ -472,11 +480,12 @@ impl EwLinearRegressionBuilder {
     }
 
     /// Builds the regression.
+    #[inline]
     pub fn build(self) -> Result<EwLinearRegression, nexus_stats_core::ConfigError> {
         let alpha = self
             .alpha
             .ok_or(nexus_stats_core::ConfigError::Missing("alpha"))?;
-        if !(alpha > 0.0 && alpha < 1.0) {
+        if !nexus_stats_core::math::in_unit_interval(alpha) {
             return Err(nexus_stats_core::ConfigError::Invalid(
                 "alpha must be in (0, 1) exclusive",
             ));
@@ -520,7 +529,7 @@ mod tests {
             r.update(x as f64, 2.0f64.mul_add(x as f64, 3.0)).unwrap();
         }
         assert!((r.slope().unwrap() - 2.0).abs() < 1e-8);
-        assert!((r.intercept_value().unwrap() - 3.0).abs() < 1e-8);
+        assert!((r.intercept().unwrap() - 3.0).abs() < 1e-8);
         assert!((r.r_squared().unwrap() - 1.0).abs() < 1e-10);
     }
 
@@ -531,7 +540,7 @@ mod tests {
             r.update(x as f64, 5.0 * x as f64).unwrap();
         }
         assert!((r.slope().unwrap() - 5.0).abs() < 1e-8);
-        assert!(r.intercept_value().is_none());
+        assert!(r.intercept().is_none());
         assert!(!r.has_intercept());
     }
 
@@ -613,7 +622,7 @@ mod tests {
     fn empty_returns_none() {
         let r = LinearRegression::new();
         assert!(r.slope().is_none());
-        assert!(r.intercept_value().is_none());
+        assert!(r.intercept().is_none());
         assert!(r.predict(1.0).is_none());
         assert!(r.r_squared().is_none());
     }

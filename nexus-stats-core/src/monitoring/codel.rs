@@ -5,10 +5,10 @@ use crate::Sample;
 ///
 /// Feed it each item's sojourn time (how long it waited in the queue) with
 /// the dequeue timestamp. It reports `Degraded` only once sojourn has stayed
-/// above `target` for a whole `window` (the RFC's *interval*): the first
+/// above `target` for a whole `interval`: the first
 /// sample above target starts the clock, a sample at or below target stops
-/// it, and a sample above target a full window or more after the start is a
-/// standing queue. A single slow item, or a burst shorter than the window,
+/// it, and a sample above target a full interval or more after the start is a
+/// standing queue. A single slow item, or a burst shorter than the interval,
 /// is `Normal`.
 ///
 /// State is one timestamp. `no_std` compatible. `CoDel<f64>` rejects NaN and
@@ -18,7 +18,7 @@ use crate::Sample;
 ///
 /// Caller's timestamps. Any call rate; the interval is measured in ticks,
 /// not samples. Ticks must be monotonic; a counter that wraps is fine as
-/// long as the window and any real gap between samples fit in half its
+/// long as the interval and any real gap between samples fit in half its
 /// range (elapsed time is computed with wrapping subtraction).
 #[derive(Debug, Clone)]
 pub struct CoDel<T: Sample> {
@@ -34,7 +34,7 @@ pub struct CoDel<T: Sample> {
 #[derive(Debug, Clone)]
 pub struct CoDelBuilder<T: Sample> {
     target: Option<T>,
-    window: Option<u64>,
+    interval: Option<u64>,
     min_samples: u64,
 }
 
@@ -45,13 +45,13 @@ impl<T: Sample> CoDel<T> {
     pub fn builder() -> CoDelBuilder<T> {
         CoDelBuilder {
             target: None,
-            window: None,
+            interval: None,
             min_samples: 1,
         }
     }
 
     /// Whether the queue is currently standing (sojourn above target for a
-    /// full window).
+    /// full interval).
     #[inline]
     #[must_use]
     pub fn is_elevated(&self) -> bool {
@@ -141,8 +141,8 @@ impl<T: Sample> CoDelBuilder<T> {
     /// standing, in ticks (the RFC's *interval*).
     #[inline]
     #[must_use]
-    pub fn window(mut self, window: u64) -> Self {
-        self.window = Some(window);
+    pub fn interval(mut self, interval: u64) -> Self {
+        self.interval = Some(interval);
         self
     }
 
@@ -158,20 +158,25 @@ impl<T: Sample> CoDelBuilder<T> {
     ///
     /// # Errors
     ///
-    /// `ConfigError::Missing` if `target` or `window` was not set;
-    /// `ConfigError::Invalid` if `target` is not finite or `window` is zero.
+    /// `ConfigError::Missing` if `target` or `interval` was not set;
+    /// `ConfigError::Invalid` if `target` is not finite or `interval` is zero.
+    #[inline]
     pub fn build(self) -> Result<CoDel<T>, crate::ConfigError> {
         let target = self.target.ok_or(crate::ConfigError::Missing("target"))?;
         if !target.is_finite() {
             return Err(crate::ConfigError::Invalid("CoDel target must be finite"));
         }
-        let window = self.window.ok_or(crate::ConfigError::Missing("window"))?;
-        if window == 0 {
-            return Err(crate::ConfigError::Invalid("CoDel window must be positive"));
+        let interval = self
+            .interval
+            .ok_or(crate::ConfigError::Missing("interval"))?;
+        if interval == 0 {
+            return Err(crate::ConfigError::Invalid(
+                "CoDel interval must be positive",
+            ));
         }
         Ok(CoDel {
             target,
-            interval: window,
+            interval,
             first_above: None,
             elevated: false,
             count: 0,
@@ -218,10 +223,10 @@ mod raw_tests {
     use super::*;
     use crate::Condition;
 
-    fn codel(target: i64, window: u64) -> CoDel<i64> {
+    fn codel(target: i64, interval: u64) -> CoDel<i64> {
         CoDel::<i64>::builder()
             .target(target)
-            .window(window)
+            .interval(interval)
             .build()
             .unwrap()
     }
@@ -270,7 +275,7 @@ mod raw_tests {
     }
 
     // The second reproduction from #759: a long healthy history and several
-    // quiet windows must not make one slow sample look like a standing queue.
+    // quiet intervals must not make one slow sample look like a standing queue.
     #[test]
     fn long_quiet_history_then_one_slow_sample_is_normal() {
         let mut cd = codel(50, 100);
@@ -279,7 +284,7 @@ mod raw_tests {
             t += 1;
             assert_eq!(cd.update(t, 5), Some(Condition::Normal));
         }
-        t += 5 * 100; // five quiet windows
+        t += 5 * 100; // five quiet intervals
         assert_eq!(cd.update(t, 200), Some(Condition::Normal));
     }
 
@@ -296,7 +301,7 @@ mod raw_tests {
     fn min_samples_primes() {
         let mut cd = CoDel::<i64>::builder()
             .target(50)
-            .window(1000)
+            .interval(1000)
             .min_samples(3)
             .build()
             .unwrap();
@@ -335,7 +340,7 @@ mod raw_tests {
     fn raw_codel_f64() {
         let mut cd = CoDel::<f64>::builder()
             .target(0.5)
-            .window(1000)
+            .interval(1000)
             .build()
             .unwrap();
         assert_eq!(cd.update(0, 0.1).unwrap(), Some(Condition::Normal));
@@ -349,7 +354,7 @@ mod raw_tests {
     fn rejects_nan_and_inf() {
         let mut cd = CoDel::<f64>::builder()
             .target(0.5)
-            .window(1000)
+            .interval(1000)
             .build()
             .unwrap();
         assert!(matches!(
@@ -363,7 +368,7 @@ mod raw_tests {
         assert!(
             CoDel::<f64>::builder()
                 .target(f64::NAN)
-                .window(1000)
+                .interval(1000)
                 .build()
                 .is_err()
         );
