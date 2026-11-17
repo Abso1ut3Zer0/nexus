@@ -114,6 +114,24 @@ feature_vector! {
     }
 }
 
+// Attributes that keep f64 alignment stay accepted
+feature_vector! {
+    #[repr(align(16))]
+    pub struct Aligned16 {
+        a,
+        b,
+    }
+}
+
+feature_vector! {
+    #[repr(packed(8))]
+    pub struct Packed8 {
+        a,
+        b,
+        c,
+    }
+}
+
 // === Compile-time property verification ===
 
 #[test]
@@ -179,6 +197,23 @@ fn alignment_is_f64() {
         core::mem::align_of::<WideVec>(),
         core::mem::align_of::<f64>()
     );
+}
+
+#[test]
+fn repr_attributes_that_keep_alignment() {
+    assert_eq!(core::mem::align_of::<Aligned16>(), 16);
+    assert_eq!(
+        core::mem::align_of::<Packed8>(),
+        core::mem::align_of::<f64>()
+    );
+    let a = Aligned16 { a: 1.0, b: 2.0 };
+    assert_eq!(a.as_slice(), &[1.0, 2.0]);
+    let p = Packed8 {
+        a: 1.0,
+        b: 2.0,
+        c: 3.0,
+    };
+    assert_eq!(p.as_slice(), &[1.0, 2.0, 3.0]);
 }
 
 // === as_slice / as_mut_slice correctness ===
