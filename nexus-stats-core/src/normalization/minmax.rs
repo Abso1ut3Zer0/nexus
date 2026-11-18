@@ -52,6 +52,10 @@ impl<T: Float> MinMaxNorm<T> {
     /// Feeds a sample at the given timestamp. Returns normalized value
     /// in [0, 1] once at least one sample has been observed.
     ///
+    /// A sample timestamped before the previous one does not enter the
+    /// window (see [`WindowedMax`]); it is normalized against the current
+    /// window and clamped to [0, 1].
+    ///
     /// # Errors
     ///
     /// Returns `DataError::NotANumber` if the sample is NaN, or
@@ -62,7 +66,11 @@ impl<T: Float> MinMaxNorm<T> {
         let x = sample.to_f64();
         self.min_tracker.update(timestamp, x)?;
         self.max_tracker.update(timestamp, x)?;
-        Ok(self.compute_normalized(x))
+        // A no-op for a sample that entered the window, which always lies
+        // within it; a late sample may not.
+        Ok(self
+            .compute_normalized(x)
+            .map(|v| T::from_f64(v.to_f64().clamp(0.0, 1.0))))
     }
 
     /// Normalizes an arbitrary value against current windowed min/max
@@ -236,5 +244,28 @@ mod tests {
         assert!(mm.update(0, f64::INFINITY).is_err());
         assert!(mm.update(0, f64::NEG_INFINITY).is_err());
         assert_eq!(mm.count(), 0);
+    }
+
+    // A late sample does not move the window. Before, it reset both trackers
+    // to itself (0.5 here) and the next in-order sample read 0.0.
+    #[test]
+    fn late_sample_is_clamped_and_leaves_the_window() {
+        let mut mm = MinMaxNorm::<f64>::builder().window(100).build().unwrap();
+        let _ = mm.update(1000, 10.0).unwrap();
+        let _ = mm.update(1030, 20.0).unwrap();
+        assert_eq!(mm.update(1020, 30.0).unwrap(), Some(1.0));
+        assert_eq!(mm.update(1020, 0.0).unwrap(), Some(0.0));
+        assert_eq!(mm.update(1020, 15.0).unwrap(), Some(0.5));
+        assert_eq!(
+            (mm.min(), mm.max(), mm.count()),
+            (Some(10.0), Some(20.0), 2)
+        );
+        assert_eq!(mm.update(1031, 15.0).unwrap(), Some(0.5));
+
+        let mut m32 = MinMaxNorm::<f32>::builder().window(100).build().unwrap();
+        let _ = m32.update(1000, 10.0).unwrap();
+        let _ = m32.update(1030, 20.0).unwrap();
+        assert_eq!(m32.update(1020, 30.0).unwrap(), Some(1.0));
+        assert_eq!(m32.update(1020, 0.0).unwrap(), Some(0.0));
     }
 }

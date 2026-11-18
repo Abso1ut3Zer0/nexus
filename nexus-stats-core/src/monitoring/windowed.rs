@@ -14,7 +14,7 @@
 // windowed maximum, the minimum never below, because the reported value is
 // always a real sample from inside the window.
 //
-// State: 3 × (timestamp, value) + u64 window + u64 count.
+// State: 3 × (timestamp, value) + u64 window + u64 count + u64 last tick.
 
 use crate::Sample;
 
@@ -45,11 +45,20 @@ struct Stamped<T: Copy> {
 /// out. A periodic reader that needs the window to expire without new data
 /// should feed the current tick with a neutral value or treat the result as
 /// stale by its own clock.
+///
+/// Ticks must be non-decreasing. A sample timestamped before the previous
+/// accepted one is ignored: the state and the count stay as they were and
+/// `update` returns the current extremum, so a late extreme value is dropped
+/// too. Elapsed time is computed with wrapping subtraction, so a counter
+/// that wraps is fine as long as the window and any real gap between
+/// samples fit in half its range.
 #[derive(Debug, Clone)]
 pub struct WindowedMax<T: Sample> {
     window: u64,
     samples: [Stamped<T>; 3],
     count: u64,
+    /// Timestamp of the newest accepted sample.
+    last: u64,
 }
 
 impl<T: Sample> WindowedMax<T> {
@@ -71,6 +80,7 @@ impl<T: Sample> WindowedMax<T> {
             window,
             samples: [init; 3],
             count: 0,
+            last: 0,
         })
     }
 
@@ -119,7 +129,11 @@ impl<T: Sample> WindowedMax<T> {
 
     #[inline]
     fn fold(&mut self, timestamp: u64, value: T) -> T {
+        if self.count > 0 && is_late(timestamp, self.last) {
+            return self.samples[0].value;
+        }
         self.count += 1;
+        self.last = timestamp;
         running(&mut self.samples, self.window, timestamp, value, |a, b| {
             a >= b
         })
@@ -169,11 +183,20 @@ impl WindowedMax<i64> {
 /// out. A periodic reader that needs the window to expire without new data
 /// should feed the current tick with a neutral value or treat the result as
 /// stale by its own clock.
+///
+/// Ticks must be non-decreasing. A sample timestamped before the previous
+/// accepted one is ignored: the state and the count stay as they were and
+/// `update` returns the current extremum, so a late extreme value is dropped
+/// too. Elapsed time is computed with wrapping subtraction, so a counter
+/// that wraps is fine as long as the window and any real gap between
+/// samples fit in half its range.
 #[derive(Debug, Clone)]
 pub struct WindowedMin<T: Sample> {
     window: u64,
     samples: [Stamped<T>; 3],
     count: u64,
+    /// Timestamp of the newest accepted sample.
+    last: u64,
 }
 
 impl<T: Sample> WindowedMin<T> {
@@ -195,6 +218,7 @@ impl<T: Sample> WindowedMin<T> {
             window,
             samples: [init; 3],
             count: 0,
+            last: 0,
         })
     }
 
@@ -243,7 +267,11 @@ impl<T: Sample> WindowedMin<T> {
 
     #[inline]
     fn fold(&mut self, timestamp: u64, value: T) -> T {
+        if self.count > 0 && is_late(timestamp, self.last) {
+            return self.samples[0].value;
+        }
         self.count += 1;
+        self.last = timestamp;
         running(&mut self.samples, self.window, timestamp, value, |a, b| {
             a <= b
         })
@@ -272,11 +300,19 @@ impl WindowedMin<i64> {
     }
 }
 
+/// Whether `timestamp` is before `last` on a wrapping tick counter: the
+/// signed difference, so a forward step across the wrap is not late.
+#[inline]
+fn is_late(timestamp: u64, last: u64) -> bool {
+    (timestamp.wrapping_sub(last) as i64) < 0
+}
+
 /// `minmax_running_max` / `minmax_running_min` from `lib/win_minmax.c`.
 ///
 /// `better(a, b)` is `a >= b` for a maximum and `a <= b` for a minimum.
-/// Returns the current extremum, `s[0].value`. Timestamps are expected to be
-/// non-decreasing; subtraction wraps, as in the kernel's `u32` arithmetic.
+/// Returns the current extremum, `s[0].value`. Timestamps must be
+/// non-decreasing (the callers drop late samples); subtraction wraps, as in
+/// the kernel's `u32` arithmetic.
 #[inline]
 fn running<T: Copy>(
     s: &mut [Stamped<T>; 3],
@@ -566,6 +602,124 @@ mod proptests {
                 let exact_min = hist.iter().filter(|&&(ts, _)| t - ts <= win).map(|&(_, v)| v).min().unwrap();
                 prop_assert!(pmax.update(t, v) <= exact_max);
                 prop_assert!(pmin.update(t, v) >= exact_min);
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod late_sample_tests {
+    use super::*;
+    use proptest::prelude::*;
+
+    // A late sample used to read as a gap longer than the window and reset
+    // the tracker to itself: max 1 here, with 50 still in the window.
+    #[test]
+    fn late_sample_does_not_reset_the_window() {
+        let mut wm = WindowedMax::<i64>::new(100).unwrap();
+        let _ = wm.update(1000, 50);
+        let _ = wm.update(1030, 40);
+        assert_eq!(wm.update(1020, 1), 50);
+        assert_eq!(wm.max(), Some(50));
+        assert_eq!(wm.count(), 2);
+
+        let mut wn = WindowedMin::<i64>::new(100).unwrap();
+        let _ = wn.update(1000, 5);
+        let _ = wn.update(1030, 6);
+        assert_eq!(wn.update(1020, 99), 5);
+        assert_eq!(wn.min(), Some(5));
+        assert_eq!(wn.count(), 2);
+    }
+
+    // The documented cost of ignoring: a late extreme value is dropped.
+    #[test]
+    fn late_extreme_value_is_dropped() {
+        let mut wm = WindowedMax::<f64>::new(100).unwrap();
+        let _ = wm.update(1000, 10.0).unwrap();
+        let _ = wm.update(1030, 20.0).unwrap();
+        assert_eq!(wm.update(1020, 99.0).unwrap(), 20.0);
+
+        let mut wn = WindowedMin::<f64>::new(100).unwrap();
+        let _ = wn.update(1000, 10.0).unwrap();
+        let _ = wn.update(1030, 5.0).unwrap();
+        assert_eq!(wn.update(1020, -99.0).unwrap(), 5.0);
+        assert_eq!(wn.count(), 2);
+    }
+
+    #[test]
+    fn equal_timestamp_is_accepted() {
+        let mut wm = WindowedMax::<i64>::new(100).unwrap();
+        let _ = wm.update(1000, 10);
+        assert_eq!(wm.update(1000, 30), 30);
+        assert_eq!(wm.count(), 2);
+    }
+
+    #[test]
+    fn lateness_follows_the_wrapping_counter() {
+        let mut wm = WindowedMax::<i64>::new(100).unwrap();
+        let _ = wm.update(u64::MAX - 5, 10);
+        assert_eq!(wm.update(3, 5), 10); // forward across the wrap: 10 still in window
+        assert_eq!(wm.update(u64::MAX - 1, 99), 10); // late across the wrap: ignored
+        assert_eq!(wm.count(), 2);
+
+        let mut wn = WindowedMin::<i64>::new(100).unwrap();
+        let _ = wn.update(u64::MAX - 5, 10);
+        assert_eq!(wn.update(3, 20), 10);
+        assert_eq!(wn.update(u64::MAX - 1, -99), 10);
+        assert_eq!(wn.count(), 2);
+    }
+
+    #[test]
+    fn first_sample_and_reset_have_no_floor() {
+        let mut wm = WindowedMax::<i64>::new(100).unwrap();
+        assert_eq!(wm.update(u64::MAX, 7), 7);
+        wm.reset();
+        assert_eq!(wm.update(5, 3), 3);
+        assert_eq!(wm.count(), 1);
+
+        let mut wn = WindowedMin::<i64>::new(100).unwrap();
+        assert_eq!(wn.update(u64::MAX, 7), 7);
+        wn.reset();
+        assert_eq!(wn.update(5, 9), 9);
+        assert_eq!(wn.count(), 1);
+    }
+
+    proptest! {
+        #![proptest_config(ProptestConfig::with_cases(400))]
+
+        /// With some timestamps stepping backwards, the trackers behave as if
+        /// only the in-order samples had been fed: the error direction holds
+        /// against the exact window over those samples, and only they count.
+        #[test]
+        fn out_of_order_input_acts_like_the_in_order_samples(
+            win in 1u64..200,
+            steps in proptest::collection::vec((-60i64..50, -1_000i64..1_000), 1..300),
+        ) {
+            let mut pmax = WindowedMax::<i64>::new(win).unwrap();
+            let mut pmin = WindowedMin::<i64>::new(win).unwrap();
+            let mut ref_max = WindowedMax::<i64>::new(win).unwrap();
+            let mut ref_min = WindowedMin::<i64>::new(win).unwrap();
+            let mut kept: Vec<(u64, i64)> = Vec::new();
+            let mut t = 1_000_000u64; // far from the wrap: plain `>=` is the reference
+            for (step, v) in steps {
+                t = t.wrapping_add_signed(step);
+                let got_max = pmax.update(t, v);
+                let got_min = pmin.update(t, v);
+                let last = kept.last().map(|&(ts, _)| ts);
+                if last.is_none_or(|l| t >= l) {
+                    kept.push((t, v));
+                    let _ = ref_max.update(t, v);
+                    let _ = ref_min.update(t, v);
+                }
+                let now = kept.last().unwrap().0;
+                let exact_max = kept.iter().filter(|&&(ts, _)| now - ts <= win).map(|&(_, v)| v).max().unwrap();
+                let exact_min = kept.iter().filter(|&&(ts, _)| now - ts <= win).map(|&(_, v)| v).min().unwrap();
+                prop_assert_eq!(got_max, ref_max.max().unwrap());
+                prop_assert_eq!(got_min, ref_min.min().unwrap());
+                prop_assert!(got_max <= exact_max);
+                prop_assert!(got_min >= exact_min);
+                prop_assert_eq!(pmax.count(), kept.len() as u64);
+                prop_assert_eq!(pmin.count(), kept.len() as u64);
             }
         }
     }

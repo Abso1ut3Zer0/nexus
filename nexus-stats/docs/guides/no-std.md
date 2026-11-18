@@ -58,7 +58,7 @@ All primitives are stack-allocated with known sizes. No heap allocation.
 |-----------|--------|
 | EMA, CUSUM | 24-56 bytes |
 | Welford | 24 bytes |
-| WindowedMin/Max | 48 bytes |
+| WindowedMin/Max | 72 bytes |
 | MOSUM<32> | 256 bytes (ring buffer) |
 | WindowedMedian<16> | 256 bytes (2 arrays) |
 | Everything else | 8-32 bytes |

@@ -134,7 +134,7 @@ type with timestamps, or `PollSaturation`, which is weighted per message.
 
 - All-time min or max → [**RunningMin / RunningMax**](../algorithms/running-min-max.md)
 - Min/max over a time window → [**WindowedMin / WindowedMax**](../algorithms/windowed-min-max.md)
-  - Nichols' algorithm (Linux `win_minmax`, from TCP BBR), 64 bytes. Approximate by
+  - Nichols' algorithm (Linux `win_minmax`, from TCP BBR), 72 bytes. Approximate by
     design: the reported max is never above the truth and the min never below, but
     about 1 to 2% of updates on stationary input disagree with an exact window.
     For a per-reporting-interval maximum, prefer `MaxGauge`: exact and simpler.
