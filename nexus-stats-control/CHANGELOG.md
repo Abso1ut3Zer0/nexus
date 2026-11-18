@@ -52,6 +52,7 @@ contained.
 
 ### Fixed
 
+- **TopK::top short-buffer selection** ([#789](https://github.com/Abso1ut3Zer0/nexus/issues/789)): `top` copied the first `n` table entries into the buffer in insertion order then sorted, so a buffer shorter than the table returned arbitrary entries rather than the most frequent. The method now selects instead of sorting: each slot takes the highest-ranked entry not yet picked, keeping ties in insertion order.
 - **FlexProportion shares decayed to zero.** The global total never halved
   while every local's count did, so a key receiving every single event read
   a 0.5 share after one half-life and 0.01 after a hundred. As in the kernel,
