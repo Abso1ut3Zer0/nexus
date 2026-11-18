@@ -306,8 +306,10 @@ CHANGELOG entry in `nexus-stats-core`:
 
 - `PolynomialRegression` / `EwPolynomialRegression` judge singularity relative
   to the matrix scale and never return NaN coefficients; `LinearRegression` /
-  `EwLinearRegression` return `None` for (nearly) constant x instead of a
-  rounding-noise slope.
+  `EwLinearRegression` keep means and co-moments instead of raw power sums,
+  so a large x or y offset (unix timestamps, a price level) no longer
+  cancels, and return `None` for constant x instead of a rounding-noise
+  slope.
 - `ShiryaevRoberts` saturates its statistic at `1e300` instead of overflowing
   to `+inf`, turning NaN and reporting `false` forever.
 - `RobustZScore` scales by `sqrt(2/π)` (its spread is a *mean* absolute
