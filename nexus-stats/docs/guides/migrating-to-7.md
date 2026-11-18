@@ -97,6 +97,7 @@ information. Builders follow their type: `EmaF64Builder` → `EmaBuilder`,
 |-----|-----|
 | `DecayAccumU64` | `DecayAccum` |
 | `TopK::total()` | `TopK::count()` |
+| `TopK::top(&mut buf) -> usize` | `TopK::top() -> impl ExactSizeIterator<Item = (&K, u64)>`, a view of the table; `top().take(k)` is the top k; `K: Clone` no longer required |
 
 ### nexus-stats-regression
 
@@ -346,6 +347,6 @@ CHANGELOG entry in `nexus-stats-core`:
 4. `cargo build`. What remains is section 4: `DeadBand::new` now returns
    `Result`, any `i64` `DeadBand` threshold changes type, `Adwin` /
    `PageHinkley` verdicts are `Option<bool>`, `Debounce::count()` is
-   `consecutive()`, `Exp3::select` needs a `&mut` bandit, and the method
-   renames in the section 1 tables (`intercept`, `count`, `interval`,
-   `update_at`).
+   `consecutive()`, `Exp3::select` needs a `&mut` bandit, `TopK::top()`
+   returns an iterator instead of filling a buffer, and the method renames in
+   the section 1 tables (`intercept`, `count`, `interval`, `update_at`).

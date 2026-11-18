@@ -88,6 +88,10 @@ one naming convention across the family. Migration guide:
   → `interval`, `BucketPolicy::WallTimeNanos` → `Ticks`,
   `BucketAccumulator::update_at_raw` → `update_at`, `TopK::total` → `count`,
   `intercept_value` → `intercept`, the bandits' `total_pulls` → `count`.
+- **`TopK::top()` is an iterator over the sorted table** (`top().take(k)`),
+  not a fill of a caller's buffer; the table is kept sorted on `update`, so
+  hot keys are found first and the minimum is O(1). `K: Clone` no longer
+  required (control).
 - `libm` also enables `nexus-stats-smoothing/libm`, so `HuberEma` /
   `ConditionalEma::halflife` exist on a `no_std` + `libm` build.
 

@@ -8,18 +8,24 @@ couple of hundred counters and the wrong tool past that.
 | Property | Value |
 |----------|-------|
 | Update cost | O(capacity): 36 cycles at 16 counters, ~40 ticks at 100, ~900 at 10,000 |
-| Query cost (`top`) | one pass over the table plus a sort or heap of the result |
+| Query cost (`top`) | free: an iterator over the table, which is kept sorted |
 | Memory | capacity × (key + count), one allocation at construction |
-| Types | `TopK<K>` for `K: Eq + Clone`; capacity at construction (`alloc`) |
-| Output | (key, count) pairs, highest count first |
+| Types | `TopK<K>` for `K: Eq`; capacity at construction (`alloc`) |
+| Output | `top()`: iterator of `(&key, count)`, highest count first |
 
 ## What It Does
 
-Maintains a fixed-size table of (item, estimated count) pairs.
-- If item is tracked: increment its count
-- If table not full: add item with count 1
-- If table full: evict the minimum-count item, replace with new item,
-  count = evicted_count + 1 (the overcount)
+Maintains a fixed-size table of (item, estimated count) pairs, kept sorted
+by count, highest first.
+- If item is tracked: increment its count and swap it to the front of its
+  old tie run (one swap keeps the order)
+- If table not full: append the item with count 1 (the minimum, so the end)
+- If table full: the last entry is a minimum; replace it with the new item,
+  count = evicted_count + 1 (the overcount), and swap it forward likewise
+
+Because the table is sorted, the hot keys of a skewed stream sit at the
+front and the scan that finds them ends early, the minimum is found in O(1),
+and `top()` is a view with nothing to copy or sort.
 
 **Accuracy guarantee:** Any item with true frequency > `total / capacity`
 is guaranteed to be in the output. Reported counts may overestimate
@@ -39,9 +45,7 @@ top.update("BTC-USD".to_string());
 top.update("ETH-USD".to_string());
 top.update("BTC-USD".to_string());
 
-let mut buf = [("".to_string(), 0u64); 16];
-let n = top.top(&mut buf);
-for (key, count) in &buf[..n] {
+for (key, count) in top.top().take(10) {
     println!("{key}: {count}");
 }
 ```
@@ -58,24 +62,27 @@ for (key, count) in &buf[..n] {
 |-----------|-----|-----|
 | `TopK::update` (16 slots) | 36 cycles | 44 cycles |
 
-`update` is one linear scan of the table, so it scales with `capacity`
-(scaling harness, Zipf stream, TSC ticks, p50; a `HashMap` increment is
-about 17 for comparison):
+`update` is one scan of the table for the key plus one swap, so its cost is
+bounded by `capacity` and, on a skewed stream, is usually far less: the hot
+keys sit at the front. Scaling harness, Zipf stream, TSC ticks, p50 (a
+`HashMap` increment is about 17 for comparison):
 
-| counters | `update` | `top(25)` | `top` full ranking |
+| symbols / counters | `update`, sorted table | `update`, previous unsorted table | `top().take(25)` |
 |---|---|---|---|
-| 100 | 40 | 930 | 1,600 |
-| 1,000 | 140 | 2,300 | 18,000 |
-| 10,000 | 880 | 9,600 | 76,000 |
+| 100 / 100 | 42 | 43 | 9 |
+| 1,000 / 1,000 | 121 | 139 | 9 |
+| 10,000 / 10,000 | 692 | 872 | 9 |
+| 10,000 / 100 (42% of updates hit) | 104 | 124 | 9 |
+| 10,000 / 500 (61% hit) | 242 | 298 | 9 |
+| 10,000 / 1,000 (71% hit) | 481 | 602 | 9 |
 
-Up to a couple of hundred counters the flat scan is the right trade (no
+Up to a couple of hundred counters the flat table is the right trade (no
 hashing, no allocation, contiguous memory). Past that, a hash-indexed table
 is the right structure for `update`; this type is not it.
 
-`top(n)` is a query: a buffer that covers the table is sorted directly, a
-shorter one is filled through a size-n min-heap kept in the buffer
-(O(len log n)). Equal counts come out in a deterministic but unspecified
-order.
+`top()` is a view of the sorted table: an iterator of `(&key, count)` with no
+copy, no sort and no buffer; `top().take(k)` is the top k. Equal counts come
+out in a deterministic but unspecified order.
 
 ## Academic Reference
 
