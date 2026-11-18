@@ -834,4 +834,99 @@ mod tests {
             assert_eq!(ew.slope(), None, "base {base}");
         }
     }
+
+    /// Small deterministic generator for the noisy-data test.
+    struct Lcg(u64);
+
+    impl Lcg {
+        /// Uniform in [-0.5, 0.5).
+        fn next_centered(&mut self) -> f64 {
+            self.0 = self
+                .0
+                .wrapping_mul(6_364_136_223_846_793_005)
+                .wrapping_add(1_442_695_040_888_963_407);
+            (self.0 >> 11) as f64 / (1u64 << 53) as f64 - 0.5
+        }
+    }
+
+    /// Weighted two-pass least squares: (mean x, mean y, slope).
+    fn two_pass_fit(xs: &[f64], ys: &[f64], ws: &[f64]) -> (f64, f64, f64) {
+        let sw: f64 = ws.iter().sum();
+        let mx = xs.iter().zip(ws).map(|(x, w)| w * x).sum::<f64>() / sw;
+        let my = ys.iter().zip(ws).map(|(y, w)| w * y).sum::<f64>() / sw;
+        let mut sxx = 0.0;
+        let mut sxy = 0.0;
+        for i in 0..xs.len() {
+            let dx = xs[i] - mx;
+            sxx = (ws[i] * dx).mul_add(dx, sxx);
+            sxy = (ws[i] * dx).mul_add(ys[i] - my, sxy);
+        }
+        (mx, my, sxy / sxx)
+    }
+
+    // Exact lines cannot tell a wrong weight or a wrong reference point from
+    // the right one: every point is on the fit. Noisy data can.
+    #[test]
+    fn noisy_fit_matches_a_two_pass_reference() {
+        use alloc::vec;
+        use alloc::vec::Vec;
+
+        let n = 2000;
+        let alpha = 0.01;
+        for base in [0.0, 1.7e9] {
+            let mut rng = Lcg(12_345);
+            let mut r = LinearRegression::new();
+            let mut ew = EwLinearRegression::builder().alpha(alpha).build().unwrap();
+            let mut xs = Vec::new();
+            let mut ys = Vec::new();
+            for i in 0..n {
+                let x = 3.0f64.mul_add(rng.next_centered(), 0.7 * f64::from(i));
+                let y = 5.0f64.mul_add(rng.next_centered(), 1.5f64.mul_add(x, -4.0));
+                r.update(base + x, y).unwrap();
+                ew.update(base + x, y).unwrap();
+                // The offset the regression actually saw, exact after rounding.
+                xs.push((base + x) - base);
+                ys.push(y);
+            }
+            let flat = vec![1.0; n as usize];
+            let decayed: Vec<f64> = (0..n).map(|i| (1.0 - alpha).powi(n - 1 - i)).collect();
+            let at = 500.0;
+            for (name, fit, (mx, my, slope)) in [
+                (
+                    "plain",
+                    r.slope().zip(r.predict(base + at)),
+                    two_pass_fit(&xs, &ys, &flat),
+                ),
+                (
+                    "ew",
+                    ew.slope().zip(ew.predict(base + at)),
+                    two_pass_fit(&xs, &ys, &decayed),
+                ),
+            ] {
+                let (got_slope, got_pred) = fit.unwrap();
+                let want_pred = slope.mul_add(at - mx, my);
+                assert!(
+                    (got_slope - slope).abs() < 1e-12,
+                    "{name} base {base}: slope {got_slope} vs {slope}"
+                );
+                assert!(
+                    (got_pred - want_pred).abs() < 1e-9,
+                    "{name} base {base}: predict {got_pred} vs {want_pred}"
+                );
+                if base == 0.0 {
+                    let got_icpt = if name == "plain" {
+                        r.intercept()
+                    } else {
+                        ew.intercept()
+                    }
+                    .unwrap();
+                    let want_icpt = slope.mul_add(-mx, my);
+                    assert!(
+                        (got_icpt - want_icpt).abs() < 1e-9,
+                        "{name}: intercept {got_icpt} vs {want_icpt}"
+                    );
+                }
+            }
+        }
+    }
 }
