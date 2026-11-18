@@ -61,7 +61,7 @@ costs a branch mispredict, about 20 cycles.
 | TrendAlert | 10 | 11 | Holt + threshold |
 | Jitter<f64> | 7 | 7 | EMA of deltas |
 | **Frequency** | | | |
-| TopK (16 slots) | 36 | 44 | linear scan |
+| TopK (16 slots) | 36 | 48 | sorted array, scanned (indexed above 32 counters) |
 | **Utilities** | | | |
 | BoolWindow (64) | 5 | 8 | bit manipulation |
 | Hysteresis<f64> | 2 | 2 | two comparisons |
@@ -84,7 +84,7 @@ costs a branch mispredict, about 20 cycles.
 | WindowedMedian (window N) | 2 × N × 8 bytes |
 | Bocpd (max run N) | 11 × (N + 1) × 8 bytes (posterior, two sufficient statistics, two scratch rows, six precomputed tables) |
 | Adwin (max_buckets B) | 64 × (B + 1) × 16 bytes in one allocation, plus 128 bytes of lane occupancies; fixed at build |
-| TopK<K> (capacity N) | N × (sizeof(K) + 8) bytes, boxed once at construction |
+| TopK<K> (capacity N) | N × (sizeof(K) + 24, padded) bytes of counters, plus 8 × next_pow2(2N) bytes of hash index when N > 32, allocated once at construction |
 
 ## Running Benchmarks
 

@@ -97,7 +97,7 @@ information. Builders follow their type: `EmaF64Builder` → `EmaBuilder`,
 |-----|-----|
 | `DecayAccumU64` | `DecayAccum` |
 | `TopK::total()` | `TopK::count()` |
-| `TopK::top(&mut buf) -> usize` | `TopK::top() -> impl ExactSizeIterator<Item = (&K, u64)>`, a view of the table; `top().take(k)` is the top k; `K: Clone` no longer required |
+| `TopK::top(&mut buf) -> usize` | `TopK::top() -> impl ExactSizeIterator<Item = Counter<'_, K>>` (`key`, `count`, `error`, `guaranteed()`), a view of the sorted table; `top().take(k)` is the top k; `guaranteed_top()` says how many leading ranks are exact. `K: Eq + Hash` (was `Eq + Clone`) |
 
 ### nexus-stats-regression
 

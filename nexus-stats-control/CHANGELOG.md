@@ -49,25 +49,30 @@ contained.
   `is_full()`). `TopK::top()` is `#[must_use]`, and a debug assertion checks
   that the table never exceeds its capacity.
 - Docs: `BoolWindow::failure_rate` says an empty window reads `0.0`.
-- **`TopK` keeps its table sorted, and `top()` is a view of it.** The table
-  was unsorted: `update` scanned it for the key and, on a miss, scanned it
-  again for the minimum, and `top` (after
-  [#790](https://github.com/Abso1ut3Zer0/nexus/pull/790)) ranked the entries
-  into a caller-supplied buffer with n selection passes, O(len x n). Now every
-  update keeps the table sorted by count with one swap (an increment moves
-  the entry to the front of its old tie run; a new key takes the last slot,
-  the minimum, in O(1)), so the hot keys of a skewed stream sit at the front
-  and the scan for them ends early. `top()` returns an iterator of
-  `(&key, count)` over the table, highest first, nothing copied or sorted;
-  `top().take(k)` is the top k, and `K: Clone` is no longer required. On the
-  scaling harness (Zipf stream, interleaved against the old table in one
-  process) `update` is faster at every size: 121 vs 139 ticks at 1,000
-  counters, 692 vs 872 at 10,000, 104 vs 124 for a 100-counter table over
-  10,000 symbols; `top().take(25)` is 9 ticks where the #790 selection was
-  18 µs at 1,000 counters. Equal counts come out in a deterministic but
-  unspecified order (was table order). The type doc and page state the
-  regime: the flat table is for up to a couple of hundred counters, and
-  `capacity` is sized at several times the k you report.
+- **`TopK` is the paper's Stream-Summary: a hash-indexed array kept sorted,
+  with per-counter error.** The table was an unsorted array scanned on every
+  update (twice on a miss), and `top()` (after
+  [#790](https://github.com/Abso1ut3Zer0/nexus/pull/790)) ranked it into a
+  caller-supplied buffer with n selection passes. Now: the counters live in an
+  array kept sorted by count (one swap per update; the minimum to evict is the
+  last slot, and the start of the run tied at the minimum is maintained, not
+  searched), a fixed open-addressing index with a deterministic Fx hasher
+  and 32-bit tags finds a key's slot for tables above 32 counters (smaller
+  tables are scanned; cheaper at that size), and each counter carries the
+  `error` it inherited on entry, as in Metwally et al. (2005). `update` is
+  O(1) expected regardless of capacity or universe: on the scaling harness,
+  interleaved against the old table in one process, 15 vs 43 ticks at 100
+  counters, 23 vs 139 at 1,000, and 71 vs 719 for a 1,000-counter table over
+  a million symbols; a tiny table that never evicts (16 symbols, 16 counters)
+  costs 5 to 10 ticks more than before, each counter being twice the bytes. `top()`
+  returns an iterator of `Counter { key, count, error }` over the sorted
+  array (`guaranteed()` is `count - error`), `top().take(k)` is the top k,
+  and `guaranteed_top()` is the number of leading ranks whose order is
+  provably exact. `K: Eq + Hash` (was `Eq + Clone`; nothing is cloned).
+  Equal counts come out in a deterministic but unspecified order. The type
+  doc and both pages state the inspiration (market-data observability), the
+  three guarantees, how to size `capacity` for a wanted k, and the
+  literature.
 ### Fixed
 
 - **TopK::top short-buffer selection** ([#789](https://github.com/Abso1ut3Zer0/nexus/issues/789)): `top` copied the first `n` table entries into the buffer in insertion order then sorted, so a buffer shorter than the table returned arbitrary entries rather than the most frequent. The method now selects instead of sorting: each slot takes the highest-ranked entry not yet picked, keeping ties in insertion order.

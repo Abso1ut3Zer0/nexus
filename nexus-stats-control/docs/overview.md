@@ -6,7 +6,7 @@
 
 - **PeakDetector** — detects local maxima (or minima) with a prominence threshold.
 - **BoolWindow** — rolling pass/fail rate over a fixed-count sliding window.
-- **TopK** — Space-Saving top-K frequent items tracker (approximate, O(K) memory).
+- **TopK** — Space-Saving top-K frequent items tracker (approximate, O(capacity) memory, O(1) update).
 - **FlexProportion** — each key's share of a decaying event count (load shares, venue shares).
 - **DecayAccum** — event-driven score that exponentially decays with real time between events.
 
@@ -30,7 +30,7 @@ PeakDetector, FlexProportion, and DecayAccum can be used in a bare-metal `no_std
 
 - **PeakDetector**: O(1) per sample, tens of cycles.
 - **BoolWindow**: O(1) per update (bitmask over a fixed window).
-- **TopK**: Space-Saving algorithm — O(K) memory, O(K) per update (one linear scan).
+- **TopK**: Space-Saving algorithm — O(capacity) memory, O(1) expected per update (hash index into an array kept sorted by count).
 - **FlexProportion**: O(1) per update, integer arithmetic.
 - **DecayAccum**: O(1) per update including the exp decay.
 
