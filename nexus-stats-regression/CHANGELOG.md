@@ -63,6 +63,7 @@ contained.
 
 ### Fixed
 
+- **`LinearRegression` and `EwLinearRegression` keep the fit at large offsets** ([#792](https://github.com/Abso1ut3Zer0/nexus/issues/792)): both accumulated raw power sums, so with x on a unix-timestamp scale or y on a price level the slope cancelled to rounding noise and `slope()` returned `None` on a perfect line. They now keep means and co-moments about them (Welford; West's weighted form for the EW type), anchored on the latest sample; through-origin mode keeps raw sums. `ExponentialRegression`, `LogarithmicRegression`, `PowerRegression`, their `Ew` forms and `KyleLambda` inherit the fix. The degenerate-x check is now exact (every x equal), so a one-tick spread at a large offset is no longer rejected, and `r_squared` is clamped to `[0, 1]`.
 - **`no_std` + `libm` builds again.** `PowerRegression::predict` and
   `EwPowerRegression::predict` called `f64::powf` directly, which only exists
   with `std`; they now use `nexus_stats_core::math::powf` (`libm::pow` under
