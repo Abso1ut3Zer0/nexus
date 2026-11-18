@@ -11,15 +11,18 @@ use crate::Sample;
 /// standing queue. A single slow item, or a burst shorter than the interval,
 /// is `Normal`.
 ///
-/// State is one timestamp. `no_std` compatible. `CoDel<f64>` rejects NaN and
+/// State is two timestamps. `no_std` compatible. `CoDel<f64>` rejects NaN and
 /// infinity and returns `Result`; `CoDel<i64>` cannot fail.
 ///
 /// # Weighting clock
 ///
 /// Caller's timestamps. Any call rate; the interval is measured in ticks,
-/// not samples. Ticks must be monotonic; a counter that wraps is fine as
-/// long as the interval and any real gap between samples fit in half its
-/// range (elapsed time is computed with wrapping subtraction).
+/// not samples. Ticks must be non-decreasing. A sample timestamped before
+/// the previous accepted one is ignored: it neither starts nor clears the
+/// timer, it is not counted, and `update` returns the current condition. A
+/// counter that wraps is fine as long as the interval and any real gap
+/// between samples fit in half its range (elapsed time is computed with
+/// wrapping subtraction).
 #[derive(Debug, Clone)]
 pub struct CoDel<T: Sample> {
     target: T,
@@ -28,6 +31,8 @@ pub struct CoDel<T: Sample> {
     elevated: bool,
     count: u64,
     min_samples: u64,
+    /// Timestamp of the newest accepted sample.
+    last: u64,
 }
 
 /// Builder for [`CoDel`].
@@ -82,13 +87,22 @@ impl<T: Sample> CoDel<T> {
 
     #[inline]
     fn fold(&mut self, timestamp: u64, above_target: bool) -> Option<Condition> {
+        if self.count > 0 && is_late(timestamp, self.last) {
+            return self.condition();
+        }
         self.count += 1;
+        self.last = timestamp;
         self.elevated = standing_queue(
             &mut self.first_above,
             self.interval,
             timestamp,
             above_target,
         );
+        self.condition()
+    }
+
+    #[inline]
+    fn condition(&self) -> Option<Condition> {
         if self.count < self.min_samples {
             return None;
         }
@@ -181,6 +195,7 @@ impl<T: Sample> CoDelBuilder<T> {
             elevated: false,
             count: 0,
             min_samples: self.min_samples,
+            last: 0,
         })
     }
 }
@@ -188,6 +203,13 @@ impl<T: Sample> CoDelBuilder<T> {
 // =========================================================================
 // RFC 8289 standing-queue rule, shared by every instantiation
 // =========================================================================
+
+/// Whether `timestamp` is before `last` on a wrapping tick counter: the
+/// signed difference, so a forward step across the wrap is not late.
+#[inline]
+fn is_late(timestamp: u64, last: u64) -> bool {
+    (timestamp.wrapping_sub(last) as i64) < 0
+}
 
 /// The `first_above_time` rule from RFC 8289 section 5.6.
 ///
@@ -207,15 +229,11 @@ fn standing_queue(
     now: u64,
     above_target: bool,
 ) -> bool {
-    if !above_target {
-        *first_above = None;
-        return false;
-    }
-    if let Some(started) = *first_above {
-        return now.wrapping_sub(started) >= interval;
-    }
-    *first_above = Some(now);
-    false
+    let started = first_above.unwrap_or(now);
+    *first_above = if above_target { Some(started) } else { None };
+    // `interval` is positive, so a timer that starts on this sample is not
+    // yet standing.
+    above_target && now.wrapping_sub(started) >= interval
 }
 
 #[cfg(test)]
@@ -372,5 +390,96 @@ mod raw_tests {
                 .build()
                 .is_err()
         );
+    }
+}
+
+#[cfg(test)]
+mod late_sample_tests {
+    use super::*;
+    use crate::Condition;
+
+    fn codel(target: i64, interval: u64) -> CoDel<i64> {
+        CoDel::<i64>::builder()
+            .target(target)
+            .interval(interval)
+            .build()
+            .unwrap()
+    }
+
+    // A sample earlier than the timer's start used to read as a huge elapsed
+    // time (wrapping subtraction) and report a standing queue at once.
+    #[test]
+    fn late_sample_above_target_is_ignored() {
+        let mut cd = codel(50, 1000);
+        assert_eq!(cd.update(1000, 200), Some(Condition::Normal)); // starts at 1000
+        assert_eq!(cd.update(900, 200), Some(Condition::Normal)); // late: ignored
+        assert_eq!(cd.count(), 1);
+        assert_eq!(cd.update(1999, 200), Some(Condition::Normal)); // still timed from 1000
+        assert_eq!(cd.update(2000, 200), Some(Condition::Degraded));
+    }
+
+    #[test]
+    fn late_sample_below_target_does_not_clear() {
+        let mut cd = codel(50, 1000);
+        let _ = cd.update(0, 200);
+        assert_eq!(cd.update(1000, 200), Some(Condition::Degraded));
+        assert_eq!(cd.update(999, 10), Some(Condition::Degraded)); // late: ignored
+        assert!(cd.is_elevated());
+        assert_eq!(cd.count(), 2);
+        assert_eq!(cd.update(1000, 200), Some(Condition::Degraded)); // equal tick is accepted
+        assert_eq!(cd.count(), 3);
+    }
+
+    #[test]
+    fn late_sample_does_not_prime() {
+        let mut cd = CoDel::<i64>::builder()
+            .target(50)
+            .interval(1000)
+            .min_samples(2)
+            .build()
+            .unwrap();
+        assert_eq!(cd.update(100, 200), None);
+        assert_eq!(cd.update(99, 200), None); // late: not counted
+        assert!(!cd.is_primed());
+        assert_eq!(cd.update(100, 200), Some(Condition::Normal));
+        assert!(cd.is_primed());
+    }
+
+    #[test]
+    fn late_f64_sample_is_ignored() {
+        let mut cd = CoDel::<f64>::builder()
+            .target(0.5)
+            .interval(1000)
+            .build()
+            .unwrap();
+        assert_eq!(cd.update(1000, 0.9).unwrap(), Some(Condition::Normal));
+        assert_eq!(cd.update(900, 0.9).unwrap(), Some(Condition::Normal));
+        assert_eq!(cd.count(), 1);
+    }
+
+    // Lateness is the signed difference on the wrapping counter: a forward
+    // step across the wrap is accepted, a step back across it is late.
+    #[test]
+    fn lateness_follows_the_wrapping_counter() {
+        let mut cd = codel(50, 20);
+        let _ = cd.update(u64::MAX - 10, 200); // starts at MAX-10
+        assert_eq!(cd.update(5, 200), Some(Condition::Normal)); // forward across the wrap
+        assert_eq!(cd.update(u64::MAX - 1, 10), Some(Condition::Normal)); // late: ignored
+        assert_eq!(cd.count(), 2);
+        assert_eq!(cd.update(9, 200), Some(Condition::Degraded)); // timer was not cleared
+    }
+
+    // The first sample has nothing to be late against, even at a tick past
+    // half the counter's range; reset forgets the last tick.
+    #[test]
+    fn first_sample_and_reset_have_no_floor() {
+        let mut cd = codel(50, 1000);
+        assert_eq!(cd.update(u64::MAX, 200), Some(Condition::Normal));
+        assert_eq!(cd.count(), 1);
+        cd.reset();
+        assert_eq!(cd.update(u64::MAX, 200), Some(Condition::Normal));
+        cd.reset();
+        assert_eq!(cd.update(5, 200), Some(Condition::Normal)); // earlier than before reset
+        assert_eq!(cd.count(), 1);
     }
 }
