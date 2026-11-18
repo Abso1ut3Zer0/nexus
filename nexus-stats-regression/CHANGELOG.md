@@ -57,8 +57,8 @@ contained.
 - **`Coefficients::eval(x)`** evaluates the fitted polynomial;
   `PolynomialRegression::predict` is `coefficients()?.eval(x)`. `Kalman2d`
   and `Kalman3d` gain `is_primed()`.
-- **One copy of each kernel.** LMS, NLMS, RLS and Huber use `math::dot` /
-  `math::axpy`; `BetaBinomial` and `GammaPoisson` share
+- **One copy of each kernel.** LMS, NLMS, RLS, Huber and `OnlineGd` use
+  `math::dot` / `math::axpy`; `BetaBinomial` and `GammaPoisson` share
   `math::upper_tail_z`. The existing tests pass unchanged.
 
 ### Fixed

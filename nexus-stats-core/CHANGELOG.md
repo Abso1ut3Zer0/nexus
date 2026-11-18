@@ -253,6 +253,9 @@ contained.
 - `nexus-stats-core/docs` rewritten against the shipped API: the `Instant`
   types it described never existed.
 - `Hurst` states its cost: O(1) per `update`, O(window) per `hurst()` query.
+- `feature_vector!`'s SAFETY comments cite the two compile-time assertions
+  (size, alignment) that make them true, after
+  [#788](https://github.com/Abso1ut3Zer0/nexus/pull/788) added the second.
 
 ## [3.0.1] — 2026-06-05
 

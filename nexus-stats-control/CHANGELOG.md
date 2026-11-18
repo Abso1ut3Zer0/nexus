@@ -49,6 +49,17 @@ contained.
   `is_full()`). `TopK::top()` is `#[must_use]`, and a debug assertion checks
   that the table never exceeds its capacity.
 - Docs: `BoolWindow::failure_rate` says an empty window reads `0.0`.
+- **`TopK::top` is a heap selection** (follow-up to
+  [#790](https://github.com/Abso1ut3Zer0/nexus/pull/790)). A buffer that
+  covers the table is sorted directly; a shorter one is filled through a
+  size-n min-heap kept in the buffer, O(len log n) in place of the n
+  selection passes (O(len x n)) that #790 shipped. On the scaling harness a
+  top 25 of a 1,000-counter table goes from 18 µs to 0.9 µs and a full
+  ranking of 10,000 from 190 ms to 28 µs. Equal counts come out in a
+  deterministic but unspecified order (was table order). The type doc and
+  page now state the regime: `update` is O(capacity), about 40 ticks at 100
+  counters and 900 at 10,000, so the type is for up to a couple of hundred
+  counters; and `capacity` is sized at several times the k you report.
 
 ### Fixed
 
