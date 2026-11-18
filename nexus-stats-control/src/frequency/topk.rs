@@ -1,10 +1,31 @@
 use alloc::vec::Vec;
 
-/// Space-Saving algorithm for top-K frequent item tracking.
+/// Space-Saving top-K frequent items over a stream, in bounded memory.
 ///
-/// Tracks the `capacity` most frequent items in a stream with bounded memory:
-/// a table sized once at construction, scanned linearly on every update.
-/// Efficient for the usual capacities (10 to 100). Requires `alloc`.
+/// A table of `capacity` (key, count) pairs sized once at construction and
+/// scanned linearly on every update: a tracked key is incremented, a new key
+/// takes a free slot, and once the table is full a new key evicts the minimum
+/// and inherits its count (the overcount). Nothing allocates after
+/// construction and the output is deterministic. Requires `alloc`.
+///
+/// # Regime
+///
+/// This is a small-k statistic. `update` costs one scan of the table: about
+/// 40 ticks at 100 counters, 140 at 1,000 and 900 at 10,000 on the scaling
+/// harness, against about 17 for a hash-map increment. Up to a couple of
+/// hundred counters the flat scan is the right trade (no hashing, no
+/// allocation, contiguous memory); past that a hash-indexed table is the
+/// right structure and this type is the wrong tool. `top` is a query, not an
+/// update-path cost: one pass over the table plus a sort or heap of the
+/// result.
+///
+/// # Choosing `capacity`
+///
+/// `capacity` is the table size, not the k you report. Any count may be
+/// overestimated by at most `total / capacity`, so the top k are exact only
+/// when the k-th true frequency clears that bound; under Zipf-like traffic
+/// that means a capacity of several times k. "Top 25 of 10,000 symbols" is a
+/// 100 to 500 counter table, 50 to 110 ns per update.
 ///
 /// # Use Cases
 /// - "What are the top 10 symbols by message volume?"
@@ -100,34 +121,56 @@ impl<K: Eq + Clone> TopK<K> {
 
     /// Writes the most frequent tracked items into `buf`, highest estimated
     /// count first, and returns how many were written:
-    /// `min(buf.len(), self.len())`. A `buf` shorter than the table receives
-    /// the top `buf.len()` items. Equal counts keep insertion order.
-    /// Counts may overestimate; see the overcount property.
+    /// `min(buf.len(), self.len())`.
+    ///
+    /// One pass over the table, nothing allocated, the table never reordered.
+    /// A buffer that covers the whole table is filled and sorted directly
+    /// (O(len log len)); a shorter one is filled through a size-n min-heap
+    /// kept in `buf` itself (O(len log n)), so a top 25 of a 1,000-counter
+    /// table is one scan plus a few dozen sifts. Equal counts come out in a
+    /// deterministic but unspecified order. Counts may overestimate; see the
+    /// overcount property.
     #[must_use]
-    #[inline]
     pub fn top(&self, buf: &mut [(K, u64)]) -> usize {
-        let n = self.entries.len().min(buf.len());
-        // Selection, not a sort: `&self` cannot reorder the table and the
-        // call must not allocate. Each pass takes the largest entry that
-        // ranks below the previous pick in (count desc, index asc) order.
-        let mut prev: Option<(u64, usize)> = None;
-        for (written, slot) in buf[..n].iter_mut().enumerate() {
-            let mut best: Option<(u64, usize)> = None;
-            for (i, e) in self.entries.iter().enumerate() {
-                let below_prev =
-                    prev.is_none_or(|(pc, pi)| e.count < pc || (e.count == pc && i > pi));
-                let above_best =
-                    best.is_none_or(|(bc, bi)| e.count > bc || (e.count == bc && i < bi));
-                if below_prev && above_best {
-                    best = Some((e.count, i));
-                }
+        let len = self.entries.len();
+        let n = len.min(buf.len());
+        if n == 0 {
+            return 0;
+        }
+        if n == len {
+            for (slot, e) in buf[..n].iter_mut().zip(&self.entries) {
+                *slot = (e.key.clone(), e.count);
             }
-            // `n <= entries.len()` leaves an unpicked entry for every slot.
-            let Some((count, i)) = best else {
-                return written;
-            };
-            *slot = (self.entries[i].key.clone(), count);
-            prev = best;
+            buf[..n].sort_unstable_by(|a, b| b.1.cmp(&a.1));
+            return n;
+        }
+        // Size-n min-heap in `buf[..n]`: the root is the weakest kept entry,
+        // so once the heap is full most table entries fail one compare
+        // against `floor` and move on. `floor` is a local because the
+        // compiler cannot see that `heap[0]` is unchanged on the reject path.
+        let heap = &mut buf[..n];
+        let mut filled = 0;
+        let mut floor = 0;
+        for e in &self.entries {
+            if filled < n {
+                heap[filled] = (e.key.clone(), e.count);
+                filled += 1;
+                sift_up(heap, filled - 1);
+                if filled == n {
+                    floor = heap[0].1;
+                }
+            } else if e.count > floor {
+                heap[0] = (e.key.clone(), e.count);
+                sift_down(heap, 0);
+                floor = heap[0].1;
+            }
+        }
+        // Heapsort: move the minimum to the end until the slice is descending.
+        let mut end = n;
+        while end > 1 {
+            heap.swap(0, end - 1);
+            end -= 1;
+            sift_down(&mut heap[..end], 0);
         }
         n
     }
@@ -175,6 +218,42 @@ impl<K: Eq + Clone> TopK<K> {
     pub fn reset(&mut self) {
         self.entries.clear();
         self.total = 0;
+    }
+}
+
+/// Min-heap on `.1` (the count): restore the heap property upward from `i`.
+fn sift_up<K>(heap: &mut [(K, u64)], mut i: usize) {
+    while i > 0 {
+        let parent = (i - 1) / 2;
+        if heap[i].1 < heap[parent].1 {
+            heap.swap(i, parent);
+            i = parent;
+        } else {
+            break;
+        }
+    }
+}
+
+/// Min-heap on `.1` (the count): restore the heap property downward from `i`.
+fn sift_down<K>(heap: &mut [(K, u64)], mut i: usize) {
+    let len = heap.len();
+    loop {
+        let left = 2 * i + 1;
+        if left >= len {
+            break;
+        }
+        let right = left + 1;
+        let child = if right < len && heap[right].1 < heap[left].1 {
+            right
+        } else {
+            left
+        };
+        if heap[child].1 < heap[i].1 {
+            heap.swap(child, i);
+            i = child;
+        } else {
+            break;
+        }
     }
 }
 
@@ -331,19 +410,34 @@ mod tests {
         assert_eq!(buf, [(9, 100), (8, 50)]);
     }
 
+    /// Equal counts come out in an unspecified but deterministic order: the
+    /// same stream gives the same output, on both the sort and the heap path.
     #[test]
-    fn top_keeps_insertion_order_on_ties() {
-        let mut t: TopK<u32> = TopK::new(5).unwrap();
-        for k in [7, 3, 5] {
-            t.update(k);
-        }
-        let mut buf = [(0u32, 0u64); 3];
-        assert_eq!(t.top(&mut buf), 3);
-        assert_eq!(buf, [(7, 1), (3, 1), (5, 1)]);
+    fn top_is_deterministic_on_ties() {
+        let build = || {
+            let mut t: TopK<u32> = TopK::new(5).unwrap();
+            for k in [7, 3, 5, 9, 1] {
+                t.update(k);
+            }
+            t
+        };
+        let (a, b) = (build(), build());
+        let (mut full_a, mut full_b) = ([(0u32, 0u64); 5], [(0u32, 0u64); 5]);
+        assert_eq!(a.top(&mut full_a), 5);
+        assert_eq!(b.top(&mut full_b), 5);
+        assert_eq!(full_a, full_b);
+        assert!(full_a.iter().all(|e| e.1 == 1));
+        let (mut short_a, mut short_b) = ([(0u32, 0u64); 3], [(0u32, 0u64); 3]);
+        assert_eq!(a.top(&mut short_a), 3);
+        assert_eq!(b.top(&mut short_b), 3);
+        assert_eq!(short_a, short_b);
     }
 
+    /// Every buffer length returns a valid top-n: sorted, unique keys, counts
+    /// matching `count_of`, the same count sequence as the head of the full
+    /// ranking, and no omitted key with a count above the n-th.
     #[test]
-    fn top_every_buffer_length_is_a_prefix_of_the_full_ranking() {
+    fn top_every_buffer_length_is_a_valid_top_n() {
         use alloc::vec;
         use alloc::vec::Vec;
         struct Lcg(u64);
@@ -375,13 +469,65 @@ mod tests {
             for &(k, c) in &full[..nf] {
                 assert_eq!(c, t.count_of(&k), "seed {seed}: count for {k}");
             }
-            // Every shorter buffer gets the head of that ranking.
+            // Every shorter buffer is a valid top-n of that ranking (ties at
+            // the boundary may pick either key, so compare counts and sets).
             for len in 0..=cap + 2 {
                 let mut buf = vec![(0u32, 0u64); len];
                 let n = t.top(&mut buf);
                 assert_eq!(n, len.min(t.len()));
-                assert_eq!(&buf[..n], &full[..n], "seed {seed} len {len}");
+                let counts = |v: &[(u32, u64)]| v.iter().map(|e| e.1).collect::<Vec<_>>();
+                assert_eq!(
+                    counts(&buf[..n]),
+                    counts(&full[..n]),
+                    "seed {seed} len {len}"
+                );
+                let mut ks: Vec<u32> = buf[..n].iter().map(|e| e.0).collect();
+                ks.sort_unstable();
+                ks.dedup();
+                assert_eq!(ks.len(), n, "seed {seed} len {len}: duplicate key");
+                for &(k, c) in &buf[..n] {
+                    assert_eq!(c, t.count_of(&k), "seed {seed} len {len}: count for {k}");
+                }
+                if n > 0 && n < nf {
+                    let boundary = buf[n - 1].1;
+                    for &(k, c) in &full[..nf] {
+                        if c > boundary {
+                            assert!(
+                                buf[..n].iter().any(|e| e.0 == k),
+                                "seed {seed} len {len}: {k} omitted"
+                            );
+                        }
+                    }
+                }
             }
+        }
+    }
+
+    /// The heap path (buffer much shorter than a large table) against a
+    /// brute-force ranking of the same table.
+    #[test]
+    fn top_heap_path_matches_brute_force() {
+        use alloc::vec;
+        use alloc::vec::Vec;
+        let mut t: TopK<u32> = TopK::new(200).unwrap();
+        let mut x = 0x2545_F491_4F6C_DD1Du64;
+        for _ in 0..20_000 {
+            x ^= x << 13;
+            x ^= x >> 7;
+            x ^= x << 17;
+            // skewed keys: low keys far more often than high ones
+            let key = ((x >> 40) as u32 % 50).min((x >> 20) as u32 % 300);
+            t.update(key);
+        }
+        let mut full = vec![(0u32, 0u64); 200];
+        let nf = t.top(&mut full);
+        for n in [1usize, 2, 7, 25, 64, 199] {
+            let mut buf = vec![(0u32, 0u64); n];
+            assert_eq!(t.top(&mut buf), n.min(nf));
+            let counts: Vec<u64> = buf[..n.min(nf)].iter().map(|e| e.1).collect();
+            let expect: Vec<u64> = full[..n.min(nf)].iter().map(|e| e.1).collect();
+            assert_eq!(counts, expect, "n = {n}");
+            assert!(buf[..n.min(nf)].windows(2).all(|w| w[0].1 >= w[1].1));
         }
     }
 }

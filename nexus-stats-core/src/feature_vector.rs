@@ -94,9 +94,11 @@ macro_rules! feature_vector {
             #[inline]
             #[must_use]
             pub fn as_slice(&self) -> &[f64] {
-                // SAFETY: repr(C) struct of all f64 fields has the same
-                // layout as [f64; N]. No padding between f64 fields
-                // (all 8-byte aligned, 8-byte sized).
+                // SAFETY: a repr(C) struct of DIMENSIONS `f64` fields has the
+                // layout of `[f64; DIMENSIONS]`. The two compile-time
+                // assertions below the impl are what guarantee it: the size
+                // one rules out padding, the alignment one rules out a
+                // `repr(packed)` among the caller's attributes.
                 unsafe {
                     core::slice::from_raw_parts(
                         self as *const Self as *const f64,

@@ -1,5 +1,6 @@
 use alloc::boxed::Box;
 use alloc::vec;
+use nexus_stats_core::math::axpy;
 
 /// Online gradient descent optimizer with fixed learning rate.
 ///
@@ -83,9 +84,7 @@ impl OnlineGd {
         for &g in gradient {
             check_finite!(g);
         }
-        for i in 0..self.dims {
-            self.params[i] -= self.learning_rate * gradient[i];
-        }
+        axpy(-self.learning_rate, gradient, &mut self.params);
         self.count += 1;
         Ok(())
     }
