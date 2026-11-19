@@ -12,7 +12,7 @@ Streaming online normalizers. Module path: `nexus_stats_core::normalization`.
 
 All three share one shape:
 
-- `update(..)` feeds a sample and returns its normalized value, `Ok(None)` while there is nothing to normalize against.
+- `update(..)` feeds a sample and returns its normalized value, `Ok(None)` while there is nothing to normalize against. `ZScoreNorm` scores the sample against the state *before* it and then folds it in (a score against statistics that already contain the sample is capped). `MinMaxNorm` and `QuantileNorm` fold first: a range or a rank is defined to include the sample, so a new maximum reads exactly 1.
 - `normalize(value)` scores a value against the current state without changing it. It returns `Result<Option<T>, DataError>`: `Err` for NaN or infinity, `Ok(None)` if not primed.
 - `count()` / `is_primed()` / `reset()`.
 
@@ -38,7 +38,7 @@ Scoring before folding is what makes the outlier visible. A sample folded into t
 
 `update` returns `Ok(None)` until `min_samples` earlier samples have been seen (default 2, or at once when seeded).
 
-**Zero scale.** While every sample so far has been the same value, the standard deviation is zero and the score follows the usual numerical convention for division by zero: `+inf` for a sample above that value, `-inf` for one below, and `0.0` for a sample equal to it.
+**Zero scale.** While every sample so far has been the same value (or after a flat stretch long enough for the weighted variance to decay to nothing), the standard deviation is zero and the score follows the usual numerical convention for division by zero: `+inf` for a sample above the mean, `-inf` for one below, and `0.0` for a sample on it.
 
 ```rust
 use nexus_stats_core::normalization::ZScoreNorm;
@@ -54,9 +54,9 @@ assert!(z > 4.0);                           // a threshold test fires
 assert_eq!(z.clamp(-5.0, 5.0), 5.0);        // and clamping bounds it
 ```
 
-This is the one non-finite value the type returns. The other types in this crate reject infinity as input, so clamp the score before feeding it on.
+The other types in this crate reject infinity as input, so clamp the score before feeding it on. The samples right after such a jump are scored against statistics the jump created: a second sample at the new level scores exactly `sqrt((1 - alpha) / alpha)`, whatever the size of the jump.
 
-**Use for:** feature normalization in streaming ML, adaptive thresholding, comparing values across instruments with different scales.
+**Use for:** outlier scoring, adaptive thresholding, comparing values across instruments with different scales.
 
 **Caveats:** requires `std` or `libm` (for sqrt). The standard deviation counts as zero below `max(|mean|, 1.0) * 1e-14`, and so does a deviation from the mean of a constant stream.
 
@@ -84,7 +84,7 @@ assert_eq!(mn.normalize(300.0).unwrap(), Some(1.5)); // outside the window's ran
 
 **Use for:** range-based normalization where the scale drifts over time. Market data features, sensor readings, any signal where min/max shift.
 
-**Caveats:** returns 0.5 when the range is zero (all values equal within the window). `update` clamps its result to [0, 1]; `normalize` does not, so a value outside the window's range reads below 0 or above 1. A sample timestamped before the previous one does not enter the window; it is normalized against the current window. No feature gate required: works on bare no_std.
+**Caveats:** the windowed extremes are tracked with three stored samples each and are approximate: the range can be narrower than the true window's, never wider. Returns 0.5 when the range is zero (all values equal within the window). `update` clamps its result to [0, 1]; `normalize` does not, so a value outside the window's range reads below 0 or above 1. A sample timestamped before the previous one does not enter the window; it is normalized against the current window. No feature gate required: works on bare no_std.
 
 ---
 
@@ -109,13 +109,13 @@ assert_eq!(qn.normalize(-1.0).unwrap(), Some(0.0));    // below everything seen
 assert_eq!(qn.normalize(9999.0).unwrap(), Some(1.0));  // above everything seen
 ```
 
-`resolution(n)` tracks the quantiles `1/(n+1), ..., n/(n+1)`. The rank is continuous and non-decreasing in the value.
+`resolution(n)` tracks the quantiles `1/(n+1), ..., n/(n+1)`. The rank is non-decreasing in the value, and continuous except at a value that several markers share (one value making up a large part of the stream), where it steps across that run.
 
 **Accuracy:** the rank is off by at most the probability in one cell, `1 / (resolution + 1)`, plus the markers' own estimation error. The bound is approached where a cell is far from uniform: one that spans a gap in the distribution, or an end cell of a long-tailed distribution. Typical error is far smaller (under 0.001 on a uniform stream at resolution 19; mean error 0.002 on an exponential one). Raise the resolution if the tails matter.
 
 **Use for:** distribution-free normalization, quantile-based features, copula transforms. Handles arbitrary distributions without assumptions about shape.
 
-**Caveats:** requires `alloc`. O(resolution) per update; see the performance reference for measured cost. Allocates once at construction. All-time: every sample since construction or `reset` counts equally. Ranks are available after `resolution + 2` samples.
+**Caveats:** requires `alloc`. O(resolution) per update; see the [performance reference](../../nexus-stats/docs/reference/performance.md) for measured cost. Allocates once at construction. All-time: every sample since construction or `reset` counts equally. Ranks are available after `resolution + 2` samples.
 
 ---
 

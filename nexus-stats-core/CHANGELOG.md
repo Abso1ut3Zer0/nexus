@@ -152,11 +152,11 @@ contained.
 - **`QuantileNorm` is a P² histogram** (Jain & Chlamtac 1985): one array of
   `resolution + 2` markers adjusted in a single pass, in place of
   `resolution` independent P² estimators with five markers each. Ranks are
-  continuous and non-decreasing in the value, exactly 0 below the minimum
-  seen and 1 above the maximum (the tails were the constants `p1 / 2` and
-  `(1 + pn) / 2`, with a step at the edge), and the markers cannot cross.
-  Memory is `16 * (resolution + 2)` bytes, down from about
-  `176 * resolution`.
+  non-decreasing in the value, exactly 0 below the minimum seen and 1 above
+  the maximum (the tails were the constants `p1 / 2` and `(1 + pn) / 2`,
+  with a step at the edge), and the markers cannot cross. Memory is
+  `16 * (resolution + 2)` bytes, down from about `190 * resolution`.
+  `resolution(1)` is accepted (minimum, median, maximum).
 - **`DistributionShift` compares each completed window with the baseline
   before it** and latches the result. `update` returns
   `Result<Option<ShapeShift>, DataError>`, `Some` on the sample that
@@ -164,7 +164,14 @@ contained.
   that completed it, so a full window could never be read: the accessors saw
   only a partly filled one, and nothing at all for the first three samples
   of each. The baseline no longer includes the window under test, and each
-  sample is folded once instead of twice.
+  sample is folded once instead of twice. `is_primed()` means "the first
+  window has completed, so a baseline exists" and stays true until `reset`;
+  whether the last window produced a reading is `last()`.
+- **`DistributionShift::kurtosis_shift()`, `skewness_shift()` and
+  `is_shifted()` are removed.** The reading is the `ShapeShift` that
+  `update` returns and `last()` holds; the three were one-line reads of it,
+  and `is_shifted` applied a single threshold to two quantities on different
+  scales.
 - **`normalize` returns `Result<Option<T>, DataError>`** on the three
   normalizers; NaN and infinity went straight through to the output.
   `MinMaxNorm::normalize` is documented as unclamped.

@@ -11,7 +11,10 @@ use crate::monitoring::{WindowedMax, WindowedMin};
 ///
 /// The window is tracked by a [`WindowedMin`] and a [`WindowedMax`], three
 /// stored samples each, so memory is fixed whatever the window length; see
-/// those types for how the window ages and for the timestamp rules.
+/// those types for how the window ages and for the timestamp rules. Those
+/// trackers are approximate: the reported extremes are always real samples
+/// from inside the window, but not always the most extreme ones, so the
+/// range used here can be narrower than the true window's, never wider.
 ///
 /// `T` is the sample type at the boundary, `f64` or `f32`; the trackers
 /// run in `f64` either way, so `MinMaxNorm<f32>` is for producing `f32`
@@ -78,8 +81,10 @@ impl<T: Float> MinMaxNorm<T> {
     }
 
     /// Normalizes an arbitrary value against current windowed min/max
-    /// without updating state. Not clamped: a value outside the window's
-    /// range maps below 0 or above 1, which is how to tell that it is.
+    /// without updating state. Not clamped: a value outside the tracked
+    /// range maps below 0 or above 1. [`update`](Self::update) differs: it
+    /// widens the range to include its sample first, so it never reads
+    /// outside [0, 1].
     ///
     /// Returns `Ok(None)` if not primed.
     ///

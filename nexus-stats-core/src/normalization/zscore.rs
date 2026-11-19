@@ -13,8 +13,8 @@ const SD_FLOOR: f64 = 1e-14;
 ///
 /// Returns `(sample - mean) / std_dev` using exponentially weighted
 /// estimates of the mean and standard deviation of the samples seen before
-/// it. Useful for online feature normalization before feeding into adaptive
-/// filters or learners, and as an outlier score. Against a constant
+/// it. Use it to put streams with different scales on a common one, and as
+/// an outlier score. Against a constant
 /// stream, which has no scale, a different value scores `+inf` or `-inf`;
 /// see [`update`](ZScoreNorm::update).
 ///
@@ -78,14 +78,24 @@ impl<T: Float> ZScoreNorm<T> {
     ///
     /// # Zero scale
     ///
-    /// When the standard deviation is zero (every sample so far was the
-    /// same value) the score follows the usual numerical convention for
-    /// division by zero: `+inf` for a sample above that value and `-inf`
+    /// The standard deviation counts as zero below
+    /// `max(|mean|, 1.0) * 1e-14`. That is the case while every sample so
+    /// far has been the same value, after a long enough flat stretch for the
+    /// exponentially weighted variance to decay there, and for a seed with
+    /// zero variance. The score then follows the usual numerical convention
+    /// for division by zero: `+inf` for a sample above the mean and `-inf`
     /// for one below, so a threshold test such as `z > 4.0` fires on a jump
-    /// out of a flat stream and `z.clamp(lo, hi)` bounds it. A sample equal
-    /// to the value scores `0.0`. An infinite score is the one non-finite
-    /// value this type returns; the other types in this crate reject it as
-    /// input, so clamp it before feeding it on.
+    /// out of a flat stream and `z.clamp(lo, hi)` bounds it. A sample on
+    /// the mean (within the same floor) scores `0.0`.
+    ///
+    /// The samples after such a jump are scored against statistics the jump
+    /// itself created: a second sample at the new level scores exactly
+    /// `sqrt((1 - alpha) / alpha)`, whatever the size of the jump.
+    ///
+    /// An infinite score is not valid input to the other types in this
+    /// crate, which reject it; clamp it before feeding it on.
+    /// `ZScoreNorm<f32>` also returns infinity for a finite score too large
+    /// for `f32`.
     ///
     /// # Errors
     ///
@@ -312,7 +322,7 @@ mod tests {
     }
 
     #[test]
-    fn a_jump_out_of_a_flat_stream_trips_a_threshold_once() {
+    fn a_jump_out_of_a_flat_stream_scores_infinite_then_finite() {
         let mut zs = ZScoreNorm::<f64>::builder().alpha(0.1).build().unwrap();
         for _ in 0..50 {
             let _ = zs.update(100.0).unwrap();
@@ -320,9 +330,10 @@ mod tests {
         let z = zs.update(150.0).unwrap().unwrap();
         assert!(z > 4.0);
         assert_eq!(z.clamp(-5.0, 5.0), 5.0);
-        // The jump gave the stream a scale: the next score is finite.
-        let next = zs.update(150.0).unwrap().unwrap();
-        assert!(next.is_finite() && next > 0.0, "{next}");
+        // The jump gave the stream a scale. Mean 105, variance
+        // 0.1 * 50 * 45 = 225: a second sample at the new level scores
+        // (150 - 105) / 15 = 3 = sqrt((1 - alpha) / alpha).
+        assert_eq!(zs.update(150.0).unwrap(), Some(3.0));
     }
 
     #[test]

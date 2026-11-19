@@ -382,16 +382,19 @@ CHANGELOG entry in `nexus-stats-core`:
   `+inf` or `-inf`, not `0.0`: clamp the score if it feeds a type that
   rejects infinity. Thresholds tuned against the old capped values need
   retuning.
-- **`QuantileNorm` is a P² histogram.** Ranks are continuous, reach exactly
-  0 and 1 outside the range seen, and prime after `resolution + 2` samples.
+- **`QuantileNorm` is a P² histogram.** Ranks reach exactly 0 and 1
+  outside the range seen and prime after `resolution + 2` samples.
   `min_samples` below `resolution + 2` is an error (it was silently raised).
   Values differ from the old estimator grid.
 - **`DistributionShift::update` returns `Result<Option<ShapeShift>, _>`**:
   `Some` on the sample that completes a window, with that window compared
-  against the baseline before it. `kurtosis_shift()`, `skewness_shift()` and
-  `is_shifted()` read the last completed window instead of a partly filled
-  one. `fast_window` must be at least 4.
-- Additive: `DistributionShift::last()` / `fast_window()`, `ShapeShift`.
+  against the baseline before it, and `last()` returns the most recent one.
+  `kurtosis_shift()`, `skewness_shift()` and `is_shifted(t)` are removed:
+  read `shift.excess_kurtosis` and `shift.skewness` and test each against
+  its own threshold. `is_primed()` is true once the first window has
+  completed. `fast_window` must be at least 4.
+- Additive: `DistributionShift::last()` / `fast_window()`, `ShapeShift`,
+  `QuantileNorm` accepts `resolution(1)`.
 
 ## 5. Checklist
 

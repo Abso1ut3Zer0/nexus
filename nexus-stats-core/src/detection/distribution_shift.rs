@@ -43,7 +43,8 @@ use crate::statistics::Moments;
 /// assert_eq!(readings.len(), 2);
 /// assert!(readings[0].skewness.abs() < 1e-9);
 /// assert!(readings[1].skewness > 1.0);
-/// assert!(det.is_shifted(1.0));
+/// // The last reading stays available between windows.
+/// assert_eq!(det.last(), Some(readings[1]));
 /// ```
 #[derive(Debug, Clone)]
 pub struct DistributionShift {
@@ -56,6 +57,10 @@ pub struct DistributionShift {
 
 /// How a completed window's shape differs from the baseline before it:
 /// window minus baseline.
+///
+/// The two fields are on different scales (the sampling noise of kurtosis
+/// is about twice that of skewness), so test each against its own
+/// threshold: `s.excess_kurtosis > 2.0 || s.skewness.abs() > 1.0`.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct ShapeShift {
     /// Skewness difference. Positive: the window is more right-skewed than
@@ -64,18 +69,6 @@ pub struct ShapeShift {
     /// Excess-kurtosis difference. Positive: the window has heavier tails
     /// than the baseline.
     pub excess_kurtosis: f64,
-}
-
-impl ShapeShift {
-    /// Whether either difference exceeds `threshold` in magnitude. The two
-    /// are on different scales (the sampling noise of kurtosis is about
-    /// twice that of skewness); compare the fields directly for separate
-    /// thresholds.
-    #[inline]
-    #[must_use]
-    pub fn exceeds(&self, threshold: f64) -> bool {
-        self.skewness.abs() > threshold || self.excess_kurtosis.abs() > threshold
-    }
 }
 
 /// Builder for [`DistributionShift`].
@@ -126,33 +119,6 @@ impl DistributionShift {
         self.last
     }
 
-    /// Kurtosis shift of the last completed window: its excess kurtosis
-    /// minus the baseline's. Positive values mean heavier tails than the
-    /// baseline. `None` as for [`last`](Self::last).
-    #[inline]
-    #[must_use]
-    pub fn kurtosis_shift(&self) -> Option<f64> {
-        self.last.map(|s| s.excess_kurtosis)
-    }
-
-    /// Skewness shift of the last completed window: its skewness minus the
-    /// baseline's. Positive values mean more right-skewed than the
-    /// baseline. `None` as for [`last`](Self::last).
-    #[inline]
-    #[must_use]
-    pub fn skewness_shift(&self) -> Option<f64> {
-        self.last.map(|s| s.skewness)
-    }
-
-    /// Whether the last completed window's skewness or kurtosis differs
-    /// from the baseline's by more than `threshold`. `false` when there is
-    /// no reading; [`last`](Self::last) tells the two apart.
-    #[inline]
-    #[must_use]
-    pub fn is_shifted(&self, threshold: f64) -> bool {
-        self.last.is_some_and(|s| s.exceeds(threshold))
-    }
-
     /// Total number of observations fed.
     #[inline]
     #[must_use]
@@ -167,11 +133,14 @@ impl DistributionShift {
         self.fast_window
     }
 
-    /// Whether a reading is available from the last completed window.
+    /// Whether a baseline exists, that is, the first window has completed.
+    /// Stays true until [`reset`](Self::reset). It does not say that the
+    /// last window produced a reading (a constant window does not); that is
+    /// [`last`](Self::last).
     #[inline]
     #[must_use]
     pub fn is_primed(&self) -> bool {
-        self.last.is_some()
+        self.count >= self.fast_window
     }
 
     /// Forgets the baseline, the window in progress and the last reading.
@@ -287,28 +256,10 @@ mod tests {
         for &x in &W3[..7] {
             assert_eq!(det.update(x).unwrap(), None);
             assert_eq!(det.last(), Some(reading));
-            assert_eq!(det.kurtosis_shift(), Some(reading.excess_kurtosis));
-            assert_eq!(det.skewness_shift(), Some(reading.skewness));
         }
         assert!(det.is_primed());
-    }
-
-    #[test]
-    fn is_shifted_applies_the_threshold_to_either_measure() {
-        let mut det = DistributionShift::builder().fast_window(8).build().unwrap();
-        for &x in W1.iter().chain(&W2) {
-            let _ = det.update(x).unwrap();
-        }
-        let r = det.last().unwrap();
-        let (lo, hi) = (
-            r.skewness.abs().min(r.excess_kurtosis.abs()),
-            r.skewness.abs().max(r.excess_kurtosis.abs()),
-        );
-        assert!(lo < hi);
-        assert!(det.is_shifted(lo * 0.5));
-        // Over the smaller measure but under the larger: still shifted.
-        assert!(det.is_shifted(f64::midpoint(lo, hi)));
-        assert!(!det.is_shifted(hi));
+        det.reset();
+        assert!(!det.is_primed());
     }
 
     #[test]
@@ -323,7 +274,6 @@ mod tests {
         assert!(r.skewness.abs() < 1e-12, "{r:?}");
         // Repeating a window leaves the pooled kurtosis where it was.
         assert!(r.excess_kurtosis.abs() < 1e-12, "{r:?}");
-        assert!(!det.is_shifted(1e-9));
     }
 
     #[test]
@@ -331,21 +281,24 @@ mod tests {
         let mut det = DistributionShift::builder().fast_window(8).build().unwrap();
         // First window: nothing to compare against.
         for &x in &W1 {
+            assert!(!det.is_primed());
             assert_eq!(det.update(x).unwrap(), None);
         }
-        assert!(!det.is_primed());
-        assert!(!det.is_shifted(0.0));
+        // The baseline exists from here on, but there is no reading yet.
+        assert!(det.is_primed());
+        assert_eq!(det.last(), None);
         // A constant window has no skewness or kurtosis: no reading, and
         // the previous one is not left standing.
         for &x in &W2 {
             let _ = det.update(x).unwrap();
         }
-        assert!(det.is_primed());
+        assert!(det.last().is_some());
         for _ in 0..8 {
             assert_eq!(det.update(5.0).unwrap(), None);
         }
         assert_eq!(det.last(), None);
-        assert!(!det.is_primed());
+        // Still primed: priming does not flap with the readings.
+        assert!(det.is_primed());
     }
 
     #[test]
@@ -354,11 +307,22 @@ mod tests {
         assert_eq!(det.update(f64::NAN), Err(crate::DataError::NotANumber));
         assert_eq!(det.update(f64::INFINITY), Err(crate::DataError::Infinite));
         assert_eq!(det.count(), 0);
-        // The rejected samples did not advance the window.
-        for &x in &W1[..7] {
-            let _ = det.update(x).unwrap();
+        // Rejected samples interleaved with two windows of valid ones do
+        // not advance the window: the reading still arrives on the 16th
+        // valid sample and equals the reading without them.
+        let mut reading = None;
+        for (i, &x) in W1.iter().chain(&W2).enumerate() {
+            assert!(det.update(f64::NAN).is_err());
+            let r = det.update(x).unwrap();
+            assert_eq!(r.is_some(), i == 15, "sample {i}");
+            reading = reading.or(r);
         }
-        assert_eq!(det.count(), 7);
+        assert_eq!(det.count(), 16);
+        let (w1, w2) = (moments(&W1), moments(&W2));
+        assert_eq!(
+            reading.unwrap().skewness,
+            w2.skewness().unwrap() - w1.skewness().unwrap()
+        );
     }
 
     #[test]

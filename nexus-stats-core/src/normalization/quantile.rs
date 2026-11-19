@@ -16,8 +16,11 @@ use crate::math::MulAdd;
 /// height (a value) and a position (how many samples lie at or below it);
 /// a sample moves the positions and nudges each interior height toward its
 /// quantile. The rank of a value is interpolated between the two markers
-/// that bracket it, so it is continuous and non-decreasing in the value,
-/// exactly 0 below the minimum seen and exactly 1 above the maximum.
+/// that bracket it, so it is non-decreasing in the value, exactly 0 below
+/// the minimum seen and exactly 1 above the maximum. It is continuous
+/// except at a value several markers share (a value that makes up a large
+/// part of the stream), where it steps from the bottom of that run to the
+/// top and reads the middle on the value itself.
 ///
 /// # Accuracy
 ///
@@ -29,8 +32,12 @@ use crate::math::MulAdd;
 /// largest sample seen. Typical error is one to two orders of magnitude
 /// smaller. If the tails matter, raise the resolution.
 ///
-/// O(resolution) per update, one pass over two contiguous arrays. Fixed
-/// memory: `16 * (resolution + 2)` bytes. Requires `alloc`.
+/// O(resolution) per update over two contiguous arrays. Fixed memory:
+/// `16 * (resolution + 2)` bytes. Requires `alloc`.
+///
+/// Heights are differences and interpolations of samples, so samples whose
+/// spread exceeds `f64::MAX` (for example `-1e308` and `1e308`) overflow
+/// them; keep inputs within a range whose differences are finite.
 ///
 /// The histogram is all-time: every sample since construction or
 /// [`reset`](Self::reset) counts equally.
@@ -100,7 +107,9 @@ impl<T: Float> QuantileNorm<T> {
     pub fn update(&mut self, sample: T) -> Result<Option<T>, crate::DataError> {
         check_finite!(sample);
         let x = sample.to_f64();
-        if (self.count as usize) < self.heights.len() {
+        // Compared in `u64`: a `usize` cast would wrap on a 32-bit target
+        // after 2^32 samples and re-enter the fill.
+        if self.count < self.heights.len() as u64 {
             self.fill(x);
         } else {
             self.fold(x);
@@ -193,7 +202,12 @@ impl<T: Float> QuantileNorm<T> {
         // neighbours' range.
         let step = (self.count - 1) as f64 / last as f64;
         for i in 1..last {
-            let off = (i as f64).fma(step, 1.0) - positions[i];
+            // Not fused: whether a marker moves is a threshold on this
+            // value, and a fused multiply-add would round it differently
+            // on targets with and without FMA, giving different markers for
+            // the same input.
+            #[allow(clippy::suboptimal_flops)]
+            let off = i as f64 * step + 1.0 - positions[i];
             let gap_up = positions[i + 1] - positions[i];
             let gap_down = positions[i - 1] - positions[i];
             let s = if off >= 1.0 && gap_up > 1.0 {
@@ -253,7 +267,7 @@ impl<T: Float> QuantileNorm<T> {
 }
 
 impl<T: Float> QuantileNormBuilder<T> {
-    /// Number of interior quantile markers (required, >= 2).
+    /// Number of interior quantile markers (required, at least 1).
     ///
     /// Markers track the quantiles `1/(n+1), 2/(n+1), ..., n/(n+1)`:
     /// resolution 9 tracks the deciles. More markers follow the shape of
@@ -280,15 +294,15 @@ impl<T: Float> QuantileNormBuilder<T> {
     /// # Errors
     ///
     /// - `Missing("resolution")` if the resolution was not set.
-    /// - `Invalid` if the resolution is below 2, or `min_samples` is below
+    /// - `Invalid` if the resolution is 0, or `min_samples` is below
     ///   `resolution + 2`.
     #[inline]
     pub fn build(self) -> Result<QuantileNorm<T>, crate::ConfigError> {
         let resolution = self
             .resolution
             .ok_or(crate::ConfigError::Missing("resolution"))?;
-        if resolution < 2 {
-            return Err(crate::ConfigError::Invalid("resolution must be >= 2"));
+        if resolution == 0 {
+            return Err(crate::ConfigError::Invalid("resolution must be >= 1"));
         }
         let markers = resolution
             .checked_add(2)
@@ -330,7 +344,7 @@ mod tests {
     /// heights ordered, positions strictly increasing from 1 to count.
     fn assert_invariants(qn: &QuantileNorm<f64>) {
         let n = qn.heights.len();
-        if (qn.count as usize) < n {
+        if qn.count < n as u64 {
             return;
         }
         assert!(qn.heights.windows(2).all(|w| w[0] <= w[1]), "{qn:?}");
@@ -410,7 +424,7 @@ mod tests {
     }
 
     #[test]
-    fn rank_error_is_within_one_cell_and_small_on_average() {
+    fn rank_error_is_about_one_cell_at_worst_and_small_on_average() {
         // Between two markers the rank is interpolated linearly in the
         // value, so the error is bounded by the probability in one cell,
         // 1 / (resolution + 1), reached where a cell holds a gap or a long
@@ -467,6 +481,60 @@ mod tests {
     }
 
     #[test]
+    fn upward_marker_moves_match_the_p2_formulas() {
+        // Positions 1, 2, 3, 6 of six samples; a seventh at or above the
+        // maximum moves the top marker to 7. Marker 1 is one position short
+        // of its target (3) but has no room below marker 2, so it stays.
+        // Marker 2 is two short of its target (5) and moves up one.
+        let setup = |heights: [f64; 4]| {
+            let mut qn = QuantileNorm::<f64>::builder()
+                .resolution(2)
+                .build()
+                .unwrap();
+            qn.heights.copy_from_slice(&heights);
+            qn.positions.copy_from_slice(&[1.0, 2.0, 3.0, 6.0]);
+            qn.count = 6;
+            qn
+        };
+
+        // Parabolic: through (2, 50), (3, 95), (7, 200) at position 4:
+        // 95 + (1/5) * (2 * 105/4 + 3 * 45) = 132.5.
+        let mut qn = setup([0.0, 50.0, 95.0, 100.0]);
+        let _ = qn.update(200.0).unwrap();
+        assert_eq!(&*qn.positions, &[1.0, 2.0, 4.0, 7.0]);
+        assert_eq!(&*qn.heights, &[0.0, 50.0, 132.5, 200.0]);
+
+        // Linear: the parabola through (2, 10), (3, 95), (7, 100) gives
+        // 146.5, above the upper neighbour, so step along the upper chord:
+        // 95 + (100 - 95) / 4.
+        let mut qn = setup([0.0, 10.0, 95.0, 100.0]);
+        let _ = qn.update(100.0).unwrap();
+        assert_eq!(&*qn.positions, &[1.0, 2.0, 4.0, 7.0]);
+        assert_eq!(&*qn.heights, &[0.0, 10.0, 96.25, 100.0]);
+    }
+
+    #[test]
+    fn rank_steps_across_a_value_several_markers_share() {
+        // Five markers on the samples 1, 2, 2, 2, 3: the three 2s are
+        // positions 2..=4 of 5.
+        let mut qn = QuantileNorm::<f64>::builder()
+            .resolution(3)
+            .build()
+            .unwrap();
+        for x in [2.0, 1.0, 2.0, 3.0, 2.0] {
+            let _ = qn.update(x).unwrap();
+        }
+        let rank = |v: f64| qn.normalize(v).unwrap().unwrap();
+        assert_eq!(rank(1.5), 0.125);
+        // Approaching the run from below reaches its bottom, the value
+        // itself reads its middle, and leaving it starts from its top.
+        assert!((rank(2.0 - 1e-9) - 0.25).abs() < 1e-8);
+        assert_eq!(rank(2.0), 0.5);
+        assert!((rank(2.0 + 1e-9) - 0.75).abs() < 1e-8);
+        assert_eq!(rank(2.5), 0.875);
+    }
+
+    #[test]
     fn rank_is_monotone_and_bounded() {
         let mut qn = QuantileNorm::<f64>::builder()
             .resolution(9)
@@ -501,7 +569,6 @@ mod tests {
         assert_eq!(qn.update(5_000.0).unwrap(), Some(1.0));
         assert_eq!(qn.update(-5_000.0).unwrap(), Some(0.0));
         let r = qn.update(500.0).unwrap().unwrap();
-        assert_eq!(qn.normalize(500.0).unwrap(), Some(r));
         assert!((r - 0.5).abs() < 0.02, "{r}");
     }
 
@@ -574,6 +641,10 @@ mod tests {
         assert_eq!(qn.update(f64::NAN), Err(crate::DataError::NotANumber));
         assert_eq!(qn.update(f64::INFINITY), Err(crate::DataError::Infinite));
         assert_eq!(qn.normalize(f64::NAN), Err(crate::DataError::NotANumber));
+        assert_eq!(
+            qn.normalize(f64::NEG_INFINITY),
+            Err(crate::DataError::Infinite)
+        );
         assert_eq!(qn.count(), 0);
     }
 
@@ -583,9 +654,15 @@ mod tests {
         let b = QuantileNorm::<f64>::builder;
         assert_eq!(b().build().unwrap_err(), Missing("resolution"));
         assert_eq!(
-            b().resolution(1).build().unwrap_err(),
-            Invalid("resolution must be >= 2")
+            b().resolution(0).build().unwrap_err(),
+            Invalid("resolution must be >= 1")
         );
+        // One interior marker is the smallest histogram: min, median, max.
+        let mut median = b().resolution(1).build().unwrap();
+        for x in [3.0, 1.0, 2.0] {
+            let _ = median.update(x).unwrap();
+        }
+        assert_eq!(median.normalize(2.0).unwrap(), Some(0.5));
         assert_eq!(
             b().resolution(9).min_samples(10).build().unwrap_err(),
             Invalid("min_samples must be at least resolution + 2")

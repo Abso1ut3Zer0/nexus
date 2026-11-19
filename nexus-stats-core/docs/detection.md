@@ -112,15 +112,14 @@ for x in symmetric.chain(heavy) {
     }
 }
 assert_eq!(readings.len(), 2); // windows 2 and 3; window 1 is the first baseline
-assert!(!readings[0].exceeds(0.5));
+assert!(readings[0].skewness.abs() < 0.5 && readings[0].excess_kurtosis.abs() < 0.5);
 assert!(readings[1].skewness > 2.0 && readings[1].excess_kurtosis > 2.0);
 
 // The last reading stays available until the next window completes.
 assert_eq!(ds.last(), Some(readings[1]));
-assert!(ds.is_shifted(2.0));
 ```
 
-A reading is `ShapeShift { skewness, excess_kurtosis }`, window minus baseline. `is_shifted(t)` and `ShapeShift::exceeds(t)` apply one threshold to both; compare the fields yourself for separate thresholds (the sampling noise of kurtosis is about twice that of skewness).
+A reading is `ShapeShift { skewness, excess_kurtosis }`, window minus baseline. `update` returns it on the sample that completes a window and `last()` holds it until the next one. Test each field against its own threshold: the two are on different scales (the sampling noise of kurtosis is about twice that of skewness).
 
 **Use for:** "something structural changed" detection, for example a market regime change where the mean is still 0 but the tails got fatter. Complements CUSUM (mean shift) and MOSUM (spike).
 
