@@ -198,6 +198,18 @@ contained.
   `minmax_running_max` / `minmax_running_min` / `minmax_subwin_update`.
   Affected `CoDel` through its former `min_sojourn()` and any delay baseline built on
   `WindowedMin` ([#758](https://github.com/Abso1ut3Zer0/nexus/issues/758)).
+- **`WindowedMin<T>` / `WindowedMax<T>` / `MinMaxNorm<T>` ignore a late
+  sample** ([#799](https://github.com/Abso1ut3Zer0/nexus/issues/799)): a
+  sample timestamped before the previous one read as a gap longer than the
+  window under wrapping subtraction and reset the tracker to itself, so
+  updates at 1000, 1030 and a late 1020 reported the late value as the max
+  with a larger one still in the window, and `MinMaxNorm` returned 0.5 and
+  misread the next sample. A sample timestamped before the previous
+  accepted one is now ignored (no state change, not counted, the current
+  extremum returned), so a late extreme value is dropped too; lateness is
+  the signed difference, so a counter that wraps still works.
+  `MinMaxNorm::update` normalizes a late sample against the current window
+  and clamps it to [0, 1]. The trackers are 72 bytes (one more tick).
 - **`CoDel<T>`** reported `Degraded` on a single sample above
   target. RFC 8289 requires sojourn to stay above target for a whole
   interval. It now implements the RFC's `first_above_time` rule directly:

@@ -6,7 +6,7 @@ using only 3 stored samples. From Linux kernel `win_minmax.h` (TCP BBR).
 | Property | Value |
 |----------|-------|
 | Update cost | 9 cycles (amortized O(1)) |
-| Memory | 64 bytes (3 samples, window, count) |
+| Memory | 72 bytes (3 samples, window, count, last tick) |
 | Types | `WindowedMax<f64>`, `WindowedMin<f64>`, `WindowedMax<i64>`, `WindowedMin<i64>` |
 | Accuracy | Approximate by design; see below |
 | Output | Current window extremum |
@@ -39,7 +39,7 @@ The algorithm keeps the best, 2nd best and 3rd best samples in the window,
 each at least as recent as the one before it. A new extremum forgets
 everything earlier. By age, a choice is only replaced while no distinct
 choice has been found yet: the 2nd after a quarter of the window, the 3rd
-after half. When the best ages out, the 2nd is promoted. 64 bytes of state
+after half. When the best ages out, the 2nd is promoted. 72 bytes of state
 regardless of window size. This is a literal port of the kernel's
 `lib/win_minmax.c`.
 
@@ -74,7 +74,11 @@ let current_max = max.update(now_ns, sample).unwrap();
 ```
 
 Timestamps are `u64`. The user defines what the units mean (nanoseconds,
-ticks, milliseconds, etc.).
+ticks, milliseconds, etc.). Ticks must be non-decreasing: a sample
+timestamped before the previous accepted one is ignored (no state change,
+not counted, the current extremum returned), so a late extreme value is
+dropped too. A counter that wraps is fine as long as the window and any
+real gap between samples fit in half its range.
 
 ## Performance
 

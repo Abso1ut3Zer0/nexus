@@ -54,7 +54,7 @@ let v = mn.normalize(100.0).unwrap();  // position in [0, 1]
 
 **Use for:** range-based normalization where the scale drifts over time. Market data features, sensor readings, any signal where min/max shift.
 
-**Caveats:** returns 0.5 when the range is zero (all values equal within the window). No feature gate required — works on bare no_std.
+**Caveats:** returns 0.5 when the range is zero (all values equal within the window). A sample timestamped before the previous one does not enter the window; it is normalized against the current window and clamped to [0, 1]. No feature gate required — works on bare no_std.
 
 ---
 

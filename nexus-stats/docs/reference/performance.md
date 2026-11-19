@@ -77,7 +77,7 @@ costs a branch mispredict, about 20 cycles.
 |----------|-------------|
 | Simple (EMA, CUSUM, Drawdown, etc.) | 16-56 bytes |
 | Welford, Covariance | 24-48 bytes |
-| Windowed types (3-sample Nichols') | 48 bytes |
+| Windowed types (3-sample Nichols') | 72 bytes |
 | PollSaturation (`repr(C)`: flag byte + nine `u64`) | 80 bytes (64-bit) |
 | SojournSaturation (budget + five `u64` + flag) | 56 bytes (64-bit) |
 | Ring buffer types (`storage::Ring`: Mosum, Kama, Hurst, window N) | N × 8 bytes, plus 32 bytes of `Ring` metadata (slice pointer and length, head, full flag) |
