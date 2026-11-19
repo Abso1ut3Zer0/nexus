@@ -286,8 +286,8 @@ impl Cusum {
     ///
     /// # Errors
     ///
-    /// - Slack values must be non-negative.
-    /// - Threshold values must be positive.
+    /// - Slack values must be finite and non-negative.
+    /// - Threshold values must be finite and positive.
     #[inline]
     pub fn reconfigure(
         &mut self,
@@ -302,22 +302,22 @@ impl Cusum {
         }
         if !crate::math::nonnegative_finite(slack_upper) {
             return Err(crate::ConfigError::Invalid(
-                "slack_upper must be non-negative",
+                "slack_upper must be finite and non-negative",
             ));
         }
         if !crate::math::nonnegative_finite(slack_lower) {
             return Err(crate::ConfigError::Invalid(
-                "slack_lower must be non-negative",
+                "slack_lower must be finite and non-negative",
             ));
         }
         if !crate::math::positive_finite(threshold_upper) {
             return Err(crate::ConfigError::Invalid(
-                "threshold_upper must be positive",
+                "threshold_upper must be finite and positive",
             ));
         }
         if !crate::math::positive_finite(threshold_lower) {
             return Err(crate::ConfigError::Invalid(
-                "threshold_lower must be positive",
+                "threshold_lower must be finite and positive",
             ));
         }
 
@@ -488,12 +488,12 @@ impl CusumBuilder {
 
         if !crate::math::nonnegative_finite(slack_upper) {
             return Err(crate::ConfigError::Invalid(
-                "slack_upper must be non-negative",
+                "slack_upper must be finite and non-negative",
             ));
         }
         if !crate::math::nonnegative_finite(slack_lower) {
             return Err(crate::ConfigError::Invalid(
-                "slack_lower must be non-negative",
+                "slack_lower must be finite and non-negative",
             ));
         }
         #[allow(clippy::float_cmp)]
@@ -504,12 +504,12 @@ impl CusumBuilder {
         }
         if !crate::math::positive_finite(threshold_upper) {
             return Err(crate::ConfigError::Invalid(
-                "threshold_upper must be positive",
+                "threshold_upper must be finite and positive",
             ));
         }
         if !crate::math::positive_finite(threshold_lower) {
             return Err(crate::ConfigError::Invalid(
-                "threshold_lower must be positive",
+                "threshold_lower must be finite and positive",
             ));
         }
 
@@ -965,7 +965,7 @@ mod tests {
         assert!(matches!(
             result,
             Err(crate::ConfigError::Invalid(
-                "slack_upper must be non-negative"
+                "slack_upper must be finite and non-negative"
             ))
         ));
     }
@@ -976,7 +976,7 @@ mod tests {
         assert!(matches!(
             result,
             Err(crate::ConfigError::Invalid(
-                "slack_lower must be non-negative"
+                "slack_lower must be finite and non-negative"
             ))
         ));
     }
@@ -987,7 +987,7 @@ mod tests {
         assert!(matches!(
             result,
             Err(crate::ConfigError::Invalid(
-                "threshold_upper must be positive"
+                "threshold_upper must be finite and positive"
             ))
         ));
     }
@@ -998,7 +998,7 @@ mod tests {
         assert!(matches!(
             result,
             Err(crate::ConfigError::Invalid(
-                "threshold_lower must be positive"
+                "threshold_lower must be finite and positive"
             ))
         ));
     }
