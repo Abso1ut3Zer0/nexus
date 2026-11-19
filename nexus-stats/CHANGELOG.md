@@ -105,6 +105,14 @@ one naming convention across the family. Migration guide:
   reports the side further over threshold and gains `restart_on_alarm()`;
   `halflife` / `span` errors name the knob. See the migration guide.
 
+- Carried from core (blind audit, PR C2): `ZScoreNorm::update` scores
+  before it folds, so outliers are no longer capped; `QuantileNorm` is a P²
+  histogram; `DistributionShift::update` returns a `ShapeShift` once per
+  completed window, its `kurtosis_shift()` / `skewness_shift()` /
+  `is_shifted()` readers are removed, and `is_primed()` means the first
+  window has completed; `normalize` returns `Result<Option<T>, _>` on the
+  three normalizers. See the migration guide.
+
 ### Removed
 
 - `SaturationF64` ([#761](https://github.com/Abso1ut3Zer0/nexus/issues/761)),

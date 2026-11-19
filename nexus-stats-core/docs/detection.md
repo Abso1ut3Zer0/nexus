@@ -88,7 +88,9 @@ assert_eq!(alarms, [(5, "up")]);
 
 ## DistributionShift
 
-Detects changes in the *shape* of a distribution rather than its mean: kurtosis shift (tails getting fatter/thinner) and skewness shift. Maintains two windows — a slow baseline and a fast recent window — and compares them.
+Detects changes in the *shape* of a distribution rather than its mean: tails getting fatter or thinner (kurtosis) and asymmetry (skewness).
+
+Samples fill a window of `fast_window` observations. When the window completes, its skewness and excess kurtosis are compared with those of the baseline (everything before the window), the difference is returned and latched, and the window joins the baseline.
 
 ```rust
 use nexus_stats_core::detection::DistributionShift;
@@ -98,17 +100,30 @@ let mut ds = DistributionShift::builder()
     .build()
     .unwrap();
 
-let returns = (0..250).map(|i| f64::from(i % 7) - 3.0);
-for r in returns { ds.update(r).unwrap(); }
+// Two windows of a symmetric ramp, then one with a heavy right tail.
+let symmetric = (0..200).map(|i| f64::from(i % 100));
+let heavy = (0..100).map(|i| if i % 20 == 0 { 2_000.0 } else { f64::from(i) });
 
-if ds.is_shifted(2.0) {
-    // the fast window's kurtosis or skewness differs from the baseline's
-    // by more than 2.0
-    println!("distribution shape changed");
+let mut readings = Vec::new();
+for x in symmetric.chain(heavy) {
+    // `Some` only on the sample that completes a window.
+    if let Some(shift) = ds.update(x).unwrap() {
+        readings.push(shift);
+    }
 }
+assert_eq!(readings.len(), 2); // windows 2 and 3; window 1 is the first baseline
+assert!(readings[0].skewness.abs() < 0.5 && readings[0].excess_kurtosis.abs() < 0.5);
+assert!(readings[1].skewness > 2.0 && readings[1].excess_kurtosis > 2.0);
+
+// The last reading stays available until the next window completes.
+assert_eq!(ds.last(), Some(readings[1]));
 ```
 
-**Use for:** "something structural changed" detection — e.g. market regime changes where the mean is still 0 but the tails got fatter. Complements CUSUM (mean shift) and MOSUM (spike).
+A reading is `ShapeShift { skewness, excess_kurtosis }`, window minus baseline. `update` returns it on the sample that completes a window and `last()` holds it until the next one. Test each field against its own threshold: the two are on different scales (the sampling noise of kurtosis is about twice that of skewness).
+
+**Use for:** "something structural changed" detection, for example a market regime change where the mean is still 0 but the tails got fatter. Complements CUSUM (mean shift) and MOSUM (spike).
+
+**Caveats:** one reading per `fast_window` samples, from the second window on. The sample kurtosis of a short window is mostly noise, so use tens to hundreds of samples. The baseline is all-time and adapts more slowly the longer the detector runs; `reset()` after a confirmed regime change. A constant window has no shape and yields no reading.
 
 ---
 

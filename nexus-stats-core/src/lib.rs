@@ -57,6 +57,8 @@ mod doc_pages {
     struct Control;
     #[doc = include_str!("../docs/detection.md")]
     struct Detection;
+    #[doc = include_str!("../docs/normalization.md")]
+    struct Normalization;
     #[doc = include_str!("../docs/smoothing.md")]
     struct Smoothing;
 }

@@ -141,6 +141,41 @@ contained.
   `value += alpha * (sample - value)`**: one select instead of two, and two
   fewer fields.
 
+- **`ZScoreNorm::update` scores a sample against the statistics of the
+  samples before it, then folds it in.** It folded first, which bounds the
+  score by `sqrt((1 - alpha) / alpha)` whatever the sample: 3.0 at alpha
+  0.1, so a 1e9 outlier scored 2.9999999999999996 and a gate at 4 could
+  never fire. With a zero standard deviation (a constant stream so far) a
+  sample off the constant scores `+inf` or `-inf`, the usual convention for
+  division by zero, where it used to score `0.0`; a sample on the constant
+  still scores `0.0`.
+- **`QuantileNorm` is a P² histogram** (Jain & Chlamtac 1985): one array of
+  `resolution + 2` markers adjusted in a single pass, in place of
+  `resolution` independent P² estimators with five markers each. Ranks are
+  non-decreasing in the value, exactly 0 below the minimum seen and 1 above
+  the maximum (the tails were the constants `p1 / 2` and `(1 + pn) / 2`,
+  with a step at the edge), and the markers cannot cross. Memory is
+  `16 * (resolution + 2)` bytes, down from about `190 * resolution`.
+  `resolution(1)` is accepted (minimum, median, maximum).
+- **`DistributionShift` compares each completed window with the baseline
+  before it** and latches the result. `update` returns
+  `Result<Option<ShapeShift>, DataError>`, `Some` on the sample that
+  completes a window. Before, the window was discarded in the same `update`
+  that completed it, so a full window could never be read: the accessors saw
+  only a partly filled one, and nothing at all for the first three samples
+  of each. The baseline no longer includes the window under test, and each
+  sample is folded once instead of twice. `is_primed()` means "the first
+  window has completed, so a baseline exists" and stays true until `reset`;
+  whether the last window produced a reading is `last()`.
+- **`DistributionShift::kurtosis_shift()`, `skewness_shift()` and
+  `is_shifted()` are removed.** The reading is the `ShapeShift` that
+  `update` returns and `last()` holds; the three were one-line reads of it,
+  and `is_shifted` applied a single threshold to two quantities on different
+  scales.
+- **`normalize` returns `Result<Option<T>, DataError>`** on the three
+  normalizers; NaN and infinity went straight through to the output.
+  `MinMaxNorm::normalize` is documented as unclamped.
+
 ### Removed
 
 - **`SaturationF64`** ([#761](https://github.com/Abso1ut3Zer0/nexus/issues/761)):
@@ -159,6 +194,8 @@ contained.
 - **`HalfLifeBuilder`**: it had no knobs. `HalfLife::new()`.
 
 ### Added
+
+- `ShapeShift`, `DistributionShift::last()` and `fast_window()`.
 
 - `CusumBuilder::restart_on_alarm()`: zero the alarming side as it reports,
   for one alarm per detection (the classic restarting CUSUM).
@@ -210,6 +247,13 @@ contained.
   `math::upper_tail_z`.
 
 ### Fixed
+
+- **`QuantileNorm` rejects a `min_samples` below `resolution + 2`** instead
+  of silently raising it.
+- **`ZScoreNorm` reports a bad `halflife` or `span` under its own name**, as
+  `Ema` does.
+- **`DistributionShift` requires `fast_window >= 4`**, the fewest samples
+  for which excess kurtosis is defined.
 
 - **A bad `halflife` or `span` is reported under its own name.** The `Ema`
   builder (and `AsymEma`'s `span_up` / `span_down`) converted the knob to an
@@ -307,6 +351,11 @@ contained.
   now: fixed at build, no deque.
 
 ### Docs
+
+- `docs/normalization.md` is compiled and run as a doctest, and the
+  `DistributionShift` section of `docs/detection.md` is rewritten against
+  the new behaviour. The `MinMaxNorm` example had its `update` arguments
+  reversed.
 
 - `docs/control.md`, `docs/detection.md` and `docs/smoothing.md` are compiled
   and run as doctests; their examples assert the values they describe. The

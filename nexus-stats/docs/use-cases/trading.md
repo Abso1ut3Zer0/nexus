@@ -224,27 +224,29 @@ Cheaper to compute than Hurst.
 
 **Type:** `DistributionShift` (nexus-stats-core)
 
-Compares fast-window vs slow-baseline kurtosis and skewness. Catches
-regime changes that CUSUM misses (mean stays flat, but tails get fat).
+Compares the kurtosis and skewness of each completed window with the
+baseline before it. Catches regime changes that CUSUM misses (mean stays
+flat, but tails get fat).
 
 ```rust
 use nexus_stats_core::detection::DistributionShift;
 
 let mut det = DistributionShift::builder()
     .fast_window(50)
-    .build();
+    .build()?;
 
-det.update(trade_return)?;
-
-if let Some(shift) = det.kurtosis_shift() {
-    // shift > 2.0 → recent window has much heavier tails
-    // Action: widen spreads, reduce position limits
+// `Some` once per 50 returns, on the one that completes a window.
+if let Some(shift) = det.update(trade_return)? {
+    if shift.excess_kurtosis > 2.0 {
+        // the window just completed has much heavier tails
+        // Action: widen spreads, reduce position limits
+    }
+    if shift.skewness < -1.0 {
+        // returns skewed left (adverse selection)
+        // Action: reduce passive quoting, increase aggression
+    }
 }
-
-if let Some(shift) = det.skewness_shift() {
-    // shift < -1.0 → recent returns skewed left (adverse selection)
-    // Action: reduce passive quoting, increase aggression
-}
+// Between windows, `det.last()` holds the most recent reading.
 ```
 
 ### Change detection on a running metric

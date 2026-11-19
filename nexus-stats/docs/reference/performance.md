@@ -30,6 +30,13 @@ costs a branch mispredict, about 20 cycles.
 | RobustZScore<f64> | 8 | 8 | EMA + MAD + freeze |
 | AdaptiveThreshold | 7 | 7 | EMA + Welford + z-score |
 | Bocpd (max run 64) | 3637 | 4405 | three passes over the run-length posterior, SIMD `ln`/`exp` when built with `+avx2,+fma` |
+| DistributionShift (window 50) | 15 | 16 | one moments update; a merge per window |
+| **Normalization** | | | |
+| ZScoreNorm<f64> | 6 | 7 | score, then EW mean and variance |
+| MinMaxNorm<f64> | 15 | 19 | two 3-sample window trackers |
+| QuantileNorm<f64> (resolution 9) | 186 | 234 | P² histogram, 11 markers |
+| QuantileNorm<f64> (resolution 19) | 292 | 344 | 21 markers |
+| QuantileNorm<f64> (resolution 99) | 886 | 1089 | 101 markers |
 | **Smoothing** | | | |
 | Ema | 5 | 6 | one multiply-add |
 | AsymEma | 12 | 12 | branch + multiply-add |

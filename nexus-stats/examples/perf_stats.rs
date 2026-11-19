@@ -13,6 +13,7 @@
 use std::hint::black_box;
 
 use nexus_stats::monitoring::{PollSaturation, SojournSaturation};
+use nexus_stats::normalization::{MinMaxNorm, QuantileNorm, ZScoreNorm};
 
 use nexus_stats::{
     control::{
@@ -2276,6 +2277,40 @@ fn main() {
     print_row("Bocpd(64)::update", &mut buf);
     bench_adaptive_threshold_f64(&mut buf);
     print_row("AdaptiveThreshold::update", &mut buf);
+
+    section("Normalization");
+    print_header();
+    let mut zs = ZScoreNorm::<f64>::builder().span(50).build().unwrap();
+    bench_feed(&mut buf, &mut zs, |z, v| {
+        let _ = z.update(v);
+    });
+    print_row("ZScoreNorm::update", &mut buf);
+    let mut mm = (
+        MinMaxNorm::<f64>::builder().window(1_000).build().unwrap(),
+        0u64,
+    );
+    bench_feed(&mut buf, &mut mm, |(m, tick), v| {
+        *tick += 1;
+        let _ = m.update(*tick, v);
+    });
+    print_row("MinMaxNorm::update", &mut buf);
+    // The standard feed has 20 distinct values; a quantile sketch needs a
+    // continuous input, so spread each one with a golden-ratio fraction.
+    for resolution in [9usize, 19, 99] {
+        let mut qn = (
+            QuantileNorm::<f64>::builder()
+                .resolution(resolution)
+                .build()
+                .unwrap(),
+            0u64,
+        );
+        bench_feed(&mut buf, &mut qn, |(q, k), v| {
+            *k += 1;
+            let spread = (*k as f64 * 0.618_033_988_749_895).fract();
+            let _ = q.update(v + spread);
+        });
+        print_row(&format!("QuantileNorm({resolution})::update"), &mut buf);
+    }
 
     section("Smoothing");
     print_header();

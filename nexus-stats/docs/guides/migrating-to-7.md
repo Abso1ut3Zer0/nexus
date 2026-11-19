@@ -369,6 +369,33 @@ CHANGELOG entry in `nexus-stats-core`:
   `math::alpha_from_span`. The `i64` forms of `FirstDiff`, `SecondDiff` and
   `Slew` saturate instead of overflowing.
 
+### Normalizers and DistributionShift (blind audit, PR C2)
+
+- **`normalize(value)` returns `Result<Option<T>, DataError>`** on
+  `ZScoreNorm`, `MinMaxNorm` and `QuantileNorm`: NaN and infinity are
+  rejected as `update` rejects them. Add a `?` or `.unwrap()` before the
+  existing `Option` handling.
+- **`ZScoreNorm::update` scores the sample against the statistics before
+  it**, then folds it in. Scores are larger than before (the old score was
+  capped at `sqrt((1 - alpha) / alpha)`) and the first score arrives one
+  sample later. A sample that departs from a so-far constant stream scores
+  `+inf` or `-inf`, not `0.0`: clamp the score if it feeds a type that
+  rejects infinity. Thresholds tuned against the old capped values need
+  retuning.
+- **`QuantileNorm` is a P² histogram.** Ranks reach exactly 0 and 1
+  outside the range seen and prime after `resolution + 2` samples.
+  `min_samples` below `resolution + 2` is an error (it was silently raised).
+  Values differ from the old estimator grid.
+- **`DistributionShift::update` returns `Result<Option<ShapeShift>, _>`**:
+  `Some` on the sample that completes a window, with that window compared
+  against the baseline before it, and `last()` returns the most recent one.
+  `kurtosis_shift()`, `skewness_shift()` and `is_shifted(t)` are removed:
+  read `shift.excess_kurtosis` and `shift.skewness` and test each against
+  its own threshold. `is_primed()` is true once the first window has
+  completed. `fast_window` must be at least 4.
+- Additive: `DistributionShift::last()` / `fast_window()`, `ShapeShift`,
+  `QuantileNorm` accepts `resolution(1)`.
+
 ## 5. Checklist
 
 1. Replace the names in tables 1 and 2, builders included.

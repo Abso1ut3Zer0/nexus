@@ -1,13 +1,24 @@
 use crate::statistics::Moments;
 
-/// Detects distribution shape changes by comparing fast and slow moment estimates.
+/// Detects distribution shape changes by comparing each completed window of
+/// samples against everything before it.
 ///
-/// Maintains two `Moments` accumulators — a short-window "fast" tracker
-/// and a long-window "slow" baseline. Shifts in kurtosis or skewness between
-/// the two indicate regime changes (e.g., fat-tail events, asymmetry shifts).
+/// Samples fill a "fast" window of `fast_window` observations. When the
+/// window completes, its skewness and excess kurtosis are compared with
+/// those of the baseline (every sample before the window), the difference
+/// is reported and latched, and the window is merged into the baseline.
+/// A shift in kurtosis or skewness between the two indicates a regime
+/// change (fat-tail events, asymmetry shifts) that a mean or variance
+/// monitor would not see.
 ///
-/// The fast tracker is periodically reset after `fast_window` observations
-/// to keep it responsive. The slow tracker accumulates continuously.
+/// A reading therefore arrives once per `fast_window` samples, from the
+/// second window on (the first window only builds the baseline), and
+/// [`last`](Self::last) holds it until the next window completes.
+///
+/// The baseline is all-time: it weights every past sample equally and
+/// adapts more slowly the longer the detector runs. Call
+/// [`reset`](Self::reset) to start a new baseline after a confirmed regime
+/// change.
 ///
 /// # Examples
 ///
@@ -19,18 +30,45 @@ use crate::statistics::Moments;
 ///     .build()
 ///     .unwrap();
 ///
-/// // Feed normal-looking data
-/// for i in 0..200 {
-///     det.update(i as f64 * 0.01).unwrap();
+/// // Two windows of a symmetric ramp, then one with a heavy right tail.
+/// let symmetric = (0..100).map(|i| f64::from(i % 50));
+/// let skewed = (0..50).map(|i| if i % 10 == 0 { 500.0 } else { f64::from(i) });
+/// let mut readings = Vec::new();
+/// for x in symmetric.chain(skewed) {
+///     if let Some(shift) = det.update(x).unwrap() {
+///         readings.push(shift);
+///     }
 /// }
+/// // One reading per completed window after the first.
+/// assert_eq!(readings.len(), 2);
+/// assert!(readings[0].skewness.abs() < 1e-9);
+/// assert!(readings[1].skewness > 1.0);
+/// // The last reading stays available between windows.
+/// assert_eq!(det.last(), Some(readings[1]));
 /// ```
 #[derive(Debug, Clone)]
 pub struct DistributionShift {
     fast: Moments,
-    slow: Moments,
+    baseline: Moments,
     fast_window: u64,
-    fast_count: u64,
     count: u64,
+    last: Option<ShapeShift>,
+}
+
+/// How a completed window's shape differs from the baseline before it:
+/// window minus baseline.
+///
+/// The two fields are on different scales (the sampling noise of kurtosis
+/// is about twice that of skewness), so test each against its own
+/// threshold: `s.excess_kurtosis > 2.0 || s.skewness.abs() > 1.0`.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct ShapeShift {
+    /// Skewness difference. Positive: the window is more right-skewed than
+    /// the baseline.
+    pub skewness: f64,
+    /// Excess-kurtosis difference. Positive: the window has heavier tails
+    /// than the baseline.
+    pub excess_kurtosis: f64,
 }
 
 /// Builder for [`DistributionShift`].
@@ -47,72 +85,38 @@ impl DistributionShift {
         DistributionShiftBuilder { fast_window: None }
     }
 
-    /// Feed an observation.
+    /// Feeds an observation.
     ///
-    /// Both fast and slow trackers receive the value. The fast tracker
-    /// resets every `fast_window` observations.
+    /// Returns `Ok(Some(shift))` on the sample that completes a window,
+    /// when both that window and the baseline before it have a defined
+    /// shape, and `Ok(None)` on every other sample. A shape is undefined
+    /// for a constant window (zero variance), and there is no baseline
+    /// during the first window.
     ///
     /// # Errors
     ///
-    /// Returns `DataError` if the value is NaN or infinite.
+    /// Returns `DataError::NotANumber` if the value is NaN, or
+    /// `DataError::Infinite` if the value is infinite.
     #[inline]
-    pub fn update(&mut self, value: f64) -> Result<(), crate::DataError> {
-        check_finite!(value);
-
-        self.count += 1;
-        self.fast_count += 1;
-
+    pub fn update(&mut self, value: f64) -> Result<Option<ShapeShift>, crate::DataError> {
         self.fast.update(value)?;
-        self.slow.update(value)?;
-
-        // Reset fast tracker when window is full to keep it responsive.
-        if self.fast_count >= self.fast_window {
-            self.fast = Moments::new();
-            self.fast_count = 0;
+        self.count += 1;
+        if self.fast.count() < self.fast_window {
+            return Ok(None);
         }
-
-        Ok(())
+        self.last = Self::compare(&self.fast, &self.baseline);
+        self.baseline.merge(&self.fast);
+        self.fast.reset();
+        Ok(self.last)
     }
 
-    /// Kurtosis shift: fast excess kurtosis minus slow excess kurtosis.
-    ///
-    /// Positive values indicate the recent window has heavier tails than
-    /// the baseline. Returns `None` if either tracker has insufficient data.
+    /// The reading from the most recently completed window, or `None` if
+    /// that window had none (see [`update`](Self::update)) or no window has
+    /// completed against a baseline yet.
     #[inline]
     #[must_use]
-    pub fn kurtosis_shift(&self) -> Option<f64> {
-        let fast_k = self.fast.excess_kurtosis()?;
-        let slow_k = self.slow.excess_kurtosis()?;
-        Some(fast_k - slow_k)
-    }
-
-    /// Skewness shift: fast skewness minus slow skewness.
-    ///
-    /// Positive shift means recent data is more right-skewed than baseline.
-    /// Returns `None` if either tracker has insufficient data.
-    #[inline]
-    #[must_use]
-    pub fn skewness_shift(&self) -> Option<f64> {
-        let fast_s = self.fast.skewness()?;
-        let slow_s = self.slow.skewness()?;
-        Some(fast_s - slow_s)
-    }
-
-    /// Whether either shift exceeds the given threshold (absolute value).
-    #[inline]
-    #[must_use]
-    pub fn is_shifted(&self, threshold: f64) -> bool {
-        if let Some(ks) = self.kurtosis_shift()
-            && ks.abs() > threshold
-        {
-            return true;
-        }
-        if let Some(ss) = self.skewness_shift()
-            && ss.abs() > threshold
-        {
-            return true;
-        }
-        false
+    pub fn last(&self) -> Option<ShapeShift> {
+        self.last
     }
 
     /// Total number of observations fed.
@@ -122,25 +126,45 @@ impl DistributionShift {
         self.count
     }
 
-    /// Whether enough observations have been fed for both trackers.
+    /// The configured window length in samples.
+    #[inline]
+    #[must_use]
+    pub fn fast_window(&self) -> u64 {
+        self.fast_window
+    }
+
+    /// Whether a baseline exists, that is, the first window has completed.
+    /// Stays true until [`reset`](Self::reset). It does not say that the
+    /// last window produced a reading (a constant window does not); that is
+    /// [`last`](Self::last).
     #[inline]
     #[must_use]
     pub fn is_primed(&self) -> bool {
-        // Need at least 4 samples in both for kurtosis to be defined.
-        self.slow.count() >= 4 && self.fast.count() >= 4
+        self.count >= self.fast_window
     }
 
-    /// Reset all state.
+    /// Forgets the baseline, the window in progress and the last reading.
+    #[inline]
     pub fn reset(&mut self) {
-        self.fast = Moments::new();
-        self.slow = Moments::new();
-        self.fast_count = 0;
+        self.fast.reset();
+        self.baseline.reset();
         self.count = 0;
+        self.last = None;
+    }
+
+    #[inline]
+    fn compare(window: &Moments, baseline: &Moments) -> Option<ShapeShift> {
+        Some(ShapeShift {
+            skewness: window.skewness()? - baseline.skewness()?,
+            excess_kurtosis: window.excess_kurtosis()? - baseline.excess_kurtosis()?,
+        })
     }
 }
 
 impl DistributionShiftBuilder {
-    /// Number of observations for the fast (short) window before reset.
+    /// Number of observations per window. At least 4 (excess kurtosis is
+    /// undefined below that); in practice tens to hundreds, since the
+    /// sample kurtosis of a short window is mostly noise.
     ///
     /// Default: 50.
     #[inline]
@@ -154,19 +178,21 @@ impl DistributionShiftBuilder {
     ///
     /// # Errors
     ///
-    /// `ConfigError::Invalid` if `fast_window` is 0.
+    /// `ConfigError::Invalid` if `fast_window` is below 4.
     #[inline]
     pub fn build(self) -> Result<DistributionShift, crate::ConfigError> {
         let fast_window = self.fast_window.unwrap_or(50);
-        if fast_window == 0 {
-            return Err(crate::ConfigError::Invalid("fast_window must be > 0"));
+        if fast_window < 4 {
+            return Err(crate::ConfigError::Invalid(
+                "fast_window must be at least 4",
+            ));
         }
         Ok(DistributionShift {
             fast: Moments::new(),
-            slow: Moments::new(),
+            baseline: Moments::new(),
             fast_window,
-            fast_count: 0,
             count: 0,
+            last: None,
         })
     }
 }
@@ -175,135 +201,158 @@ impl DistributionShiftBuilder {
 mod tests {
     use super::*;
 
-    #[test]
-    fn stable_distribution_no_shift() {
-        let mut det = DistributionShift::builder()
-            .fast_window(100)
-            .build()
-            .unwrap();
-        // 537 samples: the fast window is mid-fill at the end, so the shift
-        // is defined (a multiple of the window would leave it just reset).
-        for i in 0..537 {
-            det.update((i % 100) as f64).unwrap();
+    fn moments(xs: &[f64]) -> Moments {
+        let mut m = Moments::new();
+        for &x in xs {
+            m.update(x).unwrap();
         }
-        let ks = det.kurtosis_shift().expect("fast window holds 37 samples");
-        assert!(
-            ks.abs() < 2.0,
-            "kurtosis shift should be small for stable data, got {ks}"
-        );
+        m
+    }
+
+    /// Three windows of 8 with distinct shapes.
+    const W1: [f64; 8] = [1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0];
+    const W2: [f64; 8] = [1.0, 1.0, 2.0, 2.0, 3.0, 3.0, 4.0, 30.0];
+    const W3: [f64; 8] = [-40.0, 1.0, 2.0, 2.0, 3.0, 3.0, 4.0, 4.0];
+
+    #[test]
+    fn a_reading_is_the_completed_window_against_everything_before_it() {
+        let mut det = DistributionShift::builder().fast_window(8).build().unwrap();
+        let mut readings = Vec::new();
+        for (i, &x) in W1.iter().chain(&W2).chain(&W3).enumerate() {
+            let r = det.update(x).unwrap();
+            // Only the samples that complete windows 2 and 3 report.
+            assert_eq!(r.is_some(), i == 15 || i == 23, "sample {i}");
+            readings.extend(r);
+        }
+
+        let (w1, w2, w3) = (moments(&W1), moments(&W2), moments(&W3));
+        let mut w12 = w1.clone();
+        w12.merge(&w2);
+        let expected = [
+            ShapeShift {
+                skewness: w2.skewness().unwrap() - w1.skewness().unwrap(),
+                excess_kurtosis: w2.excess_kurtosis().unwrap() - w1.excess_kurtosis().unwrap(),
+            },
+            ShapeShift {
+                skewness: w3.skewness().unwrap() - w12.skewness().unwrap(),
+                excess_kurtosis: w3.excess_kurtosis().unwrap() - w12.excess_kurtosis().unwrap(),
+            },
+        ];
+        assert_eq!(readings, expected);
+        // Right tail, then left tail.
+        assert!(readings[0].skewness > 1.0 && readings[0].excess_kurtosis > 1.0);
+        assert!(readings[1].skewness < -1.0);
     }
 
     #[test]
-    fn fat_tail_shift_detected() {
-        let mut det = DistributionShift::builder()
-            .fast_window(50)
-            .build()
-            .unwrap();
-        // Mild baseline, then a fast window of outliers plus a partial one so
-        // the fast tracker is populated when queried.
-        for i in 0..200 {
-            det.update((i as f64) * 0.01).unwrap();
+    fn the_reading_is_latched_between_windows() {
+        let mut det = DistributionShift::builder().fast_window(8).build().unwrap();
+        for &x in W1.iter().chain(&W2) {
+            let _ = det.update(x).unwrap();
         }
-        for i in 0..80 {
-            let val = if i % 5 == 0 { 1000.0 } else { 1.0 };
-            det.update(val).unwrap();
+        let reading = det.last().unwrap();
+        // A caller polling exactly at a window boundary, or anywhere inside
+        // the next window, sees the same completed reading.
+        for &x in &W3[..7] {
+            assert_eq!(det.update(x).unwrap(), None);
+            assert_eq!(det.last(), Some(reading));
         }
-        assert_eq!(det.count(), 280);
-        // The fast window holds 30 samples with one outlier in five; the slow
-        // baseline holds all 280 with one in eighteen. Rarer extremes mean a
-        // heavier tail, so the slow kurtosis is the larger one and the shift
-        // is large and negative: what matters is that it is large.
-        let ks = det.kurtosis_shift().expect("fast window holds 30 samples");
-        assert!(
-            ks.abs() > 1.0,
-            "expected a large kurtosis shift between the two windows, got {ks}"
-        );
-        let ss = det.skewness_shift().expect("fast window holds 30 samples");
-        assert!(
-            ss.abs() > 0.1,
-            "expected measurable skewness shift from outliers, got {ss}"
-        );
-    }
-
-    #[test]
-    fn is_shifted_threshold() {
-        let mut det = DistributionShift::builder()
-            .fast_window(100)
-            .build()
-            .unwrap();
-        // Same distribution everywhere, fast window mid-fill: not shifted.
-        for i in 0..537 {
-            det.update((i % 50) as f64).unwrap();
-        }
-        assert!(
-            det.kurtosis_shift().is_some(),
-            "the verdict must be a real reading"
-        );
-        assert!(!det.is_shifted(100.0));
-        // A burst of outliers in the fast window is a shift at a sane threshold.
-        for i in 0..40 {
-            det.update(if i % 5 == 0 { 1000.0 } else { 1.0 }).unwrap();
-        }
-        assert!(
-            det.is_shifted(1.0),
-            "outlier burst must register as a shift"
-        );
-    }
-
-    #[test]
-    fn not_primed_before_4() {
-        let mut det = DistributionShift::builder()
-            .fast_window(100)
-            .build()
-            .unwrap();
-        det.update(1.0).unwrap();
-        det.update(2.0).unwrap();
-        det.update(3.0).unwrap();
+        assert!(det.is_primed());
+        det.reset();
         assert!(!det.is_primed());
     }
 
     #[test]
-    fn primed_after_4() {
-        let mut det = DistributionShift::builder()
-            .fast_window(100)
-            .build()
-            .unwrap();
-        for i in 0..5 {
-            det.update(i as f64).unwrap();
+    fn same_shape_reads_no_shift() {
+        let mut det = DistributionShift::builder().fast_window(8).build().unwrap();
+        for _ in 0..5 {
+            for &x in &W1 {
+                let _ = det.update(x).unwrap();
+            }
         }
-        // slow has 5, fast has 5 → both >= 4
+        let r = det.last().unwrap();
+        assert!(r.skewness.abs() < 1e-12, "{r:?}");
+        // Repeating a window leaves the pooled kurtosis where it was.
+        assert!(r.excess_kurtosis.abs() < 1e-12, "{r:?}");
+    }
+
+    #[test]
+    fn no_reading_without_a_baseline_or_a_shape() {
+        let mut det = DistributionShift::builder().fast_window(8).build().unwrap();
+        // First window: nothing to compare against.
+        for &x in &W1 {
+            assert!(!det.is_primed());
+            assert_eq!(det.update(x).unwrap(), None);
+        }
+        // The baseline exists from here on, but there is no reading yet.
+        assert!(det.is_primed());
+        assert_eq!(det.last(), None);
+        // A constant window has no skewness or kurtosis: no reading, and
+        // the previous one is not left standing.
+        for &x in &W2 {
+            let _ = det.update(x).unwrap();
+        }
+        assert!(det.last().is_some());
+        for _ in 0..8 {
+            assert_eq!(det.update(5.0).unwrap(), None);
+        }
+        assert_eq!(det.last(), None);
+        // Still primed: priming does not flap with the readings.
         assert!(det.is_primed());
     }
 
     #[test]
-    fn reset_clears_state() {
-        let mut det = DistributionShift::builder()
-            .fast_window(50)
-            .build()
-            .unwrap();
-        for i in 0..100 {
-            det.update(i as f64).unwrap();
+    fn rejects_nan_and_inf_without_counting_them() {
+        let mut det = DistributionShift::builder().fast_window(8).build().unwrap();
+        assert_eq!(det.update(f64::NAN), Err(crate::DataError::NotANumber));
+        assert_eq!(det.update(f64::INFINITY), Err(crate::DataError::Infinite));
+        assert_eq!(det.count(), 0);
+        // Rejected samples interleaved with two windows of valid ones do
+        // not advance the window: the reading still arrives on the 16th
+        // valid sample and equals the reading without them.
+        let mut reading = None;
+        for (i, &x) in W1.iter().chain(&W2).enumerate() {
+            assert!(det.update(f64::NAN).is_err());
+            let r = det.update(x).unwrap();
+            assert_eq!(r.is_some(), i == 15, "sample {i}");
+            reading = reading.or(r);
+        }
+        assert_eq!(det.count(), 16);
+        let (w1, w2) = (moments(&W1), moments(&W2));
+        assert_eq!(
+            reading.unwrap().skewness,
+            w2.skewness().unwrap() - w1.skewness().unwrap()
+        );
+    }
+
+    #[test]
+    fn reset_forgets_baseline_window_and_reading() {
+        let mut det = DistributionShift::builder().fast_window(8).build().unwrap();
+        for &x in W1.iter().chain(&W2).chain(&W3[..3]) {
+            let _ = det.update(x).unwrap();
         }
         det.reset();
         assert_eq!(det.count(), 0);
-        assert!(!det.is_primed());
+        assert_eq!(det.last(), None);
+        // A full window after reset is a first window again.
+        for &x in &W2 {
+            assert_eq!(det.update(x).unwrap(), None);
+        }
     }
 
     #[test]
-    fn nan_rejected() {
-        let mut det = DistributionShift::builder()
-            .fast_window(50)
-            .build()
-            .unwrap();
-        assert!(det.update(f64::NAN).is_err());
-    }
-
-    #[test]
-    fn inf_rejected() {
-        let mut det = DistributionShift::builder()
-            .fast_window(50)
-            .build()
-            .unwrap();
-        assert!(det.update(f64::INFINITY).is_err());
+    fn builder_validates_the_window() {
+        for w in [0, 1, 3] {
+            assert_eq!(
+                DistributionShift::builder()
+                    .fast_window(w)
+                    .build()
+                    .unwrap_err(),
+                crate::ConfigError::Invalid("fast_window must be at least 4")
+            );
+        }
+        let det = DistributionShift::builder().build().unwrap();
+        assert_eq!(det.fast_window(), 50);
+        assert!(DistributionShift::builder().fast_window(4).build().is_ok());
     }
 }

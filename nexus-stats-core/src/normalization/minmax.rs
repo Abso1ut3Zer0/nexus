@@ -9,6 +9,13 @@ use crate::monitoring::{WindowedMax, WindowedMin};
 /// sliding timestamp window: `(sample - min) / (max - min)`. When the range
 /// is zero (all values equal), returns 0.5.
 ///
+/// The window is tracked by a [`WindowedMin`] and a [`WindowedMax`], three
+/// stored samples each, so memory is fixed whatever the window length; see
+/// those types for how the window ages and for the timestamp rules. Those
+/// trackers are approximate: the reported extremes are always real samples
+/// from inside the window, but not always the most extreme ones, so the
+/// range used here can be narrower than the true window's, never wider.
+///
 /// `T` is the sample type at the boundary, `f64` or `f32`; the trackers
 /// run in `f64` either way, so `MinMaxNorm<f32>` is for producing `f32`
 /// features, not for saving precision.
@@ -74,13 +81,22 @@ impl<T: Float> MinMaxNorm<T> {
     }
 
     /// Normalizes an arbitrary value against current windowed min/max
-    /// without updating state.
+    /// without updating state. Not clamped: a value outside the tracked
+    /// range maps below 0 or above 1. [`update`](Self::update) differs: it
+    /// widens the range to include its sample first (or clamps a late
+    /// sample, which does not enter the window), so it never reads outside
+    /// [0, 1].
     ///
-    /// Returns `None` if not primed.
+    /// Returns `Ok(None)` if not primed.
+    ///
+    /// # Errors
+    ///
+    /// Returns `DataError::NotANumber` if the value is NaN, or
+    /// `DataError::Infinite` if the value is infinite.
     #[inline]
-    #[must_use]
-    pub fn normalize(&self, value: T) -> Option<T> {
-        self.compute_normalized(value.to_f64())
+    pub fn normalize(&self, value: T) -> Result<Option<T>, crate::DataError> {
+        check_finite!(value);
+        Ok(self.compute_normalized(value.to_f64()))
     }
 
     #[inline]
@@ -119,18 +135,19 @@ impl<T: Float> MinMaxNorm<T> {
         Some(T::from_f64(max - min))
     }
 
-    /// Number of samples processed (minimum of both trackers).
+    /// Number of samples accepted into the window since construction or
+    /// `reset`. The two trackers are fed together and always agree.
     #[inline]
     #[must_use]
     pub fn count(&self) -> u64 {
-        self.min_tracker.count().min(self.max_tracker.count())
+        self.min_tracker.count()
     }
 
     /// Whether at least one sample has been observed.
     #[inline]
     #[must_use]
     pub fn is_primed(&self) -> bool {
-        self.min_tracker.count() > 0 && self.max_tracker.count() > 0
+        self.count() > 0
     }
 
     /// Resets accumulated state. Window size preserved.
@@ -177,8 +194,7 @@ mod tests {
         let _ = mm.update(1, 20.0).unwrap();
         let v = mm.update(2, 30.0).unwrap().unwrap();
         assert!((v - 1.0).abs() < 1e-10, "30 should map to 1.0, got {v}");
-        let mid = mm.normalize(20.0).unwrap();
-        assert!((mid - 0.5).abs() < 1e-10, "20 should map to 0.5, got {mid}");
+        assert_eq!(mm.normalize(20.0).unwrap(), Some(0.5));
     }
 
     #[test]
@@ -220,11 +236,18 @@ mod tests {
         let mut mm = MinMaxNorm::<f64>::builder().window(100).build().unwrap();
         let _ = mm.update(0, 0.0).unwrap();
         let _ = mm.update(1, 100.0).unwrap();
-        let v = mm.normalize(75.0).unwrap();
-        assert!(
-            (v - 0.75).abs() < 1e-10,
-            "75 in [0,100] should be 0.75, got {v}"
-        );
+        assert_eq!(mm.normalize(75.0).unwrap(), Some(0.75));
+        // Not clamped: outside the window's range reads outside [0, 1].
+        assert_eq!(mm.normalize(150.0).unwrap(), Some(1.5));
+        assert_eq!(mm.normalize(-50.0).unwrap(), Some(-0.5));
+        assert_eq!(mm.count(), 2);
+    }
+
+    #[test]
+    fn normalize_before_any_sample_is_none() {
+        let mm = MinMaxNorm::<f64>::builder().window(100).build().unwrap();
+        assert_eq!(mm.normalize(1.0).unwrap(), None);
+        assert!(!mm.is_primed());
     }
 
     #[test]
@@ -243,6 +266,8 @@ mod tests {
         assert!(mm.update(0, f64::NAN).is_err());
         assert!(mm.update(0, f64::INFINITY).is_err());
         assert!(mm.update(0, f64::NEG_INFINITY).is_err());
+        assert_eq!(mm.normalize(f64::NAN), Err(crate::DataError::NotANumber));
+        assert_eq!(mm.normalize(f64::INFINITY), Err(crate::DataError::Infinite));
         assert_eq!(mm.count(), 0);
     }
 
