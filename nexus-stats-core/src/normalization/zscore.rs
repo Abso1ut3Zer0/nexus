@@ -3,16 +3,20 @@ use core::marker::PhantomData;
 use crate::Float;
 use crate::statistics::EwmaVar;
 
-/// Relative floor under which a standard deviation counts as zero. FMA with
-/// a non-exact alpha leaves tiny non-zero variance on constant input; the
-/// statistics run in `f64`, so one floor serves every `T`.
+/// Relative floor under which a standard deviation, or a deviation from the
+/// mean of a constant stream, counts as zero. FMA with a non-exact alpha
+/// leaves tiny non-zero variance (and a mean a few ulps off) on constant
+/// input; the statistics run in `f64`, so one floor serves every `T`.
 const SD_FLOOR: f64 = 1e-14;
 
 /// Z-score normalizer backed by EWMA variance.
 ///
 /// Returns `(sample - mean) / std_dev` using exponentially weighted
-/// estimates of mean and standard deviation. Useful for online feature
-/// normalization before feeding into adaptive filters or learners.
+/// estimates of the mean and standard deviation of the samples seen before
+/// it. Useful for online feature normalization before feeding into adaptive
+/// filters or learners, and as an outlier score. Against a constant
+/// stream, which has no scale, a different value scores `+inf` or `-inf`;
+/// see [`update`](ZScoreNorm::update).
 ///
 /// `T` is the sample type at the boundary, `f64` or `f32`; the mean and
 /// variance accumulate in `f64` either way, so `ZScoreNorm<f32>` is for
@@ -25,10 +29,11 @@ const SD_FLOOR: f64 = 1e-14;
 ///
 /// let mut zs = ZScoreNorm::<f64>::builder().span(20).build().unwrap();
 /// for i in 0..100 {
-///     let _ = zs.update(100.0 + f64::from(i));
+///     let _ = zs.update(100.0 + f64::from(i % 5));
 /// }
-/// let z = zs.update(150.0).unwrap();
-/// assert!(z.is_some());
+/// // In-range samples score small; an outlier is not capped.
+/// assert!(zs.normalize(102.0).unwrap().unwrap().abs() < 1.0);
+/// assert!(zs.update(1_000.0).unwrap().unwrap() > 100.0);
 /// ```
 #[derive(Debug, Clone)]
 pub struct ZScoreNorm<T: Float> {
@@ -39,7 +44,7 @@ pub struct ZScoreNorm<T: Float> {
 /// Builder for [`ZScoreNorm`].
 #[derive(Debug, Clone)]
 pub struct ZScoreNormBuilder<T: Float> {
-    alpha: Option<f64>,
+    weight: Option<crate::math::EwWeight>,
     min_samples: u64,
     seed_mean: Option<f64>,
     seed_variance: Option<f64>,
@@ -52,7 +57,7 @@ impl<T: Float> ZScoreNorm<T> {
     #[must_use]
     pub fn builder() -> ZScoreNormBuilder<T> {
         ZScoreNormBuilder {
-            alpha: None,
+            weight: None,
             min_samples: 2,
             seed_mean: None,
             seed_variance: None,
@@ -60,9 +65,27 @@ impl<T: Float> ZScoreNorm<T> {
         }
     }
 
-    /// Feeds a sample. Returns the z-score once primed.
+    /// Scores a sample against the statistics of the samples before it,
+    /// then folds it in.
     ///
-    /// If the standard deviation is zero (constant stream), returns `0.0`.
+    /// Scoring first is what lets an outlier read as one: a sample folded
+    /// into the mean and variance before being scored against them can
+    /// never exceed `sqrt((1 - alpha) / alpha)`, whatever its size.
+    ///
+    /// Returns `Ok(None)` until `min_samples` earlier samples have been seen
+    /// (or a seed supplied); the sample is folded in either way. Equivalent
+    /// to [`normalize`](Self::normalize) followed by the fold.
+    ///
+    /// # Zero scale
+    ///
+    /// When the standard deviation is zero (every sample so far was the
+    /// same value) the score follows the usual numerical convention for
+    /// division by zero: `+inf` for a sample above that value and `-inf`
+    /// for one below, so a threshold test such as `z > 4.0` fires on a jump
+    /// out of a flat stream and `z.clamp(lo, hi)` bounds it. A sample equal
+    /// to the value scores `0.0`. An infinite score is the one non-finite
+    /// value this type returns; the other types in this crate reject it as
+    /// input, so clamp it before feeding it on.
     ///
     /// # Errors
     ///
@@ -72,29 +95,42 @@ impl<T: Float> ZScoreNorm<T> {
     pub fn update(&mut self, sample: T) -> Result<Option<T>, crate::DataError> {
         check_finite!(sample);
         let x = sample.to_f64();
+        let z = self.score(x);
         self.inner.update(x)?;
-        Ok(self.compute_zscore(x))
+        Ok(z)
     }
 
-    /// Normalizes an arbitrary value against current statistics
-    /// without updating state.
+    /// Scores an arbitrary value against the current mean and standard
+    /// deviation without updating state.
     ///
-    /// Returns `None` if not primed.
+    /// Returns `Ok(None)` if not primed. With a zero standard deviation the
+    /// score is `0.0`, `+inf` or `-inf` as described on
+    /// [`update`](Self::update).
+    ///
+    /// # Errors
+    ///
+    /// Returns `DataError::NotANumber` if the value is NaN, or
+    /// `DataError::Infinite` if the value is infinite.
     #[inline]
-    #[must_use]
-    pub fn normalize(&self, value: T) -> Option<T> {
-        self.compute_zscore(value.to_f64())
+    pub fn normalize(&self, value: T) -> Result<Option<T>, crate::DataError> {
+        check_finite!(value);
+        Ok(self.score(value.to_f64()))
     }
 
     #[inline]
-    fn compute_zscore(&self, value: f64) -> Option<T> {
-        if !self.inner.is_primed() {
-            return None;
-        }
+    fn score(&self, value: f64) -> Option<T> {
         let mean = self.inner.mean()?;
         let sd = self.inner.std_dev()?;
         let floor = mean.abs().max(1.0) * SD_FLOOR;
-        let z = if sd > floor { (value - mean) / sd } else { 0.0 };
+        let deviation = value - mean;
+        let z = if sd > floor {
+            deviation / sd
+        } else if deviation.abs() <= floor {
+            // On the constant itself: zero at every positive scale.
+            0.0
+        } else {
+            f64::INFINITY.copysign(deviation)
+        };
         Some(T::from_f64(z))
     }
 
@@ -138,25 +174,24 @@ impl<T: Float> ZScoreNormBuilder<T> {
     #[inline]
     #[must_use]
     pub fn alpha(mut self, alpha: T) -> Self {
-        self.alpha = Some(alpha.to_f64());
+        self.weight = Some(crate::math::EwWeight::Alpha(alpha.to_f64()));
         self
     }
 
-    /// Samples for weight to decay by half.
+    /// Samples for weight to decay by half. Must be positive and finite.
     #[inline]
     #[must_use]
     pub fn halflife(mut self, halflife: T) -> Self {
-        let alpha = crate::math::alpha_from_halflife(halflife.to_f64());
-        self.alpha = Some(alpha);
+        self.weight = Some(crate::math::EwWeight::Halflife(halflife.to_f64()));
         self
     }
 
-    /// Number of samples for center of mass (pandas convention).
+    /// Span in samples (the pandas `span` convention, `alpha = 2 / (n + 1)`).
+    /// Must be at least 2.
     #[inline]
     #[must_use]
-    #[allow(clippy::cast_precision_loss)]
     pub fn span(mut self, n: u64) -> Self {
-        self.alpha = Some(2.0 / (n as f64 + 1.0));
+        self.weight = Some(crate::math::EwWeight::Span(n));
         self
     }
 
@@ -181,14 +216,18 @@ impl<T: Float> ZScoreNormBuilder<T> {
     ///
     /// # Errors
     ///
-    /// Returns `ConfigError` if alpha is missing or not in (0, 1).
+    /// - `Missing("alpha")` if none of `alpha`, `halflife`, `span` was set.
+    /// - `Invalid` if `alpha` is outside (0, 1), `halflife` is not positive
+    ///   and finite, or `span` is below 2; the message names the knob set.
     #[inline]
     pub fn build(self) -> Result<ZScoreNorm<T>, crate::ConfigError> {
-        let mut ewma = EwmaVar::builder();
-        if let Some(a) = self.alpha {
-            ewma = ewma.alpha(a);
-        }
-        ewma = ewma.min_samples(self.min_samples);
+        let alpha = self
+            .weight
+            .ok_or(crate::ConfigError::Missing("alpha"))?
+            .resolve()?;
+        let mut ewma = EwmaVar::builder()
+            .alpha(alpha)
+            .min_samples(self.min_samples);
         if let (Some(m), Some(v)) = (self.seed_mean, self.seed_variance) {
             ewma = ewma.seed(m, v);
         }
@@ -203,68 +242,155 @@ impl<T: Float> ZScoreNormBuilder<T> {
 mod tests {
     use super::*;
 
-    #[test]
-    fn shifted_scaled() {
-        let mut zs = ZScoreNorm::<f64>::builder().alpha(0.1).build().unwrap();
+    fn warmed(alpha: f64) -> ZScoreNorm<f64> {
+        let mut zs = ZScoreNorm::<f64>::builder().alpha(alpha).build().unwrap();
         for i in 0..500 {
-            let _ = zs.update(100.0 + (i % 10) as f64);
+            let _ = zs.update(100.0 + f64::from(i % 7)).unwrap();
         }
-        let z = zs.update(105.0).unwrap().unwrap();
-        assert!(
-            z.abs() < 3.0,
-            "z-score of near-mean value should be moderate, got {z}"
-        );
+        zs
     }
 
     #[test]
-    fn warmup_returns_none() {
+    fn scores_against_the_statistics_before_the_sample() {
+        let mut zs = warmed(0.1);
+        let (mean, sd) = (zs.mean().unwrap(), zs.std_dev().unwrap());
+        let x = 110.0;
+        let expected = (x - mean) / sd;
+        assert_eq!(zs.normalize(x).unwrap(), Some(expected));
+        assert_eq!(zs.update(x).unwrap(), Some(expected));
+        // The fold happened after the score.
+        assert!(zs.mean().unwrap() > mean);
+    }
+
+    #[test]
+    fn an_outlier_is_not_capped_by_its_own_weight() {
+        // Folding first bounds |z| by sqrt((1 - alpha) / alpha): 3.0 at
+        // alpha 0.1, 1.0 at 0.5.
+        for alpha in [0.1, 0.5] {
+            let mut zs = warmed(alpha);
+            let z = zs.update(1e9).unwrap().unwrap();
+            assert!(z > 1e6, "alpha {alpha}: z = {z}");
+        }
+    }
+
+    #[test]
+    fn nothing_to_score_against_is_none() {
         let mut zs = ZScoreNorm::<f64>::builder().alpha(0.1).build().unwrap();
-        assert!(zs.update(1.0).unwrap().is_none());
-        assert!(!zs.is_primed());
+        // min_samples 2: the first two samples have no primed statistics
+        // behind them; the third does.
+        assert_eq!(zs.update(1.0).unwrap(), None);
+        assert_eq!(zs.normalize(5.0).unwrap(), None);
+        assert_eq!(zs.update(3.0).unwrap(), None);
+        assert!(zs.is_primed());
+        assert!(zs.update(2.0).unwrap().is_some());
+        assert_eq!(zs.count(), 3);
     }
 
     #[test]
-    fn normalize_without_update() {
+    fn zero_scale_follows_the_division_by_zero_convention() {
+        // 0.1 is not exact in binary, so the mean and variance carry
+        // rounding residue; the floor absorbs it.
+        for constant in [42.0, 0.1, -1e9, 0.0] {
+            let mut zs = ZScoreNorm::<f64>::builder().alpha(0.1).build().unwrap();
+            let _ = zs.update(constant).unwrap();
+            let _ = zs.update(constant).unwrap();
+            for _ in 0..100 {
+                assert_eq!(zs.update(constant).unwrap(), Some(0.0), "{constant}");
+            }
+            let step = constant.abs().max(1.0) * 1e-6;
+            assert_eq!(
+                zs.normalize(constant + step).unwrap(),
+                Some(f64::INFINITY),
+                "{constant}"
+            );
+            assert_eq!(
+                zs.normalize(constant - step).unwrap(),
+                Some(f64::NEG_INFINITY),
+                "{constant}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_jump_out_of_a_flat_stream_trips_a_threshold_once() {
+        let mut zs = ZScoreNorm::<f64>::builder().alpha(0.1).build().unwrap();
+        for _ in 0..50 {
+            let _ = zs.update(100.0).unwrap();
+        }
+        let z = zs.update(150.0).unwrap().unwrap();
+        assert!(z > 4.0);
+        assert_eq!(z.clamp(-5.0, 5.0), 5.0);
+        // The jump gave the stream a scale: the next score is finite.
+        let next = zs.update(150.0).unwrap().unwrap();
+        assert!(next.is_finite() && next > 0.0, "{next}");
+    }
+
+    #[test]
+    fn f32_zero_scale_is_infinite_too() {
+        let mut zs = ZScoreNorm::<f32>::builder().alpha(0.1).build().unwrap();
+        for _ in 0..10 {
+            let _ = zs.update(7.0).unwrap();
+        }
+        assert_eq!(zs.update(8.0).unwrap(), Some(f32::INFINITY));
+    }
+
+    #[test]
+    fn seeded_statistics_score_at_once() {
         let mut zs = ZScoreNorm::<f64>::builder()
             .alpha(0.1)
             .seed(100.0, 25.0)
             .build()
             .unwrap();
-        let z = zs.normalize(105.0).unwrap();
-        assert!((z - 1.0).abs() < 0.01, "expected z ≈ 1.0, got {z}");
-        let z2 = zs.update(105.0).unwrap().unwrap();
-        assert!(z != z2, "update should change internal state");
+        assert_eq!(zs.normalize(105.0).unwrap(), Some(1.0));
+        assert_eq!(zs.update(90.0).unwrap(), Some(-2.0));
     }
 
     #[test]
-    fn zero_variance() {
-        let mut zs = ZScoreNorm::<f64>::builder().alpha(0.1).build().unwrap();
-        for _ in 0..100 {
-            let z = zs.update(42.0).unwrap();
-            if let Option::Some(v) = z {
-                assert!(
-                    v.abs() < 1e-10,
-                    "constant stream z-score should be 0.0, got {v}"
-                );
-            }
-        }
+    fn f32_boundary() {
+        let mut zs = ZScoreNorm::<f32>::builder()
+            .alpha(0.1)
+            .seed(100.0, 25.0)
+            .build()
+            .unwrap();
+        assert_eq!(zs.update(110.0).unwrap(), Some(2.0f32));
     }
 
     #[test]
     fn rejects_nan_inf() {
-        let mut zs = ZScoreNorm::<f64>::builder().alpha(0.1).build().unwrap();
-        assert!(zs.update(f64::NAN).is_err());
-        assert!(zs.update(f64::INFINITY).is_err());
-        assert!(zs.update(f64::NEG_INFINITY).is_err());
-        assert_eq!(zs.count(), 0);
+        let mut zs = warmed(0.1);
+        let n = zs.count();
+        assert_eq!(zs.update(f64::NAN), Err(crate::DataError::NotANumber));
+        assert_eq!(zs.update(f64::INFINITY), Err(crate::DataError::Infinite));
+        assert_eq!(zs.normalize(f64::NAN), Err(crate::DataError::NotANumber));
+        assert_eq!(
+            zs.normalize(f64::NEG_INFINITY),
+            Err(crate::DataError::Infinite)
+        );
+        assert_eq!(zs.count(), n);
+    }
+
+    #[test]
+    fn a_bad_knob_is_reported_under_its_own_name() {
+        use crate::ConfigError::{Invalid, Missing};
+        let b = ZScoreNorm::<f64>::builder;
+        assert_eq!(b().build().unwrap_err(), Missing("alpha"));
+        assert_eq!(
+            b().span(1).build().unwrap_err(),
+            Invalid("span must be at least 2")
+        );
+        assert_eq!(
+            b().halflife(0.0).build().unwrap_err(),
+            Invalid("halflife must be positive and finite")
+        );
+        assert_eq!(
+            b().alpha(1.0).build().unwrap_err(),
+            Invalid("alpha must be in (0, 1)")
+        );
     }
 
     #[test]
     fn reset_clears() {
-        let mut zs = ZScoreNorm::<f64>::builder().alpha(0.1).build().unwrap();
-        for i in 0..50 {
-            let _ = zs.update(i as f64);
-        }
+        let mut zs = warmed(0.1);
         assert!(zs.is_primed());
         zs.reset();
         assert_eq!(zs.count(), 0);
