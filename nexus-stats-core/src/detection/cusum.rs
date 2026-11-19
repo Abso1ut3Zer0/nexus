@@ -132,10 +132,12 @@ impl Cusum {
         if !(rising || falling) {
             return Ok(Some(Direction::Neutral));
         }
-        // Both over: the side further over relative to its own threshold,
-        // compared as cross-products (thresholds are positive).
+        // Both over: the side further over relative to its own threshold.
+        // Ratios, not cross-products: a product of two large sums can
+        // overflow to infinity on both sides and lose the comparison. This
+        // branch is cold, so the two divisions cost nothing that matters.
         let report_rising = rising
-            && (!falling || self.upper * self.threshold_lower >= self.lower * self.threshold_upper);
+            && (!falling || self.upper / self.threshold_upper >= self.lower / self.threshold_lower);
         if report_rising {
             if self.restart_on_alarm {
                 self.upper = 0.0;
@@ -648,6 +650,17 @@ mod tests {
             .build()
             .unwrap();
         assert_eq!(c.update(0.0).unwrap(), Some(Direction::Rising));
+        // Sums large enough that their cross-products would both overflow:
+        // the lower is 10x over, the upper 1.5x.
+        let mut c = Cusum::builder(0.0)
+            .slack(0.0)
+            .threshold_upper(1e200)
+            .threshold_lower(1e199)
+            .seed_upper(1.5e200)
+            .seed_lower(1e200)
+            .build()
+            .unwrap();
+        assert_eq!(c.update(0.0).unwrap(), Some(Direction::Falling));
     }
 
     #[test]

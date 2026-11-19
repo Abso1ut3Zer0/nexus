@@ -211,9 +211,10 @@ contained.
 
 ### Fixed
 
-- **A bad `halflife` or `span` is reported under its own name.** `Ema` and
-  `AsymEma` builders converted the knob to an alpha as it was set, so
-  `halflife(-1.0)` and `span(0)` surfaced as "alpha must be in (0, 1)".
+- **A bad `halflife` or `span` is reported under its own name.** The `Ema`
+  builder (and `AsymEma`'s `span_up` / `span_down`) converted the knob to an
+  alpha as it was set, so `halflife(-1.0)` and `span(0)` surfaced as "alpha
+  must be in (0, 1)".
   `halflife` must be positive and finite and `span` at least 2.
 - **`Cusum::builder` validates the target first.** A NaN target was reported
   as a slack error, and a target of 0 with default thresholds as "threshold

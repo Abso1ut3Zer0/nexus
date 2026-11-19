@@ -261,8 +261,8 @@ impl EwWeight {
     /// # Errors
     ///
     /// `ConfigError::Invalid` naming the knob that was set: `alpha` outside
-    /// `(0, 1)`, a `halflife` that is not positive and finite, or a `span`
-    /// below 2.
+    /// `(0, 1)`, a `halflife` that is not positive and finite or whose weight
+    /// rounds to 0 or 1, or a `span` below 2.
     #[inline]
     pub fn resolve(self) -> Result<f64, crate::ConfigError> {
         let alpha = match self {
@@ -279,7 +279,15 @@ impl EwWeight {
                         "halflife must be positive and finite",
                     ));
                 }
-                alpha_from_halflife(h)
+                // A half-life so short that `1 - exp(-x)` rounds to one, or
+                // so long that it rounds to zero, has no usable weight.
+                let alpha = alpha_from_halflife(h);
+                if !in_unit_interval(alpha) {
+                    return Err(crate::ConfigError::Invalid(
+                        "halflife is too small or too large for a usable weight",
+                    ));
+                }
+                alpha
             }
             Self::Span(n) => {
                 if n < 2 {
@@ -288,13 +296,8 @@ impl EwWeight {
                 alpha_from_span(n)
             }
         };
-        // A half-life so long that `1 - exp(-x)` rounds to zero, or so short
-        // that it rounds to one, has no usable weight.
-        if !in_unit_interval(alpha) {
-            return Err(crate::ConfigError::Invalid(
-                "smoothing weight rounds outside (0, 1)",
-            ));
-        }
+        // In (0, 1) on every arm: a span of 2 or more gives `2 / (n + 1)` in
+        // (0, 2/3], which no `u64` rounds to zero.
         Ok(alpha)
     }
 }

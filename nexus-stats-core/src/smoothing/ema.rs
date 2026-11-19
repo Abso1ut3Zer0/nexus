@@ -323,7 +323,15 @@ mod tests {
                 Invalid("halflife must be positive and finite")
             );
         }
+        #[cfg(any(feature = "std", feature = "libm"))]
+        for h in [1e-3, 1e300] {
+            assert_eq!(
+                err(Ema::builder().halflife(h)),
+                Invalid("halflife is too small or too large for a usable weight")
+            );
+        }
         assert!(Ema::builder().span(2).build().is_ok());
+        assert!(Ema::builder().span(u64::MAX).build().is_ok());
         assert_eq!(
             err(Ema::builder().alpha(0.5).seed(f64::NAN)),
             Invalid("EMA seed must be finite")

@@ -358,9 +358,10 @@ CHANGELOG entry in `nexus-stats-core`:
   reported (it was always `Rising`).
 - **`Slew::value()` returns `Option<T>`**: `None` before the first sample
   (it was a fabricated 0).
-- **`span(n)` needs `n >= 2`** and `halflife(h)` a positive finite `h` on
-  `Ema` and `AsymEma`; the error names the knob that was set.
-  `AsymEma` rejects `min_samples(0)`.
+- **`Ema::builder().span(n)` needs `n >= 2`** and `.halflife(h)` a positive
+  finite `h`; the error names the knob that was set. `AsymEma`'s
+  `span_up(n)` / `span_down(n)` need `n >= 2` as well, and it rejects
+  `min_samples(0)`.
 - **`SecondDiff<f64>`** is computed as the difference of first differences;
   results can differ from 7.0 pre-releases in the last bit.
 - **`Hysteresis::new` rejects infinite thresholds.**
