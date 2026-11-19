@@ -203,10 +203,19 @@ contained.
   interval. It now implements the RFC's `first_above_time` rule directly:
   a sample above target arms a deadline at `now + interval`, a sample at or
   below target disarms it, and only a sample above target at or after the
-  deadline is `Degraded`. One timestamp of state; the windowed minimum the
+  deadline is `Degraded`. The windowed minimum the
   old composition relied on (and its own inaccuracy, #758) is gone.
   the builder's `interval` is the RFC's. `CoDelBuilder<f64>::build` now rejects a
   non-finite target ([#759](https://github.com/Abso1ut3Zer0/nexus/issues/759)).
+- **`CoDel<T>` ignores a late sample** ([#797](https://github.com/Abso1ut3Zer0/nexus/issues/797)):
+  a sample timestamped before the timer's start read as a huge elapsed time
+  under wrapping subtraction, so one reordered sample right after the timer
+  armed reported `Degraded` at once. A sample timestamped before the
+  previous accepted one is now ignored (no state change, not counted, the
+  current condition returned), with lateness judged by the signed
+  difference so a counter that wraps still works. State is two timestamps
+  (64 bytes). `standing_queue` is branch-free, so the update costs the same
+  as before.
 
 - **`Liveness`**: two defects. `update()` folded the gap
   into the smoothed interval before testing it, which made the test

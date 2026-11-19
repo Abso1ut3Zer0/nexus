@@ -6,8 +6,8 @@ interval, not just once.
 
 | Property | Value |
 |----------|-------|
-| Update cost | one compare and one timestamp compare |
-| Memory | 56 bytes |
+| Update cost | one compare and two timestamp compares |
+| Memory | 64 bytes |
 | Types | `CoDel<i64>`, `CoDel<f64>` |
 | Priming | Configurable via `min_samples` |
 | Output | `Option<Condition>` — `Normal` or `Degraded` |
@@ -68,8 +68,14 @@ Internally, the `first_above_time` rule from RFC 8289 section 5.6:
    `now + interval` → `Condition::Normal` (waiting out the window)
 3. A sojourn above target at or after the deadline → `Condition::Degraded`,
    and it stays `Degraded` until a sample at or below target disarms it
+4. A sample timestamped before the previous accepted one is **ignored**: it
+   neither arms nor disarms the deadline, is not counted, and `update`
+   returns the current condition
 
-One timestamp of state. There is no windowed minimum, so the detector is
+Two timestamps of state: the deadline and the last accepted tick. Ticks
+must be non-decreasing; a counter that wraps is fine as long as the
+interval and any real gap between samples fit in half its range. There is
+no windowed minimum, so the detector is
 exact: it fires at precisely one window of continuous excess, never on a
 transient.
 
