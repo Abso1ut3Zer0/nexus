@@ -9,6 +9,21 @@ use crate::Direction;
 /// Supports asymmetric slack and threshold parameters for different
 /// sensitivity to upward vs downward shifts.
 ///
+/// # After an alarm
+///
+/// By default the sums are not cleared when a side crosses its threshold:
+/// `update` keeps reporting that direction until the sum drains back under
+/// the threshold or the caller calls [`reset`](Self::reset). That suits "is
+/// the process still off target", and a long excursion takes as long to
+/// drain as it took to build. Set
+/// [`restart_on_alarm`](CusumBuilder::restart_on_alarm) for the classic
+/// restarting CUSUM, which zeroes the alarming side as it reports, so each
+/// alarm is a fresh detection.
+///
+/// If both sides are over threshold at once, the one further over (relative
+/// to its threshold) is reported; [`upper`](Self::upper) and
+/// [`lower`](Self::lower) expose both sums.
+///
 /// # Use Cases
 /// - Exchange ack latency degradation (detect shift up)
 /// - Recovery detection (detect shift back down)
@@ -25,6 +40,13 @@ pub struct Cusum {
     lower: f64,
     count: u64,
     min_samples: u64,
+    /// Samples needed before a direction is reported: `min_samples`, or 0
+    /// when seeded.
+    prime_at: u64,
+    /// What `reset` restores (0.0 when unseeded).
+    seed_upper: f64,
+    seed_lower: f64,
+    restart_on_alarm: bool,
     // Track whether user explicitly set slack/threshold so
     // reset_with_target knows whether to recompute defaults.
     slack_upper_explicit: bool,
@@ -56,6 +78,7 @@ pub struct CusumBuilder {
     min_samples: u64,
     seed_upper: Option<f64>,
     seed_lower: Option<f64>,
+    restart_on_alarm: bool,
 }
 
 impl Cusum {
@@ -72,6 +95,7 @@ impl Cusum {
             min_samples: 0,
             seed_upper: None,
             seed_lower: None,
+            restart_on_alarm: false,
         }
     }
 
@@ -79,7 +103,8 @@ impl Cusum {
     ///
     /// Returns `Ok(None)` until `min_samples` have been processed.
     /// After priming, returns `Ok(Some(Direction::Rising))`, `Ok(Some(Direction::Falling))`,
-    /// or `Ok(Some(Direction::Neutral))`.
+    /// or `Ok(Some(Direction::Neutral))`. A direction keeps being reported
+    /// while its sum stays over threshold; see "After an alarm" on the type.
     ///
     /// # Errors
     ///
@@ -98,17 +123,30 @@ impl Cusum {
         let s_low = self.lower - diff - self.slack_lower;
         self.lower = s_low.max(0.0);
 
-        if self.count < self.min_samples {
+        if self.count < self.prime_at {
             return Ok(None);
         }
 
-        Ok(if self.upper > self.threshold_upper {
-            Some(Direction::Rising)
-        } else if self.lower > self.threshold_lower {
-            Some(Direction::Falling)
+        let rising = self.upper > self.threshold_upper;
+        let falling = self.lower > self.threshold_lower;
+        if !(rising || falling) {
+            return Ok(Some(Direction::Neutral));
+        }
+        // Both over: the side further over relative to its own threshold,
+        // compared as cross-products (thresholds are positive).
+        let report_rising = rising
+            && (!falling || self.upper * self.threshold_lower >= self.lower * self.threshold_upper);
+        if report_rising {
+            if self.restart_on_alarm {
+                self.upper = 0.0;
+            }
+            Ok(Some(Direction::Rising))
         } else {
-            Some(Direction::Neutral)
-        })
+            if self.restart_on_alarm {
+                self.lower = 0.0;
+            }
+            Ok(Some(Direction::Falling))
+        }
     }
 
     /// Upper cumulative sum (tracks upward drift).
@@ -125,29 +163,35 @@ impl Cusum {
         self.lower
     }
 
-    /// Number of samples processed.
+    /// Number of samples processed since construction or the last reset. A
+    /// seed is not a sample.
     #[inline]
     #[must_use]
     pub fn count(&self) -> u64 {
         self.count
     }
 
-    /// Whether the detector has reached `min_samples`.
+    /// Whether directions are being reported: `min_samples` reached, or
+    /// seeded.
     #[inline]
     #[must_use]
     pub fn is_primed(&self) -> bool {
-        self.count >= self.min_samples
+        self.count >= self.prime_at
     }
 
-    /// Resets cumulative sums and count to zero. Parameters unchanged.
+    /// Returns to the as-built state: count zero and the sums at their seeds
+    /// (zero when unseeded). Parameters unchanged.
     #[inline]
     pub fn reset(&mut self) {
-        self.upper = 0.0;
-        self.lower = 0.0;
+        self.upper = self.seed_upper;
+        self.lower = self.seed_lower;
         self.count = 0;
     }
 
     /// Resets and updates the target mean.
+    ///
+    /// Seeds were calibrated against the old target, so they are dropped:
+    /// the sums start at zero and `min_samples` applies again.
     ///
     /// If slack or threshold were not explicitly set by the user, they are
     /// recomputed from the new target using the defaults (5% and 50% of
@@ -173,6 +217,9 @@ impl Cusum {
             ));
         }
         self.target = new_target;
+        self.seed_upper = 0.0;
+        self.seed_lower = 0.0;
+        self.prime_at = self.min_samples;
         self.upper = 0.0;
         self.lower = 0.0;
         self.count = 0;
@@ -288,10 +335,8 @@ impl Cusum {
 impl CusumBuilder {
     #[inline]
     fn default_slack(target: f64) -> f64 {
-        // 5% of target magnitude, floored to 0.0
-        let abs_target = target.abs();
-        let slack = abs_target / 20.0;
-        if slack < 0.0 { 0.0 } else { slack }
+        // 5% of target magnitude
+        target.abs() / 20.0
     }
 
     #[inline]
@@ -373,9 +418,11 @@ impl CusumBuilder {
         self
     }
 
-    /// Pre-loads the upper cumulative sum from calibration data.
+    /// Pre-loads the upper cumulative sum from calibration data. Must be
+    /// finite and non-negative (the sums never go below zero).
     ///
-    /// When seeded, `is_primed()` returns true immediately.
+    /// When seeded, `is_primed()` returns true immediately and `reset()`
+    /// returns to the seed.
     #[inline]
     #[must_use]
     pub fn seed_upper(mut self, val: f64) -> Self {
@@ -383,9 +430,11 @@ impl CusumBuilder {
         self
     }
 
-    /// Pre-loads the lower cumulative sum from calibration data.
+    /// Pre-loads the lower cumulative sum from calibration data. Must be
+    /// finite and non-negative.
     ///
-    /// When seeded, `is_primed()` returns true immediately.
+    /// When seeded, `is_primed()` returns true immediately and `reset()`
+    /// returns to the seed.
     #[inline]
     #[must_use]
     pub fn seed_lower(mut self, val: f64) -> Self {
@@ -393,14 +442,30 @@ impl CusumBuilder {
         self
     }
 
+    /// Zeroes a side's sum when it reports an alarm, so every alarm is a new
+    /// detection instead of a state that persists until it drains. Off by
+    /// default; see "After an alarm" on [`Cusum`].
+    #[inline]
+    #[must_use]
+    pub fn restart_on_alarm(mut self) -> Self {
+        self.restart_on_alarm = true;
+        self
+    }
+
     /// Builds the detector.
     ///
     /// # Errors
     ///
-    /// - Slack values must be non-negative.
-    /// - Threshold values must be positive.
+    /// - The target must be finite.
+    /// - Slack values must be finite and non-negative.
+    /// - Threshold values must be finite and positive. With a target of 0
+    ///   the default threshold is 0, so thresholds must be set explicitly.
+    /// - Seeds must be finite and non-negative.
     #[inline]
     pub fn build(self) -> Result<Cusum, crate::ConfigError> {
+        if !self.target.is_finite() {
+            return Err(crate::ConfigError::Invalid("target must be finite"));
+        }
         let slack_upper_explicit = self.slack_upper.is_some();
         let slack_lower_explicit = self.slack_lower.is_some();
         let threshold_upper_explicit = self.threshold_upper.is_some();
@@ -429,6 +494,12 @@ impl CusumBuilder {
                 "slack_lower must be non-negative",
             ));
         }
+        #[allow(clippy::float_cmp)]
+        if self.target == 0.0 && !(threshold_upper_explicit && threshold_lower_explicit) {
+            return Err(crate::ConfigError::Invalid(
+                "default threshold is zero for target 0; set thresholds explicitly",
+            ));
+        }
         if !crate::math::positive_finite(threshold_upper) {
             return Err(crate::ConfigError::Invalid(
                 "threshold_upper must be positive",
@@ -440,16 +511,20 @@ impl CusumBuilder {
             ));
         }
 
-        if !self.target.is_finite() {
-            return Err(crate::ConfigError::Invalid("target must be finite"));
-        }
-        if self.seed_upper.is_some_and(|s| !s.is_finite())
-            || self.seed_lower.is_some_and(|s| !s.is_finite())
+        if self
+            .seed_upper
+            .is_some_and(|s| !crate::math::nonnegative_finite(s))
+            || self
+                .seed_lower
+                .is_some_and(|s| !crate::math::nonnegative_finite(s))
         {
-            return Err(crate::ConfigError::Invalid("seed values must be finite"));
+            return Err(crate::ConfigError::Invalid(
+                "seed values must be finite and non-negative",
+            ));
         }
         let seeded = self.seed_upper.is_some() || self.seed_lower.is_some();
-        let initial_count = if seeded { self.min_samples } else { 0 };
+        let seed_upper = self.seed_upper.unwrap_or(0.0);
+        let seed_lower = self.seed_lower.unwrap_or(0.0);
 
         Ok(Cusum {
             target: self.target,
@@ -457,10 +532,14 @@ impl CusumBuilder {
             slack_lower,
             threshold_upper,
             threshold_lower,
-            upper: self.seed_upper.unwrap_or(0.0),
-            lower: self.seed_lower.unwrap_or(0.0),
-            count: initial_count,
+            upper: seed_upper,
+            lower: seed_lower,
+            count: 0,
             min_samples: self.min_samples,
+            prime_at: if seeded { 0 } else { self.min_samples },
+            seed_upper,
+            seed_lower,
+            restart_on_alarm: self.restart_on_alarm,
             slack_upper_explicit,
             slack_lower_explicit,
             threshold_upper_explicit,
@@ -472,6 +551,154 @@ impl CusumBuilder {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn feed(c: &mut Cusum, xs: &[f64]) -> Vec<Option<Direction>> {
+        xs.iter().map(|&x| c.update(x).unwrap()).collect()
+    }
+
+    #[test]
+    #[allow(clippy::float_cmp)]
+    fn sums_follow_the_clamped_recursion() {
+        // target 10, slack 1: upper += x - 11, lower += 9 - x, each floored at 0.
+        let mut c = Cusum::builder(10.0)
+            .slack(1.0)
+            .threshold(5.0)
+            .build()
+            .unwrap();
+        let out = feed(&mut c, &[13.0, 14.0, 12.0, 5.0]);
+        // upper: 2, 5, 6, 0.   lower: 0, 0, 0, 4.
+        assert_eq!(
+            out,
+            [
+                Some(Direction::Neutral),
+                Some(Direction::Neutral), // 5 is not over a threshold of 5
+                Some(Direction::Rising),
+                Some(Direction::Neutral),
+            ]
+        );
+        assert_eq!((c.upper(), c.lower()), (0.0, 4.0));
+    }
+
+    #[test]
+    #[allow(clippy::float_cmp)]
+    fn an_alarm_persists_until_the_sum_drains() {
+        let mut c = Cusum::builder(0.0)
+            .slack(1.0)
+            .threshold(3.0)
+            .build()
+            .unwrap();
+        // upper: 4 (alarm), then on-target samples drain it by the slack.
+        let out = feed(&mut c, &[5.0, 0.0, 0.0, 0.0]);
+        assert_eq!(
+            out,
+            [
+                Some(Direction::Rising),
+                Some(Direction::Neutral), // 3 is not over 3
+                Some(Direction::Neutral),
+                Some(Direction::Neutral),
+            ]
+        );
+        let mut c = Cusum::builder(0.0)
+            .slack(1.0)
+            .threshold(3.0)
+            .build()
+            .unwrap();
+        let out = feed(&mut c, &[9.0, 0.0, 0.0]);
+        // upper: 8, 7, 6: still reported with no further evidence.
+        assert_eq!(out, [Some(Direction::Rising); 3]);
+    }
+
+    #[test]
+    #[allow(clippy::float_cmp)]
+    fn restart_on_alarm_zeroes_the_alarming_side_only() {
+        let mut c = Cusum::builder(0.0)
+            .slack(1.0)
+            .threshold(3.0)
+            .seed_lower(2.0)
+            .restart_on_alarm()
+            .build()
+            .unwrap();
+        // upper 8 > 3: reported and zeroed. lower 2 - 9 - 1 floors at 0.
+        assert_eq!(c.update(9.0).unwrap(), Some(Direction::Rising));
+        assert_eq!(c.upper(), 0.0);
+        assert_eq!(c.update(0.0).unwrap(), Some(Direction::Neutral));
+        // A fresh excursion is a fresh alarm.
+        assert_eq!(c.update(9.0).unwrap(), Some(Direction::Rising));
+    }
+
+    #[test]
+    fn with_both_sides_over_the_one_further_over_its_threshold_is_reported() {
+        // Seed both sides over threshold; the lower is 3x over, the upper 2x.
+        let mut c = Cusum::builder(0.0)
+            .slack(0.0)
+            .threshold_upper(10.0)
+            .threshold_lower(4.0)
+            .seed_upper(20.0)
+            .seed_lower(12.0)
+            .build()
+            .unwrap();
+        assert_eq!(c.update(0.0).unwrap(), Some(Direction::Falling));
+        // Swap the ratio: upper 5x over, lower 3x.
+        let mut c = Cusum::builder(0.0)
+            .slack(0.0)
+            .threshold_upper(10.0)
+            .threshold_lower(4.0)
+            .seed_upper(50.0)
+            .seed_lower(12.0)
+            .build()
+            .unwrap();
+        assert_eq!(c.update(0.0).unwrap(), Some(Direction::Rising));
+    }
+
+    #[test]
+    #[allow(clippy::float_cmp)]
+    fn seeds_prime_without_counting_and_survive_reset() {
+        let mut c = Cusum::builder(100.0)
+            .slack(5.0)
+            .threshold(50.0)
+            .min_samples(20)
+            .seed_upper(30.0)
+            .build()
+            .unwrap();
+        assert!(c.is_primed());
+        assert_eq!(c.count(), 0);
+        assert_eq!((c.upper(), c.lower()), (30.0, 0.0));
+        // 30 + (130 - 100) - 5 = 55 > 50 on the very first sample.
+        assert_eq!(c.update(130.0).unwrap(), Some(Direction::Rising));
+        assert_eq!(c.count(), 1);
+        c.reset();
+        assert_eq!((c.upper(), c.count()), (30.0, 0));
+        assert!(c.is_primed());
+        // A new target drops the seed and min_samples applies again.
+        c.reset_with_target(200.0).unwrap();
+        assert_eq!(c.upper(), 0.0);
+        assert!(!c.is_primed());
+        assert_eq!(c.update(200.0).unwrap(), None);
+    }
+
+    #[test]
+    fn config_errors_name_the_real_problem() {
+        use crate::ConfigError::Invalid;
+        assert_eq!(
+            Cusum::builder(f64::NAN).build().unwrap_err(),
+            Invalid("target must be finite")
+        );
+        assert_eq!(
+            Cusum::builder(0.0).build().unwrap_err(),
+            Invalid("default threshold is zero for target 0; set thresholds explicitly")
+        );
+        assert!(Cusum::builder(0.0).threshold(1.0).build().is_ok());
+        for seed in [-1.0, f64::NAN, f64::INFINITY] {
+            assert_eq!(
+                Cusum::builder(1.0).seed_upper(seed).build().unwrap_err(),
+                Invalid("seed values must be finite and non-negative")
+            );
+            assert_eq!(
+                Cusum::builder(1.0).seed_lower(seed).build().unwrap_err(),
+                Invalid("seed values must be finite and non-negative")
+            );
+        }
+    }
 
     // =========================================================================
     // Basic shift detection

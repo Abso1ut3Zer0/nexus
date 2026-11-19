@@ -48,3 +48,15 @@ pub mod normalization;
 pub mod smoothing;
 /// Core streaming statistics.
 pub mod statistics;
+
+/// The doc pages under `docs/` whose examples are compiled and run as
+/// doctests, so a page cannot drift from the API it describes.
+#[cfg(all(doctest, feature = "std"))]
+mod doc_pages {
+    #[doc = include_str!("../docs/control.md")]
+    struct Control;
+    #[doc = include_str!("../docs/detection.md")]
+    struct Detection;
+    #[doc = include_str!("../docs/smoothing.md")]
+    struct Smoothing;
+}

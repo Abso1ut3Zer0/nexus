@@ -98,6 +98,13 @@ one naming convention across the family. Migration guide:
 - `libm` also enables `nexus-stats-smoothing/libm`, so `HuberEma` /
   `ConditionalEma::halflife` exist on a `no_std` + `libm` build.
 
+- Carried from core (blind audit, PR C1): `LevelCrossing::update` returns
+  the crossing's `Direction` and no longer counts a touch as a crossing;
+  seeds on `Ema` and `Cusum` are values, not samples (`count()` starts at 0,
+  `reset()` restores the seed); `Slew::value()` is an `Option`; `Cusum`
+  reports the side further over threshold and gains `restart_on_alarm()`;
+  `halflife` / `span` errors name the knob. See the migration guide.
+
 ### Removed
 
 - `SaturationF64` ([#761](https://github.com/Abso1ut3Zer0/nexus/issues/761)),

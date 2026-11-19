@@ -14,12 +14,6 @@ use crate::math::MulAdd;
 pub struct AsymEma {
     alpha_up: f64,
     alpha_down: f64,
-    // Precomputed `1.0 - alpha_*` for the `update` hot path; saves a
-    // subtraction per sample at the cost of two f64 fields per
-    // instance. Set in `build()` and held constant for the
-    // instance's lifetime.
-    one_minus_alpha_up: f64,
-    one_minus_alpha_down: f64,
     value: f64,
     count: u64,
     min_samples: u64,
@@ -28,8 +22,8 @@ pub struct AsymEma {
 /// Builder for [`AsymEma`].
 #[derive(Debug, Clone)]
 pub struct AsymEmaBuilder {
-    alpha_up: Option<f64>,
-    alpha_down: Option<f64>,
+    alpha_up: Option<crate::math::EwWeight>,
+    alpha_down: Option<crate::math::EwWeight>,
     min_samples: u64,
 }
 
@@ -59,30 +53,24 @@ impl AsymEma {
         if self.count == 1 {
             self.value = sample;
         } else {
-            let (alpha, one_minus) = if sample > self.value {
-                (self.alpha_up, self.one_minus_alpha_up)
+            // One select of the weight, then the incremental form
+            // `value += alpha * (sample - value)`.
+            let alpha = if sample > self.value {
+                self.alpha_up
             } else {
-                (self.alpha_down, self.one_minus_alpha_down)
+                self.alpha_down
             };
-            self.value = alpha.fma(sample, one_minus * self.value);
+            self.value = alpha.fma(sample - self.value, self.value);
         }
 
-        if self.count >= self.min_samples {
-            Ok(Some(self.value))
-        } else {
-            Ok(None)
-        }
+        Ok(self.value())
     }
 
     /// Current smoothed value, or `None` if not primed.
     #[inline]
     #[must_use]
     pub fn value(&self) -> Option<f64> {
-        if self.count >= self.min_samples {
-            Some(self.value)
-        } else {
-            None
-        }
+        self.is_primed().then_some(self.value)
     }
 
     /// Number of samples processed.
@@ -112,7 +100,7 @@ impl AsymEmaBuilder {
     #[inline]
     #[must_use]
     pub fn alpha_up(mut self, alpha: f64) -> Self {
-        self.alpha_up = Some(alpha);
+        self.alpha_up = Some(crate::math::EwWeight::Alpha(alpha));
         self
     }
 
@@ -120,23 +108,23 @@ impl AsymEmaBuilder {
     #[inline]
     #[must_use]
     pub fn alpha_down(mut self, alpha: f64) -> Self {
-        self.alpha_down = Some(alpha);
+        self.alpha_down = Some(crate::math::EwWeight::Alpha(alpha));
         self
     }
 
-    /// Span for rising smoothing (alpha_up = 2/(n+1)).
+    /// Span for rising smoothing (alpha_up = 2/(n+1)). Must be at least 2.
     #[inline]
     #[must_use]
     pub fn span_up(mut self, n: u64) -> Self {
-        self.alpha_up = Some(2.0 / (n as f64 + 1.0));
+        self.alpha_up = Some(crate::math::EwWeight::Span(n));
         self
     }
 
-    /// Span for falling smoothing (alpha_down = 2/(n+1)).
+    /// Span for falling smoothing (alpha_down = 2/(n+1)). Must be at least 2.
     #[inline]
     #[must_use]
     pub fn span_down(mut self, n: u64) -> Self {
-        self.alpha_down = Some(2.0 / (n as f64 + 1.0));
+        self.alpha_down = Some(crate::math::EwWeight::Span(n));
         self
     }
 
@@ -152,28 +140,26 @@ impl AsymEmaBuilder {
     ///
     /// # Errors
     ///
-    /// - Both alpha_up and alpha_down must have been set.
-    /// - Both must be in (0, 1) exclusive.
+    /// - `Missing` if the rising or the falling weight was not set.
+    /// - `Invalid` if an alpha is outside (0, 1) or a span is below 2.
+    /// - `Invalid` if `min_samples` is 0.
     #[inline]
     pub fn build(self) -> Result<AsymEma, crate::ConfigError> {
         let alpha_up = self
             .alpha_up
-            .ok_or(crate::ConfigError::Missing("alpha_up"))?;
+            .ok_or(crate::ConfigError::Missing("alpha_up"))?
+            .resolve()?;
         let alpha_down = self
             .alpha_down
-            .ok_or(crate::ConfigError::Missing("alpha_down"))?;
-        if !crate::math::in_unit_interval(alpha_up) {
-            return Err(crate::ConfigError::Invalid("alpha_up must be in (0, 1)"));
-        }
-        if !crate::math::in_unit_interval(alpha_down) {
-            return Err(crate::ConfigError::Invalid("alpha_down must be in (0, 1)"));
+            .ok_or(crate::ConfigError::Missing("alpha_down"))?
+            .resolve()?;
+        if self.min_samples == 0 {
+            return Err(crate::ConfigError::Invalid("min_samples must be >= 1"));
         }
 
         Ok(AsymEma {
             alpha_up,
             alpha_down,
-            one_minus_alpha_up: 1.0 - alpha_up,
-            one_minus_alpha_down: 1.0 - alpha_down,
             value: 0.0,
             count: 0,
             min_samples: self.min_samples,
@@ -184,6 +170,42 @@ impl AsymEmaBuilder {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    #[allow(clippy::float_cmp)]
+    fn each_direction_uses_its_own_weight() {
+        let mut ema = AsymEma::builder()
+            .alpha_up(0.5)
+            .alpha_down(0.25)
+            .build()
+            .unwrap();
+        assert_eq!(ema.update(8.0).unwrap(), Some(8.0));
+        // Rising: 8 + 0.5 * (16 - 8).
+        assert_eq!(ema.update(16.0).unwrap(), Some(12.0));
+        // Falling: 12 + 0.25 * (4 - 12).
+        assert_eq!(ema.update(4.0).unwrap(), Some(10.0));
+        // Equal to the value counts as not rising; either weight leaves it.
+        assert_eq!(ema.update(10.0).unwrap(), Some(10.0));
+    }
+
+    #[test]
+    fn rejects_bad_weights_and_zero_min_samples() {
+        use crate::ConfigError::Invalid;
+        let base = || AsymEma::builder().alpha_up(0.5).alpha_down(0.5);
+        assert_eq!(
+            base().alpha_up(1.0).build().unwrap_err(),
+            Invalid("alpha must be in (0, 1)")
+        );
+        assert_eq!(
+            base().span_down(1).build().unwrap_err(),
+            Invalid("span must be at least 2")
+        );
+        assert_eq!(
+            base().min_samples(0).build().unwrap_err(),
+            Invalid("min_samples must be >= 1")
+        );
+        assert!(base().span_up(2).span_down(50).build().is_ok());
+    }
 
     #[test]
     fn fast_attack_slow_decay() {

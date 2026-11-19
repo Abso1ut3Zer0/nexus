@@ -32,15 +32,21 @@ and activity/oscillation counting.
 ## API
 
 ```rust
-let mut lc = LevelCrossing::<f64>::new(100.0);  // threshold
+let mut lc = LevelCrossing::<f64>::new(100.0).unwrap();  // threshold
 
-lc.update(95.0).unwrap();   // below — false
-lc.update(105.0).unwrap();  // crossed! — true
-lc.update(110.0).unwrap();  // still above — false
-lc.update(90.0).unwrap();   // crossed back — true
+assert_eq!(lc.update(95.0).unwrap(), None);                      // first sample
+assert_eq!(lc.update(105.0).unwrap(), Some(Direction::Rising));  // crossed up
+assert_eq!(lc.update(110.0).unwrap(), None);                     // still above
+assert_eq!(lc.update(90.0).unwrap(), Some(Direction::Falling));  // crossed back
 
 assert_eq!(lc.crossing_count(), 2);
 ```
+
+`update` returns the direction on the sample that lands on the other side of
+the threshold, and `None` otherwise. A sample exactly on the threshold is on
+neither side: it reports nothing and does not change sides. Touching the
+threshold and going back is not a crossing; passing through it is one,
+reported on arrival at the far side.
 
 ## Examples
 
@@ -54,4 +60,4 @@ assert_eq!(lc.crossing_count(), 2);
 |-----------|-----|-----|
 | `LevelCrossing::<f64>::update` | 3 cycles | 4 cycles |
 
-One comparison per sample. Branch perfectly predicted for stable signals.
+Two comparisons per sample. Branches perfectly predicted for stable signals.

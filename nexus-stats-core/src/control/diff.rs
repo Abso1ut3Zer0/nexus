@@ -5,7 +5,8 @@ use crate::Sample;
 /// Returns the change between consecutive samples.
 /// `None` on the first sample (no previous value to diff against).
 /// `FirstDiff<f64>` rejects NaN and infinity and returns `Result`;
-/// `FirstDiff<i64>` cannot fail.
+/// `FirstDiff<i64>` cannot fail: a difference beyond the `i64` range
+/// saturates at `i64::MIN` / `i64::MAX`.
 ///
 /// # Use Cases
 /// - Computing returns from prices
@@ -57,7 +58,7 @@ impl<T: Sample> FirstDiff<T> {
             self.prev = sample;
             return None;
         }
-        let diff = sample - self.prev;
+        let diff = sample.sat_sub(self.prev);
         self.prev = sample;
         Some(diff)
     }
@@ -79,6 +80,7 @@ impl FirstDiff<f64> {
 
 impl FirstDiff<i64> {
     /// Feeds a sample. Returns `x[n] - x[n-1]`, or `None` on the first sample.
+    #[must_use]
     #[inline]
     pub fn update(&mut self, sample: i64) -> Option<i64> {
         self.fold(sample)
@@ -96,8 +98,10 @@ impl<T: Sample> Default for FirstDiff<T> {
 ///
 /// Returns the acceleration (change in change) of a signal.
 /// `None` until the third sample.
+/// Computed as the difference of the two first differences.
 /// `SecondDiff<f64>` rejects NaN and infinity and returns `Result`;
-/// `SecondDiff<i64>` cannot fail.
+/// `SecondDiff<i64>` cannot fail: each subtraction saturates at the `i64`
+/// bounds.
 ///
 /// # Use Cases
 /// - Acceleration from position
@@ -120,6 +124,13 @@ impl<T: Sample> SecondDiff<T> {
             prev1: T::ZERO,
             count: 0,
         }
+    }
+
+    /// Samples processed since construction or `reset`.
+    #[inline]
+    #[must_use]
+    pub fn count(&self) -> u64 {
+        self.count
     }
 
     /// Whether a second difference is available (three samples seen).
@@ -149,7 +160,9 @@ impl<T: Sample> SecondDiff<T> {
             self.prev1 = sample;
             return None;
         }
-        let diff2 = sample - (self.prev1 + self.prev1) + self.prev2;
+        let diff2 = sample
+            .sat_sub(self.prev1)
+            .sat_sub(self.prev1.sat_sub(self.prev2));
         self.prev2 = self.prev1;
         self.prev1 = sample;
         Some(diff2)
@@ -174,6 +187,7 @@ impl SecondDiff<f64> {
 impl SecondDiff<i64> {
     /// Feeds a sample. Returns the second difference, or `None` on the
     /// first two samples.
+    #[must_use]
     #[inline]
     pub fn update(&mut self, sample: i64) -> Option<i64> {
         self.fold(sample)
@@ -190,6 +204,32 @@ impl<T: Sample> Default for SecondDiff<T> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn i64_differences_saturate_instead_of_overflowing() {
+        let mut fd = FirstDiff::<i64>::new();
+        assert_eq!(fd.update(i64::MIN), None);
+        assert_eq!(fd.update(i64::MAX), Some(i64::MAX));
+        assert_eq!(fd.update(i64::MIN), Some(i64::MIN));
+
+        let mut sd = SecondDiff::<i64>::new();
+        assert_eq!(sd.update(i64::MAX), None);
+        assert_eq!(sd.update(i64::MIN), None);
+        assert_eq!(sd.update(i64::MAX), Some(i64::MAX));
+        assert_eq!(sd.count(), 3);
+    }
+
+    #[test]
+    #[allow(clippy::float_cmp)]
+    fn second_diff_is_the_difference_of_first_differences() {
+        // 1, 4, 9, 16, 30: first differences 3, 5, 7, 14; second 2, 2, 7.
+        let mut sd = SecondDiff::<f64>::new();
+        let out: Vec<_> = [1.0, 4.0, 9.0, 16.0, 30.0]
+            .into_iter()
+            .map(|x| sd.update(x).unwrap())
+            .collect();
+        assert_eq!(out, [None, None, Some(2.0), Some(2.0), Some(7.0)]);
+    }
 
     // First diff
     #[test]

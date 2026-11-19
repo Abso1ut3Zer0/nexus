@@ -341,6 +341,33 @@ CHANGELOG entry in `nexus-stats-core`:
   `Covariance::variance_x` / `variance_y`, `Coefficients::eval`, and a
   `libm` feature on `nexus-stats-smoothing` (the umbrella forwards it).
 
+### Core foundations (blind audit, PR C1)
+
+- **`LevelCrossing::update` returns the direction.** `Result<Option<Direction>, _>`
+  for `f64`, `Option<Direction>` for `i64`: `Some(Rising)` / `Some(Falling)`
+  on a crossing, `None` otherwise. Replace `if lc.update(x)? {` with
+  `if lc.update(x)?.is_some() {`. A sample exactly on the threshold is no
+  longer "above": touching the threshold and going back is not a crossing.
+- **A seed is a value, not samples** (`Ema`, `Cusum`). `count()` starts at 0
+  on a seeded instance instead of at `min_samples`, and `reset()` returns to
+  the seed instead of discarding it. Code that read `count()` to mean
+  "primed" should call `is_primed()`.
+- **`Cusum` seeds must be non-negative**, and `Cusum::builder(0.0)` without
+  explicit thresholds is rejected at `build()` with the message that names
+  the cause. When both sides are over threshold the side further over is
+  reported (it was always `Rising`).
+- **`Slew::value()` returns `Option<T>`**: `None` before the first sample
+  (it was a fabricated 0).
+- **`span(n)` needs `n >= 2`** and `halflife(h)` a positive finite `h` on
+  `Ema` and `AsymEma`; the error names the knob that was set.
+  `AsymEma` rejects `min_samples(0)`.
+- **`SecondDiff<f64>`** is computed as the difference of first differences;
+  results can differ from 7.0 pre-releases in the last bit.
+- **`Hysteresis::new` rejects infinite thresholds.**
+- Additive: `CusumBuilder::restart_on_alarm()`, `SecondDiff::count()`,
+  `math::alpha_from_span`. The `i64` forms of `FirstDiff`, `SecondDiff` and
+  `Slew` saturate instead of overflowing.
+
 ## 5. Checklist
 
 1. Replace the names in tables 1 and 2, builders included.

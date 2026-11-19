@@ -19,10 +19,15 @@ exceed a threshold, a shift is detected.
 
 It tracks both directions independently:
 - **`Direction::Rising`** — the mean has increased (e.g., latency got worse)
-- **`Direction::Falling`** — the mean has decreased (e.g., latency recovered)
+- **`Direction::Falling`** — the mean has dropped below target (e.g., latency
+  fell under the baseline). A return *to* target reads `Direction::Neutral`.
 
-After detection, call `reset()` to clear the accumulated sum and start
-watching for the next shift.
+The sums are not cleared when a threshold is crossed: `update` keeps
+reporting the direction until the sum drains back under the threshold (as
+long as the excursion took to build) or you call `reset()`. Build with
+`.restart_on_alarm()` to zero the alarming side as it reports, so each alarm
+is a fresh detection. If both sides are over threshold at once, the one
+further over relative to its own threshold is reported.
 
 ## When to Use It
 
@@ -151,16 +156,23 @@ downward shifts (recovery) should be confirmed over a longer period.
 
 ### Seeding
 
-Skip warmup with a pre-loaded baseline:
+Start with evidence already accumulated, for example carried over from a
+previous session:
 
 ```rust
 let cusum = Cusum::builder(100.0)
     .slack(5.0)
     .threshold(50.0)
-    .seed_upper(0.0)  // start with zero accumulated evidence
-    .seed_lower(0.0)
+    .min_samples(20)
+    .seed_upper(30.0)  // 30 of the 50 needed for a Rising alarm
     .build().unwrap();
+assert!(cusum.is_primed());      // a seed primes; min_samples no longer applies
+assert_eq!(cusum.count(), 0);    // and is not counted as samples
 ```
+
+Seeds must be finite and non-negative. `reset()` returns to the seeds;
+`reset_with_target()` drops them, since they were calibrated against the old
+target.
 
 ### Integer Inputs
 

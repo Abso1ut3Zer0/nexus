@@ -120,6 +120,27 @@ contained.
   crate's filters and conjugate priors. `Hysteresis<i64>::update` and
   `LevelCrossing<i64>::update` are `#[must_use]` like their `f64` forms.
 
+- **`LevelCrossing::update` returns the direction of the crossing**
+  (`Option<Direction>`: `Rising`, `Falling`, or `None`) instead of a `bool`,
+  and a sample exactly on the threshold is on neither side. Before, the
+  threshold itself counted as "above", so a signal that touched it and went
+  back (-1, 0, -1 around 0) was counted as two crossings.
+- **A seed is a value, not samples** (`Ema`, `Cusum`). A seeded instance is
+  primed at once, `count()` counts only samples fed (it used to start at
+  `min_samples`), and `reset()` returns to the as-built state, seed included.
+  `Cusum::reset_with_target` drops the seeds, which were calibrated against
+  the old target.
+- **`Cusum` reports the side further over its threshold when both are over**
+  (it always reported `Rising`), and documents that an alarm persists until
+  the sum drains or `reset()` is called.
+- **`Slew::value()` returns `Option<T>`**, `None` before the first sample.
+- **`SecondDiff` is the difference of the two first differences.** Same value
+  as before up to floating-point rounding; the `i64` form no longer
+  overflows.
+- **`AsymEma::update` selects the weight and applies
+  `value += alpha * (sample - value)`**: one select instead of two, and two
+  fewer fields.
+
 ### Removed
 
 - **`SaturationF64`** ([#761](https://github.com/Abso1ut3Zer0/nexus/issues/761)):
@@ -138,6 +159,13 @@ contained.
 - **`HalfLifeBuilder`**: it had no knobs. `HalfLife::new()`.
 
 ### Added
+
+- `CusumBuilder::restart_on_alarm()`: zero the alarming side as it reports,
+  for one alarm per detection (the classic restarting CUSUM).
+- `SecondDiff::count()`.
+- `math::alpha_from_span`, and `math::EwWeight`, the shared resolver behind
+  the `alpha` / `halflife` / `span` builder knobs.
+- `Sample::sat_sub` / `sat_add`.
 
 - **`PollSaturation`** / **`PollSummary`** — consumer-side saturation from
   poll outcomes and the caller's stamps: no message timestamps, no queue
@@ -182,6 +210,22 @@ contained.
   `math::upper_tail_z`.
 
 ### Fixed
+
+- **A bad `halflife` or `span` is reported under its own name.** `Ema` and
+  `AsymEma` builders converted the knob to an alpha as it was set, so
+  `halflife(-1.0)` and `span(0)` surfaced as "alpha must be in (0, 1)".
+  `halflife` must be positive and finite and `span` at least 2.
+- **`Cusum::builder` validates the target first.** A NaN target was reported
+  as a slack error, and a target of 0 with default thresholds as "threshold
+  must be positive". Negative seeds are rejected (the sums are never
+  negative).
+- **`FirstDiff<i64>`, `SecondDiff<i64>` and `Slew<i64>` saturate** instead of
+  panicking in debug and wrapping in release on sentinel-sized inputs; their
+  docs said they cannot fail.
+- **`Hysteresis` documents its thresholds as inclusive**, which is what the
+  code does, and rejects infinite thresholds (the state could never change).
+- **`AsymEma` rejects `min_samples(0)`**, which made `value()` report
+  `Some(0.0)` before any sample.
 
 - **`feature_vector!` alignment soundness** ([#787](https://github.com/Abso1ut3Zer0/nexus/issues/787)): a `#[repr(packed)]` attribute from the caller lowered struct alignment to 1, so the safe `as_slice()` and `as_mut_slice()` could build a `&[f64]` from a misaligned pointer. A compile-time assertion now rejects any struct whose alignment falls below that of `f64`.
 - **`no_std` + `alloc` without `std` or `libm` builds again.** `CovarianceMatrix`
@@ -262,6 +306,11 @@ contained.
   now: fixed at build, no deque.
 
 ### Docs
+
+- `docs/control.md`, `docs/detection.md` and `docs/smoothing.md` are compiled
+  and run as doctests; their examples assert the values they describe. The
+  pages had drifted: `Direction::Up`/`Down`, reversed `Hysteresis::new`
+  arguments, a `LevelCrossing` example for the old return type.
 
 - Every monitoring type states its **weighting clock** (per `update` call, per
   event with its timestamp, the caller's timestamps, or none) and the module

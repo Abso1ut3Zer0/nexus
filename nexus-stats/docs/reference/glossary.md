@@ -67,8 +67,8 @@ Typically set to half the minimum shift to detect.
 **Sojourn Time** — Time an item spends in a queue (from enqueue to dequeue).
 CoDel operates on this metric.
 
-**Span** — EMA parameter equivalent to window size. `α = 2/(span + 1)`.
-The "center of mass" interpretation from pandas/finance.
+**Span** — EMA parameter equivalent to window size. `α = 2/(span + 1)`,
+the pandas `span` convention. Must be at least 2.
 
 **Threshold (h)** — CUSUM parameter. Accumulated evidence required before
 declaring a shift. Higher = fewer false alarms, slower detection.

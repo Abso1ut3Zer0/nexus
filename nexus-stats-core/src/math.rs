@@ -222,12 +222,81 @@ pub fn indicator(b: bool) -> f64 {
 
 /// EMA weight for a half-life of `halflife` samples: `1 - exp(-ln 2 / halflife)`.
 ///
-/// Builders validate `halflife > 0` before calling; the result is in `(0, 1)`.
+/// The result is in `(0, 1)` for a positive finite `halflife`; builders reach
+/// this through [`EwWeight::resolve`], which validates it first.
 #[cfg(any(feature = "std", feature = "libm"))]
 #[inline]
 #[must_use]
 pub fn alpha_from_halflife(halflife: f64) -> f64 {
     1.0 - exp(-core::f64::consts::LN_2 / halflife)
+}
+
+/// EMA weight for a span of `n` samples: `2 / (n + 1)`, the pandas `span`
+/// convention. In `(0, 1)` for `n >= 2`.
+#[inline]
+#[must_use]
+#[allow(clippy::cast_precision_loss)]
+pub fn alpha_from_span(n: u64) -> f64 {
+    2.0 / (n as f64 + 1.0)
+}
+
+/// How a builder was told its exponential weight: directly, as a half-life,
+/// or as a span. Builders store the knob the caller set and resolve it in
+/// `build`, so a bad value is reported under the name the caller used.
+#[doc(hidden)]
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum EwWeight {
+    /// The weight itself, in `(0, 1)`.
+    Alpha(f64),
+    /// Samples for a weight to decay by half; positive and finite.
+    #[cfg(any(feature = "std", feature = "libm"))]
+    Halflife(f64),
+    /// Pandas `span`; at least 2.
+    Span(u64),
+}
+
+impl EwWeight {
+    /// The weight in `(0, 1)`.
+    ///
+    /// # Errors
+    ///
+    /// `ConfigError::Invalid` naming the knob that was set: `alpha` outside
+    /// `(0, 1)`, a `halflife` that is not positive and finite, or a `span`
+    /// below 2.
+    #[inline]
+    pub fn resolve(self) -> Result<f64, crate::ConfigError> {
+        let alpha = match self {
+            Self::Alpha(a) => {
+                if !in_unit_interval(a) {
+                    return Err(crate::ConfigError::Invalid("alpha must be in (0, 1)"));
+                }
+                a
+            }
+            #[cfg(any(feature = "std", feature = "libm"))]
+            Self::Halflife(h) => {
+                if !positive_finite(h) {
+                    return Err(crate::ConfigError::Invalid(
+                        "halflife must be positive and finite",
+                    ));
+                }
+                alpha_from_halflife(h)
+            }
+            Self::Span(n) => {
+                if n < 2 {
+                    return Err(crate::ConfigError::Invalid("span must be at least 2"));
+                }
+                alpha_from_span(n)
+            }
+        };
+        // A half-life so long that `1 - exp(-x)` rounds to zero, or so short
+        // that it rounds to one, has no usable weight.
+        if !in_unit_interval(alpha) {
+            return Err(crate::ConfigError::Invalid(
+                "smoothing weight rounds outside (0, 1)",
+            ));
+        }
+        Ok(alpha)
+    }
 }
 
 /// `z` such that `P(Z > z) = p` for a standard normal, for `p` in `(0, 0.5]`:

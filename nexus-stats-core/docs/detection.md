@@ -17,19 +17,19 @@ For advanced detection (MOSUM, Shiryaev-Roberts, AdaptiveThreshold, RobustZScore
 
 Page's cumulative sum test. Two accumulators (`upper` and `lower`) track cumulative deviation from a target. A `threshold` crossing signals a persistent shift.
 
-```
+```text
 upper_t = max(0, upper_{t-1} + (sample - target - slack))
 lower_t = max(0, lower_{t-1} + (target - sample - slack))
 
-if upper_t > threshold -> upward shift
-if lower_t > threshold -> downward shift
+if upper_t > threshold -> Rising
+if lower_t > threshold -> Falling
 ```
 
 The `slack` parameter (typically 0.5 * expected_shift) prevents false alarms from normal noise.
 
 ### API
 
-```rust
+```rust,ignore
 impl Cusum {
     pub fn builder(target: f64) -> CusumBuilder;
     pub fn update(&mut self, sample: f64) -> Result<Option<Direction>, DataError>;
@@ -40,7 +40,13 @@ impl Cusum {
 }
 ```
 
-`update` returns `Ok(Some(Direction::Up))` or `Ok(Some(Direction::Down))` when a threshold crosses, else `Ok(None)`.
+`update` returns `Ok(None)` until `min_samples` samples have been seen (the default is 0, so by default never). After that it returns `Ok(Some(Direction::Rising))` while the upper sum is over its threshold, `Ok(Some(Direction::Falling))` while the lower sum is, and `Ok(Some(Direction::Neutral))` otherwise.
+
+### After an alarm
+
+The sums are not cleared when a threshold is crossed. `update` keeps reporting the direction until the sum drains back under the threshold, which takes as long as the excursion took to build, or until you call `reset()`. For one alarm per detection, build with `.restart_on_alarm()`: the alarming side is zeroed as it reports.
+
+If both sides are over threshold at once, the side further over relative to its own threshold is reported. `upper()` and `lower()` expose both sums.
 
 ### Example — latency shift detector
 
@@ -52,16 +58,22 @@ let target = 120.0; // expected latency in us
 let mut cusum = Cusum::builder(target)
     .slack(10.0)          // ignore noise up to 10us
     .threshold(50.0)      // cumulative budget before alert
+    .restart_on_alarm()   // one alarm per detection
     .build()
     .unwrap();
 
-for &latency in &latencies {
+// On target, then a persistent +30us shift. Each shifted sample adds
+// 30 - 10 = 20 to the upper sum: 20, 40, 60 crosses the threshold of 50.
+let latencies = [120.0, 125.0, 115.0, 150.0, 150.0, 150.0, 150.0];
+let mut alarms = Vec::new();
+for (i, &latency) in latencies.iter().enumerate() {
     match cusum.update(latency).unwrap() {
-        Some(Direction::Up)   => println!("latency regime shifted UP"),
-        Some(Direction::Down) => println!("latency regime shifted DOWN"),
-        None => {}
+        Some(Direction::Rising) => alarms.push((i, "up")),
+        Some(Direction::Falling) => alarms.push((i, "down")),
+        Some(Direction::Neutral) | None => {}
     }
 }
+assert_eq!(alarms, [(5, "up")]);
 ```
 
 **Use for:** detecting persistent mean shifts — e.g. a GC policy change added 20us to every request, and you want to know within a dozen samples.
@@ -83,12 +95,15 @@ use nexus_stats_core::detection::DistributionShift;
 
 let mut ds = DistributionShift::builder()
     .fast_window(100)
-    .build();
+    .build()
+    .unwrap();
 
+let returns = (0..250).map(|i| f64::from(i % 7) - 3.0);
 for r in returns { ds.update(r).unwrap(); }
 
 if ds.is_shifted(2.0) {
-    // z-score > 2 on kurtosis or skewness shift
+    // the fast window's kurtosis or skewness differs from the baseline's
+    // by more than 2.0
     println!("distribution shape changed");
 }
 ```
