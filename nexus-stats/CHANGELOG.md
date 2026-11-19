@@ -108,8 +108,10 @@ one naming convention across the family. Migration guide:
 - Carried from core (blind audit, PR C2): `ZScoreNorm::update` scores
   before it folds, so outliers are no longer capped; `QuantileNorm` is a P²
   histogram; `DistributionShift::update` returns a `ShapeShift` once per
-  completed window; `normalize` returns `Result<Option<T>, _>` on the three
-  normalizers. See the migration guide.
+  completed window, its `kurtosis_shift()` / `skewness_shift()` /
+  `is_shifted()` readers are removed, and `is_primed()` means the first
+  window has completed; `normalize` returns `Result<Option<T>, _>` on the
+  three normalizers. See the migration guide.
 
 ### Removed
 

@@ -14,9 +14,9 @@ const SD_FLOOR: f64 = 1e-14;
 /// Returns `(sample - mean) / std_dev` using exponentially weighted
 /// estimates of the mean and standard deviation of the samples seen before
 /// it. Use it to put streams with different scales on a common one, and as
-/// an outlier score. Against a constant
-/// stream, which has no scale, a different value scores `+inf` or `-inf`;
-/// see [`update`](ZScoreNorm::update).
+/// an outlier score. Against a constant stream, which has no scale, a
+/// different value scores `+inf` or `-inf`; see
+/// [`update`](ZScoreNorm::update).
 ///
 /// `T` is the sample type at the boundary, `f64` or `f32`; the mean and
 /// variance accumulate in `f64` either way, so `ZScoreNorm<f32>` is for
@@ -95,7 +95,9 @@ impl<T: Float> ZScoreNorm<T> {
     /// An infinite score is not valid input to the other types in this
     /// crate, which reject it; clamp it before feeding it on.
     /// `ZScoreNorm<f32>` also returns infinity for a finite score too large
-    /// for `f32`.
+    /// for `f32`. As everywhere in this crate, inputs large enough to
+    /// overflow the accumulated variance (around `1e154` and beyond) are
+    /// outside the supported range, and can score NaN.
     ///
     /// # Errors
     ///

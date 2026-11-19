@@ -83,8 +83,9 @@ impl<T: Float> MinMaxNorm<T> {
     /// Normalizes an arbitrary value against current windowed min/max
     /// without updating state. Not clamped: a value outside the tracked
     /// range maps below 0 or above 1. [`update`](Self::update) differs: it
-    /// widens the range to include its sample first, so it never reads
-    /// outside [0, 1].
+    /// widens the range to include its sample first (or clamps a late
+    /// sample, which does not enter the window), so it never reads outside
+    /// [0, 1].
     ///
     /// Returns `Ok(None)` if not primed.
     ///
