@@ -116,7 +116,7 @@ shift-based EMA internally.
 |-----------|------|---------|----------|
 | `alpha` | Smoothing factor (0,1) | Must set | Start with 0.1, adjust |
 | `halflife` | Samples to decay by half | Computes alpha | More intuitive than raw alpha |
-| `span` | Center of mass window | Computes alpha | pandas convention: alpha = 2/(n+1) |
+| `span` | Span in samples (n >= 2) | Computes alpha | pandas `span`: alpha = 2/(n+1) |
 | `min_samples` | Warmup before output | 1 | Set higher for noisy startup |
 
 ### Seeding
@@ -128,7 +128,13 @@ let ema = Ema::builder()
     .alpha(0.1)
     .seed(100.0)  // start from known value
     .build().unwrap();
+assert_eq!(ema.value(), Some(100.0));
+assert_eq!(ema.count(), 0);
 ```
+
+A seed is a value, not samples: the EMA is primed at once (`min_samples` no
+longer applies), `count()` still counts only samples fed, the first sample is
+smoothed into the seed, and `reset()` returns to the seed.
 
 ## Examples by Domain
 

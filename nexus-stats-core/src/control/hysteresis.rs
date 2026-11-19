@@ -2,9 +2,10 @@ use crate::Sample;
 
 /// Hysteresis filter — Schmitt trigger with separate high/low thresholds.
 ///
-/// Transitions to `true` when sample exceeds the high threshold.
-/// Transitions to `false` when sample drops below the low threshold.
-/// Between the thresholds, the state is unchanged — preventing oscillation.
+/// Transitions to `true` when a sample reaches the high threshold
+/// (`sample >= high`) and to `false` when one reaches the low threshold
+/// (`sample <= low`). Both bounds are inclusive. Strictly between them the
+/// state is unchanged, which is what prevents oscillation.
 /// `Hysteresis<f64>` rejects NaN and infinity and returns `Result`;
 /// `Hysteresis<i64>` cannot fail.
 ///
@@ -25,11 +26,16 @@ impl<T: Sample> Hysteresis<T> {
     ///
     /// # Errors
     ///
-    /// Returns `ConfigError::Invalid` if `low_threshold` is not strictly
-    /// below `high_threshold` (a NaN threshold fails this test).
+    /// Returns `ConfigError::Invalid` if either threshold is NaN or infinite
+    /// (an infinite threshold can never be reached, so the state would never
+    /// change in that direction), or if `low_threshold` is not strictly
+    /// below `high_threshold`.
     #[inline]
     #[allow(clippy::neg_cmp_op_on_partial_ord)]
     pub fn new(low_threshold: T, high_threshold: T) -> Result<Self, crate::ConfigError> {
+        if !low_threshold.is_finite() || !high_threshold.is_finite() {
+            return Err(crate::ConfigError::Invalid("thresholds must be finite"));
+        }
         // Negated form rejects NaN (all NaN comparisons are false).
         if !(low_threshold < high_threshold) {
             return Err(crate::ConfigError::Invalid(
@@ -65,7 +71,8 @@ impl<T: Sample> Hysteresis<T> {
         self.count > 0
     }
 
-    /// Resets the state to `false`.
+    /// Resets the state to `false` and the sample count to zero. The
+    /// thresholds are kept.
     #[inline]
     pub fn reset(&mut self) {
         self.state = false;
@@ -110,6 +117,29 @@ impl Hysteresis<i64> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn both_thresholds_are_inclusive() {
+        let mut h = Hysteresis::<f64>::new(60.0, 80.0).unwrap();
+        // Just under high does not arm; exactly high does.
+        assert!(!h.update(79.999).unwrap());
+        assert!(h.update(80.0).unwrap());
+        // Just over low does not disarm; exactly low does.
+        assert!(h.update(60.001).unwrap());
+        assert!(!h.update(60.0).unwrap());
+
+        let mut h = Hysteresis::<i64>::new(60, 80).unwrap();
+        assert!(!h.update(79));
+        assert!(h.update(80));
+        assert!(h.update(61));
+        assert!(!h.update(60));
+    }
+
+    #[test]
+    fn rejects_infinite_thresholds() {
+        assert!(Hysteresis::<f64>::new(f64::NEG_INFINITY, 80.0).is_err());
+        assert!(Hysteresis::<f64>::new(60.0, f64::INFINITY).is_err());
+    }
 
     #[test]
     fn rising_crosses_high() {

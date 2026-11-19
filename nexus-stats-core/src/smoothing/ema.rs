@@ -34,6 +34,13 @@ pub(crate) const fn log2_of_span_plus_one(span: u64) -> u32 {
 /// - `halflife(h)` — samples for weight to decay by half.
 /// - `span(n)` — pandas/finance convention, alpha = 2/(n+1).
 ///
+/// # Seeding
+///
+/// `seed(v)` starts the average at `v`, as if it had already converged
+/// there: the value is available at once and the first sample is smoothed
+/// into it. `count()` still counts only samples fed, and `reset()` returns
+/// to the seed.
+///
 /// # Use Cases
 /// - Smoothing noisy latency measurements
 /// - Tracking moving average of throughput
@@ -44,13 +51,18 @@ pub struct Ema {
     one_minus_alpha: f64,
     value: f64,
     count: u64,
-    min_samples: u64,
+    /// Samples needed before the value is reported: `min_samples`, or 0 when
+    /// seeded (a seed is a value from the start). Zero therefore also means
+    /// "do not initialize from the first sample".
+    prime_at: u64,
+    /// What `reset` restores: the seed, or 0.0 when unseeded.
+    start: f64,
 }
 
 /// Builder for [`Ema`].
 #[derive(Debug, Clone)]
 pub struct EmaBuilder {
-    alpha: Option<f64>,
+    weight: Option<crate::math::EwWeight>,
     min_samples: u64,
     seed: Option<f64>,
 }
@@ -61,7 +73,7 @@ impl Ema {
     #[must_use]
     pub fn builder() -> EmaBuilder {
         EmaBuilder {
-            alpha: None,
+            weight: None,
             min_samples: 1,
             seed: None,
         }
@@ -69,7 +81,8 @@ impl Ema {
 
     /// Feeds a sample. Returns smoothed value once primed.
     ///
-    /// First sample initializes the EMA directly (no smoothing).
+    /// The first sample initializes the EMA directly (no smoothing), unless
+    /// the EMA was seeded, in which case it is smoothed into the seed.
     ///
     /// # Errors
     ///
@@ -78,30 +91,21 @@ impl Ema {
     #[inline]
     pub fn update(&mut self, sample: f64) -> Result<Option<f64>, crate::DataError> {
         check_finite!(sample);
+        let first_unseeded = self.count == 0 && self.prime_at != 0;
         self.count += 1;
-
-        if self.count == 1 {
-            self.value = sample;
+        self.value = if first_unseeded {
+            sample
         } else {
-            self.value = self.alpha.fma(sample, self.one_minus_alpha * self.value);
-        }
-
-        if self.count >= self.min_samples {
-            Ok(Some(self.value))
-        } else {
-            Ok(None)
-        }
+            self.alpha.fma(sample, self.one_minus_alpha * self.value)
+        };
+        Ok(self.value())
     }
 
     /// Current smoothed value, or `None` if not primed.
     #[inline]
     #[must_use]
     pub fn value(&self) -> Option<f64> {
-        if self.count >= self.min_samples {
-            Some(self.value)
-        } else {
-            None
-        }
+        self.is_primed().then_some(self.value)
     }
 
     /// The smoothing factor alpha.
@@ -111,24 +115,26 @@ impl Ema {
         self.alpha
     }
 
-    /// Number of samples processed.
+    /// Number of samples processed since construction or `reset`. A seed is
+    /// not a sample.
     #[inline]
     #[must_use]
     pub fn count(&self) -> u64 {
         self.count
     }
 
-    /// Whether the EMA has reached `min_samples`.
+    /// Whether a value is available: `min_samples` reached, or seeded.
     #[inline]
     #[must_use]
     pub fn is_primed(&self) -> bool {
-        self.count >= self.min_samples
+        self.count >= self.prime_at
     }
 
-    /// Resets to uninitialized state. Parameters unchanged.
+    /// Returns to the as-built state: no samples, and the seed if one was
+    /// configured. Parameters unchanged.
     #[inline]
     pub fn reset(&mut self) {
-        self.value = 0.0;
+        self.value = self.start;
         self.count = 0;
     }
 
@@ -153,30 +159,28 @@ impl EmaBuilder {
     #[inline]
     #[must_use]
     pub fn alpha(mut self, alpha: f64) -> Self {
-        self.alpha = Some(alpha);
+        self.weight = Some(crate::math::EwWeight::Alpha(alpha));
         self
     }
 
-    /// Samples for weight to decay by half.
+    /// Samples for weight to decay by half. Must be positive and finite.
     ///
     /// Computes: `alpha = 1 - exp(-ln(2) / halflife)`
     #[inline]
     #[must_use]
     #[cfg(any(feature = "std", feature = "libm"))]
     pub fn halflife(mut self, halflife: f64) -> Self {
-        let alpha = crate::math::alpha_from_halflife(halflife);
-        self.alpha = Some(alpha);
+        self.weight = Some(crate::math::EwWeight::Halflife(halflife));
         self
     }
 
-    /// Number of samples for center of mass (pandas convention).
+    /// Span in samples (the pandas `span` convention). Must be at least 2.
     ///
     /// Computes: `alpha = 2 / (n + 1)`
     #[inline]
     #[must_use]
     pub fn span(mut self, n: u64) -> Self {
-        let alpha = 2.0 / (n as f64 + 1.0);
-        self.alpha = Some(alpha);
+        self.weight = Some(crate::math::EwWeight::Span(n));
         self
     }
 
@@ -190,8 +194,9 @@ impl EmaBuilder {
 
     /// Pre-loads the smoothed value from calibration data.
     ///
-    /// When seeded, `is_primed()` returns true immediately and
-    /// the first `update()` applies smoothing (no raw initialization).
+    /// When seeded, `is_primed()` returns true immediately (`min_samples`
+    /// no longer applies), the first `update()` applies smoothing (no raw
+    /// initialization), and `reset()` returns to the seed.
     #[inline]
     #[must_use]
     pub fn seed(mut self, value: f64) -> Self {
@@ -203,14 +208,16 @@ impl EmaBuilder {
     ///
     /// # Errors
     ///
-    /// - Alpha must have been set (via `alpha`, `halflife`, or `span`).
-    /// - Alpha must be in (0, 1) exclusive.
+    /// - `Missing("alpha")` if none of `alpha`, `halflife`, `span` was set.
+    /// - `Invalid` if `alpha` is outside (0, 1), `halflife` is not positive
+    ///   and finite, or `span` is below 2; the message names the knob set.
+    /// - `Invalid` if `min_samples` is 0 or the seed is not finite.
     #[inline]
     pub fn build(self) -> Result<Ema, crate::ConfigError> {
-        let alpha = self.alpha.ok_or(crate::ConfigError::Missing("alpha"))?;
-        if !crate::math::in_unit_interval(alpha) {
-            return Err(crate::ConfigError::Invalid("EMA alpha must be in (0, 1)"));
-        }
+        let alpha = self
+            .weight
+            .ok_or(crate::ConfigError::Missing("alpha"))?
+            .resolve()?;
         if self.min_samples == 0 {
             return Err(crate::ConfigError::Invalid("EMA min_samples must be >= 1"));
         }
@@ -218,16 +225,18 @@ impl EmaBuilder {
             return Err(crate::ConfigError::Invalid("EMA seed must be finite"));
         }
 
-        let (value, count) = self
-            .seed
-            .map_or((0.0, 0), |seed_val| (seed_val, self.min_samples));
-
+        let start = self.seed.unwrap_or(0.0);
         Ok(Ema {
             alpha,
             one_minus_alpha: 1.0 - alpha,
-            value,
-            count,
-            min_samples: self.min_samples,
+            value: start,
+            count: 0,
+            prime_at: if self.seed.is_some() {
+                0
+            } else {
+                self.min_samples
+            },
+            start,
         })
     }
 }
@@ -235,6 +244,99 @@ impl EmaBuilder {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    #[allow(clippy::float_cmp)]
+    fn update_follows_the_recurrence_exactly() {
+        // alpha 0.25: 8, then 8 + 0.25*(16-8) = 10, then 10 + 0.25*(2-10) = 8.
+        let mut ema = Ema::builder().alpha(0.25).build().unwrap();
+        assert_eq!(ema.update(8.0).unwrap(), Some(8.0));
+        assert_eq!(ema.update(16.0).unwrap(), Some(10.0));
+        assert_eq!(ema.update(2.0).unwrap(), Some(8.0));
+    }
+
+    #[test]
+    #[allow(clippy::float_cmp)]
+    fn seed_is_a_value_not_samples() {
+        let mut ema = Ema::builder()
+            .alpha(0.25)
+            .min_samples(10)
+            .seed(100.0)
+            .build()
+            .unwrap();
+        // Primed by the seed alone; no sample has been counted.
+        assert!(ema.is_primed());
+        assert_eq!(ema.value(), Some(100.0));
+        assert_eq!(ema.count(), 0);
+        // The first sample is smoothed into the seed, not substituted for it.
+        assert_eq!(ema.update(200.0).unwrap(), Some(125.0));
+        assert_eq!(ema.count(), 1);
+    }
+
+    #[test]
+    #[allow(clippy::float_cmp)]
+    fn reset_returns_to_the_seed() {
+        let mut ema = Ema::builder().alpha(0.5).seed(100.0).build().unwrap();
+        let _ = ema.update(0.0).unwrap();
+        ema.reset();
+        assert_eq!(ema.count(), 0);
+        assert_eq!(ema.value(), Some(100.0));
+        assert_eq!(ema.update(200.0).unwrap(), Some(150.0));
+    }
+
+    #[test]
+    #[allow(clippy::float_cmp)]
+    fn unseeded_reset_reinitializes_from_the_next_sample() {
+        let mut ema = Ema::builder().alpha(0.5).min_samples(2).build().unwrap();
+        let _ = ema.update(10.0).unwrap();
+        let _ = ema.update(20.0).unwrap();
+        ema.reset();
+        assert_eq!(ema.value(), None);
+        assert_eq!(ema.update(40.0).unwrap(), None);
+        assert_eq!(ema.update(60.0).unwrap(), Some(50.0));
+    }
+
+    #[test]
+    fn a_bad_knob_is_reported_under_its_own_name() {
+        use crate::ConfigError::Invalid;
+        let err = |b: EmaBuilder| b.build().unwrap_err();
+        assert_eq!(
+            err(Ema::builder().alpha(1.0)),
+            Invalid("alpha must be in (0, 1)")
+        );
+        assert_eq!(
+            err(Ema::builder().alpha(f64::NAN)),
+            Invalid("alpha must be in (0, 1)")
+        );
+        assert_eq!(
+            err(Ema::builder().span(1)),
+            Invalid("span must be at least 2")
+        );
+        assert_eq!(
+            err(Ema::builder().span(0)),
+            Invalid("span must be at least 2")
+        );
+        #[cfg(any(feature = "std", feature = "libm"))]
+        for h in [0.0, -1.0, f64::NAN, f64::INFINITY] {
+            assert_eq!(
+                err(Ema::builder().halflife(h)),
+                Invalid("halflife must be positive and finite")
+            );
+        }
+        #[cfg(any(feature = "std", feature = "libm"))]
+        for h in [1e-3, 1e300] {
+            assert_eq!(
+                err(Ema::builder().halflife(h)),
+                Invalid("halflife is too small or too large for a usable weight")
+            );
+        }
+        assert!(Ema::builder().span(2).build().is_ok());
+        assert!(Ema::builder().span(u64::MAX).build().is_ok());
+        assert_eq!(
+            err(Ema::builder().alpha(0.5).seed(f64::NAN)),
+            Invalid("EMA seed must be finite")
+        );
+    }
 
     #[test]
     fn first_sample_initializes() {

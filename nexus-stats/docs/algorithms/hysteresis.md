@@ -79,8 +79,8 @@ let mut hyst = Hysteresis::<f64>::new(
 
 | Parameter | What | Guidance |
 |-----------|------|----------|
-| `low_threshold` | Below this → output goes LOW | Set below the noise floor of your signal at the boundary |
-| `high_threshold` | Above this → output goes HIGH | Set above the noise floor |
+| `low_threshold` | At or below this → output goes LOW | Set below the noise floor of your signal at the boundary |
+| `high_threshold` | At or above this → output goes HIGH | Set above the noise floor |
 
 **Dead zone width** = `high - low`. Wider = more stable, but slower to
 react to genuine transitions. Size it to be wider than your typical noise

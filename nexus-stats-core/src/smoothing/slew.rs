@@ -6,7 +6,7 @@ use crate::Sample;
 /// output follows the input but moves at most `max_rate` per update, in
 /// either direction. The first sample is passed through.
 /// `Slew<f64>` rejects NaN and infinity and returns `Result`;
-/// `Slew<i64>` cannot fail.
+/// `Slew<i64>` cannot fail: the allowed band saturates at the `i64` bounds.
 ///
 /// # Use Cases
 /// - Smoothing displayed values without an EMA's lag
@@ -42,11 +42,11 @@ impl<T: Sample> Slew<T> {
         })
     }
 
-    /// Current output value.
+    /// Current output value, or `None` before the first sample.
     #[inline]
     #[must_use]
-    pub fn value(&self) -> T {
-        self.value
+    pub fn value(&self) -> Option<T> {
+        self.is_primed().then_some(self.value)
     }
 
     /// Samples processed since construction or `reset`.
@@ -77,7 +77,10 @@ impl<T: Sample> Slew<T> {
             self.value = sample;
             return sample;
         }
-        self.value = sample.clamp_to(self.value - self.max_rate, self.value + self.max_rate);
+        self.value = sample.clamp_to(
+            self.value.sat_sub(self.max_rate),
+            self.value.sat_add(self.max_rate),
+        );
         self.value
     }
 }
@@ -98,6 +101,7 @@ impl Slew<f64> {
 
 impl Slew<i64> {
     /// Feeds a sample. Returns the rate-limited output.
+    #[must_use]
     #[inline]
     pub fn update(&mut self, sample: i64) -> i64 {
         self.fold(sample)
@@ -107,6 +111,22 @@ impl Slew<i64> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn i64_band_saturates_at_the_type_bounds() {
+        let mut s = Slew::<i64>::new(10).unwrap();
+        assert_eq!(s.value(), None);
+        assert_eq!(s.update(i64::MAX - 3), i64::MAX - 3);
+        // The band's upper edge would overflow; it saturates and the sample
+        // inside it passes.
+        assert_eq!(s.update(i64::MAX), i64::MAX);
+        assert_eq!(s.update(0), i64::MAX - 10);
+
+        let mut s = Slew::<i64>::new(i64::MAX).unwrap();
+        assert_eq!(s.update(i64::MIN), i64::MIN);
+        assert_eq!(s.update(i64::MAX), -1);
+        assert_eq!(s.value(), Some(-1));
+    }
 
     #[test]
     #[allow(clippy::float_cmp)]

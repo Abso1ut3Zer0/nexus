@@ -52,6 +52,14 @@ pub trait Sample:
     /// The value halfway between `self` and `other`, without overflow.
     fn midpoint(self, other: Self) -> Self;
 
+    /// `self - other`. Integers saturate at the type's bounds, so a
+    /// difference of sentinel-sized values clamps where plain `-` would
+    /// overflow; floats subtract as usual.
+    fn sat_sub(self, other: Self) -> Self;
+
+    /// `self + other`, saturating for integers as [`sat_sub`](Self::sat_sub).
+    fn sat_add(self, other: Self) -> Self;
+
     /// The value as `f64` (exact for `f64`, rounded for large `i64`).
     fn to_f64(self) -> f64;
 
@@ -240,6 +248,16 @@ impl Sample for f64 {
     }
 
     #[inline]
+    fn sat_sub(self, other: Self) -> Self {
+        self - other
+    }
+
+    #[inline]
+    fn sat_add(self, other: Self) -> Self {
+        self + other
+    }
+
+    #[inline]
     fn to_f64(self) -> f64 {
         self
     }
@@ -248,9 +266,8 @@ impl Sample for f64 {
     type EmaConfig = f64;
     const EMA_CONFIG_NAME: &'static str = "alpha";
     #[inline]
-    #[allow(clippy::cast_precision_loss)]
     fn ema_config_from_span(span: u64) -> f64 {
-        2.0 / (span as f64 + 1.0)
+        crate::math::alpha_from_span(span)
     }
     type Decay = f64;
     #[inline]
@@ -284,6 +301,16 @@ impl Sample for i64 {
     #[inline]
     fn midpoint(self, other: Self) -> Self {
         i64::midpoint(self, other)
+    }
+
+    #[inline]
+    fn sat_sub(self, other: Self) -> Self {
+        self.saturating_sub(other)
+    }
+
+    #[inline]
+    fn sat_add(self, other: Self) -> Self {
+        self.saturating_add(other)
     }
 
     #[inline]
