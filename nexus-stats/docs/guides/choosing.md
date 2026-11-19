@@ -105,7 +105,7 @@ type with timestamps, or `PollSaturation`, which is weighted per message.
 **What kind of relationship?**
 
 - Simple linear trend (slope + intercept) → [**LinearRegression**](../algorithms/linear-regression.md)
-  - Closed-form solve, 48 bytes, ~6 cycles. The default for trend estimation.
+  - Closed-form solve, 72 bytes, ~8 cycles. The default for trend estimation.
 - Linear trend that adapts to regime changes → [**EwLinearRegression**](../algorithms/linear-regression.md)
   - Same but with exponential decay. "What's the *current* slope?"
 - Proportional relationship through origin → `LinearRegression::through_origin()`

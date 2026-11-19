@@ -27,11 +27,19 @@ use nexus_stats_core::math::MulAdd;
 /// ```
 #[derive(Debug, Clone)]
 pub struct LinearRegression {
-    sum_x: f64,
-    sum_x2: f64,
-    sum_y: f64,
-    sum_xy: f64,
-    sum_y2: f64,
+    // With an intercept: running means and co-moments about them (Welford),
+    // so a large offset in x or y never cancels. The means are kept relative
+    // to the latest sample (`anchor_*`), so every quantity the update rounds
+    // is on the scale of the data's spread, not its offset. Through the
+    // origin: raw sums of squares and cross products, which carry no
+    // subtraction.
+    anchor_x: f64,
+    anchor_y: f64,
+    mean_x: f64,
+    mean_y: f64,
+    sxx: f64,
+    sxy: f64,
+    syy: f64,
     count: u64,
     intercept: bool,
 }
@@ -55,11 +63,13 @@ impl LinearRegression {
     #[must_use]
     pub fn new() -> Self {
         Self {
-            sum_x: 0.0,
-            sum_x2: 0.0,
-            sum_y: 0.0,
-            sum_xy: 0.0,
-            sum_y2: 0.0,
+            anchor_x: 0.0,
+            anchor_y: 0.0,
+            mean_x: 0.0,
+            mean_y: 0.0,
+            sxx: 0.0,
+            sxy: 0.0,
+            syy: 0.0,
             count: 0,
             intercept: true,
         }
@@ -70,11 +80,13 @@ impl LinearRegression {
     #[must_use]
     pub fn through_origin() -> Self {
         Self {
-            sum_x: 0.0,
-            sum_x2: 0.0,
-            sum_y: 0.0,
-            sum_xy: 0.0,
-            sum_y2: 0.0,
+            anchor_x: 0.0,
+            anchor_y: 0.0,
+            mean_x: 0.0,
+            mean_y: 0.0,
+            sxx: 0.0,
+            sxy: 0.0,
+            syy: 0.0,
             count: 0,
             intercept: false,
         }
@@ -97,37 +109,44 @@ impl LinearRegression {
         check_finite!(x);
         check_finite!(y);
         self.count += 1;
-        self.sum_x += x;
-        self.sum_x2 = x.fma(x, self.sum_x2);
-        self.sum_y += y;
-        self.sum_xy = x.fma(y, self.sum_xy);
-        self.sum_y2 = y.fma(y, self.sum_y2);
+        if self.intercept {
+            let w = 1.0 / self.count as f64;
+            // Offsets from the previous anchor; exact for nearby values.
+            let sx = x - self.anchor_x;
+            let sy = y - self.anchor_y;
+            let dx = sx - self.mean_x; // x minus the old mean
+            let dy = sy - self.mean_y;
+            let ex = w.fma(-dx, dx); // x minus the new mean: dx * (1 - w)
+            let ey = w.fma(-dy, dy);
+            self.sxx = dx.fma(ex, self.sxx);
+            self.sxy = dx.fma(ey, self.sxy);
+            self.syy = dy.fma(ey, self.syy);
+            // Re-anchor on this sample: the new mean sits at -e from it.
+            self.anchor_x = x;
+            self.anchor_y = y;
+            self.mean_x = -ex;
+            self.mean_y = -ey;
+        } else {
+            self.sxx = x.fma(x, self.sxx);
+            self.sxy = x.fma(y, self.sxy);
+            self.syy = y.fma(y, self.syy);
+        }
         Ok(())
     }
 
     /// Slope of the fit, or `None` if not primed.
     #[must_use]
     pub fn slope(&self) -> Option<f64> {
-        if (self.count as usize) < self.dim() {
+        if !self.is_primed() {
             return None;
         }
-        if self.intercept {
-            let n = self.count as f64;
-            let denom = n.fma(self.sum_x2, -(self.sum_x * self.sum_x));
-            // Zero to within the rounding of n accumulations of each of the two
-            // terms that cancelled (each carries ~EPS·n·Σx²): the x values are
-            // constant to within 2·sqrt(EPS) of their magnitude and the slope
-            // is undefined.
-            if denom <= 4.0 * f64::EPSILON * n * n * self.sum_x2 {
-                return None;
-            }
-            Some(n.fma(self.sum_xy, -(self.sum_x * self.sum_y)) / denom)
-        } else {
-            if self.sum_x2 == 0.0 {
-                return None;
-            }
-            Some(self.sum_xy / self.sum_x2)
+        // `sxx` is zero only when every x is the same (exactly: the anchored
+        // update rounds nothing for equal inputs), and never negative. Any
+        // representable spread, even one tick at a large offset, is real.
+        if self.sxx <= 0.0 {
+            return None;
         }
+        Some(self.sxy / self.sxx)
     }
 
     /// Intercept value, or `None` if not primed or no intercept.
@@ -137,8 +156,7 @@ impl LinearRegression {
             return None;
         }
         let slope = self.slope()?;
-        let n = self.count as f64;
-        Some(slope.fma(-self.sum_x, self.sum_y) / n)
+        Some(slope.fma(-(self.anchor_x + self.mean_x), self.anchor_y + self.mean_y))
     }
 
     /// R² goodness of fit, or `None` if not enough data.
@@ -146,31 +164,14 @@ impl LinearRegression {
     /// With intercept: centered R² = 1 - SS_res/SS_tot.
     /// Without intercept: uncentered R² = 1 - SS_res/Σy².
     #[must_use]
-    #[allow(clippy::suboptimal_flops)]
     pub fn r_squared(&self) -> Option<f64> {
+        // Both modes reduce to sxy^2 / (sxx * syy): centered sums with an
+        // intercept, raw sums through the origin.
         let slope = self.slope()?;
-        let n = self.count as f64;
-
-        // SS_res = Σy² - 2*slope*Σxy - 2*intercept*Σy + slope²*Σx² + 2*slope*intercept*Σx + n*intercept²
-        // Simplified via the closed-form:
-        let (ss_res, ss_tot) = if self.intercept {
-            let intercept = (self.sum_y - slope * self.sum_x) / n;
-            let ss_res = self.sum_y2 - 2.0 * slope * self.sum_xy - 2.0 * intercept * self.sum_y
-                + slope * slope * self.sum_x2
-                + 2.0 * slope * intercept * self.sum_x
-                + n * intercept * intercept;
-            let ss_tot = self.sum_y2 - self.sum_y * self.sum_y / n;
-            (ss_res, ss_tot)
-        } else {
-            let ss_res = self.sum_y2 - 2.0 * slope * self.sum_xy + slope * slope * self.sum_x2;
-            (ss_res, self.sum_y2)
-        };
-
-        if ss_tot <= 0.0 {
+        if self.syy <= 0.0 {
             return None;
         }
-
-        Some(1.0 - ss_res / ss_tot)
+        Some((slope * self.sxy / self.syy).clamp(0.0, 1.0))
     }
 
     /// Predict y for a given x.
@@ -178,8 +179,11 @@ impl LinearRegression {
     pub fn predict(&self, x: f64) -> Option<f64> {
         let slope = self.slope()?;
         if self.intercept {
-            let intercept = self.intercept()?;
-            Some(slope.fma(x, intercept))
+            // About the mean, so a large x offset cancels before it multiplies.
+            Some(slope.fma(
+                (x - self.anchor_x) - self.mean_x,
+                self.anchor_y + self.mean_y,
+            ))
         } else {
             Some(slope * x)
         }
@@ -209,11 +213,13 @@ impl LinearRegression {
     /// Resets to empty state. Intercept setting unchanged.
     #[inline]
     pub fn reset(&mut self) {
-        self.sum_x = 0.0;
-        self.sum_x2 = 0.0;
-        self.sum_y = 0.0;
-        self.sum_xy = 0.0;
-        self.sum_y2 = 0.0;
+        self.anchor_x = 0.0;
+        self.anchor_y = 0.0;
+        self.mean_x = 0.0;
+        self.mean_y = 0.0;
+        self.sxx = 0.0;
+        self.sxy = 0.0;
+        self.syy = 0.0;
         self.count = 0;
     }
 }
@@ -238,11 +244,13 @@ impl LinearRegressionBuilder {
     #[inline]
     pub fn build(self) -> Result<LinearRegression, nexus_stats_core::ConfigError> {
         Ok(LinearRegression {
-            sum_x: 0.0,
-            sum_x2: 0.0,
-            sum_y: 0.0,
-            sum_xy: 0.0,
-            sum_y2: 0.0,
+            anchor_x: 0.0,
+            anchor_y: 0.0,
+            mean_x: 0.0,
+            mean_y: 0.0,
+            sxx: 0.0,
+            sxy: 0.0,
+            syy: 0.0,
             count: 0,
             intercept: self.intercept,
         })
@@ -277,11 +285,18 @@ impl LinearRegressionBuilder {
 /// ```
 #[derive(Debug, Clone)]
 pub struct EwLinearRegression {
-    sum_x: f64,
-    sum_x2: f64,
-    sum_y: f64,
-    sum_xy: f64,
-    sum_y2: f64,
+    // Exponentially weighted Welford (West), anchored: the means are kept
+    // relative to the latest sample (`anchor_*`), so every quantity the
+    // update rounds is on the scale of the data's spread, not its offset.
+    // Unanchored, the rounding of a mean near 1e15 does not decay away
+    // under exponential weights and swamps a spread of a few hundred.
+    anchor_x: f64,
+    anchor_y: f64,
+    mean_x: f64,
+    mean_y: f64,
+    sxx: f64,
+    sxy: f64,
+    syy: f64,
     alpha: f64,
     one_minus_alpha: f64,
     effective_n: f64,
@@ -322,38 +337,46 @@ impl EwLinearRegression {
         check_finite!(x);
         check_finite!(y);
         self.count += 1;
-        self.effective_n = self.one_minus_alpha.fma(self.effective_n, 1.0);
-        self.sum_x = self.one_minus_alpha.fma(self.sum_x, x);
-        self.sum_x2 = self.one_minus_alpha.fma(self.sum_x2, x * x);
-        self.sum_y = self.one_minus_alpha.fma(self.sum_y, y);
-        self.sum_xy = self.one_minus_alpha.fma(self.sum_xy, x * y);
-        self.sum_y2 = self.one_minus_alpha.fma(self.sum_y2, y * y);
+        let decay = self.one_minus_alpha;
+        self.effective_n = decay.fma(self.effective_n, 1.0);
+        if self.intercept {
+            let w = 1.0 / self.effective_n;
+            // Offsets from the previous anchor; exact for nearby values.
+            let sx = x - self.anchor_x;
+            let sy = y - self.anchor_y;
+            let dx = sx - self.mean_x; // x minus the old mean
+            let dy = sy - self.mean_y;
+            let ex = w.fma(-dx, dx); // x minus the new mean: dx * (1 - w)
+            let ey = w.fma(-dy, dy);
+            self.sxx = decay.fma(self.sxx, dx * ex);
+            self.sxy = decay.fma(self.sxy, dx * ey);
+            self.syy = decay.fma(self.syy, dy * ey);
+            // Re-anchor on this sample: the new mean sits at -e from it.
+            self.anchor_x = x;
+            self.anchor_y = y;
+            self.mean_x = -ex;
+            self.mean_y = -ey;
+        } else {
+            self.sxx = decay.fma(self.sxx, x * x);
+            self.sxy = decay.fma(self.sxy, x * y);
+            self.syy = decay.fma(self.syy, y * y);
+        }
         Ok(())
     }
 
     /// Slope, or `None` if not primed.
     #[must_use]
     pub fn slope(&self) -> Option<f64> {
-        if (self.effective_n as usize) < self.dim() {
+        if !self.is_primed() {
             return None;
         }
-        if self.intercept {
-            let n = self.effective_n;
-            let denom = n.fma(self.sum_x2, -(self.sum_x * self.sum_x));
-            // Zero to within the rounding of n accumulations of each of the two
-            // terms that cancelled (each carries ~EPS·n·Σx²): the x values are
-            // constant to within 2·sqrt(EPS) of their magnitude and the slope
-            // is undefined.
-            if denom <= 4.0 * f64::EPSILON * n * n * self.sum_x2 {
-                return None;
-            }
-            Some(n.fma(self.sum_xy, -(self.sum_x * self.sum_y)) / denom)
-        } else {
-            if self.sum_x2 == 0.0 {
-                return None;
-            }
-            Some(self.sum_xy / self.sum_x2)
+        // `sxx` is zero only when every x is the same (exactly: the anchored
+        // update rounds nothing for equal inputs), and never negative. Any
+        // representable spread, even one tick at a large offset, is real.
+        if self.sxx <= 0.0 {
+            return None;
         }
+        Some(self.sxy / self.sxx)
     }
 
     /// Intercept value, or `None` if not primed or no intercept.
@@ -363,34 +386,19 @@ impl EwLinearRegression {
             return None;
         }
         let slope = self.slope()?;
-        Some(slope.fma(-self.sum_x, self.sum_y) / self.effective_n)
+        Some(slope.fma(-(self.anchor_x + self.mean_x), self.anchor_y + self.mean_y))
     }
 
     /// R² goodness of fit.
     #[must_use]
-    #[allow(clippy::suboptimal_flops)]
     pub fn r_squared(&self) -> Option<f64> {
+        // Both modes reduce to sxy^2 / (sxx * syy): centered sums with an
+        // intercept, raw sums through the origin.
         let slope = self.slope()?;
-        let n = self.effective_n;
-
-        let (ss_res, ss_tot) = if self.intercept {
-            let intercept = (self.sum_y - slope * self.sum_x) / n;
-            let ss_res = self.sum_y2 - 2.0 * slope * self.sum_xy - 2.0 * intercept * self.sum_y
-                + slope * slope * self.sum_x2
-                + 2.0 * slope * intercept * self.sum_x
-                + n * intercept * intercept;
-            let ss_tot = self.sum_y2 - self.sum_y * self.sum_y / n;
-            (ss_res, ss_tot)
-        } else {
-            let ss_res = self.sum_y2 - 2.0 * slope * self.sum_xy + slope * slope * self.sum_x2;
-            (ss_res, self.sum_y2)
-        };
-
-        if ss_tot <= 0.0 {
+        if self.syy <= 0.0 {
             return None;
         }
-
-        Some(1.0 - ss_res / ss_tot)
+        Some((slope * self.sxy / self.syy).clamp(0.0, 1.0))
     }
 
     /// Predict y.
@@ -398,8 +406,11 @@ impl EwLinearRegression {
     pub fn predict(&self, x: f64) -> Option<f64> {
         let slope = self.slope()?;
         if self.intercept {
-            let intercept = self.intercept()?;
-            Some(slope.fma(x, intercept))
+            // About the mean, so a large x offset cancels before it multiplies.
+            Some(slope.fma(
+                (x - self.anchor_x) - self.mean_x,
+                self.anchor_y + self.mean_y,
+            ))
         } else {
             Some(slope * x)
         }
@@ -443,11 +454,13 @@ impl EwLinearRegression {
     /// Reset. Config unchanged.
     #[inline]
     pub fn reset(&mut self) {
-        self.sum_x = 0.0;
-        self.sum_x2 = 0.0;
-        self.sum_y = 0.0;
-        self.sum_xy = 0.0;
-        self.sum_y2 = 0.0;
+        self.anchor_x = 0.0;
+        self.anchor_y = 0.0;
+        self.mean_x = 0.0;
+        self.mean_y = 0.0;
+        self.sxx = 0.0;
+        self.sxy = 0.0;
+        self.syy = 0.0;
         self.effective_n = 0.0;
         self.count = 0;
     }
@@ -500,11 +513,13 @@ impl EwLinearRegressionBuilder {
         }
 
         Ok(EwLinearRegression {
-            sum_x: 0.0,
-            sum_x2: 0.0,
-            sum_y: 0.0,
-            sum_xy: 0.0,
-            sum_y2: 0.0,
+            anchor_x: 0.0,
+            anchor_y: 0.0,
+            mean_x: 0.0,
+            mean_y: 0.0,
+            sxx: 0.0,
+            sxy: 0.0,
+            syy: 0.0,
             alpha,
             one_minus_alpha: 1.0 - alpha,
             effective_n: 0.0,
@@ -731,5 +746,187 @@ mod tests {
     fn ew_alpha_that_can_never_prime_is_rejected() {
         assert!(EwLinearRegression::builder().alpha(0.5).build().is_err());
         assert!(EwLinearRegression::builder().alpha(0.49).build().is_ok());
+    }
+
+    // Offsets typical of real inputs: unix timestamps in x, prices in y. Raw
+    // power sums cancel to nothing here; the centered, anchored update must
+    // stay at f64 precision.
+    const TIME_BASES: [f64; 3] = [1.7e9, 1.7e12, 1.7e15];
+
+    /// Increasing integer ticks with uneven gaps, so the running mean is not
+    /// a round number and rounding it at a large offset would show.
+    fn irregular_tick(i: u32) -> f64 {
+        f64::from(7 * i + (i * i) % 7)
+    }
+
+    #[test]
+    fn timestamp_x_fits_a_line() {
+        for base in TIME_BASES {
+            let mut r = LinearRegression::new();
+            for i in 0..3000 {
+                let d = irregular_tick(i);
+                r.update(base + d, 2.0f64.mul_add(d, 1.0)).unwrap();
+            }
+            let slope = r.slope().unwrap();
+            assert!((slope - 2.0).abs() < 1e-12, "base {base}: slope {slope}");
+            let p = r.predict(base + 30_000.0).unwrap();
+            assert!((p - 60_001.0).abs() < 1e-6, "base {base}: predict {p}");
+            let r2 = r.r_squared().unwrap();
+            assert!((r2 - 1.0).abs() < 1e-12, "base {base}: r2 {r2}");
+        }
+    }
+
+    #[test]
+    fn ew_timestamp_x_fits_a_line() {
+        for base in TIME_BASES {
+            let mut r = EwLinearRegression::builder().alpha(0.01).build().unwrap();
+            for i in 0..3000 {
+                let d = irregular_tick(i);
+                r.update(base + d, 2.0f64.mul_add(d, 1.0)).unwrap();
+            }
+            let slope = r.slope().unwrap();
+            assert!((slope - 2.0).abs() < 1e-12, "base {base}: slope {slope}");
+            let p = r.predict(base + 30_000.0).unwrap();
+            assert!((p - 60_001.0).abs() < 1e-6, "base {base}: predict {p}");
+        }
+    }
+
+    #[test]
+    fn price_level_y_keeps_a_small_slope() {
+        let mut r = LinearRegression::new();
+        let mut ew = EwLinearRegression::builder().alpha(0.01).build().unwrap();
+        for i in 0..3000 {
+            let d = f64::from(i);
+            let y = 0.002f64.mul_add(d, 50_000.0);
+            r.update(d, y).unwrap();
+            ew.update(d, y).unwrap();
+        }
+        for slope in [r.slope().unwrap(), ew.slope().unwrap()] {
+            assert!((slope / 0.002 - 1.0).abs() < 1e-9, "slope {slope}");
+        }
+    }
+
+    #[test]
+    fn one_tick_spread_at_a_large_offset_has_a_slope() {
+        let mut r = LinearRegression::new();
+        let mut ew = EwLinearRegression::builder().alpha(0.01).build().unwrap();
+        for i in 0..1000 {
+            let tick = f64::from(i % 2);
+            r.update(1.7e15 + tick, 3.0 * tick).unwrap();
+            ew.update(1.7e15 + tick, 3.0 * tick).unwrap();
+        }
+        for slope in [r.slope(), ew.slope()] {
+            let slope = slope.unwrap();
+            assert!((slope - 3.0).abs() < 1e-12, "slope {slope}");
+        }
+    }
+
+    #[test]
+    fn constant_timestamp_x_has_no_slope() {
+        for base in TIME_BASES {
+            let mut r = LinearRegression::new();
+            let mut ew = EwLinearRegression::builder().alpha(0.01).build().unwrap();
+            for i in 0..100 {
+                r.update(base, f64::from(i)).unwrap();
+                ew.update(base, f64::from(i)).unwrap();
+            }
+            assert_eq!(r.slope(), None, "base {base}");
+            assert_eq!(ew.slope(), None, "base {base}");
+        }
+    }
+
+    /// Small deterministic generator for the noisy-data test.
+    struct Lcg(u64);
+
+    impl Lcg {
+        /// Uniform in [-0.5, 0.5).
+        fn next_centered(&mut self) -> f64 {
+            self.0 = self
+                .0
+                .wrapping_mul(6_364_136_223_846_793_005)
+                .wrapping_add(1_442_695_040_888_963_407);
+            (self.0 >> 11) as f64 / (1u64 << 53) as f64 - 0.5
+        }
+    }
+
+    /// Weighted two-pass least squares: (mean x, mean y, slope).
+    fn two_pass_fit(xs: &[f64], ys: &[f64], ws: &[f64]) -> (f64, f64, f64) {
+        let sw: f64 = ws.iter().sum();
+        let mx = xs.iter().zip(ws).map(|(x, w)| w * x).sum::<f64>() / sw;
+        let my = ys.iter().zip(ws).map(|(y, w)| w * y).sum::<f64>() / sw;
+        let mut sxx = 0.0;
+        let mut sxy = 0.0;
+        for i in 0..xs.len() {
+            let dx = xs[i] - mx;
+            sxx = (ws[i] * dx).mul_add(dx, sxx);
+            sxy = (ws[i] * dx).mul_add(ys[i] - my, sxy);
+        }
+        (mx, my, sxy / sxx)
+    }
+
+    // Exact lines cannot tell a wrong weight or a wrong reference point from
+    // the right one: every point is on the fit. Noisy data can.
+    #[test]
+    fn noisy_fit_matches_a_two_pass_reference() {
+        use alloc::vec;
+        use alloc::vec::Vec;
+
+        let n = 2000;
+        let alpha = 0.01;
+        for base in [0.0, 1.7e9] {
+            let mut rng = Lcg(12_345);
+            let mut r = LinearRegression::new();
+            let mut ew = EwLinearRegression::builder().alpha(alpha).build().unwrap();
+            let mut xs = Vec::new();
+            let mut ys = Vec::new();
+            for i in 0..n {
+                let x = 3.0f64.mul_add(rng.next_centered(), 0.7 * f64::from(i));
+                let y = 5.0f64.mul_add(rng.next_centered(), 1.5f64.mul_add(x, -4.0));
+                r.update(base + x, y).unwrap();
+                ew.update(base + x, y).unwrap();
+                // The offset the regression actually saw, exact after rounding.
+                xs.push((base + x) - base);
+                ys.push(y);
+            }
+            let flat = vec![1.0; n as usize];
+            let decayed: Vec<f64> = (0..n).map(|i| (1.0 - alpha).powi(n - 1 - i)).collect();
+            let at = 500.0;
+            for (name, fit, (mx, my, slope)) in [
+                (
+                    "plain",
+                    r.slope().zip(r.predict(base + at)),
+                    two_pass_fit(&xs, &ys, &flat),
+                ),
+                (
+                    "ew",
+                    ew.slope().zip(ew.predict(base + at)),
+                    two_pass_fit(&xs, &ys, &decayed),
+                ),
+            ] {
+                let (got_slope, got_pred) = fit.unwrap();
+                let want_pred = slope.mul_add(at - mx, my);
+                assert!(
+                    (got_slope - slope).abs() < 1e-12,
+                    "{name} base {base}: slope {got_slope} vs {slope}"
+                );
+                assert!(
+                    (got_pred - want_pred).abs() < 1e-9,
+                    "{name} base {base}: predict {got_pred} vs {want_pred}"
+                );
+                if base == 0.0 {
+                    let got_icpt = if name == "plain" {
+                        r.intercept()
+                    } else {
+                        ew.intercept()
+                    }
+                    .unwrap();
+                    let want_icpt = slope.mul_add(-mx, my);
+                    assert!(
+                        (got_icpt - want_icpt).abs() < 1e-9,
+                        "{name}: intercept {got_icpt} vs {want_icpt}"
+                    );
+                }
+            }
+        }
     }
 }

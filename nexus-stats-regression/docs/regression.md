@@ -4,7 +4,7 @@ Closed-form and EW regressors. Module path: `nexus_stats_regression::regression`
 
 ## LinearRegression — streaming OLS
 
-The simplest streaming regressor: y = a + bx. Updates sufficient statistics (`Σx`, `Σy`, `Σxy`, `Σx²`, `n`) on each `update(x, y)`; solves the OLS equations on query.
+The simplest streaming regressor: y = a + bx. Keeps the running means and the co-moments about them (Welford: `Σ(x-mx)²`, `Σ(x-mx)(y-my)`, `Σ(y-my)²`, `n`) on each `update(x, y)`, with the means held relative to the latest sample, so a large offset in `x` or `y` (unix timestamps, a price level) does not cancel. Slope, intercept and R² are direct formulas on query.
 
 ### API
 
@@ -52,7 +52,7 @@ let fair = beta.predict(0.01).unwrap();
 
 ## EwLinearRegression — forgetful linear regression
 
-Same shape, but sufficient statistics decay exponentially. The effective sample size stays bounded, so the regression adapts to regime changes.
+Same shape, but the means and co-moments are exponentially weighted (West's weighted form of the same update). The effective sample size stays bounded, so the regression adapts to regime changes.
 
 ```rust
 let mut beta = EwLinearRegression::builder()

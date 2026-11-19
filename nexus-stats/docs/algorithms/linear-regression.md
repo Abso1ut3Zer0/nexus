@@ -6,8 +6,8 @@ no matrix elimination.
 
 | Property | Value |
 |----------|-------|
-| Update cost | 7 cycles |
-| Memory | ~48 bytes |
+| Update cost | 8 cycles |
+| Memory | 72 bytes (96 for `EwLinearRegression`) |
 | Types | `LinearRegression` |
 | EW types | `EwLinearRegression` |
 | Priming | 2 observations (with intercept), 1 (through origin) |
@@ -16,9 +16,9 @@ no matrix elimination.
 ## What It Does
 
 Fits `y = ax + b` (with intercept) or `y = ax` (through origin)
-from streaming data. Uses 5 sufficient statistics — no matrix
-solve, no array of powers. The slope and intercept are computed
-from closed-form formulas on query.
+from streaming data. Keeps running means and the co-moments about
+them (Welford): no matrix solve, no array of powers. Slope,
+intercept and R² are direct formulas on query.
 
 **OLS** — weights all observations equally.
 
@@ -51,56 +51,59 @@ For polynomial fits (degree 2+), see
 
 ## How It Works
 
-### Sufficient Statistics
+### State
+
+With an intercept: the running means and the co-moments about
+them (Welford). The means are held relative to the latest sample,
+the anchor, so every quantity the update rounds is on the scale of
+the data's spread, not its offset.
 
 ```
-sum_x  = Σ x
-sum_x2 = Σ x²
-sum_y  = Σ y
-sum_xy = Σ x·y
-sum_y2 = Σ y²      (for R²)
-n      = count
+anchor_x, anchor_y   latest sample
+mean_x,   mean_y     mean minus anchor
+sxx = Σ (x - mx)²     mx, my: the means
+sxy = Σ (x - mx)(y - my)
+syy = Σ (y - my)²     (for R²)
+n   = count
 ```
 
-Update: 6 additions + 2 multiplications. No loop, no powers.
+Update, with `w = 1/n` (y is the same with `dy`, `ey`):
+
+```
+dx = (x - anchor_x) - mean_x      x minus the old mean
+ex = dx·(1 - w)                   x minus the new mean
+sxx += dx·ex,  sxy += dx·ey,  syy += dy·ey
+anchor_x = x,  mean_x = -ex
+```
+
+Through the origin: raw `sxx = Σx²`, `sxy = Σxy`, `syy = Σy²`,
+which carry no subtraction.
 
 ### Closed-Form Solve
 
-**With intercept (y = ax + b):**
 ```
-denom     = n·sum_x2 - sum_x²
-slope     = (n·sum_xy - sum_x·sum_y) / denom
-intercept = (sum_y - slope·sum_x) / n
-```
-
-**Through origin (y = ax):**
-```
-slope = sum_xy / sum_x2
+slope     = sxy / sxx                           (None if sxx = 0)
+intercept = my - slope·mx                       mx = anchor_x + mean_x
+predict   = my + slope·((x - anchor_x) - mean_x)
+R²        = slope·sxy / syy = sxy² / (sxx·syy), clamped to [0, 1]
 ```
 
-**R² (with intercept):**
-```
-SS_res = sum_y2 - slope·sum_xy - intercept·sum_y
-SS_tot = sum_y2 - sum_y²/n
-R²     = 1 - SS_res / SS_tot
-```
-
-No Gaussian elimination — these are direct formulas. O(1) per query.
+Through the origin, `predict = slope·x` and R² is the uncentered
+form of the same expression. With an intercept, `sxx` is zero only
+when every x is equal, so any real spread, even one tick at a large
+offset, gives a slope. No Gaussian elimination. O(1) per query.
 
 ### Numerical Stability
 
-The closed-form formulas use sums of products (not deviations from
-mean like Welford). For data where `x` values are large and
-close together (e.g., Unix timestamps in nanoseconds), the
-`n·sum_x2 - sum_x²` denominator can lose precision due to
-catastrophic cancellation.
+The co-moments are sums of products of deviations, so a large
+offset in x or y (unix timestamps, a price level) never cancels.
+Against an exact rational fit the slope stays within 3e-13 with x
+in unix seconds, milliseconds or microseconds. There is no need to
+center x before feeding it.
 
-**Mitigation:** Center your x values. Instead of feeding raw
-timestamps, feed `x - x_first` or `x - x_mean`. This keeps
-the magnitudes small and the denominator well-conditioned.
-
-For the EW variant, the decay naturally keeps sums bounded —
-less susceptible to this issue.
+`EwLinearRegression` uses West's weighted form of the same update:
+`effective_n = (1 - α)·effective_n + 1`, `w = 1/effective_n`, and
+the co-moments decay, `sxx = (1 - α)·sxx + dx·ex`.
 
 ## Configuration
 
@@ -216,8 +219,8 @@ println!("rate: {:.2} units/$", r.slope().unwrap());
 | What it gives you | Slope + intercept + R² | Smoothed value |
 | Answers | "What's the rate of change?" | "What's the current level?" |
 | Model | y = ax + b (parametric) | Weighted average (non-parametric) |
-| Memory | 48 bytes | 24 bytes |
-| Update cost | 7 cycles | 5 cycles |
+| Memory | 72 bytes | 24 bytes |
+| Update cost | 8 cycles | 5 cycles |
 
 Use LinearRegression when you need the *trend direction and rate*.
 Use EMA when you need a *smoothed current value*.
@@ -226,9 +229,9 @@ Use EMA when you need a *smoothed current value*.
 
 | Operation | p50 |
 |-----------|-----|
-| `LinearRegression::update` | 7 cycles |
-| `slope()` query | 4 cycles |
-| `r_squared()` query | 15 cycles |
-| `predict(x)` query | 7 cycles |
+| `LinearRegression::update` | 8 cycles |
+| `slope()` query | 2 cycles |
+| `r_squared()` query | 5 cycles |
+| `predict(x)` query | 3 cycles |
 
 No matrix solve — all queries are direct formulas.
