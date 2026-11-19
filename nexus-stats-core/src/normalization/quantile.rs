@@ -2,6 +2,7 @@ use alloc::boxed::Box;
 use core::marker::PhantomData;
 
 use crate::Float;
+use crate::math::MulAdd;
 
 /// Quantile normalizer: a value's approximate rank in `[0, 1]`.
 ///
@@ -192,7 +193,7 @@ impl<T: Float> QuantileNorm<T> {
         // neighbours' range.
         let step = (self.count - 1) as f64 / last as f64;
         for i in 1..last {
-            let off = (i as f64).mul_add(step, 1.0) - positions[i];
+            let off = (i as f64).fma(step, 1.0) - positions[i];
             let gap_up = positions[i + 1] - positions[i];
             let gap_down = positions[i - 1] - positions[i];
             let s = if off >= 1.0 && gap_up > 1.0 {
@@ -205,8 +206,8 @@ impl<T: Float> QuantileNorm<T> {
             let (below, here, above) = (heights[i - 1], heights[i], heights[i + 1]);
             let slope_up = (above - here) / gap_up;
             let slope_down = (below - here) / gap_down;
-            let parabolic = (s / (gap_up - gap_down)).mul_add(
-                (s - gap_down).mul_add(slope_up, (gap_up - s) * slope_down),
+            let parabolic = (s / (gap_up - gap_down)).fma(
+                (s - gap_down).fma(slope_up, (gap_up - s) * slope_down),
                 here,
             );
             heights[i] = if below < parabolic && parabolic < above {
@@ -245,7 +246,7 @@ impl<T: Float> QuantileNorm<T> {
         } else {
             let (lo, hi) = (below - 1, below);
             let t = (value - heights[lo]) / (heights[hi] - heights[lo]);
-            t.mul_add(positions[hi] - positions[lo], positions[lo]) - 1.0
+            t.fma(positions[hi] - positions[lo], positions[lo]) - 1.0
         };
         Some(T::from_f64(rank / span))
     }
@@ -455,7 +456,7 @@ mod tests {
         assert_eq!(qn.heights[1], 3.875);
         // Marker 2: the parabola through (4, 3.875), (6, 50), (7, 100) at
         // position 5 stays between its neighbours.
-        let expected = 50.0 - (1.0 * 50.0 + 2.0 * (50.0 - 3.875) / 2.0) / 3.0;
+        let expected = 50.0 - (50.0 + (50.0 - 3.875)) / 3.0;
         assert!(
             (qn.heights[2] - expected).abs() < 1e-12,
             "{}",
