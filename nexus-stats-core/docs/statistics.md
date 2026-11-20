@@ -141,13 +141,13 @@ for observation in observations {
 use nexus_stats_core::statistics::HarmonicMean;
 
 let mut h = HarmonicMean::new();
-for rate_mbps in throughputs { h.update(rate_mbps).unwrap(); }
+for rate_mbps in throughputs { h.update(rate_mbps); }
 let effective = h.mean().unwrap();
 ```
 
 **Use for:** "what's the effective throughput across these links?" (classical HM use case). Rarely the right answer for latency — arithmetic mean over latency is usually what you want.
 
-**Caveats:** requires all inputs strictly positive. Rejects zero and negatives.
+**Caveats:** defined for strictly positive inputs. `update` does not validate; `checked_update` refuses zero, negatives, NaN, infinity, and anything outside `[1e-120, 1e120]`.
 
 ---
 

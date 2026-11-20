@@ -115,7 +115,8 @@ one naming convention across the family. Migration guide:
 - Carried from core: `Welford::update` no longer validates or returns a
   `Result`; `Welford::checked_update` is the validating form (after the
   standard library's `+` and `checked_add`). `INPUT_LIMIT` is re-exported
-  at the crate root. The other types follow one at a time.
+  at the crate root. The other types follow one at a time: `HarmonicMean`
+  so far. The migration guide keeps the list.
 
 ### Removed
 

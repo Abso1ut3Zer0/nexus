@@ -29,6 +29,17 @@ impl HarmonicMean {
     ///
     /// Does not validate `sample`; arithmetic follows IEEE 754. See
     /// [`checked_update`](Self::checked_update).
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use nexus_stats_core::statistics::HarmonicMean;
+    ///
+    /// let mut hm = HarmonicMean::new();
+    /// hm.update(60.0);
+    /// hm.update(30.0);
+    /// assert_eq!(hm.mean(), Some(40.0));
+    /// ```
     #[inline]
     pub fn update(&mut self, sample: f64) {
         self.count += 1;
@@ -47,6 +58,17 @@ impl HarmonicMean {
     ///   infinite.
     /// - [`DataError::OutOfRange`](crate::DataError::OutOfRange) if `sample`
     ///   is outside that range, which includes zero and every negative.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use nexus_stats_core::{DataError, statistics::HarmonicMean};
+    ///
+    /// let mut hm = HarmonicMean::new();
+    /// assert_eq!(hm.checked_update(60.0), Ok(()));
+    /// assert_eq!(hm.checked_update(0.0), Err(DataError::OutOfRange));
+    /// assert_eq!(hm.count(), 1);
+    /// ```
     #[inline]
     pub fn checked_update(&mut self, sample: f64) -> Result<(), crate::DataError> {
         crate::math::check_input(sample, crate::INPUT_LIMIT)?;

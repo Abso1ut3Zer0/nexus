@@ -44,6 +44,14 @@ hm.update(1.0);   // second rate
 assert!((hm.mean().unwrap() - 1.818).abs() < 0.01);
 ```
 
+`update` does not validate its input. `checked_update` returns a
+`DataError` and changes nothing for a NaN, an infinity, or a sample outside
+`[1e-120, 1e120]`, which includes zero and negatives:
+
+```rust
+assert_eq!(hm.checked_update(0.0), Err(DataError::OutOfRange));
+```
+
 ## When to Use Something Else
 
 - Averaging values (not rates) → arithmetic mean via [Welford](welford.md)
