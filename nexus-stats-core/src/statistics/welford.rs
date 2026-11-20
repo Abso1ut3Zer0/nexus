@@ -64,8 +64,11 @@ impl Welford {
     #[inline]
     pub fn update(&mut self, sample: f64) {
         self.count += 1;
+        // The weight of the new sample. It depends only on the count, so the
+        // division does not have to wait for the previous update's mean.
+        let weight = 1.0 / self.count as f64;
         let delta = sample - self.mean;
-        self.mean += delta / self.count as f64;
+        self.mean += delta * weight;
         let delta2 = sample - self.mean;
         self.m2 += delta * delta2;
     }
