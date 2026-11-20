@@ -15,25 +15,19 @@ macro_rules! check_finite {
     };
 }
 
-/// Checks one input to a `checked_update`: `Ok` if `value` is a number no
-/// larger in magnitude than `limit`.
+/// Returns `Ok` if `value` is a number no larger in magnitude than `limit`.
 ///
 /// # Errors
 ///
-/// - `DataError::NotANumber` if `value` is NaN.
-/// - `DataError::Infinite` if `value` is infinite.
-/// - `DataError::OutOfRange` if `value` is finite and above `limit` in
-///   magnitude.
+/// - [`DataError::NotANumber`](crate::DataError::NotANumber) if `value` is
+///   NaN.
+/// - [`DataError::Infinite`](crate::DataError::Infinite) if `value` is
+///   infinite.
+/// - [`DataError::OutOfRange`](crate::DataError::OutOfRange) if `value` is
+///   finite and larger in magnitude than `limit`.
 #[inline]
 pub fn check_input(value: f64, limit: f64) -> Result<(), crate::DataError> {
-    // Why it is written this way and not as three tests in a row (NaN?
-    // infinite? too large?): nearly every call accepts, and a single
-    // `|value| <= limit` already decides that, because a NaN or an infinity
-    // fails it as well. Working out which of the three it was is only
-    // needed after a refusal, so it lives in `refusal` below, marked
-    // `#[cold]` to keep it out of the caller's inlined code.
-
-    /// Why `value` was refused.
+    // Cold: naming the reason stays off the accepted path.
     #[cold]
     fn refusal(value: f64) -> crate::DataError {
         if value.is_nan() {
@@ -45,6 +39,7 @@ pub fn check_input(value: f64, limit: f64) -> Result<(), crate::DataError> {
         }
     }
 
+    // NaN and infinity fail this comparison too, so one test accepts.
     if value.abs() <= limit {
         return Ok(());
     }

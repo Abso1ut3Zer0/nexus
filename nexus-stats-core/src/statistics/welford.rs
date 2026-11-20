@@ -58,9 +58,19 @@ impl Welford {
 
     /// Feeds a sample.
     ///
-    /// Does not validate the sample: the arithmetic follows IEEE 754, as
-    /// `f64` arithmetic does. See [`checked_update`](Self::checked_update)
-    /// for the validating form, and [`reset`](Self::reset) to start over.
+    /// Does not validate `sample`; arithmetic follows IEEE 754. See
+    /// [`checked_update`](Self::checked_update).
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use nexus_stats_core::statistics::Welford;
+    ///
+    /// let mut w = Welford::new();
+    /// w.update(1.0);
+    /// w.update(3.0);
+    /// assert_eq!(w.mean(), Some(2.0));
+    /// ```
     #[inline]
     pub fn update(&mut self, sample: f64) {
         self.count += 1;
@@ -73,22 +83,29 @@ impl Welford {
         self.m2 += delta * delta2;
     }
 
-    /// Checked [`update`](Self::update): feeds the sample only if it is a
-    /// number no larger in magnitude than
-    /// [`INPUT_LIMIT`](crate::INPUT_LIMIT). On an error the accumulator is
-    /// unchanged.
-    ///
-    /// An accumulator fed only through this method since
-    /// [`new`](Self::new) or [`reset`](Self::reset) cannot overflow. (One
-    /// built by [`from_parts`](Self::from_parts) starts from whatever it
-    /// was given.)
+    /// Checked update. Feeds `sample`, or returns an error and leaves the
+    /// accumulator unchanged if `sample` is NaN, infinite, or larger in
+    /// magnitude than [`INPUT_LIMIT`](crate::INPUT_LIMIT).
     ///
     /// # Errors
     ///
-    /// - `DataError::NotANumber` if the sample is NaN.
-    /// - `DataError::Infinite` if the sample is infinite.
-    /// - `DataError::OutOfRange` if the sample is finite and above
-    ///   `INPUT_LIMIT` in magnitude.
+    /// - [`DataError::NotANumber`](crate::DataError::NotANumber) if `sample`
+    ///   is NaN.
+    /// - [`DataError::Infinite`](crate::DataError::Infinite) if `sample` is
+    ///   infinite.
+    /// - [`DataError::OutOfRange`](crate::DataError::OutOfRange) if `sample`
+    ///   is finite and larger in magnitude than `INPUT_LIMIT`.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use nexus_stats_core::{DataError, statistics::Welford};
+    ///
+    /// let mut w = Welford::new();
+    /// assert_eq!(w.checked_update(1.0), Ok(()));
+    /// assert_eq!(w.checked_update(f64::NAN), Err(DataError::NotANumber));
+    /// assert_eq!(w.count(), 1);
+    /// ```
     #[inline]
     pub fn checked_update(&mut self, sample: f64) -> Result<(), crate::DataError> {
         crate::math::check_input(sample, crate::INPUT_LIMIT)?;
