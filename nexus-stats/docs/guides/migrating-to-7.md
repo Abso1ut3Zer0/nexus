@@ -413,7 +413,9 @@ outside, rename the call to `checked_update` and keep the error handling.
 
 Moved so far: `Welford`, `HarmonicMean` (its `checked_update` also
 refuses a sample below `1 / INPUT_LIMIT`, which covers zero and negatives),
-`Covariance`, `Moments` (its limit is `Moments::INPUT_LIMIT`, `1e60`).
+`Covariance`, `Moments` (its limit is `Moments::INPUT_LIMIT`, `1e60`),
+`Lpm` (its `checked_update` refuses the sample that would overflow the
+sum, with no fixed input limit).
 
 `Moments::skewness()`, `excess_kurtosis()` and `kurtosis()` are replaced
 by `shape()`, which returns both in a `Shape`:

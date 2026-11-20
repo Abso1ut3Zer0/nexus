@@ -184,6 +184,8 @@ contained.
   the same change as `Welford`. `checked_update` is the validating form.
 - **`Covariance::update` no longer validates or returns a `Result`**, the
   same change again. `checked_update(x, y)` validates both values.
+- **`Lpm::update` no longer validates or returns a `Result`.**
+  `checked_update` is the validating form.
 - **`Moments::update` no longer validates or returns a `Result`.**
   `checked_update` validates against `Moments::INPUT_LIMIT` (`1e60`).
 - **`Moments::shape()` replaces `skewness()`, `excess_kurtosis()` and
@@ -265,6 +267,11 @@ contained.
 - `HarmonicMean::checked_update`: refuses a NaN, an infinity, or a sample
   outside `[1 / INPUT_LIMIT, INPUT_LIMIT]` (which includes zero and
   negatives), and leaves the accumulator unchanged.
+- `Lpm::checked_update`: refuses a NaN, an infinity, and the sample whose
+  shortfall raised to the order would overflow the running sum. It tests
+  the result, not the input, since the order goes up to 16 and no single
+  input limit covers every order. The type docs give rough bounds and the
+  libraries this follows.
 - `Moments::checked_update`, `Moments::INPUT_LIMIT`, `Shape`.
 - `Covariance::checked_update`: refuses the pair, and leaves the
   accumulator unchanged, if either value is NaN, infinite, or larger in
