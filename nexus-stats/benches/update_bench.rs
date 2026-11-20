@@ -160,10 +160,10 @@ fn bench_harmonic_mean(c: &mut Criterion) {
     let mut rng = Lcg::new(42);
     let mut h = HarmonicMean::new();
     for _ in 0..1000 {
-        let _ = h.update(rng.next_f64() + 1.0); // must be positive
+        h.update(rng.next_f64() + 1.0);
     }
     c.bench_function("HarmonicMean::update", |b| {
-        b.iter(|| h.update(black_box(rng.next_f64() + 1.0)).unwrap())
+        b.iter(|| h.update(black_box(rng.next_f64() + 1.0)))
     });
 }
 

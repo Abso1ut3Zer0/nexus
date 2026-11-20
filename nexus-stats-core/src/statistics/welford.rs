@@ -135,10 +135,10 @@ impl Welford {
     #[must_use]
     pub fn mean(&self) -> Option<f64> {
         if self.count == 0 {
-            None
-        } else {
-            Some(self.mean)
+            return None;
         }
+
+        Some(self.mean)
     }
 
     /// Sample variance (N-1 denominator), or `None` if < 2 samples.
@@ -146,10 +146,10 @@ impl Welford {
     #[must_use]
     pub fn variance(&self) -> Option<f64> {
         if self.count < 2 {
-            None
-        } else {
-            Some(self.m2 / (self.count - 1) as f64)
+            return None;
         }
+
+        Some(self.m2 / (self.count - 1) as f64)
     }
 
     /// Population variance (N denominator), or `None` if empty.
@@ -157,10 +157,10 @@ impl Welford {
     #[must_use]
     pub fn population_variance(&self) -> Option<f64> {
         if self.count == 0 {
-            None
-        } else {
-            Some(self.m2 / self.count as f64)
+            return None;
         }
+
+        Some(self.m2 / self.count as f64)
     }
 
     /// Sum of squared deviations from the running mean (the `m2` of

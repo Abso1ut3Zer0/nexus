@@ -898,13 +898,12 @@ fn bench_harmonic_mean_f64(samples: &mut [u64]) {
     let mut h = HarmonicMean::new();
     let mut rng = 12345u64;
     for _ in 0..WARMUP {
-        h.update(1.0 + (next_val(&mut rng) % 100) as f64).unwrap();
+        h.update(1.0 + (next_val(&mut rng) % 100) as f64);
     }
     for s in samples.iter_mut() {
         let start = rdtsc_start();
         for _ in 0..BATCH {
-            h.update(black_box(1.0 + (next_val(&mut rng) % 100) as f64))
-                .unwrap();
+            h.update(black_box(1.0 + (next_val(&mut rng) % 100) as f64));
         }
         let end = rdtsc_end();
         black_box(h.mean());

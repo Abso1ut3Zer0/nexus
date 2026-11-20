@@ -292,8 +292,8 @@ CHANGELOG entry in `nexus-stats-core`:
 
 ### Data policy
 
-- `DataError::OutOfRange` is new: `HarmonicMean::update` returns it for a
-  non-positive sample instead of panicking; ThompsonBeta/Exp3 use it for a
+- `DataError::OutOfRange` is new: `HarmonicMean::checked_update` returns
+  it for a non-positive sample (in 6.x `update` panicked on one); ThompsonBeta/Exp3 use it for a
   reward outside `[0, 1]` (and Exp3 for `prob` outside `(0, 1]`),
   ThompsonGamma for a non-positive reward. `Negative` is kept for strictly
   negative inputs (Amihud volume, GammaPoisson exposure).
@@ -411,7 +411,8 @@ To migrate a call: where the value comes from your own arithmetic on data
 you already trust, drop the `?` or `.unwrap()`. Where it comes from
 outside, rename the call to `checked_update` and keep the error handling.
 
-Moved so far: `Welford`.
+Moved so far: `Welford`, `HarmonicMean` (its `checked_update` also
+refuses a sample below `1 / INPUT_LIMIT`, which covers zero and negatives).
 
 ## 5. Checklist
 

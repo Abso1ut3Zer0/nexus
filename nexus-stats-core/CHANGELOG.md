@@ -73,8 +73,8 @@ contained.
   `DistributionShiftBuilder::build`, `BipowerVariationBuilder::build`,
   `Welford::from_parts`.
 - **`DataError::OutOfRange`** for finite inputs outside a method's range.
-  `HarmonicMean::update` returns it for a non-positive sample instead of
-  panicking; the `DataError` doc states the three-way policy.
+  `HarmonicMean::checked_update` returns it for a non-positive sample
+  (`update` used to panic on one); the `DataError` doc states the three-way policy.
 - **`HitRate::hit_rate` / `ew_hit_rate` and `Amihud::illiq` return `Option`:**
   a rate over zero observations is undefined, not 0.0. `Amihud` rejects
   negative volume with `Negative`, skips zero volume without advancing
@@ -180,6 +180,8 @@ contained.
   the arithmetic, which follows IEEE 754. The validating form is the new
   `checked_update`. This is the shape every type is moving to, one type at
   a time; the crate docs state the rule.
+- **`HarmonicMean::update` no longer validates or returns a `Result`**,
+  the same change as `Welford`. `checked_update` is the validating form.
 
 ### Removed
 
@@ -252,6 +254,9 @@ contained.
   returns a `DataError` and leaves the accumulator unchanged for a NaN, an
   infinity, or a magnitude above the new `INPUT_LIMIT` (`1e120`), within
   which the variance cannot overflow.
+- `HarmonicMean::checked_update`: refuses a NaN, an infinity, or a sample
+  outside `[1 / INPUT_LIMIT, INPUT_LIMIT]` (which includes zero and
+  negatives), and leaves the accumulator unchanged.
 - `math::alpha_from_halflife`, `math::dot`, `math::axpy`,
   `math::upper_tail_z`.
 
