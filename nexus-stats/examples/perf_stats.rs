@@ -1145,7 +1145,7 @@ fn bench_bipower_variation_f64(samples: &mut [u64]) {
             b.update(black_box(100.0 + (next_val(&mut rng) % 200) as f64 / 100.0));
         }
         let end = rdtsc_end();
-        black_box(b.last());
+        black_box(b.decomposition());
         *s = (end - start) / BATCH;
     }
 }
@@ -1162,7 +1162,7 @@ fn bench_roll_spread_f64(samples: &mut [u64]) {
             r.update(black_box(100.0 + (next_val(&mut rng) % 200) as f64 / 100.0));
         }
         let end = rdtsc_end();
-        black_box(r.last());
+        black_box(r.estimate());
         *s = (end - start) / BATCH;
     }
 }

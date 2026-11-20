@@ -20,12 +20,11 @@ use crate::math::MulAdd;
 /// use nexus_stats_core::statistics::RollSpread;
 ///
 /// let mut rs = RollSpread::builder().alpha(0.05).min_samples(3).build().unwrap();
-/// let mut estimate = None;
 /// // A price bouncing between bid and ask.
 /// for i in 0..200 {
-///     estimate = rs.update(if i % 2 == 0 { 100.0 } else { 100.1 });
+///     rs.update(if i % 2 == 0 { 100.0 } else { 100.1 });
 /// }
-/// assert!(estimate.unwrap().spread > 0.0);
+/// assert!(rs.estimate().unwrap().spread > 0.0);
 /// ```
 #[derive(Debug, Clone)]
 pub struct RollSpread {
@@ -98,13 +97,12 @@ impl RollSpread {
         }
     }
 
-    /// Feeds a trade price. Returns the estimate as [`last`](Self::last)
-    /// does.
+    /// Feeds a trade price.
     ///
     /// Does not validate `price`; arithmetic follows IEEE 754. See
     /// [`checked_update`](Self::checked_update).
     #[inline]
-    pub fn update(&mut self, price: f64) -> Option<RollEstimate> {
+    pub fn update(&mut self, price: f64) {
         let log_price = crate::math::ln(price);
         self.count += 1;
 
@@ -118,8 +116,6 @@ impl RollSpread {
             self.prev_change = change;
         }
         self.prev_log_price = log_price;
-
-        self.last()
     }
 
     /// Checked update. Feeds `price`, or returns an error and leaves the
@@ -134,20 +130,21 @@ impl RollSpread {
     /// - [`DataError::OutOfRange`](crate::DataError::OutOfRange) if `price`
     ///   is zero or negative.
     #[inline]
-    pub fn checked_update(&mut self, price: f64) -> Result<Option<RollEstimate>, crate::DataError> {
+    pub fn checked_update(&mut self, price: f64) -> Result<(), crate::DataError> {
         // Any positive price is allowed: its logarithm is small.
         crate::math::check_input(price, f64::MAX)?;
         if price <= 0.0 {
             return Err(crate::DataError::OutOfRange);
         }
-        Ok(self.update(price))
+        self.update(price);
+        Ok(())
     }
 
     /// The current estimate, or `None` until `min_samples` prices have been
     /// fed.
     #[inline]
     #[must_use]
-    pub fn last(&self) -> Option<RollEstimate> {
+    pub fn estimate(&self) -> Option<RollEstimate> {
         if self.count < self.min_samples {
             return None;
         }
@@ -279,7 +276,7 @@ mod tests {
             log_price += change;
             rs.update(log_price.exp());
         }
-        rs.last().unwrap()
+        rs.estimate().unwrap()
     }
 
     /// Buy or sell at random: `+1.0` or `-1.0`.
@@ -300,7 +297,7 @@ mod tests {
             mid += drift;
             rs.update((mid + half_spread * side(&mut state)).exp());
         }
-        rs.last().unwrap()
+        rs.estimate().unwrap()
     }
 
     #[test]
@@ -380,13 +377,13 @@ mod tests {
             .min_samples(4)
             .build()
             .unwrap();
-        assert_eq!(rs.update(100.0), None);
-        assert_eq!(rs.update(100.1), None);
-        assert_eq!(rs.update(100.0), None);
+        for price in [100.0, 100.1, 100.0] {
+            rs.update(price);
+            assert_eq!(rs.estimate(), None);
+        }
         assert!(!rs.is_primed());
-        let estimate = rs.update(100.1);
-        assert!(estimate.is_some());
-        assert_eq!(estimate, rs.last());
+        rs.update(100.1);
+        assert!(rs.estimate().is_some());
         assert!(rs.is_primed());
     }
 
@@ -427,11 +424,11 @@ mod tests {
             rs.update(price);
         }
         rs.reset();
-        assert_eq!((rs.count(), rs.last()), (0, None));
+        assert_eq!((rs.count(), rs.estimate()), (0, None));
         for price in next {
             rs.update(price);
         }
-        assert_eq!(rs.last(), fresh.last());
+        assert_eq!(rs.estimate(), fresh.estimate());
     }
 
     #[test]
@@ -452,12 +449,14 @@ mod tests {
         assert_eq!(rs.checked_update(-0.0), Err(OutOfRange));
         assert_eq!(rs.checked_update(-1.0), Err(OutOfRange));
         assert_eq!(
-            (rs.count(), rs.last()),
-            (untouched.count(), untouched.last())
+            (rs.count(), rs.estimate()),
+            (untouched.count(), untouched.estimate())
         );
 
         // The next good price pairs with the last good price and change.
-        assert_eq!(rs.checked_update(100.2), untouched.checked_update(100.2));
+        rs.checked_update(100.2).unwrap();
+        untouched.checked_update(100.2).unwrap();
+        assert_eq!(rs.estimate(), untouched.estimate());
     }
 
     #[test]
@@ -467,7 +466,7 @@ mod tests {
             let price = if i % 2 == 0 { f64::MAX } else { 5e-324 };
             rs.checked_update(price).unwrap();
         }
-        let estimate = rs.last().unwrap();
+        let estimate = rs.estimate().unwrap();
         assert!(estimate.autocovariance.is_finite());
         assert!(estimate.spread.is_finite() && estimate.spread > 0.0);
     }
@@ -477,9 +476,11 @@ mod tests {
         let mut checked = estimator(0.1);
         let mut unchecked = estimator(0.1);
         for price in [100.0, 100.1, 99.9, 100.0, 100.3, 100.2] {
-            assert_eq!(checked.checked_update(price), Ok(unchecked.update(price)));
+            checked.checked_update(price).unwrap();
+            unchecked.update(price);
         }
         assert_eq!(checked.count(), unchecked.count());
+        assert_eq!(checked.estimate(), unchecked.estimate());
     }
 
     #[test]

@@ -18,12 +18,11 @@ use crate::math::MulAdd;
 /// use nexus_stats_core::statistics::BipowerVariation;
 ///
 /// let mut bv = BipowerVariation::builder().min_samples(3).build().unwrap();
-/// let mut reading = None;
 /// for price in [100.0, 101.0, 100.0, 101.0, 150.0, 151.0, 150.0] {
-///     reading = bv.update(price);
+///     bv.update(price);
 /// }
 /// // Most of the variation is the one jump.
-/// assert!(reading.unwrap().jump_ratio().unwrap() > 0.9);
+/// assert!(bv.decomposition().unwrap().jump_ratio().unwrap() > 0.9);
 /// ```
 #[derive(Debug, Clone)]
 pub struct BipowerVariation {
@@ -108,7 +107,7 @@ impl BipowerVariation {
         BipowerVariationBuilder { min_samples: 30 }
     }
 
-    /// Feeds a price. Returns the reading as [`last`](Self::last) does.
+    /// Feeds a price.
     ///
     /// Does not validate `price`; arithmetic follows IEEE 754. See
     /// [`checked_update`](Self::checked_update).
@@ -119,14 +118,15 @@ impl BipowerVariation {
     /// use nexus_stats_core::statistics::BipowerVariation;
     ///
     /// let mut bv = BipowerVariation::builder().min_samples(3).build().unwrap();
-    /// assert_eq!(bv.update(100.0), None);
-    /// assert_eq!(bv.update(100.0), None);
-    /// let reading = bv.update(100.0).unwrap();
+    /// for _ in 0..3 {
+    ///     bv.update(100.0);
+    /// }
+    /// let reading = bv.decomposition().unwrap();
     /// assert_eq!(reading.realized_variance, 0.0);
     /// assert_eq!(reading.returns, 2);
     /// ```
     #[inline]
-    pub fn update(&mut self, price: f64) -> Option<JumpDecomposition> {
+    pub fn update(&mut self, price: f64) {
         let log_price = crate::math::ln(price);
         self.count += 1;
 
@@ -138,8 +138,6 @@ impl BipowerVariation {
             self.prev_abs_return = abs_return;
         }
         self.prev_log_price = log_price;
-
-        self.last()
     }
 
     /// Checked update. Feeds `price`, or returns an error and leaves the
@@ -160,28 +158,26 @@ impl BipowerVariation {
     /// use nexus_stats_core::{DataError, statistics::BipowerVariation};
     ///
     /// let mut bv = BipowerVariation::new();
-    /// assert_eq!(bv.checked_update(100.0), Ok(None));
+    /// assert_eq!(bv.checked_update(100.0), Ok(()));
     /// assert_eq!(bv.checked_update(0.0), Err(DataError::OutOfRange));
     /// assert_eq!(bv.count(), 1);
     /// ```
     #[inline]
-    pub fn checked_update(
-        &mut self,
-        price: f64,
-    ) -> Result<Option<JumpDecomposition>, crate::DataError> {
+    pub fn checked_update(&mut self, price: f64) -> Result<(), crate::DataError> {
         // Any positive price is allowed: its logarithm is small.
         crate::math::check_input(price, f64::MAX)?;
         if price <= 0.0 {
             return Err(crate::DataError::OutOfRange);
         }
-        Ok(self.update(price))
+        self.update(price);
+        Ok(())
     }
 
     /// The reading since the last reset, or `None` until `min_samples`
     /// prices have been fed.
     #[inline]
     #[must_use]
-    pub fn last(&self) -> Option<JumpDecomposition> {
+    pub fn decomposition(&self) -> Option<JumpDecomposition> {
         if self.count < self.min_samples {
             return None;
         }
@@ -271,7 +267,7 @@ mod tests {
             log_price += r;
             bv.update(log_price.exp());
         }
-        bv.last().unwrap()
+        bv.decomposition().unwrap()
     }
 
     fn close(a: f64, b: f64) -> bool {
@@ -332,7 +328,7 @@ mod tests {
             log_price += ((0..12).map(|_| uniform()).sum::<f64>() - 6.0) * 1e-3;
             bv.update(log_price.exp());
         }
-        let r = bv.last().unwrap();
+        let r = bv.decomposition().unwrap();
         let ratio = r.debiased_bipower_variation() / r.realized_variance;
         assert!((ratio - 1.0).abs() < 0.03, "ratio = {ratio}");
         assert!(r.jump_ratio().unwrap() < 0.03);
@@ -358,13 +354,13 @@ mod tests {
     #[test]
     fn no_reading_until_min_samples() {
         let mut bv = BipowerVariation::builder().min_samples(4).build().unwrap();
-        assert_eq!(bv.update(100.0), None);
-        assert_eq!(bv.update(101.0), None);
-        assert_eq!(bv.update(100.0), None);
+        for price in [100.0, 101.0, 100.0] {
+            bv.update(price);
+            assert_eq!(bv.decomposition(), None);
+        }
         assert!(!bv.is_primed());
-        let reading = bv.update(101.0);
-        assert!(reading.is_some());
-        assert_eq!(reading, bv.last());
+        bv.update(101.0);
+        assert!(bv.decomposition().is_some());
         assert!(bv.is_primed());
     }
 
@@ -387,13 +383,13 @@ mod tests {
             bv.update(price);
         }
         bv.reset();
-        assert_eq!((bv.count(), bv.last()), (0, None));
+        assert_eq!((bv.count(), bv.decomposition()), (0, None));
 
         // Nothing from before the reset reaches the next period.
         for price in next_period {
             bv.update(price);
         }
-        assert_eq!(bv.last(), fresh.last());
+        assert_eq!(bv.decomposition(), fresh.decomposition());
     }
 
     #[test]
@@ -414,12 +410,14 @@ mod tests {
         assert_eq!(bv.checked_update(-0.0), Err(OutOfRange));
         assert_eq!(bv.checked_update(-1.0), Err(OutOfRange));
         assert_eq!(
-            (bv.count(), bv.last()),
-            (untouched.count(), untouched.last())
+            (bv.count(), bv.decomposition()),
+            (untouched.count(), untouched.decomposition())
         );
 
         // The next good price pairs with the last good price and return.
-        assert_eq!(bv.checked_update(104.0), untouched.checked_update(104.0));
+        bv.checked_update(104.0).unwrap();
+        untouched.checked_update(104.0).unwrap();
+        assert_eq!(bv.decomposition(), untouched.decomposition());
     }
 
     #[test]
@@ -428,7 +426,7 @@ mod tests {
         for _ in 0..3 {
             bv.checked_update(5e-324).unwrap();
         }
-        assert_eq!(bv.last().unwrap().realized_variance, 0.0);
+        assert_eq!(bv.decomposition().unwrap().realized_variance, 0.0);
     }
 
     #[test]
@@ -442,7 +440,7 @@ mod tests {
             };
             bv.checked_update(price).unwrap();
         }
-        let r = bv.last().unwrap();
+        let r = bv.decomposition().unwrap();
         assert!(r.realized_variance.is_finite());
         assert!(r.debiased_bipower_variation().is_finite());
         assert_eq!(r.jump_ratio(), Some(0.0));
@@ -454,10 +452,11 @@ mod tests {
         let mut checked = tracker();
         let mut unchecked = tracker();
         for price in prices {
-            assert_eq!(checked.checked_update(price), Ok(unchecked.update(price)));
+            checked.checked_update(price).unwrap();
+            unchecked.update(price);
         }
         assert_eq!(checked.count(), unchecked.count());
-        assert_eq!(checked.last(), unchecked.last());
+        assert_eq!(checked.decomposition(), unchecked.decomposition());
     }
 
     #[test]
