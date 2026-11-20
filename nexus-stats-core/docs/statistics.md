@@ -304,7 +304,7 @@ for i in 0..100 { sp.update(i as f64); }
 let prob = sp.lpm().unwrap();  // ~0.5
 ```
 
-**Overflow:** the shortfall is raised to the order and summed directly, as R's `PerformanceAnalytics::lpm` and Boost.Accumulators' `moment` do; no library rescales a power sum. Keep shortfalls under about `1e150` at order 2, `1e75` at order 4, `1e18` at order 16. `update` does not validate. `checked_update` refuses a NaN, an infinity, and the sample that would overflow the sum: it tests the result, which is where IEEE 754 defines overflow.
+**Overflow:** the shortfall is raised to the order and summed directly, as R's `PerformanceAnalytics::lpm` and Boost.Accumulators' `moment` do, neither of which rescales. For a stream of any length, keep shortfalls under about `1e144` at order 2, `1e72` at order 4, `1e18` at order 16. `update` does not validate. `checked_update` refuses a NaN, an infinity, and the sample that would overflow the sum: it tests the result, which is where IEEE 754 defines overflow.
 
 **Use for:** downside risk measurement, Sortino ratio inputs, tail-sensitive risk metrics. Semivariance is the most common application — use the `semivariance(target)` convenience constructor.
 

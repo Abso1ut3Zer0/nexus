@@ -12,10 +12,10 @@
 /// # Overflow
 ///
 /// The shortfall is raised to the order and summed directly, as in R's
-/// `PerformanceAnalytics::lpm` and Boost.Accumulators' `moment`; no
-/// library rescales a power sum. A large shortfall at a high order can
-/// therefore overflow an `f64`: keep shortfalls under about `1e150` at
-/// order 2, `1e75` at order 4, and `1e18` at order 16.
+/// `PerformanceAnalytics::lpm` and Boost.Accumulators' `moment`, neither
+/// of which rescales. A large shortfall at a high order can therefore
+/// overflow an `f64`. For a stream of any length, keep shortfalls under
+/// about `1e144` at order 2, `1e72` at order 4, and `1e18` at order 16.
 ///
 /// [`checked_update`](Self::checked_update) refuses the sample that would
 /// overflow the sum. It tests the result, which is where IEEE 754 defines
@@ -72,6 +72,17 @@ impl Lpm {
     ///
     /// Does not validate `sample`; arithmetic follows IEEE 754. See
     /// [`checked_update`](Self::checked_update).
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use nexus_stats_core::statistics::Lpm;
+    ///
+    /// let mut lpm = Lpm::semivariance(0.0).unwrap();
+    /// lpm.update(-3.0);
+    /// lpm.update(1.0);
+    /// assert_eq!(lpm.lpm(), Some(4.5));
+    /// ```
     #[inline]
     pub fn update(&mut self, sample: f64) {
         self.sum += self.term(sample);
@@ -79,7 +90,7 @@ impl Lpm {
     }
 
     /// Checked update. Feeds `sample`, or returns an error and leaves the
-    /// state unchanged if `sample` is NaN or infinite, or if its shortfall
+    /// accumulator unchanged if `sample` is NaN or infinite, or if its shortfall
     /// raised to the order would overflow the running sum.
     ///
     /// # Errors
@@ -163,8 +174,7 @@ impl Lpm {
     /// The sample's shortfall below the target, raised to the order.
     #[inline]
     fn term(&self, sample: f64) -> f64 {
-        // Clamped, not branched: which side of the target a sample falls
-        // on is a coin flip.
+        // Clamped, not branched: the side of the target is a coin flip.
         let shortfall = (self.target - sample).max(0.0);
         match self.order {
             0 => crate::math::indicator(shortfall > 0.0),
@@ -345,6 +355,18 @@ mod tests {
     }
 
     #[test]
+    fn a_shortfall_that_overflows_is_refused_except_as_a_count() {
+        // `1e308 - (-1e308)` is infinite, though both values are finite.
+        let fed = |order: u32| {
+            let mut lpm = Lpm::builder().target(1e308).order(order).build().unwrap();
+            (lpm.checked_update(-1e308), lpm.count())
+        };
+        assert_eq!(fed(1), (Err(crate::DataError::OutOfRange), 0));
+        // Order 0 only counts shortfalls, so the size does not matter.
+        assert_eq!(fed(0), (Ok(()), 1));
+    }
+
+    #[test]
     fn checked_update_gives_the_same_result_as_update() {
         for order in [0, 1, 2, 5] {
             let mut checked = Lpm::builder().target(1.0).order(order).build().unwrap();
@@ -353,6 +375,7 @@ mod tests {
                 checked.checked_update(x).unwrap();
                 unchecked.update(x);
             }
+            assert_eq!(checked.count(), unchecked.count());
             assert_eq!(checked.lpm(), unchecked.lpm(), "order {order}");
         }
     }

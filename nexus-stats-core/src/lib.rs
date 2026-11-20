@@ -17,8 +17,8 @@
 //!
 //! - `update` does not validate its input; arithmetic follows IEEE 754.
 //! - `checked_update` returns a [`DataError`] and leaves the state unchanged
-//!   if the input is NaN, infinite, or larger in magnitude than
-//!   [`INPUT_LIMIT`].
+//!   if the input is NaN, infinite, or outside the bound the type
+//!   documents. For most types that bound is [`INPUT_LIMIT`].
 //!
 //! A type fed only through `checked_update` never returns NaN.
 //!
@@ -43,7 +43,8 @@ pub mod storage;
 
 pub use enums::{Condition, ConfigError, DataError, Direction};
 
-/// The largest magnitude `checked_update` accepts: `1e120`.
+/// The largest magnitude `checked_update` accepts, on a type that does not
+/// document its own bound: `1e120`.
 ///
 /// Within it, a sum of squared differences cannot overflow for any stream
 /// length: `2^64 * (2e120)^2 < 1e260`.

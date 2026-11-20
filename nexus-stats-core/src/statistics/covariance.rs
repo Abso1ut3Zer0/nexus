@@ -174,8 +174,7 @@ impl Covariance {
             return None;
         }
 
-        // Two roots: the product of the two sums can overflow or underflow
-        // where neither sum does.
+        // Two roots: the product of the sums can overflow or underflow.
         let scale = crate::math::sqrt(self.m2_x) * crate::math::sqrt(self.m2_y);
         // Rounding can leave the quotient just outside [-1, 1].
         Some((self.co_moment / scale).clamp(-1.0, 1.0))
@@ -386,6 +385,11 @@ mod tests {
             checked.checked_update(x, y).unwrap();
             unchecked.update(x, y);
         }
+        assert_eq!(checked.count(), unchecked.count());
+        assert_eq!(checked.mean_x(), unchecked.mean_x());
+        assert_eq!(checked.mean_y(), unchecked.mean_y());
+        assert_eq!(checked.variance_x(), unchecked.variance_x());
+        assert_eq!(checked.variance_y(), unchecked.variance_y());
         assert_eq!(checked.covariance(), unchecked.covariance());
         assert_eq!(checked.correlation(), unchecked.correlation());
     }
