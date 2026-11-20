@@ -10,9 +10,9 @@ Supports parallel merging.
 | Update cost | 17 cycles |
 | Memory | ~40 bytes (f64) |
 | Types | `Moments` |
-| Priming | Mean after 1, variance after 2, skewness after 3, kurtosis after 4 |
-| Output | `mean()`, `variance()`, `skewness()`, `kurtosis()` — all `Option` |
-| Error handling | Returns `Result<_, DataError>` on NaN/Inf input |
+| Priming | Mean after 1, variance after 2, shape after 4 |
+| Output | `mean()`, `variance()`, `shape()` (skewness and excess kurtosis), all `Option` |
+| Error handling | `update` does not validate; `checked_update` returns `Result<_, DataError>` |
 
 ## What It Does
 
@@ -92,12 +92,25 @@ combined.M4 = a.M4 + b.M4 + delta⁴ × na × nb × (na² - na·nb + nb²) / N³
 let mut m = Moments::new();
 
 for sample in data {
-    m.update(sample).unwrap();
+    m.update(sample);
 }
 
-println!("skewness: {:?}", m.skewness());
-println!("kurtosis: {:?}", m.kurtosis());
+if let Some(shape) = m.shape() {
+    println!("skewness: {}", shape.skewness);
+    println!("excess kurtosis: {}", shape.excess_kurtosis);
+}
 ```
+
+`shape()` returns skewness and excess kurtosis together. It is `None` with
+fewer than four samples, and when the data is too close to constant for a
+shape to be resolved: a variance at or below `(f64::EPSILON * mean)^2`
+(the test SciPy's `skew` and `kurtosis` use), or a spread so small that the
+divisors underflow.
+
+`update` does not validate its input. `checked_update` returns a
+`DataError` and changes nothing for a NaN, an infinity, or a magnitude
+above `Moments::INPUT_LIMIT` (`1e60`; fourth powers overflow sooner than
+squares).
 
 ### Merging
 
@@ -105,8 +118,8 @@ println!("kurtosis: {:?}", m.kurtosis());
 let mut worker_a = Moments::new();
 let mut worker_b = Moments::new();
 
-for x in &data[..half] { worker_a.update(*x).unwrap(); }
-for x in &data[half..] { worker_b.update(*x).unwrap(); }
+for x in &data[..half] { worker_a.update(*x); }
+for x in &data[half..] { worker_b.update(*x); }
 
 worker_a.merge(&worker_b);
 // worker_a now has moments for the full dataset
@@ -120,16 +133,13 @@ worker_a.merge(&worker_b);
 let mut samples = Moments::new();
 
 // On each observation:
-samples.update(measurement).unwrap();
+samples.update(measurement);
 
-if let Some(skew) = samples.skewness() {
-    if skew < -0.5 {
+if let Some(shape) = samples.shape() {
+    if shape.skewness < -0.5 {
         // Negative skew: larger negative deviations than positive
     }
-}
-
-if let Some(kurt) = samples.kurtosis() {
-    if kurt > 3.0 {
+    if shape.excess_kurtosis > 0.0 {
         // Fat tails: extreme values more likely than Gaussian
     }
 }
@@ -141,12 +151,12 @@ if let Some(kurt) = samples.kurtosis() {
 let mut latency = Moments::new();
 
 // Per request:
-latency.update(response_time_us).unwrap();
+latency.update(response_time_us);
 
 // Alert if distribution becomes asymmetric
 // (indicates a subpopulation hitting a slow path)
-if let Some(skew) = latency.skewness() {
-    if skew > 2.0 {
+if let Some(shape) = latency.shape() {
+    if shape.skewness > 2.0 {
         alert("latency distribution is right-skewed");
     }
 }
@@ -155,8 +165,8 @@ if let Some(skew) = latency.skewness() {
 ### Monitoring — Regime Change via Kurtosis
 
 ```rust
-// Track kurtosis over time:
-// Stable regime: kurtosis ≈ 0
+// Track excess kurtosis over time:
+// Stable regime: excess kurtosis ≈ 0
 // Volatile regime: kurtosis spikes (fat tails)
 // Calm regime: kurtosis drops (thin tails)
 ```
@@ -174,7 +184,6 @@ use a batch estimator with Bessel's correction.
 |-----------|-----|
 | `Moments::update` | 17 cycles |
 | `Moments::merge` | 31 cycles |
-| `skewness()` query | 7 cycles (includes `sqrt`) |
 
 ## Academic Reference
 

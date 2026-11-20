@@ -126,6 +126,17 @@ impl Moments {
     ///   infinite.
     /// - [`DataError::OutOfRange`](crate::DataError::OutOfRange) if `sample`
     ///   is finite and larger in magnitude than `Moments::INPUT_LIMIT`.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use nexus_stats_core::{DataError, statistics::Moments};
+    ///
+    /// let mut m = Moments::new();
+    /// assert_eq!(m.checked_update(1.0), Ok(()));
+    /// assert_eq!(m.checked_update(1e61), Err(DataError::OutOfRange));
+    /// assert_eq!(m.count(), 1);
+    /// ```
     #[inline]
     pub fn checked_update(&mut self, sample: f64) -> Result<(), crate::DataError> {
         crate::math::check_input(sample, Self::INPUT_LIMIT)?;

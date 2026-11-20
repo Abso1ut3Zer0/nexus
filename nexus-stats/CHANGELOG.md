@@ -142,6 +142,10 @@ one naming convention across the family. Migration guide:
 
 ### Fixed
 
+- Carried from core: `Moments` no longer returns NaN for skewness or
+  kurtosis on very small spreads. `Moments::shape()` replaces
+  `skewness()` / `excess_kurtosis()` / `kurtosis()`; see the migration
+  guide.
 - Carried from core: `Covariance::correlation` no longer overflows or
   underflows on very large or very small inputs, and stays within
   `[-1, 1]`.

@@ -413,7 +413,23 @@ outside, rename the call to `checked_update` and keep the error handling.
 
 Moved so far: `Welford`, `HarmonicMean` (its `checked_update` also
 refuses a sample below `1 / INPUT_LIMIT`, which covers zero and negatives),
-`Covariance`.
+`Covariance`, `Moments` (its limit is `Moments::INPUT_LIMIT`, `1e60`).
+
+`Moments::skewness()`, `excess_kurtosis()` and `kurtosis()` are replaced
+by `shape()`, which returns both in a `Shape`:
+
+```rust
+// before
+let skew = m.skewness()?;
+let kurt = m.kurtosis()?;
+// after
+let shape = m.shape()?;
+let (skew, kurt) = (shape.skewness, shape.kurtosis());
+```
+
+`shape()` needs four samples (skewness alone needed three), and is `None`
+where the old readers returned NaN or noise: data too close to constant
+for its shape to be resolved.
 
 `Covariance::correlation` is now always within `[-1, 1]` and no longer
 reads 0 or `None` for very large or very small inputs.

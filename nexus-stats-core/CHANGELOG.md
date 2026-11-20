@@ -184,6 +184,12 @@ contained.
   the same change as `Welford`. `checked_update` is the validating form.
 - **`Covariance::update` no longer validates or returns a `Result`**, the
   same change again. `checked_update(x, y)` validates both values.
+- **`Moments::update` no longer validates or returns a `Result`.**
+  `checked_update` validates against `Moments::INPUT_LIMIT` (`1e60`).
+- **`Moments::shape()` replaces `skewness()`, `excess_kurtosis()` and
+  `kurtosis()`.** It returns a `Shape { skewness, excess_kurtosis }`, with
+  `kurtosis()` on the struct. Skewness now needs four samples (it was
+  three), since the pair comes together.
 
 ### Removed
 
@@ -259,6 +265,7 @@ contained.
 - `HarmonicMean::checked_update`: refuses a NaN, an infinity, or a sample
   outside `[1 / INPUT_LIMIT, INPUT_LIMIT]` (which includes zero and
   negatives), and leaves the accumulator unchanged.
+- `Moments::checked_update`, `Moments::INPUT_LIMIT`, `Shape`.
 - `Covariance::checked_update`: refuses the pair, and leaves the
   accumulator unchanged, if either value is NaN, infinite, or larger in
   magnitude than `INPUT_LIMIT`.
@@ -267,6 +274,11 @@ contained.
 
 ### Fixed
 
+- **`Moments` no longer returns NaN for skewness or kurtosis.** On data
+  with a spread under about `1e-100` the divisors underflowed. `shape()`
+  returns `None` there, and also when the variance is at or below
+  `(f64::EPSILON * mean)^2`, the test SciPy's `skew` and `kurtosis` use
+  for data too close to constant.
 - **`Covariance::correlation` no longer overflows or underflows, and stays
   within `[-1, 1]`.** It multiplied the two sums of squares before taking
   the root, so inputs near `1e120` read as a correlation of 0 and inputs
