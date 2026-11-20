@@ -244,19 +244,19 @@ taskset -c 0 ./target/release/examples/perf_stats
 
 nexus-stats distinguishes two failure categories:
 
-- **Data errors** (NaN, Inf) — All float update methods return `Result<_, DataError>`. The library rejects the input and leaves state unchanged. The caller declares the policy: `.unwrap()` to crash, log and continue, or trigger a circuit breaker.
+- **Data errors** (NaN, Inf): the validating method returns `Result<_, DataError>`, rejects the input and leaves state unchanged. The caller declares the policy: `.unwrap()` to crash, log and continue, or trigger a circuit breaker. The types are moving one at a time to the standard library's `+` / `checked_add` shape: on a moved type (`Welford` so far) the validating method is `checked_update`, and `update` does the arithmetic without validating (IEEE 754). On the others `update` itself validates and returns the `Result`.
 - **Programmer errors** (wrong dimensions, out-of-range) — The library panics. Fix the code.
 
 The library makes no assumptions about which policy is correct. Each system has different implications.
 
 ```rust
 // Production: log and continue
-if let Err(e) = stats.update(sample) {
+if let Err(e) = stats.checked_update(sample) {
     warn!("bad data: {e:?}");
 }
 
 // Testing: crash hard
-stats.update(sample).unwrap();
+stats.checked_update(sample).unwrap();
 ```
 
 ## Features
