@@ -34,6 +34,9 @@ impl Welford {
     /// `m2` is the sum of squared deviations from the mean
     /// (`variance * (count - 1)` for sample variance).
     ///
+    /// Values larger in magnitude than [`INPUT_LIMIT`](crate::INPUT_LIMIT)
+    /// can overflow later updates.
+    ///
     /// # Errors
     ///
     /// `ConfigError::Invalid` if `mean` is not finite, `m2` is negative or not
