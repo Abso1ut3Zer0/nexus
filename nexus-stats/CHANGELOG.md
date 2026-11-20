@@ -112,6 +112,10 @@ one naming convention across the family. Migration guide:
   `is_shifted()` readers are removed, and `is_primed()` means the first
   window has completed; `normalize` returns `Result<Option<T>, _>` on the
   three normalizers. See the migration guide.
+- Carried from core: `Welford::update` no longer validates or returns a
+  `Result`; `Welford::checked_update` is the validating form (after the
+  standard library's `+` and `checked_add`). `INPUT_LIMIT` is re-exported
+  at the crate root. The other types follow one at a time.
 
 ### Removed
 

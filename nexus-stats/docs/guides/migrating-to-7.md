@@ -396,6 +396,24 @@ CHANGELOG entry in `nexus-stats-core`:
 - Additive: `DistributionShift::last()` / `fast_window()`, `ShapeShift`,
   `QuantileNorm` accepts `resolution(1)`.
 
+### `update` and `checked_update`
+
+The types are moving, one at a time, to the shape of the standard
+library's `+` and `checked_add`:
+
+- `update` does the arithmetic and nothing else. It does not validate its
+  input, follows IEEE 754, and returns its reading directly, not in a
+  `Result`.
+- `checked_update` validates first and returns the `Result`. It refuses
+  NaN, infinity and a magnitude above `INPUT_LIMIT` (`1e120`), and leaves
+  the state unchanged.
+
+To migrate a call: where the value comes from your own arithmetic on data
+you already trust, drop the `?` or `.unwrap()`. Where it comes from
+outside, rename the call to `checked_update` and keep the error handling.
+
+Moved so far: `Welford`.
+
 ## 5. Checklist
 
 1. Replace the names in tables 1 and 2, builders included.

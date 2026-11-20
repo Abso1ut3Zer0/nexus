@@ -15,6 +15,28 @@ macro_rules! check_finite {
     };
 }
 
+/// Returns from the enclosing function with a `DataError` unless
+/// `|val| <= limit`: `NotANumber` for NaN, `Infinite` for infinity,
+/// `OutOfRange` for a finite value beyond the limit.
+#[doc(hidden)]
+#[macro_export]
+macro_rules! check_magnitude {
+    ($val:expr, $limit:expr) => {{
+        let value: f64 = $val;
+        // Written so that NaN fails the test.
+        #[allow(clippy::neg_cmp_op_on_partial_ord)]
+        if !(value.abs() <= $limit) {
+            return Err(if value.is_nan() {
+                $crate::DataError::NotANumber
+            } else if value.is_infinite() {
+                $crate::DataError::Infinite
+            } else {
+                $crate::DataError::OutOfRange
+            });
+        }
+    }};
+}
+
 /// f32 variant of [`check_finite`].
 #[doc(hidden)]
 #[inline]

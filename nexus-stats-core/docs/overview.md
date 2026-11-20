@@ -12,8 +12,8 @@ Every streaming type in this crate follows the same shape:
 use nexus_stats_core::statistics::Welford;
 
 let mut w = Welford::new();
-w.update(100.5)?;           // O(1), Result for NaN/Inf
-w.update(99.8)?;
+w.checked_update(100.5)?;   // O(1), Result for NaN/Inf
+w.checked_update(99.8)?;
 if w.is_primed() {
     let mean = w.mean().unwrap();
     let var  = w.variance().unwrap();
@@ -22,6 +22,7 @@ w.reset();
 ```
 
 - **`update(sample)` → `Result<_, DataError>`** for float types. NaN/Inf inputs return an error. The caller decides whether to propagate, log, or swallow.
+- **`update` and `checked_update`**, after the standard library's `+` and `checked_add`, is the shape the types are moving to one at a time: `update` does not validate (IEEE 754) and returns its reading directly, and `checked_update` is the validating form that returns the `Result`. `Welford` is the first; a type without a `checked_update` still validates in `update`.
 - **`is_primed()` / `count()` / `reset()`** on every type.
 - **O(1) per update.** Fixed memory. No allocation on the hot path after construction.
 - **`f64` by default**; the cheap primitives (`Slew`, `DeadBand`, `Hysteresis`, the extrema, the diffs, ...) are generic over `f64` and `i64`. See [Integer Variants](#integer-variants).

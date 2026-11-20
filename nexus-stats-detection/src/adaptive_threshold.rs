@@ -57,8 +57,7 @@ impl AdaptiveThreshold {
     ) -> Result<Option<Direction>, nexus_stats_core::DataError> {
         check_finite!(sample);
         let _ = self.ema.update(sample);
-        // Already validated by check_finite! above
-        let _ = self.welford.update(sample);
+        self.welford.update(sample);
         if self.welford.count() < self.min_samples {
             return Ok(None);
         }

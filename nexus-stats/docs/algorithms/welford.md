@@ -91,6 +91,28 @@ println!("n={}, mean={:.2}, std_dev={:.2}",
 );
 ```
 
+### Checked input
+
+`update` does not validate its input; the arithmetic follows IEEE 754, as
+`f64` arithmetic does. `checked_update` is the validating form, in the
+manner of the standard library's `checked_add`: it returns an error and
+leaves the accumulator unchanged for a NaN, an infinity, or a magnitude
+above `INPUT_LIMIT` (`1e120`, within which the variance cannot overflow).
+
+```rust
+use nexus_stats::{DataError, statistics::Welford};
+
+let mut stats = Welford::new();
+stats.checked_update(1.0)?;
+stats.checked_update(3.0)?;
+assert_eq!(stats.checked_update(f64::NAN), Err(DataError::NotANumber));
+assert_eq!(stats.count(), 2); // the refused sample changed nothing
+```
+
+Use `update` for values your own code produced and already trusts, and
+`checked_update` for values that arrive from outside. `reset()` starts
+over.
+
 ### Merging
 
 ```rust
@@ -98,8 +120,8 @@ let mut worker_a = Welford::new();
 let mut worker_b = Welford::new();
 
 // Split work
-for x in &data[..half] { worker_a.update(*x).unwrap(); }
-for x in &data[half..] { worker_b.update(*x).unwrap(); }
+for x in &data[..half] { worker_a.update(*x); }
+for x in &data[half..] { worker_b.update(*x); }
 
 // Merge
 worker_a.merge(&worker_b);
