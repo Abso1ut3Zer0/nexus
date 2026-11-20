@@ -12,7 +12,7 @@ Every streaming type in this crate follows the same shape:
 use nexus_stats_core::statistics::Welford;
 
 let mut w = Welford::new();
-w.checked_update(100.5)?;   // O(1), Result for NaN/Inf
+w.checked_update(100.5)?;   // O(1); Err for NaN, infinity, or out of range
 w.checked_update(99.8)?;
 if w.is_primed() {
     let mean = w.mean().unwrap();
@@ -21,8 +21,7 @@ if w.is_primed() {
 w.reset();
 ```
 
-- **`update(sample)` → `Result<_, DataError>`** for float types. NaN/Inf inputs return an error. The caller decides whether to propagate, log, or swallow.
-- **`update` and `checked_update`**, after the standard library's `+` and `checked_add`, is the shape the types are moving to one at a time: `update` does not validate (IEEE 754) and returns its reading directly, and `checked_update` is the validating form that returns the `Result`. `Welford` is the first; a type without a `checked_update` still validates in `update`.
+- **`update` and `checked_update`**, after the standard library's `+` and `checked_add`. `update` does the arithmetic and nothing else: it does not validate its input, follows IEEE 754, and returns no `Result`. `checked_update` is the validating form: it returns a `DataError` and changes nothing for a NaN, an infinity, or a magnitude above `INPUT_LIMIT`. The types are moving to this pair one at a time and `Welford` is the first; a type without a `checked_update` still validates inside `update` and returns `Result<_, DataError>` from it. Either way the caller decides whether to propagate, log, or swallow an error.
 - **`is_primed()` / `count()` / `reset()`** on every type.
 - **O(1) per update.** Fixed memory. No allocation on the hot path after construction.
 - **`f64` by default**; the cheap primitives (`Slew`, `DeadBand`, `Hysteresis`, the extrema, the diffs, ...) are generic over `f64` and `i64`. See [Integer Variants](#integer-variants).

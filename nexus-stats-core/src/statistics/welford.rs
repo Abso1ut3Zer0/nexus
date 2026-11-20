@@ -75,8 +75,13 @@ impl Welford {
 
     /// Checked [`update`](Self::update): feeds the sample only if it is a
     /// number no larger in magnitude than
-    /// [`INPUT_LIMIT`](crate::INPUT_LIMIT), within which the variance
-    /// cannot overflow. On an error the accumulator is unchanged.
+    /// [`INPUT_LIMIT`](crate::INPUT_LIMIT). On an error the accumulator is
+    /// unchanged.
+    ///
+    /// An accumulator fed only through this method since
+    /// [`new`](Self::new) or [`reset`](Self::reset) cannot overflow. (One
+    /// built by [`from_parts`](Self::from_parts) starts from whatever it
+    /// was given.)
     ///
     /// # Errors
     ///
@@ -421,10 +426,21 @@ mod tests {
 
     #[test]
     fn checked_update_accepts_the_limit_without_overflow() {
+        // The widest swings the limit allows, for long enough that an
+        // overflow would have shown.
         let mut w = Welford::new();
-        w.checked_update(crate::INPUT_LIMIT).unwrap();
-        w.checked_update(-crate::INPUT_LIMIT).unwrap();
+        for i in 0..100_000 {
+            let sample = if i % 2 == 0 {
+                crate::INPUT_LIMIT
+            } else {
+                -crate::INPUT_LIMIT
+            };
+            w.checked_update(sample).unwrap();
+        }
+        assert!(w.mean().unwrap().is_finite());
+        assert!(w.m2().is_finite());
         assert!(w.variance().unwrap().is_finite());
+        assert!(w.std_dev().unwrap().is_finite());
     }
 
     #[test]

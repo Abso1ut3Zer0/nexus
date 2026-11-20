@@ -402,8 +402,7 @@ The types are moving, one at a time, to the shape of the standard
 library's `+` and `checked_add`:
 
 - `update` does the arithmetic and nothing else. It does not validate its
-  input, follows IEEE 754, and returns its reading directly, not in a
-  `Result`.
+  input, follows IEEE 754, and returns no `Result`.
 - `checked_update` validates first and returns the `Result`. It refuses
   NaN, infinity and a magnitude above `INPUT_LIMIT` (`1e120`), and leaves
   the state unchanged.

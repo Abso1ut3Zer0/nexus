@@ -18,10 +18,10 @@
 //! - `update` does the arithmetic and nothing else. It does not validate
 //!   its input and follows IEEE 754, as `f64` arithmetic does.
 //! - `checked_update` validates first and returns a `Result`. It refuses
-//!   NaN, infinity, and a value large enough to overflow the type (see
-//!   [`INPUT_LIMIT`]), with a [`DataError`], and leaves the state
-//!   unchanged. Fed only through `checked_update`, a type never returns
-//!   NaN.
+//!   NaN, infinity, and a magnitude above [`INPUT_LIMIT`], with a
+//!   [`DataError`], and leaves the state unchanged. A type that has been
+//!   fed only through `checked_update` since it was created or reset
+//!   cannot overflow and never returns NaN.
 //!
 //! `reset()` returns a type to its starting state.
 //!

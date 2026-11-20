@@ -31,9 +31,7 @@ pub fn check_input(value: f64, limit: f64) -> Result<(), crate::DataError> {
     // `|value| <= limit` already decides that, because a NaN or an infinity
     // fails it as well. Working out which of the three it was is only
     // needed after a refusal, so it lives in `refusal` below, marked
-    // `#[cold]` to keep it out of the caller's inlined code. Inside a
-    // `checked_update` this compiles to one compare and one branch before
-    // the arithmetic, against three of each for the tests in a row.
+    // `#[cold]` to keep it out of the caller's inlined code.
 
     /// Why `value` was refused.
     #[cold]
@@ -47,7 +45,6 @@ pub fn check_input(value: f64, limit: f64) -> Result<(), crate::DataError> {
         }
     }
 
-    // One comparison accepts: a NaN or an infinity fails it too.
     if value.abs() <= limit {
         return Ok(());
     }
@@ -417,7 +414,8 @@ mod tests {
     fn check_input_accepts_up_to_the_limit_and_names_each_refusal() {
         use crate::DataError::{Infinite, NotANumber, OutOfRange};
 
-        for accepted in [0.0, -0.0, 1.5, -1.5, 10.0, -10.0, f64::MIN_POSITIVE] {
+        // 5e-324 is the smallest subnormal.
+        for accepted in [0.0, -0.0, 1.5, -1.5, 10.0, -10.0, 5e-324, -5e-324] {
             assert_eq!(super::check_input(accepted, 10.0), Ok(()), "{accepted}");
         }
         assert_eq!(super::check_input(f64::NAN, 10.0), Err(NotANumber));
