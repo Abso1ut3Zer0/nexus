@@ -406,14 +406,14 @@ fn bench_covariance_f64(samples: &mut [u64]) {
     for _ in 0..WARMUP {
         let x = 90.0 + (next_val(&mut rng) % 20) as f64;
         let y = x * 2.0 + (next_val(&mut rng) % 5) as f64;
-        cov.update(x, y).unwrap();
+        cov.update(x, y);
     }
     for s in samples.iter_mut() {
         let start = rdtsc_start();
         for _ in 0..BATCH {
             let x = 90.0 + (next_val(&mut rng) % 20) as f64;
             let y = x * 2.0 + (next_val(&mut rng) % 5) as f64;
-            cov.update(x, y).unwrap();
+            cov.update(x, y);
         }
         let end = rdtsc_end();
         black_box(cov.correlation());
@@ -1955,7 +1955,7 @@ fn warm_covariance() -> Covariance {
     for _ in 0..WARMUP {
         let x = 90.0 + (next_val(&mut rng) % 20) as f64;
         let y = x * 2.0 + (next_val(&mut rng) % 5) as f64;
-        cov.update(x, y).unwrap();
+        cov.update(x, y);
     }
     cov
 }

@@ -115,8 +115,8 @@ one naming convention across the family. Migration guide:
 - Carried from core: `Welford::update` no longer validates or returns a
   `Result`; `Welford::checked_update` is the validating form (after the
   standard library's `+` and `checked_add`). `INPUT_LIMIT` is re-exported
-  at the crate root. The other types follow one at a time: `HarmonicMean`
-  so far. The migration guide keeps the list.
+  at the crate root. The other types follow one at a time; the migration
+  guide keeps the list.
 
 ### Removed
 
@@ -141,6 +141,10 @@ one naming convention across the family. Migration guide:
   `nexus-stats-smoothing`'s `libm` feature.
 
 ### Fixed
+
+- Carried from core: `Covariance::correlation` no longer overflows or
+  underflows on very large or very small inputs, and stays within
+  `[-1, 1]`.
 
 - Carried from core: `WindowedMin` / `WindowedMax` kernel-exact
   ([#758](https://github.com/Abso1ut3Zer0/nexus/issues/758)), `CoDel` RFC 8289

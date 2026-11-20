@@ -61,7 +61,7 @@ impl HalfLife {
         check_finite!(value);
         self.count += 1;
         if self.count >= 2 {
-            self.pairs.update(value, self.prev)?;
+            self.pairs.update(value, self.prev);
         }
         self.prev = value;
         Ok(())

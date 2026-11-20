@@ -19,6 +19,7 @@ mod moments;
 mod percentile;
 #[cfg(any(feature = "std", feature = "libm"))]
 mod roll_spread;
+mod running_mean;
 #[cfg(all(feature = "alloc", any(feature = "std", feature = "libm")))]
 mod two_scale_rv;
 #[cfg(feature = "alloc")]

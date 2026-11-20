@@ -146,13 +146,10 @@ fn bench_covariance(c: &mut Criterion) {
     let mut rng = Lcg::new(42);
     let mut cov = Covariance::new();
     for _ in 0..1000 {
-        let _ = cov.update(rng.next_f64(), rng.next_f64());
+        cov.update(rng.next_f64(), rng.next_f64());
     }
     c.bench_function("Covariance::update", |b| {
-        b.iter(|| {
-            cov.update(black_box(rng.next_f64()), black_box(rng.next_f64()))
-                .unwrap()
-        })
+        b.iter(|| cov.update(black_box(rng.next_f64()), black_box(rng.next_f64())))
     });
 }
 
