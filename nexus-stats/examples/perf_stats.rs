@@ -2461,7 +2461,7 @@ fn main() {
     print_row("Amihud::update", &mut buf);
     let mut hl = HalfLife::new();
     bench_feed(&mut buf, &mut hl, |h, v| {
-        let _ = h.update(v);
+        h.update(v);
     });
     print_row("HalfLife::update", &mut buf);
     let mut vr = VarianceRatio::builder().q(5).alpha(0.01).build().unwrap();
