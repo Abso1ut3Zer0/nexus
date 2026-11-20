@@ -6,8 +6,8 @@ use crate::math::MulAdd;
 /// Works on log returns, `r_i = ln(price_i) - ln(price_{i-1})`:
 ///
 /// - realized variance, `sum r_i^2`, counts everything;
-/// - bipower variation, `pi/2 * sum |r_i| * |r_{i-1}|`, is barely moved by a
-///   single jump.
+/// - bipower variation, `pi/2 * sum |r_i| * |r_{i-1}|`, is moved far less by
+///   a jump: the jump enters once, times its neighbours, not squared.
 ///
 /// Both are totals since the last [`reset`](Self::reset), so reset at the
 /// start of each period.
@@ -112,6 +112,19 @@ impl BipowerVariation {
     ///
     /// Does not validate `price`; arithmetic follows IEEE 754. See
     /// [`checked_update`](Self::checked_update).
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use nexus_stats_core::statistics::BipowerVariation;
+    ///
+    /// let mut bv = BipowerVariation::builder().min_samples(3).build().unwrap();
+    /// assert_eq!(bv.update(100.0), None);
+    /// assert_eq!(bv.update(100.0), None);
+    /// let reading = bv.update(100.0).unwrap();
+    /// assert_eq!(reading.realized_variance, 0.0);
+    /// assert_eq!(reading.returns, 2);
+    /// ```
     #[inline]
     pub fn update(&mut self, price: f64) -> Option<JumpDecomposition> {
         let log_price = crate::math::ln(price);
@@ -140,6 +153,17 @@ impl BipowerVariation {
     ///   infinite.
     /// - [`DataError::OutOfRange`](crate::DataError::OutOfRange) if `price`
     ///   is zero or negative.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use nexus_stats_core::{DataError, statistics::BipowerVariation};
+    ///
+    /// let mut bv = BipowerVariation::new();
+    /// assert_eq!(bv.checked_update(100.0), Ok(None));
+    /// assert_eq!(bv.checked_update(0.0), Err(DataError::OutOfRange));
+    /// assert_eq!(bv.count(), 1);
+    /// ```
     #[inline]
     pub fn checked_update(
         &mut self,
@@ -352,18 +376,24 @@ mod tests {
 
     #[test]
     fn reset_clears_the_period() {
+        let next_period = [200.0, 210.0, 190.0, 205.0];
+        let mut fresh = tracker();
+        for price in next_period {
+            fresh.update(price);
+        }
+
         let mut bv = tracker();
-        for price in [100.0, 101.0, 100.0, 105.0] {
+        for price in [100.0, 101.0, 100.0, 150.0] {
             bv.update(price);
         }
         bv.reset();
         assert_eq!((bv.count(), bv.last()), (0, None));
 
-        // The first price after a reset pairs with nothing before it.
-        for price in [200.0, 200.0, 200.0] {
+        // Nothing from before the reset reaches the next period.
+        for price in next_period {
             bv.update(price);
         }
-        assert_eq!(bv.last().unwrap().realized_variance, 0.0);
+        assert_eq!(bv.last(), fresh.last());
     }
 
     #[test]
@@ -371,21 +401,34 @@ mod tests {
         use crate::DataError::{Infinite, NotANumber, OutOfRange};
 
         let mut bv = tracker();
-        for price in [100.0, 101.0, 100.0] {
+        let mut untouched = tracker();
+        for price in [100.0, 101.0, 99.0] {
             bv.checked_update(price).unwrap();
+            untouched.checked_update(price).unwrap();
         }
-        let before = (bv.count(), bv.last());
 
         assert_eq!(bv.checked_update(f64::NAN), Err(NotANumber));
         assert_eq!(bv.checked_update(f64::INFINITY), Err(Infinite));
         assert_eq!(bv.checked_update(f64::NEG_INFINITY), Err(Infinite));
         assert_eq!(bv.checked_update(0.0), Err(OutOfRange));
+        assert_eq!(bv.checked_update(-0.0), Err(OutOfRange));
         assert_eq!(bv.checked_update(-1.0), Err(OutOfRange));
+        assert_eq!(
+            (bv.count(), bv.last()),
+            (untouched.count(), untouched.last())
+        );
 
-        assert_eq!((bv.count(), bv.last()), before);
-        // The next good price pairs with the last good one: no move.
-        let after = bv.checked_update(100.0).unwrap().unwrap();
-        assert_eq!(after.realized_variance, before.1.unwrap().realized_variance);
+        // The next good price pairs with the last good price and return.
+        assert_eq!(bv.checked_update(104.0), untouched.checked_update(104.0));
+    }
+
+    #[test]
+    fn checked_update_accepts_a_subnormal_price() {
+        let mut bv = tracker();
+        for _ in 0..3 {
+            bv.checked_update(5e-324).unwrap();
+        }
+        assert_eq!(bv.last().unwrap().realized_variance, 0.0);
     }
 
     #[test]

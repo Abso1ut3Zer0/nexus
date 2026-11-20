@@ -415,7 +415,33 @@ Moved so far: `Welford`, `HarmonicMean` (its `checked_update` also
 refuses a sample below `1 / INPUT_LIMIT`, which covers zero and negatives),
 `Covariance`, `Moments` (its limit is `Moments::INPUT_LIMIT`, `1e60`),
 `Lpm` (its `checked_update` refuses the sample that would overflow the
-sum, with no fixed input limit), `HalfLife`.
+sum, with no fixed input limit), `HalfLife`, `BipowerVariation` (its
+`checked_update` refuses a zero or negative price, with no magnitude
+limit).
+
+`BipowerVariation` changed in three ways:
+
+- It takes the logarithm of each price itself and works on log returns, as
+  the definitions do. It differenced raw prices.
+- Realized variance and bipower variation are totals since the last
+  `reset()`, not per-step averages. Reset at the start of each period.
+- The readers on the tracker are replaced by a `JumpDecomposition`,
+  returned from `update` and re-read with `last()`:
+
+```rust
+// before
+let rv = bv.realized_variance()?;
+let jump = bv.jump_ratio()?;
+// after
+let reading = bv.last()?;
+let rv = reading.realized_variance;
+let jump = reading.jump_ratio()?;
+```
+
+`reading.bipower_variation` is the original definition;
+`reading.debiased_bipower_variation()` scales it by `M / (M - 1)` to be
+comparable with realized variance, and the two jump readings use that.
+`min_samples` must be at least 3, and the type needs `std` or `libm`.
 
 `HalfLife::autocorrelation()` is now `coefficient()`, and `half_life()` is
 replaced by `reversion()`, which says why there is no half-life when there
