@@ -71,10 +71,10 @@ fn bench_welford(c: &mut Criterion) {
     let mut rng = Lcg::new(42);
     let mut w = Welford::new();
     for _ in 0..1000 {
-        let _ = w.update(rng.next_f64());
+        w.update(rng.next_f64());
     }
     c.bench_function("Welford::update", |b| {
-        b.iter(|| w.update(black_box(rng.next_f64())).unwrap())
+        b.iter(|| w.update(black_box(rng.next_f64())))
     });
 }
 
@@ -82,10 +82,10 @@ fn bench_moments(c: &mut Criterion) {
     let mut rng = Lcg::new(42);
     let mut m = Moments::new();
     for _ in 0..1000 {
-        let _ = m.update(rng.next_f64());
+        m.update(rng.next_f64());
     }
     c.bench_function("Moments::update", |b| {
-        b.iter(|| m.update(black_box(rng.next_f64())).unwrap())
+        b.iter(|| m.update(black_box(rng.next_f64())))
     });
 }
 
@@ -138,7 +138,7 @@ fn bench_ewma_var(c: &mut Criterion) {
         let _ = e.update(rng.next_f64());
     }
     c.bench_function("EwmaVar::update", |b| {
-        b.iter(|| e.update(black_box(rng.next_f64())).unwrap())
+        b.iter(|| e.update(black_box(rng.next_f64())))
     });
 }
 
@@ -146,13 +146,10 @@ fn bench_covariance(c: &mut Criterion) {
     let mut rng = Lcg::new(42);
     let mut cov = Covariance::new();
     for _ in 0..1000 {
-        let _ = cov.update(rng.next_f64(), rng.next_f64());
+        cov.update(rng.next_f64(), rng.next_f64());
     }
     c.bench_function("Covariance::update", |b| {
-        b.iter(|| {
-            cov.update(black_box(rng.next_f64()), black_box(rng.next_f64()))
-                .unwrap()
-        })
+        b.iter(|| cov.update(black_box(rng.next_f64()), black_box(rng.next_f64())))
     });
 }
 
@@ -160,10 +157,10 @@ fn bench_harmonic_mean(c: &mut Criterion) {
     let mut rng = Lcg::new(42);
     let mut h = HarmonicMean::new();
     for _ in 0..1000 {
-        let _ = h.update(rng.next_f64() + 1.0); // must be positive
+        h.update(rng.next_f64() + 1.0); // must be positive
     }
     c.bench_function("HarmonicMean::update", |b| {
-        b.iter(|| h.update(black_box(rng.next_f64() + 1.0)).unwrap())
+        b.iter(|| h.update(black_box(rng.next_f64() + 1.0)))
     });
 }
 
@@ -1070,10 +1067,10 @@ fn bench_lpm(c: &mut Criterion) {
     let mut rng = Lcg::new(42);
     let mut lpm = Lpm::builder().target(0.0).order(2).build().unwrap();
     for _ in 0..1000 {
-        let _ = lpm.update(rng.next_f64() - 50.0);
+        lpm.update(rng.next_f64() - 50.0);
     }
     c.bench_function("Lpm::update (order=2)", |b| {
-        b.iter(|| lpm.update(black_box(rng.next_f64() - 50.0)).unwrap())
+        b.iter(|| lpm.update(black_box(rng.next_f64() - 50.0)))
     });
 }
 
@@ -1095,7 +1092,7 @@ fn bench_zscore_norm(c: &mut Criterion) {
         let _ = zs.update(rng.next_f64());
     }
     c.bench_function("ZScoreNorm::<f64>::update", |b| {
-        b.iter(|| zs.update(black_box(rng.next_f64())).unwrap())
+        b.iter(|| zs.update(black_box(rng.next_f64())))
     });
 }
 

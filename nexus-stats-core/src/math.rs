@@ -15,6 +15,30 @@ macro_rules! check_finite {
     };
 }
 
+/// Returns from the enclosing function with a `DataError` unless
+/// `|val| <= limit`: `NotANumber` for NaN, `Infinite` for infinity,
+/// `OutOfRange` for a finite value beyond the limit. One comparison on the
+/// accepted path, like [`check_finite`]. The first line of every
+/// `checked_update`.
+#[doc(hidden)]
+#[macro_export]
+macro_rules! check_magnitude {
+    ($val:expr, $limit:expr) => {{
+        let value: f64 = $val;
+        // Written so that NaN fails the test.
+        #[allow(clippy::neg_cmp_op_on_partial_ord)]
+        if !(value.abs() <= $limit) {
+            return Err(if value.is_nan() {
+                $crate::DataError::NotANumber
+            } else if value.is_infinite() {
+                $crate::DataError::Infinite
+            } else {
+                $crate::DataError::OutOfRange
+            });
+        }
+    }};
+}
+
 /// f32 variant of [`check_finite`].
 #[doc(hidden)]
 #[inline]
@@ -261,14 +285,22 @@ impl EwWeight {
     /// # Errors
     ///
     /// `ConfigError::Invalid` naming the knob that was set: `alpha` outside
-    /// `(0, 1)`, a `halflife` that is not positive and finite or whose weight
-    /// rounds to 0 or 1, or a `span` below 2.
+    /// `(0, 1)`, a `halflife` that is not positive and finite, or a `span`
+    /// below 2; and any of the three whose weight is within `f64::EPSILON`
+    /// of 0 or 1. Such a weight is in range on paper, but `1 - alpha` then
+    /// rounds to 1 or to 0, and the recursions built on it stop moving or
+    /// divide by zero.
     #[inline]
     pub fn resolve(self) -> Result<f64, crate::ConfigError> {
         let alpha = match self {
             Self::Alpha(a) => {
                 if !in_unit_interval(a) {
                     return Err(crate::ConfigError::Invalid("alpha must be in (0, 1)"));
+                }
+                if !usable_weight(a) {
+                    return Err(crate::ConfigError::Invalid(
+                        "alpha is too close to 0 or 1 for a usable weight",
+                    ));
                 }
                 a
             }
@@ -282,7 +314,7 @@ impl EwWeight {
                 // A half-life so short that `1 - exp(-x)` rounds to one, or
                 // so long that it rounds to zero, has no usable weight.
                 let alpha = alpha_from_halflife(h);
-                if !in_unit_interval(alpha) {
+                if !usable_weight(alpha) {
                     return Err(crate::ConfigError::Invalid(
                         "halflife is too small or too large for a usable weight",
                     ));
@@ -293,13 +325,23 @@ impl EwWeight {
                 if n < 2 {
                     return Err(crate::ConfigError::Invalid("span must be at least 2"));
                 }
-                alpha_from_span(n)
+                let alpha = alpha_from_span(n);
+                if !usable_weight(alpha) {
+                    return Err(crate::ConfigError::Invalid(
+                        "span is too large for a usable weight",
+                    ));
+                }
+                alpha
             }
         };
-        // In (0, 1) on every arm: a span of 2 or more gives `2 / (n + 1)` in
-        // (0, 2/3], which no `u64` rounds to zero.
         Ok(alpha)
     }
+}
+
+/// Whether both `alpha` and `1 - alpha` are distinguishable from 0 and 1.
+#[inline]
+fn usable_weight(alpha: f64) -> bool {
+    alpha >= f64::EPSILON && alpha <= 1.0 - f64::EPSILON
 }
 
 /// `z` such that `P(Z > z) = p` for a standard normal, for `p` in `(0, 0.5]`:

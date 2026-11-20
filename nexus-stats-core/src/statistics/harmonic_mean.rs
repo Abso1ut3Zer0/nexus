@@ -27,21 +27,39 @@ impl HarmonicMean {
 
     /// Feeds a sample. Must be positive and non-zero.
     ///
-    /// # Errors
-    ///
-    /// Returns `DataError::NotANumber` if the sample is NaN, or
-    /// `DataError::Infinite` if the sample is infinite.
-    ///
-    /// Returns `DataError::OutOfRange` if the sample is zero or negative: the
-    /// harmonic mean is defined for positive values only.
+    /// Unchecked, like `f64` arithmetic: whatever is passed is folded in. A
+    /// NaN or an infinity makes the readings NaN from then on, until
+    /// [`reset`](Self::reset); a finite value above
+    /// [`INPUT_LIMIT`](crate::INPUT_LIMIT) in magnitude can overflow them. Use
+    /// [`checked_update`](Self::checked_update) to have such a value refused
+    /// instead.
     #[inline]
-    pub fn update(&mut self, sample: f64) -> Result<(), crate::DataError> {
-        check_finite!(sample);
-        if sample <= 0.0 {
-            return Err(crate::DataError::OutOfRange);
-        }
+    pub fn update(&mut self, sample: f64) {
         self.count += 1;
         self.reciprocal_sum += 1.0 / sample;
+    }
+
+    /// [`update`](Self::update) with the sample validated first: refuses a
+    /// NaN, an infinity, a zero or a negative (the harmonic mean is defined
+    /// for positive values only), and a sample outside
+    /// `[1 / INPUT_LIMIT, INPUT_LIMIT]`, whose reciprocal or whose own size
+    /// could take the sum of reciprocals out of range. Leaves the state
+    /// untouched. Fed only through this method the mean is always a finite
+    /// positive number.
+    ///
+    /// # Errors
+    ///
+    /// `DataError::NotANumber`, `DataError::Infinite`, or
+    /// `DataError::OutOfRange` for a sample outside that range. See
+    /// [`INPUT_LIMIT`](crate::INPUT_LIMIT).
+    #[inline]
+    pub fn checked_update(&mut self, sample: f64) -> Result<(), crate::DataError> {
+        check_magnitude!(sample, crate::INPUT_LIMIT);
+        // Also covers zero and negatives.
+        if sample < 1.0 / crate::INPUT_LIMIT {
+            return Err(crate::DataError::OutOfRange);
+        }
+        self.update(sample);
         Ok(())
     }
 
@@ -99,8 +117,8 @@ mod tests {
     fn known_values() {
         let mut hm = HarmonicMean::new();
         // HM(1, 4) = 2 / (1/1 + 1/4) = 2 / 1.25 = 1.6
-        hm.update(1.0).unwrap();
-        hm.update(4.0).unwrap();
+        hm.update(1.0);
+        hm.update(4.0);
         let m = hm.mean().unwrap();
         assert!((m - 1.6).abs() < 1e-10, "expected 1.6, got {m}");
     }
@@ -111,7 +129,7 @@ mod tests {
         let vals = [2.0, 4.0, 8.0];
         let mut sum = 0.0;
         for &v in &vals {
-            hm.update(v).unwrap();
+            hm.update(v);
             sum += v;
         }
         let arithmetic = sum / vals.len() as f64;
@@ -126,7 +144,7 @@ mod tests {
     fn equal_values() {
         let mut hm = HarmonicMean::new();
         for _ in 0..100 {
-            hm.update(5.0).unwrap();
+            hm.update(5.0);
         }
         let m = hm.mean().unwrap();
         assert!(
@@ -138,7 +156,7 @@ mod tests {
     #[test]
     fn reset() {
         let mut hm = HarmonicMean::new();
-        hm.update(1.0).unwrap();
+        hm.update(1.0);
         hm.reset();
         assert_eq!(hm.count(), 0);
         assert!(hm.mean().is_none());
@@ -153,9 +171,9 @@ mod tests {
     #[test]
     fn rejects_zero_and_negative_without_touching_state() {
         let mut hm = HarmonicMean::new();
-        hm.update(2.0).unwrap();
-        assert_eq!(hm.update(0.0), Err(crate::DataError::OutOfRange));
-        assert_eq!(hm.update(-1.0), Err(crate::DataError::OutOfRange));
+        hm.update(2.0);
+        assert_eq!(hm.checked_update(0.0), Err(crate::DataError::OutOfRange));
+        assert_eq!(hm.checked_update(-1.0), Err(crate::DataError::OutOfRange));
         assert_eq!(hm.count(), 1);
         assert_eq!(hm.mean(), Some(2.0));
     }
@@ -163,10 +181,16 @@ mod tests {
     #[test]
     fn rejects_nan_and_inf() {
         let mut hm = HarmonicMean::new();
-        assert_eq!(hm.update(f64::NAN), Err(crate::DataError::NotANumber));
-        assert_eq!(hm.update(f64::INFINITY), Err(crate::DataError::Infinite));
         assert_eq!(
-            hm.update(f64::NEG_INFINITY),
+            hm.checked_update(f64::NAN),
+            Err(crate::DataError::NotANumber)
+        );
+        assert_eq!(
+            hm.checked_update(f64::INFINITY),
+            Err(crate::DataError::Infinite)
+        );
+        assert_eq!(
+            hm.checked_update(f64::NEG_INFINITY),
             Err(crate::DataError::Infinite)
         );
         assert_eq!(hm.count(), 0);

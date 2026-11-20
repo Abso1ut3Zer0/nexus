@@ -1,25 +1,34 @@
 # EwmaVariance — Exponentially Weighted Variance
 
 **Recent volatility tracking.** More responsive than Welford's cumulative
-variance. The RiskMetrics (JP Morgan 1996) pattern.
+variance. The estimator pandas computes by default
+(`ewm(alpha=a).mean()` / `.var()`).
 
 | Property | Value |
 |----------|-------|
-| Update cost | 6 cycles |
-| Memory | ~24 bytes |
-| Types | `EwmaVar` |
+| Update cost | see the performance reference |
+| Memory | ~120 bytes |
+| Types | `EwmaVar`, reading `MeanVariance` |
 
 ## What It Does
 
-Tracks two EMA-like values — smoothed mean and smoothed variance:
+Sample `i` of `n` carries weight `(1 - alpha)^(n - i)`. The reading is the
+weighted mean and the unbiased weighted variance:
+
 ```
-mean_new = alpha × sample + (1 - alpha) × mean_old
-var_new  = (1 - alpha) × (var_old + alpha × (sample - mean_old)²)
+W    = sum of weights          W2 = sum of squared weights
+mean = sum(w * x) / W
+var  = sum(w * (x - mean)^2) / (W - W2 / W)
 ```
 
-Unlike Welford (which gives equal weight to all observations), EWMA
-variance weights recent observations more heavily. Old volatility
-fades away.
+computed incrementally, with no stored samples. It is unbiased from the
+second sample on: there is no warm-up period in which the variance reads
+low. (The plain RiskMetrics recursion
+`var = (1 - alpha) * (var + alpha * (x - mean)^2)` reads 18% of the true
+variance after two samples at alpha 0.1, and 5% low forever.)
+
+Unlike Welford (which gives equal weight to all observations), this
+weights recent observations more heavily. Old volatility fades away.
 
 ## When to Use It / When Not To
 
@@ -39,9 +48,10 @@ fades away.
 ```rust
 let mut ev = EwmaVar::builder().span(30).min_samples(10).build().unwrap();
 
-if let Some((mean, var)) = ev.update(sample).unwrap() {
-    let threshold = mean + 3.0 * var.sqrt();
+if let Some(reading) = ev.update(sample) {
+    let threshold = reading.mean + 3.0 * reading.std_dev();
 }
+// `ev.last()` re-reads the same `MeanVariance` without feeding a sample.
 ```
 
 ## Performance

@@ -45,7 +45,9 @@ let mut illiq = Amihud::builder()
     .halflife(100.0)
     .build()?;
 
-illiq.update(return_abs, dollar_volume)?;
+// The return may have either sign; the reading is the smoothed
+// |return| / dollar volume, None before the first traded period.
+let current = illiq.update(period_return, dollar_volume);
 
 // Cross-venue comparison: which venue is most liquid right now?
 let venue_a_illiq = venue_a_amihud.illiq();
@@ -146,20 +148,26 @@ markout.update(fill_price, current_mid)?;
 
 **Type:** `HalfLife` (nexus-stats-core)
 
-Estimates mean-reversion half-life from lag-1 autocorrelation.
-`half_life = -ln(2) / ln(AC(1))`.
+Estimates mean-reversion half-life from an AR(1) fit,
+`x_t = c + phi * x_{t-1}`: `half_life = -ln(2) / ln(phi)` when
+`0 < phi < 1`.
 
 ```rust
-use nexus_stats_core::statistics::HalfLife;
+use nexus_stats_core::statistics::{HalfLife, Reversion};
 
 let mut hl = HalfLife::new();
 
 // Feed spread observations:
-hl.update(current_spread)?;
+hl.update(current_spread);
 
-if let Some(half_life) = hl.half_life() {
-    // half_life = 6 → signal mean-reverts in ~6 ticks
-    // Use for: KAMA slow period, hedger wake threshold (2× half-life)
+match hl.reversion() {
+    Some(Reversion::Reverting { half_life }) => {
+        // half_life = 6 → signal mean-reverts in ~6 ticks
+        // Use for: KAMA slow period, hedger wake threshold (2× half-life)
+    }
+    Some(Reversion::NotReverting) => { /* random walk or trending: no reversion to trade */ }
+    Some(Reversion::Oscillating) => { /* overshoots the mean every step */ }
+    None => { /* fewer than three samples, or a constant series */ }
 }
 ```
 
@@ -167,28 +175,34 @@ if let Some(half_life) = hl.half_life() {
 
 **Type:** `Hurst` (nexus-stats-core)
 
-Rolling Hurst exponent via R/S analysis. H < 0.5 = mean-reverting,
-H > 0.5 = trending, H ≈ 0.5 = random walk.
+Rolling Hurst exponent via standard R/S analysis, on returns. Higher
+means moves persist, lower means they reverse. On independent returns the
+method reads somewhat above 0.5 at practical window sizes (about 0.6 for a
+few hundred samples), so calibrate the neutral level on shuffled or
+simulated data for your window instead of assuming 0.5.
 
 ```rust
 use nexus_stats_core::statistics::Hurst;
 
 let mut hurst = Hurst::builder()
-    .window_size(100)
+    .window_size(256)
     .build()
     .unwrap();
 
-// Feed bar-level returns (not tick-by-tick):
-hurst.update(bar_return)?;
+// Feed bar-level returns (not tick-by-tick, and not price levels):
+hurst.update(bar_return);
 
-if hurst.is_mean_reverting() {
-    // Tighter spreads, mean-reversion strategies
-} else if hurst.is_trending() {
-    // Wider spreads, trend-following bias
+// `neutral` is what this window size reads on independent returns.
+if let Some(h) = hurst.hurst() {
+    if h < neutral - margin {
+        // Tighter spreads, mean-reversion strategies
+    } else if h > neutral + margin {
+        // Wider spreads, trend-following bias
+    }
 }
 ```
 
-**Pair with `VarianceRatio`** for confirmation — two independent
+**Pair with `VarianceRatio`** for confirmation: two independent
 tests of the same hypothesis.
 
 ### Variance ratio test for random walk
@@ -206,10 +220,10 @@ let mut vr = VarianceRatio::builder()
     .alpha(0.0035)   // EW forgetting factor, about a 200-sample half-life
     .build()?;
 
-vr.update(price)?;
-
-if let Some(ratio) = vr.variance_ratio() {
-    // ratio < 1.0 → mean-reverting at 5-tick scale
+// `update` returns the ratio once 2 * q + 1 prices have been fed.
+if let Some(ratio) = vr.update(price) {
+    // ratio well below 1.0 → mean-reverting at 5-tick scale
+    // (a single reading is noisy: compare with a margin)
 }
 ```
 
@@ -236,7 +250,7 @@ let mut det = DistributionShift::builder()
     .build()?;
 
 // `Some` once per 50 returns, on the one that completes a window.
-if let Some(shift) = det.update(trade_return)? {
+if let Some(shift) = det.update(trade_return) {
     if shift.excess_kurtosis > 2.0 {
         // the window just completed has much heavier tails
         // Action: widen spreads, reduce position limits
@@ -276,7 +290,7 @@ let mut hits = HitRate::builder()
     .build()?;
 
 // predicted_sign and realized_sign: positive or negative
-hits.update(predicted_sign, realized_sign)?;
+hits.update(predicted_sign, realized_sign);
 
 let rate = hits.ew_hit_rate();
 // 50% = coin flip, 55% = meaningful edge, 60%+ = strong signal
@@ -337,11 +351,12 @@ if let Some(bar) = bars.update(tick_count as f64)? {
 ### Confirm mean-reversion with two tests
 
 ```rust
-// Hurst: structural, long-window
-let trending = hurst.is_trending();
+// Hurst: structural, long-window. `neutral` is what this window reads on
+// independent returns (above 0.5; see the Hurst section).
+let trending = hurst.hurst().is_some_and(|h| h > neutral + margin);
 
 // Variance ratio: fast, multi-scale
-let mean_reverting = vr.variance_ratio().map_or(false, |r| r < 0.95);
+let mean_reverting = vr.variance_ratio().is_some_and(|r| r < 0.95);
 
 if !trending && mean_reverting {
     // High confidence: market is mean-reverting at this scale
@@ -355,7 +370,7 @@ if !trending && mean_reverting {
 let r2 = lagged.r_squared();          // prediction power
 let slope = lagged.slope();            // calibration
 let hit = hits.ew_hit_rate();          // directional accuracy
-let half_life = hl.half_life();        // signal persistence
+let persistence = hl.reversion();      // signal persistence (Reverting { half_life }, ...)
 let horizon = decay.useful_horizon(0.01);  // predictive horizon
 ```
 

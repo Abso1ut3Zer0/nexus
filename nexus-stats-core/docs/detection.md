@@ -107,7 +107,7 @@ let heavy = (0..100).map(|i| if i % 20 == 0 { 2_000.0 } else { f64::from(i) });
 let mut readings = Vec::new();
 for x in symmetric.chain(heavy) {
     // `Some` only on the sample that completes a window.
-    if let Some(shift) = ds.update(x).unwrap() {
+    if let Some(shift) = ds.update(x) {
         readings.push(shift);
     }
 }

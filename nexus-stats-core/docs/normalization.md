@@ -12,8 +12,9 @@ Streaming online normalizers. Module path: `nexus_stats_core::normalization`.
 
 All three share one shape:
 
-- `update(..)` feeds a sample and returns its normalized value, `Ok(None)` while there is nothing to normalize against. `ZScoreNorm` scores the sample against the state *before* it and then folds it in (a score against statistics that already contain the sample is capped). `MinMaxNorm` and `QuantileNorm` fold first: a range or a rank is defined to include the sample, so a new maximum reads exactly 1.
-- `normalize(value)` scores a value against the current state without changing it. It returns `Result<Option<T>, DataError>`: `Err` for NaN or infinity, `Ok(None)` if not primed.
+- `update(..)` feeds a sample and returns its normalized value, `None` while there is nothing to normalize against (inside a `Result` on `MinMaxNorm` and `QuantileNorm`, and on every `checked_update`). `ZScoreNorm` scores the sample against the state *before* it and then folds it in (a score against statistics that already contain the sample is capped). `MinMaxNorm` and `QuantileNorm` fold first: a range or a rank is defined to include the sample, so a new maximum reads exactly 1.
+- `normalize(value)` scores a value against the current state without changing it; `None` if not primed.
+- `ZScoreNorm` follows the unchecked/checked split described in [`statistics.md`](statistics.md#update-and-checked_update): `update` and `normalize` do no validation and return `Option<T>` directly (`None` if not primed, NaN for a NaN); `checked_update` and `checked_normalize` return `Result<Option<T>, DataError>` and refuse NaN, infinity and a magnitude above `INPUT_LIMIT` (`1e120`). `MinMaxNorm` and `QuantileNorm` have not been converted yet: their `update` and `normalize` validate and return a `Result`.
 - `count()` / `is_primed()` / `reset()`.
 
 ---
@@ -27,16 +28,16 @@ use nexus_stats_core::normalization::ZScoreNorm;
 
 let mut zn = ZScoreNorm::<f64>::builder().span(50).build().unwrap();
 for i in 0..500 {
-    let _ = zn.update(100.0 + f64::from(i % 7)).unwrap();
+    let _ = zn.update(100.0 + f64::from(i % 7));
 }
 // A typical sample scores small; an outlier scores as large as it is.
-assert!(zn.update(103.0).unwrap().unwrap().abs() < 1.0);
-assert!(zn.update(10_000.0).unwrap().unwrap() > 1_000.0);
+assert!(zn.update(103.0).unwrap().abs() < 1.0);
+assert!(zn.update(10_000.0).unwrap() > 1_000.0);
 ```
 
-Scoring before folding is what makes the outlier visible. A sample folded into the statistics first and scored against them afterwards can never exceed `sqrt((1 - alpha) / alpha)` (3.0 at alpha 0.1), whatever its size.
+Scoring before folding is what makes the outlier visible. A sample folded into the statistics first and scored against them afterwards is capped at a constant that depends only on alpha (about 3 at alpha 0.1), whatever its size.
 
-`update` returns `Ok(None)` until `min_samples` earlier samples have been seen (default 2, or at once when seeded).
+`update` returns `None` until `min_samples` earlier samples have been seen (default 2, or at once when seeded).
 
 **Zero scale.** While every sample so far has been the same value (or after a flat stretch long enough for the weighted variance to decay to nothing), the standard deviation is zero and the score follows the usual numerical convention for division by zero: `+inf` for a sample above the mean, `-inf` for one below, and `0.0` for a sample on it.
 
@@ -45,16 +46,16 @@ use nexus_stats_core::normalization::ZScoreNorm;
 
 let mut zn = ZScoreNorm::<f64>::builder().span(50).build().unwrap();
 for _ in 0..100 {
-    let _ = zn.update(100.0).unwrap();
+    let _ = zn.update(100.0);
 }
-assert_eq!(zn.normalize(100.0).unwrap(), Some(0.0));
-let z = zn.update(150.0).unwrap().unwrap(); // a jump out of a flat stream
+assert_eq!(zn.normalize(100.0), Some(0.0));
+let z = zn.update(150.0).unwrap(); // a jump out of a flat stream
 assert_eq!(z, f64::INFINITY);
 assert!(z > 4.0);                           // a threshold test fires
 assert_eq!(z.clamp(-5.0, 5.0), 5.0);        // and clamping bounds it
 ```
 
-The other types in this crate reject infinity as input, so clamp the score before feeding it on. The samples right after such a jump are scored against statistics the jump created: a second sample at the new level scores exactly `sqrt((1 - alpha) / alpha)`, whatever the size of the jump.
+The other types in this crate reject infinity as input, so clamp the score before feeding it on. The samples right after such a jump are scored against statistics the jump created: a second sample at the new level scores the same value whatever the size of the jump, `(1 - alpha) / sqrt(alpha * (2 - alpha) / 2)` once the weights have settled (about 2.9 at alpha 0.1).
 
 **Use for:** outlier scoring, adaptive thresholding, comparing values across instruments with different scales.
 

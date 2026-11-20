@@ -23,7 +23,11 @@ pub enum Condition {
 }
 
 /// Configuration error from building a stats primitive.
+///
+/// Non-exhaustive: match the variants you handle and end with a wildcard
+/// arm, so that a variant added later does not break your build.
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum ConfigError {
     /// A required parameter was not set.
     Missing(&'static str),
@@ -52,7 +56,14 @@ impl std::error::Error for ConfigError {}
 ///
 /// The library makes no assumptions about the caller's policy.
 /// Each system has different implications for bad data.
+///
+/// One type for every `update`: it says an input value was refused, and the
+/// variant says why. A given method produces only the variants its
+/// documentation lists. Non-exhaustive: match the reasons you handle and
+/// end with a wildcard arm, so that a reason added later does not break
+/// your build.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum DataError {
     /// Input contained NaN.
     NotANumber,
@@ -61,7 +72,9 @@ pub enum DataError {
     /// Input contained a negative value where non-negative was required.
     Negative,
     /// Input was finite but outside the range the method accepts: zero where
-    /// strictly positive is required, a probability above one, and the like.
+    /// strictly positive is required, a probability above one, a magnitude
+    /// beyond [`INPUT_LIMIT`](crate::INPUT_LIMIT) passed to a
+    /// `checked_update`, and the like.
     OutOfRange,
 }
 

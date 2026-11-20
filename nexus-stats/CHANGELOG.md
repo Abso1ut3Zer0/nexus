@@ -110,8 +110,31 @@ one naming convention across the family. Migration guide:
   histogram; `DistributionShift::update` returns a `ShapeShift` once per
   completed window, its `kurtosis_shift()` / `skewness_shift()` /
   `is_shifted()` readers are removed, and `is_primed()` means the first
-  window has completed; `normalize` returns `Result<Option<T>, _>` on the
-  three normalizers. See the migration guide.
+  window has completed; `normalize` returns `Result<Option<T>, _>` on
+  `MinMaxNorm` and `QuantileNorm`. See the migration guide.
+
+- Carried from core (blind audit, PR C3): `EwmaVar` is the unbiased pandas
+  estimator; `HalfLife` fixes its regression slope and returns a named
+  `Reversion`; `VarianceRatio` is corrected for overlapping changes;
+  `TwoScaleRv` gains the paper's small-sample refinement;
+  `BipowerVariation` reports period totals; `Hurst` is standard R/S
+  analysis; `RollSpread`, `BipowerVariation`, `TwoScaleRv` and `EwmaVar`
+  return named readings from `update`; `RollSpread::hasbrouck_spread()` is
+  removed. See the migration guide.
+
+- Carried from core (blind audit, PR C3): **`update` is unchecked and
+  `checked_update` is checked**, after the standard library's `+` and
+  `checked_add`, on the variance and microstructure cluster. `update` no
+  longer returns a `Result`: it does no validation and follows IEEE 754 (a
+  NaN in is NaN out until `reset()`). `checked_update` returns the
+  `Result` and refuses NaN, infinity, out-of-limit magnitudes and
+  out-of-domain values. Fed through it, these types never return NaN (the
+  number contract). The limits are re-exported as
+  `nexus_stats::INPUT_LIMIT` and `INPUT_LIMIT_FOURTH_MOMENT`. The rest of
+  the library converts cluster by cluster. See the migration guide.
+
+- `DataError` and `ConfigError` are `#[non_exhaustive]`: matches on them
+  need a wildcard arm.
 
 ### Removed
 

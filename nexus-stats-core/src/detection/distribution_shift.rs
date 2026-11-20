@@ -35,7 +35,7 @@ use crate::statistics::Moments;
 /// let skewed = (0..50).map(|i| if i % 10 == 0 { 500.0 } else { f64::from(i) });
 /// let mut readings = Vec::new();
 /// for x in symmetric.chain(skewed) {
-///     if let Some(shift) = det.update(x).unwrap() {
+///     if let Some(shift) = det.update(x) {
 ///         readings.push(shift);
 ///     }
 /// }
@@ -93,21 +93,39 @@ impl DistributionShift {
     /// for a constant window (zero variance), and there is no baseline
     /// during the first window.
     ///
-    /// # Errors
-    ///
-    /// Returns `DataError::NotANumber` if the value is NaN, or
-    /// `DataError::Infinite` if the value is infinite.
+    /// Unchecked, like `f64` arithmetic: whatever is passed is folded in. A
+    /// NaN or an infinity makes the readings NaN from then on, until
+    /// [`reset`](Self::reset); a finite value above
+    /// [`INPUT_LIMIT_FOURTH_MOMENT`](crate::INPUT_LIMIT_FOURTH_MOMENT) in magnitude can overflow them. Use
+    /// [`checked_update`](Self::checked_update) to have such a value refused
+    /// instead.
     #[inline]
-    pub fn update(&mut self, value: f64) -> Result<Option<ShapeShift>, crate::DataError> {
-        self.fast.update(value)?;
+    pub fn update(&mut self, value: f64) -> Option<ShapeShift> {
+        self.fast.update(value);
         self.count += 1;
         if self.fast.count() < self.fast_window {
-            return Ok(None);
+            return None;
         }
         self.last = Self::compare(&self.fast, &self.baseline);
         self.baseline.merge(&self.fast);
         self.fast.reset();
-        Ok(self.last)
+        self.last
+    }
+
+    /// [`update`](Self::update) with the input validated first: refuses a
+    /// value that is NaN, infinite, or above [`INPUT_LIMIT_FOURTH_MOMENT`](crate::INPUT_LIMIT_FOURTH_MOMENT) in
+    /// magnitude, and leaves the state untouched. Fed only through this
+    /// method, no reading is ever NaN, or infinite unless its documentation
+    /// says so.
+    ///
+    /// # Errors
+    ///
+    /// `DataError::NotANumber`, `DataError::Infinite`, or
+    /// `DataError::OutOfRange` for a finite magnitude above the limit.
+    #[inline]
+    pub fn checked_update(&mut self, value: f64) -> Result<Option<ShapeShift>, crate::DataError> {
+        check_magnitude!(value, crate::INPUT_LIMIT_FOURTH_MOMENT);
+        Ok(self.update(value))
     }
 
     /// The reading from the most recently completed window, or `None` if
@@ -204,7 +222,7 @@ mod tests {
     fn moments(xs: &[f64]) -> Moments {
         let mut m = Moments::new();
         for &x in xs {
-            m.update(x).unwrap();
+            m.update(x);
         }
         m
     }
@@ -219,7 +237,7 @@ mod tests {
         let mut det = DistributionShift::builder().fast_window(8).build().unwrap();
         let mut readings = Vec::new();
         for (i, &x) in W1.iter().chain(&W2).chain(&W3).enumerate() {
-            let r = det.update(x).unwrap();
+            let r = det.update(x);
             // Only the samples that complete windows 2 and 3 report.
             assert_eq!(r.is_some(), i == 15 || i == 23, "sample {i}");
             readings.extend(r);
@@ -248,13 +266,13 @@ mod tests {
     fn the_reading_is_latched_between_windows() {
         let mut det = DistributionShift::builder().fast_window(8).build().unwrap();
         for &x in W1.iter().chain(&W2) {
-            let _ = det.update(x).unwrap();
+            let _ = det.update(x);
         }
         let reading = det.last().unwrap();
         // A caller polling exactly at a window boundary, or anywhere inside
         // the next window, sees the same completed reading.
         for &x in &W3[..7] {
-            assert_eq!(det.update(x).unwrap(), None);
+            assert_eq!(det.update(x), None);
             assert_eq!(det.last(), Some(reading));
         }
         assert!(det.is_primed());
@@ -267,7 +285,7 @@ mod tests {
         let mut det = DistributionShift::builder().fast_window(8).build().unwrap();
         for _ in 0..5 {
             for &x in &W1 {
-                let _ = det.update(x).unwrap();
+                let _ = det.update(x);
             }
         }
         let r = det.last().unwrap();
@@ -282,7 +300,7 @@ mod tests {
         // First window: nothing to compare against.
         for &x in &W1 {
             assert!(!det.is_primed());
-            assert_eq!(det.update(x).unwrap(), None);
+            assert_eq!(det.update(x), None);
         }
         // The baseline exists from here on, but there is no reading yet.
         assert!(det.is_primed());
@@ -290,11 +308,11 @@ mod tests {
         // A constant window has no skewness or kurtosis: no reading, and
         // the previous one is not left standing.
         for &x in &W2 {
-            let _ = det.update(x).unwrap();
+            let _ = det.update(x);
         }
         assert!(det.last().is_some());
         for _ in 0..8 {
-            assert_eq!(det.update(5.0).unwrap(), None);
+            assert_eq!(det.update(5.0), None);
         }
         assert_eq!(det.last(), None);
         // Still primed: priming does not flap with the readings.
@@ -304,16 +322,22 @@ mod tests {
     #[test]
     fn rejects_nan_and_inf_without_counting_them() {
         let mut det = DistributionShift::builder().fast_window(8).build().unwrap();
-        assert_eq!(det.update(f64::NAN), Err(crate::DataError::NotANumber));
-        assert_eq!(det.update(f64::INFINITY), Err(crate::DataError::Infinite));
+        assert_eq!(
+            det.checked_update(f64::NAN),
+            Err(crate::DataError::NotANumber)
+        );
+        assert_eq!(
+            det.checked_update(f64::INFINITY),
+            Err(crate::DataError::Infinite)
+        );
         assert_eq!(det.count(), 0);
         // Rejected samples interleaved with two windows of valid ones do
         // not advance the window: the reading still arrives on the 16th
         // valid sample and equals the reading without them.
         let mut reading = None;
         for (i, &x) in W1.iter().chain(&W2).enumerate() {
-            assert!(det.update(f64::NAN).is_err());
-            let r = det.update(x).unwrap();
+            assert!(det.checked_update(f64::NAN).is_err());
+            let r = det.update(x);
             assert_eq!(r.is_some(), i == 15, "sample {i}");
             reading = reading.or(r);
         }
@@ -329,14 +353,14 @@ mod tests {
     fn reset_forgets_baseline_window_and_reading() {
         let mut det = DistributionShift::builder().fast_window(8).build().unwrap();
         for &x in W1.iter().chain(&W2).chain(&W3[..3]) {
-            let _ = det.update(x).unwrap();
+            let _ = det.update(x);
         }
         det.reset();
         assert_eq!(det.count(), 0);
         assert_eq!(det.last(), None);
         // A full window after reset is a first window again.
         for &x in &W2 {
-            assert_eq!(det.update(x).unwrap(), None);
+            assert_eq!(det.update(x), None);
         }
     }
 

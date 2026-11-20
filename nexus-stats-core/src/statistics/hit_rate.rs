@@ -17,7 +17,7 @@ use crate::smoothing::Ema;
 ///     .unwrap();
 ///
 /// // Correct prediction: both positive
-/// hr.update(1.0, 0.5).unwrap();
+/// hr.update(1.0, 0.5);
 /// assert!((hr.hit_rate().unwrap() - 1.0).abs() < f64::EPSILON);
 /// ```
 #[derive(Debug, Clone)]
@@ -44,30 +44,35 @@ impl HitRate {
     /// Feed a prediction and realized direction.
     ///
     /// A "hit" is recorded when both values have the same sign (both
-    /// positive or both negative). Zero is treated as no direction —
-    /// if either is zero, it counts as a miss.
+    /// positive or both negative). Zero is treated as no direction: if
+    /// either is zero, it counts as a miss.
+    ///
+    /// Unchecked: a NaN on either side has no sign and counts as a miss.
+    /// Use [`checked_update`](Self::checked_update) to have it refused
+    /// instead. (Only signs are used, so no magnitude can overflow.)
+    #[inline]
+    pub fn update(&mut self, predicted_direction: f64, realized_direction: f64) {
+        self.total += 1;
+        let is_hit = same_sign(predicted_direction, realized_direction);
+        self.hits += u64::from(is_hit);
+        let _ = self.ew_hits.fold(crate::math::indicator(is_hit));
+    }
+
+    /// [`update`](Self::update) with both values validated first: refuses a
+    /// NaN or an infinity and leaves the state untouched.
     ///
     /// # Errors
     ///
-    /// Returns `DataError` if either value is NaN or infinite.
+    /// `DataError::NotANumber` or `DataError::Infinite` for either value.
     #[inline]
-    pub fn update(
+    pub fn checked_update(
         &mut self,
         predicted_direction: f64,
         realized_direction: f64,
     ) -> Result<(), crate::DataError> {
         check_finite!(predicted_direction);
         check_finite!(realized_direction);
-
-        self.total += 1;
-        let is_hit = same_sign(predicted_direction, realized_direction);
-        self.hits += u64::from(is_hit);
-
-        let hit_val = crate::math::indicator(is_hit);
-        // Ema::update returns Result<Option<f64>, DataError>, but 0.0/1.0
-        // are always finite, so this cannot fail.
-        let _ = self.ew_hits.update(hit_val);
-
+        self.update(predicted_direction, realized_direction);
         Ok(())
     }
 
@@ -164,7 +169,7 @@ mod tests {
     fn all_correct() {
         let mut hr = HitRate::builder().alpha(0.1).build().unwrap();
         for _ in 0..100 {
-            hr.update(1.0, 1.0).unwrap();
+            hr.update(1.0, 1.0);
         }
         assert!((hr.hit_rate().unwrap() - 1.0).abs() < f64::EPSILON);
         assert!(hr.ew_hit_rate().unwrap() > 0.99);
@@ -174,7 +179,7 @@ mod tests {
     fn all_wrong() {
         let mut hr = HitRate::builder().alpha(0.1).build().unwrap();
         for _ in 0..100 {
-            hr.update(1.0, -1.0).unwrap();
+            hr.update(1.0, -1.0);
         }
         assert!(hr.hit_rate().unwrap().abs() < f64::EPSILON);
         assert!(hr.ew_hit_rate().unwrap() < 0.01);
@@ -186,9 +191,9 @@ mod tests {
         // 5 hits, 5 misses
         for i in 0..10 {
             if i < 5 {
-                hr.update(1.0, 1.0).unwrap();
+                hr.update(1.0, 1.0);
             } else {
-                hr.update(1.0, -1.0).unwrap();
+                hr.update(1.0, -1.0);
             }
         }
         assert!((hr.hit_rate().unwrap() - 0.5).abs() < f64::EPSILON);
@@ -197,9 +202,9 @@ mod tests {
     #[test]
     fn zero_treated_as_miss() {
         let mut hr = HitRate::builder().alpha(0.1).build().unwrap();
-        hr.update(0.0, 1.0).unwrap();
+        hr.update(0.0, 1.0);
         assert!(hr.hit_rate().unwrap().abs() < f64::EPSILON);
-        hr.update(1.0, 0.0).unwrap();
+        hr.update(1.0, 0.0);
         assert!(hr.hit_rate().unwrap().abs() < f64::EPSILON);
     }
 
@@ -213,7 +218,7 @@ mod tests {
     #[test]
     fn reset_clears_state() {
         let mut hr = HitRate::builder().alpha(0.1).build().unwrap();
-        hr.update(1.0, 1.0).unwrap();
+        hr.update(1.0, 1.0);
         hr.reset();
         assert_eq!(hr.count(), 0);
         assert!(!hr.is_primed());
@@ -224,13 +229,13 @@ mod tests {
     #[test]
     fn nan_rejected() {
         let mut hr = HitRate::builder().alpha(0.1).build().unwrap();
-        assert!(hr.update(f64::NAN, 1.0).is_err());
-        assert!(hr.update(1.0, f64::NAN).is_err());
+        assert!(hr.checked_update(f64::NAN, 1.0).is_err());
+        assert!(hr.checked_update(1.0, f64::NAN).is_err());
     }
 
     #[test]
     fn inf_rejected() {
         let mut hr = HitRate::builder().alpha(0.1).build().unwrap();
-        assert!(hr.update(f64::INFINITY, 1.0).is_err());
+        assert!(hr.checked_update(f64::INFINITY, 1.0).is_err());
     }
 }

@@ -372,13 +372,15 @@ CHANGELOG entry in `nexus-stats-core`:
 ### Normalizers and DistributionShift (blind audit, PR C2)
 
 - **`normalize(value)` returns `Result<Option<T>, DataError>`** on
-  `ZScoreNorm`, `MinMaxNorm` and `QuantileNorm`: NaN and infinity are
-  rejected as `update` rejects them. Add a `?` or `.unwrap()` before the
-  existing `Option` handling.
+  `MinMaxNorm` and `QuantileNorm`: NaN and infinity are rejected as
+  `update` rejects them. Add a `?` or `.unwrap()` before the existing
+  `Option` handling. (`ZScoreNorm::normalize` keeps returning `Option<T>`
+  and gains `checked_normalize`; see the unchecked/checked split under
+  PR C3 below.)
 - **`ZScoreNorm::update` scores the sample against the statistics before
   it**, then folds it in. Scores are larger than before (the old score was
-  capped at `sqrt((1 - alpha) / alpha)`) and the first score arrives one
-  sample later. A sample that departs from a so-far constant stream scores
+  capped at a constant set by alpha, about 3 at alpha 0.1) and the first
+  score arrives one sample later. A sample that departs from a so-far constant stream scores
   `+inf` or `-inf`, not `0.0`: clamp the score if it feeds a type that
   rejects infinity. Thresholds tuned against the old capped values need
   retuning.
@@ -386,7 +388,8 @@ CHANGELOG entry in `nexus-stats-core`:
   outside the range seen and prime after `resolution + 2` samples.
   `min_samples` below `resolution + 2` is an error (it was silently raised).
   Values differ from the old estimator grid.
-- **`DistributionShift::update` returns `Result<Option<ShapeShift>, _>`**:
+- **`DistributionShift::update` returns `Option<ShapeShift>`**
+  (`checked_update` returns it in a `Result`):
   `Some` on the sample that completes a window, with that window compared
   against the baseline before it, and `last()` returns the most recent one.
   `kurtosis_shift()`, `skewness_shift()` and `is_shifted(t)` are removed:
@@ -395,6 +398,94 @@ CHANGELOG entry in `nexus-stats-core`:
   completed. `fast_window` must be at least 4.
 - Additive: `DistributionShift::last()` / `fast_window()`, `ShapeShift`,
   `QuantileNorm` accepts `resolution(1)`.
+
+### Variance and microstructure estimators (blind audit, PR C3)
+
+- **`EwmaVar` computes the pandas-default estimator** (`ewm(alpha=a).mean()`
+  / `.var()`): unbiased from the second sample, no warm-up shortfall.
+  Readings differ from 7.0 pre-releases, most of all in the first samples.
+  `update` returns `Option<MeanVariance>` and `last()` re-reads
+  it; `mean()`, `variance()` and `std_dev()` on the tracker are removed
+  (`reading.mean`, `reading.variance`, `reading.std_dev()`). `min_samples`
+  must be at least 2. A seed is a converged state: `count()` starts at 0
+  and `reset()` restores it.
+- **`ZScoreNorm::mean()` / `std_dev()` are replaced by `baseline()`**, which
+  returns the `MeanVariance` the next sample is scored against. Scores
+  change with the `EwmaVar` estimator.
+- **`HalfLife` divides by the right variance and names its result.**
+  `autocorrelation()` is now `ar1_coefficient()` and `half_life()` is
+  replaced by `reversion() -> Option<Reversion>`: `Reverting { half_life }`,
+  `NotReverting` or `Oscillating`. The old value was the reverse-regression
+  slope, wrong on short or trending-then-decaying series.
+- **`RollSpread::update` returns `Option<RollEstimate>`** (`spread`,
+  `autocovariance`, `model_fits()`), with `last()`. The estimate no longer
+  reads low while warming up. A non-negative autocovariance gives a spread
+  of 0 (it was `None`); `model_fits()` is `false` when it is positive.
+  `spread()` and `autocovariance()` are removed.
+  **`hasbrouck_spread()` is removed**: its formula matched no published
+  estimator. `min_samples` must be at least 3.
+- **`BipowerVariation` reports period totals**, as the definitions do:
+  `realized_variance` and `bipower_variation` are sums since the last
+  `reset()`, not per-step averages. Multiply old readings by the number of
+  price changes to compare. `update` returns `Option<JumpDecomposition>`
+  with `jump_variation()` and `jump_ratio()`; the four readers on the
+  tracker are removed. `min_samples` must be at least 3.
+- **`TwoScaleRv` applies the paper's small-sample refinement**, so its
+  estimate is about `K / (K - 1)` times the old one, and `noise_variance`
+  follows the paper's `all-tick variance / 2n`. `update` returns
+  `Option<TwoScaleEstimate>`, whose fields are `two_scale_variance` (was
+  `realized_variance()`), `realized_variance` (the all-tick sum, was
+  `fast_rv()`) and `noise_variance`, with `two_scale_volatility()`. The
+  readers on the tracker are removed. `min_samples` must be at least
+  `2 * k`.
+- **`VarianceRatio` is corrected for overlapping changes** and averages 1
+  on a random walk (it read 0.6 to 0.9). `update` returns the ratio; it
+  primes at `2 * q + 1` values. `alpha` above `2 / q` is rejected: the
+  weights must span at least q changes. `is_mean_reverting()` and `is_trending()`
+  are removed: compare the ratio with 1 using a margin.
+- **`Hurst` is standard multi-scale R/S analysis.** Values differ from the
+  single-window formula it replaced. Feed returns, not price levels. The
+  window must be at least 32 (default 128). `is_mean_reverting()` and
+  `is_trending()` are removed: on independent data the method reads above
+  0.5, so 0.5 is not the neutral level.
+- **`Amihud::update(ret, dollar_volume)`** takes a return of either sign and
+  returns the smoothed ratio.
+- **`DataError` and `ConfigError` are `#[non_exhaustive]`.** An exhaustive
+  `match` on either no longer compiles: add a `_ =>` arm. Each method's
+  documentation lists the variants it can produce.
+- **`update` is unchecked; `checked_update` is the checked form.** After
+  the standard library's `+` and `checked_add`. On `Welford`, `Moments`, `Covariance`, `EwmaVar`, `ZScoreNorm`,
+  `HalfLife`, `RollSpread`, `BipowerVariation`, `TwoScaleRv`,
+  `VarianceRatio`, `Hurst`, `DistributionShift`, `HarmonicMean`, `Lpm`,
+  `Amihud` and `HitRate`:
+  - `update` no longer returns a `Result`. It does no validation and
+    follows IEEE 754: a NaN or an infinity passed in makes the readings
+    NaN until `reset()`, and a value too large to square overflows them.
+    Types that return a reading return it directly
+    (`Option<MeanVariance>`, not `Result<Option<MeanVariance>, _>`).
+  - `checked_update` has the old signature and more: it refuses NaN,
+    infinity, a magnitude above `INPUT_LIMIT` (`1e120`;
+    `INPUT_LIMIT_FOURTH_MOMENT`, `1e60`, for `Moments` and
+    `DistributionShift`) and out-of-domain values (a non-positive sample
+    for `HarmonicMean`, a negative volume for `Amihud`), and changes
+    nothing. Fed only through it, these types never return NaN.
+  - `ZScoreNorm::normalize` is unchecked in the same way and
+    `checked_normalize` is its checked form.
+  - To migrate: where the input is already known to be finite (your own
+    arithmetic on validated data), drop the `?` or `.unwrap()` from
+    `update`. Where it comes from outside, rename the call to
+    `checked_update` and keep the error handling. A type that has taken
+    bad input through `update` is put right with `reset()`.
+  - The rest of the library still returns a `Result` from `update` and
+    converts cluster by cluster.
+  - `checked_update` is the choice where input is not trusted and you
+    want the guarantee without an "if".
+  - `Moments::skewness` / `excess_kurtosis` return `None` when the spread is
+    too small for the higher moments to be resolved (under about `1e-97` /
+    `1e-73`), where they could return NaN.
+  - `Covariance::correlation` is clamped to `[-1, 1]`.
+  - A weight within `f64::EPSILON` of 0 or 1 (`alpha(1e-17)`,
+    `span(u64::MAX)`) is rejected by every builder that takes one.
 
 ## 5. Checklist
 

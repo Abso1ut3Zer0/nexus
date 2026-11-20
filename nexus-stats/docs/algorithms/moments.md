@@ -12,7 +12,7 @@ Supports parallel merging.
 | Types | `Moments` |
 | Priming | Mean after 1, variance after 2, skewness after 3, kurtosis after 4 |
 | Output | `mean()`, `variance()`, `skewness()`, `kurtosis()` — all `Option` |
-| Error handling | Returns `Result<_, DataError>` on NaN/Inf input |
+| Error handling | `update` is unchecked (IEEE 754); `checked_update` returns `Result<_, DataError>` on NaN, infinity or an out-of-limit magnitude |
 
 ## What It Does
 
@@ -92,7 +92,7 @@ combined.M4 = a.M4 + b.M4 + delta⁴ × na × nb × (na² - na·nb + nb²) / N³
 let mut m = Moments::new();
 
 for sample in data {
-    m.update(sample).unwrap();
+    m.update(sample);
 }
 
 println!("skewness: {:?}", m.skewness());
@@ -105,8 +105,8 @@ println!("kurtosis: {:?}", m.kurtosis());
 let mut worker_a = Moments::new();
 let mut worker_b = Moments::new();
 
-for x in &data[..half] { worker_a.update(*x).unwrap(); }
-for x in &data[half..] { worker_b.update(*x).unwrap(); }
+for x in &data[..half] { worker_a.update(*x); }
+for x in &data[half..] { worker_b.update(*x); }
 
 worker_a.merge(&worker_b);
 // worker_a now has moments for the full dataset
@@ -120,7 +120,7 @@ worker_a.merge(&worker_b);
 let mut samples = Moments::new();
 
 // On each observation:
-samples.update(measurement).unwrap();
+samples.update(measurement);
 
 if let Some(skew) = samples.skewness() {
     if skew < -0.5 {
@@ -141,7 +141,7 @@ if let Some(kurt) = samples.kurtosis() {
 let mut latency = Moments::new();
 
 // Per request:
-latency.update(response_time_us).unwrap();
+latency.update(response_time_us);
 
 // Alert if distribution becomes asymmetric
 // (indicates a subpopulation hitting a slow path)

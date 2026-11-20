@@ -175,13 +175,12 @@ fn bench_welford_f64(samples: &mut [u64]) {
     let mut w = Welford::new();
     let mut rng = 12345u64;
     for _ in 0..WARMUP {
-        w.update(90.0 + (next_val(&mut rng) % 20) as f64).unwrap();
+        w.update(90.0 + (next_val(&mut rng) % 20) as f64);
     }
     for s in samples.iter_mut() {
         let start = rdtsc_start();
         for _ in 0..BATCH {
-            w.update(black_box(90.0 + (next_val(&mut rng) % 20) as f64))
-                .unwrap();
+            w.update(black_box(90.0 + (next_val(&mut rng) % 20) as f64));
         }
         let end = rdtsc_end();
         black_box(w.mean());
@@ -252,15 +251,15 @@ fn bench_ewma_var_f64(samples: &mut [u64]) {
     let mut ev = EwmaVar::builder().alpha(0.1).build().unwrap();
     let mut rng = 12345u64;
     for _ in 0..WARMUP {
-        let _ = ev.update(90.0 + (next_val(&mut rng) % 20) as f64).unwrap();
+        let _ = ev.update(90.0 + (next_val(&mut rng) % 20) as f64);
     }
     for s in samples.iter_mut() {
         let start = rdtsc_start();
         for _ in 0..BATCH {
-            let _ = ev.update(90.0 + (next_val(&mut rng) % 20) as f64).unwrap();
+            let _ = ev.update(90.0 + (next_val(&mut rng) % 20) as f64);
         }
         let end = rdtsc_end();
-        black_box(ev.variance());
+        black_box(ev.last());
         *s = (end - start) / BATCH;
     }
 }
@@ -407,14 +406,14 @@ fn bench_covariance_f64(samples: &mut [u64]) {
     for _ in 0..WARMUP {
         let x = 90.0 + (next_val(&mut rng) % 20) as f64;
         let y = x * 2.0 + (next_val(&mut rng) % 5) as f64;
-        cov.update(x, y).unwrap();
+        cov.update(x, y);
     }
     for s in samples.iter_mut() {
         let start = rdtsc_start();
         for _ in 0..BATCH {
             let x = 90.0 + (next_val(&mut rng) % 20) as f64;
             let y = x * 2.0 + (next_val(&mut rng) % 5) as f64;
-            cov.update(x, y).unwrap();
+            cov.update(x, y);
         }
         let end = rdtsc_end();
         black_box(cov.correlation());
@@ -798,12 +797,12 @@ fn bench_moments_f64(samples: &mut [u64]) {
     let mut m = Moments::new();
     let mut rng = 12345u64;
     for _ in 0..WARMUP {
-        m.update(90.0 + (next_val(&mut rng) % 20) as f64).unwrap();
+        m.update(90.0 + (next_val(&mut rng) % 20) as f64);
     }
     for s in samples.iter_mut() {
         let start = rdtsc_start();
         for _ in 0..BATCH {
-            m.update(90.0 + (next_val(&mut rng) % 20) as f64).unwrap();
+            m.update(90.0 + (next_val(&mut rng) % 20) as f64);
         }
         let end = rdtsc_end();
         black_box(m.kurtosis());
@@ -899,13 +898,12 @@ fn bench_harmonic_mean_f64(samples: &mut [u64]) {
     let mut h = HarmonicMean::new();
     let mut rng = 12345u64;
     for _ in 0..WARMUP {
-        h.update(1.0 + (next_val(&mut rng) % 100) as f64).unwrap();
+        h.update(1.0 + (next_val(&mut rng) % 100) as f64);
     }
     for s in samples.iter_mut() {
         let start = rdtsc_start();
         for _ in 0..BATCH {
-            h.update(black_box(1.0 + (next_val(&mut rng) % 100) as f64))
-                .unwrap();
+            h.update(black_box(1.0 + (next_val(&mut rng) % 100) as f64));
         }
         let end = rdtsc_end();
         black_box(h.mean());
@@ -1139,17 +1137,15 @@ fn bench_bipower_variation_f64(samples: &mut [u64]) {
     let mut b = BipowerVariation::new();
     let mut rng = 12345u64;
     for _ in 0..WARMUP {
-        b.update(100.0 + (next_val(&mut rng) % 200) as f64 / 100.0)
-            .unwrap();
+        b.update(100.0 + (next_val(&mut rng) % 200) as f64 / 100.0);
     }
     for s in samples.iter_mut() {
         let start = rdtsc_start();
         for _ in 0..BATCH {
-            b.update(black_box(100.0 + (next_val(&mut rng) % 200) as f64 / 100.0))
-                .unwrap();
+            b.update(black_box(100.0 + (next_val(&mut rng) % 200) as f64 / 100.0));
         }
         let end = rdtsc_end();
-        black_box(b.bipower_variation());
+        black_box(b.last());
         *s = (end - start) / BATCH;
     }
 }
@@ -1158,17 +1154,15 @@ fn bench_roll_spread_f64(samples: &mut [u64]) {
     let mut r = RollSpread::builder().alpha(0.05).build().unwrap();
     let mut rng = 12345u64;
     for _ in 0..WARMUP {
-        r.update(100.0 + (next_val(&mut rng) % 200) as f64 / 100.0)
-            .unwrap();
+        r.update(100.0 + (next_val(&mut rng) % 200) as f64 / 100.0);
     }
     for s in samples.iter_mut() {
         let start = rdtsc_start();
         for _ in 0..BATCH {
-            r.update(black_box(100.0 + (next_val(&mut rng) % 200) as f64 / 100.0))
-                .unwrap();
+            r.update(black_box(100.0 + (next_val(&mut rng) % 200) as f64 / 100.0));
         }
         let end = rdtsc_end();
-        black_box(r.spread());
+        black_box(r.last());
         *s = (end - start) / BATCH;
     }
 }
@@ -1177,17 +1171,15 @@ fn bench_two_scale_rv_f64(samples: &mut [u64]) {
     let mut t = TwoScaleRv::builder().k(5).build().unwrap();
     let mut rng = 12345u64;
     for _ in 0..WARMUP {
-        t.update(100.0 + (next_val(&mut rng) % 200) as f64 / 100.0)
-            .unwrap();
+        t.update(100.0 + (next_val(&mut rng) % 200) as f64 / 100.0);
     }
     for s in samples.iter_mut() {
         let start = rdtsc_start();
         for _ in 0..BATCH {
-            t.update(black_box(100.0 + (next_val(&mut rng) % 200) as f64 / 100.0))
-                .unwrap();
+            t.update(black_box(100.0 + (next_val(&mut rng) % 200) as f64 / 100.0));
         }
         let end = rdtsc_end();
-        black_box(t.realized_variance());
+        black_box(t.last());
         *s = (end - start) / BATCH;
     }
 }
@@ -1677,8 +1669,8 @@ fn bench_moments_merge(samples: &mut [u64]) {
     let mut b = Moments::new();
     let mut rng = 12345u64;
     for _ in 0..WARMUP {
-        a.update(90.0 + (next_val(&mut rng) % 20) as f64).unwrap();
-        b.update(90.0 + (next_val(&mut rng) % 20) as f64).unwrap();
+        a.update(90.0 + (next_val(&mut rng) % 20) as f64);
+        b.update(90.0 + (next_val(&mut rng) % 20) as f64);
     }
     for s in samples.iter_mut() {
         let start = rdtsc_start();
@@ -1957,7 +1949,7 @@ fn warm_covariance() -> Covariance {
     for _ in 0..WARMUP {
         let x = 90.0 + (next_val(&mut rng) % 20) as f64;
         let y = x * 2.0 + (next_val(&mut rng) % 5) as f64;
-        cov.update(x, y).unwrap();
+        cov.update(x, y);
     }
     cov
 }
@@ -2009,7 +2001,7 @@ fn warm_moments() -> Moments {
     let mut m = Moments::new();
     let mut rng = 12345u64;
     for _ in 0..WARMUP {
-        m.update(90.0 + (next_val(&mut rng) % 20) as f64).unwrap();
+        m.update(90.0 + (next_val(&mut rng) % 20) as f64);
     }
     m
 }
@@ -2018,7 +2010,7 @@ fn warm_welford() -> Welford {
     let mut w = Welford::new();
     let mut rng = 12345u64;
     for _ in 0..WARMUP {
-        w.update(90.0 + (next_val(&mut rng) % 20) as f64).unwrap();
+        w.update(90.0 + (next_val(&mut rng) % 20) as f64);
     }
     w
 }
@@ -2453,7 +2445,7 @@ fn main() {
     bench_feed(&mut buf, &mut hit, |h, v| {
         // Realized sign decorrelated from the predicted one: a cheap hash.
         let realized = ((v as u64).wrapping_mul(0x9E37_79B9_7F4A_7C15) >> 60) as f64 - 7.5;
-        let _ = h.update(v - 100.0, realized);
+        h.update(v - 100.0, realized);
     });
     print_row("HitRate::update", &mut buf);
     let mut amihud = Amihud::builder().alpha(0.05).build().unwrap();
@@ -2463,7 +2455,7 @@ fn main() {
     print_row("Amihud::update", &mut buf);
     let mut hl = HalfLife::new();
     bench_feed(&mut buf, &mut hl, |h, v| {
-        let _ = h.update(v);
+        h.update(v);
     });
     print_row("HalfLife::update", &mut buf);
     let mut vr = VarianceRatio::builder().q(5).alpha(0.01).build().unwrap();
@@ -2473,12 +2465,12 @@ fn main() {
     print_row("VarianceRatio(5)::update", &mut buf);
     let mut hurst = Hurst::builder().window_size(64).build().unwrap();
     bench_feed(&mut buf, &mut hurst, |h, v| {
-        let _ = h.update(v);
+        h.update(v);
     });
     print_row("Hurst(64)::update", &mut buf);
     let mut lpm = Lpm::builder().target(100.0).order(2).build().unwrap();
     bench_feed(&mut buf, &mut lpm, |l, v| {
-        let _ = l.update(v);
+        l.update(v);
     });
     print_row("Lpm(2)::update", &mut buf);
     let mut cvar = Cvar::builder().alpha(0.05).build().unwrap();

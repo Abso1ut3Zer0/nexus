@@ -92,7 +92,7 @@ type with timestamps, or `PollSaturation`, which is weighted per message.
 - Skewness + kurtosis (distribution shape) → [**Moments**](../algorithms/moments.md)
   - Extends Welford to 3rd/4th moments. Fat tail and asymmetry detection.
 - Exponentially weighted variance (recent volatility) → [**EwmaVariance**](../algorithms/ewma-var.md)
-  - More responsive than Welford. RiskMetrics pattern.
+  - More responsive than Welford. Unbiased, the pandas `ewm` default.
 - Are two signals correlated? → [**Covariance**](../algorithms/covariance.md)
   - Online Pearson correlation. Supports merge.
 - Average of rates/throughputs → [**HarmonicMean**](../algorithms/harmonic-mean.md)

@@ -26,11 +26,9 @@ let mut min_rtt = WindowedMin::<f64>::new(10_000_000_000).unwrap(); // 10s windo
 // On each RTT measurement:
 if let Some(smoothed) = srtt.update(rtt_ms).unwrap() {
     min_rtt.update(now_ns, rtt_ms).unwrap();
-    rttvar.update(rtt_ms).unwrap();
-
-    // Timeout = smoothed_rtt + 4 × variance (RFC 6298)
-    if let Some(var) = rttvar.variance() {
-        let rto = smoothed + 4.0 * var.sqrt();
+    // Timeout = smoothed_rtt + 4 × deviation (after RFC 6298)
+    if let Some(reading) = rttvar.update(rtt_ms) {
+        let rto = smoothed + 4.0 * reading.std_dev();
     }
 }
 ```

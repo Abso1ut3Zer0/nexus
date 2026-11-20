@@ -98,8 +98,8 @@ let mut worker_a = Welford::new();
 let mut worker_b = Welford::new();
 
 // Split work
-for x in &data[..half] { worker_a.update(*x).unwrap(); }
-for x in &data[half..] { worker_b.update(*x).unwrap(); }
+for x in &data[..half] { worker_a.update(*x); }
+for x in &data[half..] { worker_b.update(*x); }
 
 // Merge
 worker_a.merge(&worker_b);

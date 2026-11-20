@@ -159,7 +159,7 @@ contained.
   `resolution(1)` is accepted (minimum, median, maximum).
 - **`DistributionShift` compares each completed window with the baseline
   before it** and latches the result. `update` returns
-  `Result<Option<ShapeShift>, DataError>`, `Some` on the sample that
+  `Option<ShapeShift>`, `Some` on the sample that
   completes a window. Before, the window was discarded in the same `update`
   that completed it, so a full window could never be read: the accessors saw
   only a partly filled one, and nothing at all for the first three samples
@@ -172,11 +172,80 @@ contained.
   `update` returns and `last()` holds; the three were one-line reads of it,
   and `is_shifted` applied a single threshold to two quantities on different
   scales.
-- **`normalize` returns `Result<Option<T>, DataError>`** on the three
-  normalizers; NaN and infinity went straight through to the output.
+- **`normalize` returns `Result<Option<T>, DataError>`** on `MinMaxNorm`
+  and `QuantileNorm`; NaN and infinity went straight through to the
+  output. (`ZScoreNorm` has the unchecked `normalize` and
+  `checked_normalize` pair instead; see `update` is unchecked, below.)
   `MinMaxNorm::normalize` is documented as unclamped.
 
+- **`update` is unchecked and no longer returns a `Result`** on `Welford`,
+  `Moments`, `Covariance`, `EwmaVar`, `ZScoreNorm`, `HalfLife`,
+  `RollSpread`, `BipowerVariation`, `TwoScaleRv`, `VarianceRatio`, `Hurst`,
+  `DistributionShift`, `HarmonicMean`, `Lpm`, `Amihud` and `HitRate`. It
+  does no validation and follows IEEE 754, like `f64` arithmetic: a NaN or
+  an infinity passed in makes the readings NaN until `reset()`, a value
+  too large to square overflows them, and a value outside the type's
+  domain is folded in as it is. The checked form is the new
+  `checked_update` (see Added), which calls `update` after validating, so
+  the logic exists once. `ZScoreNorm::normalize` returns `Option<T>`, with
+  `checked_normalize` beside it. This reverses the rule that every
+  `update` returns a `Result`; the rest of the library converts cluster by
+  cluster, and until then still validates in `update`.
+
+- **`EwmaVar` computes the unbiased exponentially weighted variance**, the
+  pandas default (`ewm(alpha=a).var()`, that is `adjust=True, bias=False`),
+  and matches it to rounding. The plain recursion it replaces read 18% of
+  the true variance after two samples at alpha 0.1, 80% after ten, and 5%
+  low forever. The weight totals converge, after which an update costs the
+  same as before. `update` returns a named `MeanVariance` reading and
+  `last()` re-reads it; `mean()`, `variance()` and `std_dev()` on the
+  tracker are removed. A seed is a converged state that `reset()` restores.
+- **`HalfLife` reports a named `Reversion`** (`Reverting { half_life }`,
+  `NotReverting`, `Oscillating`) from `reversion()`, and the AR(1)
+  coefficient from `ar1_coefficient()`. One `Option<f64>` used to stand for
+  "not primed", "constant", "not mean-reverting" and "oscillating".
+- **`RollSpread`, `BipowerVariation`, `TwoScaleRv` return named readings
+  from `update`** (`RollEstimate`, `JumpDecomposition`, `TwoScaleEstimate`),
+  with `last()`; their per-field readers are removed.
+- **`BipowerVariation` reports totals over the period**, per the
+  definitions (Barndorff-Nielsen & Shephard 2004): realized variance is the
+  sum of squared price changes and bipower variation `pi / 2` times the sum
+  of adjacent absolute products. They were per-step averages, unlike
+  `TwoScaleRv`'s `realized_variance`.
+- **`RollSpread` reports a spread of 0 when the autocovariance is not
+  negative**, the usual convention for the estimator, with
+  `RollEstimate::model_fits()` to tell that from a genuine zero.
+- **`Hurst` is standard R/S analysis**: the slope of `ln(R/S)` on
+  `ln(n)` over block lengths `N, N/2, N/4, ...` (Hurst 1951; Mandelbrot &
+  Wallis 1969). It was `ln(R/S) / ln(n)` from a single window, which is not
+  the estimator the name refers to. Its known upward bias on short blocks
+  is documented. It takes increments, not levels.
+- **`VarianceRatio::update` returns the ratio**, primes at `2 * q + 1`
+  values, and uses the shared ring. `Amihud::update` takes a return of
+  either sign and returns the smoothed ratio.
+
+- **`RollEstimate::model_fits()`** is `false` when the autocovariance is
+  positive, which separates "the model does not apply" from a price that
+  has not moved. `TwoScaleEstimate`'s fields are `two_scale_variance`,
+  `realized_variance` (the all-tick sum, as in `JumpDecomposition`) and
+  `noise_variance`.
+- **`VarianceRatio` rejects `alpha > 2 / q`**: the weights must span at
+  least q changes for a q-period variance to mean anything.
+
+- **`DataError` and `ConfigError` are `#[non_exhaustive]`.** Match the
+  variants you handle and end with a wildcard arm. A given method produces
+  only the variants its documentation lists, and a reason added later will
+  not break a build.
+
 ### Removed
+
+- `RollSpread::hasbrouck_spread()`. It computed `spread * sqrt(1 + rho)` and
+  credited Hasbrouck (2009), whose estimator is a Bayesian Gibbs sampler of
+  the Roll model; the formula matches no published estimator found.
+- `VarianceRatio::is_mean_reverting()` / `is_trending()` and
+  `Hurst::is_mean_reverting()` / `is_trending()`: a bare comparison with 1
+  or 0.5, with no allowance for sampling noise or, for Hurst, the method's
+  bias.
 
 - **`SaturationF64`** ([#761](https://github.com/Abso1ut3Zer0/nexus/issues/761)):
   an EMA of a caller-supplied utilization fraction against an unvalidated
@@ -194,6 +263,31 @@ contained.
 - **`HalfLifeBuilder`**: it had no knobs. `HalfLife::new()`.
 
 ### Added
+
+- **`checked_update`**, beside an `update` that is now unchecked (see
+  Changed), after the standard library's `+` and `checked_add`. It refuses
+  NaN, infinity, a magnitude above the type's input limit and anything
+  outside the type's domain with a `DataError`, and changes nothing. On
+  `Welford`, `Moments`, `Covariance`, `EwmaVar`, `ZScoreNorm`,
+  `HalfLife`, `RollSpread`, `BipowerVariation`, `TwoScaleRv`,
+  `VarianceRatio`, `Hurst`, `DistributionShift`, `HarmonicMean`, `Lpm`,
+  `Amihud` and `HitRate`. `HarmonicMean`'s
+  refuses a sample outside `[1 / INPUT_LIMIT, INPUT_LIMIT]`; `Lpm`'s
+  checks its running sum, since its order goes too high for a single
+  limit; `Amihud`'s refuses a negative volume and an unrepresentable
+  ratio. `ZScoreNorm::checked_normalize` is the same for `normalize`.
+- **The number contract**, stated in the crate docs: for a type fed only
+  through `checked_update` (equivalently, `update` given finite input
+  within `INPUT_LIMIT`, `1e120`, or `INPUT_LIMIT_FOURTH_MOMENT`, `1e60`,
+  for `Moments` and `DistributionShift`), every returned `f64` is a number,
+  never NaN, and finite unless the method documents infinity. Property
+  tests (`tests/number_contract.rs`) feed these types magnitudes up to
+  `1e300` through `checked_update` and require every reading to be a
+  number.
+
+- `MeanVariance`, `Reversion`, `RollEstimate`, `JumpDecomposition`,
+  `TwoScaleEstimate`; `ZScoreNorm::baseline()`; `Hurst::window_size()`;
+  `TwoScaleRv::k()`.
 
 - `ShapeShift`, `DistributionShift::last()` and `fast_window()`.
 
@@ -247,6 +341,45 @@ contained.
   `math::upper_tail_z`.
 
 ### Fixed
+
+- **`Moments::skewness` and `excess_kurtosis` returned NaN on data with a
+  very small spread** (the powers of the variance underflowed to `0 / 0`),
+  and `DistributionShift` with them. They return `None` below the spread
+  at which the higher moments can be resolved.
+- **`Covariance::correlation` could overflow or underflow** by multiplying
+  the two sums of squares before the square root: it read 0 for perfectly
+  correlated large-magnitude data and `None` for small-magnitude data. The
+  roots are taken separately and the result clamped to `[-1, 1]`.
+- **`Hurst` read a window stuck on one value as an exponent of 1** when the
+  value does not sum exactly (0.1, say): a constant block is now detected
+  by comparing its samples.
+- **Weights within `f64::EPSILON` of 0 or 1 are rejected** by every builder
+  that takes `alpha`, `halflife` or `span`. They passed the range check and
+  then made `1 - alpha` round to 1 or 0, after which `EwmaVar` and
+  `RollSpread` divided by zero.
+- **`HalfLife` divided by the wrong variance.** It computed
+  `Cov(x_t, x_{t-1}) / Var(x_t)`, the reverse-regression slope, where the
+  AR(1) coefficient is `Cov / Var(x_{t-1})`. The two agree on long
+  stationary series and differ on short ones: 8, 4, 2, 1 (a clean decay
+  with a half-life of 1) read as not mean-reverting, and 1, 2, 4, 8 as a
+  half-life of 1.
+- **`VarianceRatio` read low on a random walk**, permanently: about 0.91 at
+  q = 5 and 0.63 at q = 20 with alpha 0.05. Overlapping q-period changes
+  are correlated, so their variance about their own mean is understated.
+  The ratio now carries the exponentially weighted counterpart of the
+  `(1 - q / n)` correction in Lo and MacKinlay's overlapping estimator and
+  averages 1.00 to 1.02.
+- **`TwoScaleRv` read about `1 / K` low even on noise-free data.** It
+  omitted the small-sample refinement `1 / (1 - n_bar / n)` (equation 2.4
+  of Aït-Sahalia, Mykland & Zhang). The noise variance follows equation
+  2.1. `min_samples` below `2 * k` is rejected (it could underflow at 0).
+- **`RollSpread` read 13% to 80% too tight at first prime.** Its averages
+  started at zero and were not normalized by the weight accumulated.
+- **`Amihud` returned a negative illiquidity for a signed return.** It
+  takes the absolute value itself now.
+- `EwmaVar`, `VarianceRatio`, `RollSpread`, `Amihud` report a bad
+  `halflife` or `span` under its own name, and gain `span(n)` where it was
+  missing.
 
 - **`QuantileNorm` rejects a `min_samples` below `resolution + 2`** instead
   of silently raising it.
@@ -351,6 +484,16 @@ contained.
   now: fixed at build, no deque.
 
 ### Docs
+
+- `docs/statistics.md` is compiled and run as a doctest: every example is
+  self-contained and asserts the values it describes. It gains sections for
+  `RollSpread`, `BipowerVariation` and `TwoScaleRv`, which had none, and
+  loses several statements that were not true of the code: a
+  `CovarianceMatrix` example that omitted its required weight and named
+  methods that do not exist, a `BucketAccumulator` example that called the
+  wrong update method for its policy (so the bar never closed) and claimed
+  OHLC and VWAP, a `HitRate` description of a different statistic, and a
+  `Percentile` priming rule.
 
 - `docs/normalization.md` is compiled and run as a doctest, and the
   `DistributionShift` section of `docs/detection.md` is rewritten against

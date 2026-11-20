@@ -16,7 +16,7 @@
 ///
 /// let mut lpm = Lpm::semivariance(0.0).unwrap();
 /// for &v in &[-3.0, -1.0, 0.0, 2.0, 5.0] {
-///     lpm.update(v).unwrap();
+///     lpm.update(v);
 /// }
 /// let sv = lpm.lpm().unwrap();
 /// assert!((sv - 2.0).abs() < 0.01);
@@ -58,31 +58,69 @@ impl Lpm {
 
     /// Feeds a sample.
     ///
+    /// Unchecked, like `f64` arithmetic: whatever is passed is folded in. A
+    /// NaN makes the moment NaN from then on, until [`reset`](Self::reset);
+    /// a large enough shortfall at a high order overflows it to infinity.
+    /// Use [`checked_update`](Self::checked_update) to have such a sample
+    /// refused instead.
+    #[inline]
+    pub fn update(&mut self, sample: f64) {
+        self.commit(self.sum + self.term(sample));
+    }
+
+    /// [`update`](Self::update) with the sample validated first: refuses a
+    /// NaN or an infinity, and a sample whose shortfall raised to the order
+    /// would take the running sum to infinity. Orders run up to 16, too
+    /// high for a single input limit to rule that out, so the result itself
+    /// is checked. Fed only through this method the moment is always a
+    /// finite number.
+    ///
     /// # Errors
     ///
-    /// Returns `DataError::NotANumber` if the sample is NaN, or
-    /// `DataError::Infinite` if the sample is infinite.
+    /// `DataError::NotANumber`, `DataError::Infinite`, or
+    /// `DataError::OutOfRange` if the sum would overflow. A refused sample
+    /// changes nothing.
     #[inline]
-    pub fn update(&mut self, sample: f64) -> Result<(), crate::DataError> {
+    pub fn checked_update(&mut self, sample: f64) -> Result<(), crate::DataError> {
         check_finite!(sample);
+        let sum = self.sum + self.term(sample);
+        if !sum.is_finite() {
+            return Err(crate::DataError::OutOfRange);
+        }
+        self.commit(sum);
+        Ok(())
+    }
+
+    /// Records one more sample with the running sum it produced: shared by
+    /// [`update`](Self::update), which takes whatever the sum came to, and
+    /// [`checked_update`](Self::checked_update), which has first made sure
+    /// it is finite. (`checked_update` cannot simply call `update`: it has
+    /// to see the new sum before committing it.)
+    #[inline]
+    fn commit(&mut self, sum: f64) {
+        self.sum = sum;
+        self.count += 1;
+    }
+
+    /// The shortfall below the target, raised to the order.
+    #[inline]
+    fn term(&self, sample: f64) -> f64 {
         // Clamp instead of branching: for a return stream around the target,
         // `shortfall > 0` is a coin flip for the branch predictor. A zero
         // shortfall adds zero for every order.
         let shortfall = (self.target - sample).max(0.0);
         match self.order {
-            0 => self.sum += crate::math::indicator(shortfall > 0.0),
-            1 => self.sum += shortfall,
-            2 => self.sum += shortfall * shortfall,
+            0 => crate::math::indicator(shortfall > 0.0),
+            1 => shortfall,
+            2 => shortfall * shortfall,
             d => {
                 let mut power = shortfall;
                 for _ in 1..d {
                     power *= shortfall;
                 }
-                self.sum += power;
+                power
             }
         }
-        self.count += 1;
-        Ok(())
     }
 
     /// Lower partial moment: average downside deviation^order.
@@ -202,7 +240,7 @@ mod tests {
         // semivariance = 10 / 5 = 2.0
         let mut lpm = Lpm::semivariance(0.0).unwrap();
         for &v in &[-3.0, -1.0, 0.0, 2.0, 5.0] {
-            lpm.update(v).unwrap();
+            lpm.update(v);
         }
         let sv = lpm.lpm().unwrap();
         assert!((sv - 2.0).abs() < 1e-10, "expected 2.0, got {sv}");
@@ -212,7 +250,7 @@ mod tests {
     fn shortfall_probability() {
         let mut lpm = Lpm::builder().target(50.0).order(0).build().unwrap();
         for i in 0..100 {
-            lpm.update(i as f64).unwrap();
+            lpm.update(i as f64);
         }
         let prob = lpm.lpm().unwrap();
         assert!((prob - 0.5).abs() < 0.01, "expected ~0.5, got {prob}");
@@ -222,7 +260,7 @@ mod tests {
     fn expected_shortfall() {
         let mut lpm = Lpm::builder().target(10.0).order(1).build().unwrap();
         for &v in &[5.0, 8.0, 12.0, 15.0] {
-            lpm.update(v).unwrap();
+            lpm.update(v);
         }
         // shortfalls: 5, 2, 0, 0 → sum=7, mean=7/4=1.75
         let es = lpm.lpm().unwrap();
@@ -233,7 +271,7 @@ mod tests {
     fn all_above_target() {
         let mut lpm = Lpm::semivariance(0.0).unwrap();
         for &v in &[1.0, 2.0, 3.0] {
-            lpm.update(v).unwrap();
+            lpm.update(v);
         }
         let sv = lpm.lpm().unwrap();
         assert!((sv - 0.0).abs() < 1e-10, "expected 0.0, got {sv}");
@@ -243,7 +281,7 @@ mod tests {
     fn all_below_target() {
         let mut lpm = Lpm::builder().target(100.0).order(2).build().unwrap();
         for &v in &[90.0, 80.0, 70.0] {
-            lpm.update(v).unwrap();
+            lpm.update(v);
         }
         // shortfalls: 10, 20, 30; squared: 100, 400, 900; mean = 1400/3
         let sv = lpm.lpm().unwrap();
@@ -259,8 +297,8 @@ mod tests {
         let mut sv = Lpm::semivariance(0.0).unwrap();
         let mut manual = Lpm::builder().target(0.0).order(2).build().unwrap();
         for &v in &[-2.0, -1.0, 0.0, 1.0, 2.0] {
-            sv.update(v).unwrap();
-            manual.update(v).unwrap();
+            sv.update(v);
+            manual.update(v);
         }
         assert!((sv.lpm().unwrap() - manual.lpm().unwrap()).abs() < 1e-10);
         assert_eq!(sv.order(), 2);
@@ -269,17 +307,17 @@ mod tests {
     #[test]
     fn rejects_nan_inf() {
         let mut lpm = Lpm::semivariance(0.0).unwrap();
-        assert!(lpm.update(f64::NAN).is_err());
-        assert!(lpm.update(f64::INFINITY).is_err());
-        assert!(lpm.update(f64::NEG_INFINITY).is_err());
+        assert!(lpm.checked_update(f64::NAN).is_err());
+        assert!(lpm.checked_update(f64::INFINITY).is_err());
+        assert!(lpm.checked_update(f64::NEG_INFINITY).is_err());
         assert_eq!(lpm.count(), 0);
     }
 
     #[test]
     fn reset_clears() {
         let mut lpm = Lpm::semivariance(5.0).unwrap();
-        lpm.update(2.0).unwrap();
-        lpm.update(3.0).unwrap();
+        lpm.update(2.0);
+        lpm.update(3.0);
         assert_eq!(lpm.count(), 2);
         lpm.reset();
         assert_eq!(lpm.count(), 0);

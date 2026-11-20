@@ -12,8 +12,8 @@ Every streaming type in this crate follows the same shape:
 use nexus_stats_core::statistics::Welford;
 
 let mut w = Welford::new();
-w.update(100.5)?;           // O(1), Result for NaN/Inf
-w.update(99.8)?;
+w.update(100.5);            // O(1), unchecked; `checked_update` refuses NaN/Inf
+w.update(99.8);
 if w.is_primed() {
     let mean = w.mean().unwrap();
     let var  = w.variance().unwrap();

@@ -8,7 +8,7 @@ Supports Chan's merge for parallel aggregation.
 | Update cost | 11 cycles |
 | Memory | ~48 bytes |
 | Types | `Covariance` |
-| Error handling | Returns `Result<_, DataError>` on NaN/Inf input |
+| Error handling | `update` is unchecked (IEEE 754); `checked_update` returns `Result<_, DataError>` on NaN, infinity or an out-of-limit magnitude |
 
 ## What It Does
 
@@ -19,7 +19,7 @@ Pearson correlation coefficient (-1 to +1).
 let mut cov = Covariance::new();
 
 for (x, y) in paired_samples {
-    cov.update(x, y).unwrap();
+    cov.update(x, y);
 }
 
 if let Some(r) = cov.correlation() {

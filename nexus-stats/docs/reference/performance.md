@@ -32,7 +32,7 @@ costs a branch mispredict, about 20 cycles.
 | Bocpd (max run 64) | 3637 | 4405 | three passes over the run-length posterior, SIMD `ln`/`exp` when built with `+avx2,+fma` |
 | DistributionShift (window 50) | 15 | 16 | one moments update; a merge per window |
 | **Normalization** | | | |
-| ZScoreNorm<f64> | 6 | 7 | score, then EW mean and variance |
+| ZScoreNorm<f64> | 7 | 7 | score, then EW mean and variance |
 | MinMaxNorm<f64> | 15 | 19 | two 3-sample window trackers |
 | QuantileNorm<f64> (resolution 9) | 186 | 234 | P² histogram, 11 markers |
 | QuantileNorm<f64> (resolution 19) | 292 | 344 | 21 markers |
@@ -49,7 +49,7 @@ costs a branch mispredict, about 20 cycles.
 | **Statistics** | | | |
 | Welford | 13 | 13 | one division |
 | Welford query | 9 | 10 | includes vsqrtsd |
-| EwmaVar | 6 | 6 | two multiply-adds |
+| EwmaVar | 6 | 6 | two multiply-adds once the weight totals settle (about 36 / alpha samples); two reciprocals more before that |
 | Covariance | 11 | 11 | three accumulators |
 | HarmonicMean | 6 | 7 | one reciprocal |
 | **Monitoring** | | | |

@@ -91,6 +91,12 @@ impl Ema {
     #[inline]
     pub fn update(&mut self, sample: f64) -> Result<Option<f64>, crate::DataError> {
         check_finite!(sample);
+        Ok(self.fold(sample))
+    }
+
+    /// The update itself, unchecked: for the types built on this one.
+    #[inline]
+    pub(crate) fn fold(&mut self, sample: f64) -> Option<f64> {
         let first_unseeded = self.count == 0 && self.prime_at != 0;
         self.count += 1;
         self.value = if first_unseeded {
@@ -98,7 +104,7 @@ impl Ema {
         } else {
             self.alpha.fma(sample, self.one_minus_alpha * self.value)
         };
-        Ok(self.value())
+        self.value()
     }
 
     /// Current smoothed value, or `None` if not primed.
@@ -331,7 +337,20 @@ mod tests {
             );
         }
         assert!(Ema::builder().span(2).build().is_ok());
-        assert!(Ema::builder().span(u64::MAX).build().is_ok());
+        // In range on paper, but `1 - alpha` rounds to 1 or to 0.
+        assert_eq!(
+            err(Ema::builder().span(u64::MAX)),
+            Invalid("span is too large for a usable weight")
+        );
+        for alpha in [1e-17, f64::EPSILON / 2.0, 1.0 - f64::EPSILON / 2.0] {
+            assert_eq!(
+                err(Ema::builder().alpha(alpha)),
+                Invalid("alpha is too close to 0 or 1 for a usable weight")
+            );
+        }
+        assert!(Ema::builder().alpha(f64::EPSILON).build().is_ok());
+        assert!(Ema::builder().alpha(1.0 - f64::EPSILON).build().is_ok());
+        assert!(Ema::builder().span(1 << 50).build().is_ok());
         assert_eq!(
             err(Ema::builder().alpha(0.5).seed(f64::NAN)),
             Invalid("EMA seed must be finite")
