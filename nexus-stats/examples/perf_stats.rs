@@ -1137,17 +1137,15 @@ fn bench_bipower_variation_f64(samples: &mut [u64]) {
     let mut b = BipowerVariation::new();
     let mut rng = 12345u64;
     for _ in 0..WARMUP {
-        b.update(100.0 + (next_val(&mut rng) % 200) as f64 / 100.0)
-            .unwrap();
+        b.update(100.0 + (next_val(&mut rng) % 200) as f64 / 100.0);
     }
     for s in samples.iter_mut() {
         let start = rdtsc_start();
         for _ in 0..BATCH {
-            b.update(black_box(100.0 + (next_val(&mut rng) % 200) as f64 / 100.0))
-                .unwrap();
+            b.update(black_box(100.0 + (next_val(&mut rng) % 200) as f64 / 100.0));
         }
         let end = rdtsc_end();
-        black_box(b.bipower_variation());
+        black_box(b.last());
         *s = (end - start) / BATCH;
     }
 }

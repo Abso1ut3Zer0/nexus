@@ -142,6 +142,10 @@ one naming convention across the family. Migration guide:
 
 ### Fixed
 
+- Carried from core: `BipowerVariation` works on log returns and reports
+  period totals, as the definitions do, and returns a `JumpDecomposition`
+  from `update`. Readings are not comparable with earlier ones; see the
+  migration guide.
 - Carried from core: `HalfLife` divided by the wrong variance, which
   misread short and decaying series. `coefficient()` and `reversion()`
   replace `autocorrelation()` and `half_life()`; see the migration guide.

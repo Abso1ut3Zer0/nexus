@@ -1,6 +1,7 @@
 //! Core streaming statistics.
 
 mod amihud;
+#[cfg(any(feature = "std", feature = "libm"))]
 mod bipower;
 mod bucket;
 mod covariance;
@@ -27,6 +28,7 @@ mod variance_ratio;
 mod welford;
 
 pub use amihud::*;
+#[cfg(any(feature = "std", feature = "libm"))]
 pub use bipower::*;
 pub use bucket::*;
 pub use covariance::*;

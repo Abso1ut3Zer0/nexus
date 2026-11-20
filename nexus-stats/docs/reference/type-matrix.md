@@ -67,7 +67,7 @@ See [Integer vs Float](../guides/integer-vs-float.md) for the caller rules and
 | `HitRate` | `bool` labels | — | core (`statistics`) |
 | `BucketAccumulator` (→ `BucketSummary`) | `f64` | — | core (`statistics`) |
 | `Amihud` | `f64` | — | core (`statistics`) |
-| `BipowerVariation` | `f64` | — | core (`statistics`) |
+| `BipowerVariation` (→ `JumpDecomposition`) | `f64` | `std\|libm` | core (`statistics`) |
 | `RollSpread` | `f64` | `std\|libm` | core (`statistics`) |
 | `HalfLife` | `f64` | `std\|libm` | core (`statistics`) |
 | `Hurst` | `f64` | `alloc + std\|libm` | core (`statistics`) |
