@@ -59,7 +59,8 @@ impl HitRate {
     }
 
     /// [`update`](Self::update) with both values validated first: refuses a
-    /// NaN or an infinity and leaves the state untouched.
+    /// NaN or an infinity and leaves the state untouched. (No magnitude
+    /// limit: only the signs are used.)
     ///
     /// # Errors
     ///
@@ -231,11 +232,13 @@ mod tests {
         let mut hr = HitRate::builder().alpha(0.1).build().unwrap();
         assert!(hr.checked_update(f64::NAN, 1.0).is_err());
         assert!(hr.checked_update(1.0, f64::NAN).is_err());
+        assert_eq!((hr.count(), hr.hit_rate()), (0, None));
     }
 
     #[test]
     fn inf_rejected() {
         let mut hr = HitRate::builder().alpha(0.1).build().unwrap();
         assert!(hr.checked_update(f64::INFINITY, 1.0).is_err());
+        assert_eq!((hr.count(), hr.hit_rate()), (0, None));
     }
 }

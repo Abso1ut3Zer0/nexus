@@ -47,7 +47,7 @@ let mut illiq = Amihud::builder()
 
 // The return may have either sign; the reading is the smoothed
 // |return| / dollar volume, None before the first traded period.
-let current = illiq.update(period_return, dollar_volume);
+let current = illiq.checked_update(period_return, dollar_volume)?;
 
 // Cross-venue comparison: which venue is most liquid right now?
 let venue_a_illiq = venue_a_amihud.illiq();
@@ -158,7 +158,7 @@ use nexus_stats_core::statistics::{HalfLife, Reversion};
 let mut hl = HalfLife::new();
 
 // Feed spread observations:
-hl.update(current_spread);
+hl.checked_update(current_spread)?;
 
 match hl.reversion() {
     Some(Reversion::Reverting { half_life }) => {
@@ -190,7 +190,7 @@ let mut hurst = Hurst::builder()
     .unwrap();
 
 // Feed bar-level returns (not tick-by-tick, and not price levels):
-hurst.update(bar_return);
+hurst.checked_update(bar_return)?;
 
 // `neutral` is what this window size reads on independent returns.
 if let Some(h) = hurst.hurst() {
@@ -221,7 +221,7 @@ let mut vr = VarianceRatio::builder()
     .build()?;
 
 // `update` returns the ratio once 2 * q + 1 prices have been fed.
-if let Some(ratio) = vr.update(price) {
+if let Some(ratio) = vr.checked_update(price)? {
     // ratio well below 1.0 → mean-reverting at 5-tick scale
     // (a single reading is noisy: compare with a margin)
 }
@@ -250,7 +250,7 @@ let mut det = DistributionShift::builder()
     .build()?;
 
 // `Some` once per 50 returns, on the one that completes a window.
-if let Some(shift) = det.update(trade_return) {
+if let Some(shift) = det.checked_update(trade_return)? {
     if shift.excess_kurtosis > 2.0 {
         // the window just completed has much heavier tails
         // Action: widen spreads, reduce position limits
@@ -290,7 +290,7 @@ let mut hits = HitRate::builder()
     .build()?;
 
 // predicted_sign and realized_sign: positive or negative
-hits.update(predicted_sign, realized_sign);
+hits.checked_update(predicted_sign, realized_sign)?;
 
 let rate = hits.ew_hit_rate();
 // 50% = coin flip, 55% = meaningful edge, 60%+ = strong signal

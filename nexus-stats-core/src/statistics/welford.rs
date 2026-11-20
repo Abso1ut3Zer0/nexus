@@ -58,10 +58,12 @@ impl Welford {
 
     /// Feeds a sample.
     ///
-    /// Unchecked, like `f64` arithmetic: whatever is passed is folded in. A
-    /// NaN or an infinity makes the readings NaN from then on, until
-    /// [`reset`](Self::reset); a finite value above
-    /// [`INPUT_LIMIT`](crate::INPUT_LIMIT) in magnitude can overflow them. Use
+    /// Unchecked, like `f64` arithmetic: whatever is passed is folded in.
+    /// After a NaN, an infinity, or a finite value above
+    /// [`INPUT_LIMIT`](crate::INPUT_LIMIT) in magnitude (which can
+    /// overflow), the readings carry no meaning until
+    /// [`reset`](Self::reset): NaN as a rule, though a comparison inside can
+    /// turn that into `None` or a wrong number. Use
     /// [`checked_update`](Self::checked_update) to have such a value refused
     /// instead.
     #[inline]

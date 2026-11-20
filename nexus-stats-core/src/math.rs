@@ -236,6 +236,15 @@ macro_rules! impl_mul_add {
 impl_mul_add!(f64);
 impl_mul_add!(f32);
 
+/// `x` floored at zero, with a NaN kept as NaN. `f64::max` would return
+/// `0.0` for a NaN and report a poisoned state as a clean zero. One `maxsd`,
+/// as `x.max(0.0)` is.
+#[inline]
+#[must_use]
+pub fn floor_at_zero(x: f64) -> f64 {
+    if x < 0.0 { 0.0 } else { x }
+}
+
 /// `1.0` for `true`, `0.0` for `false`, as a conversion rather than a select:
 /// a select between two float constants lowers to a jump on the predicate.
 #[inline]

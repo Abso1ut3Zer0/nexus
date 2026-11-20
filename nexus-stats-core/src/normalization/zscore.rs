@@ -73,7 +73,7 @@ impl<T: Float> ZScoreNorm<T> {
     /// capped at a constant that depends only on alpha (about 3 at alpha
     /// 0.1), whatever its size.
     ///
-    /// Returns `Ok(None)` until `min_samples` earlier samples have been seen
+    /// Returns `None` until `min_samples` earlier samples have been seen
     /// (or a seed supplied); the sample is folded in either way. Equivalent
     /// to [`normalize`](Self::normalize) followed by the fold.
     ///
@@ -99,10 +99,12 @@ impl<T: Float> ZScoreNorm<T> {
     /// crate; clamp it before feeding it on. `ZScoreNorm<f32>` also returns
     /// infinity for a finite score too large for `f32`.
     ///
-    /// Unchecked, like `f64` arithmetic: whatever is passed is folded in. A
-    /// NaN or an infinity makes the readings NaN from then on, until
-    /// [`reset`](Self::reset); a finite value above
-    /// [`INPUT_LIMIT`](crate::INPUT_LIMIT) in magnitude can overflow them. Use
+    /// Unchecked, like `f64` arithmetic: whatever is passed is folded in.
+    /// After a NaN, an infinity, or a finite value above
+    /// [`INPUT_LIMIT`](crate::INPUT_LIMIT) in magnitude (which can
+    /// overflow), the readings carry no meaning until
+    /// [`reset`](Self::reset): NaN as a rule, though a comparison inside can
+    /// turn that into `None` or a wrong number. Use
     /// [`checked_update`](Self::checked_update) to have such a value refused
     /// instead.
     #[inline]

@@ -125,8 +125,8 @@ one naming convention across the family. Migration guide:
 - Carried from core (blind audit, PR C3): **`update` is unchecked and
   `checked_update` is checked**, after the standard library's `+` and
   `checked_add`, on the variance and microstructure cluster. `update` no
-  longer returns a `Result`: it does no validation and follows IEEE 754 (a
-  NaN in is NaN out until `reset()`). `checked_update` returns the
+  longer returns a `Result`: it does no validation and follows IEEE 754
+  (after a NaN the readings carry no meaning until `reset()`). `checked_update` returns the
   `Result` and refuses NaN, infinity, out-of-limit magnitudes and
   out-of-domain values. Fed through it, these types never return NaN (the
   number contract). The limits are re-exported as

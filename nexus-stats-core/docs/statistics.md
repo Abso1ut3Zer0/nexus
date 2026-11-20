@@ -13,7 +13,7 @@ Streaming, fixed-memory, O(1)-per-update statistical primitives. Module path: `n
 | `CovarianceMatrix` | N-dimensional covariance matrix | O(N²) |
 | `HarmonicMean` | Harmonic mean | 2 words |
 | `Percentile` | Online percentile (P² algorithm) | small, fixed |
-| `BucketAccumulator` | Bar-style OHLC / VWAP aggregation | small, fixed |
+| `BucketAccumulator` | Bar-style aggregation (sum, count, mean, first, last per bucket) | small, fixed |
 | `Amihud` | Amihud illiquidity measure (EW) | small |
 | `RollSpread` | Roll's implicit bid-ask spread | small |
 | `BipowerVariation` | Realized variance, bipower variation, jump share | small |
@@ -29,8 +29,8 @@ Streaming, fixed-memory, O(1)-per-update statistical primitives. Module path: `n
 
 Two ways in, after the standard library's `+` and `checked_add`:
 
-- `update` is unchecked. It does no validation, returns its reading directly, and follows IEEE 754: a NaN or an infinity makes the readings NaN from then on, and a value large enough for its square to overflow makes them infinite or NaN.
-- `checked_update` validates first and returns a `Result`. It refuses NaN, infinity, a magnitude above `INPUT_LIMIT` (`1e120`; `INPUT_LIMIT_FOURTH_MOMENT`, `1e60`, for `Moments`), and anything outside the type's domain, with a `DataError`, and changes nothing. Fed only through it, no reading is ever NaN.
+- `update` is unchecked. It does no validation, returns its reading directly, and follows IEEE 754. After a NaN, an infinity, or a value large enough for its square to overflow, the readings carry no meaning: NaN or infinite as a rule, though a comparison inside a type can turn that into `None` or a wrong number (a `Hurst` block holding a NaN is left out of the fit; `HitRate` counts a NaN as a miss). It never panics.
+- `checked_update` validates first and returns a `Result`. It refuses NaN, infinity, a value that could overflow the type (for most, a magnitude above `INPUT_LIMIT`, `1e120`; `INPUT_LIMIT_FOURTH_MOMENT`, `1e60`, for `Moments`), and anything outside the type's domain, with a `DataError`, and changes nothing. Fed only through it, no reading is ever NaN.
 
 A type that has taken bad input through `update` is put right with `reset()`. When to call it is the application's decision.
 
@@ -55,7 +55,7 @@ assert_eq!(w.count(), 0);
 assert!(w.checked_update(INPUT_LIMIT).is_ok());
 ```
 
-Every type on this page except `Percentile` and `Cvar` has the pair. (Those two, and the rest of the library, still validate in `update` and return a `Result` from it; they are being converted cluster by cluster.)
+Every type on this page except `CovarianceMatrix`, `Percentile`, `BucketAccumulator` and `Cvar` has the pair. (Those four, and the rest of the library, still validate in `update` and return a `Result` from it; they are being converted cluster by cluster.)
 
 ---
 
@@ -203,7 +203,7 @@ assert!((h.mean().unwrap() - 40.0).abs() < 1e-12);
 
 **Use for:** "what's the effective throughput across these links?" (classical HM use case). Rarely the right answer for latency — arithmetic mean over latency is usually what you want.
 
-**Caveats:** requires all inputs strictly positive. Rejects zero and negatives.
+**Caveats:** defined for strictly positive inputs. `checked_update` refuses zero and negatives; `update` folds them in and the mean loses its meaning.
 
 ---
 

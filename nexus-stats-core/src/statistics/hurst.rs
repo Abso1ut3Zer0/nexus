@@ -84,10 +84,14 @@ impl Hurst {
 
     /// Feeds an increment: a return or a change, not a price level.
     ///
-    /// Unchecked, like `f64` arithmetic: whatever is passed is folded in. A
-    /// NaN or an infinity makes the readings NaN from then on, until
-    /// [`reset`](Self::reset); a finite value above
-    /// [`INPUT_LIMIT`](crate::INPUT_LIMIT) in magnitude can overflow them. Use
+    /// Unchecked, like `f64` arithmetic: whatever is passed is folded in.
+    /// After a NaN, an infinity, or a finite value above
+    /// [`INPUT_LIMIT`](crate::INPUT_LIMIT) in magnitude (which can
+    /// overflow), the readings carry no meaning until
+    /// [`reset`](Self::reset): NaN as a rule, though a comparison inside can
+    /// turn that into `None` or a wrong number. Here a block holding a NaN
+    /// is left out of the fit, so the exponent stays finite and is computed
+    /// from fewer blocks; the value also leaves with the window. Use
     /// [`checked_update`](Self::checked_update) to have such a value refused
     /// instead.
     #[inline]

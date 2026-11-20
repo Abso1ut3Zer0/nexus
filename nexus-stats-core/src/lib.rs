@@ -13,13 +13,15 @@
 //!
 //! # `update` and `checked_update`
 //!
-//! Every type has two ways in, after the standard library's `+` and
-//! `checked_add`:
+//! A type brought under this rule (see the end of the section) has two
+//! ways in, after the standard library's `+` and `checked_add`:
 //!
 //! - **`update`** is unchecked. It does no validation, returns its reading
-//!   directly, and follows IEEE 754: a NaN or an infinity passed in makes
-//!   the readings NaN from then on, and a value large enough for its square
-//!   (or fourth power) to overflow makes them infinite or NaN.
+//!   directly, and follows IEEE 754. After a NaN, an infinity, or a value
+//!   large enough for its square (or fourth power) to overflow, the
+//!   readings carry no meaning: NaN or infinite as a rule, though a
+//!   comparison inside a type can turn that into `None` or a wrong number
+//!   (each `update` says what its type does). It never panics.
 //! - **`checked_update`** validates first and returns a `Result`. It
 //!   refuses NaN, infinity, a magnitude above the type's input limit, and
 //!   anything outside the type's domain (a non-positive sample for a
@@ -34,10 +36,10 @@
 //!
 //! # The number contract
 //!
-//! For a type fed only through `checked_update` (equivalently: `update`
-//! given finite input within [`INPUT_LIMIT`] in magnitude, or
-//! [`INPUT_LIMIT_FOURTH_MOMENT`] for the types that say so), every `f64` a
-//! method returns is a number:
+//! For a type fed only through `checked_update`, or through `update` with
+//! input its `checked_update` would have accepted (for most types: finite
+//! and within [`INPUT_LIMIT`] in magnitude, or [`INPUT_LIMIT_FOURTH_MOMENT`]
+//! for the types that say so), every `f64` a method returns is a number:
 //!
 //! - **Never NaN.**
 //! - **Finite**, except where a method documents that it can return

@@ -61,6 +61,8 @@ impl Lpm {
     /// Unchecked, like `f64` arithmetic: whatever is passed is folded in. A
     /// NaN makes the moment NaN from then on, until [`reset`](Self::reset);
     /// a large enough shortfall at a high order overflows it to infinity.
+    /// (`+inf` is no shortfall and `-inf` an infinite one, as the definition
+    /// has it.)
     /// Use [`checked_update`](Self::checked_update) to have such a sample
     /// refused instead.
     #[inline]
@@ -108,7 +110,7 @@ impl Lpm {
         // Clamp instead of branching: for a return stream around the target,
         // `shortfall > 0` is a coin flip for the branch predictor. A zero
         // shortfall adds zero for every order.
-        let shortfall = (self.target - sample).max(0.0);
+        let shortfall = crate::math::floor_at_zero(self.target - sample);
         match self.order {
             0 => crate::math::indicator(shortfall > 0.0),
             1 => shortfall,

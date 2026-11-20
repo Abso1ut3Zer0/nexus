@@ -87,16 +87,18 @@ impl DistributionShift {
 
     /// Feeds an observation.
     ///
-    /// Returns `Ok(Some(shift))` on the sample that completes a window,
-    /// when both that window and the baseline before it have a defined
-    /// shape, and `Ok(None)` on every other sample. A shape is undefined
+    /// Returns `Some(shift)` on the sample that completes a window, when
+    /// both that window and the baseline before it have a defined shape,
+    /// and `None` on every other sample. A shape is undefined
     /// for a constant window (zero variance), and there is no baseline
     /// during the first window.
     ///
-    /// Unchecked, like `f64` arithmetic: whatever is passed is folded in. A
-    /// NaN or an infinity makes the readings NaN from then on, until
-    /// [`reset`](Self::reset); a finite value above
-    /// [`INPUT_LIMIT_FOURTH_MOMENT`](crate::INPUT_LIMIT_FOURTH_MOMENT) in magnitude can overflow them. Use
+    /// Unchecked, like `f64` arithmetic: whatever is passed is folded in.
+    /// After a NaN, an infinity, or a finite value above
+    /// [`INPUT_LIMIT_FOURTH_MOMENT`](crate::INPUT_LIMIT_FOURTH_MOMENT) in magnitude (which can
+    /// overflow), the readings carry no meaning until
+    /// [`reset`](Self::reset): NaN as a rule, though a comparison inside can
+    /// turn that into `None` or a wrong number. Use
     /// [`checked_update`](Self::checked_update) to have such a value refused
     /// instead.
     #[inline]

@@ -25,14 +25,15 @@ impl HarmonicMean {
         }
     }
 
-    /// Feeds a sample. Must be positive and non-zero.
+    /// Feeds a sample. The harmonic mean is defined for positive values.
     ///
-    /// Unchecked, like `f64` arithmetic: whatever is passed is folded in. A
-    /// NaN or an infinity makes the readings NaN from then on, until
-    /// [`reset`](Self::reset); a finite value above
-    /// [`INPUT_LIMIT`](crate::INPUT_LIMIT) in magnitude can overflow them. Use
-    /// [`checked_update`](Self::checked_update) to have such a value refused
-    /// instead.
+    /// Unchecked, like `f64` arithmetic: the reciprocal of whatever is
+    /// passed is added. A NaN makes the mean NaN, and a zero, a negative or
+    /// a value small enough for its reciprocal to overflow leaves it without
+    /// meaning, until [`reset`](Self::reset). (An infinity adds a reciprocal
+    /// of zero, as the definition has it.) Use
+    /// [`checked_update`](Self::checked_update) to have such a sample
+    /// refused instead.
     #[inline]
     pub fn update(&mut self, sample: f64) {
         self.count += 1;

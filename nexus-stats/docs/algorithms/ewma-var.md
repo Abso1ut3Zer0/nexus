@@ -59,3 +59,5 @@ if let Some(reading) = ev.update(sample) {
 | Operation | p50 | p99 |
 |-----------|-----|-----|
 | `EwmaVar::update` | 6 cycles | 6 cycles |
+
+Measured once the weight totals have settled, about `36 / alpha` samples in. Before that each update also computes two reciprocals.

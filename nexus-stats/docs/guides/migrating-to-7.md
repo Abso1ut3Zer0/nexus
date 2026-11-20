@@ -292,8 +292,8 @@ CHANGELOG entry in `nexus-stats-core`:
 
 ### Data policy
 
-- `DataError::OutOfRange` is new: `HarmonicMean::update` returns it for a
-  non-positive sample instead of panicking; ThompsonBeta/Exp3 use it for a
+- `DataError::OutOfRange` is new: `HarmonicMean::checked_update` returns
+  it for a non-positive sample (`update` panicked); ThompsonBeta/Exp3 use it for a
   reward outside `[0, 1]` (and Exp3 for `prob` outside `(0, 1]`),
   ThompsonGamma for a non-positive reward. `Negative` is kept for strictly
   negative inputs (Amihud volume, GammaPoisson exposure).
@@ -459,14 +459,19 @@ CHANGELOG entry in `nexus-stats-core`:
   `VarianceRatio`, `Hurst`, `DistributionShift`, `HarmonicMean`, `Lpm`,
   `Amihud` and `HitRate`:
   - `update` no longer returns a `Result`. It does no validation and
-    follows IEEE 754: a NaN or an infinity passed in makes the readings
-    NaN until `reset()`, and a value too large to square overflows them.
+    follows IEEE 754: after a NaN, an infinity or a value too large to
+    square, the readings carry no meaning until `reset()`. That is NaN or
+    infinity as a rule, but not always: a `Hurst` block holding a NaN is
+    left out of the fit, `VarianceRatio` reads `None`, and `HitRate`
+    counts a NaN as a miss. It never panics.
     Types that return a reading return it directly
     (`Option<MeanVariance>`, not `Result<Option<MeanVariance>, _>`).
   - `checked_update` has the old signature and more: it refuses NaN,
-    infinity, a magnitude above `INPUT_LIMIT` (`1e120`;
-    `INPUT_LIMIT_FOURTH_MOMENT`, `1e60`, for `Moments` and
-    `DistributionShift`) and out-of-domain values (a non-positive sample
+    infinity, a value that could overflow the type (a magnitude above
+    `INPUT_LIMIT`, `1e120`, or `INPUT_LIMIT_FOURTH_MOMENT`, `1e60`, for
+    `Moments` and `DistributionShift`; `Lpm` checks its running sum and
+    `Amihud` its ratio instead; `HitRate` uses only signs and has no
+    limit) and out-of-domain values (a non-positive sample
     for `HarmonicMean`, a negative volume for `Amihud`), and changes
     nothing. Fed only through it, these types never return NaN.
   - `ZScoreNorm::normalize` is unchecked in the same way and

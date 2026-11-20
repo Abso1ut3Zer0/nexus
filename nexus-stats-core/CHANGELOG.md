@@ -182,12 +182,14 @@ contained.
   `Moments`, `Covariance`, `EwmaVar`, `ZScoreNorm`, `HalfLife`,
   `RollSpread`, `BipowerVariation`, `TwoScaleRv`, `VarianceRatio`, `Hurst`,
   `DistributionShift`, `HarmonicMean`, `Lpm`, `Amihud` and `HitRate`. It
-  does no validation and follows IEEE 754, like `f64` arithmetic: a NaN or
-  an infinity passed in makes the readings NaN until `reset()`, a value
-  too large to square overflows them, and a value outside the type's
-  domain is folded in as it is. The checked form is the new
-  `checked_update` (see Added), which calls `update` after validating, so
-  the logic exists once. `ZScoreNorm::normalize` returns `Option<T>`, with
+  does no validation and follows IEEE 754, like `f64` arithmetic: after a
+  NaN, an infinity, a value too large to square or one outside the type's
+  domain, the readings carry no meaning until `reset()` (NaN or infinity
+  as a rule; each `update` documents its type). It never panics. The
+  checked form is the new `checked_update` (see Added), which calls
+  `update` after validating, so the logic exists once (`Lpm` shares a
+  private step instead, since it must see the new sum before committing
+  it). `ZScoreNorm::normalize` returns `Option<T>`, with
   `checked_normalize` beside it. This reverses the rule that every
   `update` returns a `Result`; the rest of the library converts cluster by
   cluster, and until then still validates in `update`.
@@ -266,8 +268,9 @@ contained.
 
 - **`checked_update`**, beside an `update` that is now unchecked (see
   Changed), after the standard library's `+` and `checked_add`. It refuses
-  NaN, infinity, a magnitude above the type's input limit and anything
-  outside the type's domain with a `DataError`, and changes nothing. On
+  NaN, infinity, a value that could overflow the type (for most, a
+  magnitude above its input limit) and anything outside the type's domain
+  with a `DataError`, and changes nothing. On
   `Welford`, `Moments`, `Covariance`, `EwmaVar`, `ZScoreNorm`,
   `HalfLife`, `RollSpread`, `BipowerVariation`, `TwoScaleRv`,
   `VarianceRatio`, `Hurst`, `DistributionShift`, `HarmonicMean`, `Lpm`,
