@@ -184,6 +184,14 @@ contained.
   the same change as `Welford`. `checked_update` is the validating form.
 - **`Covariance::update` no longer validates or returns a `Result`**, the
   same change again. `checked_update(x, y)` validates both values.
+- **`HalfLife::update` no longer validates or returns a `Result`.**
+  `checked_update` is the validating form.
+- **`HalfLife::coefficient()` and `reversion()` replace `autocorrelation()`
+  and `half_life()`.** The value was a regression coefficient, not a
+  correlation. `reversion()` returns a `Reversion`: `Reverting
+  { half_life }`, `NotReverting` (`phi >= 1`) or `Oscillating`
+  (`phi < 0`). `half_life()` returned `None` for all of "not enough data",
+  "not reverting" and "oscillating".
 - **`Lpm::update` no longer validates or returns a `Result`.**
   `checked_update` is the validating form.
 - **`Moments::update` no longer validates or returns a `Result`.**
@@ -267,6 +275,7 @@ contained.
 - `HarmonicMean::checked_update`: refuses a NaN, an infinity, or a sample
   outside `[1 / INPUT_LIMIT, INPUT_LIMIT]` (which includes zero and
   negatives), and leaves the accumulator unchanged.
+- `HalfLife::checked_update`, `Reversion`.
 - `Lpm::checked_update`: refuses a NaN, an infinity, and the sample whose
   shortfall raised to the order would overflow the running sum. It tests
   the result, not the input, since the order goes up to 16 and no single
@@ -281,6 +290,14 @@ contained.
 
 ### Fixed
 
+- **`HalfLife` divides by the variance of the lagged values.** The
+  least-squares slope of `x_t` on `x_{t-1}` is `Cov / Var(x_{t-1})`; it
+  divided by `Var(x_t)`. The two agree on long stationary series and not
+  on short or decaying ones: `8, 4, 2, 1` read as not reverting (it has a
+  half-life of 1), and `1, 2, 4, 8` as a half-life of 1 (it does not
+  revert). `coefficient()` is also `None` when the lagged values differ
+  only at rounding level (variance at or below `(f64::EPSILON * mean)^2`),
+  where the slope was numerical noise.
 - **`Moments` no longer returns NaN for skewness or kurtosis.** On data
   with a spread under about `1e-73` the divisors underflowed or lost
   their digits. `shape()` returns `None` there, and also when the variance

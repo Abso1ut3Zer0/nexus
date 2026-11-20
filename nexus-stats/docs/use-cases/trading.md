@@ -146,20 +146,25 @@ markout.update(fill_price, current_mid)?;
 
 **Type:** `HalfLife` (nexus-stats-core)
 
-Estimates mean-reversion half-life from lag-1 autocorrelation.
-`half_life = -ln(2) / ln(AC(1))`.
+Fits `x_t = c + phi * x_{t-1}` and reports the half-life of a deviation,
+`-ln(2) / ln(phi)`.
 
 ```rust
-use nexus_stats_core::statistics::HalfLife;
+use nexus_stats_core::statistics::{HalfLife, Reversion};
 
 let mut hl = HalfLife::new();
 
-// Feed spread observations:
-hl.update(current_spread)?;
+// Feed spread observations (from outside, so through the checked form):
+hl.checked_update(current_spread)?;
 
-if let Some(half_life) = hl.half_life() {
-    // half_life = 6 → signal mean-reverts in ~6 ticks
-    // Use for: KAMA slow period, hedger wake threshold (2× half-life)
+match hl.reversion() {
+    Some(Reversion::Reverting { half_life }) => {
+        // half_life = 6 → signal mean-reverts in ~6 ticks
+        // Use for: KAMA slow period, hedger wake threshold (2× half-life)
+    }
+    Some(Reversion::NotReverting) => { /* trending */ }
+    Some(Reversion::Oscillating) => { /* overshoots every step */ }
+    None => { /* fewer than three values, or a constant series */ }
 }
 ```
 
@@ -355,7 +360,7 @@ if !trending && mean_reverting {
 let r2 = lagged.r_squared();          // prediction power
 let slope = lagged.slope();            // calibration
 let hit = hits.ew_hit_rate();          // directional accuracy
-let half_life = hl.half_life();        // signal persistence
+let reversion = hl.reversion();        // signal persistence
 let horizon = decay.useful_horizon(0.01);  // predictive horizon
 ```
 

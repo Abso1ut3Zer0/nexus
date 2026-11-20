@@ -228,17 +228,26 @@ let rate = hr.hit_rate().unwrap();
 
 ## HalfLife — Mean-reversion half-life
 
-Fits a linear regression `Δx_t = α + β*(x_{t-1} - μ)` in a streaming way. If `β < 0`, the series is mean-reverting and the half-life is `ln(2) / -β`.
+Fits `x_t = c + phi * x_{t-1}` by least squares, in a streaming way. A deviation from the mean shrinks by `phi` each step, so it halves in `-ln 2 / ln phi` steps.
 
 ```rust
-use nexus_stats_core::statistics::HalfLife;
+use nexus_stats_core::statistics::{HalfLife, Reversion};
 let mut hl = HalfLife::new();
-for spread in spreads { hl.update(spread).unwrap(); }
+for spread in spreads { hl.update(spread); }
 
-if let Some(h) = hl.half_life() {
-    println!("half life = {h:.1} samples");
+match hl.reversion() {
+    Some(Reversion::Reverting { half_life }) => println!("half life = {half_life:.1} samples"),
+    Some(Reversion::NotReverting) => println!("trending (phi >= 1)"),
+    Some(Reversion::Oscillating) => println!("overshoots every step (phi < 0)"),
+    None => println!("fewer than three values, or a (near-)constant series"),
 }
 ```
+
+**Bias:** the least-squares estimate of `phi` is biased low, most visibly near 1 (the Dickey-Fuller bias): a random walk usually reads as reverting with a long half-life. The estimate is left uncorrected, as statsmodels' `AutoReg` and R's `ar` leave it. Use a unit-root test, not this, to decide whether a series reverts.
+
+`coefficient()` returns `phi` itself. `update` does not validate; `checked_update` refuses a NaN, an infinity, or a magnitude above `INPUT_LIMIT`.
+
+**The formula:** `-ln 2 / ln phi` is exact for data sampled at fixed steps. A common shortcut (Chan, *Algorithmic Trading*) is `-ln 2 / (phi - 1)`. It agrees when reversion is slow and reads long when it is fast (39% long at `phi = 0.5`). To get Chan's number: `-LN_2 / (hl.coefficient()? - 1.0)`.
 
 **Use for:** stat arb, pairs trading calibration — if half-life is longer than your holding period, the trade isn't mean-reverting fast enough.
 

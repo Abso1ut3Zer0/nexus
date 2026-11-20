@@ -142,6 +142,9 @@ one naming convention across the family. Migration guide:
 
 ### Fixed
 
+- Carried from core: `HalfLife` divided by the wrong variance, which
+  misread short and decaying series. `coefficient()` and `reversion()`
+  replace `autocorrelation()` and `half_life()`; see the migration guide.
 - Carried from core: `Moments` no longer returns NaN for skewness or
   kurtosis on very small spreads. `Moments::shape()` replaces
   `skewness()` / `excess_kurtosis()` / `kurtosis()`; see the migration
