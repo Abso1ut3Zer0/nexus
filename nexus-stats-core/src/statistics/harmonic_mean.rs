@@ -25,23 +25,36 @@ impl HarmonicMean {
         }
     }
 
-    /// Feeds a sample. Must be positive and non-zero.
+    /// Feeds a sample.
+    ///
+    /// Does not validate `sample`; arithmetic follows IEEE 754. See
+    /// [`checked_update`](Self::checked_update).
+    #[inline]
+    pub fn update(&mut self, sample: f64) {
+        self.count += 1;
+        self.reciprocal_sum += 1.0 / sample;
+    }
+
+    /// Checked update. Feeds `sample`, or returns an error and leaves the
+    /// accumulator unchanged if `sample` is NaN, infinite, or outside
+    /// `[1 / INPUT_LIMIT, INPUT_LIMIT]`.
     ///
     /// # Errors
     ///
-    /// Returns `DataError::NotANumber` if the sample is NaN, or
-    /// `DataError::Infinite` if the sample is infinite.
-    ///
-    /// Returns `DataError::OutOfRange` if the sample is zero or negative: the
-    /// harmonic mean is defined for positive values only.
+    /// - [`DataError::NotANumber`](crate::DataError::NotANumber) if `sample`
+    ///   is NaN.
+    /// - [`DataError::Infinite`](crate::DataError::Infinite) if `sample` is
+    ///   infinite.
+    /// - [`DataError::OutOfRange`](crate::DataError::OutOfRange) if `sample`
+    ///   is outside that range, which includes zero and every negative.
     #[inline]
-    pub fn update(&mut self, sample: f64) -> Result<(), crate::DataError> {
-        check_finite!(sample);
-        if sample <= 0.0 {
+    pub fn checked_update(&mut self, sample: f64) -> Result<(), crate::DataError> {
+        crate::math::check_input(sample, crate::INPUT_LIMIT)?;
+        // A smaller sample's reciprocal could overflow the sum.
+        if sample < 1.0 / crate::INPUT_LIMIT {
             return Err(crate::DataError::OutOfRange);
         }
-        self.count += 1;
-        self.reciprocal_sum += 1.0 / sample;
+        self.update(sample);
         Ok(())
     }
 
@@ -50,10 +63,10 @@ impl HarmonicMean {
     #[must_use]
     pub fn mean(&self) -> Option<f64> {
         if self.count == 0 {
-            None
-        } else {
-            Some(self.count as f64 / self.reciprocal_sum)
+            return None;
         }
+
+        Some(self.count as f64 / self.reciprocal_sum)
     }
 
     /// Number of samples processed.
@@ -99,8 +112,8 @@ mod tests {
     fn known_values() {
         let mut hm = HarmonicMean::new();
         // HM(1, 4) = 2 / (1/1 + 1/4) = 2 / 1.25 = 1.6
-        hm.update(1.0).unwrap();
-        hm.update(4.0).unwrap();
+        hm.update(1.0);
+        hm.update(4.0);
         let m = hm.mean().unwrap();
         assert!((m - 1.6).abs() < 1e-10, "expected 1.6, got {m}");
     }
@@ -111,7 +124,7 @@ mod tests {
         let vals = [2.0, 4.0, 8.0];
         let mut sum = 0.0;
         for &v in &vals {
-            hm.update(v).unwrap();
+            hm.update(v);
             sum += v;
         }
         let arithmetic = sum / vals.len() as f64;
@@ -126,7 +139,7 @@ mod tests {
     fn equal_values() {
         let mut hm = HarmonicMean::new();
         for _ in 0..100 {
-            hm.update(5.0).unwrap();
+            hm.update(5.0);
         }
         let m = hm.mean().unwrap();
         assert!(
@@ -138,7 +151,7 @@ mod tests {
     #[test]
     fn reset() {
         let mut hm = HarmonicMean::new();
-        hm.update(1.0).unwrap();
+        hm.update(1.0);
         hm.reset();
         assert_eq!(hm.count(), 0);
         assert!(hm.mean().is_none());
@@ -151,24 +164,53 @@ mod tests {
     }
 
     #[test]
-    fn rejects_zero_and_negative_without_touching_state() {
+    fn checked_update_refuses_bad_input_and_changes_nothing() {
+        use crate::DataError::{Infinite, NotANumber, OutOfRange};
+
         let mut hm = HarmonicMean::new();
-        hm.update(2.0).unwrap();
-        assert_eq!(hm.update(0.0), Err(crate::DataError::OutOfRange));
-        assert_eq!(hm.update(-1.0), Err(crate::DataError::OutOfRange));
-        assert_eq!(hm.count(), 1);
-        assert_eq!(hm.mean(), Some(2.0));
+        hm.checked_update(2.0).unwrap();
+
+        assert_eq!(hm.checked_update(f64::NAN), Err(NotANumber));
+        assert_eq!(hm.checked_update(f64::INFINITY), Err(Infinite));
+        assert_eq!(hm.checked_update(f64::NEG_INFINITY), Err(Infinite));
+        assert_eq!(hm.checked_update(0.0), Err(OutOfRange));
+        assert_eq!(hm.checked_update(-1.0), Err(OutOfRange));
+        assert_eq!(hm.checked_update(1e-121), Err(OutOfRange));
+        assert_eq!(hm.checked_update(1e121), Err(OutOfRange));
+
+        assert_eq!((hm.count(), hm.mean()), (1, Some(2.0)));
     }
 
     #[test]
-    fn rejects_nan_and_inf() {
+    fn checked_update_accepts_both_ends_of_the_range_without_overflow() {
+        let smallest = 1.0 / crate::INPUT_LIMIT;
         let mut hm = HarmonicMean::new();
-        assert_eq!(hm.update(f64::NAN), Err(crate::DataError::NotANumber));
-        assert_eq!(hm.update(f64::INFINITY), Err(crate::DataError::Infinite));
-        assert_eq!(
-            hm.update(f64::NEG_INFINITY),
-            Err(crate::DataError::Infinite)
-        );
-        assert_eq!(hm.count(), 0);
+        for _ in 0..100_000 {
+            hm.checked_update(smallest).unwrap();
+            hm.checked_update(crate::INPUT_LIMIT).unwrap();
+        }
+        let mean = hm.mean().unwrap();
+        assert!(mean.is_finite() && mean > 0.0, "mean = {mean}");
+    }
+
+    #[test]
+    fn checked_update_gives_the_same_result_as_update() {
+        let mut checked = HarmonicMean::new();
+        let mut unchecked = HarmonicMean::new();
+        for x in [2.0, 0.5, 1e9, 3.25] {
+            checked.checked_update(x).unwrap();
+            unchecked.update(x);
+        }
+        assert_eq!(checked.count(), unchecked.count());
+        assert_eq!(checked.mean(), unchecked.mean());
+    }
+
+    #[test]
+    fn update_does_not_validate() {
+        // A negative sample is folded in as its reciprocal, as the
+        // arithmetic has it.
+        let mut hm = HarmonicMean::new();
+        hm.update(-4.0);
+        assert_eq!(hm.mean(), Some(-4.0));
     }
 }
