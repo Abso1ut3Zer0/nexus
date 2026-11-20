@@ -47,7 +47,7 @@ costs a branch mispredict, about 20 cycles.
 | WindowedMedian<f64> (window 32) | 80 | 99 | O(N) sorted array |
 | Slew<f64> | 8 | 8 | clamp (maxsd/minsd) |
 | **Statistics** | | | |
-| Welford | 13 | 13 | one division |
+| Welford | 7 | 7 | one reciprocal of the count, off the running mean's dependency chain |
 | Welford query | 9 | 10 | includes vsqrtsd |
 | EwmaVar | 6 | 6 | two multiply-adds |
 | Covariance | 11 | 11 | three accumulators |
