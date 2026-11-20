@@ -191,8 +191,8 @@ contained.
   since the last `reset()`, as defined; they were per-step averages, with
   different divisors. Old readings are not comparable. The type now needs
   `std` or `libm`, and `min_samples` must be at least 3.
-- **`BipowerVariation::update` returns `Option<JumpDecomposition>`** and no
-  longer validates; `last()` re-reads it and `checked_update` is the
+- **`BipowerVariation::decomposition()` returns a `JumpDecomposition`.**
+  `update` no longer validates and returns nothing; `checked_update` is the
   validating form. `realized_variance()`, `bipower_variation()`,
   `jump_variation()` and `jump_ratio()` on the tracker are replaced by the
   reading: fields `realized_variance`, `bipower_variation` (the original
@@ -291,7 +291,7 @@ contained.
   outside `[1 / INPUT_LIMIT, INPUT_LIMIT]` (which includes zero and
   negatives), and leaves the accumulator unchanged.
 - `BipowerVariation::checked_update` (refuses NaN, infinity, and a zero or
-  negative price), `BipowerVariation::last`, `JumpDecomposition`.
+  negative price), `BipowerVariation::decomposition`, `JumpDecomposition`.
 - `HalfLife::checked_update`, `Reversion`.
 - `Lpm::checked_update`: refuses a NaN, an infinity, and the sample whose
   shortfall raised to the order would overflow the running sum. It tests

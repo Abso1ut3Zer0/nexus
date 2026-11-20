@@ -1145,7 +1145,7 @@ fn bench_bipower_variation_f64(samples: &mut [u64]) {
             b.update(black_box(100.0 + (next_val(&mut rng) % 200) as f64 / 100.0));
         }
         let end = rdtsc_end();
-        black_box(b.last());
+        black_box(b.decomposition());
         *s = (end - start) / BATCH;
     }
 }
@@ -1154,17 +1154,15 @@ fn bench_roll_spread_f64(samples: &mut [u64]) {
     let mut r = RollSpread::builder().alpha(0.05).build().unwrap();
     let mut rng = 12345u64;
     for _ in 0..WARMUP {
-        r.update(100.0 + (next_val(&mut rng) % 200) as f64 / 100.0)
-            .unwrap();
+        r.update(100.0 + (next_val(&mut rng) % 200) as f64 / 100.0);
     }
     for s in samples.iter_mut() {
         let start = rdtsc_start();
         for _ in 0..BATCH {
-            r.update(black_box(100.0 + (next_val(&mut rng) % 200) as f64 / 100.0))
-                .unwrap();
+            r.update(black_box(100.0 + (next_val(&mut rng) % 200) as f64 / 100.0));
         }
         let end = rdtsc_end();
-        black_box(r.spread());
+        black_box(r.estimate());
         *s = (end - start) / BATCH;
     }
 }

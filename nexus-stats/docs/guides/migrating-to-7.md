@@ -425,15 +425,15 @@ limit).
   the definitions do. It differenced raw prices.
 - Realized variance and bipower variation are totals since the last
   `reset()`, not per-step averages. Reset at the start of each period.
-- The readers on the tracker are replaced by a `JumpDecomposition`,
-  returned from `update` and re-read with `last()`:
+- The readers on the tracker are replaced by a `JumpDecomposition`, read
+  with `decomposition()`:
 
 ```rust
 // before
 let rv = bv.realized_variance()?;
 let jump = bv.jump_ratio()?;
 // after
-let reading = bv.last()?;
+let reading = bv.decomposition()?;
 let rv = reading.realized_variance;
 let jump = reading.jump_ratio()?;
 ```
