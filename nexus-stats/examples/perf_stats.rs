@@ -2476,7 +2476,7 @@ fn main() {
     print_row("Hurst(64)::update", &mut buf);
     let mut lpm = Lpm::builder().target(100.0).order(2).build().unwrap();
     bench_feed(&mut buf, &mut lpm, |l, v| {
-        let _ = l.update(v);
+        l.update(v);
     });
     print_row("Lpm(2)::update", &mut buf);
     let mut cvar = Cvar::builder().alpha(0.05).build().unwrap();

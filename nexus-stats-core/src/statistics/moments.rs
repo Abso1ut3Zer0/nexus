@@ -90,6 +90,17 @@ impl Moments {
     ///
     /// Does not validate `sample`; arithmetic follows IEEE 754. See
     /// [`checked_update`](Self::checked_update).
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use nexus_stats_core::statistics::Moments;
+    ///
+    /// let mut m = Moments::new();
+    /// m.update(1.0);
+    /// m.update(3.0);
+    /// assert_eq!(m.mean(), Some(2.0));
+    /// ```
     #[inline]
     pub fn update(&mut self, sample: f64) {
         self.count += 1;
@@ -108,8 +119,7 @@ impl Moments {
         //   m3 += spread * step * (n - 2) - 3 * step * m2
         //   m2 += spread
         let poly = n.fma(n - 3.0, 3.0);
-        // `step_sq * poly` first: `spread * step_sq` underflows for tiny
-        // values on a long stream.
+        // `step_sq * poly` first: `spread * step_sq` can underflow.
         let m4_from_m2 = spread.fma(step_sq * poly, 6.0 * step_sq * self.m2);
         self.m4 += (-4.0 * step).fma(self.m3, m4_from_m2);
         self.m3 += (spread * step).fma(n - 2.0, -3.0 * step * self.m2);
@@ -158,10 +168,10 @@ impl Moments {
     #[must_use]
     pub fn mean(&self) -> Option<f64> {
         if self.count == 0 {
-            None
-        } else {
-            Some(self.mean)
+            return None;
         }
+
+        Some(self.mean)
     }
 
     /// Sample variance (N-1 denominator), or `None` if < 2 samples.
@@ -169,10 +179,10 @@ impl Moments {
     #[must_use]
     pub fn variance(&self) -> Option<f64> {
         if self.count < 2 {
-            None
-        } else {
-            Some(self.m2 / (self.count - 1) as f64)
+            return None;
         }
+
+        Some(self.m2 / (self.count - 1) as f64)
     }
 
     /// Population variance (N denominator), or `None` if empty.
@@ -180,10 +190,10 @@ impl Moments {
     #[must_use]
     pub fn population_variance(&self) -> Option<f64> {
         if self.count == 0 {
-            None
-        } else {
-            Some(self.m2 / self.count as f64)
+            return None;
         }
+
+        Some(self.m2 / self.count as f64)
     }
 
     /// Sample standard deviation, or `None` if < 2 samples.
@@ -522,6 +532,9 @@ mod tests {
             checked.checked_update(x).unwrap();
             unchecked.update(x);
         }
+        assert_eq!(checked.count(), unchecked.count());
+        assert_eq!(checked.mean(), unchecked.mean());
+        assert_eq!(checked.variance(), unchecked.variance());
         assert_eq!(checked.shape(), unchecked.shape());
     }
 

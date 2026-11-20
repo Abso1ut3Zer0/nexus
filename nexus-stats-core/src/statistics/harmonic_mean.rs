@@ -48,7 +48,8 @@ impl HarmonicMean {
 
     /// Checked update. Feeds `sample`, or returns an error and leaves the
     /// accumulator unchanged if `sample` is NaN, infinite, or outside
-    /// `[1 / INPUT_LIMIT, INPUT_LIMIT]`.
+    /// `[1 / INPUT_LIMIT, INPUT_LIMIT]` (see
+    /// [`INPUT_LIMIT`](crate::INPUT_LIMIT)).
     ///
     /// # Errors
     ///

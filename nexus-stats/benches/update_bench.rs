@@ -1067,10 +1067,10 @@ fn bench_lpm(c: &mut Criterion) {
     let mut rng = Lcg::new(42);
     let mut lpm = Lpm::builder().target(0.0).order(2).build().unwrap();
     for _ in 0..1000 {
-        let _ = lpm.update(rng.next_f64() - 50.0);
+        lpm.update(rng.next_f64() - 50.0);
     }
     c.bench_function("Lpm::update (order=2)", |b| {
-        b.iter(|| lpm.update(black_box(rng.next_f64() - 50.0)).unwrap())
+        b.iter(|| lpm.update(black_box(rng.next_f64() - 50.0)))
     });
 }
 

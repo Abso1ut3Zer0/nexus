@@ -294,15 +294,17 @@ use nexus_stats_core::statistics::Lpm;
 // Semivariance (order 2) with target = 0.0
 let mut lpm = Lpm::semivariance(0.0).unwrap();
 for &v in &[-3.0, -1.0, 0.0, 2.0, 5.0] {
-    lpm.update(v).unwrap();
+    lpm.update(v);
 }
 let sv = lpm.lpm().unwrap();  // (9 + 1 + 0 + 0 + 0) / 5 = 2.0
 
 // Shortfall probability (order 0)
 let mut sp = Lpm::builder().target(50.0).order(0).build().unwrap();
-for i in 0..100 { sp.update(i as f64).unwrap(); }
+for i in 0..100 { sp.update(i as f64); }
 let prob = sp.lpm().unwrap();  // ~0.5
 ```
+
+**Overflow:** the shortfall is raised to the order and summed directly, as R's `PerformanceAnalytics::lpm` and Boost.Accumulators' `moment` do, neither of which rescales. For a stream of any length, keep shortfalls under about `1e144` at order 2, `1e72` at order 4, `1e18` at order 16. `update` does not validate. `checked_update` refuses a NaN, an infinity, and the sample that would overflow the sum: it tests the result, which is where IEEE 754 defines overflow.
 
 **Use for:** downside risk measurement, Sortino ratio inputs, tail-sensitive risk metrics. Semivariance is the most common application — use the `semivariance(target)` convenience constructor.
 
