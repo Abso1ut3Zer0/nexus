@@ -797,15 +797,15 @@ fn bench_moments_f64(samples: &mut [u64]) {
     let mut m = Moments::new();
     let mut rng = 12345u64;
     for _ in 0..WARMUP {
-        m.update(90.0 + (next_val(&mut rng) % 20) as f64).unwrap();
+        m.update(90.0 + (next_val(&mut rng) % 20) as f64);
     }
     for s in samples.iter_mut() {
         let start = rdtsc_start();
         for _ in 0..BATCH {
-            m.update(90.0 + (next_val(&mut rng) % 20) as f64).unwrap();
+            m.update(90.0 + (next_val(&mut rng) % 20) as f64);
         }
         let end = rdtsc_end();
-        black_box(m.kurtosis());
+        black_box(m.shape());
         *s = (end - start) / BATCH;
     }
 }
@@ -1675,8 +1675,8 @@ fn bench_moments_merge(samples: &mut [u64]) {
     let mut b = Moments::new();
     let mut rng = 12345u64;
     for _ in 0..WARMUP {
-        a.update(90.0 + (next_val(&mut rng) % 20) as f64).unwrap();
-        b.update(90.0 + (next_val(&mut rng) % 20) as f64).unwrap();
+        a.update(90.0 + (next_val(&mut rng) % 20) as f64);
+        b.update(90.0 + (next_val(&mut rng) % 20) as f64);
     }
     for s in samples.iter_mut() {
         let start = rdtsc_start();
@@ -2007,7 +2007,7 @@ fn warm_moments() -> Moments {
     let mut m = Moments::new();
     let mut rng = 12345u64;
     for _ in 0..WARMUP {
-        m.update(90.0 + (next_val(&mut rng) % 20) as f64).unwrap();
+        m.update(90.0 + (next_val(&mut rng) % 20) as f64);
     }
     m
 }
@@ -2552,8 +2552,8 @@ fn main() {
     bench_query(&mut buf, &lr, |r| r.predict(5.0));
     print_row("LinearRegression::predict", &mut buf);
     let m = warm_moments();
-    bench_query(&mut buf, &m, Moments::skewness);
-    print_row("Moments::skewness", &mut buf);
+    bench_query(&mut buf, &m, Moments::shape);
+    print_row("Moments::shape", &mut buf);
     let w = warm_welford();
     bench_query(&mut buf, &w, Welford::std_dev);
     print_row("Welford::std_dev", &mut buf);

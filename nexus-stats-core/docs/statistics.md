@@ -58,12 +58,15 @@ Extends Welford to third and fourth central moments using Pébay's online formul
 use nexus_stats_core::statistics::Moments;
 
 let mut m = Moments::new();
-for r in returns { m.update(r).unwrap(); }
+for r in returns { m.update(r); }
 
-let skew      = m.skewness().unwrap();         // asymmetry, 0 = symmetric
-let kurt      = m.kurtosis().unwrap();         // classical (normal = 3)
-let excess    = m.excess_kurtosis().unwrap();  // normal = 0
+let shape  = m.shape().unwrap();
+let skew   = shape.skewness;         // asymmetry, 0 = symmetric
+let excess = shape.excess_kurtosis;  // normal = 0
+let kurt   = shape.kurtosis();       // classical (normal = 3)
 ```
+
+`shape()` is `None` with fewer than four samples, or when the data is too close to constant for a shape to be resolved. `update` does not validate; `checked_update` refuses a NaN, an infinity, or a magnitude above `Moments::INPUT_LIMIT` (`1e60`).
 
 **Use for:** return distributions, latency distribution shape, detecting fat tails. `excess_kurtosis > 3` is a serious tail warning.
 

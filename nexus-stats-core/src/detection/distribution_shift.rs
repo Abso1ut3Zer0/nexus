@@ -99,7 +99,8 @@ impl DistributionShift {
     /// `DataError::Infinite` if the value is infinite.
     #[inline]
     pub fn update(&mut self, value: f64) -> Result<Option<ShapeShift>, crate::DataError> {
-        self.fast.update(value)?;
+        check_finite!(value);
+        self.fast.update(value);
         self.count += 1;
         if self.fast.count() < self.fast_window {
             return Ok(None);
@@ -154,9 +155,12 @@ impl DistributionShift {
 
     #[inline]
     fn compare(window: &Moments, baseline: &Moments) -> Option<ShapeShift> {
+        let window = window.shape()?;
+        let baseline = baseline.shape()?;
+
         Some(ShapeShift {
-            skewness: window.skewness()? - baseline.skewness()?,
-            excess_kurtosis: window.excess_kurtosis()? - baseline.excess_kurtosis()?,
+            skewness: window.skewness - baseline.skewness,
+            excess_kurtosis: window.excess_kurtosis - baseline.excess_kurtosis,
         })
     }
 }
@@ -204,7 +208,7 @@ mod tests {
     fn moments(xs: &[f64]) -> Moments {
         let mut m = Moments::new();
         for &x in xs {
-            m.update(x).unwrap();
+            m.update(x);
         }
         m
     }
@@ -230,12 +234,14 @@ mod tests {
         w12.merge(&w2);
         let expected = [
             ShapeShift {
-                skewness: w2.skewness().unwrap() - w1.skewness().unwrap(),
-                excess_kurtosis: w2.excess_kurtosis().unwrap() - w1.excess_kurtosis().unwrap(),
+                skewness: w2.shape().unwrap().skewness - w1.shape().unwrap().skewness,
+                excess_kurtosis: w2.shape().unwrap().excess_kurtosis
+                    - w1.shape().unwrap().excess_kurtosis,
             },
             ShapeShift {
-                skewness: w3.skewness().unwrap() - w12.skewness().unwrap(),
-                excess_kurtosis: w3.excess_kurtosis().unwrap() - w12.excess_kurtosis().unwrap(),
+                skewness: w3.shape().unwrap().skewness - w12.shape().unwrap().skewness,
+                excess_kurtosis: w3.shape().unwrap().excess_kurtosis
+                    - w12.shape().unwrap().excess_kurtosis,
             },
         ];
         assert_eq!(readings, expected);
@@ -321,7 +327,7 @@ mod tests {
         let (w1, w2) = (moments(&W1), moments(&W2));
         assert_eq!(
             reading.unwrap().skewness,
-            w2.skewness().unwrap() - w1.skewness().unwrap()
+            w2.shape().unwrap().skewness - w1.shape().unwrap().skewness
         );
     }
 
