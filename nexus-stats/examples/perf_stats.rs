@@ -175,13 +175,12 @@ fn bench_welford_f64(samples: &mut [u64]) {
     let mut w = Welford::new();
     let mut rng = 12345u64;
     for _ in 0..WARMUP {
-        w.update(90.0 + (next_val(&mut rng) % 20) as f64).unwrap();
+        w.update(90.0 + (next_val(&mut rng) % 20) as f64);
     }
     for s in samples.iter_mut() {
         let start = rdtsc_start();
         for _ in 0..BATCH {
-            w.update(black_box(90.0 + (next_val(&mut rng) % 20) as f64))
-                .unwrap();
+            w.update(black_box(90.0 + (next_val(&mut rng) % 20) as f64));
         }
         let end = rdtsc_end();
         black_box(w.mean());
@@ -2018,7 +2017,7 @@ fn warm_welford() -> Welford {
     let mut w = Welford::new();
     let mut rng = 12345u64;
     for _ in 0..WARMUP {
-        w.update(90.0 + (next_val(&mut rng) % 20) as f64).unwrap();
+        w.update(90.0 + (next_val(&mut rng) % 20) as f64);
     }
     w
 }

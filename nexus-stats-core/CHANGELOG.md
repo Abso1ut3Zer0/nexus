@@ -175,6 +175,11 @@ contained.
 - **`normalize` returns `Result<Option<T>, DataError>`** on the three
   normalizers; NaN and infinity went straight through to the output.
   `MinMaxNorm::normalize` is documented as unclamped.
+- **`Welford::update` no longer validates and no longer returns a
+  `Result`**, after the standard library's `+` and `checked_add`: it does
+  the arithmetic, which follows IEEE 754. The validating form is the new
+  `checked_update`. This is the shape every type is moving to, one type at
+  a time; the crate docs state the rule.
 
 ### Removed
 
@@ -243,6 +248,10 @@ contained.
 - `Covariance::variance_x()` / `variance_y()`: the marginal variances the
   type already carries.
 - `Welford::m2()`: the sum of squared deviations, the `m2` of `from_parts`.
+- `Welford::checked_update`: `update` with the sample validated first. It
+  returns a `DataError` and leaves the accumulator unchanged for a NaN, an
+  infinity, or a magnitude above the new `INPUT_LIMIT` (`1e120`), within
+  which the variance cannot overflow.
 - `math::alpha_from_halflife`, `math::dot`, `math::axpy`,
   `math::upper_tail_z`.
 

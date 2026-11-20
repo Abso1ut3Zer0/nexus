@@ -71,10 +71,10 @@ fn bench_welford(c: &mut Criterion) {
     let mut rng = Lcg::new(42);
     let mut w = Welford::new();
     for _ in 0..1000 {
-        let _ = w.update(rng.next_f64());
+        w.update(rng.next_f64());
     }
     c.bench_function("Welford::update", |b| {
-        b.iter(|| w.update(black_box(rng.next_f64())).unwrap())
+        b.iter(|| w.update(black_box(rng.next_f64())))
     });
 }
 

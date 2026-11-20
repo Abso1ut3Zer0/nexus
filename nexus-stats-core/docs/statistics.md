@@ -33,7 +33,7 @@ use nexus_stats_core::statistics::Welford;
 
 let mut w = Welford::new();
 for latency_us in [120.0, 118.0, 125.0, 130.0, 119.0] {
-    w.update(latency_us).unwrap();
+    w.update(latency_us);
 }
 
 let mean = w.mean().unwrap();        // ~ 122.4
@@ -41,6 +41,8 @@ let var  = w.variance().unwrap();    // sample variance (n-1)
 let std  = w.std_dev().unwrap();
 let n    = w.count();
 ```
+
+`update` does not validate its input (IEEE 754, as `f64` arithmetic). `checked_update` returns a `DataError` and changes nothing for a NaN, an infinity, or a magnitude above `INPUT_LIMIT` (`1e120`).
 
 **Use for:** running mean/variance/stddev on any float stream. The default first choice when you need "how noisy is this?".
 

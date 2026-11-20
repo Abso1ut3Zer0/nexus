@@ -34,6 +34,9 @@ impl Welford {
     /// `m2` is the sum of squared deviations from the mean
     /// (`variance * (count - 1)` for sample variance).
     ///
+    /// Values larger in magnitude than [`INPUT_LIMIT`](crate::INPUT_LIMIT)
+    /// can overflow later updates.
+    ///
     /// # Errors
     ///
     /// `ConfigError::Invalid` if `mean` is not finite, `m2` is negative or not
@@ -58,18 +61,58 @@ impl Welford {
 
     /// Feeds a sample.
     ///
-    /// # Errors
+    /// Does not validate `sample`; arithmetic follows IEEE 754. See
+    /// [`checked_update`](Self::checked_update).
     ///
-    /// Returns `DataError::NotANumber` if the sample is NaN, or
-    /// `DataError::Infinite` if the sample is infinite.
+    /// # Examples
+    ///
+    /// ```
+    /// use nexus_stats_core::statistics::Welford;
+    ///
+    /// let mut w = Welford::new();
+    /// w.update(1.0);
+    /// w.update(3.0);
+    /// assert_eq!(w.mean(), Some(2.0));
+    /// ```
     #[inline]
-    pub fn update(&mut self, sample: f64) -> Result<(), crate::DataError> {
-        check_finite!(sample);
+    pub fn update(&mut self, sample: f64) {
         self.count += 1;
+        // The weight of the new sample. It depends only on the count, so the
+        // division does not have to wait for the previous update's mean.
+        let weight = 1.0 / self.count as f64;
         let delta = sample - self.mean;
-        self.mean += delta / self.count as f64;
+        self.mean += delta * weight;
         let delta2 = sample - self.mean;
         self.m2 += delta * delta2;
+    }
+
+    /// Checked update. Feeds `sample`, or returns an error and leaves the
+    /// accumulator unchanged if `sample` is NaN, infinite, or larger in
+    /// magnitude than [`INPUT_LIMIT`](crate::INPUT_LIMIT).
+    ///
+    /// # Errors
+    ///
+    /// - [`DataError::NotANumber`](crate::DataError::NotANumber) if `sample`
+    ///   is NaN.
+    /// - [`DataError::Infinite`](crate::DataError::Infinite) if `sample` is
+    ///   infinite.
+    /// - [`DataError::OutOfRange`](crate::DataError::OutOfRange) if `sample`
+    ///   is finite and larger in magnitude than `INPUT_LIMIT`.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use nexus_stats_core::{DataError, statistics::Welford};
+    ///
+    /// let mut w = Welford::new();
+    /// assert_eq!(w.checked_update(1.0), Ok(()));
+    /// assert_eq!(w.checked_update(f64::NAN), Err(DataError::NotANumber));
+    /// assert_eq!(w.count(), 1);
+    /// ```
+    #[inline]
+    pub fn checked_update(&mut self, sample: f64) -> Result<(), crate::DataError> {
+        crate::math::check_input(sample, crate::INPUT_LIMIT)?;
+        self.update(sample);
         Ok(())
     }
 
@@ -201,7 +244,7 @@ mod tests {
     #[test]
     fn single_sample() {
         let mut w = Welford::new();
-        w.update(42.0).unwrap();
+        w.update(42.0);
 
         assert_eq!(w.count(), 1);
         assert_eq!(w.mean(), Some(42.0));
@@ -214,7 +257,7 @@ mod tests {
         let mut w = Welford::new();
 
         for &x in &[2.0, 4.0, 4.0, 4.0, 5.0, 5.0, 7.0, 9.0] {
-            w.update(x).unwrap();
+            w.update(x);
         }
 
         assert_eq!(w.count(), 8);
@@ -244,8 +287,8 @@ mod tests {
     #[test]
     fn two_samples() {
         let mut w = Welford::new();
-        w.update(10.0).unwrap();
-        w.update(20.0).unwrap();
+        w.update(10.0);
+        w.update(20.0);
 
         assert_eq!(w.count(), 2);
         assert!((w.mean().unwrap() - 15.0).abs() < 1e-10);
@@ -259,7 +302,7 @@ mod tests {
         let base = 1e8;
 
         for i in 0..1000 {
-            w.update((i as f64).fma(0.001, base)).unwrap();
+            w.update((i as f64).fma(0.001, base));
         }
 
         let var = w.variance().unwrap();
@@ -280,8 +323,8 @@ mod tests {
     fn merge_into_empty() {
         let mut a = Welford::new();
         let mut b = Welford::new();
-        b.update(10.0).unwrap();
-        b.update(20.0).unwrap();
+        b.update(10.0);
+        b.update(20.0);
 
         a.merge(&b);
         assert_eq!(a.count(), 2);
@@ -291,8 +334,8 @@ mod tests {
     #[test]
     fn merge_empty_into_existing() {
         let mut a = Welford::new();
-        a.update(10.0).unwrap();
-        a.update(20.0).unwrap();
+        a.update(10.0);
+        a.update(20.0);
         let b = Welford::new();
 
         a.merge(&b);
@@ -306,16 +349,16 @@ mod tests {
 
         let mut single = Welford::new();
         for &x in &data {
-            single.update(x).unwrap();
+            single.update(x);
         }
 
         let mut first = Welford::new();
         let mut second = Welford::new();
         for &x in &data[..4] {
-            first.update(x).unwrap();
+            first.update(x);
         }
         for &x in &data[4..] {
-            second.update(x).unwrap();
+            second.update(x);
         }
         first.merge(&second);
 
@@ -332,11 +375,11 @@ mod tests {
 
         for i in 0..100 {
             let x = i as f64;
-            single.update(x).unwrap();
+            single.update(x);
             if i < 7 {
-                a.update(x).unwrap();
+                a.update(x);
             } else {
-                b.update(x).unwrap();
+                b.update(x);
             }
         }
         a.merge(&b);
@@ -350,7 +393,7 @@ mod tests {
     fn reset_clears_state() {
         let mut w = Welford::new();
         for i in 0..100 {
-            w.update(i as f64).unwrap();
+            w.update(i as f64);
         }
 
         w.reset();
@@ -369,7 +412,7 @@ mod tests {
     fn from_parts_round_trip() {
         let mut w = Welford::new();
         for &x in &[2.0, 4.0, 4.0, 4.0, 5.0, 5.0, 7.0, 9.0] {
-            w.update(x).unwrap();
+            w.update(x);
         }
 
         let count = w.count();
@@ -383,12 +426,69 @@ mod tests {
     }
 
     #[test]
-    fn rejects_nan_and_inf() {
+    fn checked_update_refuses_bad_input_and_changes_nothing() {
+        use crate::DataError::{Infinite, NotANumber, OutOfRange};
+
         let mut w = Welford::new();
-        assert_eq!(w.update(f64::NAN), Err(crate::DataError::NotANumber));
-        assert_eq!(w.update(f64::INFINITY), Err(crate::DataError::Infinite));
-        assert_eq!(w.update(f64::NEG_INFINITY), Err(crate::DataError::Infinite));
+        w.checked_update(1.0).unwrap();
+        w.checked_update(3.0).unwrap();
+        let before = (w.count(), w.mean(), w.variance());
+
+        assert_eq!(w.checked_update(f64::NAN), Err(NotANumber));
+        assert_eq!(w.checked_update(f64::INFINITY), Err(Infinite));
+        assert_eq!(w.checked_update(f64::NEG_INFINITY), Err(Infinite));
+        assert_eq!(w.checked_update(1e121), Err(OutOfRange));
+        assert_eq!(w.checked_update(-1e121), Err(OutOfRange));
+
+        assert_eq!((w.count(), w.mean(), w.variance()), before);
+        assert_eq!(before, (2, Some(2.0), Some(2.0)));
+    }
+
+    #[test]
+    fn checked_update_accepts_the_limit_without_overflow() {
+        // The widest swings the limit allows, for long enough that an
+        // overflow would have shown.
+        let mut w = Welford::new();
+        for i in 0..100_000 {
+            let sample = if i % 2 == 0 {
+                crate::INPUT_LIMIT
+            } else {
+                -crate::INPUT_LIMIT
+            };
+            w.checked_update(sample).unwrap();
+        }
+        assert!(w.mean().unwrap().is_finite());
+        assert!(w.m2().is_finite());
+        assert!(w.variance().unwrap().is_finite());
+        assert!(w.std_dev().unwrap().is_finite());
+    }
+
+    #[test]
+    fn checked_update_gives_the_same_result_as_update() {
+        let mut checked = Welford::new();
+        let mut unchecked = Welford::new();
+        for x in [2.0, -7.5, 1e9, 0.0, 3.25] {
+            checked.checked_update(x).unwrap();
+            unchecked.update(x);
+        }
+        assert_eq!(checked.count(), unchecked.count());
+        assert_eq!(checked.mean(), unchecked.mean());
+        assert_eq!(checked.variance(), unchecked.variance());
+    }
+
+    #[test]
+    fn update_does_not_validate_and_reset_starts_over() {
+        // Past the limit the squares overflow, as IEEE 754 arithmetic does.
+        let mut w = Welford::new();
+        w.update(1e200);
+        w.update(-1e200);
+        assert_eq!(w.variance(), Some(f64::INFINITY));
+
+        w.reset();
         assert_eq!(w.count(), 0);
+        w.update(1.0);
+        w.update(3.0);
+        assert_eq!((w.mean(), w.variance()), (Some(2.0), Some(2.0)));
     }
 }
 
@@ -415,7 +515,7 @@ mod proptests {
         ) {
             let mut w = Welford::new();
             for &s in &samples {
-                w.update(s).unwrap();
+                w.update(s);
             }
 
             prop_assert_eq!(w.count(), samples.len() as u64);
@@ -457,16 +557,16 @@ mod proptests {
         ) {
             let mut whole = Welford::new();
             for &s in &samples {
-                whole.update(s).unwrap();
+                whole.update(s);
             }
 
             let mut left = Welford::new();
             for &s in &samples[..split] {
-                left.update(s).unwrap();
+                left.update(s);
             }
             let mut right = Welford::new();
             for &s in &samples[split..] {
-                right.update(s).unwrap();
+                right.update(s);
             }
             left.merge(&right);
 

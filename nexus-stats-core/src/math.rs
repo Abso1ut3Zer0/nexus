@@ -15,6 +15,37 @@ macro_rules! check_finite {
     };
 }
 
+/// Returns `Ok` if `value` is a number no larger in magnitude than `limit`.
+///
+/// # Errors
+///
+/// - [`DataError::NotANumber`](crate::DataError::NotANumber) if `value` is
+///   NaN.
+/// - [`DataError::Infinite`](crate::DataError::Infinite) if `value` is
+///   infinite.
+/// - [`DataError::OutOfRange`](crate::DataError::OutOfRange) if `value` is
+///   finite and larger in magnitude than `limit`.
+#[inline]
+pub fn check_input(value: f64, limit: f64) -> Result<(), crate::DataError> {
+    // Cold: naming the reason stays off the accepted path.
+    #[cold]
+    fn refusal(value: f64) -> crate::DataError {
+        if value.is_nan() {
+            crate::DataError::NotANumber
+        } else if value.is_infinite() {
+            crate::DataError::Infinite
+        } else {
+            crate::DataError::OutOfRange
+        }
+    }
+
+    // NaN and infinity fail this comparison too, so one test accepts.
+    if value.abs() <= limit {
+        return Ok(());
+    }
+    Err(refusal(value))
+}
+
 /// f32 variant of [`check_finite`].
 #[doc(hidden)]
 #[inline]
@@ -374,6 +405,22 @@ pub fn in_unit_interval(x: f64) -> bool {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn check_input_accepts_up_to_the_limit_and_names_each_refusal() {
+        use crate::DataError::{Infinite, NotANumber, OutOfRange};
+
+        // 5e-324 is the smallest subnormal.
+        for accepted in [0.0, -0.0, 1.5, -1.5, 10.0, -10.0, 5e-324, -5e-324] {
+            assert_eq!(super::check_input(accepted, 10.0), Ok(()), "{accepted}");
+        }
+        assert_eq!(super::check_input(f64::NAN, 10.0), Err(NotANumber));
+        assert_eq!(super::check_input(f64::INFINITY, 10.0), Err(Infinite));
+        assert_eq!(super::check_input(f64::NEG_INFINITY, 10.0), Err(Infinite));
+        assert_eq!(super::check_input(10.000_001, 10.0), Err(OutOfRange));
+        assert_eq!(super::check_input(-10.000_001, 10.0), Err(OutOfRange));
+        assert_eq!(super::check_input(f64::MAX, 10.0), Err(OutOfRange));
+    }
+
     #[cfg(any(feature = "std", feature = "libm"))]
     #[test]
     fn powf_matches_integer_powers() {

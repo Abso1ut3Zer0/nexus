@@ -72,8 +72,9 @@ impl Autocorrelation {
     #[inline]
     pub fn update(&mut self, sample: f64) -> Result<(), nexus_stats_core::DataError> {
         check_finite!(sample);
-        self.stats.update(sample)?;
-        // `update` succeeded, so the mean exists; the fallback is never taken.
+        self.stats.update(sample);
+        // A sample has been fed, so the mean exists; the fallback is never
+        // taken.
         let mean = self.stats.mean().unwrap_or(sample);
 
         // Cross-moment: accumulate (x_new - mean)(x_lagged - mean) once the

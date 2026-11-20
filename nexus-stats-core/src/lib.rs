@@ -10,6 +10,20 @@
 //! Includes: error types, math utilities, core smoothing (EMA, AsymEma, Slew),
 //! statistics (Welford, Moments, EwmaVar, Covariance, HarmonicMean, Percentile),
 //! monitoring, core detection (CUSUM), and core control types.
+//!
+//! # `update` and `checked_update`
+//!
+//! Like `+` and `checked_add` in the standard library:
+//!
+//! - `update` does not validate its input; arithmetic follows IEEE 754.
+//! - `checked_update` returns a [`DataError`] and leaves the state unchanged
+//!   if the input is NaN, infinite, or larger in magnitude than
+//!   [`INPUT_LIMIT`].
+//!
+//! A type fed only through `checked_update` never returns NaN.
+//!
+//! Types are moving to this pair one at a time. Until a type has a
+//! `checked_update`, its `update` validates and returns a `Result`.
 
 #[cfg(feature = "alloc")]
 extern crate alloc;
@@ -28,6 +42,12 @@ pub mod clock;
 pub mod storage;
 
 pub use enums::{Condition, ConfigError, DataError, Direction};
+
+/// The largest magnitude `checked_update` accepts: `1e120`.
+///
+/// Within it, a sum of squared differences cannot overflow for any stream
+/// length: `2^64 * (2e120)^2 < 1e260`.
+pub const INPUT_LIMIT: f64 = 1e120;
 
 /// The numeric types the generic monitors accept. Sealed: named as bounds,
 /// implemented only here.
