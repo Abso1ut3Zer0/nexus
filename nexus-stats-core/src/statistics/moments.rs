@@ -1,9 +1,5 @@
 use crate::math::MulAdd;
-
-// We intentionally avoid mul_add/FMA in the moment formulas — the update
-// order (M4 before M3 before M2) is critical and FMA rewriting could
-// change numerical behavior. Additionally, moments must compile on
-// no_std without libm.
+use crate::statistics::running_mean::step_mean;
 
 /// Online skewness and kurtosis via Pébay's higher-moment extension
 /// of Welford's algorithm (Pébay, 2008).
@@ -31,9 +27,9 @@ use crate::math::MulAdd;
 /// use nexus_stats_core::statistics::Moments;
 ///
 /// let mut m = Moments::new();
-/// for i in 1..=1000u64 { m.update(i as f64).unwrap(); }
+/// for i in 1..=1000u64 { m.update(i as f64); }
 /// // Uniform distribution: skewness ≈ 0, kurtosis ≈ -1.2
-/// let skew = m.skewness().unwrap();
+/// let skew = m.shape().unwrap().skewness;
 /// assert!(skew.abs() < 0.1);
 /// ```
 #[derive(Debug, Clone)]
@@ -44,6 +40,30 @@ pub struct Moments {
     m3: f64,
     m4: f64,
 }
+
+/// The shape of a distribution, from [`Moments::shape`].
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Shape {
+    /// Skewness. Zero for a symmetric distribution, positive when the
+    /// longer tail is on the right.
+    pub skewness: f64,
+    /// Excess kurtosis. Zero for a normal distribution, positive for
+    /// heavier tails.
+    pub excess_kurtosis: f64,
+}
+
+impl Shape {
+    /// Kurtosis: [`excess_kurtosis`](Self::excess_kurtosis) plus 3.
+    #[inline]
+    #[must_use]
+    pub fn kurtosis(&self) -> f64 {
+        self.excess_kurtosis + 3.0
+    }
+}
+
+/// Below this a divisor has lost precision to underflow.
+#[cfg(any(feature = "std", feature = "libm"))]
+const SMALLEST_DIVISOR: f64 = f64::MIN_POSITIVE / f64::EPSILON;
 
 impl Moments {
     /// Creates a new empty accumulator.
@@ -59,33 +79,57 @@ impl Moments {
         }
     }
 
+    /// The largest magnitude [`checked_update`](Self::checked_update)
+    /// accepts: `1e60`.
+    ///
+    /// Within it, a sum of fourth powers of differences cannot overflow for
+    /// any stream length: `2^64 * (2e60)^4 < 1e261`.
+    pub const INPUT_LIMIT: f64 = 1e60;
+
     /// Feeds a sample.
+    ///
+    /// Does not validate `sample`; arithmetic follows IEEE 754. See
+    /// [`checked_update`](Self::checked_update).
+    #[inline]
+    pub fn update(&mut self, sample: f64) {
+        self.count += 1;
+        let n = self.count as f64;
+        let weight = 1.0 / n;
+        let deviation = step_mean(&mut self.mean, sample, weight);
+        // How far the mean moved, and what the sample adds to `m2`.
+        let step = deviation.before * weight;
+        let spread = deviation.before * deviation.after;
+        let step_sq = step * step;
+
+        // Higher moments first: each uses the lower ones from before this
+        // sample. Written with fused multiply-adds, `a.fma(b, c) = a * b + c`:
+        //
+        //   m4 += spread * step² * (n² - 3n + 3) + 6 * step² * m2 - 4 * step * m3
+        //   m3 += spread * step * (n - 2) - 3 * step * m2
+        //   m2 += spread
+        let poly = n.fma(n - 3.0, 3.0);
+        let m4_from_m2 = (spread * step_sq).fma(poly, 6.0 * step_sq * self.m2);
+        self.m4 += (-4.0 * step).fma(self.m3, m4_from_m2);
+        self.m3 += (spread * step).fma(n - 2.0, -3.0 * step * self.m2);
+        self.m2 += spread;
+    }
+
+    /// Checked update. Feeds `sample`, or returns an error and leaves the
+    /// accumulator unchanged if `sample` is NaN, infinite, or larger in
+    /// magnitude than [`Moments::INPUT_LIMIT`].
     ///
     /// # Errors
     ///
-    /// Returns `DataError::NotANumber` if the sample is NaN, or
-    /// `DataError::Infinite` if the sample is infinite.
+    /// - [`DataError::NotANumber`](crate::DataError::NotANumber) if `sample`
+    ///   is NaN.
+    /// - [`DataError::Infinite`](crate::DataError::Infinite) if `sample` is
+    ///   infinite.
+    /// - [`DataError::OutOfRange`](crate::DataError::OutOfRange) if `sample`
+    ///   is finite and larger in magnitude than `Moments::INPUT_LIMIT`.
     #[inline]
-    pub fn update(&mut self, sample: f64) -> Result<(), crate::DataError> {
-        check_finite!(sample);
-        self.count += 1;
-        let n = self.count as f64;
-        let delta = sample - self.mean;
-        let delta_n = delta / n;
-        let delta_n2 = delta_n * delta_n;
-        let term1 = delta * delta_n * (n - 1.0);
-
-        // M4 before M3 before M2 — each uses previous iteration's lower moments
-        // Same association as the textbook update (A + B) - C; the shim fuses
-        // only where the target has FMA.
-        let poly = n.fma(n, -(3.0 * n)) + 3.0;
-        self.m4 += (4.0 * delta_n).fma(
-            -self.m3,
-            (term1 * delta_n2).fma(poly, 6.0 * delta_n2 * self.m2),
-        );
-        self.m3 += (term1 * delta_n).fma(n - 2.0, -(3.0 * delta_n * self.m2));
-        self.m2 += term1;
-        self.mean += delta_n;
+    pub fn checked_update(&mut self, sample: f64) -> Result<(), crate::DataError> {
+        crate::math::check_input(sample, Self::INPUT_LIMIT)?;
+        self.update(sample);
         Ok(())
     }
 
@@ -137,53 +181,51 @@ impl Moments {
         self.variance().map(crate::math::sqrt)
     }
 
-    /// Population skewness (Fisher's definition), or `None` if < 3
-    /// samples or variance is zero.
+    /// Skewness and excess kurtosis (population definitions).
     ///
-    /// Positive = right-skewed (tail extends right).
-    /// Negative = left-skewed (tail extends left).
-    /// Zero = symmetric.
+    /// `None` with fewer than four samples, or when the data is too close
+    /// to constant for its shape to be resolved:
+    ///
+    /// - the variance is at or below `(f64::EPSILON * mean)^2`, the test
+    ///   SciPy's `skew` and `kurtosis` use for "all values are equal" once
+    ///   rounding is allowed for;
+    /// - the squared sum of squares underflows, which that test misses for
+    ///   tiny data centred on zero.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use nexus_stats_core::statistics::Moments;
+    ///
+    /// let mut m = Moments::new();
+    /// for x in [1.0, 2.0, 3.0, 4.0, 5.0] {
+    ///     m.update(x);
+    /// }
+    /// let shape = m.shape().unwrap();
+    /// assert_eq!(shape.skewness, 0.0);
+    /// assert!((shape.excess_kurtosis + 1.3).abs() < 1e-12);
+    /// ```
     #[cfg(any(feature = "std", feature = "libm"))]
     #[inline]
     #[must_use]
-    pub fn skewness(&self) -> Option<f64> {
-        if self.count < 3 {
-            return None;
-        }
-        if self.m2 == 0.0 {
-            return None;
-        }
-        let n = self.count as f64;
-        Some(crate::math::sqrt(n) * self.m3 / (self.m2 * crate::math::sqrt(self.m2)))
-    }
-
-    /// Population excess kurtosis, or `None` if < 4 samples or
-    /// variance is zero.
-    ///
-    /// Normal distribution = 0. Positive = heavy tails (leptokurtic).
-    /// Negative = light tails (platykurtic). This is the most common
-    /// convention (numpy, scipy, most finance).
-    #[inline]
-    #[must_use]
-    pub fn excess_kurtosis(&self) -> Option<f64> {
+    pub fn shape(&self) -> Option<Shape> {
         if self.count < 4 {
             return None;
         }
-        if self.m2 == 0.0 {
+        let n = self.count as f64;
+        let rounding = f64::EPSILON * self.mean;
+        if self.m2 / n <= rounding * rounding {
             return None;
         }
-        let n = self.count as f64;
-        Some(n * self.m4 / (self.m2 * self.m2) - 3.0)
-    }
+        let m2_sq = self.m2 * self.m2;
+        if m2_sq < SMALLEST_DIVISOR {
+            return None;
+        }
 
-    /// Population kurtosis (non-excess), or `None` if < 4 samples or
-    /// variance is zero.
-    ///
-    /// Normal distribution = 3. This is `excess_kurtosis() + 3`.
-    #[inline]
-    #[must_use]
-    pub fn kurtosis(&self) -> Option<f64> {
-        self.excess_kurtosis().map(|k| k + 3.0)
+        Some(Shape {
+            skewness: crate::math::sqrt(n) * self.m3 / (self.m2 * crate::math::sqrt(self.m2)),
+            excess_kurtosis: n * self.m4 / m2_sq - 3.0,
+        })
     }
 
     /// Whether enough data has been collected for all queries (>= 4).
@@ -259,7 +301,7 @@ mod tests {
     fn uniform_1_to_100() {
         let mut m = Moments::new();
         for i in 1..=100u64 {
-            m.update(i as f64).unwrap();
+            m.update(i as f64);
         }
 
         assert_eq!(m.count(), 100);
@@ -278,9 +320,9 @@ mod tests {
     fn uniform_skewness_near_zero() {
         let mut m = Moments::new();
         for i in 1..=10000u64 {
-            m.update(i as f64).unwrap();
+            m.update(i as f64);
         }
-        let skew = m.skewness().unwrap();
+        let skew = m.shape().unwrap().skewness;
         assert!(skew.abs() < 0.01, "skewness = {skew}, expected ≈ 0");
     }
 
@@ -288,9 +330,9 @@ mod tests {
     fn uniform_kurtosis() {
         let mut m = Moments::new();
         for i in 1..=10000u64 {
-            m.update(i as f64).unwrap();
+            m.update(i as f64);
         }
-        let kurt = m.excess_kurtosis().unwrap();
+        let kurt = m.shape().unwrap().excess_kurtosis;
         assert!(
             (kurt - (-1.2)).abs() < 0.01,
             "kurtosis = {kurt}, expected ≈ -1.2"
@@ -303,33 +345,31 @@ mod tests {
         assert_eq!(m.count(), 0);
         assert!(m.mean().is_none());
         assert!(m.variance().is_none());
-        assert!(m.skewness().is_none());
-        assert!(m.excess_kurtosis().is_none());
+        assert!(m.shape().is_none());
         assert!(!m.is_primed());
     }
 
     #[test]
     fn single_sample() {
         let mut m = Moments::new();
-        m.update(42.0).unwrap();
+        m.update(42.0);
         assert_eq!(m.count(), 1);
         assert_eq!(m.mean(), Some(42.0));
         assert!(m.variance().is_none());
-        assert!(m.skewness().is_none());
-        assert!(m.excess_kurtosis().is_none());
+        assert!(m.shape().is_none());
     }
 
     #[test]
     fn priming_thresholds() {
         let mut m = Moments::new();
-        m.update(1.0).unwrap();
+        m.update(1.0);
         assert!(m.mean().is_some());
-        m.update(2.0).unwrap();
+        m.update(2.0);
         assert!(m.variance().is_some());
-        m.update(3.0).unwrap();
-        assert!(m.skewness().is_some());
-        m.update(4.0).unwrap();
-        assert!(m.excess_kurtosis().is_some());
+        m.update(3.0);
+        assert!(m.shape().is_none());
+        m.update(4.0);
+        assert!(m.shape().is_some());
         assert!(m.is_primed());
     }
 
@@ -338,24 +378,23 @@ mod tests {
     fn constant_input() {
         let mut m = Moments::new();
         for _ in 0..100 {
-            m.update(42.0).unwrap();
+            m.update(42.0);
         }
         assert_eq!(m.mean(), Some(42.0));
         assert_eq!(m.variance(), Some(0.0));
-        assert!(m.skewness().is_none());
-        assert!(m.excess_kurtosis().is_none());
+        assert!(m.shape().is_none());
     }
 
     #[test]
     fn right_skewed_distribution() {
         let mut m = Moments::new();
         for _ in 0..900 {
-            m.update(1.0).unwrap();
+            m.update(1.0);
         }
         for _ in 0..100 {
-            m.update(10.0).unwrap();
+            m.update(10.0);
         }
-        let skew = m.skewness().unwrap();
+        let skew = m.shape().unwrap().skewness;
         assert!(skew > 0.0, "right-skewed should be positive, got {skew}");
     }
 
@@ -363,12 +402,12 @@ mod tests {
     fn reset_clears_state() {
         let mut m = Moments::new();
         for i in 0..100 {
-            m.update(i as f64).unwrap();
+            m.update(i as f64);
         }
         m.reset();
         assert_eq!(m.count(), 0);
         assert!(m.mean().is_none());
-        assert!(m.excess_kurtosis().is_none());
+        assert!(m.shape().is_none());
     }
 
     #[test]
@@ -384,7 +423,7 @@ mod tests {
         let mut a = Moments::new();
         let mut b = Moments::new();
         for i in 1..=50u64 {
-            b.update(i as f64).unwrap();
+            b.update(i as f64);
         }
         a.merge(&b);
         assert_eq!(a.count(), 50);
@@ -397,24 +436,26 @@ mod tests {
 
         let mut single = Moments::new();
         for &x in &data {
-            single.update(x).unwrap();
+            single.update(x);
         }
 
         let mut first = Moments::new();
         let mut second = Moments::new();
         for &x in &data[..80] {
-            first.update(x).unwrap();
+            first.update(x);
         }
         for &x in &data[80..] {
-            second.update(x).unwrap();
+            second.update(x);
         }
         first.merge(&second);
 
         assert_eq!(first.count(), single.count());
         assert!((first.mean().unwrap() - single.mean().unwrap()).abs() < 1e-10);
         assert!((first.variance().unwrap() - single.variance().unwrap()).abs() < 1e-6);
-        assert!((first.skewness().unwrap() - single.skewness().unwrap()).abs() < 1e-6);
-        assert!((first.kurtosis().unwrap() - single.kurtosis().unwrap()).abs() < 1e-4);
+        assert!((first.shape().unwrap().skewness - single.shape().unwrap().skewness).abs() < 1e-6);
+        assert!(
+            (first.shape().unwrap().kurtosis() - single.shape().unwrap().kurtosis()).abs() < 1e-4
+        );
     }
 
     #[test]
@@ -424,11 +465,122 @@ mod tests {
     }
 
     #[test]
-    fn rejects_nan_and_inf() {
+    fn checked_update_refuses_bad_input_and_changes_nothing() {
+        use crate::DataError::{Infinite, NotANumber, OutOfRange};
+
+        let readings = |m: &Moments| (m.count(), m.mean(), m.variance(), m.shape());
         let mut m = Moments::new();
-        assert_eq!(m.update(f64::NAN), Err(crate::DataError::NotANumber));
-        assert_eq!(m.update(f64::INFINITY), Err(crate::DataError::Infinite));
-        assert_eq!(m.update(f64::NEG_INFINITY), Err(crate::DataError::Infinite));
-        assert_eq!(m.count(), 0);
+        for x in [1.0, 2.0, 3.0, 10.0] {
+            m.checked_update(x).unwrap();
+        }
+        let before = readings(&m);
+
+        assert_eq!(m.checked_update(f64::NAN), Err(NotANumber));
+        assert_eq!(m.checked_update(f64::INFINITY), Err(Infinite));
+        assert_eq!(m.checked_update(f64::NEG_INFINITY), Err(Infinite));
+        assert_eq!(m.checked_update(1e61), Err(OutOfRange));
+        assert_eq!(m.checked_update(-1e61), Err(OutOfRange));
+
+        assert_eq!(readings(&m), before);
+        assert_eq!(m.count(), 4);
+    }
+
+    #[test]
+    fn checked_update_accepts_the_limit_without_overflow() {
+        let mut m = Moments::new();
+        for i in 0..100_000 {
+            let sign = if i % 2 == 0 { 1.0 } else { -1.0 };
+            m.checked_update(sign * Moments::INPUT_LIMIT).unwrap();
+        }
+        assert!(m.mean().unwrap().is_finite());
+        assert!(m.variance().unwrap().is_finite());
+        assert!(m.shape().unwrap().skewness.is_finite());
+        // Two values, equally often: the flattest distribution there is.
+        assert!((m.shape().unwrap().excess_kurtosis + 2.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn checked_update_gives_the_same_result_as_update() {
+        let mut checked = Moments::new();
+        let mut unchecked = Moments::new();
+        for x in [2.0, -7.5, 1e9, 0.0, 3.25, 11.0] {
+            checked.checked_update(x).unwrap();
+            unchecked.update(x);
+        }
+        assert_eq!(checked.shape(), unchecked.shape());
+    }
+
+    #[test]
+    fn update_does_not_validate() {
+        let mut m = Moments::new();
+        m.update(1e200);
+        m.update(-1e200);
+        assert_eq!(m.variance(), Some(f64::INFINITY));
+    }
+
+    #[test]
+    fn matches_the_moments_computed_in_two_passes() {
+        let xs = [3.0, -1.5, 8.0, 0.25, 4.0, 4.0, -6.0, 12.5, 1.0];
+        let n = xs.len() as f64;
+        let mean = xs.iter().sum::<f64>() / n;
+        let central = |power: i32| xs.iter().map(|x| (x - mean).powi(power)).sum::<f64>() / n;
+        let (m2, m3, m4) = (central(2), central(3), central(4));
+
+        let mut m = Moments::new();
+        for x in xs {
+            m.update(x);
+        }
+        assert!((m.mean().unwrap() - mean).abs() < 1e-12);
+        assert!((m.population_variance().unwrap() - m2).abs() < 1e-12);
+        assert!((m.shape().unwrap().skewness - m3 / m2.powf(1.5)).abs() < 1e-12);
+        assert!((m.shape().unwrap().excess_kurtosis - (m4 / (m2 * m2) - 3.0)).abs() < 1e-12);
+    }
+
+    #[test]
+    fn the_shape_does_not_depend_on_scale_until_it_cannot_be_resolved() {
+        let fed = |scale: f64| {
+            let mut m = Moments::new();
+            for x in [-2.0, -1.0, 0.0, 0.0, 1.0, 5.0] {
+                m.update(x * scale);
+            }
+            m.shape()
+        };
+        let reference = fed(1.0).unwrap();
+        for scale in [1e60, 1e-30, 1e-60] {
+            let shape = fed(scale).unwrap();
+            assert!((shape.skewness - reference.skewness).abs() < 1e-9);
+            assert!((shape.excess_kurtosis - reference.excess_kurtosis).abs() < 1e-9);
+        }
+        // Here the divisors underflow: main returned NaN.
+        for scale in [1e-100, 1e-110, 1e-150] {
+            assert_eq!(fed(scale), None, "scale {scale}");
+        }
+    }
+
+    #[test]
+    fn a_spread_lost_to_rounding_against_the_mean_has_no_shape() {
+        // A spread of 1e-10 on a mean of 1e9 is below what an f64 can
+        // hold there: SciPy's "all values are equal" test.
+        let mut m = Moments::new();
+        for x in [-2.0_f64, -1.0, 0.0, 0.0, 1.0, 5.0] {
+            m.update(x.mul_add(1e-10, 1e9));
+        }
+        assert_eq!(m.shape(), None);
+
+        // The same spread on a mean of 1 is fine.
+        let mut m = Moments::new();
+        for x in [-2.0_f64, -1.0, 0.0, 0.0, 1.0, 5.0] {
+            m.update(x.mul_add(1e-10, 1.0));
+        }
+        assert!(m.shape().is_some());
+    }
+
+    #[test]
+    fn kurtosis_is_excess_plus_three() {
+        let shape = Shape {
+            skewness: 0.0,
+            excess_kurtosis: -1.2,
+        };
+        assert_eq!(shape.kurtosis(), 1.8);
     }
 }

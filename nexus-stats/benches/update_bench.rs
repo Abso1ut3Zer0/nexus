@@ -82,10 +82,10 @@ fn bench_moments(c: &mut Criterion) {
     let mut rng = Lcg::new(42);
     let mut m = Moments::new();
     for _ in 0..1000 {
-        let _ = m.update(rng.next_f64());
+        m.update(rng.next_f64());
     }
     c.bench_function("Moments::update", |b| {
-        b.iter(|| m.update(black_box(rng.next_f64())).unwrap())
+        b.iter(|| m.update(black_box(rng.next_f64())))
     });
 }
 
