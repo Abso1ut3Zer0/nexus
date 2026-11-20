@@ -3,8 +3,16 @@ use crate::statistics::Covariance;
 /// Estimates how fast a series reverts to its mean.
 ///
 /// Fits `x_t = c + phi * x_{t-1}` by least squares over the values fed so
-/// far. A deviation from the mean shrinks by `phi` each step, so it halves
-/// in `-ln 2 / ln phi` steps.
+/// far. A deviation from the mean is multiplied by `phi` each step, so it
+/// halves in `-ln 2 / ln phi` steps.
+///
+/// # Bias
+///
+/// The least-squares estimate of `phi` is biased low, most visibly near 1
+/// (the Dickey-Fuller bias): a random walk usually reads as reverting with
+/// a long half-life. The estimate is left uncorrected, as statsmodels'
+/// `AutoReg` and R's `ar` leave it. Use a unit-root test, not this, to
+/// decide whether a series reverts.
 ///
 /// # Examples
 ///
@@ -40,8 +48,7 @@ pub enum Reversion {
         /// long when it is fast: 39% long at `phi = 0.5`.
         half_life: f64,
     },
-    /// `phi >= 1`: deviations persist or grow, as in a trend or a random
-    /// walk.
+    /// `phi >= 1`: deviations persist or grow, as in a trend.
     NotReverting,
     /// `phi < 0`: each step overshoots the mean.
     Oscillating,
@@ -69,6 +76,18 @@ impl HalfLife {
     ///
     /// Does not validate `value`; arithmetic follows IEEE 754. See
     /// [`checked_update`](Self::checked_update).
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use nexus_stats_core::statistics::HalfLife;
+    ///
+    /// let mut hl = HalfLife::new();
+    /// for x in [8.0, 4.0, 2.0, 1.0] {
+    ///     hl.update(x);
+    /// }
+    /// assert_eq!(hl.coefficient(), Some(0.5));
+    /// ```
     #[inline]
     pub fn update(&mut self, value: f64) {
         self.count += 1;
@@ -90,6 +109,17 @@ impl HalfLife {
     ///   infinite.
     /// - [`DataError::OutOfRange`](crate::DataError::OutOfRange) if `value`
     ///   is finite and larger in magnitude than `INPUT_LIMIT`.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use nexus_stats_core::{DataError, statistics::HalfLife};
+    ///
+    /// let mut hl = HalfLife::new();
+    /// assert_eq!(hl.checked_update(1.0), Ok(()));
+    /// assert_eq!(hl.checked_update(f64::NAN), Err(DataError::NotANumber));
+    /// assert_eq!(hl.count(), 1);
+    /// ```
     #[inline]
     pub fn checked_update(&mut self, value: f64) -> Result<(), crate::DataError> {
         crate::math::check_input(value, crate::INPUT_LIMIT)?;
@@ -100,13 +130,16 @@ impl HalfLife {
     /// The coefficient `phi`: the least-squares slope of `x_t` on
     /// `x_{t-1}`.
     ///
-    /// `None` until three values have been fed, or if the lagged values are
-    /// all equal, which leaves the slope undefined.
+    /// `None` until three values have been fed, or if the lagged values
+    /// are too close to constant for a slope to be resolved: a variance at
+    /// or below `(f64::EPSILON * mean)^2`, the relative test SciPy uses for
+    /// near-constant data. (R's `lm` likewise withholds the coefficient.)
     #[inline]
     #[must_use]
     pub fn coefficient(&self) -> Option<f64> {
         let lagged_variance = self.pairs.variance_y()?;
-        if lagged_variance <= 0.0 {
+        let rounding = f64::EPSILON * self.pairs.mean_y()?;
+        if lagged_variance <= rounding * rounding {
             return None;
         }
 
@@ -205,6 +238,37 @@ mod tests {
         let hl = fed((0..1000).map(|i| if i % 2 == 0 { 10.0 } else { -10.0 }));
         assert!((hl.coefficient().unwrap() + 1.0).abs() < 1e-12);
         assert_eq!(hl.reversion(), Some(Reversion::Oscillating));
+    }
+
+    #[test]
+    fn a_coefficient_of_zero_reverts_at_once() {
+        let hl = fed([1.0, 2.0, 3.0, 2.0]);
+        assert_eq!(hl.coefficient(), Some(0.0));
+        assert_eq!(
+            hl.reversion(),
+            Some(Reversion::Reverting { half_life: 0.0 })
+        );
+    }
+
+    #[test]
+    fn equal_lagged_values_have_no_coefficient() {
+        // The last value differs, but it is never a lagged one.
+        let hl = fed([5.0, 5.0, 5.0, 9.0]);
+        assert_eq!(hl.coefficient(), None);
+    }
+
+    #[test]
+    fn lagged_values_that_differ_only_by_rounding_have_no_coefficient() {
+        let step = f64::EPSILON;
+        assert_eq!(fed([1.0, 1.0 + step, 1.0, 1e120]).coefficient(), None);
+        assert_eq!(
+            fed([1e6, 1e6_f64.mul_add(step, 1e6), 1e6, 1e6]).coefficient(),
+            None
+        );
+
+        // A small but real spread is resolved.
+        let hl = fed([1.0, 1.0 + 1e-6, 1.0 + 2e-6, 1.0 + 3e-6]);
+        assert!((hl.coefficient().unwrap() - 1.0).abs() < 1e-6);
     }
 
     #[test]

@@ -415,7 +415,21 @@ Moved so far: `Welford`, `HarmonicMean` (its `checked_update` also
 refuses a sample below `1 / INPUT_LIMIT`, which covers zero and negatives),
 `Covariance`, `Moments` (its limit is `Moments::INPUT_LIMIT`, `1e60`),
 `Lpm` (its `checked_update` refuses the sample that would overflow the
-sum, with no fixed input limit).
+sum, with no fixed input limit), `HalfLife`.
+
+`HalfLife::autocorrelation()` is now `coefficient()`, and `half_life()` is
+replaced by `reversion()`, which says why there is no half-life when there
+is none:
+
+```rust
+// before
+if let Some(h) = hl.half_life() { /* ... */ }
+// after
+if let Some(Reversion::Reverting { half_life }) = hl.reversion() { /* ... */ }
+```
+
+The numbers change on short or decaying series: the coefficient divided by
+the wrong variance (see the changelog).
 
 `Moments::skewness()`, `excess_kurtosis()` and `kurtosis()` are replaced
 by `shape()`, which returns both in a `Shape`:
