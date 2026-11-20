@@ -1,4 +1,5 @@
 use crate::math::MulAdd;
+use crate::statistics::running_mean::step_mean;
 
 /// Welford — Online mean, variance, and standard deviation.
 ///
@@ -80,10 +81,8 @@ impl Welford {
         // The weight of the new sample. It depends only on the count, so the
         // division does not have to wait for the previous update's mean.
         let weight = 1.0 / self.count as f64;
-        let delta = sample - self.mean;
-        self.mean += delta * weight;
-        let delta2 = sample - self.mean;
-        self.m2 += delta * delta2;
+        let deviation = step_mean(&mut self.mean, sample, weight);
+        self.m2 += deviation.before * deviation.after;
     }
 
     /// Checked update. Feeds `sample`, or returns an error and leaves the

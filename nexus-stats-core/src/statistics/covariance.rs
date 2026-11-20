@@ -1,4 +1,5 @@
 use crate::math::MulAdd;
+use crate::statistics::running_mean::step_mean;
 
 /// Online covariance and Pearson correlation between two signals.
 ///
@@ -36,36 +37,37 @@ impl Covariance {
 
     /// Feeds a paired sample.
     ///
+    /// Does not validate `x` or `y`; arithmetic follows IEEE 754. See
+    /// [`checked_update`](Self::checked_update).
+    #[inline]
+    pub fn update(&mut self, x: f64, y: f64) {
+        self.count += 1;
+        let weight = 1.0 / self.count as f64;
+        let dx = step_mean(&mut self.mean_x, x, weight);
+        let dy = step_mean(&mut self.mean_y, y, weight);
+
+        self.m2_x += dx.before * dx.after;
+        self.m2_y += dy.before * dy.after;
+        self.co_moment += dx.before * dy.after;
+    }
+
+    /// Checked update. Feeds the pair, or returns an error and leaves the
+    /// accumulator unchanged if `x` or `y` is NaN, infinite, or larger in
+    /// magnitude than [`INPUT_LIMIT`](crate::INPUT_LIMIT).
+    ///
     /// # Errors
     ///
-    /// Returns `DataError::NotANumber` if either input is NaN, or
-    /// `DataError::Infinite` if either input is infinite.
+    /// - [`DataError::NotANumber`](crate::DataError::NotANumber) if either
+    ///   is NaN.
+    /// - [`DataError::Infinite`](crate::DataError::Infinite) if either is
+    ///   infinite.
+    /// - [`DataError::OutOfRange`](crate::DataError::OutOfRange) if either
+    ///   is finite and larger in magnitude than `INPUT_LIMIT`.
     #[inline]
-    pub fn update(&mut self, x: f64, y: f64) -> Result<(), crate::DataError> {
-        check_finite!(x);
-        check_finite!(y);
-        self.count += 1;
-        // One reciprocal and two multiplies, not two divisions: measured 2
-        // ticks faster here and 5 faster in `HalfLife`, which runs this per
-        // sample. (A consumer that chains more arithmetic onto the new means
-        // pays for the multiply instead; `CrossCorrelation` keeps its own
-        // lag-0 accumulators for that reason.)
-        let inv_n = 1.0 / self.count as f64;
-
-        let dx = x - self.mean_x;
-        let dy = y - self.mean_y;
-
-        self.mean_x += dx * inv_n;
-        self.mean_y += dy * inv_n;
-
-        // Use the NEW mean_x but OLD mean_y for the co-moment update
-        let dx2 = x - self.mean_x;
-        self.co_moment += dx * (y - self.mean_y);
-
-        // Welford M2 updates
-        self.m2_x += dx * dx2;
-        let dy2 = y - self.mean_y;
-        self.m2_y += dy * dy2;
+    pub fn checked_update(&mut self, x: f64, y: f64) -> Result<(), crate::DataError> {
+        crate::math::check_input(x, crate::INPUT_LIMIT)?;
+        crate::math::check_input(y, crate::INPUT_LIMIT)?;
+        self.update(x, y);
         Ok(())
     }
 
@@ -81,10 +83,10 @@ impl Covariance {
     #[must_use]
     pub fn mean_x(&self) -> Option<f64> {
         if self.count == 0 {
-            None
-        } else {
-            Some(self.mean_x)
+            return None;
         }
+
+        Some(self.mean_x)
     }
 
     /// Mean of Y, or `None` if empty.
@@ -92,10 +94,10 @@ impl Covariance {
     #[must_use]
     pub fn mean_y(&self) -> Option<f64> {
         if self.count == 0 {
-            None
-        } else {
-            Some(self.mean_y)
+            return None;
         }
+
+        Some(self.mean_y)
     }
 
     /// Sample variance of X (N-1 denominator), or `None` if < 2 samples.
@@ -103,10 +105,10 @@ impl Covariance {
     #[must_use]
     pub fn variance_x(&self) -> Option<f64> {
         if self.count < 2 {
-            None
-        } else {
-            Some(self.m2_x / (self.count - 1) as f64)
+            return None;
         }
+
+        Some(self.m2_x / (self.count - 1) as f64)
     }
 
     /// Sample variance of Y (N-1 denominator), or `None` if < 2 samples.
@@ -114,10 +116,10 @@ impl Covariance {
     #[must_use]
     pub fn variance_y(&self) -> Option<f64> {
         if self.count < 2 {
-            None
-        } else {
-            Some(self.m2_y / (self.count - 1) as f64)
+            return None;
         }
+
+        Some(self.m2_y / (self.count - 1) as f64)
     }
 
     /// Sample covariance (N-1 denominator), or `None` if < 2 samples.
@@ -125,10 +127,10 @@ impl Covariance {
     #[must_use]
     pub fn covariance(&self) -> Option<f64> {
         if self.count < 2 {
-            None
-        } else {
-            Some(self.co_moment / (self.count - 1) as f64)
+            return None;
         }
+
+        Some(self.co_moment / (self.count - 1) as f64)
     }
 
     /// Pearson correlation coefficient, or `None` if < 2 samples.
@@ -142,12 +144,15 @@ impl Covariance {
         if self.count < 2 {
             return None;
         }
-        let var_product = self.m2_x * self.m2_y;
-        if var_product <= 0.0 {
+        if self.m2_x <= 0.0 || self.m2_y <= 0.0 {
             return None;
         }
-        let r = self.co_moment / crate::math::sqrt(var_product);
-        Some(r)
+
+        // Two roots: the product of the two sums can overflow or underflow
+        // where neither sum does.
+        let scale = crate::math::sqrt(self.m2_x) * crate::math::sqrt(self.m2_y);
+        // Rounding can leave the quotient just outside [-1, 1].
+        Some((self.co_moment / scale).clamp(-1.0, 1.0))
     }
 
     /// Merges another accumulator into this one (Chan's algorithm).
@@ -214,7 +219,7 @@ mod tests {
     fn perfect_positive_correlation() {
         let mut c = Covariance::new();
         for i in 0..100 {
-            c.update(i as f64, i as f64 * 2.0).unwrap();
+            c.update(i as f64, i as f64 * 2.0);
         }
         let r = c.correlation().unwrap();
         assert!(
@@ -227,7 +232,7 @@ mod tests {
     fn perfect_negative_correlation() {
         let mut c = Covariance::new();
         for i in 0..100 {
-            c.update(i as f64, -(i as f64)).unwrap();
+            c.update(i as f64, -(i as f64));
         }
         let r = c.correlation().unwrap();
         assert!(
@@ -240,9 +245,9 @@ mod tests {
     fn known_covariance() {
         let mut c = Covariance::new();
         // Simple dataset: (1,2), (2,4), (3,6)
-        c.update(1.0, 2.0).unwrap();
-        c.update(2.0, 4.0).unwrap();
-        c.update(3.0, 6.0).unwrap();
+        c.update(1.0, 2.0);
+        c.update(2.0, 4.0);
+        c.update(3.0, 6.0);
 
         let cov = c.covariance().unwrap();
         // Cov(X, 2X) = 2 * Var(X). Var([1,2,3]) = 1.0. So cov = 2.0.
@@ -259,16 +264,16 @@ mod tests {
 
         let mut single = Covariance::new();
         for i in 0..8 {
-            single.update(data_x[i], data_y[i]).unwrap();
+            single.update(data_x[i], data_y[i]);
         }
 
         let mut a = Covariance::new();
         let mut b = Covariance::new();
         for i in 0..4 {
-            a.update(data_x[i], data_y[i]).unwrap();
+            a.update(data_x[i], data_y[i]);
         }
         for i in 4..8 {
-            b.update(data_x[i], data_y[i]).unwrap();
+            b.update(data_x[i], data_y[i]);
         }
         a.merge(&b);
 
@@ -280,8 +285,8 @@ mod tests {
     #[test]
     fn reset_clears() {
         let mut c = Covariance::new();
-        c.update(1.0, 2.0).unwrap();
-        c.update(3.0, 4.0).unwrap();
+        c.update(1.0, 2.0);
+        c.update(3.0, 4.0);
         c.reset();
         assert_eq!(c.count(), 0);
     }
@@ -295,28 +300,99 @@ mod tests {
     #[test]
     fn zero_variance_returns_none_correlation() {
         let mut c = Covariance::new();
-        c.update(5.0, 1.0).unwrap();
-        c.update(5.0, 2.0).unwrap(); // X has zero variance
+        c.update(5.0, 1.0);
+        c.update(5.0, 2.0); // X has zero variance
         assert!(c.correlation().is_none());
     }
 
     #[test]
-    fn rejects_nan_and_inf() {
+    fn checked_update_refuses_bad_input_in_either_place_and_changes_nothing() {
+        use crate::DataError::{Infinite, NotANumber, OutOfRange};
+
         let mut c = Covariance::new();
-        // NaN in x
-        assert_eq!(c.update(f64::NAN, 1.0), Err(crate::DataError::NotANumber));
-        // NaN in y
-        assert_eq!(c.update(1.0, f64::NAN), Err(crate::DataError::NotANumber));
-        // Inf in x
-        assert_eq!(
-            c.update(f64::INFINITY, 1.0),
-            Err(crate::DataError::Infinite)
-        );
-        // Neg inf in y
-        assert_eq!(
-            c.update(1.0, f64::NEG_INFINITY),
-            Err(crate::DataError::Infinite)
-        );
-        assert_eq!(c.count(), 0);
+        c.checked_update(1.0, 2.0).unwrap();
+        c.checked_update(3.0, 6.0).unwrap();
+        let before = (c.count(), c.mean_x(), c.mean_y(), c.covariance());
+
+        assert_eq!(c.checked_update(f64::NAN, 1.0), Err(NotANumber));
+        assert_eq!(c.checked_update(1.0, f64::NAN), Err(NotANumber));
+        assert_eq!(c.checked_update(f64::INFINITY, 1.0), Err(Infinite));
+        assert_eq!(c.checked_update(1.0, f64::NEG_INFINITY), Err(Infinite));
+        assert_eq!(c.checked_update(1e121, 1.0), Err(OutOfRange));
+        assert_eq!(c.checked_update(1.0, -1e121), Err(OutOfRange));
+
+        assert_eq!((c.count(), c.mean_x(), c.mean_y(), c.covariance()), before);
+        assert_eq!(before, (2, Some(2.0), Some(4.0), Some(4.0)));
+    }
+
+    #[test]
+    fn checked_update_accepts_the_limit_without_overflow() {
+        let limit = crate::INPUT_LIMIT;
+        let mut c = Covariance::new();
+        for i in 0..100_000 {
+            let sign = if i % 2 == 0 { 1.0 } else { -1.0 };
+            c.checked_update(sign * limit, -sign * limit).unwrap();
+        }
+        assert!(c.variance_x().unwrap().is_finite());
+        assert!(c.variance_y().unwrap().is_finite());
+        assert!(c.covariance().unwrap().is_finite());
+        assert!((c.correlation().unwrap() + 1.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn checked_update_gives_the_same_result_as_update() {
+        let mut checked = Covariance::new();
+        let mut unchecked = Covariance::new();
+        for (x, y) in [(2.0, 1.0), (-7.5, 3.0), (1e9, -4.0), (0.0, 0.5)] {
+            checked.checked_update(x, y).unwrap();
+            unchecked.update(x, y);
+        }
+        assert_eq!(checked.covariance(), unchecked.covariance());
+        assert_eq!(checked.correlation(), unchecked.correlation());
+    }
+
+    #[test]
+    fn update_does_not_validate() {
+        let mut c = Covariance::new();
+        c.update(1e200, 1.0);
+        c.update(-1e200, 2.0);
+        assert_eq!(c.variance_x(), Some(f64::INFINITY));
+    }
+
+    #[test]
+    fn correlation_holds_where_the_product_of_the_sums_would_not() {
+        // Sums of squares near 1e240 and 1e-240: their product overflows
+        // in the first case and underflows in the second.
+        for scale in [1e120, 1e-120] {
+            let mut c = Covariance::new();
+            for i in 0..10 {
+                let x = f64::from(i) * scale;
+                c.update(x, 2.0 * x);
+            }
+            let r = c.correlation().unwrap();
+            assert!((r - 1.0).abs() < 1e-12, "scale {scale}: r = {r}");
+        }
+    }
+
+    #[test]
+    fn correlation_never_leaves_minus_one_to_one() {
+        let mut state = 7u64;
+        let mut noise = || {
+            state = state
+                .wrapping_mul(6_364_136_223_846_793_005)
+                .wrapping_add(1_442_695_040_888_963_407);
+            (state >> 11) as f64 / (1u64 << 53) as f64
+        };
+        for _ in 0..2_000 {
+            let mut c = Covariance::new();
+            let slope = noise() - 0.5;
+            for _ in 0..5 {
+                let x = noise();
+                c.update(x, slope * x);
+            }
+            if let Some(r) = c.correlation() {
+                assert!((-1.0..=1.0).contains(&r), "r = {r}");
+            }
+        }
     }
 }
