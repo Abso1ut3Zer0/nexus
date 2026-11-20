@@ -15,26 +15,43 @@ macro_rules! check_finite {
     };
 }
 
-/// Returns from the enclosing function with a `DataError` unless
-/// `|val| <= limit`: `NotANumber` for NaN, `Infinite` for infinity,
-/// `OutOfRange` for a finite value beyond the limit.
-#[doc(hidden)]
-#[macro_export]
-macro_rules! check_magnitude {
-    ($val:expr, $limit:expr) => {{
-        let value: f64 = $val;
-        // Written so that NaN fails the test.
-        #[allow(clippy::neg_cmp_op_on_partial_ord)]
-        if !(value.abs() <= $limit) {
-            return Err(if value.is_nan() {
-                $crate::DataError::NotANumber
-            } else if value.is_infinite() {
-                $crate::DataError::Infinite
-            } else {
-                $crate::DataError::OutOfRange
-            });
+/// Checks one input to a `checked_update`: `Ok` if `value` is a number no
+/// larger in magnitude than `limit`.
+///
+/// # Errors
+///
+/// - `DataError::NotANumber` if `value` is NaN.
+/// - `DataError::Infinite` if `value` is infinite.
+/// - `DataError::OutOfRange` if `value` is finite and above `limit` in
+///   magnitude.
+#[inline]
+pub fn check_input(value: f64, limit: f64) -> Result<(), crate::DataError> {
+    // Why it is written this way and not as three tests in a row (NaN?
+    // infinite? too large?): nearly every call accepts, and a single
+    // `|value| <= limit` already decides that, because a NaN or an infinity
+    // fails it as well. Working out which of the three it was is only
+    // needed after a refusal, so it lives in `refusal` below, marked
+    // `#[cold]` to keep it out of the caller's inlined code. Inside a
+    // `checked_update` this compiles to one compare and one branch before
+    // the arithmetic, against three of each for the tests in a row.
+
+    /// Why `value` was refused.
+    #[cold]
+    fn refusal(value: f64) -> crate::DataError {
+        if value.is_nan() {
+            crate::DataError::NotANumber
+        } else if value.is_infinite() {
+            crate::DataError::Infinite
+        } else {
+            crate::DataError::OutOfRange
         }
-    }};
+    }
+
+    // One comparison accepts: a NaN or an infinity fails it too.
+    if value.abs() <= limit {
+        return Ok(());
+    }
+    Err(refusal(value))
 }
 
 /// f32 variant of [`check_finite`].
@@ -396,6 +413,21 @@ pub fn in_unit_interval(x: f64) -> bool {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn check_input_accepts_up_to_the_limit_and_names_each_refusal() {
+        use crate::DataError::{Infinite, NotANumber, OutOfRange};
+
+        for accepted in [0.0, -0.0, 1.5, -1.5, 10.0, -10.0, f64::MIN_POSITIVE] {
+            assert_eq!(super::check_input(accepted, 10.0), Ok(()), "{accepted}");
+        }
+        assert_eq!(super::check_input(f64::NAN, 10.0), Err(NotANumber));
+        assert_eq!(super::check_input(f64::INFINITY, 10.0), Err(Infinite));
+        assert_eq!(super::check_input(f64::NEG_INFINITY, 10.0), Err(Infinite));
+        assert_eq!(super::check_input(10.000_001, 10.0), Err(OutOfRange));
+        assert_eq!(super::check_input(-10.000_001, 10.0), Err(OutOfRange));
+        assert_eq!(super::check_input(f64::MAX, 10.0), Err(OutOfRange));
+    }
+
     #[cfg(any(feature = "std", feature = "libm"))]
     #[test]
     fn powf_matches_integer_powers() {

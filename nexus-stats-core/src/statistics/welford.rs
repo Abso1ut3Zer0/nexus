@@ -83,7 +83,7 @@ impl Welford {
     ///   `INPUT_LIMIT` in magnitude.
     #[inline]
     pub fn checked_update(&mut self, sample: f64) -> Result<(), crate::DataError> {
-        check_magnitude!(sample, crate::INPUT_LIMIT);
+        crate::math::check_input(sample, crate::INPUT_LIMIT)?;
         self.update(sample);
         Ok(())
     }
