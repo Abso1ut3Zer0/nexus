@@ -102,7 +102,7 @@ use nexus_stats_core::statistics::Covariance;
 
 let mut c = Covariance::new();
 for (bid_change, ask_change) in book_updates {
-    c.update(bid_change, ask_change).unwrap();
+    c.update(bid_change, ask_change);
 }
 
 let cov  = c.covariance().unwrap();

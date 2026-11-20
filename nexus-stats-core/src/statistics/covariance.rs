@@ -39,6 +39,18 @@ impl Covariance {
     ///
     /// Does not validate `x` or `y`; arithmetic follows IEEE 754. See
     /// [`checked_update`](Self::checked_update).
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use nexus_stats_core::statistics::Covariance;
+    ///
+    /// let mut c = Covariance::new();
+    /// for x in [1.0, 2.0, 3.0] {
+    ///     c.update(x, 2.0 * x);
+    /// }
+    /// assert_eq!(c.covariance(), Some(2.0));
+    /// ```
     #[inline]
     pub fn update(&mut self, x: f64, y: f64) {
         self.count += 1;
@@ -57,12 +69,26 @@ impl Covariance {
     ///
     /// # Errors
     ///
+    /// `x` is checked first, so its error is the one returned if both are
+    /// refused.
+    ///
     /// - [`DataError::NotANumber`](crate::DataError::NotANumber) if either
     ///   is NaN.
     /// - [`DataError::Infinite`](crate::DataError::Infinite) if either is
     ///   infinite.
     /// - [`DataError::OutOfRange`](crate::DataError::OutOfRange) if either
     ///   is finite and larger in magnitude than `INPUT_LIMIT`.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use nexus_stats_core::{DataError, statistics::Covariance};
+    ///
+    /// let mut c = Covariance::new();
+    /// assert_eq!(c.checked_update(1.0, 2.0), Ok(()));
+    /// assert_eq!(c.checked_update(1.0, f64::NAN), Err(DataError::NotANumber));
+    /// assert_eq!(c.count(), 1);
+    /// ```
     #[inline]
     pub fn checked_update(&mut self, x: f64, y: f64) -> Result<(), crate::DataError> {
         crate::math::check_input(x, crate::INPUT_LIMIT)?;
@@ -133,10 +159,10 @@ impl Covariance {
         Some(self.co_moment / (self.count - 1) as f64)
     }
 
-    /// Pearson correlation coefficient, or `None` if < 2 samples.
+    /// Pearson correlation coefficient, in `[-1, 1]`.
     ///
-    /// Returns a value in [-1, 1]. Returns `None` if either variable
-    /// has zero variance (undefined correlation).
+    /// `None` with fewer than two samples, or if either variable has zero
+    /// variance, which leaves the correlation undefined.
     #[cfg(any(feature = "std", feature = "libm"))]
     #[inline]
     #[must_use]
@@ -312,7 +338,17 @@ mod tests {
         let mut c = Covariance::new();
         c.checked_update(1.0, 2.0).unwrap();
         c.checked_update(3.0, 6.0).unwrap();
-        let before = (c.count(), c.mean_x(), c.mean_y(), c.covariance());
+        let readings = |c: &Covariance| {
+            (
+                c.count(),
+                c.mean_x(),
+                c.mean_y(),
+                c.variance_x(),
+                c.variance_y(),
+                c.covariance(),
+            )
+        };
+        let before = readings(&c);
 
         assert_eq!(c.checked_update(f64::NAN, 1.0), Err(NotANumber));
         assert_eq!(c.checked_update(1.0, f64::NAN), Err(NotANumber));
@@ -321,8 +357,11 @@ mod tests {
         assert_eq!(c.checked_update(1e121, 1.0), Err(OutOfRange));
         assert_eq!(c.checked_update(1.0, -1e121), Err(OutOfRange));
 
-        assert_eq!((c.count(), c.mean_x(), c.mean_y(), c.covariance()), before);
-        assert_eq!(before, (2, Some(2.0), Some(4.0), Some(4.0)));
+        assert_eq!(readings(&c), before);
+        assert_eq!(
+            before,
+            (2, Some(2.0), Some(4.0), Some(2.0), Some(8.0), Some(4.0))
+        );
     }
 
     #[test]

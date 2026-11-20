@@ -10,8 +10,8 @@ pub(crate) struct Deviation {
     pub(crate) after: f64,
 }
 
-/// Moves `mean` towards `sample` by `weight`, which is `1 / count` for a
-/// plain running mean.
+/// Moves `mean` the fraction `weight` of the way to `sample`. For a plain
+/// running mean `weight` is `1 / count`.
 #[inline]
 pub(crate) fn step_mean(mean: &mut f64, sample: f64, weight: f64) -> Deviation {
     let before = sample - *mean;

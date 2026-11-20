@@ -182,6 +182,8 @@ contained.
   a time; the crate docs state the rule.
 - **`HarmonicMean::update` no longer validates or returns a `Result`**,
   the same change as `Welford`. `checked_update` is the validating form.
+- **`Covariance::update` no longer validates or returns a `Result`**, the
+  same change again. `checked_update(x, y)` validates both values.
 
 ### Removed
 
@@ -257,11 +259,19 @@ contained.
 - `HarmonicMean::checked_update`: refuses a NaN, an infinity, or a sample
   outside `[1 / INPUT_LIMIT, INPUT_LIMIT]` (which includes zero and
   negatives), and leaves the accumulator unchanged.
+- `Covariance::checked_update`: refuses the pair, and leaves the
+  accumulator unchanged, if either value is NaN, infinite, or larger in
+  magnitude than `INPUT_LIMIT`.
 - `math::alpha_from_halflife`, `math::dot`, `math::axpy`,
   `math::upper_tail_z`.
 
 ### Fixed
 
+- **`Covariance::correlation` no longer overflows or underflows, and stays
+  within `[-1, 1]`.** It multiplied the two sums of squares before taking
+  the root, so inputs near `1e120` read as a correlation of 0 and inputs
+  near `1e-120` as `None`, and rounding could leave a result just outside
+  the range. It now takes the two roots separately and clamps.
 - **`QuantileNorm` rejects a `min_samples` below `resolution + 2`** instead
   of silently raising it.
 - **`ZScoreNorm` reports a bad `halflife` or `span` under its own name**, as

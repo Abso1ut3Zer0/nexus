@@ -412,7 +412,11 @@ you already trust, drop the `?` or `.unwrap()`. Where it comes from
 outside, rename the call to `checked_update` and keep the error handling.
 
 Moved so far: `Welford`, `HarmonicMean` (its `checked_update` also
-refuses a sample below `1 / INPUT_LIMIT`, which covers zero and negatives).
+refuses a sample below `1 / INPUT_LIMIT`, which covers zero and negatives),
+`Covariance`.
+
+`Covariance::correlation` is now always within `[-1, 1]` and no longer
+reads 0 or `None` for very large or very small inputs.
 
 ## 5. Checklist
 
