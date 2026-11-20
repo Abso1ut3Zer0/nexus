@@ -275,10 +275,11 @@ contained.
 ### Fixed
 
 - **`Moments` no longer returns NaN for skewness or kurtosis.** On data
-  with a spread under about `1e-100` the divisors underflowed. `shape()`
-  returns `None` there, and also when the variance is at or below
-  `(f64::EPSILON * mean)^2`, the test SciPy's `skew` and `kurtosis` use
-  for data too close to constant.
+  with a spread under about `1e-73` the divisors underflowed or lost
+  their digits. `shape()` returns `None` there, and also when the variance
+  is at or below `(f64::EPSILON * mean)^2`, the test SciPy's `skew` and
+  `kurtosis` use for data too close to constant. A term of the update that
+  underflowed for tiny values on very long streams is regrouped.
 - **`Covariance::correlation` no longer overflows or underflows, and stays
   within `[-1, 1]`.** It multiplied the two sums of squares before taking
   the root, so inputs near `1e120` read as a correlation of 0 and inputs

@@ -104,11 +104,13 @@ impl Moments {
         // Higher moments first: each uses the lower ones from before this
         // sample. Written with fused multiply-adds, `a.fma(b, c) = a * b + c`:
         //
-        //   m4 += spread * step² * (n² - 3n + 3) + 6 * step² * m2 - 4 * step * m3
+        //   m4 += spread * (step² * (n² - 3n + 3)) + 6 * step² * m2 - 4 * step * m3
         //   m3 += spread * step * (n - 2) - 3 * step * m2
         //   m2 += spread
         let poly = n.fma(n - 3.0, 3.0);
-        let m4_from_m2 = (spread * step_sq).fma(poly, 6.0 * step_sq * self.m2);
+        // `step_sq * poly` first: `spread * step_sq` underflows for tiny
+        // values on a long stream.
+        let m4_from_m2 = spread.fma(step_sq * poly, 6.0 * step_sq * self.m2);
         self.m4 += (-4.0 * step).fma(self.m3, m4_from_m2);
         self.m3 += (spread * step).fma(n - 2.0, -3.0 * step * self.m2);
         self.m2 += spread;
@@ -195,13 +197,14 @@ impl Moments {
     /// Skewness and excess kurtosis (population definitions).
     ///
     /// `None` with fewer than four samples, or when the data is too close
-    /// to constant for its shape to be resolved:
+    /// to constant for a shape to be resolved:
     ///
-    /// - the variance is at or below `(f64::EPSILON * mean)^2`, the test
-    ///   SciPy's `skew` and `kurtosis` use for "all values are equal" once
-    ///   rounding is allowed for;
-    /// - the squared sum of squares underflows, which that test misses for
-    ///   tiny data centred on zero.
+    /// - the variance is at or below `(f64::EPSILON * mean)^2`. This is the
+    ///   test SciPy's `skew` and `kurtosis` use for "all values are equal"
+    ///   once rounding is allowed for. Just above it a one-pass estimate
+    ///   keeps only a few digits;
+    /// - the squared variance underflows, which that test misses for tiny
+    ///   data centred on zero.
     ///
     /// # Examples
     ///
@@ -224,18 +227,19 @@ impl Moments {
             return None;
         }
         let n = self.count as f64;
+        let variance = self.m2 / n;
         let rounding = f64::EPSILON * self.mean;
-        if self.m2 / n <= rounding * rounding {
+        if variance <= rounding * rounding {
             return None;
         }
-        let m2_sq = self.m2 * self.m2;
-        if m2_sq < SMALLEST_DIVISOR {
+        let variance_sq = variance * variance;
+        if variance_sq < SMALLEST_DIVISOR {
             return None;
         }
 
         Some(Shape {
-            skewness: crate::math::sqrt(n) * self.m3 / (self.m2 * crate::math::sqrt(self.m2)),
-            excess_kurtosis: n * self.m4 / m2_sq - 3.0,
+            skewness: (self.m3 / n) / (variance * crate::math::sqrt(variance)),
+            excess_kurtosis: (self.m4 / n) / variance_sq - 3.0,
         })
     }
 
@@ -570,20 +574,43 @@ mod tests {
 
     #[test]
     fn a_spread_lost_to_rounding_against_the_mean_has_no_shape() {
-        // A spread of 1e-10 on a mean of 1e9 is below what an f64 can
-        // hold there: SciPy's "all values are equal" test.
+        // One rounding step of spread on a mean of 1: SciPy's "all values
+        // are equal". Only that test catches it; the variance is not tiny.
+        let step = f64::EPSILON;
         let mut m = Moments::new();
-        for x in [-2.0_f64, -1.0, 0.0, 0.0, 1.0, 5.0] {
-            m.update(x.mul_add(1e-10, 1e9));
+        for x in [1.0, 1.0 + step, 1.0, 1.0, 1.0 + step, 1.0] {
+            m.update(x);
         }
+        assert!(m.variance().unwrap() > 1e-40);
         assert_eq!(m.shape(), None);
 
-        // The same spread on a mean of 1 is fine.
+        // The same spread on a mean near zero is resolved.
         let mut m = Moments::new();
-        for x in [-2.0_f64, -1.0, 0.0, 0.0, 1.0, 5.0] {
-            m.update(x.mul_add(1e-10, 1.0));
+        for x in [0.0, step, 0.0, 0.0, step, 0.0] {
+            m.update(x);
         }
         assert!(m.shape().is_some());
+    }
+
+    #[test]
+    fn the_fourth_moment_keeps_growing_on_a_long_stream_of_tiny_values() {
+        // The state after 1e17 samples of +-s, with `m4` zeroed so that its
+        // growth can be read directly.
+        let s = 1e-73_f64;
+        let count = 100_000_000_000_000_000_u64;
+        let mut m = Moments {
+            count,
+            mean: 0.0,
+            m2: count as f64 * s * s,
+            m3: 0.0,
+            m4: 0.0,
+        };
+        for i in 0..1000 {
+            m.update(if i % 2 == 0 { s } else { -s });
+        }
+        // Each sample adds s^4.
+        let expected = 1000.0 * s.powi(4);
+        assert!((m.m4 - expected).abs() < 1e-6 * expected, "m4 = {}", m.m4);
     }
 
     #[test]
