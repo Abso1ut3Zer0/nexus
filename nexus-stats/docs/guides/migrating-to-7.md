@@ -425,15 +425,15 @@ limit).
   the definitions do. It differenced raw prices.
 - Realized variance and bipower variation are totals since the last
   `reset()`, not per-step averages. Reset at the start of each period.
-- The readers on the tracker are replaced by a `JumpDecomposition`,
-  returned from `update` and re-read with `last()`:
+- The readers on the tracker are replaced by a `JumpDecomposition`, read
+  with `decomposition()`:
 
 ```rust
 // before
 let rv = bv.realized_variance()?;
 let jump = bv.jump_ratio()?;
 // after
-let reading = bv.last()?;
+let reading = bv.decomposition()?;
 let rv = reading.realized_variance;
 let jump = reading.jump_ratio()?;
 ```
@@ -442,6 +442,32 @@ let jump = reading.jump_ratio()?;
 `reading.debiased_bipower_variation()` scales it by `M / (M - 1)` to be
 comparable with realized variance, and the two jump readings use that.
 `min_samples` must be at least 3, and the type needs `std` or `libm`.
+
+`RollSpread` is also moved (its `checked_update` refuses a zero or negative
+price), and changed:
+
+- It takes the logarithm of each price and works on log changes, so the
+  spread is a proportion of the price (`0.0005` is 5 basis points). For a
+  spread in price units, multiply by the price.
+- The mean change is removed from the autocovariance, and early estimates
+  are no longer low.
+- `spread()` and `autocovariance()` are replaced by `estimate()`:
+
+```rust
+// before
+if let Some(spread) = rs.spread() { /* ... */ }
+// after
+if let Some(estimate) = rs.estimate() {
+    // estimate.spread is 0.0 when estimate.autocovariance >= 0.0
+}
+```
+
+- `hasbrouck_spread()` is removed; no published estimator has its form.
+- `min_samples` must be at least 3.
+
+**Which types return a value from `update`:** only transforms, whose result
+is used for each sample (smoothers, normalizers). A type that summarises
+many samples returns nothing from `update` and is read by a named method.
 
 `HalfLife::autocorrelation()` is now `coefficient()`, and `half_life()` is
 replaced by `reversion()`, which says why there is no half-life when there
