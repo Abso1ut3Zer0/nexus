@@ -173,15 +173,11 @@ impl EwmVar {
         self.count >= self.prime_at
     }
 
-    /// Returns to the as-built state: no samples, and the seed if one was
-    /// configured. Parameters unchanged.
+    /// Returns to no samples, and to the seed if there is one. Parameters
+    /// unchanged.
     pub fn reset(&mut self) {
         self.count = 0;
-        self.start();
-    }
 
-    /// Sets the as-built state: empty, or converged on the seed.
-    fn start(&mut self) {
         let Some(seed) = self.seed else {
             self.mean = 0.0;
             self.squared_deviations = 0.0;
@@ -196,6 +192,38 @@ impl EwmVar {
         self.weight_squares = 1.0 / (self.alpha * (2.0 - self.alpha));
         self.mean = seed.mean;
         self.squared_deviations = seed.variance * (self.weight - self.weight_squares / self.weight);
+    }
+
+    /// Resets to no samples, starting from `mean` and `variance` as a new
+    /// seed.
+    ///
+    /// A reading is available at once (`min_samples` no longer applies), and
+    /// later calls to [`reset`](Self::reset) return to this seed.
+    ///
+    /// # Errors
+    ///
+    /// `Invalid` if `mean` is not finite or `variance` is not finite and
+    /// non-negative. The tracker is left unchanged.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use nexus_stats_core::statistics::EwmVar;
+    ///
+    /// let mut ew = EwmVar::builder().alpha(0.1).build().unwrap();
+    /// ew.update(3.0);
+    /// ew.reset_with_seed(100.0, 25.0).unwrap();
+    /// let reading = ew.value().unwrap();
+    /// assert!((reading.mean - 100.0).abs() < 1e-12);
+    /// assert!((reading.variance - 25.0).abs() < 1e-12);
+    /// ```
+    pub fn reset_with_seed(&mut self, mean: f64, variance: f64) -> Result<(), crate::ConfigError> {
+        let seed = MeanVariance { mean, variance };
+        check_seed(seed)?;
+        self.seed = Some(seed);
+        self.prime_at = 0;
+        self.reset();
+        Ok(())
     }
 }
 
@@ -260,12 +288,8 @@ impl EwmVarBuilder {
                 "min_samples must be >= 2: one sample has no variance",
             ));
         }
-        if let Some(seed) = self.seed
-            && (!seed.mean.is_finite() || !crate::math::nonnegative_finite(seed.variance))
-        {
-            return Err(crate::ConfigError::Invalid(
-                "seed needs a finite mean and a finite non-negative variance",
-            ));
+        if let Some(seed) = self.seed {
+            check_seed(seed)?;
         }
 
         let mut tracker = EwmVar {
@@ -283,9 +307,18 @@ impl EwmVarBuilder {
             },
             seed: self.seed,
         };
-        tracker.start();
+        tracker.reset();
         Ok(tracker)
     }
+}
+
+fn check_seed(seed: MeanVariance) -> Result<(), crate::ConfigError> {
+    if !seed.mean.is_finite() || !crate::math::nonnegative_finite(seed.variance) {
+        return Err(crate::ConfigError::Invalid(
+            "seed needs a finite mean and a finite non-negative variance",
+        ));
+    }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -483,6 +516,37 @@ mod tests {
         for x in [48.0, 61.0, 55.5, 30.0, 58.0] {
             assert_close(seeded.update(x).unwrap(), warm.update(x).unwrap(), "seeded");
         }
+    }
+
+    #[test]
+    fn reset_with_seed_starts_from_the_new_seed() {
+        let seed = MeanVariance {
+            mean: 100.0,
+            variance: 25.0,
+        };
+        let mut ew = EwmVar::builder().alpha(0.1).min_samples(5).build().unwrap();
+        ew.update(3.0);
+        assert_eq!(ew.value(), None);
+
+        ew.reset_with_seed(seed.mean, seed.variance).unwrap();
+        assert_eq!(ew.count(), 0);
+        assert_close(ew.value().unwrap(), seed, "reseeded");
+
+        // A plain reset now returns to the new seed.
+        ew.update(140.0);
+        ew.reset();
+        assert_close(ew.value().unwrap(), seed, "after reset");
+    }
+
+    #[test]
+    fn reset_with_seed_refuses_a_bad_seed_and_changes_nothing() {
+        let mut ew = EwmVar::builder().alpha(0.5).build().unwrap();
+        ew.update(1.0);
+        let before = ew.update(3.0);
+        for (mean, variance) in [(f64::NAN, 1.0), (0.0, -1.0), (0.0, f64::INFINITY)] {
+            assert!(ew.reset_with_seed(mean, variance).is_err());
+        }
+        assert_eq!((ew.count(), ew.value()), (2, before));
     }
 
     #[test]

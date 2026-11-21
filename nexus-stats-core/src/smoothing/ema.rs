@@ -168,6 +168,36 @@ impl Ema {
         self.count = 0;
     }
 
+    /// Resets to no samples, starting from `value` as a new seed.
+    ///
+    /// The value is available at once (`min_samples` no longer applies), and
+    /// later calls to [`reset`](Self::reset) return to this seed.
+    ///
+    /// # Errors
+    ///
+    /// `Invalid` if `value` is not finite. The average is left unchanged.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use nexus_stats_core::smoothing::Ema;
+    ///
+    /// let mut ema = Ema::builder().alpha(0.5).build().unwrap();
+    /// ema.update(10.0);
+    /// ema.reset_with_seed(100.0).unwrap();
+    /// assert_eq!(ema.value(), Some(100.0));
+    /// assert_eq!(ema.update(200.0), Some(150.0));
+    /// ```
+    pub fn reset_with_seed(&mut self, value: f64) -> Result<(), crate::ConfigError> {
+        if !value.is_finite() {
+            return Err(crate::ConfigError::Invalid("EMA seed must be finite"));
+        }
+        self.start = value;
+        self.prime_at = 0;
+        self.reset();
+        Ok(())
+    }
+
     /// Updates the smoothing factor without resetting state.
     ///
     /// # Errors
@@ -495,6 +525,31 @@ mod tests {
         assert!(ema.reconfigure_alpha(0.0).is_err());
         assert!(ema.reconfigure_alpha(1.0).is_err());
         assert!(ema.reconfigure_alpha(-0.1).is_err());
+    }
+
+    #[test]
+    fn reset_with_seed_starts_from_the_new_seed() {
+        let mut ema = Ema::builder().alpha(0.5).min_samples(5).build().unwrap();
+        ema.update(10.0);
+        assert_eq!(ema.value(), None);
+
+        ema.reset_with_seed(100.0).unwrap();
+        assert_eq!((ema.count(), ema.value()), (0, Some(100.0)));
+        assert_eq!(ema.update(200.0), Some(150.0));
+
+        // A plain reset now returns to the new seed.
+        ema.reset();
+        assert_eq!((ema.count(), ema.value()), (0, Some(100.0)));
+    }
+
+    #[test]
+    fn reset_with_seed_refuses_a_bad_seed_and_changes_nothing() {
+        let mut ema = Ema::builder().alpha(0.5).build().unwrap();
+        ema.update(10.0);
+        for bad in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
+            assert!(ema.reset_with_seed(bad).is_err());
+        }
+        assert_eq!((ema.count(), ema.value()), (1, Some(10.0)));
     }
 
     #[test]
