@@ -12,7 +12,7 @@ Most users should depend on the umbrella `nexus-stats` crate, which re-exports e
 ## Start Here
 
 - [Overview](overview.md) — Design conventions, error handling, no_std, features.
-- [Statistics](statistics.md) — Welford, Moments, EwmaVar, Covariance, Percentile, HarmonicMean, HitRate, HalfLife, Hurst, VarianceRatio, Amihud, BucketAccumulator, LPM, CVaR.
+- [Statistics](statistics.md) — Welford, Moments, EwmVar, Covariance, Percentile, HarmonicMean, HitRate, HalfLife, Hurst, VarianceRatio, Amihud, BucketAccumulator, LPM, CVaR.
 - [Normalization](normalization.md) — ZScoreNorm, MinMaxNorm, QuantileNorm.
 - [Smoothing](smoothing.md) — Ema, AsymEma, Slew.
 - [Monitoring](monitoring.md) — Drawdown, RunningMax/Min, WindowedMax/Min, PeakHold, MaxGauge, Liveness, EventRate, CoDel, ErrorRate, Jitter.

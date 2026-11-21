@@ -70,7 +70,7 @@
 //! |--------|----------|
 //! | [`smoothing`] | Ema, AsymEma, Slew |
 //! | [`detection`] | Cusum, DistributionShift *(std\|libm)* |
-//! | [`statistics`] | Welford, Moments, EwmaVar, Covariance, HarmonicMean, Percentile, BipowerVariation, Cvar, Lpm, HitRate, Amihud, BucketAccumulator, HalfLife *(std\|libm)*, RollSpread *(std\|libm)*, Hurst *(alloc, std\|libm)*, TwoScaleRv *(alloc, std\|libm)*, CovarianceMatrix *(alloc)*, VarianceRatio *(alloc)* |
+//! | [`statistics`] | Welford, Moments, EwmVar, Covariance, HarmonicMean, Percentile, BipowerVariation, Cvar, Lpm, HitRate, Amihud, BucketAccumulator, HalfLife *(std\|libm)*, RollSpread *(std\|libm)*, Hurst *(alloc, std\|libm)*, TwoScaleRv *(alloc, std\|libm)*, CovarianceMatrix *(alloc)*, VarianceRatio *(alloc)* |
 //! | [`monitoring`] | Drawdown, RunningMax, RunningMin, WindowedMax, WindowedMin, MaxGauge, PeakHold, CoDel, PollSaturation, SojournSaturation, Liveness, EventRate, Jitter, ErrorRate, HawkesIntensity *(std\|libm)* |
 //! | [`control`] | DeadBand, Hysteresis, Debounce, LevelCrossing, FirstDiff, SecondDiff |
 //! | [`normalization`] | MinMaxNorm, ZScoreNorm *(std\|libm)*, QuantileNorm *(alloc)* |

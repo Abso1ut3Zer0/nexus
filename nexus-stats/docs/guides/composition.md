@@ -62,7 +62,7 @@ crosses the slow one.
 let mut fast = Ema::builder().span(5).build().unwrap();
 let mut slow = Ema::builder().span(50).build().unwrap();
 
-if let (Some(f), Some(s)) = (fast.update(x).unwrap(), slow.update(x).unwrap()) {
+if let (Some(f), Some(s)) = (fast.update(x), slow.update(x)) {
     if f > s { /* uptrend */ }
     else { /* downtrend */ }
 }

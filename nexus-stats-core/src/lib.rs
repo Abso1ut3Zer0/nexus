@@ -8,7 +8,7 @@
 //! import from `nexus-stats` instead.
 //!
 //! Includes: error types, math utilities, core smoothing (EMA, AsymEma, Slew),
-//! statistics (Welford, Moments, EwmaVar, Covariance, HarmonicMean, Percentile),
+//! statistics (Welford, Moments, EwmVar, Covariance, HarmonicMean, Percentile),
 //! monitoring, core detection (CUSUM), and core control types.
 //!
 //! # `update` and `checked_update`

@@ -43,8 +43,8 @@ use nexus_stats::{
     signal::{Autocorrelation, CrossCorrelation, Entropy, PredictiveInfoBound, TransferEntropy},
     smoothing::{AsymEma, Ema, Hampel, Holt, Kalman1d, Kama, Slew, Spring, WindowedMedian},
     statistics::{
-        Amihud, BipowerVariation, Covariance, Cvar, EwmaVar, HalfLife, HarmonicMean, HitRate,
-        Hurst, Lpm, Moments, Percentile, RollSpread, TwoScaleRv, VarianceRatio, Welford,
+        Amihud, BipowerVariation, Covariance, Cvar, EwmVar, HalfLife, HarmonicMean, HitRate, Hurst,
+        Lpm, Moments, Percentile, RollSpread, TwoScaleRv, VarianceRatio, Welford,
     },
 };
 
@@ -247,19 +247,19 @@ fn bench_windowed_min_f64(samples: &mut [u64]) {
     }
 }
 
-fn bench_ewma_var_f64(samples: &mut [u64]) {
-    let mut ev = EwmaVar::builder().alpha(0.1).build().unwrap();
+fn bench_ewm_var(samples: &mut [u64]) {
+    let mut ev = EwmVar::builder().alpha(0.1).build().unwrap();
     let mut rng = 12345u64;
     for _ in 0..WARMUP {
-        let _ = ev.update(90.0 + (next_val(&mut rng) % 20) as f64).unwrap();
+        let _ = ev.update(90.0 + (next_val(&mut rng) % 20) as f64);
     }
     for s in samples.iter_mut() {
         let start = rdtsc_start();
         for _ in 0..BATCH {
-            let _ = ev.update(90.0 + (next_val(&mut rng) % 20) as f64).unwrap();
+            let _ = ev.update(90.0 + (next_val(&mut rng) % 20) as f64);
         }
         let end = rdtsc_end();
-        black_box(ev.variance());
+        black_box(ev.value());
         *s = (end - start) / BATCH;
     }
 }
@@ -2322,8 +2322,8 @@ fn main() {
     print_header();
     bench_welford_f64(&mut buf);
     print_row("Welford::update", &mut buf);
-    bench_ewma_var_f64(&mut buf);
-    print_row("EwmaVar::update", &mut buf);
+    bench_ewm_var(&mut buf);
+    print_row("EwmVar::update", &mut buf);
     bench_covariance_f64(&mut buf);
     print_row("Covariance::update", &mut buf);
 

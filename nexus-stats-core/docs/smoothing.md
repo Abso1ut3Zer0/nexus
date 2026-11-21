@@ -22,7 +22,7 @@ use nexus_stats_core::smoothing::Ema;
 let mut ema = Ema::builder().alpha(0.25).build().unwrap();
 let stream = [8.0, 16.0, 2.0];
 let smoothed: Vec<Option<f64>> =
-    stream.into_iter().map(|x| ema.update(x).unwrap()).collect();
+    stream.into_iter().map(|x| ema.update(x)).collect();
 assert_eq!(smoothed, [Some(8.0), Some(10.0), Some(8.0)]);
 ```
 
@@ -40,10 +40,12 @@ use nexus_stats_core::smoothing::Ema;
 let mut ema = Ema::builder().alpha(0.25).min_samples(10).seed(100.0).build().unwrap();
 assert_eq!(ema.value(), Some(100.0)); // available at once; min_samples no longer applies
 assert_eq!(ema.count(), 0);           // no sample has been fed
-assert_eq!(ema.update(200.0).unwrap(), Some(125.0)); // smoothed into the seed
+assert_eq!(ema.update(200.0), Some(125.0)); // smoothed into the seed
 ema.reset();
 assert_eq!(ema.value(), Some(100.0)); // reset returns to the as-built state
 ```
+
+`reset_with_seed(v)` resets a live average to a new seed. `checked_update` is `update` with NaN and infinity refused.
 
 **Use for:** the default single-signal smoother. Parameter selection is about half-life — see [umbrella parameter guide](../../nexus-stats/docs/guides/parameter-tuning.md).
 
@@ -106,4 +108,4 @@ assert_eq!(output, [100.0, 110.0, 120.0, 110.0]);
 ## Cross-references
 
 - Advanced smoothers — Holt, KAMA, Kalman1d, Spring, Huber, Hampel, WindowedMedian — all in [`nexus-stats-smoothing`](../../nexus-stats-smoothing/docs/INDEX.md).
-- Streaming variance around an EMA: [`EwmaVar`](statistics.md#ewmavar--exponentially-weighted-variance).
+- Streaming variance around an EMA: [`EwmVar`](statistics.md#ewmvar--exponentially-weighted-variance).

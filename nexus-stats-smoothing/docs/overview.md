@@ -66,6 +66,6 @@ All types work in `no_std` with `libm`. The windowed types additionally require 
 ## Relationship to the Rest of the Ecosystem
 
 - **Base smoothers** — `nexus-stats-core::smoothing::{Ema, AsymEma, Slew}`.
-- **Statistics on smoothed output** — feed the output into `Welford` or `EwmaVar` to get mean/variance bands.
+- **Statistics on smoothed output** — feed the output into `Welford` or `EwmVar` to get mean/variance bands.
 - **Change detection on smoothed output** — `Cusum`, `Mosum`, `ShiryaevRoberts` live in `nexus-stats-core::detection` and `nexus-stats-detection::detection`.
 - **Regression on smoothed inputs** — `LinearRegression`, `Kalman2d` in `nexus-stats-regression`.

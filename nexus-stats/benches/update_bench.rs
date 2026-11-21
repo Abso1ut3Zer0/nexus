@@ -27,7 +27,7 @@ use nexus_stats::{
     regression::{EwLinearRegression, LinearRegression, LogisticRegression, PolynomialRegression},
     signal::{Autocorrelation, CrossCorrelation, Entropy, TransferEntropy},
     smoothing::{AsymEma, Ema, Holt, Kalman1d, Slew, Spring},
-    statistics::{Covariance, Cvar, EwmaVar, HarmonicMean, Lpm, Moments, Percentile, Welford},
+    statistics::{Covariance, Cvar, EwmVar, HarmonicMean, Lpm, Moments, Percentile, Welford},
 };
 
 // Simple LCG for deterministic pseudo-random data in benchmarks.
@@ -133,11 +133,11 @@ fn bench_holt(c: &mut Criterion) {
 
 fn bench_ewma_var(c: &mut Criterion) {
     let mut rng = Lcg::new(42);
-    let mut e = EwmaVar::builder().alpha(0.1).build().unwrap();
+    let mut e = EwmVar::builder().alpha(0.1).build().unwrap();
     for _ in 0..1000 {
         let _ = e.update(rng.next_f64());
     }
-    c.bench_function("EwmaVar::update", |b| {
+    c.bench_function("EwmVar::update", |b| {
         b.iter(|| e.update(black_box(rng.next_f64())).unwrap())
     });
 }

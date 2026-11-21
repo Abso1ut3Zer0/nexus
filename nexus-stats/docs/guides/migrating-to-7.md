@@ -40,7 +40,7 @@ information. Builders follow their type: `EmaF64Builder` → `EmaBuilder`,
 | `EmaF64` | `Ema` |
 | `ErrorRateF64` | `ErrorRate` |
 | `EventRateU64` | `EventRate` |
-| `EwmaVarF64` | `EwmaVar` |
+| `EwmaVarF64` | `EwmVar` (renamed, see below) |
 | `HalfLifeF64` | `HalfLife` |
 | `HarmonicMeanF64` | `HarmonicMean` |
 | `HawkesIntensityF64` | `HawkesIntensity` |
@@ -279,7 +279,7 @@ CHANGELOG entry in `nexus-stats-core`:
   tests let NaN through (Cusum, MultiGate, RobustZScore, AdaptiveThreshold,
   Mosum, ShiryaevRoberts, LMS/NLMS, RLS, Kalman2d/3d, logistic regression).
 - `min_samples(0)` is rejected (`is_primed()` was true before any sample and
-  getters reported `Some(0.0)`): Ema, EwmaVar, BipowerVariation, Lpm,
+  getters reported `Some(0.0)`): Ema, EwmVar, BipowerVariation, Lpm,
   RollSpread, Holt, HuberEma, Kalman1d; `Jitter` needs 2 unseeded.
 - The `Ema`, `AsymEma`, `ZScoreNorm` and `RollSpread` builders refuse an
   `alpha` or `span` whose weight is below about `1.1e-16`: `1 - alpha`
@@ -421,7 +421,44 @@ refuses a sample below `1e-120`, which covers zero and negatives),
 `Lpm` (its `checked_update` refuses the sample that would overflow the
 sum, with no fixed input limit), `HalfLife`, `BipowerVariation` (its
 `checked_update` refuses a zero or negative price, with no magnitude
-limit).
+limit), `Ema` (NaN and infinity only), `EwmVar`.
+
+`Ema` and `EwmVar` are transforms, so `update` still returns the value,
+without the `Result`:
+
+```rust
+// before
+if let Some(smoothed) = ema.update(x)? { /* ... */ }
+// after
+if let Some(smoothed) = ema.update(x) { /* ... */ }          // trusted input
+if let Some(smoothed) = ema.checked_update(x)? { /* ... */ } // outside input
+```
+
+`EwmaVar` is now `EwmVar`, and changed in four ways:
+
+- The name follows Polars (`ewm_var`) and pandas (`ewm().var()`). The
+  `Ew*Regression` types will be renamed to `Ewm*` later in this series.
+- The variance is the unbiased weighted variance those libraries compute.
+  The old recursion read low (about 5% in steady state, far more in the
+  first samples), so readings rise. `ZScoreNorm` and `VarianceRatio` are
+  built on it and shift with it.
+- `update` returns a `MeanVariance`, and `value()` replaces the readers on
+  the tracker:
+
+```rust
+// before
+if let Some((mean, variance)) = ew.update(x)? { /* ... */ }
+let sd = ew.std_dev()?;
+// after
+if let Some(reading) = ew.update(x) {
+    let (mean, variance) = (reading.mean, reading.variance);
+}
+let sd = ew.value()?.std_dev();
+```
+
+- `min_samples` must be at least 2, and a seed no longer counts as
+  samples: `count()` starts at 0 and `reset()` returns to the seed.
+  `ZScoreNorm` is built on `EwmVar` and changes the same way.
 
 `BipowerVariation` changed in three ways:
 

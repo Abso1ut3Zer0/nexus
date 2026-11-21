@@ -32,7 +32,7 @@ examples.
 ### Statistics
 - [Welford](algorithms/welford.md) — Online mean, variance, standard deviation
 - [Moments](algorithms/moments.md) — Online skewness & kurtosis (Pebay, 2008)
-- [EwmaVariance](algorithms/ewma-var.md) — Exponentially weighted variance
+- [EwmVar](algorithms/ewm-var.md) — Exponentially weighted variance
 - [Covariance](algorithms/covariance.md) — Online covariance and Pearson correlation
 - [HarmonicMean](algorithms/harmonic-mean.md) — Correct average for rates
 

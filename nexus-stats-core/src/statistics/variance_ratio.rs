@@ -1,7 +1,7 @@
 use alloc::boxed::Box;
 use alloc::vec;
 
-use crate::statistics::EwmaVar;
+use crate::statistics::EwmVar;
 
 /// Variance Ratio VR(q) test for mean-reversion detection.
 ///
@@ -36,8 +36,8 @@ use crate::statistics::EwmaVar;
 #[derive(Debug, Clone)]
 pub struct VarianceRatio {
     q: usize,
-    short_var: EwmaVar,
-    long_var: EwmaVar,
+    short_var: EwmVar,
+    long_var: EwmVar,
     /// The last `q` values; the slot at `head` is the oldest.
     ring: Box<[f64]>,
     head: usize,
@@ -73,27 +73,31 @@ impl VarianceRatio {
     #[inline]
     pub fn update(&mut self, value: f64) -> Result<(), crate::DataError> {
         check_finite!(value);
-        self.count += 1;
 
-        if self.count >= 2 {
-            // 1-period return
-            let ret1 = value - self.prev;
-            let _ = self.short_var.update(ret1)?;
-        }
-
+        // Both returns are checked before any state changes, so a refused
+        // value leaves no trace.
+        let count = self.count + 1;
         // The slot at `head` holds the value from q steps ago once q + 1
         // values have been seen.
         let value_q_ago = self.ring[self.head];
+        let return_1 = (count >= 2).then_some(value - self.prev);
+        let return_q = (count > self.q as u64).then_some(value - value_q_ago);
+        for ret in [return_1, return_q].into_iter().flatten() {
+            crate::math::check_input(ret, crate::math::LIMIT_FOR_SQUARES)?;
+        }
+
+        self.count = count;
+        if let Some(ret) = return_1 {
+            self.short_var.update(ret);
+        }
+        if let Some(ret) = return_q {
+            self.long_var.update(ret);
+        }
         self.ring[self.head] = value;
         self.head += 1;
         if self.head == self.q {
             self.head = 0;
         }
-        if self.count > self.q as u64 {
-            let ret_q = value - value_q_ago;
-            let _ = self.long_var.update(ret_q)?;
-        }
-
         self.prev = value;
         Ok(())
     }
@@ -104,8 +108,8 @@ impl VarianceRatio {
     #[inline]
     #[must_use]
     pub fn variance_ratio(&self) -> Option<f64> {
-        let var1 = self.short_var.variance()?;
-        let var_q = self.long_var.variance()?;
+        let var1 = self.short_var.value()?.variance;
+        let var_q = self.long_var.value()?.variance;
 
         if var1 <= 0.0 {
             return None;
@@ -201,8 +205,8 @@ impl VarianceRatioBuilder {
 
         let alpha = self.alpha.ok_or(crate::ConfigError::Missing("alpha"))?;
 
-        let short_var = EwmaVar::builder().alpha(alpha).build()?;
-        let long_var = EwmaVar::builder().alpha(alpha).build()?;
+        let short_var = EwmVar::builder().alpha(alpha).build()?;
+        let long_var = EwmVar::builder().alpha(alpha).build()?;
 
         Ok(VarianceRatio {
             q,
@@ -299,16 +303,36 @@ mod tests {
         assert!(vr.update(f64::INFINITY).is_err());
     }
 
+    #[test]
+    fn a_refused_value_leaves_no_trace() {
+        let mut vr = VarianceRatio::builder().q(2).alpha(0.1).build().unwrap();
+        for v in [1.0, 2.0, 4.0, 3.0, 5.0] {
+            vr.update(v).unwrap();
+        }
+        let mut untouched = vr.clone();
+
+        // Finite, but its returns are beyond the limit.
+        assert_eq!(vr.update(1e130), Err(crate::DataError::OutOfRange));
+        assert_eq!(vr.update(f64::NAN), Err(crate::DataError::NotANumber));
+        assert_eq!(vr.count(), untouched.count());
+
+        for v in [6.0, 4.5, 7.0] {
+            vr.update(v).unwrap();
+            untouched.update(v).unwrap();
+            assert_eq!(vr.variance_ratio(), untouched.variance_ratio());
+        }
+    }
+
     /// Against the definition computed from a plain history `Vec`: the 1-period
-    /// and q-period returns feed two `EwmaVar`s exactly as the type does, so
+    /// and q-period returns feed two `EwmVar`s exactly as the type does, so
     /// the ratio must match step by step, including when it is `None`.
     #[test]
     fn matches_the_definition_on_a_history_vec() {
         let q = 5usize;
         let alpha = 0.1;
         let mut vr = VarianceRatio::builder().q(q).alpha(alpha).build().unwrap();
-        let mut short = EwmaVar::builder().alpha(alpha).build().unwrap();
-        let mut long = EwmaVar::builder().alpha(alpha).build().unwrap();
+        let mut short = EwmVar::builder().alpha(alpha).build().unwrap();
+        let mut long = EwmVar::builder().alpha(alpha).build().unwrap();
         let mut history: Vec<f64> = Vec::new();
         for t in 0..300u32 {
             let v = (f64::from(t) * 0.37)
@@ -318,13 +342,15 @@ mod tests {
             history.push(v);
             let len = history.len();
             if len >= 2 {
-                let _ = short.update(v - history[len - 2]).unwrap();
+                short.update(v - history[len - 2]);
             }
             if len > q {
-                let _ = long.update(v - history[len - 1 - q]).unwrap();
+                long.update(v - history[len - 1 - q]);
             }
-            let expected = match (short.variance(), long.variance()) {
-                (Some(var1), Some(var_q)) if var1 > 0.0 => Some(var_q / (q as f64 * var1)),
+            let expected = match (short.value(), long.value()) {
+                (Some(short), Some(long)) if short.variance > 0.0 => {
+                    Some(long.variance / (q as f64 * short.variance))
+                }
                 _ => None,
             };
             match (vr.variance_ratio(), expected) {

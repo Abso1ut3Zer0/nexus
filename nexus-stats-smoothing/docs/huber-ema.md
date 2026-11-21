@@ -67,7 +67,7 @@ println!("robust mean latency = {:.1}us", robust.value().unwrap());
 ## Parameter tuning
 
 - `halflife`: same rules as a plain EMA. Pick based on how fast you want the baseline to respond.
-- `delta`: expected "honest" residual magnitude. A good heuristic is `2 * current_stddev`. Track it with `EwmaVar` and set `delta = 2 * stddev.sqrt()` at construction time.
+- `delta`: expected "honest" residual magnitude. A good heuristic is `2 * current_stddev`. Track it with `EwmVar` and set `delta = 2 * stddev.sqrt()` at construction time.
 
 ## Caveats
 

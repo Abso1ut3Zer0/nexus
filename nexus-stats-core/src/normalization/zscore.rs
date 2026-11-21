@@ -1,7 +1,7 @@
 use core::marker::PhantomData;
 
 use crate::Float;
-use crate::statistics::EwmaVar;
+use crate::statistics::EwmVar;
 
 /// Relative floor under which a standard deviation, or a deviation from the
 /// mean of a constant stream, counts as zero. FMA with a non-exact alpha
@@ -37,7 +37,7 @@ const SD_FLOOR: f64 = 1e-14;
 /// ```
 #[derive(Debug, Clone)]
 pub struct ZScoreNorm<T: Float> {
-    inner: EwmaVar,
+    inner: EwmVar,
     _sample: PhantomData<T>,
 }
 
@@ -108,7 +108,7 @@ impl<T: Float> ZScoreNorm<T> {
         check_finite!(sample);
         let x = sample.to_f64();
         let z = self.score(x);
-        self.inner.update(x)?;
+        self.inner.update(x);
         Ok(z)
     }
 
@@ -131,8 +131,9 @@ impl<T: Float> ZScoreNorm<T> {
 
     #[inline]
     fn score(&self, value: f64) -> Option<T> {
-        let mean = self.inner.mean()?;
-        let sd = self.inner.std_dev()?;
+        let reading = self.inner.value()?;
+        let mean = reading.mean;
+        let sd = reading.std_dev();
         let floor = mean.abs().max(1.0) * SD_FLOOR;
         let deviation = value - mean;
         let z = if sd > floor {
@@ -150,14 +151,16 @@ impl<T: Float> ZScoreNorm<T> {
     #[inline]
     #[must_use]
     pub fn mean(&self) -> Option<T> {
-        self.inner.mean().map(T::from_f64)
+        self.inner.value().map(|reading| T::from_f64(reading.mean))
     }
 
     /// Current exponentially weighted standard deviation, or `None` if not primed.
     #[inline]
     #[must_use]
     pub fn std_dev(&self) -> Option<T> {
-        self.inner.std_dev().map(T::from_f64)
+        self.inner
+            .value()
+            .map(|reading| T::from_f64(reading.std_dev()))
     }
 
     /// Number of samples processed.
@@ -174,7 +177,8 @@ impl<T: Float> ZScoreNorm<T> {
         self.inner.is_primed()
     }
 
-    /// Resets accumulated state. Parameters unchanged.
+    /// Returns to no samples, and to the seed if one was configured.
+    /// Parameters unchanged.
     #[inline]
     pub fn reset(&mut self) {
         self.inner.reset();
@@ -207,7 +211,8 @@ impl<T: Float> ZScoreNormBuilder<T> {
         self
     }
 
-    /// Minimum samples before values are valid. Default: 2.
+    /// Minimum samples before values are valid. Default and minimum: 2
+    /// (one sample has no deviation).
     #[inline]
     #[must_use]
     pub fn min_samples(mut self, min: u64) -> Self {
@@ -215,7 +220,11 @@ impl<T: Float> ZScoreNormBuilder<T> {
         self
     }
 
-    /// Pre-loads mean and variance from calibration data.
+    /// Starts the normalizer converged on this mean and variance.
+    ///
+    /// Scores are available at once (`min_samples` no longer applies),
+    /// `count()` still counts only samples fed, and `reset()` returns to the
+    /// seed.
     #[inline]
     #[must_use]
     pub fn seed(mut self, mean: T, variance: T) -> Self {
@@ -237,9 +246,7 @@ impl<T: Float> ZScoreNormBuilder<T> {
             .weight
             .ok_or(crate::ConfigError::Missing("alpha"))?
             .resolve()?;
-        let mut ewma = EwmaVar::builder()
-            .alpha(alpha)
-            .min_samples(self.min_samples);
+        let mut ewma = EwmVar::builder().alpha(alpha).min_samples(self.min_samples);
         if let (Some(m), Some(v)) = (self.seed_mean, self.seed_variance) {
             ewma = ewma.seed(m, v);
         }
@@ -326,16 +333,20 @@ mod tests {
     #[test]
     fn a_jump_out_of_a_flat_stream_scores_infinite_then_finite() {
         let mut zs = ZScoreNorm::<f64>::builder().alpha(0.1).build().unwrap();
+        let mut tracker = EwmVar::builder().alpha(0.1).build().unwrap();
         for _ in 0..50 {
             let _ = zs.update(100.0).unwrap();
+            tracker.update(100.0);
         }
         let z = zs.update(150.0).unwrap().unwrap();
         assert!(z > 4.0);
         assert_eq!(z.clamp(-5.0, 5.0), 5.0);
-        // The jump gave the stream a scale. Mean 105, variance
-        // 0.1 * 50 * 45 = 225: a second sample at the new level scores
-        // (150 - 105) / 15 = 3 = sqrt((1 - alpha) / alpha).
-        assert_eq!(zs.update(150.0).unwrap(), Some(3.0));
+        // The jump gave the stream a scale: a second sample at the new level
+        // scores against the mean and deviation the jump left behind.
+        let after_jump = tracker.update(150.0).unwrap();
+        let expected = (150.0 - after_jump.mean) / after_jump.std_dev();
+        assert_eq!(zs.update(150.0).unwrap(), Some(expected));
+        assert!((2.5..3.5).contains(&expected), "{expected}");
     }
 
     #[test]
@@ -366,6 +377,35 @@ mod tests {
             .build()
             .unwrap();
         assert_eq!(zs.update(110.0).unwrap(), Some(2.0f32));
+    }
+
+    #[test]
+    fn min_samples_below_two_is_refused() {
+        for min in [0, 1] {
+            assert!(
+                ZScoreNorm::<f64>::builder()
+                    .alpha(0.1)
+                    .min_samples(min)
+                    .build()
+                    .is_err(),
+                "{min}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_seed_is_a_state_not_samples() {
+        let mut zs = ZScoreNorm::<f64>::builder()
+            .alpha(0.1)
+            .seed(100.0, 25.0)
+            .build()
+            .unwrap();
+        assert!(zs.is_primed());
+        assert_eq!(zs.count(), 0);
+        let _ = zs.update(110.0).unwrap();
+        zs.reset();
+        assert_eq!(zs.count(), 0);
+        assert_eq!(zs.normalize(110.0).unwrap(), Some(2.0));
     }
 
     #[test]

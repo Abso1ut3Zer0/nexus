@@ -25,7 +25,7 @@ w.reset();
 - **`is_primed()` / `count()` / `reset()`** on every type.
 - **O(1) per update.** Fixed memory. No allocation on the hot path after construction.
 - **`f64` by default**; the cheap primitives (`Slew`, `DeadBand`, `Hysteresis`, the extrema, the diffs, ...) are generic over `f64` and `i64`. See [Integer Variants](#integer-variants).
-- **Builder or `new(...)` for construction.** Types with many parameters (CUSUM, EwmaVar, AsymEma) use a builder; simple types (Welford, LevelCrossing, DeadBand, Slew) have a plain `new`.
+- **Builder or `new(...)` for construction.** Types with many parameters (CUSUM, EwmVar, AsymEma) use a builder; simple types (Welford, LevelCrossing, DeadBand, Slew) have a plain `new`.
 
 ## Error Types
 
@@ -49,7 +49,7 @@ pub enum ConfigError {
 
 ## Module Layout
 
-- `nexus_stats_core::statistics` — Welford, Moments, EwmaVar, Covariance, CovarianceMatrix, HarmonicMean, Percentile, BucketAccumulator, Amihud, HitRate, HalfLife, Hurst, VarianceRatio.
+- `nexus_stats_core::statistics` — Welford, Moments, EwmVar, Covariance, CovarianceMatrix, HarmonicMean, Percentile, BucketAccumulator, Amihud, HitRate, HalfLife, Hurst, VarianceRatio.
 - `nexus_stats_core::smoothing` — `Ema`, `AsymEma`, `Slew<f64>` / `Slew<i64>`.
 - `nexus_stats_core::monitoring` — Drawdown, RunningMax/Min, WindowedMax/Min, PeakHold, MaxGauge, Liveness, EventRate, CoDel, ErrorRate, Jitter, HawkesIntensity, PollSaturation, SojournSaturation.
 - `nexus_stats_core::detection` — CUSUM, DistributionShift.

@@ -5,7 +5,7 @@ tail latency right now, (b) detect shifts before users do, and
 (c) postmortem a regression by looking at recent samples.
 
 **Crates used:**
-`nexus-stats` (Percentile, EwmaVar, CUSUM, Drawdown, Jitter),
+`nexus-stats` (Percentile, EwmVar, CUSUM, Drawdown, Jitter),
 `nexus-rt` (instrumentation handlers), `nexus-logbuf` (rolling
 sample buffer for postmortem).
 
@@ -36,7 +36,7 @@ into one histogram hides the bottleneck.
 ## 2. Resources: one bucket per metric
 
 ```rust
-use nexus_stats::statistics::{PercentileF64, EwmaVarF64};
+use nexus_stats::statistics::{PercentileF64, EwmVar};
 use nexus_stats::detection::CusumF64;
 use nexus_stats::monitoring::{DrawdownF64, JitterF64};
 use nexus_logbuf::spsc as logbuf_spsc;
@@ -52,7 +52,7 @@ pub struct LatencyMetrics {
     pub rtt_p999_ns: PercentileF64,
 
     // Smoothed mean + variance for drift detection.
-    pub t2t_mean_var: EwmaVarF64,
+    pub t2t_mean_var: EwmVar,
 
     // Shift detector — rings when the distribution steps up.
     pub t2t_shift: CusumF64,
@@ -75,7 +75,7 @@ Why these types:
 - **`PercentileF64` with target 0.999** — P² algorithm, O(1) per
   update, adaptive priming (waits for 1000 samples before
   reporting).
-- **`EwmaVarF64`** — running mean and variance, forgetting factor.
+- **`EwmVar`** — running mean and variance, forgetting factor.
   Bounded growth — safe to run for days.
 - **`CusumF64`** — the canonical change-point detector. Gives you a
   boolean "did the distribution shift?" with tunable sensitivity.
