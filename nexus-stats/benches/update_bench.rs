@@ -1092,7 +1092,7 @@ fn bench_zscore_norm(c: &mut Criterion) {
         let _ = zs.update(rng.next_f64());
     }
     c.bench_function("ZScoreNorm::<f64>::update", |b| {
-        b.iter(|| zs.update(black_box(rng.next_f64())).unwrap())
+        b.iter(|| zs.update(black_box(rng.next_f64())))
     });
 }
 
