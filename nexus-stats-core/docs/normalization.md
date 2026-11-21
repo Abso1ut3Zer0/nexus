@@ -12,53 +12,54 @@ Streaming online normalizers. Module path: `nexus_stats_core::normalization`.
 
 All three share one shape:
 
-- `update(..)` feeds a sample and returns its normalized value, `Ok(None)` while there is nothing to normalize against. `ZScoreNorm` scores the sample against the state *before* it and then folds it in (a score against statistics that already contain the sample is capped). `MinMaxNorm` and `QuantileNorm` fold first: a range or a rank is defined to include the sample, so a new maximum reads exactly 1.
-- `normalize(value)` scores a value against the current state without changing it. It returns `Result<Option<T>, DataError>`: `Err` for NaN or infinity, `Ok(None)` if not primed.
+- `update(..)` feeds a sample and returns its normalized value, `None` while there is nothing to normalize against. `ZScoreNorm` scores the sample against the state *before* it and then folds it in (a score against statistics that already contain the sample is capped). `MinMaxNorm` and `QuantileNorm` fold first: a range or a rank is defined to include the sample, so a new maximum reads exactly 1.
+- `normalize(value)` scores a value against the current state without changing it, `None` if not primed.
+- On `MinMaxNorm` and `QuantileNorm` both return a `Result` and refuse NaN and infinity. `ZScoreNorm` has moved to the unchecked `update` / `normalize` with `checked_update` / `checked_normalize` beside them; the other two follow.
 - `count()` / `is_primed()` / `reset()`.
 
 ---
 
 ## ZScoreNorm<f64> — EW z-score normalization
 
-Scores each sample against the exponentially weighted mean and standard deviation of the samples *before* it, then folds it in. Wraps `EwmVar` internally.
+Scores each sample against the exponentially weighted mean and standard deviation of the samples *before* it, then feeds it in. Wraps `EwmVar` internally.
 
 ```rust
 use nexus_stats_core::normalization::ZScoreNorm;
 
 let mut zn = ZScoreNorm::<f64>::builder().span(50).build().unwrap();
 for i in 0..500 {
-    let _ = zn.update(100.0 + f64::from(i % 7)).unwrap();
+    zn.update(100.0 + f64::from(i % 7));
 }
 // A typical sample scores small; an outlier scores as large as it is.
-assert!(zn.update(103.0).unwrap().unwrap().abs() < 1.0);
-assert!(zn.update(10_000.0).unwrap().unwrap() > 1_000.0);
+assert!(zn.update(103.0).unwrap().abs() < 1.0);
+assert!(zn.update(10_000.0).unwrap() > 1_000.0);
 ```
 
-Scoring before folding is what makes the outlier visible. A sample folded into the statistics first and scored against them afterwards can never exceed `sqrt((1 - alpha) / alpha)` (3.0 at alpha 0.1), whatever its size.
+Scoring first is what makes the outlier visible. A sample fed into the statistics before being scored against them is bounded by its own weight, whatever its size: about 2.9 at alpha 0.1.
 
-`update` returns `Ok(None)` until `min_samples` earlier samples have been seen (default 2, or at once when seeded).
+`update` returns `None` until `min_samples` earlier samples have been seen (default and minimum 2, or at once when seeded). It does not validate; `checked_update` refuses NaN, infinity, and magnitudes above `1e120`. `normalize(value)` scores without feeding the value in, and `checked_normalize` is its validating form, with the same limit.
 
-**Zero scale.** While every sample so far has been the same value (or after a flat stretch long enough for the weighted variance to decay to nothing), the standard deviation is zero and the score follows the usual numerical convention for division by zero: `+inf` for a sample above the mean, `-inf` for one below, and `0.0` for a sample on it.
+**No spread, no score.** While every sample so far has been the same value, the standard deviation is zero and there is nothing to score against, so the result is `None`. This is the convention of NumPy, pandas and SciPy, which give no value (NaN) there.
 
 ```rust
 use nexus_stats_core::normalization::ZScoreNorm;
 
 let mut zn = ZScoreNorm::<f64>::builder().span(50).build().unwrap();
 for _ in 0..100 {
-    let _ = zn.update(100.0).unwrap();
+    zn.update(100.0);
 }
-assert_eq!(zn.normalize(100.0).unwrap(), Some(0.0));
-let z = zn.update(150.0).unwrap().unwrap(); // a jump out of a flat stream
-assert_eq!(z, f64::INFINITY);
-assert!(z > 4.0);                           // a threshold test fires
-assert_eq!(z.clamp(-5.0, 5.0), 5.0);        // and clamping bounds it
+assert_eq!(zn.normalize(100.0), None);
+assert_eq!(zn.update(150.0), None);    // a jump out of a flat stream: no scale yet
+assert!(zn.update(150.0).is_some());   // the jump gave it one
 ```
 
-The other types in this crate reject infinity as input, so clamp the score before feeding it on. The samples right after such a jump are scored against statistics the jump created: a second sample at the new level scores exactly `sqrt((1 - alpha) / alpha)`, whatever the size of the jump.
+If a jump out of a flat stream should alarm, treat `None` on a primed normalizer as that signal.
+
+`seed(mean, variance)` starts it converged; `reset_with_seed(mean, variance)` does the same on a live normalizer.
 
 **Use for:** outlier scoring, adaptive thresholding, comparing values across instruments with different scales.
 
-**Caveats:** requires `std` or `libm` (for sqrt). The standard deviation counts as zero below `max(|mean|, 1.0) * 1e-14`, and so does a deviation from the mean of a constant stream.
+**Caveats:** requires `std` or `libm` (for sqrt). `ZScoreNorm<f32>` returns infinity for a finite score too large for `f32`. A variance at or below `(EPSILON * mean)^2`, what rounding alone produces, counts as no spread (the test SciPy uses).
 
 ---
 
