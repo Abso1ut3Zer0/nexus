@@ -36,7 +36,7 @@ let mut ema = Ema::builder()
     .min_samples(10)
     .build().unwrap();
 
-if let Some(smoothed) = ema.update(sample).unwrap() {   // Err on NaN or infinity
+if let Some(smoothed) = ema.update(sample) {   // unchecked; see checked_update
     // use smoothed value
 }
 
@@ -86,7 +86,7 @@ for deep-dives on each algorithm.
 |------|-----------------|-----|
 | `Welford` | Online mean, variance, std dev (Chan's merge) | 13 |
 | `Moments` | Online skewness & kurtosis (Pébay, 2008). Merge support | 17 |
-| `EwmaVar` | Exponentially weighted variance | 6 |
+| `EwmVar` | Exponentially weighted variance | 7 |
 | `Covariance` | Online covariance + Pearson correlation | 11 |
 | `HarmonicMean` | Correct average for rates/throughputs | 6 |
 | `BipowerVariation` *(std\|libm)* | Jump-robust volatility (BV vs RV) | 22 |

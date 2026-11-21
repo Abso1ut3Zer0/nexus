@@ -110,7 +110,7 @@ Critically damped, so it *never* overshoots regardless of `smooth_time`.
 
 - `alpha` — same as regular EMA.
 - `threshold` — in multiples of `sigma`. Typically 1.5-3.0.
-- `sigma` — scale for the quadratic-linear boundary. Use current running stddev (from `EwmaVar`) or a calibration constant.
+- `sigma` — scale for the quadratic-linear boundary. Use current running stddev (from `EwmVar`) or a calibration constant.
 
 A threshold of 1.5 means "steps larger than 1.5 sigma get capped". Start at 2.0 and adjust.
 

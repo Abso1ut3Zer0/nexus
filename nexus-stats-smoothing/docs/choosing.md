@@ -28,7 +28,7 @@ See [kama.md](kama.md).
 
 Use **`Kalman1d`**. It gives you position + velocity with formal optimality under Gaussian noise. You provide process noise (how fast the true state drifts) and measurement noise (how bad your sensor is), and the filter computes the optimal Kalman gain on every step.
 
-This is the right choice when you actually know (or can estimate) the noise magnitudes — e.g. from a calibration run, or from `EwmaVar` over recent residuals. When you don't know them and you're just picking magic numbers, a `Holt` will give you 90% of the benefit with half the conceptual overhead.
+This is the right choice when you actually know (or can estimate) the noise magnitudes — e.g. from a calibration run, or from `EwmVar` over recent residuals. When you don't know them and you're just picking magic numbers, a `Holt` will give you 90% of the benefit with half the conceptual overhead.
 
 See [kalman1d.md](kalman1d.md).
 
@@ -84,7 +84,7 @@ let mut k1d    = Kalman1d::builder()
     .build().unwrap();
 
 for &s in &samples {
-    ema.update(s).unwrap();
+    ema.update(s);
     holt.update(s).unwrap();
     kama.update(s).unwrap();
     k1d.update(s).unwrap();

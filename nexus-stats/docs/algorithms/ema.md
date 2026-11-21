@@ -147,7 +147,7 @@ let mut latency_ema = Ema::builder()
     .build().unwrap();
 
 // On each round-trip:
-if let Some(smoothed) = latency_ema.update(rtt_us).unwrap() {
+if let Some(smoothed) = latency_ema.update(rtt_us) {
     dashboard.set_latency(smoothed);
 }
 ```
@@ -162,7 +162,7 @@ let mut throughput = Ema::builder()
 
 // On each measurement interval:
 let bytes_per_sec = bytes_received as f64 / interval_secs;
-if let Some(smoothed) = throughput.update(bytes_per_sec).unwrap() {
+if let Some(smoothed) = throughput.update(bytes_per_sec) {
     adjust_quality(smoothed);
 }
 ```
@@ -175,7 +175,7 @@ let mut frame_ema = Ema::builder()
     .build().unwrap();
 
 // Each frame:
-if let Some(smoothed_dt) = frame_ema.update(frame_time_ms).unwrap() {
+if let Some(smoothed_dt) = frame_ema.update(frame_time_ms) {
     hud.set_fps(1000.0 / smoothed_dt);
 }
 ```
@@ -212,7 +212,7 @@ error_rate.update(if is_error { 1.0 } else { 0.0 });
 let mut ema = Ema::builder().span(20).build().unwrap();
 let mut cusum = Cusum::builder(baseline).slack(k).threshold(h).build().unwrap();
 
-if let Some(smoothed) = ema.update(sample).unwrap() {
+if let Some(smoothed) = ema.update(sample) {
     cusum.update(smoothed).unwrap();  // detect shifts in the smoothed signal
 }
 ```
@@ -228,7 +228,7 @@ let mut baseline = Ema::builder().span(100).build().unwrap();
 let mut fast = Ema::builder().span(5).build().unwrap();
 
 // Divergence between fast and slow EMA signals regime change
-if let (Some(slow), Some(fast_val)) = (baseline.update(x).unwrap(), fast.update(x).unwrap()) {
+if let (Some(slow), Some(fast_val)) = (baseline.update(x), fast.update(x)) {
     if (fast_val - slow).abs() > threshold {
         // significant divergence
     }

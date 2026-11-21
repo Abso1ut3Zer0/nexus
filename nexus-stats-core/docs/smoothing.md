@@ -45,6 +45,8 @@ ema.reset();
 assert_eq!(ema.value(), Some(100.0)); // reset returns to the as-built state
 ```
 
+`reset_with_seed(v)` resets a live average to a new seed. `checked_update` is `update` with NaN and infinity refused.
+
 **Use for:** the default single-signal smoother. Parameter selection is about half-life — see [umbrella parameter guide](../../nexus-stats/docs/guides/parameter-tuning.md).
 
 **Caveats:** lags trending signals. If your signal has drift, reach for [`Holt`](../../nexus-stats-smoothing/docs/holt.md) instead.
@@ -106,4 +108,4 @@ assert_eq!(output, [100.0, 110.0, 120.0, 110.0]);
 ## Cross-references
 
 - Advanced smoothers — Holt, KAMA, Kalman1d, Spring, Huber, Hampel, WindowedMedian — all in [`nexus-stats-smoothing`](../../nexus-stats-smoothing/docs/INDEX.md).
-- Streaming variance around an EMA: [`EwmaVar`](statistics.md#ewmavar--exponentially-weighted-variance).
+- Streaming variance around an EMA: [`EwmVar`](statistics.md#ewmvar--exponentially-weighted-variance).

@@ -7,7 +7,7 @@ estimation for networked systems.
 
 ```rust
 use nexus_stats::smoothing::AsymEma;
-use nexus_stats::statistics::EwmaVar;
+use nexus_stats::statistics::EwmVar;
 use nexus_stats::monitoring::WindowedMin;
 
 // Asymmetric EMA: react fast to RTT increases, slow to decreases
@@ -18,7 +18,7 @@ let mut srtt = AsymEma::builder()
     .build().unwrap();
 
 // RTT variance for timeout calculation
-let mut rttvar = EwmaVar::builder().span(7).build().unwrap();
+let mut rttvar = EwmVar::builder().span(7).build().unwrap();
 
 // Min RTT baseline (BBR-style)
 let mut min_rtt = WindowedMin::<f64>::new(10_000_000_000).unwrap(); // 10s window
@@ -26,11 +26,9 @@ let mut min_rtt = WindowedMin::<f64>::new(10_000_000_000).unwrap(); // 10s windo
 // On each RTT measurement:
 if let Some(smoothed) = srtt.update(rtt_ms).unwrap() {
     min_rtt.update(now_ns, rtt_ms).unwrap();
-    rttvar.update(rtt_ms).unwrap();
-
-    // Timeout = smoothed_rtt + 4 × variance (RFC 6298)
-    if let Some(var) = rttvar.variance() {
-        let rto = smoothed + 4.0 * var.sqrt();
+    // Timeout = smoothed_rtt + 4 × deviation (RFC 6298)
+    if let Some(reading) = rttvar.update(rtt_ms) {
+        let rto = smoothed + 4.0 * reading.std_dev();
     }
 }
 ```
@@ -74,7 +72,7 @@ avg_bw.update(delivery_rate);
 | Primitive | Role |
 |-----------|------|
 | [AsymmetricEMA](../algorithms/asym-ema.md) | RTT smoothing (fast up, slow down) |
-| [EwmaVariance](../algorithms/ewma-var.md) | RTT variance for timeouts |
+| [EwmVar](../algorithms/ewm-var.md) | RTT variance for timeouts |
 | [WindowedMin](../algorithms/windowed-min-max.md) | Baseline RTT (BBR) |
 | [WindowedMax](../algorithms/windowed-min-max.md) | Bandwidth estimation (BBR) |
 | [Jitter](../algorithms/jitter.md) | Inter-arrival jitter (RFC 3550) |

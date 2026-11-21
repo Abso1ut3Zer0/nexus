@@ -148,6 +148,13 @@ one naming convention across the family. Migration guide:
   mean removed, no longer reads low while warming up, and is read through
   `estimate()`. `hasbrouck_spread()` is removed. `BipowerVariation` is read
   through `decomposition()`. See the migration guide.
+- Carried from core: `EwmaVar` is renamed `EwmVar` and its variance no
+  longer reads low (it is the unbiased weighted variance pandas and Polars
+  compute). `Ema::update` and `EwmVar::update` no longer validate or
+  return a `Result`; `checked_update` is the validating form. `EwmVar`
+  returns a `MeanVariance`. Both gain `reset_with_seed`. `ZScoreNorm` and
+  `VarianceRatio` readings shift with the variance. See the migration
+  guide.
 - Carried from core: `BipowerVariation` works on log returns and reports
   period totals, as the definitions do, read as a `JumpDecomposition`
   from `decomposition()`. Readings are not comparable with earlier ones; see the

@@ -41,7 +41,7 @@ contained.
   `MinMaxNorm<T>`, `QuantileNorm<T>` for `T` in `f64`, `f32`: they take and
   return `T` but accumulate in `f64`, so the `f32` forms are boundary types
   for `f32` feature vectors, no longer `f32` accumulators. The `pub(crate)`
-  `f32` stamps of `EwmaVar`, `Percentile` and the windowed extrema are gone.
+  `f32` stamps of `EwmVar`, `Percentile` and the windowed extrema are gone.
 - **`DeadBand<T>::new(threshold: T)` returns `Result`** and rejects a negative
   or non-finite threshold (`ConfigError::Invalid`); the integer form takes an
   `i64` threshold instead of `u64`, with the same exact `abs_diff` arithmetic.
@@ -55,7 +55,7 @@ contained.
   (`-C target-cpu=native` / `-C target-feature=+fma`; always on aarch64);
   elsewhere LLVM lowers it to a call into compiler-builtins' software `fma`,
   which cost the FMA-heavy types (the regressions, the adaptive filters,
-  `EwmaVar`, `Moments`) 3 to 5 times their arithmetic on a default
+  `EwmVar`, `Moments`) 3 to 5 times their arithmetic on a default
   `cargo build --release`. The crate's shim now fuses in the first case and
   computes `a * b + c` in the second. Results on the two paths differ in
   the last bit; results within one build are deterministic as before.
@@ -74,7 +74,7 @@ contained.
   let NaN through; `Cusum` validates target, slack, thresholds and seeds, and
   `reset_with_target` returns `Result` (target 0 with default thresholds is
   rejected instead of installing a threshold of zero). `min_samples(0)` is
-  rejected by Ema, EwmaVar, BipowerVariation, Lpm, RollSpread, and Jitter needs
+  rejected by Ema, EwmVar, BipowerVariation, Lpm, RollSpread, and Jitter needs
   2 unseeded; seeds must be finite; Lpm `order` is capped at 16; Liveness and
   EventRate spans at 2^62. `WindowedMedian`-style bare or panicking
   constructors return `Result`: `LevelCrossing::new`,
@@ -120,7 +120,7 @@ contained.
   type.
 - **One copy of each kernel.** `Liveness` and `EventRate` run on the
   `sample::ShiftEma` kernel (which gains `is_initialized()` and `reset()`);
-  `HalfLife` is a `Covariance` over consecutive pairs; `EwmaVar` and
+  `HalfLife` is a `Covariance` over consecutive pairs; `EwmVar` and
   `Percentile` are plain items (the `$ty` stamping macros are gone, as is the
   never-called `math::check_finite` function; the `check_finite!` macro is
   exported, doc-hidden, for the sibling crates). `math::dot`, `math::axpy`
@@ -192,6 +192,26 @@ contained.
   the same change as `Welford`. `checked_update` is the validating form.
 - **`Covariance::update` no longer validates or returns a `Result`**, the
   same change again. `checked_update(x, y)` validates both values.
+- **`EwmaVar` is renamed `EwmVar`.** `ewm` is the stem Polars (`ewm_mean`,
+  `ewm_var`) and pandas (`ewm().var()`) use. `Ema` keeps its name. The
+  `Ew*Regression` types in `nexus-stats-regression` will take the `Ewm`
+  stem when each is converted.
+- **`Ema::update` no longer validates or returns a `Result`**: it returns
+  `Option<f64>`. `checked_update` is the validating form and refuses NaN
+  and infinity.
+- **`EwmVar::update` returns a `MeanVariance { mean, variance }`**, with
+  `std_dev()`, in place of a `(mean, variance)` tuple, and no longer
+  validates or returns a `Result`. `checked_update` is the validating
+  form. `value()` replaces `mean()`, `variance()` and `std_dev()` on the
+  type.
+- **`EwmVar` needs `min_samples` of at least 2** (one sample has no
+  variance; it accepted 1 and reported a variance of 0), and treats a seed
+  as `Ema` does: a converged state, with `count()` at 0 and `reset()`
+  returning to it. A seed used to set `count()` to `min_samples`, and
+  `reset()` discarded it.
+- **`ZScoreNorm` and `VarianceRatio` readings shift**, because the
+  variance under them is now unbiased (see Fixed). `VarianceRatio` refuses
+  a return above `1e120` in magnitude.
 - **`RollSpread` works on log-price changes, with the mean removed.**
   `update(price)` takes the logarithm itself, so the spread is a proportion
   of the price (`0.0005` is 5 basis points), as in Roll's own estimates and
@@ -332,6 +352,9 @@ contained.
   the result, not the input, since the order goes up to 16 and no single
   input limit covers every order. The type docs give rough bounds and the
   libraries this follows.
+- `Ema::checked_update`, `Ema::reset_with_seed`.
+- `EwmVar::checked_update` (refuses NaN, infinity, and a magnitude above
+  `1e120`), `EwmVar::value`, `EwmVar::reset_with_seed`, `MeanVariance`.
 - `Moments::checked_update`, `Shape`.
 - `Covariance::checked_update`: refuses the pair, and leaves the
   accumulator unchanged, if either value is NaN, infinite, or larger in
@@ -341,6 +364,13 @@ contained.
 
 ### Fixed
 
+- **`EwmVar` no longer reads low.** The variance came from the recursion
+  `var = (1 - alpha) * (var + alpha * d^2)`, which gives about 18% of the
+  true variance after two samples (alpha 0.1) and stays about 5% low. It
+  is now the unbiased weighted variance, the weighted sum of squared
+  deviations over `W - W2 / W`, which pandas (`ewm().var()`) and Polars
+  (`ewm_var`) compute by default. Unbiased from the second sample on. Old
+  readings are not comparable.
 - **Builders refuse a weight too small to use, under every knob.** An
   `alpha` below half of machine epsilon (about `1.1e-16`), or a `span`
   large enough to give one, was accepted, though `1 - alpha` rounds to 1

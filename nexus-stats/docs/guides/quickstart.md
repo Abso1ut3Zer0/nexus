@@ -10,7 +10,7 @@ use nexus_stats::smoothing::Ema;
 let mut ema = Ema::builder().span(20).build().unwrap();
 
 for sample in data {
-    if let Some(smoothed) = ema.update(sample).unwrap() {
+    if let Some(smoothed) = ema.update(sample) {
         use_smoothed_value(smoothed);
     }
 }

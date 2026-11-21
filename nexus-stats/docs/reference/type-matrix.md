@@ -57,7 +57,7 @@ See [Integer vs Float](../guides/integer-vs-float.md) for the caller rules and
 |------|---------|---------|----------------|
 | `Welford` | `f64` | — | core (`statistics`) |
 | `Moments` | `f64` | — | core (`statistics`) |
-| `EwmaVar` | `f64` | — | core (`statistics`) |
+| `EwmVar` | `f64` | — | core (`statistics`) |
 | `Covariance` | `f64` | — | core (`statistics`) |
 | `CovarianceMatrix` | `f64` | `alloc` | core (`statistics`) |
 | `HarmonicMean` | `f64` | — | core (`statistics`) |

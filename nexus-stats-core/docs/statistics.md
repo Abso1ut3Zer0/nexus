@@ -8,7 +8,7 @@ Streaming, fixed-memory, O(1)-per-update statistical primitives. Module path: `n
 |------|------------------|--------|
 | `Welford` | Mean, variance, stddev | 3 words |
 | `Moments` | Mean, variance, skewness, kurtosis (Pebay 2008) | 5 words |
-| `EwmaVar` | Exponentially-weighted mean & variance | small, fixed |
+| `EwmVar` | Exponentially-weighted mean & variance | small, fixed |
 | `Covariance` | Online covariance + Pearson correlation | 5 words |
 | `CovarianceMatrix` | N-dimensional covariance matrix | O(N²) |
 | `HarmonicMean` | Harmonic mean | 2 words |
@@ -74,25 +74,32 @@ let kurt   = shape.kurtosis();       // classical (normal = 3)
 
 ---
 
-## EwmaVar — Exponentially-weighted variance
+## EwmVar — Exponentially-weighted variance
 
-Mean and variance with an EMA-style forgetting factor. Adapts to drift unlike `Welford`.
+Mean and variance with exponentially decaying weights. `Welford` with decay: it follows drift, where `Welford` weighs every sample equally.
 
 ```rust
-use nexus_stats_core::statistics::EwmaVar;
+use nexus_stats_core::statistics::EwmVar;
 
-let mut ew = EwmaVar::builder()
+let mut ew = EwmVar::builder()
     .halflife(100.0)
     .build()
     .unwrap();
 
-for x in stream { ew.update(x).unwrap(); }
-let (mean, var) = (ew.mean().unwrap(), ew.variance().unwrap());
+for x in stream {
+    if let Some(reading) = ew.update(x) {
+        let band = reading.mean + 3.0 * reading.std_dev();
+    }
+}
 ```
 
-**Use for:** adaptive z-scores, volatility bands on a drifting mean, anywhere you want `Welford` but with decay.
+`update` returns a `MeanVariance { mean, variance }` once primed; `value()` reads the same thing without feeding a sample. `checked_update` refuses NaN, infinity, and magnitudes above `1e120`.
 
-**Caveats:** `variance()` is the EW sample variance, which is biased low under finite memory — corrections exist but are rarely worth the cycles.
+The variance is the unbiased weighted variance, the one pandas (`ewm().var()`) and Polars (`ewm_var`) compute by default. `min_samples` is at least 2: one sample has no variance.
+
+`seed(mean, variance)` starts it converged on those values. `reset_with_seed(mean, variance)` does the same on a live tracker.
+
+**Use for:** adaptive z-scores, volatility bands on a drifting mean, anywhere you want `Welford` but with decay.
 
 ---
 

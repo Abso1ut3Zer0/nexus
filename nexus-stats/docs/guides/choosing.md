@@ -91,7 +91,7 @@ type with timestamps, or `PollSaturation`, which is weighted per message.
   - Numerically stable. Supports parallel merge (Chan's algorithm).
 - Skewness + kurtosis (distribution shape) → [**Moments**](../algorithms/moments.md)
   - Extends Welford to 3rd/4th moments. Fat tail and asymmetry detection.
-- Exponentially weighted variance (recent volatility) → [**EwmaVariance**](../algorithms/ewma-var.md)
+- Exponentially weighted variance (recent volatility) → [**EwmVar**](../algorithms/ewm-var.md)
   - More responsive than Welford. RiskMetrics pattern.
 - Are two signals correlated? → [**Covariance**](../algorithms/covariance.md)
   - Online Pearson correlation. Supports merge.

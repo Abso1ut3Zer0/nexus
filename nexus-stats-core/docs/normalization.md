@@ -20,7 +20,7 @@ All three share one shape:
 
 ## ZScoreNorm<f64> — EW z-score normalization
 
-Scores each sample against the exponentially weighted mean and standard deviation of the samples *before* it, then folds it in. Wraps `EwmaVar` internally.
+Scores each sample against the exponentially weighted mean and standard deviation of the samples *before* it, then folds it in. Wraps `EwmVar` internally.
 
 ```rust
 use nexus_stats_core::normalization::ZScoreNorm;
@@ -121,6 +121,6 @@ assert_eq!(qn.normalize(9999.0).unwrap(), Some(1.0));  // above everything seen
 
 ## Cross-references
 
-- The EW mean/variance underneath ZScoreNorm: [`statistics.md`](statistics.md) (EwmaVar).
+- The EW mean/variance underneath ZScoreNorm: [`statistics.md`](statistics.md) (EwmVar).
 - The windowed trackers underneath MinMaxNorm: [`monitoring.md`](monitoring.md) (WindowedMax/Min).
 - The single-quantile P² estimator: [`statistics.md`](statistics.md) (Percentile).

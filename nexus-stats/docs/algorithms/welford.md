@@ -28,7 +28,7 @@ when the mean is large relative to the variance.
 
 **Don't use Welford when:**
 - You only need smoothed mean → use [EMA](ema.md) (cheaper, no division)
-- You need exponentially weighted variance → use [EwmaVariance](ewma-var.md)
+- You need exponentially weighted variance → use [EwmVar](ewm-var.md)
 - You need integer-only computation → Welford requires division
 
 ## How It Works

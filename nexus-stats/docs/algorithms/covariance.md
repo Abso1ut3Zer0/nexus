@@ -39,7 +39,7 @@ has zero variance.
 ## When to Use It / When Not To
 
 **Don't use Covariance when:**
-- You only need variance of one signal → [Welford](welford.md) or [EwmaVariance](ewma-var.md)
+- You only need variance of one signal → [Welford](welford.md) or [EwmVar](ewm-var.md)
 - You need exponentially weighted correlation (recent data weighted more) →
   not available; use Covariance with periodic reset as an approximation
 
