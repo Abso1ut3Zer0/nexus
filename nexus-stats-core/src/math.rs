@@ -46,6 +46,41 @@ pub fn check_input(value: f64, limit: f64) -> Result<(), crate::DataError> {
     Err(refusal(value))
 }
 
+/// `2^64`: more samples than a `u64` count can hold.
+const TWO_POW_64: f64 = 18_446_744_073_709_551_616.0;
+
+/// The largest value one powered term may reach: `1e240`.
+///
+/// Our choice, far below the overflow threshold `f64::MAX` (written Ω in
+/// the floating-point literature). A difference of two inputs can be twice
+/// an input, so its fourth power is `2^4` times larger; `2^64` terms that
+/// size still sum below the threshold.
+pub const POWER_LIMIT: f64 = 1e240;
+const _: () = assert!(TWO_POW_64 * 16.0 * POWER_LIMIT < f64::MAX);
+
+/// The largest input whose square stays within [`POWER_LIMIT`]: `1e120`.
+pub const LIMIT_FOR_SQUARES: f64 = 1e120;
+const _: () = assert!(LIMIT_FOR_SQUARES * LIMIT_FOR_SQUARES <= POWER_LIMIT);
+
+/// A divisor below this has lost precision to underflow.
+///
+/// The smallest normal number over machine epsilon: the form of LAPACK's
+/// `SMLNUM` (safe minimum over precision), which it uses to guard a
+/// division.
+pub const SMALLEST_DIVISOR: f64 = f64::MIN_POSITIVE / f64::EPSILON;
+
+/// The variance that rounding alone produces around `mean`:
+/// `(f64::EPSILON * mean)^2`.
+///
+/// A variance at or below it means the values are equal to within
+/// rounding. This is the test SciPy's `skew` and `kurtosis` use.
+#[inline]
+#[must_use]
+pub const fn rounding_variance(mean: f64) -> f64 {
+    let rounding = f64::EPSILON * mean;
+    rounding * rounding
+}
+
 /// f32 variant of [`check_finite`].
 #[doc(hidden)]
 #[inline]
@@ -287,19 +322,30 @@ pub enum EwWeight {
 }
 
 impl EwWeight {
+    /// The smallest usable weight: half of machine epsilon.
+    ///
+    /// Our choice. Below it `1 - alpha` rounds to 1 and nothing is ever
+    /// forgotten. The `halflife` knob already stops here, by rounding.
+    const SMALLEST: f64 = f64::EPSILON / 2.0;
+
     /// The weight in `(0, 1)`.
     ///
     /// # Errors
     ///
     /// `ConfigError::Invalid` naming the knob that was set: `alpha` outside
-    /// `(0, 1)`, a `halflife` that is not positive and finite or whose weight
-    /// rounds to 0 or 1, or a `span` below 2.
+    /// `(0, 1)`, a `halflife` that is not positive and finite, a `span`
+    /// below 2, or any of the three giving a weight too small to use.
     #[inline]
     pub fn resolve(self) -> Result<f64, crate::ConfigError> {
         let alpha = match self {
             Self::Alpha(a) => {
                 if !in_unit_interval(a) {
                     return Err(crate::ConfigError::Invalid("alpha must be in (0, 1)"));
+                }
+                if a < Self::SMALLEST {
+                    return Err(crate::ConfigError::Invalid(
+                        "alpha is too small for a usable weight",
+                    ));
                 }
                 a
             }
@@ -324,11 +370,15 @@ impl EwWeight {
                 if n < 2 {
                     return Err(crate::ConfigError::Invalid("span must be at least 2"));
                 }
-                alpha_from_span(n)
+                let alpha = alpha_from_span(n);
+                if alpha < Self::SMALLEST {
+                    return Err(crate::ConfigError::Invalid(
+                        "span is too large for a usable weight",
+                    ));
+                }
+                alpha
             }
         };
-        // In (0, 1) on every arm: a span of 2 or more gives `2 / (n + 1)` in
-        // (0, 2/3], which no `u64` rounds to zero.
         Ok(alpha)
     }
 }
@@ -405,6 +455,51 @@ pub fn in_unit_interval(x: f64) -> bool {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn rounding_variance_is_epsilon_times_the_mean_squared() {
+        let eps = f64::EPSILON;
+        assert_eq!(super::rounding_variance(1.0), eps * eps);
+        assert_eq!(super::rounding_variance(-1e6), (eps * 1e6) * (eps * 1e6));
+        assert_eq!(super::rounding_variance(0.0), 0.0);
+
+        // Usable where a type derives a constant of its own.
+        const AT_TWO: f64 = super::rounding_variance(2.0);
+        assert_eq!(AT_TWO, 4.0 * eps * eps);
+    }
+
+    #[test]
+    fn a_weight_too_small_to_use_is_refused_under_every_knob() {
+        use super::EwWeight::{Alpha, Span};
+        use crate::ConfigError::Invalid;
+
+        let smallest = f64::EPSILON / 2.0;
+        assert_eq!(Alpha(smallest).resolve(), Ok(smallest));
+        let too_small = Err(Invalid("alpha is too small for a usable weight"));
+        assert_eq!(Alpha(smallest / 2.0).resolve(), too_small);
+        assert_eq!(Alpha(5e-324).resolve(), too_small);
+
+        assert!(Span(1 << 50).resolve().is_ok());
+        assert_eq!(
+            Span(u64::MAX).resolve(),
+            Err(Invalid("span is too large for a usable weight"))
+        );
+    }
+
+    #[cfg(any(feature = "std", feature = "libm"))]
+    #[test]
+    fn a_halflife_too_long_to_use_is_refused() {
+        use super::EwWeight::Halflife;
+        use crate::ConfigError::Invalid;
+
+        assert!(Halflife(10.0).resolve().is_ok());
+        assert_eq!(
+            Halflife(1e18).resolve(),
+            Err(Invalid(
+                "halflife is too small or too large for a usable weight"
+            ))
+        );
+    }
+
     #[test]
     fn check_input_accepts_up_to_the_limit_and_names_each_refusal() {
         use crate::DataError::{Infinite, NotANumber, OutOfRange};

@@ -86,6 +86,11 @@ impl JumpDecomposition {
 }
 
 impl BipowerVariation {
+    /// `1 / mu_1^2`, with `mu_1 = E|Z| = sqrt(2 / pi)` for a standard normal
+    /// `Z`: the factor that puts bipower variation on the scale of realized
+    /// variance (Barndorff-Nielsen & Shephard, 2004).
+    const SCALE: f64 = core::f64::consts::FRAC_PI_2;
+
     /// Creates a tracker with the default `min_samples` (30).
     #[inline]
     #[must_use]
@@ -184,7 +189,7 @@ impl BipowerVariation {
 
         Some(JumpDecomposition {
             realized_variance: self.realized,
-            bipower_variation: core::f64::consts::FRAC_PI_2 * self.products,
+            bipower_variation: Self::SCALE * self.products,
             returns: self.count - 1,
         })
     }

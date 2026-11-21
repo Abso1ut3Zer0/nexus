@@ -35,8 +35,8 @@ impl Welford {
     /// `m2` is the sum of squared deviations from the mean
     /// (`variance * (count - 1)` for sample variance).
     ///
-    /// Values larger in magnitude than [`INPUT_LIMIT`](crate::INPUT_LIMIT)
-    /// can overflow later updates.
+    /// Values larger in magnitude than `1e120` can overflow later updates
+    /// (see [input limits](crate#input-limits)).
     ///
     /// # Errors
     ///
@@ -87,7 +87,7 @@ impl Welford {
 
     /// Checked update. Feeds `sample`, or returns an error and leaves the
     /// accumulator unchanged if `sample` is NaN, infinite, or larger in
-    /// magnitude than [`INPUT_LIMIT`](crate::INPUT_LIMIT).
+    /// magnitude than `1e120` (see [input limits](crate#input-limits)).
     ///
     /// # Errors
     ///
@@ -96,7 +96,7 @@ impl Welford {
     /// - [`DataError::Infinite`](crate::DataError::Infinite) if `sample` is
     ///   infinite.
     /// - [`DataError::OutOfRange`](crate::DataError::OutOfRange) if `sample`
-    ///   is finite and larger in magnitude than `INPUT_LIMIT`.
+    ///   is finite and larger in magnitude than `1e120`.
     ///
     /// # Examples
     ///
@@ -110,7 +110,7 @@ impl Welford {
     /// ```
     #[inline]
     pub fn checked_update(&mut self, sample: f64) -> Result<(), crate::DataError> {
-        crate::math::check_input(sample, crate::INPUT_LIMIT)?;
+        crate::math::check_input(sample, crate::math::LIMIT_FOR_SQUARES)?;
         self.update(sample);
         Ok(())
     }
@@ -450,9 +450,9 @@ mod tests {
         let mut w = Welford::new();
         for i in 0..100_000 {
             let sample = if i % 2 == 0 {
-                crate::INPUT_LIMIT
+                crate::math::LIMIT_FOR_SQUARES
             } else {
-                -crate::INPUT_LIMIT
+                -crate::math::LIMIT_FOR_SQUARES
             };
             w.checked_update(sample).unwrap();
         }

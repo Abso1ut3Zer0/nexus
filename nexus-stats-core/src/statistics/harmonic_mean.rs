@@ -15,6 +15,18 @@ pub struct HarmonicMean {
 }
 
 impl HarmonicMean {
+    /// The smallest sample `checked_update` accepts: `1e-120`.
+    ///
+    /// Our choice, with a wide margin: `2^64` reciprocals this large still
+    /// sum without overflow.
+    const SMALLEST_SAMPLE: f64 = 1e-120;
+
+    /// The largest sample `checked_update` accepts: `1e120`.
+    ///
+    /// Our choice, with a wide margin: its reciprocal stays far from
+    /// underflow.
+    const LARGEST_SAMPLE: f64 = 1e120;
+
     /// Creates a new empty accumulator.
     #[inline]
     #[must_use]
@@ -48,8 +60,7 @@ impl HarmonicMean {
 
     /// Checked update. Feeds `sample`, or returns an error and leaves the
     /// accumulator unchanged if `sample` is NaN, infinite, or outside
-    /// `[1 / INPUT_LIMIT, INPUT_LIMIT]` (see
-    /// [`INPUT_LIMIT`](crate::INPUT_LIMIT)).
+    /// `[1e-120, 1e120]` (see [input limits](crate#input-limits)).
     ///
     /// # Errors
     ///
@@ -72,9 +83,8 @@ impl HarmonicMean {
     /// ```
     #[inline]
     pub fn checked_update(&mut self, sample: f64) -> Result<(), crate::DataError> {
-        crate::math::check_input(sample, crate::INPUT_LIMIT)?;
-        // A smaller sample's reciprocal could overflow the sum.
-        if sample < 1.0 / crate::INPUT_LIMIT {
+        crate::math::check_input(sample, Self::LARGEST_SAMPLE)?;
+        if sample < Self::SMALLEST_SAMPLE {
             return Err(crate::DataError::OutOfRange);
         }
         self.update(sample);
@@ -206,11 +216,11 @@ mod tests {
 
     #[test]
     fn checked_update_accepts_both_ends_of_the_range_without_overflow() {
-        let smallest = 1.0 / crate::INPUT_LIMIT;
+        let smallest = HarmonicMean::SMALLEST_SAMPLE;
         let mut hm = HarmonicMean::new();
         for _ in 0..100_000 {
             hm.checked_update(smallest).unwrap();
-            hm.checked_update(crate::INPUT_LIMIT).unwrap();
+            hm.checked_update(HarmonicMean::LARGEST_SAMPLE).unwrap();
         }
         let mean = hm.mean().unwrap();
         assert!(mean.is_finite() && mean > 0.0, "mean = {mean}");

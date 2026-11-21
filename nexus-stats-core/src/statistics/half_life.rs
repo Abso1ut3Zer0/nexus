@@ -99,7 +99,7 @@ impl HalfLife {
 
     /// Checked update. Feeds `value`, or returns an error and leaves the
     /// estimator unchanged if `value` is NaN, infinite, or larger in
-    /// magnitude than [`INPUT_LIMIT`](crate::INPUT_LIMIT).
+    /// magnitude than `1e120` (see [input limits](crate#input-limits)).
     ///
     /// # Errors
     ///
@@ -108,7 +108,7 @@ impl HalfLife {
     /// - [`DataError::Infinite`](crate::DataError::Infinite) if `value` is
     ///   infinite.
     /// - [`DataError::OutOfRange`](crate::DataError::OutOfRange) if `value`
-    ///   is finite and larger in magnitude than `INPUT_LIMIT`.
+    ///   is finite and larger in magnitude than `1e120`.
     ///
     /// # Examples
     ///
@@ -122,7 +122,7 @@ impl HalfLife {
     /// ```
     #[inline]
     pub fn checked_update(&mut self, value: f64) -> Result<(), crate::DataError> {
-        crate::math::check_input(value, crate::INPUT_LIMIT)?;
+        crate::math::check_input(value, crate::math::LIMIT_FOR_SQUARES)?;
         self.update(value);
         Ok(())
     }
@@ -138,8 +138,7 @@ impl HalfLife {
     #[must_use]
     pub fn coefficient(&self) -> Option<f64> {
         let lagged_variance = self.pairs.variance_y()?;
-        let rounding = f64::EPSILON * self.pairs.mean_y()?;
-        if lagged_variance <= rounding * rounding {
+        if lagged_variance <= crate::math::rounding_variance(self.pairs.mean_y()?) {
             return None;
         }
 
@@ -352,7 +351,7 @@ mod tests {
 
     #[test]
     fn checked_update_accepts_the_limit_without_overflow() {
-        let limit = crate::INPUT_LIMIT;
+        let limit = crate::math::LIMIT_FOR_SQUARES;
         let mut hl = HalfLife::new();
         for i in 0..100_000 {
             hl.checked_update(if i % 2 == 0 { limit } else { -limit })

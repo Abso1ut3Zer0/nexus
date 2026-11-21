@@ -12,6 +12,14 @@ contained.
 
 ### Changed
 
+- **Thresholds are named, documented and built from the float type.** Each
+  number a converted type relies on is a private constant on the type, or
+  a shared constant or `const fn` in `math` when several types use it, with
+  a line saying what it means and where it comes from (SciPy, LAPACK, the
+  paper, or "our choice"). The input limits `checked_update` enforces are
+  explained in a new "Input limits" section of the crate docs and checked
+  against `f64::MAX` at compile time; they are not exported.
+
 - **One naming convention, no numeric suffixes** (the stats major, [#773](https://github.com/Abso1ut3Zer0/nexus/issues/773)).
   A type whose algorithm exists for one numeric type is named plainly:
   `EmaF64` → `Ema`, `WelfordF64` → `Welford`, `CusumF64` → `Cusum`,
@@ -230,7 +238,7 @@ contained.
 - **`Lpm::update` no longer validates or returns a `Result`.**
   `checked_update` is the validating form.
 - **`Moments::update` no longer validates or returns a `Result`.**
-  `checked_update` validates against `Moments::INPUT_LIMIT` (`1e60`).
+  `checked_update` refuses a magnitude above `1e60`.
 - **`Moments::shape()` replaces `skewness()`, `excess_kurtosis()` and
   `kurtosis()`.** It returns a `Shape { skewness, excess_kurtosis }`, with
   `kurtosis()` on the struct. Skewness now needs four samples (it was
@@ -309,10 +317,10 @@ contained.
 - `Welford::m2()`: the sum of squared deviations, the `m2` of `from_parts`.
 - `Welford::checked_update`: `update` with the sample validated first. It
   returns a `DataError` and leaves the accumulator unchanged for a NaN, an
-  infinity, or a magnitude above the new `INPUT_LIMIT` (`1e120`), within
+  infinity, or a magnitude above `1e120`, within
   which the variance cannot overflow.
 - `HarmonicMean::checked_update`: refuses a NaN, an infinity, or a sample
-  outside `[1 / INPUT_LIMIT, INPUT_LIMIT]` (which includes zero and
+  outside `[1e-120, 1e120]` (which includes zero and
   negatives), and leaves the accumulator unchanged.
 - `RollSpread::checked_update` (refuses NaN, infinity, and a zero or
   negative price), `RollSpread::estimate`, `RollEstimate`.
@@ -324,15 +332,21 @@ contained.
   the result, not the input, since the order goes up to 16 and no single
   input limit covers every order. The type docs give rough bounds and the
   libraries this follows.
-- `Moments::checked_update`, `Moments::INPUT_LIMIT`, `Shape`.
+- `Moments::checked_update`, `Shape`.
 - `Covariance::checked_update`: refuses the pair, and leaves the
   accumulator unchanged, if either value is NaN, infinite, or larger in
-  magnitude than `INPUT_LIMIT`.
+  magnitude than `1e120`.
 - `math::alpha_from_halflife`, `math::dot`, `math::axpy`,
   `math::upper_tail_z`.
 
 ### Fixed
 
+- **Builders refuse a weight too small to use, under every knob.** An
+  `alpha` below half of machine epsilon (about `1.1e-16`), or a `span`
+  large enough to give one, was accepted, though `1 - alpha` rounds to 1
+  there and nothing is ever forgotten. `halflife` already refused such a
+  weight. Applies to the builders that use the shared resolver: `Ema`,
+  `AsymEma`, `ZScoreNorm`, `RollSpread`.
 - **`RollSpread` no longer reads low while warming up.** Its weighted
   averages started at zero and climbed, so early estimates were a fraction
   of the true spread. They are now divided by the weight accumulated so

@@ -281,6 +281,10 @@ CHANGELOG entry in `nexus-stats-core`:
 - `min_samples(0)` is rejected (`is_primed()` was true before any sample and
   getters reported `Some(0.0)`): Ema, EwmaVar, BipowerVariation, Lpm,
   RollSpread, Holt, HuberEma, Kalman1d; `Jitter` needs 2 unseeded.
+- The `Ema`, `AsymEma`, `ZScoreNorm` and `RollSpread` builders refuse an
+  `alpha` or `span` whose weight is below about `1.1e-16`: `1 - alpha`
+  rounds to 1 there, so nothing would ever be forgotten. `halflife` already
+  refused it.
 - Fallible constructors return `Result<_, ConfigError>` instead of panicking or
   returning a bare type: `WindowedMedian::new`, `LevelCrossing::new`,
   `DistributionShiftBuilder::build`, `BipowerVariationBuilder::build`,
@@ -404,7 +408,7 @@ library's `+` and `checked_add`:
 - `update` does the arithmetic and nothing else. It does not validate its
   input, follows IEEE 754, and returns no `Result`.
 - `checked_update` validates first and returns the `Result`. It refuses
-  NaN, infinity and a magnitude above `INPUT_LIMIT` (`1e120`), and leaves
+  NaN, infinity and a magnitude above `1e120`, and leaves
   the state unchanged.
 
 To migrate a call: where the value comes from your own arithmetic on data
@@ -412,8 +416,8 @@ you already trust, drop the `?` or `.unwrap()`. Where it comes from
 outside, rename the call to `checked_update` and keep the error handling.
 
 Moved so far: `Welford`, `HarmonicMean` (its `checked_update` also
-refuses a sample below `1 / INPUT_LIMIT`, which covers zero and negatives),
-`Covariance`, `Moments` (its limit is `Moments::INPUT_LIMIT`, `1e60`),
+refuses a sample below `1e-120`, which covers zero and negatives),
+`Covariance`, `Moments` (its limit is `1e60`),
 `Lpm` (its `checked_update` refuses the sample that would overflow the
 sum, with no fixed input limit), `HalfLife`, `BipowerVariation` (its
 `checked_update` refuses a zero or negative price, with no magnitude

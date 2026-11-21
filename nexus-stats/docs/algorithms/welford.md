@@ -97,7 +97,7 @@ println!("n={}, mean={:.2}, std_dev={:.2}",
 `f64` arithmetic does. `checked_update` is the validating form, in the
 manner of the standard library's `checked_add`: it returns an error and
 leaves the accumulator unchanged for a NaN, an infinity, or a magnitude
-above `INPUT_LIMIT` (`1e120`, within which the variance cannot overflow).
+above `1e120` (within which the variance cannot overflow).
 
 ```rust
 use nexus_stats::{DataError, statistics::Welford};

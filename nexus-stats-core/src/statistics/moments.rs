@@ -61,11 +61,17 @@ impl Shape {
     }
 }
 
-/// Below this a divisor has lost precision to underflow.
-#[cfg(any(feature = "std", feature = "libm"))]
-const SMALLEST_DIVISOR: f64 = f64::MIN_POSITIVE / f64::EPSILON;
+// `Moments::LIMIT_FOR_FOURTH_POWERS`, checked by the compiler.
+const _: () = {
+    let limit = Moments::LIMIT_FOR_FOURTH_POWERS;
+    assert!(limit * limit * limit * limit <= crate::math::POWER_LIMIT);
+};
 
 impl Moments {
+    /// The largest input whose fourth power stays within
+    /// `math::POWER_LIMIT`: `1e60`.
+    const LIMIT_FOR_FOURTH_POWERS: f64 = 1e60;
+
     /// Creates a new empty accumulator.
     #[inline]
     #[must_use]
@@ -78,13 +84,6 @@ impl Moments {
             m4: 0.0,
         }
     }
-
-    /// The largest magnitude [`checked_update`](Self::checked_update)
-    /// accepts: `1e60`.
-    ///
-    /// Within it, a sum of fourth powers of differences cannot overflow for
-    /// any stream length: `2^64 * (2e60)^4 < 1e261`.
-    pub const INPUT_LIMIT: f64 = 1e60;
 
     /// Feeds a sample.
     ///
@@ -128,7 +127,7 @@ impl Moments {
 
     /// Checked update. Feeds `sample`, or returns an error and leaves the
     /// accumulator unchanged if `sample` is NaN, infinite, or larger in
-    /// magnitude than [`Moments::INPUT_LIMIT`].
+    /// magnitude than `1e60` (see [input limits](crate#input-limits)).
     ///
     /// # Errors
     ///
@@ -137,7 +136,7 @@ impl Moments {
     /// - [`DataError::Infinite`](crate::DataError::Infinite) if `sample` is
     ///   infinite.
     /// - [`DataError::OutOfRange`](crate::DataError::OutOfRange) if `sample`
-    ///   is finite and larger in magnitude than `Moments::INPUT_LIMIT`.
+    ///   is finite and larger in magnitude than `1e60`.
     ///
     /// # Examples
     ///
@@ -151,7 +150,7 @@ impl Moments {
     /// ```
     #[inline]
     pub fn checked_update(&mut self, sample: f64) -> Result<(), crate::DataError> {
-        crate::math::check_input(sample, Self::INPUT_LIMIT)?;
+        crate::math::check_input(sample, Self::LIMIT_FOR_FOURTH_POWERS)?;
         self.update(sample);
         Ok(())
     }
@@ -238,12 +237,11 @@ impl Moments {
         }
         let n = self.count as f64;
         let variance = self.m2 / n;
-        let rounding = f64::EPSILON * self.mean;
-        if variance <= rounding * rounding {
+        if variance <= crate::math::rounding_variance(self.mean) {
             return None;
         }
         let variance_sq = variance * variance;
-        if variance_sq < SMALLEST_DIVISOR {
+        if variance_sq < crate::math::SMALLEST_DIVISOR {
             return None;
         }
 
@@ -515,7 +513,8 @@ mod tests {
         let mut m = Moments::new();
         for i in 0..100_000 {
             let sign = if i % 2 == 0 { 1.0 } else { -1.0 };
-            m.checked_update(sign * Moments::INPUT_LIMIT).unwrap();
+            m.checked_update(sign * Moments::LIMIT_FOR_FOURTH_POWERS)
+                .unwrap();
         }
         assert!(m.mean().unwrap().is_finite());
         assert!(m.variance().unwrap().is_finite());

@@ -331,7 +331,10 @@ mod tests {
             );
         }
         assert!(Ema::builder().span(2).build().is_ok());
-        assert!(Ema::builder().span(u64::MAX).build().is_ok());
+        assert_eq!(
+            err(Ema::builder().span(u64::MAX)),
+            Invalid("span is too large for a usable weight")
+        );
         assert_eq!(
             err(Ema::builder().alpha(0.5).seed(f64::NAN)),
             Invalid("EMA seed must be finite")
