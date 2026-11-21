@@ -65,7 +65,7 @@ impl Covariance {
 
     /// Checked update. Feeds the pair, or returns an error and leaves the
     /// accumulator unchanged if `x` or `y` is NaN, infinite, or larger in
-    /// magnitude than [`INPUT_LIMIT`](crate::INPUT_LIMIT).
+    /// magnitude than `1e120` (see [input limits](crate#input-limits)).
     ///
     /// # Errors
     ///
@@ -77,7 +77,7 @@ impl Covariance {
     /// - [`DataError::Infinite`](crate::DataError::Infinite) if either is
     ///   infinite.
     /// - [`DataError::OutOfRange`](crate::DataError::OutOfRange) if either
-    ///   is finite and larger in magnitude than `INPUT_LIMIT`.
+    ///   is finite and larger in magnitude than `1e120`.
     ///
     /// # Examples
     ///
@@ -91,8 +91,8 @@ impl Covariance {
     /// ```
     #[inline]
     pub fn checked_update(&mut self, x: f64, y: f64) -> Result<(), crate::DataError> {
-        crate::math::check_input(x, crate::INPUT_LIMIT)?;
-        crate::math::check_input(y, crate::INPUT_LIMIT)?;
+        crate::math::check_input(x, crate::math::LIMIT_FOR_SQUARES)?;
+        crate::math::check_input(y, crate::math::LIMIT_FOR_SQUARES)?;
         self.update(x, y);
         Ok(())
     }
@@ -365,7 +365,7 @@ mod tests {
 
     #[test]
     fn checked_update_accepts_the_limit_without_overflow() {
-        let limit = crate::INPUT_LIMIT;
+        let limit = crate::math::LIMIT_FOR_SQUARES;
         let mut c = Covariance::new();
         for i in 0..100_000 {
             let sign = if i % 2 == 0 { 1.0 } else { -1.0 };
