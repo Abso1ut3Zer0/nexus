@@ -153,10 +153,16 @@ contained.
   samples before it, then folds it in.** It folded first, which bounds the
   score by `sqrt((1 - alpha) / alpha)` whatever the sample: 3.0 at alpha
   0.1, so a 1e9 outlier scored 2.9999999999999996 and a gate at 4 could
-  never fire. With a zero standard deviation (a constant stream so far) a
-  sample off the constant scores `+inf` or `-inf`, the usual convention for
-  division by zero, where it used to score `0.0`; a sample on the constant
-  still scores `0.0`.
+  never fire.
+- **`ZScoreNorm` gives no score to a stream with no spread.** While every
+  sample so far has been the same value there is no scale, and `update`
+  and `normalize` return `None`, as NumPy, pandas and SciPy give no value
+  (NaN) there. It scored `0.0`. "No spread" is a variance at or below
+  `(EPSILON * mean)^2`, the test SciPy uses, in place of a fixed `1e-14`
+  floor.
+- **`ZScoreNorm::update` and `normalize` no longer validate or return a
+  `Result`**: both return `Option<T>`. `checked_update` and `checked_normalize` are the validating
+  forms: both refuse NaN, infinity, and a magnitude above `1e120`.
 - **`QuantileNorm` is a P² histogram** (Jain & Chlamtac 1985): one array of
   `resolution + 2` markers adjusted in a single pass, in place of
   `resolution` independent P² estimators with five markers each. Ranks are
@@ -356,6 +362,8 @@ contained.
   input limit covers every order. The type docs give rough bounds and the
   libraries this follows.
 - `Ema::checked_update`, `Ema::reset_with_seed`.
+- `ZScoreNorm::checked_update`, `ZScoreNorm::checked_normalize`,
+  `ZScoreNorm::reset_with_seed`.
 - `EwmVar::checked_update` (refuses NaN, infinity, and a magnitude above
   `1e120`), `EwmVar::value`, `EwmVar::reset_with_seed`, `MeanVariance`.
 - `Moments::checked_update`, `Shape`.

@@ -376,16 +376,18 @@ CHANGELOG entry in `nexus-stats-core`:
 ### Normalizers and DistributionShift (blind audit, PR C2)
 
 - **`normalize(value)` returns `Result<Option<T>, DataError>`** on
-  `ZScoreNorm`, `MinMaxNorm` and `QuantileNorm`: NaN and infinity are
-  rejected as `update` rejects them. Add a `?` or `.unwrap()` before the
-  existing `Option` handling.
+  `MinMaxNorm` and `QuantileNorm`: NaN and infinity are rejected as
+  `update` rejects them. Add a `?` or `.unwrap()` before the existing
+  `Option` handling. (`ZScoreNorm` has moved on to `normalize` /
+  `checked_normalize`; see "`update` and `checked_update`" below.)
 - **`ZScoreNorm::update` scores the sample against the statistics before
   it**, then folds it in. Scores are larger than before (the old score was
   capped at `sqrt((1 - alpha) / alpha)`) and the first score arrives one
-  sample later. A sample that departs from a so-far constant stream scores
-  `+inf` or `-inf`, not `0.0`: clamp the score if it feeds a type that
-  rejects infinity. Thresholds tuned against the old capped values need
-  retuning.
+  sample later. A stream with no spread (every sample the same so far) has
+  no score: `None`, not `0.0`, the convention of NumPy, pandas and SciPy.
+  A sample that jumps out of a flat stream therefore also gets `None`; treat
+  `None` on a primed normalizer as that signal if it should alarm.
+  Thresholds tuned against the old capped values need retuning.
 - **`QuantileNorm` is a P² histogram.** Ranks reach exactly 0 and 1
   outside the range seen and prime after `resolution + 2` samples.
   `min_samples` below `resolution + 2` is an error (it was silently raised).
@@ -421,7 +423,7 @@ refuses a sample below `1e-120`, which covers zero and negatives),
 `Lpm` (its `checked_update` refuses the sample that would overflow the
 sum, with no fixed input limit), `HalfLife`, `BipowerVariation` (its
 `checked_update` refuses a zero or negative price, with no magnitude
-limit), `Ema` (NaN and infinity only), `EwmVar`.
+limit), `Ema` (NaN and infinity only), `EwmVar`, `ZScoreNorm`.
 
 `Ema` and `EwmVar` are transforms, so `update` still returns the value,
 without the `Result`:
@@ -459,6 +461,17 @@ let sd = ew.value()?.std_dev();
 - `min_samples` must be at least 2, and a seed no longer counts as
   samples: `count()` starts at 0 and `reset()` returns to the seed.
   `ZScoreNorm` is built on `EwmVar` and changes the same way.
+
+`ZScoreNorm` has moved too. `update` and `normalize` return `Option<T>`;
+`checked_update` and `checked_normalize` are the validating forms:
+
+```rust
+// before
+if let Some(z) = zs.update(x)? { /* ... */ }
+// after
+if let Some(z) = zs.update(x) { /* ... */ }          // trusted input
+if let Some(z) = zs.checked_update(x)? { /* ... */ } // outside input
+```
 
 `BipowerVariation` changed in three ways:
 

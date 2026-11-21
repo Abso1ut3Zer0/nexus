@@ -12,8 +12,9 @@ Streaming online normalizers. Module path: `nexus_stats_core::normalization`.
 
 All three share one shape:
 
-- `update(..)` feeds a sample and returns its normalized value, `Ok(None)` while there is nothing to normalize against. `ZScoreNorm` scores the sample against the state *before* it and then folds it in (a score against statistics that already contain the sample is capped). `MinMaxNorm` and `QuantileNorm` fold first: a range or a rank is defined to include the sample, so a new maximum reads exactly 1.
-- `normalize(value)` scores a value against the current state without changing it. It returns `Result<Option<T>, DataError>`: `Err` for NaN or infinity, `Ok(None)` if not primed.
+- `update(..)` feeds a sample and returns its normalized value, `None` while there is nothing to normalize against. `ZScoreNorm` scores the sample against the state *before* it and then folds it in (a score against statistics that already contain the sample is capped). `MinMaxNorm` and `QuantileNorm` fold first: a range or a rank is defined to include the sample, so a new maximum reads exactly 1.
+- `normalize(value)` scores a value against the current state without changing it, `None` if not primed.
+- On `MinMaxNorm` and `QuantileNorm` both return a `Result` and refuse NaN and infinity. `ZScoreNorm` has moved to the unchecked `update` / `normalize` with `checked_update` / `checked_normalize` beside them; the other two follow.
 - `count()` / `is_primed()` / `reset()`.
 
 ---
@@ -34,9 +35,9 @@ assert!(zn.update(103.0).unwrap().abs() < 1.0);
 assert!(zn.update(10_000.0).unwrap() > 1_000.0);
 ```
 
-Scoring first is what makes the outlier visible. A sample fed into the statistics before being scored against them is bounded near `sqrt((1 - alpha) / alpha)` (about 3 at alpha 0.1), whatever its size.
+Scoring first is what makes the outlier visible. A sample fed into the statistics before being scored against them is bounded by its own weight, whatever its size: about 2.9 at alpha 0.1.
 
-`update` returns `None` until `min_samples` earlier samples have been seen (default and minimum 2, or at once when seeded). It does not validate; `checked_update` refuses NaN, infinity, and magnitudes above `1e120`. `normalize(value)` scores without feeding the value in, and `checked_normalize` is its validating form.
+`update` returns `None` until `min_samples` earlier samples have been seen (default and minimum 2, or at once when seeded). It does not validate; `checked_update` refuses NaN, infinity, and magnitudes above `1e120`. `normalize(value)` scores without feeding the value in, and `checked_normalize` is its validating form, with the same limit.
 
 **No spread, no score.** While every sample so far has been the same value, the standard deviation is zero and there is nothing to score against, so the result is `None`. This is the convention of NumPy, pandas and SciPy, which give no value (NaN) there.
 
@@ -58,7 +59,7 @@ If a jump out of a flat stream should alarm, treat `None` on a primed normalizer
 
 **Use for:** outlier scoring, adaptive thresholding, comparing values across instruments with different scales.
 
-**Caveats:** requires `std` or `libm` (for sqrt). A variance at or below `(EPSILON * mean)^2`, what rounding alone produces, counts as no spread (the test SciPy uses).
+**Caveats:** requires `std` or `libm` (for sqrt). `ZScoreNorm<f32>` returns infinity for a finite score too large for `f32`. A variance at or below `(EPSILON * mean)^2`, what rounding alone produces, counts as no spread (the test SciPy uses).
 
 ---
 

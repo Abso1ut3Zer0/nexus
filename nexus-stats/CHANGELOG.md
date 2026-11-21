@@ -105,6 +105,10 @@ one naming convention across the family. Migration guide:
   reports the side further over threshold and gains `restart_on_alarm()`;
   `halflife` / `span` errors name the knob. See the migration guide.
 
+- Carried from core: `ZScoreNorm::update` and `normalize` return
+  `Option<T>` with no `Result` (`checked_update` and `checked_normalize`
+  validate), and a stream with no spread has no score (`None`), as in
+  NumPy, pandas and SciPy.
 - Carried from core (blind audit, PR C2): `ZScoreNorm::update` scores
   before it folds, so outliers are no longer capped; `QuantileNorm` is a P²
   histogram; `DistributionShift::update` returns a `ShapeShift` once per

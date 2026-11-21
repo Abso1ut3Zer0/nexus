@@ -13,7 +13,8 @@ use crate::statistics::{EwmVar, MeanVariance};
 /// NumPy, pandas, and SciPy report no value (NaN) there.
 ///
 /// `T` is the sample type at the boundary, `f64` or `f32`. The statistics
-/// accumulate in `f64` either way.
+/// accumulate in `f64` either way, and `ZScoreNorm<f32>` returns infinity
+/// for a finite score too large for `f32`.
 ///
 /// # Examples
 ///
@@ -110,8 +111,9 @@ impl<T: Float> ZScoreNorm<T> {
         self.score(value.to_f64())
     }
 
-    /// Checked normalize. Scores `value`, or returns an error if it is NaN
-    /// or infinite.
+    /// Checked normalize. Scores `value`, or returns an error if it is NaN,
+    /// infinite, or above `1e120` in magnitude: the values
+    /// [`checked_update`](Self::checked_update) accepts.
     ///
     /// # Errors
     ///
@@ -119,8 +121,10 @@ impl<T: Float> ZScoreNorm<T> {
     ///   is NaN.
     /// - [`DataError::Infinite`](crate::DataError::Infinite) if `value` is
     ///   infinite.
+    /// - [`DataError::OutOfRange`](crate::DataError::OutOfRange) if `value`
+    ///   is finite and above the limit.
     pub fn checked_normalize(&self, value: T) -> Result<Option<T>, crate::DataError> {
-        crate::math::check_input(value.to_f64(), f64::MAX)?;
+        crate::math::check_input(value.to_f64(), crate::math::LIMIT_FOR_SQUARES)?;
         Ok(self.normalize(value))
     }
 
@@ -279,7 +283,7 @@ mod tests {
     #[test]
     fn an_outlier_is_not_capped_by_its_own_weight() {
         // Fed in before scoring, a sample's own weight would bound its
-        // score near sqrt((1 - alpha) / alpha): about 3 at alpha 0.1.
+        // score: about 2.9 at alpha 0.1.
         for alpha in [0.1, 0.5] {
             let mut zs = warmed(alpha);
             let z = zs.update(1e9).unwrap();
@@ -339,7 +343,7 @@ mod tests {
         let at = (f64::EPSILON * mean) * (f64::EPSILON * mean);
         let flat = ZScoreNorm::<f64>::builder()
             .alpha(0.1)
-            .seed(mean, at)
+            .seed(mean, at / 4.0)
             .build()
             .unwrap();
         assert_eq!(flat.normalize(mean + 1.0), None);
@@ -377,6 +381,14 @@ mod tests {
             flat.update(7.0);
         }
         assert_eq!(flat.update(8.0), None);
+
+        // A finite score too large for f32.
+        let tight = ZScoreNorm::<f32>::builder()
+            .alpha(0.1)
+            .seed(0.0, 1e-6)
+            .build()
+            .unwrap();
+        assert_eq!(tight.normalize(1e36), Some(f32::INFINITY));
     }
 
     #[test]
@@ -436,13 +448,18 @@ mod tests {
     }
 
     #[test]
-    fn checked_normalize_refuses_nan_and_infinity() {
-        use crate::DataError::{Infinite, NotANumber};
+    fn checked_normalize_refuses_what_checked_update_refuses() {
+        use crate::DataError::{Infinite, NotANumber, OutOfRange};
 
         let zs = warmed(0.1);
         assert_eq!(zs.checked_normalize(f64::NAN), Err(NotANumber));
         assert_eq!(zs.checked_normalize(f64::NEG_INFINITY), Err(Infinite));
+        assert_eq!(zs.checked_normalize(1e121), Err(OutOfRange));
         assert_eq!(zs.checked_normalize(105.0), Ok(zs.normalize(105.0)));
+
+        // At the limit the score is still finite.
+        let score = zs.checked_normalize(1e120).unwrap().unwrap();
+        assert!(score.is_finite(), "{score}");
     }
 
     #[test]
