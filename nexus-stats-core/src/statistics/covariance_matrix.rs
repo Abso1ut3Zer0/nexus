@@ -86,7 +86,7 @@ impl CovarianceMatrix {
         }
 
         // Update covariance using the stable EW recurrence.
-        // The (1 - alpha) factor on the increment matches the scalar EwmaVar
+        // The (1 - alpha) factor on the increment matches the scalar EwmVar
         // recurrence: cov = (1-α) * cov + α * (1-α) * δ_i * δ_j.
         // Without it, covariance would be biased upward by ~1/(1-α).
         let alpha_times_one_minus = alpha * one_minus_alpha;

@@ -22,7 +22,7 @@ use nexus_stats_core::smoothing::Ema;
 let mut ema = Ema::builder().alpha(0.25).build().unwrap();
 let stream = [8.0, 16.0, 2.0];
 let smoothed: Vec<Option<f64>> =
-    stream.into_iter().map(|x| ema.update(x).unwrap()).collect();
+    stream.into_iter().map(|x| ema.update(x)).collect();
 assert_eq!(smoothed, [Some(8.0), Some(10.0), Some(8.0)]);
 ```
 
@@ -40,7 +40,7 @@ use nexus_stats_core::smoothing::Ema;
 let mut ema = Ema::builder().alpha(0.25).min_samples(10).seed(100.0).build().unwrap();
 assert_eq!(ema.value(), Some(100.0)); // available at once; min_samples no longer applies
 assert_eq!(ema.count(), 0);           // no sample has been fed
-assert_eq!(ema.update(200.0).unwrap(), Some(125.0)); // smoothed into the seed
+assert_eq!(ema.update(200.0), Some(125.0)); // smoothed into the seed
 ema.reset();
 assert_eq!(ema.value(), Some(100.0)); // reset returns to the as-built state
 ```

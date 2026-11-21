@@ -67,7 +67,7 @@ impl ConditionalEma {
         self.count += 1;
         if active {
             self.active_count += 1;
-            let _ = self.ema.update(value);
+            self.ema.update(value);
         }
 
         Ok(())

@@ -69,7 +69,6 @@ pub struct EmaBuilder {
 
 impl Ema {
     /// Creates a builder.
-    #[inline]
     #[must_use]
     pub fn builder() -> EmaBuilder {
         EmaBuilder {
@@ -79,18 +78,25 @@ impl Ema {
         }
     }
 
-    /// Feeds a sample. Returns smoothed value once primed.
+    /// Feeds a sample. Returns the smoothed value once primed.
     ///
-    /// The first sample initializes the EMA directly (no smoothing), unless
-    /// the EMA was seeded, in which case it is smoothed into the seed.
+    /// The first sample becomes the value, unless the average was seeded,
+    /// in which case it is smoothed into the seed.
     ///
-    /// # Errors
+    /// Does not validate `sample`; arithmetic follows IEEE 754. See
+    /// [`checked_update`](Self::checked_update).
     ///
-    /// Returns `DataError::NotANumber` if the sample is NaN, or
-    /// `DataError::Infinite` if the sample is infinite.
+    /// # Examples
+    ///
+    /// ```
+    /// use nexus_stats_core::smoothing::Ema;
+    ///
+    /// let mut ema = Ema::builder().alpha(0.5).build().unwrap();
+    /// assert_eq!(ema.update(10.0), Some(10.0));
+    /// assert_eq!(ema.update(20.0), Some(15.0));
+    /// ```
     #[inline]
-    pub fn update(&mut self, sample: f64) -> Result<Option<f64>, crate::DataError> {
-        check_finite!(sample);
+    pub fn update(&mut self, sample: f64) -> Option<f64> {
         let first_unseeded = self.count == 0 && self.prime_at != 0;
         self.count += 1;
         self.value = if first_unseeded {
@@ -98,7 +104,34 @@ impl Ema {
         } else {
             self.alpha.fma(sample, self.one_minus_alpha * self.value)
         };
-        Ok(self.value())
+        self.value()
+    }
+
+    /// Checked update. Feeds `sample` and returns the smoothed value, or
+    /// returns an error and leaves the average unchanged if `sample` is NaN
+    /// or infinite.
+    ///
+    /// # Errors
+    ///
+    /// - [`DataError::NotANumber`](crate::DataError::NotANumber) if `sample`
+    ///   is NaN.
+    /// - [`DataError::Infinite`](crate::DataError::Infinite) if `sample` is
+    ///   infinite.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use nexus_stats_core::{DataError, smoothing::Ema};
+    ///
+    /// let mut ema = Ema::builder().alpha(0.5).build().unwrap();
+    /// assert_eq!(ema.checked_update(10.0), Ok(Some(10.0)));
+    /// assert_eq!(ema.checked_update(f64::NAN), Err(DataError::NotANumber));
+    /// assert_eq!(ema.value(), Some(10.0));
+    /// ```
+    #[inline]
+    pub fn checked_update(&mut self, sample: f64) -> Result<Option<f64>, crate::DataError> {
+        crate::math::check_input(sample, f64::MAX)?;
+        Ok(self.update(sample))
     }
 
     /// Current smoothed value, or `None` if not primed.
@@ -109,7 +142,6 @@ impl Ema {
     }
 
     /// The smoothing factor alpha.
-    #[inline]
     #[must_use]
     pub fn alpha(&self) -> f64 {
         self.alpha
@@ -117,7 +149,6 @@ impl Ema {
 
     /// Number of samples processed since construction or `reset`. A seed is
     /// not a sample.
-    #[inline]
     #[must_use]
     pub fn count(&self) -> u64 {
         self.count
@@ -132,7 +163,6 @@ impl Ema {
 
     /// Returns to the as-built state: no samples, and the seed if one was
     /// configured. Parameters unchanged.
-    #[inline]
     pub fn reset(&mut self) {
         self.value = self.start;
         self.count = 0;
@@ -143,7 +173,6 @@ impl Ema {
     /// # Errors
     ///
     /// Alpha must be in (0, 1) exclusive.
-    #[inline]
     pub fn reconfigure_alpha(&mut self, alpha: f64) -> Result<(), crate::ConfigError> {
         if !crate::math::in_unit_interval(alpha) {
             return Err(crate::ConfigError::Invalid("EMA alpha must be in (0, 1)"));
@@ -156,7 +185,6 @@ impl Ema {
 
 impl EmaBuilder {
     /// Direct smoothing factor. Must be in (0, 1) exclusive.
-    #[inline]
     #[must_use]
     pub fn alpha(mut self, alpha: f64) -> Self {
         self.weight = Some(crate::math::EwWeight::Alpha(alpha));
@@ -166,7 +194,6 @@ impl EmaBuilder {
     /// Samples for weight to decay by half. Must be positive and finite.
     ///
     /// Computes: `alpha = 1 - exp(-ln(2) / halflife)`
-    #[inline]
     #[must_use]
     #[cfg(any(feature = "std", feature = "libm"))]
     pub fn halflife(mut self, halflife: f64) -> Self {
@@ -177,7 +204,6 @@ impl EmaBuilder {
     /// Span in samples (the pandas `span` convention). Must be at least 2.
     ///
     /// Computes: `alpha = 2 / (n + 1)`
-    #[inline]
     #[must_use]
     pub fn span(mut self, n: u64) -> Self {
         self.weight = Some(crate::math::EwWeight::Span(n));
@@ -185,7 +211,6 @@ impl EmaBuilder {
     }
 
     /// Minimum samples before value is considered valid. Default: 1.
-    #[inline]
     #[must_use]
     pub fn min_samples(mut self, min: u64) -> Self {
         self.min_samples = min;
@@ -197,7 +222,6 @@ impl EmaBuilder {
     /// When seeded, `is_primed()` returns true immediately (`min_samples`
     /// no longer applies), the first `update()` applies smoothing (no raw
     /// initialization), and `reset()` returns to the seed.
-    #[inline]
     #[must_use]
     pub fn seed(mut self, value: f64) -> Self {
         self.seed = Some(value);
@@ -212,7 +236,6 @@ impl EmaBuilder {
     /// - `Invalid` if `alpha` is outside (0, 1), `halflife` is not positive
     ///   and finite, or `span` is below 2; the message names the knob set.
     /// - `Invalid` if `min_samples` is 0 or the seed is not finite.
-    #[inline]
     pub fn build(self) -> Result<Ema, crate::ConfigError> {
         let alpha = self
             .weight
@@ -250,9 +273,9 @@ mod tests {
     fn update_follows_the_recurrence_exactly() {
         // alpha 0.25: 8, then 8 + 0.25*(16-8) = 10, then 10 + 0.25*(2-10) = 8.
         let mut ema = Ema::builder().alpha(0.25).build().unwrap();
-        assert_eq!(ema.update(8.0).unwrap(), Some(8.0));
-        assert_eq!(ema.update(16.0).unwrap(), Some(10.0));
-        assert_eq!(ema.update(2.0).unwrap(), Some(8.0));
+        assert_eq!(ema.update(8.0), Some(8.0));
+        assert_eq!(ema.update(16.0), Some(10.0));
+        assert_eq!(ema.update(2.0), Some(8.0));
     }
 
     #[test]
@@ -269,7 +292,7 @@ mod tests {
         assert_eq!(ema.value(), Some(100.0));
         assert_eq!(ema.count(), 0);
         // The first sample is smoothed into the seed, not substituted for it.
-        assert_eq!(ema.update(200.0).unwrap(), Some(125.0));
+        assert_eq!(ema.update(200.0), Some(125.0));
         assert_eq!(ema.count(), 1);
     }
 
@@ -277,23 +300,23 @@ mod tests {
     #[allow(clippy::float_cmp)]
     fn reset_returns_to_the_seed() {
         let mut ema = Ema::builder().alpha(0.5).seed(100.0).build().unwrap();
-        let _ = ema.update(0.0).unwrap();
+        let _ = ema.update(0.0);
         ema.reset();
         assert_eq!(ema.count(), 0);
         assert_eq!(ema.value(), Some(100.0));
-        assert_eq!(ema.update(200.0).unwrap(), Some(150.0));
+        assert_eq!(ema.update(200.0), Some(150.0));
     }
 
     #[test]
     #[allow(clippy::float_cmp)]
     fn unseeded_reset_reinitializes_from_the_next_sample() {
         let mut ema = Ema::builder().alpha(0.5).min_samples(2).build().unwrap();
-        let _ = ema.update(10.0).unwrap();
-        let _ = ema.update(20.0).unwrap();
+        let _ = ema.update(10.0);
+        let _ = ema.update(20.0);
         ema.reset();
         assert_eq!(ema.value(), None);
-        assert_eq!(ema.update(40.0).unwrap(), None);
-        assert_eq!(ema.update(60.0).unwrap(), Some(50.0));
+        assert_eq!(ema.update(40.0), None);
+        assert_eq!(ema.update(60.0), Some(50.0));
     }
 
     #[test]
@@ -344,7 +367,7 @@ mod tests {
     #[test]
     fn first_sample_initializes() {
         let mut ema = Ema::builder().alpha(0.5).build().unwrap();
-        assert_eq!(ema.update(100.0).unwrap(), Some(100.0));
+        assert_eq!(ema.update(100.0), Some(100.0));
         assert_eq!(ema.value(), Some(100.0));
     }
 
@@ -353,11 +376,11 @@ mod tests {
         let mut ema = Ema::builder().alpha(0.1).build().unwrap();
 
         // Initialize with 0
-        ema.update(0.0).unwrap();
+        ema.update(0.0);
 
         // Feed constant 100 — should converge
         for _ in 0..1000 {
-            ema.update(100.0).unwrap();
+            ema.update(100.0);
         }
 
         let val = ema.value().unwrap();
@@ -372,11 +395,11 @@ mod tests {
         let mut fast = Ema::builder().alpha(0.9).build().unwrap();
         let mut slow = Ema::builder().alpha(0.1).build().unwrap();
 
-        fast.update(0.0).unwrap();
-        slow.update(0.0).unwrap();
+        fast.update(0.0);
+        slow.update(0.0);
 
-        fast.update(100.0).unwrap();
-        slow.update(100.0).unwrap();
+        fast.update(100.0);
+        slow.update(100.0);
 
         let fast_val = fast.value().unwrap();
         let slow_val = slow.value().unwrap();
@@ -392,30 +415,26 @@ mod tests {
         let mut ema = Ema::builder().alpha(0.5).min_samples(5).build().unwrap();
 
         for i in 1..5 {
-            assert_eq!(
-                ema.update(100.0).unwrap(),
-                None,
-                "sample {i} should not be primed"
-            );
+            assert_eq!(ema.update(100.0), None, "sample {i} should not be primed");
             assert!(!ema.is_primed());
         }
 
-        assert!(ema.update(100.0).unwrap().is_some());
+        assert!(ema.update(100.0).is_some());
         assert!(ema.is_primed());
     }
 
     #[test]
     fn reset_clears_state() {
         let mut ema = Ema::builder().alpha(0.5).build().unwrap();
-        ema.update(100.0).unwrap();
-        ema.update(200.0).unwrap();
+        ema.update(100.0);
+        ema.update(200.0);
 
         ema.reset();
         assert_eq!(ema.count(), 0);
         assert_eq!(ema.value(), None);
 
         // Re-initialize should work
-        assert_eq!(ema.update(50.0).unwrap(), Some(50.0));
+        assert_eq!(ema.update(50.0), Some(50.0));
     }
 
     #[test]
@@ -458,8 +477,8 @@ mod tests {
     #[allow(clippy::float_cmp)]
     fn float_reconfigure_alpha_preserves_value() {
         let mut ema = Ema::builder().alpha(0.5).build().unwrap();
-        ema.update(100.0).unwrap();
-        ema.update(200.0).unwrap();
+        ema.update(100.0);
+        ema.update(200.0);
         let val_before = ema.value().unwrap();
         let count_before = ema.count();
 
@@ -479,21 +498,33 @@ mod tests {
     }
 
     #[test]
-    fn rejects_nan_and_inf() {
+    fn checked_update_refuses_bad_input_and_changes_nothing() {
+        use crate::DataError::{Infinite, NotANumber};
+
         let mut ema = Ema::builder().alpha(0.5).build().unwrap();
-        assert!(matches!(
-            ema.update(f64::NAN),
-            Err(crate::DataError::NotANumber)
-        ));
-        assert!(matches!(
-            ema.update(f64::INFINITY),
-            Err(crate::DataError::Infinite)
-        ));
-        assert!(matches!(
-            ema.update(f64::NEG_INFINITY),
-            Err(crate::DataError::Infinite)
-        ));
-        // State unchanged — counter should still be 0
-        assert_eq!(ema.count(), 0);
+        ema.checked_update(10.0).unwrap();
+
+        assert_eq!(ema.checked_update(f64::NAN), Err(NotANumber));
+        assert_eq!(ema.checked_update(f64::INFINITY), Err(Infinite));
+        assert_eq!(ema.checked_update(f64::NEG_INFINITY), Err(Infinite));
+
+        assert_eq!((ema.count(), ema.value()), (1, Some(10.0)));
+    }
+
+    #[test]
+    fn checked_update_gives_the_same_result_as_update() {
+        let mut checked = Ema::builder().alpha(0.2).build().unwrap();
+        let mut unchecked = checked.clone();
+        for x in [2.0, 0.5, 1e300, -3.25] {
+            assert_eq!(checked.checked_update(x), Ok(unchecked.update(x)));
+        }
+    }
+
+    #[test]
+    fn update_does_not_validate() {
+        let mut ema = Ema::builder().alpha(0.5).build().unwrap();
+        ema.update(1.0);
+        assert!(ema.update(f64::NAN).unwrap().is_nan());
+        assert_eq!(ema.count(), 2);
     }
 }

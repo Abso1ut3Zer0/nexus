@@ -8,7 +8,7 @@ mod covariance;
 #[cfg(feature = "alloc")]
 mod covariance_matrix;
 mod cvar;
-mod ewma_var;
+mod ewm_var;
 #[cfg(any(feature = "std", feature = "libm"))]
 mod half_life;
 mod harmonic_mean;
@@ -35,7 +35,7 @@ pub use covariance::*;
 #[cfg(feature = "alloc")]
 pub use covariance_matrix::*;
 pub use cvar::*;
-pub use ewma_var::*;
+pub use ewm_var::*;
 #[cfg(any(feature = "std", feature = "libm"))]
 pub use half_life::*;
 pub use harmonic_mean::*;

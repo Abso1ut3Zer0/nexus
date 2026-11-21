@@ -62,7 +62,7 @@ impl Amihud {
             return Ok(());
         }
         let ratio = abs_return / dollar_volume;
-        self.ema.update(ratio)?;
+        self.ema.checked_update(ratio)?;
         self.count += 1;
         Ok(())
     }

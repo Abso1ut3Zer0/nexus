@@ -64,9 +64,7 @@ impl HitRate {
         self.hits += u64::from(is_hit);
 
         let hit_val = crate::math::indicator(is_hit);
-        // Ema::update returns Result<Option<f64>, DataError>, but 0.0/1.0
-        // are always finite, so this cannot fail.
-        let _ = self.ew_hits.update(hit_val);
+        self.ew_hits.update(hit_val);
 
         Ok(())
     }

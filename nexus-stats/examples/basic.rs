@@ -32,7 +32,7 @@ fn main() {
 
     for (i, &sample) in samples.iter().enumerate() {
         let shift = cusum.update(sample).unwrap();
-        let smoothed = ema.update(sample).unwrap();
+        let smoothed = ema.update(sample);
         stats.update(sample);
 
         let ema_str = smoothed.map_or_else(|| "  -  ".into(), |v| format!("{v:6.1}"));
