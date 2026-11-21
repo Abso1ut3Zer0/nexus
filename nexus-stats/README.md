@@ -90,7 +90,7 @@ for deep-dives on each algorithm.
 | `Covariance` | Online covariance + Pearson correlation | 11 |
 | `HarmonicMean` | Correct average for rates/throughputs | 6 |
 | `BipowerVariation` *(std\|libm)* | Jump-robust volatility (BV vs RV) | 22 |
-| `RollSpread` *(std\|libm)* | Implicit bid-ask spread from autocovariance | 6 |
+| `RollSpread` *(std\|libm)* | Implicit bid-ask spread from autocovariance | 21 |
 | `TwoScaleRv` *(alloc, std\|libm)* | Noise-corrected realized variance | 7 |
 
 ### Regression

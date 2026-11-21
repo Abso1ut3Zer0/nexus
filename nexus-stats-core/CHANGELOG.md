@@ -184,6 +184,26 @@ contained.
   the same change as `Welford`. `checked_update` is the validating form.
 - **`Covariance::update` no longer validates or returns a `Result`**, the
   same change again. `checked_update(x, y)` validates both values.
+- **`RollSpread` works on log-price changes, with the mean removed.**
+  `update(price)` takes the logarithm itself, so the spread is a proportion
+  of the price (`0.0005` is 5 basis points), as in Roll's own estimates and
+  most later work; it differenced raw prices. The autocovariance has the
+  mean change removed, as the implementations compared do (R's `bidask`,
+  pandas-based code); it was a plain average of products, which a drifting
+  price pushed toward zero. Old readings are not comparable.
+- **`RollSpread::estimate()` returns a `RollEstimate { spread,
+  autocovariance }`.** `update` no longer validates and returns nothing;
+  `checked_update` is the validating form. `spread()` and
+  `autocovariance()` on the type are removed. A non-negative autocovariance
+  gives a spread of `0.0` (it was `None`), the usual substitute (Hasbrouck,
+  2009; Goyenko, Holden & Trzcinka, 2009); the `autocovariance` field
+  shows when that happened. `min_samples` must be at least 3. The builder
+  also accepts `span`.
+- **`update` returns a value only on a transform.** A type whose result the
+  caller uses for each sample (a smoother, a normalizer) returns it from
+  `update`. A type that summarises many samples returns nothing and is
+  read by a method named for what it returns. `BipowerVariation` follows:
+  `decomposition()` replaces `last()`, and its `update` returns nothing.
 - **`BipowerVariation` works on log returns and reports period totals.**
   `update(price)` takes the logarithm itself, as the definitions
   (Barndorff-Nielsen & Shephard, 2004) and the MFE Toolbox do; it
@@ -217,6 +237,10 @@ contained.
   three), since the pair comes together.
 
 ### Removed
+
+- **`RollSpread::hasbrouck_spread()`.** It computed `spread * sqrt(1 + rho)`
+  and credited Hasbrouck (2009). No published estimator has that form;
+  Hasbrouck's is a Bayesian sampler for the Roll model.
 
 - **`SaturationF64`** ([#761](https://github.com/Abso1ut3Zer0/nexus/issues/761)):
   an EMA of a caller-supplied utilization fraction against an unvalidated
@@ -290,6 +314,8 @@ contained.
 - `HarmonicMean::checked_update`: refuses a NaN, an infinity, or a sample
   outside `[1 / INPUT_LIMIT, INPUT_LIMIT]` (which includes zero and
   negatives), and leaves the accumulator unchanged.
+- `RollSpread::checked_update` (refuses NaN, infinity, and a zero or
+  negative price), `RollSpread::estimate`, `RollEstimate`.
 - `BipowerVariation::checked_update` (refuses NaN, infinity, and a zero or
   negative price), `BipowerVariation::decomposition`, `JumpDecomposition`.
 - `HalfLife::checked_update`, `Reversion`.
@@ -307,6 +333,10 @@ contained.
 
 ### Fixed
 
+- **`RollSpread` no longer reads low while warming up.** Its weighted
+  averages started at zero and climbed, so early estimates were a fraction
+  of the true spread. They are now divided by the weight accumulated so
+  far.
 - **`HalfLife` divides by the variance of the lagged values.** The
   least-squares slope of `x_t` on `x_{t-1}` is `Cov / Var(x_{t-1})`; it
   divided by `Var(x_t)`. The two agree on long stationary series and not

@@ -142,6 +142,10 @@ one naming convention across the family. Migration guide:
 
 ### Fixed
 
+- Carried from core: `RollSpread` works on log-price changes with the
+  mean removed, no longer reads low while warming up, and is read through
+  `estimate()`. `hasbrouck_spread()` is removed. `BipowerVariation` is read
+  through `decomposition()`. See the migration guide.
 - Carried from core: `BipowerVariation` works on log returns and reports
   period totals, as the definitions do, read as a `JumpDecomposition`
   from `decomposition()`. Readings are not comparable with earlier ones; see the

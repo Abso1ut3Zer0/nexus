@@ -443,6 +443,32 @@ let jump = reading.jump_ratio()?;
 comparable with realized variance, and the two jump readings use that.
 `min_samples` must be at least 3, and the type needs `std` or `libm`.
 
+`RollSpread` is also moved (its `checked_update` refuses a zero or negative
+price), and changed:
+
+- It takes the logarithm of each price and works on log changes, so the
+  spread is a proportion of the price (`0.0005` is 5 basis points). For a
+  spread in price units, multiply by the price.
+- The mean change is removed from the autocovariance, and early estimates
+  are no longer low.
+- `spread()` and `autocovariance()` are replaced by `estimate()`:
+
+```rust
+// before
+if let Some(spread) = rs.spread() { /* ... */ }
+// after
+if let Some(estimate) = rs.estimate() {
+    // estimate.spread is 0.0 when estimate.autocovariance >= 0.0
+}
+```
+
+- `hasbrouck_spread()` is removed; no published estimator has its form.
+- `min_samples` must be at least 3.
+
+**Which types return a value from `update`:** only transforms, whose result
+is used for each sample (smoothers, normalizers). A type that summarises
+many samples returns nothing from `update` and is read by a named method.
+
 `HalfLife::autocorrelation()` is now `coefficient()`, and `half_life()` is
 replaced by `reversion()`, which says why there is no half-life when there
 is none:

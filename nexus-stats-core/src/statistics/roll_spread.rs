@@ -9,7 +9,8 @@ use crate::math::MulAdd;
 ///
 /// Works on changes in the log price, so the spread is a proportion of the
 /// price (`0.0005` is 5 basis points) and means the same at any price
-/// level. Roll's own estimates, and most later work, use this form.
+/// level. Roll's own estimates, and most later work, use the proportional
+/// form.
 ///
 /// The autocovariance is exponentially weighted, with the mean change
 /// removed.
@@ -20,7 +21,8 @@ use crate::math::MulAdd;
 /// use nexus_stats_core::statistics::RollSpread;
 ///
 /// let mut rs = RollSpread::builder().alpha(0.05).min_samples(3).build().unwrap();
-/// // A price bouncing between bid and ask.
+/// // Trades alternating between bid and ask. (Strict alternation reads
+/// // twice the quoted spread; the model assumes the side is random.)
 /// for i in 0..200 {
 ///     rs.update(if i % 2 == 0 { 100.0 } else { 100.1 });
 /// }
@@ -101,6 +103,19 @@ impl RollSpread {
     ///
     /// Does not validate `price`; arithmetic follows IEEE 754. See
     /// [`checked_update`](Self::checked_update).
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use nexus_stats_core::statistics::RollSpread;
+    ///
+    /// let mut rs = RollSpread::builder().alpha(0.1).min_samples(3).build().unwrap();
+    /// for price in [100.0, 100.0, 100.0] {
+    ///     rs.update(price);
+    /// }
+    /// // A price that never moves has no bounce to measure.
+    /// assert_eq!(rs.estimate().unwrap().spread, 0.0);
+    /// ```
     #[inline]
     pub fn update(&mut self, price: f64) {
         let log_price = crate::math::ln(price);
@@ -129,6 +144,17 @@ impl RollSpread {
     ///   infinite.
     /// - [`DataError::OutOfRange`](crate::DataError::OutOfRange) if `price`
     ///   is zero or negative.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use nexus_stats_core::{DataError, statistics::RollSpread};
+    ///
+    /// let mut rs = RollSpread::builder().alpha(0.1).build().unwrap();
+    /// assert_eq!(rs.checked_update(100.0), Ok(()));
+    /// assert_eq!(rs.checked_update(0.0), Err(DataError::OutOfRange));
+    /// assert_eq!(rs.count(), 1);
+    /// ```
     #[inline]
     pub fn checked_update(&mut self, price: f64) -> Result<(), crate::DataError> {
         // Any positive price is allowed: its logarithm is small.
@@ -368,6 +394,31 @@ mod tests {
         // A price that never moves.
         let estimate = fed(0.1, &[0.0; 5]);
         assert_eq!((estimate.autocovariance, estimate.spread), (0.0, 0.0));
+    }
+
+    #[test]
+    fn the_estimate_does_not_depend_on_the_price_level() {
+        let estimate_at = |level: f64| {
+            let mut rs = estimator(0.1);
+            for price in [100.0, 100.1, 99.9, 100.0, 100.3, 100.2] {
+                rs.update(price * level);
+            }
+            rs.estimate().unwrap()
+        };
+        let (low, high) = (estimate_at(1.0), estimate_at(1e6));
+        assert!((low.spread - high.spread).abs() < 1e-12);
+        assert!((low.autocovariance - high.autocovariance).abs() < 1e-15);
+    }
+
+    #[test]
+    fn the_default_needs_thirty_prices() {
+        let mut rs = RollSpread::builder().alpha(0.1).build().unwrap();
+        for _ in 0..29 {
+            rs.update(100.0);
+        }
+        assert_eq!(rs.estimate(), None);
+        rs.update(100.0);
+        assert!(rs.estimate().is_some());
     }
 
     #[test]

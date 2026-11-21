@@ -68,7 +68,7 @@ See [Integer vs Float](../guides/integer-vs-float.md) for the caller rules and
 | `BucketAccumulator` (→ `BucketSummary`) | `f64` | — | core (`statistics`) |
 | `Amihud` | `f64` | — | core (`statistics`) |
 | `BipowerVariation` (→ `JumpDecomposition`) | `f64` | `std\|libm` | core (`statistics`) |
-| `RollSpread` | `f64` | `std\|libm` | core (`statistics`) |
+| `RollSpread` (→ `RollEstimate`) | `f64` | `std\|libm` | core (`statistics`) |
 | `HalfLife` | `f64` | `std\|libm` | core (`statistics`) |
 | `Hurst` | `f64` | `alloc + std\|libm` | core (`statistics`) |
 | `VarianceRatio` | `f64` | `alloc` | core (`statistics`) |
