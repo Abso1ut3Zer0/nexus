@@ -128,7 +128,8 @@ impl GammaPoisson {
     /// Approximate credible interval using normal approximation.
     ///
     /// Returns `(lower, upper)` bounds for the given confidence level,
-    /// or `None` if no exposure has been observed or confidence is not in (0, 1).
+    /// or `None` if no exposure has been observed or confidence is not in (0, 1)
+    /// (NaN included).
     ///
     /// Uses the Abramowitz & Stegun rational approximation for the
     /// inverse normal CDF.
@@ -333,10 +334,20 @@ mod tests {
     fn credible_interval_none_for_invalid_confidence() {
         let mut gp = GammaPoisson::new();
         gp.update(10, 1.0).unwrap();
-        assert!(gp.credible_interval(0.0).is_none());
-        assert!(gp.credible_interval(1.0).is_none());
-        assert!(gp.credible_interval(-0.5).is_none());
-        assert!(gp.credible_interval(1.5).is_none());
+        for c in [
+            0.0,
+            1.0,
+            -0.5,
+            1.5,
+            f64::NAN,
+            f64::INFINITY,
+            f64::NEG_INFINITY,
+        ] {
+            assert!(gp.credible_interval(c).is_none(), "confidence {c}");
+        }
+        for c in [1e-9, 0.95, 1.0 - 1e-9] {
+            assert!(gp.credible_interval(c).is_some(), "confidence {c}");
+        }
     }
 
     #[test]

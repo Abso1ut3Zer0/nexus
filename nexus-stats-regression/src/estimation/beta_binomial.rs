@@ -132,7 +132,8 @@ impl BetaBinomial {
     /// (e.g., 0.95 for a 95% interval). Uses the Abramowitz & Stegun
     /// rational approximation (26.2.23) for the inverse normal CDF.
     ///
-    /// Returns `None` if no observations have been made.
+    /// Returns `None` if no observations have been made, or if `confidence`
+    /// is not in (0, 1) (NaN included).
     #[inline]
     #[must_use]
     #[cfg(any(feature = "std", feature = "libm"))]
@@ -339,6 +340,35 @@ mod tests {
             width2 < width1,
             "interval should narrow: {width1:.4} → {width2:.4}"
         );
+    }
+
+    #[cfg(any(feature = "std", feature = "libm"))]
+    #[test]
+    fn credible_interval_none_without_observations() {
+        let bb = BetaBinomial::with_prior(2.0, 2.0).unwrap();
+        assert!(bb.credible_interval(0.95).is_none());
+    }
+
+    #[cfg(any(feature = "std", feature = "libm"))]
+    #[test]
+    fn credible_interval_none_for_invalid_confidence() {
+        let mut bb = BetaBinomial::with_prior(2.0, 2.0).unwrap();
+        bb.update(true);
+        bb.update(false);
+        for c in [
+            0.0,
+            1.0,
+            -0.5,
+            1.5,
+            f64::NAN,
+            f64::INFINITY,
+            f64::NEG_INFINITY,
+        ] {
+            assert!(bb.credible_interval(c).is_none(), "confidence {c}");
+        }
+        for c in [1e-9, 0.95, 1.0 - 1e-9] {
+            assert!(bb.credible_interval(c).is_some(), "confidence {c}");
+        }
     }
 
     #[test]
