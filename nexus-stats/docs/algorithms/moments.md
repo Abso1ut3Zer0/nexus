@@ -109,7 +109,7 @@ divisors underflow.
 
 `update` does not validate its input. `checked_update` returns a
 `DataError` and changes nothing for a NaN, an infinity, or a magnitude
-above `Moments::INPUT_LIMIT` (`1e60`; fourth powers overflow sooner than
+above `1e60` (fourth powers overflow sooner than
 squares).
 
 ### Merging

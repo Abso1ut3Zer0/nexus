@@ -21,7 +21,7 @@ if w.is_primed() {
 w.reset();
 ```
 
-- **`update` and `checked_update`**, after the standard library's `+` and `checked_add`. `update` does the arithmetic and nothing else: it does not validate its input, follows IEEE 754, and returns no `Result`. `checked_update` is the validating form: it returns a `DataError` and changes nothing for a NaN, an infinity, or a magnitude above `INPUT_LIMIT`. The types are moving to this pair one at a time (the migration guide lists the moved ones); a type without a `checked_update` still validates inside `update` and returns `Result<_, DataError>` from it. Either way the caller decides whether to propagate, log, or swallow an error.
+- **`update` and `checked_update`**, after the standard library's `+` and `checked_add`. `update` does the arithmetic and nothing else: it does not validate its input, follows IEEE 754, and returns no `Result`. `checked_update` is the validating form: it returns a `DataError` and changes nothing for a NaN, an infinity, or a magnitude above the type's limit (`1e120` for most). The types are moving to this pair one at a time (the migration guide lists the moved ones); a type without a `checked_update` still validates inside `update` and returns `Result<_, DataError>` from it. Either way the caller decides whether to propagate, log, or swallow an error.
 - **`is_primed()` / `count()` / `reset()`** on every type.
 - **O(1) per update.** Fixed memory. No allocation on the hot path after construction.
 - **`f64` by default**; the cheap primitives (`Slew`, `DeadBand`, `Hysteresis`, the extrema, the diffs, ...) are generic over `f64` and `i64`. See [Integer Variants](#integer-variants).

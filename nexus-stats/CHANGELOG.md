@@ -114,9 +114,8 @@ one naming convention across the family. Migration guide:
   three normalizers. See the migration guide.
 - Carried from core: `Welford::update` no longer validates or returns a
   `Result`; `Welford::checked_update` is the validating form (after the
-  standard library's `+` and `checked_add`). `INPUT_LIMIT` is re-exported
-  at the crate root. The other types follow one at a time; the migration
-  guide keeps the list.
+  standard library's `+` and `checked_add`). The other types follow one at
+  a time; the migration guide keeps the list.
 
 ### Removed
 
@@ -142,6 +141,9 @@ one naming convention across the family. Migration guide:
 
 ### Fixed
 
+- Carried from core: the `Ema`, `AsymEma`, `ZScoreNorm` and `RollSpread`
+  builders refuse an `alpha` or `span` whose weight is too small to use
+  (below about `1.1e-16`), as `halflife` already did.
 - Carried from core: `RollSpread` works on log-price changes with the
   mean removed, no longer reads low while warming up, and is read through
   `estimate()`. `hasbrouck_spread()` is removed. `BipowerVariation` is read

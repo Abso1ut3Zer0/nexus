@@ -31,7 +31,7 @@ if let Some(r) = cov.correlation() {
 
 `update` does not validate its input. `checked_update` returns a
 `DataError` and changes nothing if either value is NaN, infinite, or larger
-in magnitude than `INPUT_LIMIT` (`1e120`).
+in magnitude than `1e120`.
 
 `correlation()` is always within `[-1, 1]`, and `None` when either signal
 has zero variance.

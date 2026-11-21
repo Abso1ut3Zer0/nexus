@@ -42,7 +42,7 @@ let std  = w.std_dev().unwrap();
 let n    = w.count();
 ```
 
-`update` does not validate its input (IEEE 754, as `f64` arithmetic). `checked_update` returns a `DataError` and changes nothing for a NaN, an infinity, or a magnitude above `INPUT_LIMIT` (`1e120`).
+`update` does not validate its input (IEEE 754, as `f64` arithmetic). `checked_update` returns a `DataError` and changes nothing for a NaN, an infinity, or a magnitude above `1e120`.
 
 **Use for:** running mean/variance/stddev on any float stream. The default first choice when you need "how noisy is this?".
 
@@ -66,7 +66,7 @@ let excess = shape.excess_kurtosis;  // normal = 0
 let kurt   = shape.kurtosis();       // classical (normal = 3)
 ```
 
-`shape()` is `None` with fewer than four samples, or when the data is too close to constant for a shape to be resolved. `update` does not validate; `checked_update` refuses a NaN, an infinity, or a magnitude above `Moments::INPUT_LIMIT` (`1e60`).
+`shape()` is `None` with fewer than four samples, or when the data is too close to constant for a shape to be resolved. `update` does not validate; `checked_update` refuses a NaN, an infinity, or a magnitude above `1e60`.
 
 **Use for:** return distributions, latency distribution shape, detecting fat tails. `excess_kurtosis > 3` is a serious tail warning.
 
@@ -245,7 +245,7 @@ match hl.reversion() {
 
 **Bias:** the least-squares estimate of `phi` is biased low, most visibly near 1 (the Dickey-Fuller bias): a random walk usually reads as reverting with a long half-life. The estimate is left uncorrected, as statsmodels' `AutoReg` and R's `ar` leave it. Use a unit-root test, not this, to decide whether a series reverts.
 
-`coefficient()` returns `phi` itself. `update` does not validate; `checked_update` refuses a NaN, an infinity, or a magnitude above `INPUT_LIMIT`.
+`coefficient()` returns `phi` itself. `update` does not validate; `checked_update` refuses a NaN, an infinity, or a magnitude above `1e120`.
 
 **The formula:** `-ln 2 / ln phi` is exact for data sampled at fixed steps. A common shortcut (Chan, *Algorithmic Trading*) is `-ln 2 / (phi - 1)`. It agrees when reversion is slow and reads long when it is fast (39% long at `phi = 0.5`). To get Chan's number: `-LN_2 / (hl.coefficient()? - 1.0)`.
 

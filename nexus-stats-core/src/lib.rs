@@ -34,11 +34,13 @@
 //!   covariance: `2^64 * (2e120)^2 < 1e260`.
 //! - `1e60` for `Moments`, which raises it to the fourth power:
 //!   `2^64 * (2e60)^4 < 1e261`.
+//! - `[1e-120, 1e120]` for `HarmonicMean`, which sums reciprocals.
 //! - A type that takes a logarithm of its input, or tests its own running
 //!   sum, has no magnitude limit and says so.
 //!
-//! These are our own bounds, chosen with a wide margin; no convention sets
-//! them.
+//! These are our own bounds, chosen with a wide margin under the largest
+//! `f64`: the first two keep the powered term within `1e240`. No convention
+//! sets them.
 
 #[cfg(feature = "alloc")]
 extern crate alloc;
