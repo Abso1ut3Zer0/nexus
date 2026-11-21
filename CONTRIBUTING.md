@@ -216,6 +216,24 @@ Every public item needs documentation that explains:
 - Miri for undefined behavior detection where applicable
 - Stress tests that run longer than you think necessary
 
+### Inlining
+
+`#[inline]` trades speed against compile time and code size. We follow the
+standard library's policy
+([std dev guide](https://std-dev-guide.rust-lang.org/policy/inline.html)):
+
+- **Add it** to public, small, non-generic functions on a per-call hot path,
+  and to the small helpers they call. Inlining is not transitive: a helper
+  without it stays a call.
+- **Leave it off** generic functions (already inlinable), large functions,
+  and code that runs once (builders, constructors, `build`).
+- **When in doubt, leave it off.** It can be added later, with a measurement.
+- **`#[inline(always)]`** needs a micro-benchmark that justifies it.
+- **A rare slow path** inside a hot function goes in its own `#[cold]`
+  function.
+
+"Small" means straight-line code with no loop.
+
 ### No Unsafe Without Justification
 
 Unsafe code requires a `// SAFETY:` comment explaining why it's sound. "It's faster" is not sufficient — explain the invariants being upheld.

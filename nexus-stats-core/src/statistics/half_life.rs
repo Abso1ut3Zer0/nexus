@@ -62,7 +62,6 @@ impl Default for HalfLife {
 
 impl HalfLife {
     /// Creates a new estimator.
-    #[inline]
     #[must_use]
     pub const fn new() -> Self {
         Self {
@@ -134,7 +133,6 @@ impl HalfLife {
     /// are too close to constant for a slope to be resolved: a variance at
     /// or below `(f64::EPSILON * mean)^2`, the relative test SciPy uses for
     /// near-constant data. (R's `lm` likewise withholds the coefficient.)
-    #[inline]
     #[must_use]
     pub fn coefficient(&self) -> Option<f64> {
         let lagged_variance = self.pairs.variance_y()?;
@@ -147,7 +145,6 @@ impl HalfLife {
 
     /// How the series behaves around its mean. `None` exactly when
     /// [`coefficient`](Self::coefficient) is.
-    #[inline]
     #[must_use]
     pub fn reversion(&self) -> Option<Reversion> {
         let phi = self.coefficient()?;
@@ -165,14 +162,12 @@ impl HalfLife {
     }
 
     /// Number of values fed.
-    #[inline]
     #[must_use]
     pub fn count(&self) -> u64 {
         self.count
     }
 
     /// Whether three values have been fed.
-    #[inline]
     #[must_use]
     pub fn is_primed(&self) -> bool {
         self.pairs.count() >= 2

@@ -74,7 +74,6 @@ pub const SMALLEST_DIVISOR: f64 = f64::MIN_POSITIVE / f64::EPSILON;
 ///
 /// A variance at or below it means the values are equal to within
 /// rounding. This is the test SciPy's `skew` and `kurtosis` use.
-#[inline]
 #[must_use]
 pub const fn rounding_variance(mean: f64) -> f64 {
     let rounding = f64::EPSILON * mean;
@@ -335,7 +334,6 @@ impl EwWeight {
     /// `ConfigError::Invalid` naming the knob that was set: `alpha` outside
     /// `(0, 1)`, a `halflife` that is not positive and finite, a `span`
     /// below 2, or any of the three giving a weight too small to use.
-    #[inline]
     pub fn resolve(self) -> Result<f64, crate::ConfigError> {
         let alpha = match self {
             Self::Alpha(a) => {

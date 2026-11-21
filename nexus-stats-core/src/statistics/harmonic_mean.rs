@@ -28,7 +28,6 @@ impl HarmonicMean {
     const LARGEST_SAMPLE: f64 = 1e120;
 
     /// Creates a new empty accumulator.
-    #[inline]
     #[must_use]
     pub const fn new() -> Self {
         Self {
@@ -92,7 +91,6 @@ impl HarmonicMean {
     }
 
     /// Harmonic mean, or `None` if empty.
-    #[inline]
     #[must_use]
     pub fn mean(&self) -> Option<f64> {
         if self.count == 0 {
@@ -103,21 +101,18 @@ impl HarmonicMean {
     }
 
     /// Number of samples processed.
-    #[inline]
     #[must_use]
     pub fn count(&self) -> u64 {
         self.count
     }
 
     /// Whether at least one sample has been recorded.
-    #[inline]
     #[must_use]
     pub fn is_primed(&self) -> bool {
         self.count > 0
     }
 
     /// Resets to empty state.
-    #[inline]
     pub fn reset(&mut self) {
         self.reciprocal_sum = 0.0;
         self.count = 0;
@@ -125,7 +120,6 @@ impl HarmonicMean {
 }
 
 impl Default for HarmonicMean {
-    #[inline]
     fn default() -> Self {
         Self::new()
     }
