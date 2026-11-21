@@ -80,7 +80,7 @@
 //!
 //! | Feature | Module | Contents |
 //! |---------|--------|----------|
-//! | `smoothing` | `smoothing` | + Holt, Spring, Kalman1d, ConditionalEma, HuberEma, Kama *(alloc)*, Hampel *(alloc)*, WindowedMedian *(alloc)* |
+//! | `smoothing` | `smoothing` | + Holt, Spring, Kalman1d, HuberEma, Kama *(alloc)*, Hampel *(alloc)*, WindowedMedian *(alloc)* |
 //! | `detection` | `detection` | + Mosum, ShiryaevRoberts, AdaptiveThreshold, RobustZScore, TrendAlert, MultiGate, PageHinkley, Adwin, Bocpd, DistDrift |
 //! | `detection` + `alloc` | `signal` | Autocorrelation, CrossCorrelation, Entropy *(std\|libm)*, TransferEntropy *(std\|libm)*, PredictiveInfoBound *(std\|libm)* |
 //! | `detection` | `estimation` | + SprtBernoulli, SprtGaussian |
@@ -128,7 +128,7 @@ pub use nexus_stats_core::feature_vector;
 /// Smoothing and filtering primitives.
 ///
 /// Core types (`Ema`, `AsymEma`, `Slew`) are always available. Advanced types
-/// (`Holt`, `Spring`, `Kalman1d`, `ConditionalEma`, `HuberEma`, `Kama`, `Hampel`,
+/// (`Holt`, `Spring`, `Kalman1d`, `HuberEma`, `Kama`, `Hampel`,
 /// `WindowedMedian`) require the `smoothing` feature.
 pub mod smoothing {
     pub use nexus_stats_core::smoothing::*;
