@@ -51,6 +51,9 @@ if let Some(reading) = ev.update(sample) {
   magnitudes above `1e120`, and leaves the state unchanged.
 - `value()` reads the current `MeanVariance` without feeding a sample.
 - `min_samples` is at least 2: one sample has no variance.
+- There is also no reading while the weights leave no degrees of freedom
+  (`W - W2 / W` is not positive), as in pandas. That takes an `alpha`
+  within rounding of 1.
 
 ## Seeding
 

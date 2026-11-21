@@ -73,27 +73,31 @@ impl VarianceRatio {
     #[inline]
     pub fn update(&mut self, value: f64) -> Result<(), crate::DataError> {
         check_finite!(value);
-        self.count += 1;
 
-        if self.count >= 2 {
-            // 1-period return
-            let ret1 = value - self.prev;
-            self.short_var.checked_update(ret1)?;
-        }
-
+        // Both returns are checked before any state changes, so a refused
+        // value leaves no trace.
+        let count = self.count + 1;
         // The slot at `head` holds the value from q steps ago once q + 1
         // values have been seen.
         let value_q_ago = self.ring[self.head];
+        let return_1 = (count >= 2).then_some(value - self.prev);
+        let return_q = (count > self.q as u64).then_some(value - value_q_ago);
+        for ret in [return_1, return_q].into_iter().flatten() {
+            crate::math::check_input(ret, crate::math::LIMIT_FOR_SQUARES)?;
+        }
+
+        self.count = count;
+        if let Some(ret) = return_1 {
+            self.short_var.update(ret);
+        }
+        if let Some(ret) = return_q {
+            self.long_var.update(ret);
+        }
         self.ring[self.head] = value;
         self.head += 1;
         if self.head == self.q {
             self.head = 0;
         }
-        if self.count > self.q as u64 {
-            let ret_q = value - value_q_ago;
-            self.long_var.checked_update(ret_q)?;
-        }
-
         self.prev = value;
         Ok(())
     }
@@ -297,6 +301,26 @@ mod tests {
     fn inf_rejected() {
         let mut vr = VarianceRatio::builder().q(5).alpha(0.05).build().unwrap();
         assert!(vr.update(f64::INFINITY).is_err());
+    }
+
+    #[test]
+    fn a_refused_value_leaves_no_trace() {
+        let mut vr = VarianceRatio::builder().q(2).alpha(0.1).build().unwrap();
+        for v in [1.0, 2.0, 4.0, 3.0, 5.0] {
+            vr.update(v).unwrap();
+        }
+        let mut untouched = vr.clone();
+
+        // Finite, but its returns are beyond the limit.
+        assert_eq!(vr.update(1e130), Err(crate::DataError::OutOfRange));
+        assert_eq!(vr.update(f64::NAN), Err(crate::DataError::NotANumber));
+        assert_eq!(vr.count(), untouched.count());
+
+        for v in [6.0, 4.5, 7.0] {
+            vr.update(v).unwrap();
+            untouched.update(v).unwrap();
+            assert_eq!(vr.variance_ratio(), untouched.variance_ratio());
+        }
     }
 
     /// Against the definition computed from a plain history `Vec`: the 1-period

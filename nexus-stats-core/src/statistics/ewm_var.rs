@@ -138,6 +138,10 @@ impl EwmVar {
     }
 
     /// The current reading, or `None` if not primed.
+    ///
+    /// Also `None` while the weights leave no degrees of freedom, as pandas
+    /// reports no value there. That takes an `alpha` so close to 1 that
+    /// every earlier sample's weight rounds away.
     #[inline]
     #[must_use]
     pub fn value(&self) -> Option<MeanVariance> {
@@ -147,6 +151,12 @@ impl EwmVar {
 
         // The unbiased divisor for weighted samples: W - W2 / W.
         let divisor = self.weight - self.weight_squares / self.weight;
+
+        // No degrees of freedom: no reading, as pandas' `ewmcov`.
+        if divisor <= 0.0 {
+            return None;
+        }
+
         Some(MeanVariance {
             mean: self.mean,
             variance: self.squared_deviations / divisor,
@@ -441,6 +451,23 @@ mod tests {
             let _ = ew.update(x);
         }
         assert_close(ew.value().unwrap(), reference(&window, alpha), "long");
+    }
+
+    #[test]
+    fn no_reading_when_the_weights_leave_no_degrees_of_freedom() {
+        // The largest alpha below 1: each earlier weight rounds away, so the
+        // weight sum stays at exactly 1.
+        let alpha = 1.0 - f64::EPSILON / 2.0;
+        let mut ew = EwmVar::builder().alpha(alpha).build().unwrap();
+        for x in [1.0, 2.0, 5.0] {
+            assert_eq!(ew.update(x), None);
+        }
+        assert!(ew.is_primed());
+
+        // One step lower, the second sample has a reading.
+        let mut ew = EwmVar::builder().alpha(1.0 - f64::EPSILON).build().unwrap();
+        ew.update(1.0);
+        assert!(ew.update(2.0).is_some());
     }
 
     #[test]

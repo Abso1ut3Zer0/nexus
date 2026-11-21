@@ -210,8 +210,11 @@ contained.
   returning to it. A seed used to set `count()` to `min_samples`, and
   `reset()` discarded it.
 - **`ZScoreNorm` and `VarianceRatio` readings shift**, because the
-  variance under them is now unbiased (see Fixed). `VarianceRatio` refuses
-  a return above `1e120` in magnitude.
+  variance under them is now unbiased (see Fixed). `ZScoreNorm` follows
+  `EwmVar` on the rest too: `min_samples` must be at least 2, a seeded
+  normalizer starts with `count()` at 0, and `reset()` returns to the seed.
+  `VarianceRatio` refuses a value whose return is above `1e120` in
+  magnitude.
 - **`RollSpread` works on log-price changes, with the mean removed.**
   `update(price)` takes the logarithm itself, so the spread is a proportion
   of the price (`0.0005` is 5 basis points), as in Roll's own estimates and
@@ -371,6 +374,9 @@ contained.
   deviations over `W - W2 / W`, which pandas (`ewm().var()`) and Polars
   (`ewm_var`) compute by default. Unbiased from the second sample on. Old
   readings are not comparable.
+- **`VarianceRatio` is unchanged by a value it refuses.** It counted the
+  value and fed the one-period return before the longer return was checked,
+  so a refusal left the two out of step.
 - **Builders refuse a weight too small to use, under every knob.** An
   `alpha` below half of machine epsilon (about `1.1e-16`), or a `span`
   large enough to give one, was accepted, though `1 - alpha` rounds to 1

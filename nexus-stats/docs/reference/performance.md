@@ -49,7 +49,7 @@ costs a branch mispredict, about 20 cycles.
 | **Statistics** | | | |
 | Welford | 7 | 7 | one reciprocal of the count, off the running mean's dependency chain |
 | Welford query | 9 | 10 | includes vsqrtsd |
-| EwmVar | 7 | 7 | decayed Welford; two divisions off the mean's chain |
+| EwmVar | 7 | 7 | decayed Welford |
 | Covariance | 11 | 11 | three accumulators |
 | HarmonicMean | 6 | 7 | one reciprocal |
 | **Monitoring** | | | |

@@ -177,7 +177,8 @@ impl<T: Float> ZScoreNorm<T> {
         self.inner.is_primed()
     }
 
-    /// Resets accumulated state. Parameters unchanged.
+    /// Returns to no samples, and to the seed if one was configured.
+    /// Parameters unchanged.
     #[inline]
     pub fn reset(&mut self) {
         self.inner.reset();
@@ -210,7 +211,8 @@ impl<T: Float> ZScoreNormBuilder<T> {
         self
     }
 
-    /// Minimum samples before values are valid. Default: 2.
+    /// Minimum samples before values are valid. Default and minimum: 2
+    /// (one sample has no deviation).
     #[inline]
     #[must_use]
     pub fn min_samples(mut self, min: u64) -> Self {
@@ -218,7 +220,11 @@ impl<T: Float> ZScoreNormBuilder<T> {
         self
     }
 
-    /// Pre-loads mean and variance from calibration data.
+    /// Starts the normalizer converged on this mean and variance.
+    ///
+    /// Scores are available at once (`min_samples` no longer applies),
+    /// `count()` still counts only samples fed, and `reset()` returns to the
+    /// seed.
     #[inline]
     #[must_use]
     pub fn seed(mut self, mean: T, variance: T) -> Self {
@@ -371,6 +377,35 @@ mod tests {
             .build()
             .unwrap();
         assert_eq!(zs.update(110.0).unwrap(), Some(2.0f32));
+    }
+
+    #[test]
+    fn min_samples_below_two_is_refused() {
+        for min in [0, 1] {
+            assert!(
+                ZScoreNorm::<f64>::builder()
+                    .alpha(0.1)
+                    .min_samples(min)
+                    .build()
+                    .is_err(),
+                "{min}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_seed_is_a_state_not_samples() {
+        let mut zs = ZScoreNorm::<f64>::builder()
+            .alpha(0.1)
+            .seed(100.0, 25.0)
+            .build()
+            .unwrap();
+        assert!(zs.is_primed());
+        assert_eq!(zs.count(), 0);
+        let _ = zs.update(110.0).unwrap();
+        zs.reset();
+        assert_eq!(zs.count(), 0);
+        assert_eq!(zs.normalize(110.0).unwrap(), Some(2.0));
     }
 
     #[test]

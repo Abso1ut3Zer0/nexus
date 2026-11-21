@@ -458,6 +458,7 @@ let sd = ew.value()?.std_dev();
 
 - `min_samples` must be at least 2, and a seed no longer counts as
   samples: `count()` starts at 0 and `reset()` returns to the seed.
+  `ZScoreNorm` is built on `EwmVar` and changes the same way.
 
 `BipowerVariation` changed in three ways:
 
