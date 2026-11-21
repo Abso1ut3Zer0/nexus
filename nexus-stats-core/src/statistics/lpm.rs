@@ -52,7 +52,6 @@ pub struct LpmBuilder {
 
 impl Lpm {
     /// Creates a builder.
-    #[inline]
     #[must_use]
     pub fn builder() -> LpmBuilder {
         LpmBuilder {
@@ -63,7 +62,6 @@ impl Lpm {
     }
 
     /// Convenience constructor for semivariance (order = 2).
-    #[inline]
     pub fn semivariance(target: f64) -> Result<Self, crate::ConfigError> {
         Self::builder().target(target).order(2).build()
     }
@@ -126,7 +124,6 @@ impl Lpm {
     /// Lower partial moment: average downside deviation^order.
     ///
     /// Returns `None` if not primed.
-    #[inline]
     #[must_use]
     pub fn lpm(&self) -> Option<f64> {
         if self.count < self.min_samples {
@@ -137,42 +134,36 @@ impl Lpm {
     }
 
     /// The target threshold.
-    #[inline]
     #[must_use]
     pub fn target(&self) -> f64 {
         self.target
     }
 
     /// The moment order.
-    #[inline]
     #[must_use]
     pub fn order(&self) -> u32 {
         self.order
     }
 
     /// Total samples processed.
-    #[inline]
     #[must_use]
     pub fn count(&self) -> u64 {
         self.count
     }
 
     /// Whether enough samples have been observed.
-    #[inline]
     #[must_use]
     pub fn is_primed(&self) -> bool {
         self.count >= self.min_samples
     }
 
     /// Resets accumulated state. Target and order are preserved.
-    #[inline]
     pub fn reset(&mut self) {
         self.sum = 0.0;
         self.count = 0;
     }
 
     /// The sample's shortfall below the target, raised to the order.
-    #[inline]
     fn term(&self, sample: f64) -> f64 {
         // Clamped, not branched: the side of the target is a coin flip.
         let shortfall = (self.target - sample).max(0.0);
@@ -193,7 +184,6 @@ impl Lpm {
 
 impl LpmBuilder {
     /// Sets the target threshold (required).
-    #[inline]
     #[must_use]
     pub fn target(mut self, target: f64) -> Self {
         self.target = Some(target);
@@ -201,7 +191,6 @@ impl LpmBuilder {
     }
 
     /// Sets the moment order (required).
-    #[inline]
     #[must_use]
     pub fn order(mut self, order: u32) -> Self {
         self.order = Some(order);
@@ -209,7 +198,6 @@ impl LpmBuilder {
     }
 
     /// Sets the minimum samples before `lpm()` returns a value.
-    #[inline]
     #[must_use]
     pub fn min_samples(mut self, n: u64) -> Self {
         self.min_samples = n;
@@ -222,7 +210,6 @@ impl LpmBuilder {
     ///
     /// Returns `ConfigError` if target is missing/non-finite or
     /// order is missing.
-    #[inline]
     pub fn build(self) -> Result<Lpm, crate::ConfigError> {
         let target = self.target.ok_or(crate::ConfigError::Missing("target"))?;
         if !target.is_finite() {

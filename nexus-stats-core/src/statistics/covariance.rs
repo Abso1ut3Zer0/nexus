@@ -22,7 +22,6 @@ pub struct Covariance {
 
 impl Covariance {
     /// Creates a new empty accumulator.
-    #[inline]
     #[must_use]
     pub const fn new() -> Self {
         Self {
@@ -98,14 +97,12 @@ impl Covariance {
     }
 
     /// Number of paired samples processed.
-    #[inline]
     #[must_use]
     pub fn count(&self) -> u64 {
         self.count
     }
 
     /// Mean of X, or `None` if empty.
-    #[inline]
     #[must_use]
     pub fn mean_x(&self) -> Option<f64> {
         if self.count == 0 {
@@ -116,7 +113,6 @@ impl Covariance {
     }
 
     /// Mean of Y, or `None` if empty.
-    #[inline]
     #[must_use]
     pub fn mean_y(&self) -> Option<f64> {
         if self.count == 0 {
@@ -127,7 +123,6 @@ impl Covariance {
     }
 
     /// Sample variance of X (N-1 denominator), or `None` if < 2 samples.
-    #[inline]
     #[must_use]
     pub fn variance_x(&self) -> Option<f64> {
         if self.count < 2 {
@@ -138,7 +133,6 @@ impl Covariance {
     }
 
     /// Sample variance of Y (N-1 denominator), or `None` if < 2 samples.
-    #[inline]
     #[must_use]
     pub fn variance_y(&self) -> Option<f64> {
         if self.count < 2 {
@@ -149,7 +143,6 @@ impl Covariance {
     }
 
     /// Sample covariance (N-1 denominator), or `None` if < 2 samples.
-    #[inline]
     #[must_use]
     pub fn covariance(&self) -> Option<f64> {
         if self.count < 2 {
@@ -164,7 +157,6 @@ impl Covariance {
     /// `None` with fewer than two samples, or if either variable has zero
     /// variance, which leaves the correlation undefined.
     #[cfg(any(feature = "std", feature = "libm"))]
-    #[inline]
     #[must_use]
     pub fn correlation(&self) -> Option<f64> {
         if self.count < 2 {
@@ -181,7 +173,6 @@ impl Covariance {
     }
 
     /// Merges another accumulator into this one (Chan's algorithm).
-    #[inline]
     pub fn merge(&mut self, other: &Self) {
         if other.count == 0 {
             return;
@@ -208,21 +199,18 @@ impl Covariance {
     }
 
     /// Whether the covariance is defined (two samples seen).
-    #[inline]
     #[must_use]
     pub fn is_primed(&self) -> bool {
         self.count >= 2
     }
 
     /// Resets to empty state.
-    #[inline]
     pub fn reset(&mut self) {
         *self = Self::new();
     }
 }
 
 impl Default for Covariance {
-    #[inline]
     fn default() -> Self {
         Self::new()
     }

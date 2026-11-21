@@ -57,7 +57,6 @@ pub struct BipowerVariationBuilder {
 impl JumpDecomposition {
     /// `bipower_variation * M / (M - 1)`: scaled to be comparable with
     /// `realized_variance`, which has one more term.
-    #[inline]
     #[must_use]
     pub fn debiased_bipower_variation(&self) -> f64 {
         let m = self.returns as f64;
@@ -66,7 +65,6 @@ impl JumpDecomposition {
 
     /// Variation attributed to jumps:
     /// `max(realized_variance - debiased_bipower_variation, 0)`.
-    #[inline]
     #[must_use]
     pub fn jump_variation(&self) -> f64 {
         (self.realized_variance - self.debiased_bipower_variation()).max(0.0)
@@ -74,7 +72,6 @@ impl JumpDecomposition {
 
     /// Share of the realized variance attributed to jumps, in `[0, 1]`.
     /// `None` if the price never moved.
-    #[inline]
     #[must_use]
     pub fn jump_ratio(&self) -> Option<f64> {
         if self.realized_variance <= 0.0 {
@@ -92,7 +89,6 @@ impl BipowerVariation {
     const SCALE: f64 = core::f64::consts::FRAC_PI_2;
 
     /// Creates a tracker with the default `min_samples` (30).
-    #[inline]
     #[must_use]
     pub const fn new() -> Self {
         Self {
@@ -106,7 +102,6 @@ impl BipowerVariation {
     }
 
     /// Creates a builder.
-    #[inline]
     #[must_use]
     pub fn builder() -> BipowerVariationBuilder {
         BipowerVariationBuilder { min_samples: 30 }
@@ -180,7 +175,6 @@ impl BipowerVariation {
 
     /// The reading since the last reset, or `None` until `min_samples`
     /// prices have been fed.
-    #[inline]
     #[must_use]
     pub fn decomposition(&self) -> Option<JumpDecomposition> {
         if self.count < self.min_samples {
@@ -195,21 +189,18 @@ impl BipowerVariation {
     }
 
     /// Number of prices fed.
-    #[inline]
     #[must_use]
     pub fn count(&self) -> u64 {
         self.count
     }
 
     /// Whether `min_samples` prices have been fed.
-    #[inline]
     #[must_use]
     pub fn is_primed(&self) -> bool {
         self.count >= self.min_samples
     }
 
     /// Resets to the empty state. `min_samples` is unchanged.
-    #[inline]
     pub fn reset(&mut self) {
         self.realized = 0.0;
         self.products = 0.0;
@@ -227,7 +218,6 @@ impl Default for BipowerVariation {
 
 impl BipowerVariationBuilder {
     /// Prices to feed before a reading is given. Default: 30.
-    #[inline]
     #[must_use]
     pub fn min_samples(mut self, min: u64) -> Self {
         self.min_samples = min;
@@ -240,7 +230,6 @@ impl BipowerVariationBuilder {
     ///
     /// `ConfigError::Invalid` if `min_samples` is below 3: bipower variation
     /// needs two returns.
-    #[inline]
     pub fn build(self) -> Result<BipowerVariation, crate::ConfigError> {
         if self.min_samples < 3 {
             return Err(crate::ConfigError::Invalid("min_samples must be >= 3"));

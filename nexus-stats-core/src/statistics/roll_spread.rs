@@ -82,7 +82,6 @@ impl WeightedMean {
         self.weight = keep.fma(self.weight, alpha);
     }
 
-    #[inline]
     fn value(&self) -> f64 {
         self.sum / self.weight
     }
@@ -90,7 +89,6 @@ impl WeightedMean {
 
 impl RollSpread {
     /// Creates a builder.
-    #[inline]
     #[must_use]
     pub fn builder() -> RollSpreadBuilder {
         RollSpreadBuilder {
@@ -168,7 +166,6 @@ impl RollSpread {
 
     /// The current estimate, or `None` until `min_samples` prices have been
     /// fed.
-    #[inline]
     #[must_use]
     pub fn estimate(&self) -> Option<RollEstimate> {
         if self.count < self.min_samples {
@@ -192,21 +189,18 @@ impl RollSpread {
     }
 
     /// Number of prices fed.
-    #[inline]
     #[must_use]
     pub fn count(&self) -> u64 {
         self.count
     }
 
     /// Whether `min_samples` prices have been fed.
-    #[inline]
     #[must_use]
     pub fn is_primed(&self) -> bool {
         self.count >= self.min_samples
     }
 
     /// Resets to the empty state. Parameters are unchanged.
-    #[inline]
     pub fn reset(&mut self) {
         self.changes = WeightedMean::EMPTY;
         self.products = WeightedMean::EMPTY;
@@ -218,7 +212,6 @@ impl RollSpread {
 
 impl RollSpreadBuilder {
     /// Weight of the newest sample. Must be in (0, 1) exclusive.
-    #[inline]
     #[must_use]
     pub fn alpha(mut self, alpha: f64) -> Self {
         self.weight = Some(crate::math::EwWeight::Alpha(alpha));
@@ -226,7 +219,6 @@ impl RollSpreadBuilder {
     }
 
     /// Samples for a weight to decay by half. Must be positive and finite.
-    #[inline]
     #[must_use]
     pub fn halflife(mut self, halflife: f64) -> Self {
         self.weight = Some(crate::math::EwWeight::Halflife(halflife));
@@ -234,7 +226,6 @@ impl RollSpreadBuilder {
     }
 
     /// Span in samples (the pandas `span` convention). Must be at least 2.
-    #[inline]
     #[must_use]
     pub fn span(mut self, n: u64) -> Self {
         self.weight = Some(crate::math::EwWeight::Span(n));
@@ -242,7 +233,6 @@ impl RollSpreadBuilder {
     }
 
     /// Prices to feed before an estimate is given. Default: 30.
-    #[inline]
     #[must_use]
     pub fn min_samples(mut self, min: u64) -> Self {
         self.min_samples = min;
@@ -257,7 +247,6 @@ impl RollSpreadBuilder {
     ///   set.
     /// - `ConfigError::Invalid` if the one that was set is out of range, or
     ///   if `min_samples` is below 3: one product needs two changes.
-    #[inline]
     pub fn build(self) -> Result<RollSpread, crate::ConfigError> {
         let alpha = self
             .weight

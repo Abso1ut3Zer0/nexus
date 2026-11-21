@@ -20,7 +20,6 @@ pub struct Welford {
 
 impl Welford {
     /// Creates a new empty accumulator.
-    #[inline]
     #[must_use]
     pub const fn new() -> Self {
         Self {
@@ -42,7 +41,6 @@ impl Welford {
     ///
     /// `ConfigError::Invalid` if `mean` is not finite, `m2` is negative or not
     /// finite, or `count` is zero with a non-zero `mean` or `m2`.
-    #[inline]
     pub fn from_parts(count: u64, mean: f64, m2: f64) -> Result<Self, crate::ConfigError> {
         if !mean.is_finite() {
             return Err(crate::ConfigError::Invalid("mean must be finite"));
@@ -123,7 +121,6 @@ impl Welford {
     }
 
     /// Whether enough data for variance/std_dev queries (>= 2 samples).
-    #[inline]
     #[must_use]
     pub fn is_primed(&self) -> bool {
         self.count >= 2
@@ -152,7 +149,6 @@ impl Welford {
     }
 
     /// Population variance (N denominator), or `None` if empty.
-    #[inline]
     #[must_use]
     pub fn population_variance(&self) -> Option<f64> {
         if self.count == 0 {
@@ -168,7 +164,6 @@ impl Welford {
     /// `variance()` is `m2 / (count - 1)` and `population_variance()` is
     /// `m2 / count`; callers that scale by a sample count themselves read
     /// this instead of undoing that division.
-    #[inline]
     #[must_use]
     pub fn m2(&self) -> f64 {
         self.m2
@@ -186,7 +181,6 @@ impl Welford {
     ///
     /// After merging, `self` contains the statistics of the combined
     /// dataset. The other accumulator is unchanged.
-    #[inline]
     pub fn merge(&mut self, other: &Self) {
         if other.count == 0 {
             return;
@@ -211,7 +205,6 @@ impl Welford {
     }
 
     /// Resets to empty state.
-    #[inline]
     pub fn reset(&mut self) {
         self.count = 0;
         self.mean = 0.0;
@@ -220,7 +213,6 @@ impl Welford {
 }
 
 impl Default for Welford {
-    #[inline]
     fn default() -> Self {
         Self::new()
     }

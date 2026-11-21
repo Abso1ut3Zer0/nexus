@@ -54,7 +54,6 @@ pub struct Shape {
 
 impl Shape {
     /// Kurtosis: [`excess_kurtosis`](Self::excess_kurtosis) plus 3.
-    #[inline]
     #[must_use]
     pub fn kurtosis(&self) -> f64 {
         self.excess_kurtosis + 3.0
@@ -73,7 +72,6 @@ impl Moments {
     const LIMIT_FOR_FOURTH_POWERS: f64 = 1e60;
 
     /// Creates a new empty accumulator.
-    #[inline]
     #[must_use]
     pub const fn new() -> Self {
         Self {
@@ -156,14 +154,12 @@ impl Moments {
     }
 
     /// Number of samples processed.
-    #[inline]
     #[must_use]
     pub fn count(&self) -> u64 {
         self.count
     }
 
     /// Running mean, or `None` if empty.
-    #[inline]
     #[must_use]
     pub fn mean(&self) -> Option<f64> {
         if self.count == 0 {
@@ -174,7 +170,6 @@ impl Moments {
     }
 
     /// Sample variance (N-1 denominator), or `None` if < 2 samples.
-    #[inline]
     #[must_use]
     pub fn variance(&self) -> Option<f64> {
         if self.count < 2 {
@@ -185,7 +180,6 @@ impl Moments {
     }
 
     /// Population variance (N denominator), or `None` if empty.
-    #[inline]
     #[must_use]
     pub fn population_variance(&self) -> Option<f64> {
         if self.count == 0 {
@@ -197,7 +191,6 @@ impl Moments {
 
     /// Sample standard deviation, or `None` if < 2 samples.
     #[cfg(any(feature = "std", feature = "libm"))]
-    #[inline]
     #[must_use]
     pub fn std_dev(&self) -> Option<f64> {
         self.variance().map(crate::math::sqrt)
@@ -229,7 +222,6 @@ impl Moments {
     /// assert!((shape.excess_kurtosis + 1.3).abs() < 1e-12);
     /// ```
     #[cfg(any(feature = "std", feature = "libm"))]
-    #[inline]
     #[must_use]
     pub fn shape(&self) -> Option<Shape> {
         if self.count < 4 {
@@ -252,7 +244,6 @@ impl Moments {
     }
 
     /// Whether enough data has been collected for all queries (>= 4).
-    #[inline]
     #[must_use]
     pub fn is_primed(&self) -> bool {
         self.count >= 4
@@ -262,7 +253,6 @@ impl Moments {
     ///
     /// After merging, `self` contains the statistics of the combined
     /// dataset. The other accumulator is unchanged.
-    #[inline]
     #[allow(clippy::suspicious_operation_groupings)]
     pub fn merge(&mut self, other: &Self) {
         if other.count == 0 {
@@ -302,14 +292,12 @@ impl Moments {
     }
 
     /// Resets to empty state.
-    #[inline]
     pub fn reset(&mut self) {
         *self = Self::new();
     }
 }
 
 impl Default for Moments {
-    #[inline]
     fn default() -> Self {
         Self::new()
     }
