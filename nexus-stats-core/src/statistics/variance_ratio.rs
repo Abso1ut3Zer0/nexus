@@ -96,6 +96,9 @@ pub struct VarianceRatio {
     /// accumulated since the last `resync`.
     fourth_powers_rounding: RoundingEstimate,
     squares_rounding: RoundingEstimate,
+    /// And `long_squares` and `long_sum`.
+    long_squares_rounding: RoundingEstimate,
+    long_sum_rounding: RoundingEstimate,
     /// How many prices in a row have equalled the one before.
     unchanged: usize,
     /// What `update` last returned.
@@ -191,6 +194,13 @@ pub struct VarianceRatioBuilder {
 
 /// The window's size, the drift's distance from the pivot, and the sum of
 /// squared one-period returns about the drift.
+/// See [`VarianceRatio::weighted_lag_sums`].
+#[derive(Clone, Copy)]
+struct WeightedLagSums {
+    sum: f64,
+    weights: f64,
+}
+
 #[derive(Clone, Copy)]
 struct Centered {
     n: f64,
@@ -240,6 +250,8 @@ impl VarianceRatio {
         // One term leaves each total and one enters.
         self.fourth_powers_rounding.record_n(self.fourth_powers, 2);
         self.squares_rounding.record_n(self.one_period_squares, 2);
+        self.long_squares_rounding.record_n(self.long_squares, 2);
+        self.long_sum_rounding.record_n(self.long_sum, 2);
 
         if self.resync == Resync::NotNeeded {
             self.resync = self.assess();
@@ -342,6 +354,8 @@ impl VarianceRatio {
             .record_n(self.fourth_powers, adds);
         self.squares_rounding
             .record_n(self.one_period_squares, adds);
+        self.long_squares_rounding.record_n(self.long_squares, adds);
+        self.long_sum_rounding.record_n(self.long_sum, adds);
         self.resync = self.assess();
     }
 
@@ -424,6 +438,8 @@ impl VarianceRatio {
         self.fourth_powers = 0.0;
         self.fourth_powers_rounding.reset();
         self.squares_rounding.reset();
+        self.long_squares_rounding.reset();
+        self.long_sum_rounding.reset();
         self.resync = Resync::NotNeeded;
     }
 
@@ -453,18 +469,18 @@ impl VarianceRatio {
     /// one-period sum of squares is divided by `n - 1`, the `q`-period one
     /// by `m = q * (n - q + 1) * (1 - q / n)`.
     fn ratio(&self, centered: Centered) -> f64 {
-        let Centered {
-            n,
-            shift,
-            one_period,
-        } = centered;
+        let Centered { n, one_period, .. } = centered;
         let q = self.q as f64;
-        let long_terms = n - q + 1.0;
-        // The drift over `q` periods comes out of each `q`-period return.
-        let long =
-            crate::math::squares_about(self.long_squares, self.long_sum, long_terms, q * shift);
-        let m = q * long_terms * (1.0 - q / n);
-        (long / m) / (one_period / (n - 1.0))
+        let m = q * (n - q + 1.0) * (1.0 - q / n);
+        (self.long_squares_about_the_drift(centered) / m) / (one_period / (n - 1.0))
+    }
+
+    /// The sum of squared `q`-period returns, each less the drift over `q`
+    /// periods.
+    fn long_squares_about_the_drift(&self, centered: Centered) -> f64 {
+        let q = self.q as f64;
+        let terms = centered.n - q + 1.0;
+        crate::math::squares_about(self.long_squares, self.long_sum, terms, q * centered.shift)
     }
 
     /// Lo and MacKinlay's variance of the ratio when volatility changes
@@ -475,39 +491,80 @@ impl VarianceRatio {
     /// one-period returns `a` and `b` that are `j` apart, over the square
     /// of the one-period sum of squares.
     fn ratio_variance(&self, centered: Centered) -> f64 {
-        let Centered {
-            n,
-            shift,
-            one_period,
-        } = centered;
+        let Centered { n, one_period, .. } = centered;
+        let one_period_squared = one_period * one_period;
+        n * self.weighted_lag_sums(centered).sum / one_period_squared
+    }
+
+    /// The sum over lags `j` of `(2 * (1 - j / q))^2` times that lag's sum
+    /// of `(a - mean)^2 * (b - mean)^2`, and the sum of the weights alone.
+    fn weighted_lag_sums(&self, centered: Centered) -> WeightedLagSums {
+        let Centered { n, shift, .. } = centered;
         let q = self.q as f64;
-        let mut together = 0.0;
+        let mut sums = WeightedLagSums {
+            sum: 0.0,
+            weights: 0.0,
+        };
         for (index, totals) in self.lags.iter().enumerate() {
             let lag = (index + 1) as f64;
             let weight = 2.0 * (1.0 - lag / q);
-            together += weight * weight * totals.squares_about(shift, n - lag);
+            let weight = weight * weight;
+            sums.sum = weight.fma(totals.squares_about(shift, n - lag), sums.sum);
+            sums.weights += weight;
         }
-        let one_period_squared = one_period * one_period;
-        n * together / one_period_squared
+        sums
     }
 
     /// An estimate of the error rounding in the totals may put in the z
-    /// statistic, as a share of it.
+    /// statistic, as a share of the larger of `|z|` and 1.
     ///
-    /// The totals' accumulated rounding comes from [`RoundingEstimate`], at
-    /// [`CONFIDENCE`](Self::CONFIDENCE) standard deviations, for the
-    /// fourth-power sums the z statistic is built from and the squares it
-    /// is scaled by. Added to it is the rounding in taking the drift out,
-    /// which is `EPSILON` times the sizes of the terms subtracted.
+    /// `z = sqrt(n / variance) * (ratio - 1)`, so it moves with three sums
+    /// read from the totals: the weighted lag sums under `variance`, the
+    /// one-period squares, and the `q`-period squares in `ratio`. Each
+    /// one's error is its accumulated rounding (from [`RoundingEstimate`],
+    /// at [`CONFIDENCE`](Self::CONFIDENCE) standard deviations) plus the
+    /// rounding in taking the drift out, which is `EPSILON` times the sizes
+    /// of the terms subtracted. Each is taken as a share of the sum as it
+    /// is now, whatever size that is.
     // Bounds are written as they are derived; fused forms would hide them.
     #[allow(clippy::suboptimal_flops)]
-    #[inline]
     fn z_error(&self, centered: Centered) -> f64 {
-        let Centered {
-            n,
-            shift,
-            one_period,
-        } = centered;
+        let Centered { n, one_period, .. } = centered;
+        let lag_sums = self.weighted_lag_sums(centered);
+        // Exactly nothing: no pair of returns both moved, and there is no
+        // reading.
+        if lag_sums.sum == 0.0 {
+            return 0.0;
+        }
+        // Not above zero, or not a number: the sums hold only rounding
+        // residue, or a price that was not a number.
+        if !(lag_sums.sum > 0.0 && one_period > 0.0) {
+            return f64::INFINITY;
+        }
+        let long = self.long_squares_about_the_drift(centered);
+
+        let of_lag_sums = share(
+            self.lag_sums_error(centered, lag_sums.weights),
+            lag_sums.sum,
+        );
+        let of_squares = share(self.squares_error(centered), one_period);
+        let of_long = share(self.long_squares_error(centered), long);
+
+        // The ratio's own error reaches z through `ratio - 1`, which may be
+        // far smaller than the ratio.
+        let ratio = self.ratio(centered);
+        let scale = crate::math::sqrt(n / self.ratio_variance(centered));
+        let z = scale * (ratio - 1.0);
+        let through_the_ratio = scale * ratio / z.abs().max(1.0);
+
+        // z goes as the squares over the root of the lag sums.
+        0.5 * of_lag_sums + of_squares + through_the_ratio * (of_long + of_squares)
+    }
+
+    /// The error in the weighted lag sums, whose weights add to `weights`.
+    #[allow(clippy::suboptimal_flops)]
+    fn lag_sums_error(&self, centered: Centered, weights: f64) -> f64 {
+        let Centered { n, shift, .. } = centered;
         let (squares, fourth) = (self.one_period_squares, self.fourth_powers);
         let shift_2 = shift * shift;
         let shift_4 = shift_2 * shift_2;
@@ -522,17 +579,29 @@ impl VarianceRatio {
         // And evaluating it subtracts terms of these sizes.
         let evaluation =
             f64::EPSILON * (3.0 * fourth + 10.0 * shift_2 * squares + 3.0 * n * shift_4);
-        // The sum itself is near `one_period^2 / n` for each lag.
-        let from_fourth_powers = (Self::CONFIDENCE * crate::math::sqrt(variance) + evaluation) * n
-            / (one_period * one_period);
+        (Self::CONFIDENCE * crate::math::sqrt(variance) + evaluation) * weights
+    }
 
-        // The squares the statistic is scaled by, the same way.
-        let squares_evaluation = f64::EPSILON * (squares + n * shift_2);
-        let from_squares =
-            (self.squares_rounding.error(Self::CONFIDENCE) + squares_evaluation) / one_period;
+    /// The error in the one-period squares about the drift.
+    #[allow(clippy::suboptimal_flops)]
+    fn squares_error(&self, centered: Centered) -> f64 {
+        let Centered { n, shift, .. } = centered;
+        let evaluation = f64::EPSILON * (self.one_period_squares + n * shift * shift);
+        self.squares_rounding.error(Self::CONFIDENCE) + evaluation
+    }
 
-        // z goes as the squares over the root of the fourth-power sum.
-        0.5 * from_fourth_powers + from_squares
+    /// The error in the `q`-period squares about the drift.
+    #[allow(clippy::suboptimal_flops)]
+    fn long_squares_error(&self, centered: Centered) -> f64 {
+        let q = self.q as f64;
+        let drift = q * centered.shift;
+        let terms = centered.n - q + 1.0;
+        // `squares - 2 * drift * sum + terms * drift^2`.
+        let variance = self.long_squares_rounding.variance()
+            + 4.0 * drift * drift * self.long_sum_rounding.variance();
+        let evaluation = f64::EPSILON
+            * (self.long_squares + 2.0 * (drift * self.long_sum).abs() + terms * drift * drift);
+        Self::CONFIDENCE * crate::math::sqrt(variance) + evaluation
     }
 
     #[inline]
@@ -650,11 +719,25 @@ impl VarianceRatioBuilder {
             fourth_powers: 0.0,
             fourth_powers_rounding: RoundingEstimate::new(),
             squares_rounding: RoundingEstimate::new(),
+            long_squares_rounding: RoundingEstimate::new(),
+            long_sum_rounding: RoundingEstimate::new(),
             unchanged: 0,
             resync: Resync::NotNeeded,
             count: 0,
         })
     }
+}
+
+/// `error` as a share of `size`: infinite if there is an error and nothing
+/// left for it to be a share of.
+fn share(error: f64, size: f64) -> f64 {
+    if error == 0.0 {
+        return 0.0;
+    }
+    if size <= 0.0 {
+        return f64::INFINITY;
+    }
+    error / size
 }
 
 #[cfg(test)]
@@ -1127,6 +1210,90 @@ mod tests {
                     "scenario {index} price {i}: actual {actual} estimate {estimate}"
                 );
             }
+        }
+    }
+
+    /// Feeds `returns` (of the log price) and, from `from` on at every
+    /// `every`th update, checks the z statistic against the window computed
+    /// directly: its error must be within the estimate. Calls `resync` after
+    /// update `resync_at`.
+    fn assert_the_estimate_covers(
+        q: usize,
+        window: usize,
+        returns: impl Iterator<Item = f64>,
+        from: usize,
+        every: usize,
+        resync_at: Option<usize>,
+    ) {
+        let mut vr = VarianceRatio::builder()
+            .q(q)
+            .window(window)
+            .build()
+            .unwrap();
+        let mut log_price = 100.0f64.ln();
+        let mut held = alloc::collections::VecDeque::with_capacity(window + 1);
+        let mut checked = 0;
+        for (i, r) in returns.enumerate() {
+            log_price += r;
+            let price = log_price.exp();
+            vr.update(price);
+            if held.len() == window + 1 {
+                held.pop_front();
+            }
+            held.push_back(price);
+            if resync_at == Some(i) {
+                vr.resync();
+            }
+            if i < from || i % every != 0 {
+                continue;
+            }
+            let (Some(got), Some(want)) = (vr.estimate(), exact(held.make_contiguous(), q)) else {
+                continue;
+            };
+            let actual =
+                (got.z_statistic - want.z_statistic).abs() / want.z_statistic.abs().max(1.0);
+            let estimate = vr.z_error(vr.centered().unwrap());
+            assert!(
+                actual <= estimate,
+                "update {i}: z {} against {}, error {actual}, estimate {estimate}",
+                got.z_statistic,
+                want.z_statistic
+            );
+            checked += 1;
+        }
+        assert!(checked > 100, "{checked}");
+    }
+
+    #[test]
+    fn the_error_estimate_covers_moves_that_are_seldom_next_to_each_other() {
+        // A busy spell, then a price that moves a hundred times less and
+        // only on every other update, but for one adjacent pair: the lag-1
+        // sum is tiny beside the squares, and all of it is that pair.
+        let (q, window, busy) = (2, 1024, 100_000);
+        let mut noise = Noise(77);
+        let returns = (0..busy + 3 * window).map(move |i| {
+            if i < busy {
+                return 1e-3 * noise.next();
+            }
+            let after = i - busy;
+            if after % 2 == 0 || after == window + 101 {
+                return 1e-5 * noise.next();
+            }
+            0.0
+        });
+        assert_the_estimate_covers(q, window, returns, busy + window, 1, None);
+    }
+
+    #[test]
+    fn the_error_estimate_covers_a_trend_that_turns_after_resync() {
+        // A trend far stronger than the noise, a resync, and then the trend
+        // reverses: the totals are measured about a drift that no longer
+        // holds, and the turn itself is one large return about the new one.
+        for (q, window, turned, every) in [(4, 1024, -1e-3, 1), (16, 4096, -2e-3, 13)] {
+            let mut noise = Noise(99);
+            let returns = (0..6 * window)
+                .map(move |i| if i < 3 * window { 1e-3 } else { turned } + 1e-7 * noise.next());
+            assert_the_estimate_covers(q, window, returns, window + 1, every, Some(3 * window - 1));
         }
     }
 
