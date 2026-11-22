@@ -165,7 +165,7 @@ impl Lpm {
 
     /// The sample's shortfall below the target, raised to the order.
     fn term(&self, sample: f64) -> f64 {
-        // Clamped, not branched: the side of the target is a coin flip.
+        // PERF: clamped, not branched: the side of the target is a coin flip.
         let shortfall = (self.target - sample).max(0.0);
         match self.order {
             0 => crate::math::indicator(shortfall > 0.0),

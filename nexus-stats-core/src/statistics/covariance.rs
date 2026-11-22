@@ -53,6 +53,8 @@ impl Covariance {
     #[inline]
     pub fn update(&mut self, x: f64, y: f64) {
         self.count += 1;
+        // PERF: a reciprocal that depends only on the count, so the division
+        // is off the means' dependency chains.
         let weight = 1.0 / self.count as f64;
         let dx = step_mean(&mut self.mean_x, x, weight);
         let dy = step_mean(&mut self.mean_y, y, weight);

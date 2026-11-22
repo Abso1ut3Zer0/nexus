@@ -102,6 +102,8 @@ impl Moments {
     pub fn update(&mut self, sample: f64) {
         self.count += 1;
         let n = self.count as f64;
+        // PERF: a reciprocal that depends only on the count, so the division
+        // is off the mean's dependency chain.
         let weight = 1.0 / n;
         let deviation = step_mean(&mut self.mean, sample, weight);
         // How far the mean moved, and what the sample adds to `m2`.
@@ -110,7 +112,9 @@ impl Moments {
         let step_sq = step * step;
 
         // Higher moments first: each uses the lower ones from before this
-        // sample. Written with fused multiply-adds, `a.fma(b, c) = a * b + c`:
+        // sample.
+        //
+        // PERF: fused multiply-adds, `a.fma(b, c) = a * b + c`. Expanded:
         //
         //   m4 += spread * (step² * (n² - 3n + 3)) + 6 * step² * m2 - 4 * step * m3
         //   m3 += spread * step * (n - 2) - 3 * step * m2

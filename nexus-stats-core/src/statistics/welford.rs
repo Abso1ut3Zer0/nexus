@@ -76,8 +76,8 @@ impl Welford {
     #[inline]
     pub fn update(&mut self, sample: f64) {
         self.count += 1;
-        // The weight of the new sample. It depends only on the count, so the
-        // division does not have to wait for the previous update's mean.
+        // PERF: a reciprocal that depends only on the count, so the division
+        // is off the mean's dependency chain.
         let weight = 1.0 / self.count as f64;
         let deviation = step_mean(&mut self.mean, sample, weight);
         self.m2 += deviation.before * deviation.after;
