@@ -192,7 +192,7 @@ pub struct VarianceRatioBuilder {
 /// The window's size, the drift's distance from the pivot, and the sum of
 /// squared one-period returns about the drift.
 #[derive(Clone, Copy)]
-struct Centred {
+struct Centered {
     n: f64,
     shift: f64,
     one_period: f64,
@@ -288,11 +288,11 @@ impl VarianceRatio {
     /// Costs time proportional to `q`.
     #[must_use]
     pub fn estimate(&self) -> Option<VarianceRatioEstimate> {
-        let Centred {
+        let Centered {
             n,
             shift,
             one_period,
-        } = self.centred()?;
+        } = self.centered()?;
         let q = self.q as f64;
 
         // A price that never moved leaves only rounding in the totals.
@@ -427,7 +427,7 @@ impl VarianceRatio {
 
     /// `None` until the window is full.
     #[inline]
-    fn centred(&self) -> Option<Centred> {
+    fn centered(&self) -> Option<Centered> {
         if !self.log_prices.is_full() {
             return None;
         }
@@ -436,7 +436,7 @@ impl VarianceRatio {
         // The drift per period, from the window's two ends, and how far it
         // is from the return the totals are measured about.
         let shift = (prices[prices.len() - 1] - prices[0]) / n - self.pivot;
-        Some(Centred {
+        Some(Centered {
             n,
             shift,
             // Squares about the drift, from the total about the pivot.
@@ -455,12 +455,12 @@ impl VarianceRatio {
     // Bounds are written as they are derived; fused forms would hide them.
     #[allow(clippy::suboptimal_flops)]
     #[inline]
-    fn z_error(&self, centred: Centred) -> f64 {
-        let Centred {
+    fn z_error(&self, centered: Centered) -> f64 {
+        let Centered {
             n,
             shift,
             one_period,
-        } = centred;
+        } = centered;
         let (squares, fourth) = (self.one_period_squares, self.fourth_powers);
         let shift_2 = shift * shift;
         let shift_4 = shift_2 * shift_2;
@@ -490,10 +490,10 @@ impl VarianceRatio {
 
     #[inline]
     fn assess(&self) -> Resync {
-        let Some(centred) = self.centred() else {
+        let Some(centered) = self.centered() else {
             return Resync::NotNeeded;
         };
-        let z_error = self.z_error(centred);
+        let z_error = self.z_error(centered);
         // Written so that a NaN, from a price that was not a number, advises.
         if z_error <= Self::ADVISE_ABOVE {
             return Resync::NotNeeded;
@@ -739,7 +739,7 @@ mod tests {
     #[test]
     fn none_when_the_standard_error_cannot_be_estimated() {
         // Two moves, three periods apart: with q = 2 only lag 1 is used, and
-        // no two neighbouring returns both moved.
+        // no two neighboring returns both moved.
         let mut vr = VarianceRatio::builder().q(2).window(4).build().unwrap();
         for p in [100.0, 101.0, 101.0, 101.0, 100.0] {
             vr.update(p);
@@ -1074,7 +1074,7 @@ mod tests {
                 };
                 let actual =
                     (got.z_statistic - want.z_statistic).abs() / want.z_statistic.abs().max(1.0);
-                let estimate = vr.z_error(vr.centred().unwrap());
+                let estimate = vr.z_error(vr.centered().unwrap());
                 assert!(
                     actual <= estimate,
                     "scenario {index} price {i}: actual {actual} estimate {estimate}"
