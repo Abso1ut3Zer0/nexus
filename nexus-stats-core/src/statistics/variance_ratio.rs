@@ -89,6 +89,13 @@ pub struct VarianceRatio {
     /// Totals over pairs of one-period returns `lag` apart, for lag 1 to
     /// `q - 1`.
     lags: Box<[LagTotals]>,
+    /// Lo and MacKinlay's weight on each lag's total, `(2 * (1 - lag / q))^2`,
+    /// and their sum.
+    lag_weights: Box<[f64]>,
+    lag_weights_sum: f64,
+    /// Their divisor for the `q`-period sum of squares over a full window,
+    /// `m = q * (n - q + 1) * (1 - q / n)`.
+    long_divisor: f64,
     /// Sum of fourth powers of the one-period returns in the window: no
     /// lag's total of `a^2 * b^2` is larger.
     fourth_powers: f64,
@@ -201,13 +208,6 @@ pub struct VarianceRatioBuilder {
 
 /// The window's size, the drift's distance from the pivot, and the sum of
 /// squared one-period returns about the drift.
-/// See [`VarianceRatio::weighted_lag_sums`].
-#[derive(Clone, Copy)]
-struct WeightedLagSums {
-    sum: f64,
-    weights: f64,
-}
-
 #[derive(Clone, Copy)]
 struct Centered {
     n: f64,
@@ -321,8 +321,8 @@ impl VarianceRatio {
             return None;
         }
 
-        let ratio = self.ratio(centered);
-        let variance = self.ratio_variance(centered);
+        let ratio = self.ratio(centered, self.long_squares_about_the_drift(centered));
+        let variance = Self::ratio_variance(centered, self.weighted_lag_sum(centered));
         if variance <= 0.0 {
             return None;
         }
@@ -475,13 +475,12 @@ impl VarianceRatio {
     /// returns over `q` times the variance of one-period returns.
     ///
     /// The `q`-period returns overlap, and both variances are debiased: the
-    /// one-period sum of squares is divided by `n - 1`, the `q`-period one
-    /// by `m = q * (n - q + 1) * (1 - q / n)`.
-    fn ratio(&self, centered: Centered) -> f64 {
+    /// one-period sum of squares is divided by `n - 1`, and `long_squares`
+    /// (the `q`-period one, about the drift) by
+    /// `m = q * (n - q + 1) * (1 - q / n)`.
+    fn ratio(&self, centered: Centered, long_squares: f64) -> f64 {
         let Centered { n, one_period, .. } = centered;
-        let q = self.q as f64;
-        let m = q * (n - q + 1.0) * (1.0 - q / n);
-        (self.long_squares_about_the_drift(centered) / m) / (one_period / (n - 1.0))
+        (long_squares / self.long_divisor) / (one_period / (n - 1.0))
     }
 
     /// The sum of squared `q`-period returns, each less the drift over `q`
@@ -498,30 +497,24 @@ impl VarianceRatio {
     ///
     /// `delta_j` is `n` times the sum of `(a - mean)^2 * (b - mean)^2` over
     /// one-period returns `a` and `b` that are `j` apart, over the square
-    /// of the one-period sum of squares.
-    fn ratio_variance(&self, centered: Centered) -> f64 {
+    /// of the one-period sum of squares. `lag_sum` is those sums with their
+    /// weights, from [`weighted_lag_sum`](Self::weighted_lag_sum).
+    fn ratio_variance(centered: Centered, lag_sum: f64) -> f64 {
         let Centered { n, one_period, .. } = centered;
         let one_period_squared = one_period * one_period;
-        n * self.weighted_lag_sums(centered).sum / one_period_squared
+        n * lag_sum / one_period_squared
     }
 
     /// The sum over lags `j` of `(2 * (1 - j / q))^2` times that lag's sum
-    /// of `(a - mean)^2 * (b - mean)^2`, and the sum of the weights alone.
-    fn weighted_lag_sums(&self, centered: Centered) -> WeightedLagSums {
+    /// of `(a - mean)^2 * (b - mean)^2`.
+    fn weighted_lag_sum(&self, centered: Centered) -> f64 {
         let Centered { n, shift, .. } = centered;
-        let q = self.q as f64;
-        let mut sums = WeightedLagSums {
-            sum: 0.0,
-            weights: 0.0,
-        };
-        for (index, totals) in self.lags.iter().enumerate() {
+        let mut sum = 0.0;
+        for (index, (totals, &weight)) in self.lags.iter().zip(&self.lag_weights).enumerate() {
             let lag = (index + 1) as f64;
-            let weight = 2.0 * (1.0 - lag / q);
-            let weight = weight * weight;
-            sums.sum = weight.fma(totals.squares_about(shift, n - lag), sums.sum);
-            sums.weights += weight;
+            sum = weight.fma(totals.squares_about(shift, n - lag), sum);
         }
-        sums
+        sum
     }
 
     /// An estimate of the error rounding in the totals may put in the z
@@ -539,30 +532,27 @@ impl VarianceRatio {
     #[allow(clippy::suboptimal_flops)]
     fn z_error(&self, centered: Centered) -> f64 {
         let Centered { n, one_period, .. } = centered;
-        let lag_sums = self.weighted_lag_sums(centered);
+        let lag_sum = self.weighted_lag_sum(centered);
         // Exactly nothing: no pair of returns both moved, and there is no
         // reading.
-        if lag_sums.sum == 0.0 {
+        if lag_sum == 0.0 {
             return 0.0;
         }
         // Only rounding residue, or a NaN. Advised whatever the residue's
         // sign, though below zero the reading comes out `None` (see `Resync`).
-        if !(lag_sums.sum > 0.0 && one_period > 0.0) {
+        if !(lag_sum > 0.0 && one_period > 0.0) {
             return f64::INFINITY;
         }
         let long = self.long_squares_about_the_drift(centered);
 
-        let of_lag_sums = share(
-            self.lag_sums_error(centered, lag_sums.weights),
-            lag_sums.sum,
-        );
+        let of_lag_sums = share(self.lag_sums_error(centered), lag_sum);
         let of_squares = share(self.squares_error(centered), one_period);
         let of_long = share(self.long_squares_error(centered), long);
 
         // The ratio's own error reaches z through `ratio - 1`, which may be
         // far smaller than the ratio.
-        let ratio = self.ratio(centered);
-        let scale = crate::math::sqrt(n / self.ratio_variance(centered));
+        let ratio = self.ratio(centered, long);
+        let scale = crate::math::sqrt(n / Self::ratio_variance(centered, lag_sum));
         let z = scale * (ratio - 1.0);
         let through_the_ratio = scale * ratio / z.abs().max(1.0);
 
@@ -570,9 +560,9 @@ impl VarianceRatio {
         0.5 * of_lag_sums + of_squares + through_the_ratio * (of_long + of_squares)
     }
 
-    /// The error in the weighted lag sums, whose weights add to `weights`.
+    /// The error in the weighted lag sum.
     #[allow(clippy::suboptimal_flops)]
-    fn lag_sums_error(&self, centered: Centered, weights: f64) -> f64 {
+    fn lag_sums_error(&self, centered: Centered) -> f64 {
         let Centered { n, shift, .. } = centered;
         let (squares, fourth) = (self.one_period_squares, self.fourth_powers);
         let shift_2 = shift * shift;
@@ -588,7 +578,7 @@ impl VarianceRatio {
         // And evaluating it subtracts terms of these sizes.
         let evaluation =
             f64::EPSILON * (3.0 * fourth + 10.0 * shift_2 * squares + 3.0 * n * shift_4);
-        (Self::CONFIDENCE * crate::math::sqrt(variance) + evaluation) * weights
+        (Self::CONFIDENCE * crate::math::sqrt(variance) + evaluation) * self.lag_weights_sum
     }
 
     /// The error in the one-period squares about the drift.
@@ -716,6 +706,9 @@ impl VarianceRatioBuilder {
         let Some(prices) = window.checked_add(1) else {
             return Err(crate::ConfigError::Invalid("window is too large"));
         };
+        // A full window's returns, and the horizon, as the formulas use them.
+        let (returns, periods) = (window as f64, q as f64);
+        let lag_weights = lag_weights(q);
 
         Ok(VarianceRatio {
             q,
@@ -725,6 +718,9 @@ impl VarianceRatioBuilder {
             long_sum: 0.0,
             long_squares: 0.0,
             lags: vec![LagTotals::default(); q - 1].into_boxed_slice(),
+            lag_weights_sum: lag_weights.iter().fold(0.0, |sum, weight| sum + weight),
+            lag_weights,
+            long_divisor: periods * (returns - periods + 1.0) * (1.0 - periods / returns),
             fourth_powers: 0.0,
             fourth_powers_rounding: RoundingEstimate::new(),
             squares_rounding: RoundingEstimate::new(),
@@ -735,6 +731,17 @@ impl VarianceRatioBuilder {
             count: 0,
         })
     }
+}
+
+/// Lo and MacKinlay's weight on each lag's total, for lag 1 to `q - 1`:
+/// `(2 * (1 - lag / q))^2`.
+fn lag_weights(q: usize) -> Box<[f64]> {
+    (1..q)
+        .map(|lag| {
+            let weight = 2.0 * (1.0 - lag as f64 / q as f64);
+            weight * weight
+        })
+        .collect()
 }
 
 /// `error` as a share of `size`: infinite if there is an error and nothing
