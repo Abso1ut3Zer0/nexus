@@ -1,14 +1,16 @@
 use alloc::boxed::Box;
 use alloc::vec;
 
+use crate::Accuracy;
 use crate::math::{MulAdd, RoundingEstimate};
 use crate::storage::SliceRing;
 
 /// Variance ratio over a sliding window: is the price a random walk?
 ///
 /// If returns are independent, the variance of a `q`-period return is `q`
-/// times the variance of a one-period return, and the ratio of the two is
-/// 1. A ratio below 1 points to mean reversion, above 1 to trending.
+/// times the variance of a one-period return, so the ratio of the two is
+/// one. Below one points to mean reversion, above one to trending. `q` is
+/// the builder's [`horizon`](VarianceRatioBuilder::horizon).
 ///
 /// This is the statistic of Lo and MacKinlay (1988, "Stock Market Prices Do
 /// Not Follow Random Walks", *Review of Financial Studies*), computed on the
@@ -32,8 +34,18 @@ use crate::storage::SliceRing;
 ///   in twenty. Use a higher level, or require it to hold for several
 ///   reads, when a signal is costly to act on.
 ///
+/// # Window and horizon
+///
+/// The window is how much history the reading is computed over, in
+/// one-period returns: `n` in the paper. The horizon is the length of the
+/// longer return whose variance is compared with the one-period variance:
+/// `q` in the paper. With a window of 2000 and a horizon of 5, the reading
+/// asks, over the last 2000 returns, whether 5-period returns vary five
+/// times as much as one-period returns.
+///
 /// A longer window makes `z` more sensitive and slower to notice a change;
-/// a larger `q` looks for memory over a longer horizon.
+/// a larger horizon looks for memory over a longer span. The window has to
+/// be longer than the horizon, and in practice many times longer.
 ///
 /// # Cost and rounding
 ///
@@ -50,21 +62,34 @@ use crate::storage::SliceRing;
 /// come and gone. The z statistic sums fourth powers and feels this first;
 /// the ratio, which sums squares, is far less affected.
 ///
-/// `update` keeps an estimate of that error (see [`Resync`]) and returns
-/// [`Resync::Advised`] once it could reach one part in a thousand of the z
-/// statistic, and keeps returning it until [`resync`](Self::resync) is
-/// called. The reading stays available in the meantime. `resync` recomputes
-/// the totals from the stored prices; it costs the window times `q`, so it
-/// is for the caller to schedule when there is time to spare. pandas guards
-/// its rolling moments against the same loss, recomputing the window itself
-/// when it suspects it.
+/// `update` keeps an estimate of that error and returns
+/// [`Accuracy::ResyncRequired`] once it could reach one part in a thousand
+/// of the z statistic, and keeps returning it until
+/// [`resync`](Self::resync) is called. Until then there is no reading:
+/// [`estimate`](Self::estimate) returns `None`, and `update` only stores
+/// the price. So a reading that is given is good to that one part in a
+/// thousand. `resync` recomputes the totals from the stored prices; it
+/// costs the window times `q`, so it is for the caller to schedule when
+/// there is time to spare. pandas guards its rolling moments against the
+/// same loss, and never returns the suspect value either: it recomputes
+/// the window itself, at once.
+///
+/// A resync is required after volatility has fallen far below what the
+/// totals went through earlier, after a price far off the market has
+/// passed through, when the trend has moved far from where it was at the
+/// last resync, or after a price that was not a number. It is also required
+/// on a quiet window that has no reading (no two returns within `q - 1` of
+/// each other both moved) while the totals still carry rounding from
+/// busier prices: the sum that should be exactly zero is not, and what is
+/// left would decide the reading. A resync leaves that sum exactly zero
+/// and is not required again.
 ///
 /// # Examples
 ///
 /// ```
 /// use nexus_stats_core::statistics::VarianceRatio;
 ///
-/// let mut vr = VarianceRatio::builder().q(2).window(64).build().unwrap();
+/// let mut vr = VarianceRatio::builder().horizon(2).window(64).build().unwrap();
 /// // A price that bounces between two levels reverts every step.
 /// for i in 0..100 {
 ///     vr.update(if i % 2 == 0 { 100.0 } else { 101.0 });
@@ -75,7 +100,8 @@ use crate::storage::SliceRing;
 /// ```
 #[derive(Debug, Clone)]
 pub struct VarianceRatio {
-    q: usize,
+    /// The longer return horizon, in periods: `q` in the paper.
+    horizon: usize,
     /// The last `window + 1` log prices.
     log_prices: SliceRing<f64>,
     /// The return every total is measured about: zero, then the window's
@@ -109,37 +135,8 @@ pub struct VarianceRatio {
     /// How many prices in a row have equalled the one before.
     unchanged: usize,
     /// What `update` last returned.
-    resync: Resync,
+    accuracy: Accuracy,
     count: u64,
-}
-
-/// What [`VarianceRatio::update`] reports about its running totals.
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub enum Resync {
-    /// The totals hold all the digits the reading needs.
-    NotNeeded,
-    /// Rounding left in the totals may exceed one part in a thousand of the
-    /// z statistic. Volatility has fallen far below what the totals went
-    /// through earlier, a price far off the market has passed through, the
-    /// trend has moved far from where it was at the last
-    /// [`resync`](VarianceRatio::resync), or a price was not a number. The
-    /// reading is still produced; call `resync` when there is time.
-    ///
-    /// It is also returned on a quiet window that has no reading (no two
-    /// returns within `q - 1` of each other both moved) when the totals
-    /// still carry rounding from busier prices: the sum that should be
-    /// exactly zero is not, and whether the reading comes out `None` or a
-    /// meaningless number depends on the sign of what is left. A `resync`
-    /// leaves that sum exactly zero and the advice does not come back.
-    Advised {
-        /// An estimate of the error the z statistic may carry, as a share
-        /// of the larger of `|z|` and 1, at the update that raised the
-        /// advice. It is four standard deviations of the rounding the
-        /// totals have accumulated, so the real error is usually several
-        /// times smaller. 1 or more means no correct digits are left. The
-        /// ratio is far less affected.
-        z_error: f64,
-    },
 }
 
 /// Running totals over the pairs `(a, b)` of one-period returns a fixed lag
@@ -202,7 +199,7 @@ pub struct VarianceRatioEstimate {
 /// Builder for [`VarianceRatio`].
 #[derive(Debug, Clone)]
 pub struct VarianceRatioBuilder {
-    q: Option<usize>,
+    horizon: Option<usize>,
     window: Option<usize>,
 }
 
@@ -217,9 +214,9 @@ struct Centered {
 
 impl VarianceRatio {
     /// The share of the z statistic that rounding in the totals may reach
-    /// before [`Resync::Advised`] is returned: one part in a thousand. A
-    /// test statistic read against 2 or 2.6 needs no more.
-    const ADVISE_ABOVE: f64 = 1e-3;
+    /// before [`Accuracy::ResyncRequired`] is returned: one part in a
+    /// thousand. A test statistic read against 2 or 2.6 needs no more.
+    const RESYNC_ABOVE: f64 = 1e-3;
 
     /// How many standard deviations of accumulated rounding `z_error`
     /// reports: 4, which a normal error exceeds about once in 16,000.
@@ -229,30 +226,41 @@ impl VarianceRatio {
     #[must_use]
     pub fn builder() -> VarianceRatioBuilder {
         VarianceRatioBuilder {
-            q: None,
+            horizon: None,
             window: None,
         }
     }
 
     /// Feeds a price. The logarithm is taken here.
     ///
-    /// Returns whether a [`resync`](Self::resync) is advised; once it is,
-    /// every call says so until one is made.
+    /// Returns whether the reading is sound or a [`resync`](Self::resync)
+    /// is required. Once one is, every call says so and only stores the
+    /// price, and there is no reading until it is made.
+    ///
+    /// The `error` in [`Accuracy::ResyncRequired`] is that of the z
+    /// statistic, as a share of the larger of `|z|` and 1: four standard
+    /// deviations of the rounding the totals have accumulated, so the real
+    /// error is usually several times smaller.
     ///
     /// Does not validate `price`; arithmetic follows IEEE 754. See
     /// [`checked_update`](Self::checked_update).
     #[inline]
-    pub fn update(&mut self, price: f64) -> Resync {
+    pub fn update(&mut self, price: f64) -> Accuracy {
         let log_price = crate::math::ln(price);
         self.count += 1;
+
+        // With a resync due the totals are not kept: `resync` rebuilds them
+        // from the prices.
+        if self.accuracy != Accuracy::Sound {
+            self.hold(log_price);
+            return self.accuracy;
+        }
 
         // The terms the oldest price is part of leave the totals.
         if self.log_prices.is_full() {
             self.add_terms_from_the_oldest(-1.0);
         }
-        let repeats = self.log_prices.as_slice().last() == Some(&log_price);
-        self.unchanged = if repeats { self.unchanged + 1 } else { 0 };
-        self.log_prices.push(log_price);
+        self.hold(log_price);
         self.add_terms_to_the_newest(1.0);
         // One term leaves each total and one enters.
         self.fourth_powers_rounding.record_n(self.fourth_powers, 2);
@@ -260,10 +268,8 @@ impl VarianceRatio {
         self.long_squares_rounding.record_n(self.long_squares, 2);
         self.long_sum_rounding.record_n(self.long_sum, 2);
 
-        if self.resync == Resync::NotNeeded {
-            self.resync = self.assess();
-        }
-        self.resync
+        self.accuracy = self.assess();
+        self.accuracy
     }
 
     /// Checked update. Feeds `price`, or returns an error and leaves the
@@ -281,15 +287,15 @@ impl VarianceRatio {
     /// # Examples
     ///
     /// ```
-    /// use nexus_stats_core::{DataError, statistics::{Resync, VarianceRatio}};
+    /// use nexus_stats_core::{Accuracy, DataError, statistics::VarianceRatio};
     ///
-    /// let mut vr = VarianceRatio::builder().q(2).window(64).build().unwrap();
-    /// assert_eq!(vr.checked_update(100.0), Ok(Resync::NotNeeded));
+    /// let mut vr = VarianceRatio::builder().horizon(2).window(64).build().unwrap();
+    /// assert_eq!(vr.checked_update(100.0), Ok(Accuracy::Sound));
     /// assert_eq!(vr.checked_update(-1.0), Err(DataError::OutOfRange));
     /// assert_eq!(vr.count(), 1);
     /// ```
     #[inline]
-    pub fn checked_update(&mut self, price: f64) -> Result<Resync, crate::DataError> {
+    pub fn checked_update(&mut self, price: f64) -> Result<Accuracy, crate::DataError> {
         // Any positive price is allowed: its logarithm is small.
         crate::math::check_input(price, f64::MAX)?;
         if price <= 0.0 {
@@ -301,12 +307,16 @@ impl VarianceRatio {
     /// The ratio and its test statistic over the window.
     ///
     /// `None` until the window is full, while the price has not moved within
-    /// it, or when the standard error cannot be estimated (no two returns
-    /// within `q - 1` periods of each other both moved).
+    /// it, when the standard error cannot be estimated (no two returns
+    /// within `q - 1` periods of each other both moved), or while a
+    /// [`resync`](Self::resync) is due.
     ///
     /// Costs time proportional to `q`.
     #[must_use]
     pub fn estimate(&self) -> Option<VarianceRatioEstimate> {
+        if self.accuracy != Accuracy::Sound {
+            return None;
+        }
         let centered = self.centered()?;
         let Centered { n, one_period, .. } = centered;
 
@@ -334,10 +344,11 @@ impl VarianceRatio {
     }
 
     /// Recomputes the running totals from the stored prices, measured about
-    /// the window's current drift, and clears [`Resync::Advised`].
+    /// the window's current drift, and clears [`Accuracy::ResyncRequired`], which
+    /// brings the reading back.
     ///
     /// If a return far larger than the rest is still in the window, the
-    /// advice comes back when it leaves: resync again then.
+    /// requirement comes back when it leaves: resync again then.
     ///
     /// For a slow path: it costs time proportional to the window times `q`.
     pub fn resync(&mut self) {
@@ -361,17 +372,17 @@ impl VarianceRatio {
             .record_n(self.fourth_powers, adds);
         self.squares_rounding
             .record_n(self.one_period_squares, adds);
-        let long_adds = (adds + 1).saturating_sub(self.q);
+        let long_adds = (adds + 1).saturating_sub(self.horizon);
         self.long_squares_rounding
             .record_n(self.long_squares, long_adds);
         self.long_sum_rounding.record_n(self.long_sum, long_adds);
-        self.resync = self.assess();
+        self.accuracy = self.assess();
     }
 
     /// The return horizon `q`.
     #[must_use]
-    pub fn q(&self) -> usize {
-        self.q
+    pub fn horizon(&self) -> usize {
+        self.horizon
     }
 
     /// The window, in one-period returns.
@@ -430,12 +441,20 @@ impl VarianceRatio {
     /// returns held, about `q` times the pivot.
     fn sum_long_returns(&mut self) {
         let prices = self.log_prices.as_slice();
-        let long_pivot = self.q as f64 * self.pivot;
-        for (from, to) in prices.iter().zip(&prices[self.q.min(prices.len())..]) {
+        let long_pivot = self.horizon as f64 * self.pivot;
+        for (from, to) in prices.iter().zip(&prices[self.horizon.min(prices.len())..]) {
             let long = to - from - long_pivot;
             self.long_sum += long;
             self.long_squares = long.fma(long, self.long_squares);
         }
+    }
+
+    /// Stores a log price, counting how long the price has not changed.
+    #[inline]
+    fn hold(&mut self, log_price: f64) {
+        let repeats = self.log_prices.as_slice().last() == Some(&log_price);
+        self.unchanged = if repeats { self.unchanged + 1 } else { 0 };
+        self.log_prices.push(log_price);
     }
 
     fn clear_totals(&mut self) {
@@ -449,7 +468,7 @@ impl VarianceRatio {
         self.squares_rounding.reset();
         self.long_squares_rounding.reset();
         self.long_sum_rounding.reset();
-        self.resync = Resync::NotNeeded;
+        self.accuracy = Accuracy::Sound;
     }
 
     /// `None` until the window is full.
@@ -486,7 +505,7 @@ impl VarianceRatio {
     /// The sum of squared `q`-period returns, each less the drift over `q`
     /// periods.
     fn long_squares_about_the_drift(&self, centered: Centered) -> f64 {
-        let q = self.q as f64;
+        let q = self.horizon as f64;
         let terms = centered.n - q + 1.0;
         crate::math::squares_about(self.long_squares, self.long_sum, terms, q * centered.shift)
     }
@@ -538,8 +557,8 @@ impl VarianceRatio {
         if lag_sum == 0.0 {
             return 0.0;
         }
-        // Only rounding residue, or a NaN. Advised whatever the residue's
-        // sign, though below zero the reading comes out `None` (see `Resync`).
+        // Only rounding residue, or a NaN. ResyncRequired whatever the residue's
+        // sign, though below zero the reading comes out `None` (see the type docs).
         if !(lag_sum > 0.0 && one_period > 0.0) {
             return f64::INFINITY;
         }
@@ -592,7 +611,7 @@ impl VarianceRatio {
     /// The error in the `q`-period squares about the drift.
     #[allow(clippy::suboptimal_flops)]
     fn long_squares_error(&self, centered: Centered) -> f64 {
-        let q = self.q as f64;
+        let q = self.horizon as f64;
         let drift = q * centered.shift;
         let terms = centered.n - q + 1.0;
         // `squares - 2 * drift * sum + terms * drift^2`.
@@ -604,16 +623,16 @@ impl VarianceRatio {
     }
 
     #[inline]
-    fn assess(&self) -> Resync {
+    fn assess(&self) -> Accuracy {
         let Some(centered) = self.centered() else {
-            return Resync::NotNeeded;
+            return Accuracy::Sound;
         };
         let z_error = self.z_error(centered);
-        // Written so that a NaN, from a price that was not a number, advises.
-        if z_error <= Self::ADVISE_ABOVE {
-            return Resync::NotNeeded;
+        // Written so that a NaN, from a price that was not a number, requires one.
+        if z_error <= Self::RESYNC_ABOVE {
+            return Accuracy::Sound;
         }
-        Resync::Advised { z_error }
+        Accuracy::ResyncRequired { error: z_error }
     }
 
     /// Adds every term that ends at the newest price (`weight` 1).
@@ -639,9 +658,9 @@ impl VarianceRatio {
             totals.add(earlier, newest_return, weight);
         }
 
-        if last >= self.q {
-            let long_pivot = self.q as f64 * self.pivot;
-            let long_return = prices[last] - prices[last - self.q] - long_pivot;
+        if last >= self.horizon {
+            let long_pivot = self.horizon as f64 * self.pivot;
+            let long_return = prices[last] - prices[last - self.horizon] - long_pivot;
             self.long_sum = weight.fma(long_return, self.long_sum);
             self.long_squares = (weight * long_return).fma(long_return, self.long_squares);
         }
@@ -665,22 +684,23 @@ impl VarianceRatio {
             totals.add(oldest_return, later, weight);
         }
 
-        let long_pivot = self.q as f64 * self.pivot;
-        let long_return = prices[self.q] - prices[0] - long_pivot;
+        let long_pivot = self.horizon as f64 * self.pivot;
+        let long_return = prices[self.horizon] - prices[0] - long_pivot;
         self.long_sum = weight.fma(long_return, self.long_sum);
         self.long_squares = (weight * long_return).fma(long_return, self.long_squares);
     }
 }
 
 impl VarianceRatioBuilder {
-    /// The longer return horizon, in periods. Required, at least 2.
+    /// The longer return horizon, in periods: `q` in the paper. Required,
+    /// at least 2.
     #[must_use]
-    pub fn q(mut self, q: usize) -> Self {
-        self.q = Some(q);
+    pub fn horizon(mut self, horizon: usize) -> Self {
+        self.horizon = Some(horizon);
         self
     }
 
-    /// The window, in one-period returns. Required, more than `q`. The
+    /// The window, in one-period returns. Required, more than the horizon. The
     /// window holds one more price than this.
     #[must_use]
     pub fn window(mut self, returns: usize) -> Self {
@@ -692,32 +712,34 @@ impl VarianceRatioBuilder {
     ///
     /// # Errors
     ///
-    /// - `Missing` if `q` or `window` was not set.
-    /// - `Invalid` if `q` is below 2 or `window` is not more than `q`.
+    /// - `Missing` if `horizon` or `window` was not set.
+    /// - `Invalid` if `horizon` is below 2 or `window` is not more than it.
     pub fn build(self) -> Result<VarianceRatio, crate::ConfigError> {
-        let q = self.q.ok_or(crate::ConfigError::Missing("q"))?;
+        let horizon = self.horizon.ok_or(crate::ConfigError::Missing("horizon"))?;
         let window = self.window.ok_or(crate::ConfigError::Missing("window"))?;
-        if q < 2 {
-            return Err(crate::ConfigError::Invalid("q must be >= 2"));
+        if horizon < 2 {
+            return Err(crate::ConfigError::Invalid("horizon must be >= 2"));
         }
-        if window <= q {
-            return Err(crate::ConfigError::Invalid("window must be more than q"));
+        if window <= horizon {
+            return Err(crate::ConfigError::Invalid(
+                "window must be more than horizon",
+            ));
         }
         let Some(prices) = window.checked_add(1) else {
             return Err(crate::ConfigError::Invalid("window is too large"));
         };
         // A full window's returns, and the horizon, as the formulas use them.
-        let (returns, periods) = (window as f64, q as f64);
-        let lag_weights = lag_weights(q);
+        let (returns, periods) = (window as f64, horizon as f64);
+        let lag_weights = lag_weights(horizon);
 
         Ok(VarianceRatio {
-            q,
+            horizon,
             log_prices: SliceRing::new(prices, 0.0)?,
             pivot: 0.0,
             one_period_squares: 0.0,
             long_sum: 0.0,
             long_squares: 0.0,
-            lags: vec![LagTotals::default(); q - 1].into_boxed_slice(),
+            lags: vec![LagTotals::default(); horizon - 1].into_boxed_slice(),
             lag_weights_sum: lag_weights.iter().fold(0.0, |sum, weight| sum + weight),
             lag_weights,
             long_divisor: periods * (returns - periods + 1.0) * (1.0 - periods / returns),
@@ -727,7 +749,7 @@ impl VarianceRatioBuilder {
             long_squares_rounding: RoundingEstimate::new(),
             long_sum_rounding: RoundingEstimate::new(),
             unchanged: 0,
-            resync: Resync::NotNeeded,
+            accuracy: Accuracy::Sound,
             count: 0,
         })
     }
@@ -775,7 +797,7 @@ mod tests {
 
     fn ratio(prices: &[f64], q: usize) -> Option<f64> {
         let mut vr = VarianceRatio::builder()
-            .q(q)
+            .horizon(q)
             .window(prices.len() - 1)
             .build()
             .unwrap();
@@ -834,7 +856,7 @@ mod tests {
             (399, 16, -4.490_751_545_252_455),
         ] {
             let mut vr = VarianceRatio::builder()
-                .q(q)
+                .horizon(q)
                 .window(window)
                 .build()
                 .unwrap();
@@ -858,7 +880,11 @@ mod tests {
             state ^= state << 17;
             2.0 * ((state >> 11) as f64 / (1u64 << 53) as f64) - 1.0
         };
-        let mut walk = VarianceRatio::builder().q(4).window(2000).build().unwrap();
+        let mut walk = VarianceRatio::builder()
+            .horizon(4)
+            .window(2000)
+            .build()
+            .unwrap();
         let mut reverting = walk.clone();
         let mut trending = walk.clone();
         let (mut price, mut previous) = (100.0f64, 0.0);
@@ -886,7 +912,11 @@ mod tests {
     fn none_when_the_standard_error_cannot_be_estimated() {
         // Two moves, three periods apart: with q = 2 only lag 1 is used, and
         // no two neighboring returns both moved.
-        let mut vr = VarianceRatio::builder().q(2).window(4).build().unwrap();
+        let mut vr = VarianceRatio::builder()
+            .horizon(2)
+            .window(4)
+            .build()
+            .unwrap();
         for p in [100.0, 101.0, 101.0, 101.0, 100.0] {
             vr.update(p);
         }
@@ -900,7 +930,11 @@ mod tests {
         // hundred times larger in the middle.
         let mut state = 0x9E37_79B9_7F4A_7C15u64;
         let mut price = 100.0f64;
-        let mut vr = VarianceRatio::builder().q(6).window(500).build().unwrap();
+        let mut vr = VarianceRatio::builder()
+            .horizon(6)
+            .window(500)
+            .build()
+            .unwrap();
         for i in 0..60_000u32 {
             state ^= state << 13;
             state ^= state >> 7;
@@ -930,7 +964,11 @@ mod tests {
     #[test]
     fn resync_matches_the_written_out_estimators_and_can_be_repeated() {
         let series = prices(300);
-        let mut vr = VarianceRatio::builder().q(7).window(50).build().unwrap();
+        let mut vr = VarianceRatio::builder()
+            .horizon(7)
+            .window(50)
+            .build()
+            .unwrap();
         for &p in &series {
             vr.update(p);
         }
@@ -1006,7 +1044,7 @@ mod tests {
             prices.extend(core::iter::repeat_n(price, 2 * window));
 
             let mut vr = VarianceRatio::builder()
-                .q(q)
+                .horizon(q)
                 .window(window)
                 .build()
                 .unwrap();
@@ -1042,7 +1080,7 @@ mod tests {
     }
 
     #[test]
-    fn a_bad_print_is_advised_once_it_leaves_and_resync_restores_the_reading() {
+    fn a_bad_print_withholds_the_reading_once_it_leaves_until_resync() {
         for (print, q, window, noise_size) in [
             (0.01, 4, 64, 1e-5),
             (1e6, 4, 64, 1e-5),
@@ -1051,7 +1089,7 @@ mod tests {
         ] {
             let prices = with_one_print(print, window, noise_size);
             let mut vr = VarianceRatio::builder()
-                .q(q)
+                .horizon(q)
                 .window(window)
                 .build()
                 .unwrap();
@@ -1060,35 +1098,31 @@ mod tests {
                 // Both of the print's returns are out once price 3 * window + 1
                 // is in.
                 if i <= 3 * window {
-                    assert_eq!(state, Resync::NotNeeded, "print {print} price {i}");
+                    assert_eq!(state, Accuracy::Sound, "print {print} price {i}");
                     continue;
                 }
-                let want = exact(&prices[i - window..=i], q).unwrap();
+                // From then until the resync there is no reading.
                 if i <= 4 * window {
                     assert!(
-                        matches!(state, Resync::Advised { .. }),
+                        matches!(state, Accuracy::ResyncRequired { .. }),
                         "print {print} price {i}: {state:?}"
                     );
-                    // The ratio loses far less than the z statistic: even a
-                    // print a million times off leaves it good to 1 in 1000.
-                    if let Some(got) = vr.estimate() {
-                        assert!(
-                            (got.ratio - want.ratio).abs() <= 1e-3 * want.ratio,
-                            "print {print} price {i}: {got:?} vs {want:?}"
-                        );
-                    }
+                    assert_eq!(vr.estimate(), None, "print {print} price {i}");
                 }
                 if i == 4 * window {
                     vr.resync();
                 }
-                if i > 4 * window {
-                    assert_eq!(state, Resync::NotNeeded, "print {print} price {i}");
+                if i >= 4 * window {
+                    let want = exact(&prices[i - window..=i], q).unwrap();
                     let got = vr.estimate().unwrap();
                     assert!(
                         (got.ratio - want.ratio).abs() <= 1e-9 * want.ratio
                             && (got.z_statistic - want.z_statistic).abs() <= 1e-6,
                         "print {print} price {i}: {got:?} vs {want:?}"
                     );
+                }
+                if i > 4 * window {
+                    assert_eq!(state, Accuracy::Sound, "print {print} price {i}");
                 }
             }
         }
@@ -1138,9 +1172,8 @@ mod tests {
     }
 
     #[test]
-    fn the_error_estimate_is_never_below_the_actual_error() {
-        // Spikes, sudden and gradual falls in volatility, and a steady run:
-        // wherever it is checked, the z statistic is within the estimate.
+    fn every_reading_is_good_through_spikes_and_falling_volatility() {
+        // Spikes, sudden and gradual falls in volatility, and a steady run.
         let scenarios = [
             Scenario {
                 window: 256,
@@ -1198,65 +1231,53 @@ mod tests {
             },
         ];
         for (index, scenario) in scenarios.iter().enumerate() {
-            let prices = scenario.prices(index as u64 + 1);
+            let prices = scenario.prices(index as u64 + 1).into_iter();
             let (q, window) = (scenario.q, scenario.window);
-            let mut vr = VarianceRatio::builder()
-                .q(q)
-                .window(window)
-                .build()
-                .unwrap();
-            let mut first_notice = true;
-            for (i, &p) in prices.iter().enumerate() {
-                let raised = matches!(vr.update(p), Resync::Advised { .. }) && first_notice;
-                first_notice &= !raised;
-                // The exact estimate costs the window: checked at intervals
-                // and at the update that raises the notice.
-                if i < scenario.busy || !(i % 97 == 0 || raised) {
-                    continue;
-                }
-                let (Some(got), Some(want)) = (vr.estimate(), exact(&prices[i - window..=i], q))
-                else {
-                    continue;
-                };
-                let actual =
-                    (got.z_statistic - want.z_statistic).abs() / want.z_statistic.abs().max(1.0);
-                let estimate = vr.z_error(vr.centered().unwrap());
-                assert!(
-                    actual <= estimate,
-                    "scenario {index} price {i}: actual {actual} estimate {estimate}"
-                );
-            }
+            assert_every_reading_is_good(q, window, prices, scenario.busy, 97, None);
         }
     }
 
-    /// Feeds `returns` (of the log price) and, from `from` on at every
-    /// `every`th update, checks the z statistic against the window computed
-    /// directly: its error must be within the estimate. Calls `resync` after
-    /// update `resync_at`.
-    fn assert_the_estimate_covers(
+    /// Prices from the returns of their logarithm, starting at 100.
+    fn walk(returns: impl Iterator<Item = f64>) -> impl Iterator<Item = f64> {
+        let mut log_price = 100.0f64.ln();
+        returns.map(move |r| {
+            log_price += r;
+            log_price.exp()
+        })
+    }
+
+    /// Feeds `prices` as a caller would, calling `resync` whenever it is
+    /// required (and after update `resync_at`), and from `from` on at every
+    /// `every`th update checks the reading against the window computed
+    /// directly. While a resync is due there must be no reading; a reading
+    /// that is given must be within the error estimate, and so within one
+    /// part in a thousand. Returns the number of required resyncs.
+    fn assert_every_reading_is_good(
         q: usize,
         window: usize,
-        returns: impl Iterator<Item = f64>,
+        prices: impl Iterator<Item = f64>,
         from: usize,
         every: usize,
         resync_at: Option<usize>,
-    ) {
+    ) -> usize {
         let mut vr = VarianceRatio::builder()
-            .q(q)
+            .horizon(q)
             .window(window)
             .build()
             .unwrap();
-        let mut log_price = 100.0f64.ln();
         let mut held = alloc::collections::VecDeque::with_capacity(window + 1);
-        let mut checked = 0;
-        for (i, r) in returns.enumerate() {
-            log_price += r;
-            let price = log_price.exp();
-            vr.update(price);
+        let (mut checked, mut resyncs) = (0, 0);
+        for (i, price) in prices.enumerate() {
+            let state = vr.update(price);
             if held.len() == window + 1 {
                 held.pop_front();
             }
             held.push_back(price);
+            if matches!(state, Accuracy::ResyncRequired { .. }) {
+                assert_eq!(vr.estimate(), None, "update {i}");
+                vr.resync();
+                resyncs += 1;
+            }
             if resync_at == Some(i) {
                 vr.resync();
             }
@@ -1269,19 +1290,22 @@ mod tests {
             let actual =
                 (got.z_statistic - want.z_statistic).abs() / want.z_statistic.abs().max(1.0);
             let estimate = vr.z_error(vr.centered().unwrap());
+            // Below one part in a billion the direct computation's own
+            // rounding is as large as what it is compared with.
             assert!(
-                actual <= estimate,
+                actual <= estimate.max(1e-9) && estimate <= VarianceRatio::RESYNC_ABOVE,
                 "update {i}: z {} against {}, error {actual}, estimate {estimate}",
                 got.z_statistic,
                 want.z_statistic
             );
             checked += 1;
         }
-        assert!(checked > 100, "{checked}");
+        assert!(checked > 10, "{checked}");
+        resyncs
     }
 
     #[test]
-    fn the_error_estimate_covers_moves_that_are_seldom_next_to_each_other() {
+    fn every_reading_is_good_when_moves_are_seldom_next_to_each_other() {
         // A busy spell, then a price that moves a hundred times less and
         // only on every other update, but for one adjacent pair: the lag-1
         // sum is tiny beside the squares, and all of it is that pair.
@@ -1297,11 +1321,13 @@ mod tests {
             }
             0.0
         });
-        assert_the_estimate_covers(q, window, returns, busy + window, 1, None);
+        let resyncs =
+            assert_every_reading_is_good(q, window, walk(returns), busy + window, 1, None);
+        assert!(resyncs > 0);
     }
 
     #[test]
-    fn the_error_estimate_covers_a_trend_that_turns_after_resync() {
+    fn every_reading_is_good_when_a_trend_turns_after_resync() {
         // A trend far stronger than the noise, a resync, and then the trend
         // reverses: the totals are measured about a drift that no longer
         // holds, and the turn itself is one large return about the new one.
@@ -1309,12 +1335,20 @@ mod tests {
             let mut noise = Noise(99);
             let returns = (0..6 * window)
                 .map(move |i| if i < 3 * window { 1e-3 } else { turned } + 1e-7 * noise.next());
-            assert_the_estimate_covers(q, window, returns, window + 1, every, Some(3 * window - 1));
+            let resyncs = assert_every_reading_is_good(
+                q,
+                window,
+                walk(returns),
+                window + 1,
+                every,
+                Some(3 * window - 1),
+            );
+            assert!(resyncs > 0);
         }
     }
 
     #[test]
-    fn falling_volatility_is_advised_and_a_steady_market_is_not() {
+    fn falling_volatility_requires_a_resync_and_easing_does_not() {
         // A thousandfold fall after a long busy spell loses the z statistic
         // its digits; thirtyfold does not, and nor does a hundredfold burst.
         let collapse = Scenario {
@@ -1335,34 +1369,46 @@ mod tests {
             gradual: 0,
             spike: 0.0,
         };
-        for (scenario, advised) in [(collapse, true), (easing, false)] {
+        for (scenario, required) in [(collapse, true), (easing, false)] {
             let mut vr = VarianceRatio::builder()
-                .q(scenario.q)
+                .horizon(scenario.q)
                 .window(scenario.window)
                 .build()
                 .unwrap();
-            let mut last = Resync::NotNeeded;
+            let mut last = Accuracy::Sound;
             for p in scenario.prices(1) {
                 last = vr.update(p);
             }
-            assert_eq!(matches!(last, Resync::Advised { .. }), advised, "{last:?}");
+            assert_eq!(
+                matches!(last, Accuracy::ResyncRequired { .. }),
+                required,
+                "{last:?}"
+            );
             vr.resync();
-            assert_eq!(vr.update(100.0), Resync::NotNeeded);
+            assert_eq!(vr.update(100.0), Accuracy::Sound);
         }
     }
 
     #[test]
-    fn a_price_that_is_not_a_number_is_advised_and_resync_recovers() {
+    fn a_price_that_is_not_a_number_requires_a_resync_which_recovers() {
         let prices = prices(200);
-        let mut vr = VarianceRatio::builder().q(3).window(50).build().unwrap();
+        let mut vr = VarianceRatio::builder()
+            .horizon(3)
+            .window(50)
+            .build()
+            .unwrap();
         for &p in &prices[..100] {
             vr.update(p);
         }
-        assert!(matches!(vr.update(f64::NAN), Resync::Advised { .. }));
-        // The reading is not a number until the totals are rebuilt without
-        // it: 51 prices on, it has left the window.
+        assert!(matches!(
+            vr.update(f64::NAN),
+            Accuracy::ResyncRequired { .. }
+        ));
+        // No reading until the totals are rebuilt without it: 51 prices
+        // on, it has left the window.
         for &p in &prices[100..152] {
-            assert!(matches!(vr.update(p), Resync::Advised { .. }));
+            assert!(matches!(vr.update(p), Accuracy::ResyncRequired { .. }));
+            assert_eq!(vr.estimate(), None);
         }
         vr.resync();
         let got = vr.estimate().unwrap();
@@ -1371,13 +1417,17 @@ mod tests {
             (got.ratio - want.ratio).abs() < 1e-9 * want.ratio,
             "{got:?} {want:?}"
         );
-        assert_eq!(vr.update(prices[152]), Resync::NotNeeded);
+        assert_eq!(vr.update(prices[152]), Accuracy::Sound);
     }
 
     #[test]
     fn resync_before_the_window_is_full_changes_nothing_that_is_read() {
         let prices = prices(120);
-        let mut vr = VarianceRatio::builder().q(3).window(50).build().unwrap();
+        let mut vr = VarianceRatio::builder()
+            .horizon(3)
+            .window(50)
+            .build()
+            .unwrap();
         let mut plain = vr.clone();
         // With no price, with one, and part way through filling.
         vr.resync();
@@ -1399,34 +1449,41 @@ mod tests {
     }
 
     #[test]
-    fn the_advice_stays_until_resync() {
+    fn the_requirement_stays_until_resync() {
         let prices = with_one_print(0.01, 64, 1e-5);
-        let mut vr = VarianceRatio::builder().q(4).window(64).build().unwrap();
+        let mut vr = VarianceRatio::builder()
+            .horizon(4)
+            .window(64)
+            .build()
+            .unwrap();
         let mut first = None;
         for &p in &prices {
             let state = vr.update(p);
             if let Some(first) = first {
-                // The same notice, value included, on every later update.
+                // The same value, error included, on every later update,
+                // and no reading.
                 assert_eq!(state, first);
-            } else if matches!(state, Resync::Advised { .. }) {
+                assert_eq!(vr.estimate(), None);
+            } else if matches!(state, Accuracy::ResyncRequired { .. }) {
                 first = Some(state);
             }
         }
         assert!(first.is_some());
         vr.resync();
-        assert_eq!(vr.update(prices[prices.len() - 1]), Resync::NotNeeded);
+        assert!(vr.estimate().is_some());
+        assert_eq!(vr.update(prices[prices.len() - 1]), Accuracy::Sound);
     }
 
     #[test]
-    fn a_resync_with_the_print_still_in_the_window_is_advised_again_when_it_leaves() {
+    fn a_resync_with_the_print_still_in_the_window_is_required_again_when_it_leaves() {
         let (q, window) = (4, 64);
         let prices = with_one_print(1e6, window, 1e-5);
         let mut vr = VarianceRatio::builder()
-            .q(q)
+            .horizon(q)
             .window(window)
             .build()
             .unwrap();
-        let mut advised_again = false;
+        let mut required_again = false;
         for (i, &p) in prices.iter().enumerate() {
             let state = vr.update(p);
             if i == 2 * window + 10 {
@@ -1435,7 +1492,7 @@ mod tests {
                 vr.resync();
             }
             if i > 3 * window && i < 4 * window {
-                advised_again |= matches!(state, Resync::Advised { .. });
+                required_again |= matches!(state, Accuracy::ResyncRequired { .. });
             }
             if i == 4 * window {
                 vr.resync();
@@ -1452,7 +1509,7 @@ mod tests {
                 );
             }
         }
-        assert!(advised_again);
+        assert!(required_again);
     }
 
     #[test]
@@ -1469,20 +1526,23 @@ mod tests {
             .collect();
 
         let mut vr = VarianceRatio::builder()
-            .q(q)
+            .horizon(q)
             .window(window)
             .build()
             .unwrap();
         for (i, &p) in prices.iter().enumerate() {
             let state = vr.update(p);
-            // Measured about zero, a trend this strong is advised as soon
+            // Measured about zero, a trend this strong requires a resync as soon
             // as the window fills; one resync settles it.
             if i == window {
-                assert!(matches!(state, Resync::Advised { .. }), "{state:?}");
+                assert!(
+                    matches!(state, Accuracy::ResyncRequired { .. }),
+                    "{state:?}"
+                );
                 vr.resync();
             }
             if i > window {
-                assert_eq!(state, Resync::NotNeeded, "price {i}");
+                assert_eq!(state, Accuracy::Sound, "price {i}");
                 let (got, want) = (
                     vr.estimate().unwrap(),
                     exact(&prices[i - window..=i], q).unwrap(),
@@ -1510,13 +1570,13 @@ mod tests {
             })
             .collect();
         let mut vr = VarianceRatio::builder()
-            .q(q)
+            .horizon(q)
             .window(window)
             .build()
             .unwrap();
         for (i, &p) in prices.iter().enumerate() {
             // A hundredfold burst is well within what the totals hold.
-            assert_eq!(vr.update(p), Resync::NotNeeded, "price {i}");
+            assert_eq!(vr.update(p), Accuracy::Sound, "price {i}");
             // Checked at intervals: the exact estimate costs the window.
             if i >= window && i % 997 == 0 {
                 let (got, want) = (
@@ -1536,7 +1596,11 @@ mod tests {
     fn the_window_slides() {
         // arch on prices 100..=164, reached here by feeding all 165.
         let series = prices(165);
-        let mut vr = VarianceRatio::builder().q(4).window(64).build().unwrap();
+        let mut vr = VarianceRatio::builder()
+            .horizon(4)
+            .window(64)
+            .build()
+            .unwrap();
         for &p in &series {
             vr.update(p);
         }
@@ -1564,7 +1628,7 @@ mod tests {
         let mut state = 0x9E37_79B9_7F4A_7C15u64;
         let mut price = 100.0f64;
         let mut vr = VarianceRatio::builder()
-            .q(8)
+            .horizon(8)
             .window(20_000)
             .build()
             .unwrap();
@@ -1590,7 +1654,11 @@ mod tests {
 
     #[test]
     fn none_until_full_and_while_flat() {
-        let mut vr = VarianceRatio::builder().q(2).window(4).build().unwrap();
+        let mut vr = VarianceRatio::builder()
+            .horizon(2)
+            .window(4)
+            .build()
+            .unwrap();
         for p in [100.0, 101.0, 100.0, 102.0] {
             vr.update(p);
             assert_eq!(vr.estimate().map(|e| e.ratio), None);
@@ -1609,7 +1677,11 @@ mod tests {
     #[test]
     fn reset_empties_the_window() {
         let series = prices(40);
-        let mut vr = VarianceRatio::builder().q(3).window(20).build().unwrap();
+        let mut vr = VarianceRatio::builder()
+            .horizon(3)
+            .window(20)
+            .build()
+            .unwrap();
         for &p in &series {
             vr.update(p);
         }
@@ -1629,29 +1701,33 @@ mod tests {
     fn builder_validation() {
         use crate::ConfigError::{Invalid, Missing};
         let b = VarianceRatio::builder;
-        assert_eq!(b().window(10).build().unwrap_err(), Missing("q"));
-        assert_eq!(b().q(2).build().unwrap_err(), Missing("window"));
+        assert_eq!(b().window(10).build().unwrap_err(), Missing("horizon"));
+        assert_eq!(b().horizon(2).build().unwrap_err(), Missing("window"));
         assert_eq!(
-            b().q(1).window(10).build().unwrap_err(),
-            Invalid("q must be >= 2")
+            b().horizon(1).window(10).build().unwrap_err(),
+            Invalid("horizon must be >= 2")
         );
         assert_eq!(
-            b().q(5).window(5).build().unwrap_err(),
-            Invalid("window must be more than q")
+            b().horizon(5).window(5).build().unwrap_err(),
+            Invalid("window must be more than horizon")
         );
         assert_eq!(
-            b().q(5).window(usize::MAX).build().unwrap_err(),
+            b().horizon(5).window(usize::MAX).build().unwrap_err(),
             Invalid("window is too large")
         );
-        let vr = b().q(5).window(6).build().unwrap();
-        assert_eq!((vr.q(), vr.window()), (5, 6));
+        let vr = b().horizon(5).window(6).build().unwrap();
+        assert_eq!((vr.horizon(), vr.window()), (5, 6));
     }
 
     #[test]
     fn checked_update_refuses_bad_input_and_changes_nothing() {
         use crate::DataError::{Infinite, NotANumber, OutOfRange};
 
-        let mut vr = VarianceRatio::builder().q(2).window(4).build().unwrap();
+        let mut vr = VarianceRatio::builder()
+            .horizon(2)
+            .window(4)
+            .build()
+            .unwrap();
         for p in [100.0, 101.0, 100.0, 102.0, 101.0] {
             vr.checked_update(p).unwrap();
         }
@@ -1667,7 +1743,11 @@ mod tests {
 
     #[test]
     fn checked_update_gives_the_same_result_as_update() {
-        let mut checked = VarianceRatio::builder().q(3).window(30).build().unwrap();
+        let mut checked = VarianceRatio::builder()
+            .horizon(3)
+            .window(30)
+            .build()
+            .unwrap();
         let mut unchecked = checked.clone();
         for &p in &prices(60) {
             checked.checked_update(p).unwrap();
@@ -1678,7 +1758,11 @@ mod tests {
 
     #[test]
     fn update_does_not_validate() {
-        let mut vr = VarianceRatio::builder().q(2).window(4).build().unwrap();
+        let mut vr = VarianceRatio::builder()
+            .horizon(2)
+            .window(4)
+            .build()
+            .unwrap();
         for p in [100.0, f64::NAN, 101.0, 102.0, 101.0] {
             vr.update(p);
         }

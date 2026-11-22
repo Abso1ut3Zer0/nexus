@@ -58,7 +58,7 @@ pub mod clock;
 #[cfg(feature = "alloc")]
 pub mod storage;
 
-pub use enums::{Condition, ConfigError, DataError, Direction};
+pub use enums::{Accuracy, Condition, ConfigError, DataError, Direction};
 
 /// The numeric types the generic monitors accept. Sealed: named as bounds,
 /// implemented only here.

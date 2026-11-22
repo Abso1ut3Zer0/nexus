@@ -105,7 +105,7 @@
 //! | `full` | no | All subcrates |
 
 // Re-export core types at crate root
-pub use nexus_stats_core::{Condition, ConfigError, DataError, Direction};
+pub use nexus_stats_core::{Accuracy, Condition, ConfigError, DataError, Direction};
 
 /// Sealed numeric bounds of the generic types: [`Sample`] (`f64`, `i64`) and
 /// [`Float`] (`f64`, `f32`). Name them in your own signatures

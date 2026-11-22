@@ -296,15 +296,17 @@ Feed prices; the type takes the logarithm and differences them. The rescaled ran
 
 ## VarianceRatio: Lo-MacKinlay variance ratio
 
-Is the price a random walk? If returns are independent, the variance of a `q`-period return is `q` times the variance of a one-period return, and their ratio is 1. Below 1 points to mean reversion, above 1 to trending.
+Is the price a random walk? If returns are independent, the variance of a `q`-period return is `q` times the variance of a one-period return, and their ratio is 1 (`q` is the builder's `horizon`). Below 1 points to mean reversion, above 1 to trending.
 
 ```rust
 use nexus_stats_core::statistics::VarianceRatio;
-let mut vr = VarianceRatio::builder().q(5).window(2000).build().unwrap();
+let mut vr = VarianceRatio::builder().horizon(5).window(2000).build().unwrap();
 for price in prices { vr.update(price); }
 let estimate = vr.estimate().unwrap();
 let (ratio, z) = (estimate.ratio, estimate.z_statistic);
 ```
+
+**Window and horizon.** The window is how much history the reading is computed over, in one-period returns (`n` in the paper). The horizon is the length of the longer return whose variance is compared with the one-period variance (`q`). With a window of 2000 and a horizon of 5, the reading asks, over the last 2000 returns, whether 5-period returns vary five times as much as one-period returns. The window has to be longer than the horizon, and in practice many times longer.
 
 This is the statistic of Lo and MacKinlay (1988) on the log price over the last `window` returns: overlapping `q`-period returns, the drift taken from the window's two ends, and their bias corrections. `z_statistic` is their heteroskedasticity-robust statistic. Both match `arch.unitroot.VarianceRatio` with its defaults (`vr` and `stat`).
 
@@ -316,9 +318,9 @@ This is the statistic of Lo and MacKinlay (1988) on the log price over the last 
 
 **Cost and rounding.** The sums are running totals: `update` and `estimate` cost time proportional to `q`, whatever the window, so a reading stays cheap when many instruments are read on the same bar.
 
-A running total is rounded at every add, and the errors stay in it. They matter once the total has become much smaller than it was: after volatility falls a long way, or after a price far off the market has come and gone. The z statistic sums fourth powers and feels this first; the ratio is far less affected. `update` keeps an estimate of the accumulated rounding and returns `Resync::Advised { z_error }` once it could reach one part in a thousand of z, and keeps returning it until `resync()` is called. The reading is still produced meanwhile. `resync()` recomputes the totals from the stored prices and costs the window times `q`, so schedule it when there is time. pandas guards its rolling moments against the same loss, recomputing the window itself.
+A running total is rounded at every add, and the errors stay in it. They matter once the total has become much smaller than it was: after volatility falls a long way, or after a price far off the market has come and gone. The z statistic sums fourth powers and feels this first; the ratio is far less affected. `update` keeps an estimate of the accumulated rounding and returns `Accuracy::ResyncRequired { error }` once it could reach one part in a thousand of z, and keeps returning it until `resync()` is called. Until then there is no reading: `estimate()` returns `None` and `update` only stores the price, so a reading that is given is good to that one part in a thousand. `resync()` recomputes the totals from the stored prices and costs the window times `q`, so schedule it when there is time. pandas guards its rolling moments against the same loss and never returns the suspect value either: it recomputes the window itself, at once.
 
-`z_error` is four standard deviations of that rounding, treating each add's error as independent (Higham and Mary, 2019), so the real error is usually several times smaller.
+`error` is that of the z statistic, as a share of the larger of `|z|` and 1: four standard deviations of that rounding, treating each add's error as independent (Higham and Mary, 2019), so the real error is usually several times smaller.
 
 It is also raised on a quiet window that has no reading (no two returns within `q - 1` of each other both moved) while the totals still carry rounding from busier prices: the sum that should be exactly zero is not, and its sign decides whether the reading is `None` or a meaningless number. A `resync()` leaves it exactly zero. On a 64-price window with a move on one update in ten this is about once in a thousand updates; on windows of 1,024 and up it is rare.
 

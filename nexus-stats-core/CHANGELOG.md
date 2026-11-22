@@ -222,7 +222,7 @@ contained.
   `reset()` returns to the seed.
 - **`VarianceRatio`, `TwoScaleRv` and `Hurst` take a price and no longer
   validate or return a `Result` from `update`** (`VarianceRatio::update`
-  returns a `Resync` notice). Each takes the logarithm
+  returns an `Accuracy`). Each takes the logarithm
   itself. `checked_update` is the validating form and refuses NaN,
   infinity, and a price that is zero or negative.
 - **`VarianceRatio` is the Lo and MacKinlay statistic over a sliding
@@ -230,7 +230,7 @@ contained.
   construction with no published counterpart. It now computes their
   estimator on the log price over the last `window` returns (overlapping
   `q`-period returns, endpoint drift, both bias corrections) and matches
-  `arch.unitroot.VarianceRatio`. The builder takes `q` and `window`;
+  `arch.unitroot.VarianceRatio`. The builder takes `horizon` (the paper's `q`) and `window`;
   `alpha` and `halflife` are gone. `estimate()` returns a
   `VarianceRatioEstimate { ratio, z_statistic }`, replacing
   `variance_ratio()`; `is_mean_reverting()` and `is_trending()` are removed
@@ -403,20 +403,24 @@ contained.
 - `ZScoreNorm::checked_update`, `ZScoreNorm::checked_normalize`,
   `ZScoreNorm::reset_with_seed`.
 - `VarianceRatio::checked_update`, `estimate`, `resync` and `window`;
-  `VarianceRatioEstimate`; `Resync`. The z statistic is Lo and MacKinlay's
+  `VarianceRatioEstimate`. The z statistic is Lo and MacKinlay's
   heteroskedasticity-robust one. `update` and `estimate` cost time
   proportional to `q`, from running totals. `update` returns
-  `Resync::Advised { z_error }` when rounding in the totals could reach
+  `Accuracy::ResyncRequired { error }` when rounding in the totals could reach
   one part in a thousand of z (after volatility falls a long way, a price
   far off the market, or a trend far from where it was),
   and keeps returning it until `resync()` recomputes them from the stored
-  prices.
+  prices. Until then `estimate()` returns `None` and `update` only stores
+  the price.
+- `Accuracy`, at the crate root: what a windowed type's `update` reports
+  about its running totals, `Sound` or `ResyncRequired { error }`.
+  `VarianceRatio` is the first to return it.
 - `math::RoundingEstimate` and `math::RoundingBound`: the rounding error a
   running total has accumulated, from the size of the total at each add.
   The estimate treats the errors as independent (Higham and Mary, 2019)
   and matches what is seen; the bound is the worst case. For totals that
   are added to and removed from. `VarianceRatio` decides its
-  `Resync::Advised` with the estimate.
+  `Accuracy::ResyncRequired` with the estimate.
 - `storage::SliceRing`: a fixed-capacity ring whose contents are always
   one slice, for windows that are read across. `Hurst` and `VarianceRatio`
   use it.

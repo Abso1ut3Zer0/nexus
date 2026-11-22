@@ -2458,7 +2458,11 @@ fn main() {
         h.update(v);
     });
     print_row("HalfLife::update", &mut buf);
-    let mut vr = VarianceRatio::builder().q(5).window(256).build().unwrap();
+    let mut vr = VarianceRatio::builder()
+        .horizon(5)
+        .window(256)
+        .build()
+        .unwrap();
     bench_feed(&mut buf, &mut vr, |r, v| {
         r.update(v);
     });
