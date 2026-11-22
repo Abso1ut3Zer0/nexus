@@ -288,9 +288,11 @@ fn rescaled_range(log_prices: &[f64]) -> Option<f64> {
 
     // SciPy's zero-variance test (`skew`, `kurtosis`): a variance at or
     // below `(EPSILON * x)^2` is rounding, where `x` is the size of the
-    // values subtracted. Here those are log prices.
+    // values subtracted. Here those are log prices: the larger of the
+    // stretch's two ends, which set its mean return.
     let variance = sums.squares / (n - 1.0);
-    if variance <= crate::math::rounding_variance(log_prices[0]) {
+    let scale = log_prices[0].abs().max(log_prices[returns].abs());
+    if variance <= crate::math::rounding_variance(scale) {
         return None;
     }
     Some((sums.highest - sums.lowest) / crate::math::sqrt(variance))
@@ -474,6 +476,18 @@ mod tests {
         assert!(exponent(&prices_from(&returns), 8).is_some());
         // A price that never moves has no exponent.
         assert_eq!(exponent(&[100.0; 257], 8), None);
+    }
+
+    #[test]
+    fn a_stretch_steady_to_the_last_place_from_a_log_price_of_zero_is_left_out() {
+        // Prices one unit in the last place apart, rising from 1: the
+        // returns are equal but for the rounding of the logarithms, and
+        // the first log price is exactly zero. The scale of that rounding
+        // is the largest log price in the stretch's.
+        let prices = (0..9).map(|k| 1.0 + f64::from(k) * f64::EPSILON);
+        let log_prices: Vec<f64> = prices.map(f64::ln).collect();
+        assert_eq!(log_prices[0], 0.0);
+        assert_eq!(rescaled_range(&log_prices), None);
     }
 
     #[test]

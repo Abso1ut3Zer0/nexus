@@ -799,9 +799,11 @@ impl VarianceRatio {
             return None;
         }
         // SciPy's zero-variance test at the scale of the values subtracted,
-        // which are log prices: a variance this small is rounding.
-        let newest = *self.log_prices.as_slice().last()?;
-        if one_period / (n - 1.0) <= crate::math::rounding_variance(newest) {
+        // which are log prices: a variance this small is rounding. The
+        // scale is the larger of the window's two ends, which set the drift.
+        let prices = self.log_prices.as_slice();
+        let scale = prices.first()?.abs().max(prices.last()?.abs());
+        if one_period / (n - 1.0) <= crate::math::rounding_variance(scale) {
             return None;
         }
         if parts.variance <= 0.0 {
@@ -1421,6 +1423,27 @@ mod tests {
                 assert_every_reading_is_good(q, window, prices, window + 1, 1, None);
             }
         }
+    }
+
+    #[test]
+    fn a_trend_steady_to_the_last_place_has_no_reading() {
+        // Prices one unit in the last place apart, falling through 1: the
+        // returns are equal but for the rounding of the logarithms, and
+        // the newest log price is the smallest of them. The scale of that
+        // rounding is the largest log price in the window's.
+        let e = f64::EPSILON;
+        let prices = [1.0 + 3.0 * e, 1.0 + 2.0 * e, 1.0 + e, 1.0, 1.0 - e];
+        let mut vr = VarianceRatio::builder()
+            .horizon(3)
+            .window(4)
+            .build()
+            .unwrap();
+        for p in prices {
+            vr.update(p);
+            assert_eq!(vr.estimate(), None);
+        }
+        vr.resync();
+        assert_eq!(vr.estimate(), None);
     }
 
     #[test]
