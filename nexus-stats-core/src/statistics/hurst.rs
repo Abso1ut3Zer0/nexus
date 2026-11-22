@@ -11,21 +11,19 @@ mod kernel;
 /// `H` measures memory in the returns: 0.5 for independent returns (a random
 /// walk), below 0.5 for mean reversion, above 0.5 for persistence.
 ///
-/// The rescaled range `R/S` of a stretch of returns is the range of their
-/// running sum about the mean, divided by their standard deviation. It grows
-/// like `n^H` with the length `n` of the stretch, so `H` is the slope of
-/// `ln(R/S)` against `ln(n)`. This type measures `R/S` at the whole window,
-/// at each half, each quarter and so on, and fits that slope, after
-/// dividing each `R/S` by the value expected of independent returns (Anis
-/// and Lloyd, 1976, with Peters' term for the `n - 1` standard deviation).
-/// It is the procedure Weron (2002, "Estimating long-range dependence",
-/// *Physica A*) describes, and gives the value `nolds.hurst_rs` reports
-/// with `fit="poly"` on the same window sizes.
+/// The [rescaled range] of a stretch of returns grows like `n^H` with its
+/// length `n`. This type measures it at the whole window, at each half,
+/// each quarter and so on, and fits the slope, after dividing by the value
+/// expected of independent returns (Anis and Lloyd, 1976). It is the
+/// procedure of Weron (2002, "Estimating long-range dependence", *Physica
+/// A*), and gives the value `nolds.hurst_rs` reports with `fit="poly"` on
+/// the same window sizes.
 ///
-/// `update` stores the price; the exponent is computed when read, in time
-/// proportional to the window times the number of sizes. Read it per bar,
-/// not per tick. No update to the rescaled range exists as the window
-/// slides, because the mean it is measured about moves.
+/// `update` only stores the price. The exponent is computed when read, in
+/// time proportional to the window times the number of lengths: read it
+/// per bar, not per tick.
+///
+/// [rescaled range]: https://en.wikipedia.org/wiki/Hurst_exponent#Rescaled_range_(R/S)_analysis
 ///
 /// # Reading it
 ///

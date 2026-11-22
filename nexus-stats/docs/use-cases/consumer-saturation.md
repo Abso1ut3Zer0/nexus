@@ -256,6 +256,5 @@ the same role and the floor absorbs the clock offset.
 
 ## Related
 
-- [PollSaturation](../algorithms/poll-saturation.md): the algorithm page
-- [CoDel](../algorithms/codel.md): standing-queue detection from sojourn
+- `PollSaturation` and `CoDel` (standing-queue detection from sojourn), in the crate docs
 - [Backpressure](backpressure.md), [SRE Observability](sre-observability.md)

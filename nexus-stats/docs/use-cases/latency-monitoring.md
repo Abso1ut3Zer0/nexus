@@ -150,13 +150,12 @@ match gate.update(latency_us) {
 
 | Primitive | Role |
 |-----------|------|
-| [EMA](../algorithms/ema.md) | Smooth display value |
-| [Welford](../algorithms/welford.md) | Running mean/variance/std_dev |
-| [PeakHoldDecay](../algorithms/peak-hold.md) | Worst recent spike envelope |
-| [CUSUM](../algorithms/cusum.md) | Shift detection (up/down) |
-| [TrendAlert](../algorithms/trend-alert.md) | Trend direction (rising/stable/falling) |
-| [Jitter](../algorithms/jitter.md) | Variability measurement |
-| [MultiGate](../algorithms/multi-gate.md) | Bad measurement filtering |
+| `Welford` | Running mean/variance/std_dev |
+| PeakHoldDecay | Worst recent spike envelope |
+| CUSUM | Shift detection (up/down) |
+| TrendAlert | Trend direction (rising/stable/falling) |
+| Jitter | Variability measurement |
+| MultiGate | Bad measurement filtering |
 
 ## Tips
 

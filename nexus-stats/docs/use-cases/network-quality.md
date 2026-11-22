@@ -71,9 +71,6 @@ avg_bw.update(delivery_rate);
 
 | Primitive | Role |
 |-----------|------|
-| [AsymmetricEMA](../algorithms/asym-ema.md) | RTT smoothing (fast up, slow down) |
-| [EwmVar](../algorithms/ewm-var.md) | RTT variance for timeouts |
-| [WindowedMin](../algorithms/windowed-min-max.md) | Baseline RTT (BBR) |
-| [WindowedMax](../algorithms/windowed-min-max.md) | Bandwidth estimation (BBR) |
-| [Jitter](../algorithms/jitter.md) | Inter-arrival jitter (RFC 3550) |
-| [HarmonicMean](../algorithms/harmonic-mean.md) | Average throughput |
+| WindowedMin | Baseline RTT (BBR) |
+| WindowedMax | Bandwidth estimation (BBR) |
+| Jitter | Inter-arrival jitter (RFC 3550) |

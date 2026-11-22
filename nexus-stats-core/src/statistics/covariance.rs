@@ -1,15 +1,30 @@
 use crate::math::MulAdd;
 use crate::statistics::running_mean::step_mean;
 
-/// Online covariance and Pearson correlation between two signals.
+/// Covariance and correlation of two streams, over everything seen so far.
 ///
-/// Uses Welford-style numerically stable single-pass computation.
-/// Supports Chan's merge for parallel aggregation.
+/// Fed one pair at a time, in one pass and five numbers of state: the
+/// [online algorithm] that [`Welford`](crate::statistics::Welford) uses for
+/// one stream, applied to two. Two accumulators can be
+/// [merged](Self::merge).
 ///
-/// # Use Cases
-/// - "Are these two signals moving together?"
-/// - Latency correlation across venues
-/// - Co-movement detection
+/// [`covariance`](Self::covariance) is the sample covariance, with a
+/// divisor of `n - 1`.
+///
+/// [online algorithm]: https://en.wikipedia.org/wiki/Algorithms_for_calculating_variance#Online
+///
+/// # Examples
+///
+/// ```
+/// use nexus_stats_core::statistics::Covariance;
+///
+/// let mut cov = Covariance::new();
+/// for (x, y) in [(1.0, 2.0), (2.0, 4.0), (3.0, 6.0)] {
+///     cov.update(x, y);
+/// }
+/// assert_eq!(cov.covariance(), Some(2.0));
+/// assert_eq!(cov.variance_x(), Some(1.0));
+/// ```
 #[derive(Debug, Clone)]
 pub struct Covariance {
     count: u64,
@@ -143,7 +158,8 @@ impl Covariance {
         Some(self.m2_y / (self.count - 1) as f64)
     }
 
-    /// Sample covariance (N-1 denominator), or `None` if < 2 samples.
+    /// Sample covariance (a divisor of `n - 1`), or `None` with fewer than
+    /// two samples.
     #[must_use]
     pub fn covariance(&self) -> Option<f64> {
         if self.count < 2 {
@@ -173,7 +189,22 @@ impl Covariance {
         Some((self.co_moment / scale).clamp(-1.0, 1.0))
     }
 
-    /// Merges another accumulator into this one (Chan's algorithm).
+    /// Merges another accumulator into this one, as if this one had also
+    /// seen its pairs. `other` is unchanged.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use nexus_stats_core::statistics::Covariance;
+    ///
+    /// let (mut first, mut second) = (Covariance::new(), Covariance::new());
+    /// first.update(1.0, 2.0);
+    /// first.update(2.0, 4.0);
+    /// second.update(3.0, 6.0);
+    /// first.merge(&second);
+    /// assert_eq!(first.count(), 3);
+    /// assert_eq!(first.covariance(), Some(2.0));
+    /// ```
     pub fn merge(&mut self, other: &Self) {
         if other.count == 0 {
             return;

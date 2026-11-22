@@ -50,8 +50,8 @@ if let Some(mean) = stats.mean() {
 
 ## Algorithms
 
-60+ algorithms across 10 categories. See [full documentation](docs/INDEX.md)
-for deep-dives on each algorithm.
+60+ algorithms across 10 categories. Each type is documented in the crate
+docs, and each module's docs say which type to use for what.
 
 ### Change Detection
 
@@ -212,13 +212,13 @@ All types follow consistent conventions:
 
 ## Documentation
 
-Comprehensive [documentation](docs/INDEX.md) including:
+The API docs are the reference for every type. Alongside them, the
+[guides and recipes](docs/INDEX.md):
 
 - [Which algorithm do I need?](docs/guides/choosing.md) — decision tree
 - [Quick start recipes](docs/guides/quickstart.md) — copy-paste examples
 - [Parameter tuning guide](docs/guides/parameter-tuning.md) — how to set alpha, slack, etc.
 - [Composing primitives](docs/guides/composition.md) — building monitors from parts
-- 53 algorithm deep-dives with ASCII diagrams, domain examples, and performance data
 - 12 use-case guides (latency, backpressure, anomaly detection, feed health, consumer saturation, rate management, capacity planning, gaming, networking, industrial, SRE, trading)
 - [Migrating to 7.0](docs/guides/migrating-to-7.md) — the 6.x → 7.0 rename map, the generics' caller rules, removed types, behavior changes
 

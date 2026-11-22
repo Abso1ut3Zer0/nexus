@@ -1,4 +1,32 @@
-//! System monitoring and operational health.
+//! Monitors for a running system: extremes, rates, liveness and queue
+//! health.
+//!
+//! # Which type do I use?
+//!
+//! ## Highs and lows
+//!
+//! - [`RunningMax`] and [`RunningMin`]: the extreme since the last reset.
+//! - [`WindowedMax`] and [`WindowedMin`]: the extreme over a sliding window
+//!   of time.
+//! - [`PeakHold`]: a peak that decays.
+//! - [`MaxGauge`]: the maximum since it was last read.
+//! - [`Drawdown`]: the fall from the highest value seen.
+//!
+//! ## Rates and timing
+//!
+//! - [`EventRate`]: events per unit of time, smoothed.
+//! - [`ErrorRate`]: the share of events that failed.
+//! - [`Jitter`]: how much consecutive samples or arrivals vary.
+//! - [`Liveness`]: whether anything has happened recently.
+//! - [`HawkesIntensity`]: the rate of events that come in clusters.
+//!
+//! ## Queues
+//!
+//! - [`CoDel`]: a queue that is not draining, from how long each item
+//!   waited.
+//! - [`PollSaturation`]: how saturated a consumer is, from what its polls
+//!   return.
+//! - [`SojournSaturation`]: the same, from stamped waiting times.
 //!
 //! # Weighting clocks
 //!

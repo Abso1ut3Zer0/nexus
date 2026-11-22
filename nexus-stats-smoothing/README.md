@@ -10,6 +10,8 @@ Advanced smoothing algorithms for [nexus-stats](https://crates.io/crates/nexus-s
 - **Kama** — Kaufman Adaptive Moving Average (requires `alloc`)
 - **WindowedMedian<f64> / WindowedMedian<i64>** — Running median (requires `alloc`)
 
+Start with `Ema` from the core crate and move to one of these for a reason: a trend (`Holt`), alternating regimes (`Kama`), a known noise model (`Kalman1d`), a target to chase (`Spring`), or outliers (`HuberEma`, `Hampel`, `WindowedMedian`). The crate docs say which to use for what.
+
 ## Usage
 
 Enable the `smoothing` feature on `nexus-stats` for unified import paths:

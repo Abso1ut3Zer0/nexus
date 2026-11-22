@@ -108,12 +108,12 @@ if !liveness.check(now_ns) {
 
 | Primitive | What it detects |
 |-----------|----------------|
-| [Liveness](../algorithms/liveness.md) | Source stopped sending |
-| [CUSUM](../algorithms/cusum.md) | Latency shifted |
-| [EventRate](../algorithms/event-rate.md) | Message rate changed |
-| [Jitter](../algorithms/jitter.md) | Timing became unstable |
-| [DeadBand](../algorithms/dead-band.md) | Value stopped changing (stale) |
-| [Debounce](../algorithms/debounce.md) | Confirm repeated failures |
+| Liveness | Source stopped sending |
+| CUSUM | Latency shifted |
+| EventRate | Message rate changed |
+| Jitter | Timing became unstable |
+| DeadBand | Value stopped changing (stale) |
+| Debounce | Confirm repeated failures |
 
 ## Tips
 

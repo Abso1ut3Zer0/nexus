@@ -17,6 +17,14 @@ use nexus_stats_core::math::MulAdd;
 /// - Smoothing noisy position/latency measurements
 /// - Estimating rate of change (velocity) from noisy data
 /// - Predictive filtering (forecast next value)
+///
+/// # Choosing parameters
+///
+/// Once it has settled, the filter's response depends on the ratio of
+/// `process_noise` to `measurement_noise`, not on either alone: a larger
+/// ratio follows changes faster, a smaller one smooths more. If the
+/// sensor's noise variance is known, set `measurement_noise` to it and tune
+/// `process_noise`.
 #[derive(Debug, Clone)]
 pub struct Kalman1d {
     // State: [position, velocity]

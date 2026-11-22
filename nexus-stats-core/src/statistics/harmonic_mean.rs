@@ -1,13 +1,22 @@
-/// Online harmonic mean.
+/// Harmonic mean of everything seen so far: the right average for rates.
 ///
-/// Tracks the sum of reciprocals for computing the harmonic mean
-/// incrementally. Useful for averaging rates (e.g., throughput in
-/// requests/second across multiple servers).
+/// A speed held over equal distances, or a throughput over equal amounts
+/// of work, averages to the [harmonic mean]; the arithmetic mean overstates
+/// it. Two numbers of state.
 ///
-/// # Use Cases
-/// - Average throughput across heterogeneous servers
-/// - Mean speed over equal-distance segments
-/// - Any rate where arithmetic mean would be misleading
+/// [harmonic mean]: https://en.wikipedia.org/wiki/Harmonic_mean#Average_speed
+///
+/// # Examples
+///
+/// ```
+/// use nexus_stats_core::statistics::HarmonicMean;
+///
+/// // 60 km/h out and 30 km/h back, over the same road.
+/// let mut speed = HarmonicMean::new();
+/// speed.update(60.0);
+/// speed.update(30.0);
+/// assert_eq!(speed.mean(), Some(40.0));
+/// ```
 #[derive(Debug, Clone)]
 pub struct HarmonicMean {
     reciprocal_sum: f64,

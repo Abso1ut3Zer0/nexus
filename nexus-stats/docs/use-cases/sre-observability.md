@@ -99,11 +99,10 @@ if is_confirmed_down {
 
 | Primitive | Role |
 |-----------|------|
-| [ErrorRate](../algorithms/error-rate.md) | SLO / error budget tracking |
-| [BoolWindow](../algorithms/bool-window.md) | Exact failure rate over last N |
-| [EMA](../algorithms/ema.md) | Utilization: smoothed busy fraction (USE method) |
-| [CoDel](../algorithms/codel.md) | Saturation / queueing (USE method) |
-| [PollSaturation](../algorithms/poll-saturation.md) | Saturation of a consumer thread from poll outcomes (USE method) |
-| [CUSUM](../algorithms/cusum.md) | Latency degradation detection |
-| [Debounce](../algorithms/debounce.md) | Confirm outage (N consecutive failures) |
-| [MaxGauge](../algorithms/max-gauge.md) | Worst-case per scrape interval |
+| ErrorRate | SLO / error budget tracking |
+| BoolWindow | Exact failure rate over last N |
+| CoDel | Saturation / queueing (USE method) |
+| PollSaturation | Saturation of a consumer thread from poll outcomes (USE method) |
+| CUSUM | Latency degradation detection |
+| Debounce | Confirm outage (N consecutive failures) |
+| MaxGauge | Worst-case per scrape interval |

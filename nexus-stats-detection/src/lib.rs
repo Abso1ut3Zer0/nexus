@@ -6,6 +6,23 @@
 //! This crate provides change detection, anomaly detection, signal analysis,
 //! and hypothesis testing types separated from the core `nexus-stats` crate.
 //!
+//! # Which detector?
+//!
+//! Each tests a different question:
+//!
+//! - Has the mean shifted for good? `Cusum` in the core crate, or
+//!   `ShiryaevRoberts` when the size of the shift is known in advance.
+//! - Was there a spike that has since passed? `Mosum`.
+//! - Is this one sample an outlier? `AdaptiveThreshold` for roughly normal
+//!   data, `RobustZScore` for heavy tails.
+//! - Is the trend heading for a limit? `TrendAlert`.
+//! - Normal, warning or critical? `MultiGate`.
+//! - Is the stream trending or reverting? `Autocorrelation`.
+//! - Which of two streams leads? `CrossCorrelation`. Does one drive the
+//!   other? `TransferEntropy`, at a much higher cost.
+//! - A decision as soon as the evidence allows? `SprtBernoulli` for rates,
+//!   `SprtGaussian` for means.
+//!
 //! Types are organized into submodules:
 //! - [`detection`] — MOSUM, Shiryaev-Roberts, AdaptiveThreshold, RobustZ, TrendAlert, MultiGate, PageHinkley, ADWIN, DistDrift, BOCPD
 //! - [`signal`] — Autocorrelation, CrossCorrelation, Entropy, TransferEntropy, PredictiveInfoBound

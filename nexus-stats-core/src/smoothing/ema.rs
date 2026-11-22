@@ -22,17 +22,25 @@ pub(crate) const fn log2_of_span_plus_one(span: u64) -> u32 {
     (span + 1).trailing_zeros()
 }
 
-/// EMA — Exponential Moving Average.
+/// Exponential moving average: a smoothed value in which recent samples
+/// count more and old ones fade.
 ///
-/// Smooths a streaming signal with exponential decay. Recent samples
-/// weighted more heavily. Equivalent to a first-order IIR low-pass filter.
+/// Each sample moves the value a fraction `alpha` of the way toward it.
+/// This is [simple exponential smoothing], a first-order low-pass filter.
 ///
-/// # Construction
+/// # Smoothing factor
 ///
-/// Three ways to configure the smoothing factor:
-/// - `alpha(a)` — direct, a ∈ (0, 1). Higher = more reactive.
-/// - `halflife(h)` — samples for weight to decay by half.
-/// - `span(n)` — pandas/finance convention, alpha = 2/(n+1).
+/// Set one of these on the builder:
+///
+/// - `alpha(a)`: the fraction itself, in `(0, 1)`. Higher follows faster.
+/// - `halflife(h)`: the number of samples for a sample's weight to halve.
+/// - `span(n)`: pandas' convention, `alpha = 2 / (n + 1)`.
+///
+/// Choose it for the time scale of what is being tracked, not for the
+/// sample rate: to follow ten-second bursts at 100 samples a second, a
+/// half-life of several hundred samples.
+///
+/// [simple exponential smoothing]: https://en.wikipedia.org/wiki/Exponential_smoothing#Basic_(simple)_exponential_smoothing
 ///
 /// # Seeding
 ///
@@ -41,10 +49,16 @@ pub(crate) const fn log2_of_span_plus_one(span: u64) -> u32 {
 /// into it. `count()` still counts only samples fed, and `reset()` returns
 /// to the seed.
 ///
-/// # Use Cases
-/// - Smoothing noisy latency measurements
-/// - Tracking moving average of throughput
-/// - Baseline estimation for anomaly detection
+/// # Examples
+///
+/// ```
+/// use nexus_stats_core::smoothing::Ema;
+///
+/// let mut ema = Ema::builder().alpha(0.5).build().unwrap();
+/// assert_eq!(ema.update(10.0), Some(10.0));
+/// assert_eq!(ema.update(20.0), Some(15.0)); // half the way
+/// assert_eq!(ema.value(), Some(15.0));
+/// ```
 #[derive(Debug, Clone)]
 pub struct Ema {
     alpha: f64,
