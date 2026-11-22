@@ -135,11 +135,15 @@ struct LagTotals {
 
 impl LagTotals {
     /// Adds the pair `(a, b)`, or removes it with a `weight` of -1.
+    #[allow(clippy::suboptimal_flops)]
     #[inline]
     fn add(&mut self, a: f64, b: f64, weight: f64) {
         let (a_squared, b_squared, product) = (a * a, b * b, a * b);
-        self.squares = (weight * a_squared).fma(b_squared, self.squares);
-        self.mixed = (weight * product).fma(a + b, self.mixed);
+        // Not fused: each product is rounded before it is added, so that
+        // removing a pair takes away exactly what adding it put in. Fused,
+        // the removal would leave the product's rounding behind.
+        self.squares += weight * (a_squared * b_squared);
+        self.mixed += weight * (product * (a + b));
         self.products = weight.fma(product, self.products);
         self.sum_of_squares = weight.fma(a_squared + b_squared, self.sum_of_squares);
         self.sum = weight.fma(a + b, self.sum);
@@ -395,13 +399,12 @@ struct Centered {
     one_period: f64,
 }
 
-/// What the reading and its error estimate are both built from: the two
-/// sums about the drift, and the ratio and its variance from them.
+/// What the reading and its error estimate are both built from: the
+/// weighted lag sum, and the ratio and its variance.
 #[derive(Clone, Copy)]
 struct Parts {
     centered: Centered,
     lag_sum: f64,
-    long_squares: f64,
     ratio: f64,
     variance: f64,
 }
@@ -514,8 +517,9 @@ impl VarianceRatio {
     }
 
     /// Recomputes the running totals from the stored prices, measured about
-    /// the window's current drift, and clears [`Accuracy::ResyncRequired`], which
-    /// brings the reading back.
+    /// the window's current drift. That clears
+    /// [`Accuracy::ResyncRequired`] and brings the reading back, unless a
+    /// price that was not a number is still in the window.
     ///
     /// If a return far larger than the rest is still in the window, the
     /// requirement comes back when it leaves: resync again then.
@@ -605,12 +609,17 @@ impl VarianceRatio {
     fn long_squares_about_the_drift(&self, centered: Centered) -> f64 {
         let q = self.horizon as f64;
         let terms = centered.n - q + 1.0;
-        crate::math::squares_about(
+        let squares = crate::math::squares_about(
             self.totals.long_squares.total,
             self.totals.long_sum.total,
             terms,
             q * centered.shift,
-        )
+        );
+        // A sum of squares: below zero is rounding. A NaN stays one.
+        if squares < 0.0 {
+            return 0.0;
+        }
+        squares
     }
 
     /// Lo and MacKinlay's variance of the ratio when volatility changes
@@ -654,15 +663,19 @@ impl VarianceRatio {
     /// one's error is its accumulated rounding (from [`RoundingEstimate`],
     /// at [`CONFIDENCE`](Self::CONFIDENCE) standard deviations) plus the
     /// rounding in taking the drift out, which is `EPSILON` times the sizes
-    /// of the terms subtracted. Each is taken as a share of the sum as it
-    /// is now, whatever size that is.
+    /// of the terms subtracted. The lag sums' and the squares' errors are
+    /// taken as shares of those sums as they are now, whatever size that
+    /// is; the ratio's is kept as an amount, since the ratio may be zero.
+    ///
+    /// Never below zero and never NaN for prices that are numbers: every
+    /// term is an error, which is not below zero, over a size that the
+    /// checks at the top have found to be above zero.
     // Bounds are written as they are derived; fused forms would hide them.
     #[allow(clippy::suboptimal_flops)]
     fn z_error(&self, parts: Parts) -> f64 {
         let Parts {
             centered,
             lag_sum,
-            long_squares,
             ratio,
             variance,
         } = parts;
@@ -677,18 +690,21 @@ impl VarianceRatio {
         if !(lag_sum > 0.0 && one_period > 0.0) {
             return f64::INFINITY;
         }
-        let of_lag_sums = share(self.lag_sums_error(centered), lag_sum);
-        let of_squares = share(self.squares_error(centered), one_period);
-        let of_long = share(self.long_squares_error(centered), long_squares);
+        let of_lag_sums = self.lag_sums_error(centered) / lag_sum;
+        let of_squares = self.squares_error(centered) / one_period;
+        // The ratio is the `q`-period squares over `m`, over the one-period
+        // variance: its error is theirs, and its own share of the squares'.
+        let ratio_error = self.long_squares_error(centered)
+            / self.constants.long_divisor
+            / (one_period / (n - 1.0))
+            + ratio * of_squares;
 
-        // The ratio's own error reaches z through `ratio - 1`, which may be
-        // far smaller than the ratio.
+        // The ratio's error reaches z through `ratio - 1`.
         let scale = crate::math::sqrt(n / variance);
         let z = scale * (ratio - 1.0);
-        let through_the_ratio = scale * ratio / z.abs().max(1.0);
 
         // z goes as the squares over the root of the lag sums.
-        0.5 * of_lag_sums + of_squares + through_the_ratio * (of_long + of_squares)
+        0.5 * of_lag_sums + of_squares + scale * ratio_error / z.abs().max(1.0)
     }
 
     /// The error in the weighted lag sum.
@@ -747,12 +763,19 @@ impl VarianceRatio {
             return;
         };
         let z_error = self.z_error(parts);
-        // Written so that a NaN, from a price that was not a number, requires one.
-        if z_error <= Self::RESYNC_ABOVE {
+        // Sound only for a number from zero to the limit: a NaN, from a
+        // price that was not a number, requires a resync.
+        if (0.0..=Self::RESYNC_ABOVE).contains(&z_error) {
             self.reading = self.reading_from(parts);
             return;
         }
-        self.accuracy = Accuracy::ResyncRequired { error: z_error };
+        // And is reported as no digits left, as anything below zero would be.
+        let error = if z_error > 0.0 {
+            z_error
+        } else {
+            f64::INFINITY
+        };
+        self.accuracy = Accuracy::ResyncRequired { error };
     }
 
     /// `None` until the window is full.
@@ -764,7 +787,6 @@ impl VarianceRatio {
         Some(Parts {
             centered,
             lag_sum,
-            long_squares,
             ratio: self.ratio(centered, long_squares),
             variance: Self::ratio_variance(centered, lag_sum),
         })
@@ -846,18 +868,6 @@ impl VarianceRatioBuilder {
             count: 0,
         })
     }
-}
-
-/// `error` as a share of `size`: infinite if there is an error and nothing
-/// left for it to be a share of.
-fn share(error: f64, size: f64) -> f64 {
-    if error == 0.0 {
-        return 0.0;
-    }
-    if size <= 0.0 {
-        return f64::INFINITY;
-    }
-    error / size
 }
 
 #[cfg(test)]
@@ -1366,16 +1376,22 @@ mod tests {
             if i < from || i % every != 0 {
                 continue;
             }
-            let (Some(got), Some(want)) = (vr.estimate(), exact(held.make_contiguous(), q)) else {
+            let Some(got) = vr.estimate() else {
                 continue;
             };
+            // A reading where the window has none is as wrong as a wrong one.
+            let Some(want) = exact(held.make_contiguous(), q) else {
+                panic!("update {i}: {got:?} where there is no reading");
+            };
+            assert!(got.ratio >= 0.0, "update {i}: {got:?}");
             let actual =
                 (got.z_statistic - want.z_statistic).abs() / want.z_statistic.abs().max(1.0);
             let estimate = vr.z_error(vr.parts().unwrap());
             // Below one part in a billion the direct computation's own
             // rounding is as large as what it is compared with.
             assert!(
-                actual <= estimate.max(1e-9) && estimate <= VarianceRatio::RESYNC_ABOVE,
+                actual <= estimate.max(1e-9)
+                    && (0.0..=VarianceRatio::RESYNC_ABOVE).contains(&estimate),
                 "update {i}: z {} against {}, error {actual}, estimate {estimate}",
                 got.z_statistic,
                 want.z_statistic
@@ -1384,6 +1400,30 @@ mod tests {
         }
         assert!(checked > 10, "{checked}");
         resyncs
+    }
+
+    #[test]
+    fn every_reading_is_good_on_windows_barely_longer_than_the_horizon() {
+        // Prices on a grid of ticks, moving on some updates and now and then
+        // jumping: on a window one longer than the horizon the sums the
+        // reading is built from are often zero, or all rounding.
+        for (q, window) in [(2, 3), (3, 4), (5, 6), (8, 9), (16, 17), (8, 12)] {
+            for (seed, move_share) in [(1u64, 0.1), (2, 0.5), (3, 0.9)] {
+                let mut noise = Noise(seed.wrapping_mul(0x9E37_79B9_7F4A_7C15) + q as u64);
+                let mut ticks = 10_000i64;
+                let prices = (0..60_000).map(move |i| {
+                    let draw = noise.next();
+                    if draw.abs() < move_share {
+                        ticks += if draw > 0.0 { 1 } else { -1 };
+                    }
+                    if i % 997 == 0 {
+                        ticks += (200.0 * noise.next()) as i64;
+                    }
+                    ticks as f64 * 0.01
+                });
+                assert_every_reading_is_good(q, window, prices, window + 1, 1, None);
+            }
+        }
     }
 
     #[test]
@@ -1528,6 +1568,87 @@ mod tests {
                 (a, b) => assert_eq!(a, b, "price {i}"),
             }
         }
+    }
+
+    /// A tracker that has just been told a resync is required, and the
+    /// prices that brought it there.
+    fn requiring_a_resync() -> (VarianceRatio, Vec<f64>) {
+        let prices = with_one_print(0.01, 64, 1e-5);
+        let mut vr = VarianceRatio::builder()
+            .horizon(4)
+            .window(64)
+            .build()
+            .unwrap();
+        for (i, &p) in prices.iter().enumerate() {
+            if matches!(vr.update(p), Accuracy::ResyncRequired { .. }) {
+                return (vr, prices[..=i].to_vec());
+            }
+        }
+        panic!("a resync was never required");
+    }
+
+    #[test]
+    fn a_resync_reads_as_if_none_had_been_required() {
+        // Prices fed while a resync is required are only stored: after the
+        // resync the reading is, to the bit, that of a tracker that held the
+        // same window and resynced without ever being told to.
+        let (mut vr, fed) = requiring_a_resync();
+        let more = prices(40);
+        for &p in &more {
+            assert!(matches!(vr.update(p), Accuracy::ResyncRequired { .. }));
+        }
+        vr.resync();
+
+        let all: Vec<f64> = fed.iter().chain(&more).copied().collect();
+        let mut fresh = VarianceRatio::builder()
+            .horizon(4)
+            .window(64)
+            .build()
+            .unwrap();
+        for &p in &all[all.len() - 65..] {
+            fresh.update(p);
+        }
+        fresh.resync();
+        assert!(vr.estimate().is_some());
+        assert_eq!(vr.estimate(), fresh.estimate());
+        assert_eq!(vr.update(all[0]), fresh.update(all[0]));
+        assert_eq!(vr.estimate(), fresh.estimate());
+    }
+
+    #[test]
+    fn reset_while_a_resync_is_required_starts_over() {
+        let (mut vr, _) = requiring_a_resync();
+        vr.reset();
+        assert_eq!(
+            (vr.count(), vr.is_primed(), vr.estimate()),
+            (0, false, None)
+        );
+        let prices = prices(100);
+        let mut fresh = VarianceRatio::builder()
+            .horizon(4)
+            .window(64)
+            .build()
+            .unwrap();
+        for &p in &prices {
+            assert_eq!(vr.update(p), Accuracy::Sound);
+            fresh.update(p);
+        }
+        assert!(vr.estimate().is_some());
+        assert_eq!(vr.estimate(), fresh.estimate());
+    }
+
+    #[test]
+    fn checked_update_refuses_bad_input_while_a_resync_is_required() {
+        let (mut vr, _) = requiring_a_resync();
+        let mut same = vr.clone();
+        assert!(vr.checked_update(f64::NAN).is_err());
+        assert!(vr.checked_update(-1.0).is_err());
+        assert_eq!(vr.count(), same.count());
+        // Nothing was stored: both rebuild to the same reading.
+        vr.resync();
+        same.resync();
+        assert!(vr.estimate().is_some());
+        assert_eq!(vr.estimate(), same.estimate());
     }
 
     #[test]

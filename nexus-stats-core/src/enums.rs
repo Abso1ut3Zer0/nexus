@@ -77,7 +77,9 @@ pub enum Accuracy {
     ResyncRequired {
         /// An estimate of the error, as a share of the reading, when this
         /// was first returned. Each type's `update` says which reading it
-        /// is the error of. 1 or more means no correct digits are left.
+        /// is the error of. Never below zero and never NaN; 1 or more
+        /// means no correct digits are left, and it is infinite when
+        /// nothing can be said.
         error: f64,
     },
 }
