@@ -35,8 +35,8 @@ if let Some(lambda) = kyle.lambda() {
 
 **Type:** `Amihud` (nexus-stats-core)
 
-`|return| / dollar_volume` — higher means more illiquid, wider spreads
-needed. Simpler than Kyle's lambda (no regression, just a ratio).
+The average of `|return| / dollar_volume` (Amihud, 2002): higher means
+more illiquid, wider spreads needed. Simpler than Kyle's lambda (no regression, just a ratio).
 
 ```rust
 use nexus_stats_core::statistics::Amihud;
@@ -45,7 +45,8 @@ let mut illiq = Amihud::builder()
     .halflife(100.0)
     .build()?;
 
-illiq.update(return_abs, dollar_volume)?;
+// The period's return, signed or not; a zero-volume period is left out.
+illiq.update(period_return, dollar_volume);
 
 // Cross-venue comparison: which venue is most liquid right now?
 let venue_a_illiq = venue_a_amihud.illiq();
@@ -266,12 +267,13 @@ short-lived anomalies (flash event).
 
 ## Execution & Performance
 
-### Track win rate
+### Track directional accuracy
 
 **Type:** `HitRate` (nexus-stats-core)
 
-Fraction of directionally correct predictions. Both cumulative and
-exponentially weighted.
+Fraction of predictions whose sign matched the outcome (Pesaran and
+Timmermann, 1992), cumulative and exponentially weighted. A zero on either
+side is a miss.
 
 ```rust
 use nexus_stats_core::statistics::HitRate;
@@ -280,8 +282,8 @@ let mut hits = HitRate::builder()
     .halflife(100.0)
     .build()?;
 
-// predicted_sign and realized_sign: positive or negative
-hits.update(predicted_sign, realized_sign)?;
+// Any values: only the signs are compared.
+hits.update(predicted_return, realized_return);
 
 let rate = hits.ew_hit_rate();
 // 50% = coin flip, 55% = meaningful edge, 60%+ = strong signal
@@ -376,7 +378,7 @@ let horizon = decay.useful_horizon(0.01);  // predictive horizon
 | Trending vs mean-reverting | `Hurst` | core |
 | Random walk test | `VarianceRatio` | core |
 | Distribution change | `DistributionShift` | core/detection |
-| Win rate | `HitRate` | core |
+| Directional accuracy | `HitRate` | core |
 | Conditional smoothing | `Ema`, updated only when the condition holds | core |
 | Mean shift detection | `Cusum` | core |
 | Transient anomaly detection | `ShiryaevRoberts` | core |

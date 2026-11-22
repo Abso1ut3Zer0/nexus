@@ -86,8 +86,7 @@ impl Amihud {
         period_return: f64,
         dollar_volume: f64,
     ) -> Result<(), crate::DataError> {
-        crate::math::check_input(period_return, f64::MAX)?;
-        crate::math::check_input(dollar_volume, f64::MAX)?;
+        crate::math::check_inputs!(period_return, dollar_volume)?;
         if dollar_volume < 0.0 {
             return Err(crate::DataError::Negative);
         }

@@ -109,6 +109,9 @@ one naming convention across the family. Migration guide:
   reports the side further over threshold and gains `restart_on_alarm()`;
   `halflife` / `span` errors name the knob. See the migration guide.
 
+- Carried from core: `Amihud::update` and `HitRate::update` no longer
+  validate or return a `Result` (`checked_update` validates), and `Amihud`
+  takes a signed return.
 - Carried from core: `ZScoreNorm::update` and `normalize` return
   `Option<T>` with no `Result` (`checked_update` and `checked_normalize`
   validate), and a stream with no spread has no score (`None`), as in

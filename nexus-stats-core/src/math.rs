@@ -46,6 +46,23 @@ pub fn check_input(value: f64, limit: f64) -> Result<(), crate::DataError> {
     Err(refusal(value))
 }
 
+/// [`check_input`] for each value in turn, with one limit:
+/// `check_inputs!(limit; a, b)?`. Without a limit, `check_inputs!(a, b)?`
+/// refuses only NaN and infinity.
+///
+/// Evaluates to a `Result`, naming the first value refused.
+#[doc(hidden)]
+#[macro_export]
+macro_rules! __check_inputs {
+    ($limit:expr; $($value:expr),+ $(,)?) => {
+        Ok(()) $(.and_then(|()| $crate::math::check_input($value, $limit)))+
+    };
+    ($($value:expr),+ $(,)?) => {
+        $crate::math::check_inputs!(f64::MAX; $($value),+)
+    };
+}
+pub use crate::__check_inputs as check_inputs;
+
 /// `2^64`: more samples than a `u64` count can hold.
 const TWO_POW_64: f64 = 18_446_744_073_709_551_616.0;
 
@@ -496,6 +513,34 @@ mod tests {
                 "halflife is too small or too large for a usable weight"
             ))
         );
+    }
+
+    #[test]
+    fn check_inputs_checks_each_value_and_names_the_first_refused() {
+        use crate::DataError::{Infinite, NotANumber, OutOfRange};
+
+        assert_eq!(check_inputs!(1.0, -2.0), Ok(()));
+        assert_eq!(check_inputs!(1.0, -2.0, 3.0,), Ok(()));
+        assert_eq!(check_inputs!(f64::MAX), Ok(()));
+        assert_eq!(check_inputs!(1.0, f64::NAN), Err(NotANumber));
+        assert_eq!(check_inputs!(f64::INFINITY, f64::NAN), Err(Infinite));
+        assert_eq!(check_inputs!(f64::NAN, f64::INFINITY), Err(NotANumber));
+
+        assert_eq!(check_inputs!(10.0; 10.0, -10.0), Ok(()));
+        assert_eq!(check_inputs!(10.0; 1.0, 11.0), Err(OutOfRange));
+        assert_eq!(check_inputs!(10.0; 11.0, f64::NAN), Err(OutOfRange));
+        assert_eq!(check_inputs!(10.0; 1.0, 2.0, f64::NAN), Err(NotANumber));
+    }
+
+    #[test]
+    fn check_inputs_stops_at_the_first_refusal() {
+        let mut evaluated = 0;
+        let mut next = |value: f64| {
+            evaluated += 1;
+            value
+        };
+        assert!(check_inputs!(next(f64::NAN), next(1.0)).is_err());
+        assert_eq!(evaluated, 1);
     }
 
     #[test]

@@ -224,6 +224,12 @@ contained.
   normalizer starts with `count()` at 0, and `reset()` returns to the seed.
   `VarianceRatio` refuses a value whose return is above `1e120` in
   magnitude.
+- **`Amihud::update` and `HitRate::update` no longer validate or return a
+  `Result`.** `checked_update` is the validating form on both.
+- **`Amihud::update` takes the period's return, signed or not,** and uses
+  its magnitude. It took an absolute return and trusted the caller to have
+  made it one. A ratio that overflows is refused by `checked_update` as
+  `OutOfRange` (it was `Infinite`).
 - **`RollSpread` works on log-price changes, with the mean removed.**
   `update(price)` takes the logarithm itself, so the spread is a proportion
   of the price (`0.0005` is 5 basis points), as in Roll's own estimates and
@@ -369,6 +375,12 @@ contained.
   builder `seed`, `halflife_up`, `halflife_down`.
 - `ZScoreNorm::checked_update`, `ZScoreNorm::checked_normalize`,
   `ZScoreNorm::reset_with_seed`.
+- `Amihud::checked_update` (refuses NaN, infinity, a negative volume, and
+  a ratio that overflows) and `HitRate::checked_update` (NaN and infinity).
+  Both builders accept `span`.
+- `math::check_inputs!`: `check_input` for several values with one limit,
+  `check_inputs!(limit; a, b)?`, or `check_inputs!(a, b)?` for NaN and
+  infinity only.
 - `EwmVar::checked_update` (refuses NaN, infinity, and a magnitude above
   `1e120`), `EwmVar::value`, `EwmVar::reset_with_seed`, `MeanVariance`.
 - `Moments::checked_update`, `Shape`.

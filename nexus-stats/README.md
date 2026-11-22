@@ -299,7 +299,7 @@ See [`docs/use-cases/trading.md`](docs/use-cases/trading.md) for full guide with
 | Trending vs mean-reverting | `Hurst` | core |
 | Random walk test | `VarianceRatio` | core |
 | Distribution change | `DistributionShift` | core |
-| Win rate | `HitRate` | core |
+| Directional accuracy | `HitRate` | core |
 | Jump-robust volatility | `BipowerVariation` | core |
 | Implicit spread estimation | `RollSpread` | core |
 | Noise-corrected realized vol | `TwoScaleRv` | core |

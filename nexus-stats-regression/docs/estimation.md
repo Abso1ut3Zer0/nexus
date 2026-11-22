@@ -120,4 +120,4 @@ let rate = gp.rate();
 ## Cross-references
 
 - Scalar state: [`Kalman1d`](../../nexus-stats-smoothing/docs/kalman1d.md).
-- Rate tracking without uncertainty: [`HitRate`](../../nexus-stats-core/docs/statistics.md#hitrate--rolling-success-rate), [`EventRate`](../../nexus-stats-core/docs/monitoring.md#eventrate).
+- Rate tracking without uncertainty: [`ErrorRate`](../../nexus-stats-core/docs/monitoring.md#errorrate), [`EventRate`](../../nexus-stats-core/docs/monitoring.md#eventrate).

@@ -9,10 +9,13 @@ use crate::smoothing::Ema;
 ///
 /// A hit is a prediction and an outcome that are both positive or both
 /// negative. A zero on either side has no direction and counts as a miss.
-/// This is the success ratio of Pesaran and Timmermann (1992, "A Simple
+/// This is the hit rate of Pesaran and Timmermann (1992, "A Simple
 /// Nonparametric Test of Predictive Performance", *Journal of Business &
-/// Economic Statistics*), whose indicator is `prediction * outcome > 0`. The
-/// exponentially weighted rate is an addition of this crate.
+/// Economic Statistics*), which they restate (2009, *Journal of the
+/// American Statistical Association*) as the share of pairs with
+/// `prediction * outcome > 0`. Some implementations count zero against zero
+/// as a hit; this one does not. The exponentially weighted rate is an
+/// addition of this crate.
 ///
 /// # Examples
 ///
@@ -95,8 +98,7 @@ impl HitRate {
         predicted: f64,
         realized: f64,
     ) -> Result<(), crate::DataError> {
-        crate::math::check_input(predicted, f64::MAX)?;
-        crate::math::check_input(realized, f64::MAX)?;
+        crate::math::check_inputs!(predicted, realized)?;
         self.update(predicted, realized);
         Ok(())
     }
