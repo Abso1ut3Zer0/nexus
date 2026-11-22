@@ -63,7 +63,7 @@ See [Integer vs Float](../guides/integer-vs-float.md) for the caller rules and
 | `Percentile` | `f64` | — | core (`statistics`) |
 | `Lpm` | `f64` | — | core (`statistics`) |
 | `Cvar` | `f64` | — | core (`statistics`) |
-| `HitRate` | `bool` labels | — | core (`statistics`) |
+| `HitRate` | `f64` pairs (signs compared) | — | core (`statistics`) |
 | `BucketAccumulator` (→ `BucketSummary`) | `f64` | — | core (`statistics`) |
 | `Amihud` | `f64` | — | core (`statistics`) |
 | `BipowerVariation` (→ `JumpDecomposition`) | `f64` | `std\|libm` | core (`statistics`) |

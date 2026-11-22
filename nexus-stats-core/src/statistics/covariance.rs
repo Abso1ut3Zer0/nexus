@@ -92,8 +92,7 @@ impl Covariance {
     /// ```
     #[inline]
     pub fn checked_update(&mut self, x: f64, y: f64) -> Result<(), crate::DataError> {
-        crate::math::check_input(x, crate::math::LIMIT_FOR_SQUARES)?;
-        crate::math::check_input(y, crate::math::LIMIT_FOR_SQUARES)?;
+        crate::math::check_inputs!(crate::math::LIMIT_FOR_SQUARES; x, y)?;
         self.update(x, y);
         Ok(())
     }

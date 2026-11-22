@@ -120,5 +120,5 @@ for latency in latencies {
 ## Cross-references
 
 - `ErrorRate` — rolling error fraction without sequential-test machinery.
-- `HitRate` — rolling success rate.
+- `HitRate` — directional accuracy of a signal, with no test of significance.
 - For multiple comparisons or continuous thresholds, use `AdaptiveThreshold` or `MultiGate` instead.

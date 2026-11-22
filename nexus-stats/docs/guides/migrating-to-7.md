@@ -424,7 +424,11 @@ refuses a sample below `1e-120`, which covers zero and negatives),
 sum, with no fixed input limit), `HalfLife`, `BipowerVariation` (its
 `checked_update` refuses a zero or negative price, with no magnitude
 limit), `Ema`, `AsymEma` and `HuberEma` (NaN and infinity only),
-`EwmVar`, `ZScoreNorm`.
+`EwmVar`, `ZScoreNorm`, `Amihud` (also refuses a negative volume and a
+ratio that overflows), `HitRate` (NaN and infinity only).
+
+`Amihud::update` takes the period's return, signed or not, and uses its
+magnitude; drop the `.abs()` at the call site if you like.
 
 `Ema` and `EwmVar` are transforms, so `update` still returns the value,
 without the `Result`:

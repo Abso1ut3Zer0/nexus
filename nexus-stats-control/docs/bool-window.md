@@ -16,7 +16,7 @@ Internally uses a bitmask for compact O(1) storage and updates — no allocation
 - **Fill rate monitoring** with exact window semantics rather than EW smoothing.
 - **Health gates** that require "at least X of the last N were good".
 
-When you want EW decay rather than a hard window, use [`ErrorRate`](../../nexus-stats-core/docs/monitoring.md#errorrate) or [`HitRate`](../../nexus-stats-core/docs/statistics.md#hitrate--rolling-success-rate) instead.
+When you want EW decay rather than a hard window, use [`ErrorRate`](../../nexus-stats-core/docs/monitoring.md#errorrate) instead.
 
 ## API
 
@@ -62,5 +62,5 @@ If `sample_count` is much bigger than ~1024, consider whether an EW estimator gi
 ## Cross-references
 
 - [`ErrorRate`](../../nexus-stats-core/docs/monitoring.md#errorrate) — EW version with alert thresholds.
-- [`HitRate`](../../nexus-stats-core/docs/statistics.md#hitrate--rolling-success-rate) — EW success-rate tracker.
+- [`HitRate`](../../nexus-stats-core/docs/statistics.md#hitrate-directional-accuracy) — directional accuracy of a signal (sign of prediction against outcome).
 - [`BetaBinomial`](../../nexus-stats-regression/docs/estimation.md#betabinomial--bayesian-rate-estimation-for-successes) — Bayesian rate with credible intervals.

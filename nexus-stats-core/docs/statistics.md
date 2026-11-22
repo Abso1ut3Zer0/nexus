@@ -15,7 +15,7 @@ Streaming, fixed-memory, O(1)-per-update statistical primitives. Module path: `n
 | `Percentile` | Online percentile (P² algorithm) | small, fixed |
 | `BucketAccumulator` | Bar-style OHLC / VWAP aggregation | small, fixed |
 | `Amihud` | Amihud illiquidity measure (EW) | small |
-| `HitRate` | Rolling success rate over labels | small |
+| `HitRate` | Directional accuracy of a prediction (cumulative and EW) | small |
 | `HalfLife` | Mean-reversion half-life estimator | small |
 | `Hurst` | Hurst exponent (R/S estimator) | alloc, windowed |
 | `VarianceRatio` | Lo-MacKinlay variance ratio (mean-reversion test) | small |
@@ -205,31 +205,37 @@ for tick in ticks {
 
 ---
 
-## Amihud — Illiquidity estimator
+## Amihud: illiquidity
 
-Streaming (EW-smoothed) Amihud illiquidity: average of `|return| / dollar_volume`. Higher = less liquid.
+The exponentially weighted average of `|return| / dollar_volume` (Amihud, 2002). Higher means less liquid: more price movement per unit of volume.
 
 ```rust
 use nexus_stats_core::statistics::Amihud;
 let mut a = Amihud::builder().halflife(500.0).build().unwrap();
-a.update(abs_return, dollar_volume).unwrap();
+a.update(period_return, dollar_volume);
 let score = a.illiq().unwrap();
 ```
+
+Pass the period's return, signed or not; its magnitude is used. A period with zero volume is left out (the ratio is undefined there), and `count()` does not advance. `checked_update` refuses NaN, infinity, a negative volume, and a ratio that overflows.
 
 **Use for:** liquidity monitoring on crypto venues. Cross-venue comparison. Signal input to smart order routing.
 
 ---
 
-## HitRate — Rolling success rate
+## HitRate: directional accuracy
 
-EW rolling fraction-of-labels-true. Like `ErrorRate` but generalized.
+The fraction of predictions whose sign matched the outcome: `hit_rate()` over everything fed, `ew_hit_rate()` weighted toward recent pairs.
 
 ```rust
 use nexus_stats_core::statistics::HitRate;
 let mut hr = HitRate::builder().halflife(200.0).build().unwrap();
-hr.update(fill_happened, target_shares).unwrap();
+hr.update(predicted_return, realized_return);
 let rate = hr.hit_rate().unwrap();
 ```
+
+A hit is a prediction and an outcome that are both positive or both negative. A zero on either side is a miss. This is the hit rate of Pesaran and Timmermann (1992); the weighted rate is this crate's addition. `checked_update` refuses NaN and infinity.
+
+It scores a signal's direction. For the rate of a yes/no event, use [`ErrorRate`](monitoring.md#errorrate), or `BetaBinomial` when you want a prior and an interval.
 
 ---
 
