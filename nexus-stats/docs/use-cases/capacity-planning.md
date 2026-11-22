@@ -62,8 +62,8 @@ for (sym, count) in hot.top() {
 
 | Primitive | Role |
 |-----------|------|
-| [FlexProportion](../algorithms/flex-proportion.md) | Per-shard share of recent traffic |
-| [Kalman1D](../algorithms/kalman1d.md) | Load forecasting with trend |
-| [Holt](../algorithms/holt.md) | Simpler trend forecasting |
-| [TopK](../algorithms/topk.md) | Hottest items |
-| [TrendAlert](../algorithms/trend-alert.md) | Detect rising load |
+| FlexProportion | Per-shard share of recent traffic |
+| Kalman1D | Load forecasting with trend |
+| Holt | Simpler trend forecasting |
+| TopK | Hottest items |
+| TrendAlert | Detect rising load |

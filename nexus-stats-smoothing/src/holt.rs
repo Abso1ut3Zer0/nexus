@@ -10,6 +10,13 @@ use nexus_stats_core::math::MulAdd;
 /// - Trend detection ("latency is increasing linearly")
 /// - Capacity planning and degradation forecasting
 /// - Adaptive baselines that track drift
+///
+/// # Choosing parameters
+///
+/// Start `alpha` where a plain EMA on the same data would have it, and
+/// `beta` several times smaller: a trend that adapts as fast as the level
+/// oscillates. If forecasts overshoot, lower `beta`. If the level lags,
+/// raise `alpha`.
 #[derive(Debug, Clone)]
 pub struct Holt {
     alpha: f64,

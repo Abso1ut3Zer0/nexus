@@ -65,9 +65,9 @@ if let Some(shift) = drift.update(measurement).unwrap() {
 
 | Primitive | Role |
 |-----------|------|
-| [SlewLimiter](../algorithms/slew.md) | Physical rate-of-change limits |
-| [RobustZScore](../algorithms/robust-z-score.md) | Outlier detection |
-| [DeadBand](../algorithms/dead-band.md) | Stuck sensor detection |
-| [CUSUM](../algorithms/cusum.md) | Process drift |
-| [Debounce](../algorithms/debounce.md) | Confirm out-of-spec |
-| [Hysteresis](../algorithms/hysteresis.md) | Clean on/off control decisions |
+| SlewLimiter | Physical rate-of-change limits |
+| RobustZScore | Outlier detection |
+| DeadBand | Stuck sensor detection |
+| CUSUM | Process drift |
+| Debounce | Confirm out-of-spec |
+| Hysteresis | Clean on/off control decisions |

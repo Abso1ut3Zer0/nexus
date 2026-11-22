@@ -21,6 +21,21 @@
 //! | [`WindowedMedian<f64>`] | Running median over a sliding window (f64) | `alloc` |
 //! | [`WindowedMedian<i64>`] | Running median over a sliding window (i64) | `alloc` |
 //!
+//! # Which smoother?
+//!
+//! Start with `Ema` from the core crate; it is usually the right answer.
+//! Move off it for a reason:
+//!
+//! - The signal has a trend, and an average lags it: [`Holt`].
+//! - It swings between trending and ranging: [`Kama`], which smooths more
+//!   when the signal is choppy.
+//! - The noise is known or can be measured, and velocity is wanted too:
+//!   [`Kalman1d`].
+//! - A moving target is to be chased without overshoot: [`Spring`].
+//! - Some samples are outliers. In order of how hard they are discounted:
+//!   [`HuberEma`] bounds each step, [`Hampel`] shrinks or rejects them, and
+//!   [`WindowedMedian`] ignores up to half the window.
+//!
 //! # Re-export
 //!
 //! When the `smoothing` feature is enabled on `nexus-stats`, these types are

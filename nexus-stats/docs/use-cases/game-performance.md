@@ -71,7 +71,7 @@ match (over_budget, trend.update(frame_time_ms).unwrap()) {
 
 | Primitive | Role |
 |-----------|------|
-| [AdaptiveThreshold](../algorithms/adaptive-threshold.md) | Stutter detection |
-| [PeakHoldDecay](../algorithms/peak-hold.md) | Worst recent frame |
-| [TrendAlert](../algorithms/trend-alert.md) | Performance trending |
-| [Spring](../algorithms/spring.md) | Smooth camera/UI value transitions |
+| AdaptiveThreshold | Stutter detection |
+| PeakHoldDecay | Worst recent frame |
+| TrendAlert | Performance trending |
+| Spring | Smooth camera/UI value transitions |

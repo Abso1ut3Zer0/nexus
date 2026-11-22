@@ -26,6 +26,8 @@ Advanced change detection and signal analysis for [nexus-stats](https://crates.i
 - **SprtBernoulli** — Sequential Probability Ratio Test (requires `std` or `libm`)
 - **SprtGaussian** — Gaussian SPRT (requires `std` or `libm`)
 
+Each detector answers a different question: a lasting shift, a passing spike, a single outlier, a trend toward a limit. The crate docs say which to use for what.
+
 ## Usage
 
 Enable the `detection` feature on `nexus-stats` for unified import paths:

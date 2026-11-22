@@ -36,6 +36,10 @@ pub(crate) const fn log2_of_span_plus_one(span: u64) -> u32 {
 /// - `halflife(h)`: the number of samples for a sample's weight to halve.
 /// - `span(n)`: pandas' convention, `alpha = 2 / (n + 1)`.
 ///
+/// Choose it for the time scale of what is being tracked, not for the
+/// sample rate: to follow ten-second bursts at 100 samples a second, a
+/// half-life of several hundred samples.
+///
 /// [simple exponential smoothing]: https://en.wikipedia.org/wiki/Exponential_smoothing#Basic_(simple)_exponential_smoothing
 ///
 /// # Seeding

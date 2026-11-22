@@ -133,11 +133,11 @@ if (clamped - sample).abs() > 0.001 {
 
 | Primitive | Role |
 |-----------|------|
-| [MultiGate](../algorithms/multi-gate.md) | Graded severity filter |
-| [RobustZScore](../algorithms/robust-z-score.md) | O(1) outlier scoring |
-| [CUSUM](../algorithms/cusum.md) | Regime change detection |
-| [SlewLimiter](../algorithms/slew.md) | Rate-of-change guard |
-| [WindowedMedian](../algorithms/windowed-median.md) | Robust baseline for outlier thresholds |
+| MultiGate | Graded severity filter |
+| RobustZScore | O(1) outlier scoring |
+| CUSUM | Regime change detection |
+| SlewLimiter | Rate-of-change guard |
+| WindowedMedian | Robust baseline for outlier thresholds |
 
 ## Tips
 

@@ -8,51 +8,51 @@ Start with your problem. Follow the tree to find the right primitive.
 
 - Simple smoothing, good defaults → **EMA**
   - `Ema` is `f64`; cast integer samples at the call site (see [Integer vs Float](integer-vs-float.md))
-- Need to react fast when trending, slow when noisy → [**KAMA**](../algorithms/kama.md)
+- Need to react fast when trending, slow when noisy → **KAMA**
   - Adapts its smoothing factor based on signal efficiency ratio
 - Need to increase fast but decrease slow (or vice versa) → **AsymmetricEMA**
   - Different alpha for each direction. TCP RTT uses this pattern.
-- Need to track a moving target without overshoot → [**CriticallyDampedSpring**](../algorithms/spring.md)
+- Need to track a moving target without overshoot → **CriticallyDampedSpring**
   - Better than EMA when chasing a target — has velocity, anticipates
-- Need to remove impulse noise / outlier spikes → [**WindowedMedian**](../algorithms/windowed-median.md)
+- Need to remove impulse noise / outlier spikes → **WindowedMedian**
   - Median ignores outliers entirely; EMA smears them
-- Need level + trend (is it getting worse?) → [**Holt**](../algorithms/holt.md)
+- Need level + trend (is it getting worse?) → **Holt**
   - Double exponential smoothing. Separates level from trend.
-- Need adaptive smoothing that gets smarter over time → [**Kalman1D**](../algorithms/kalman1d.md)
+- Need adaptive smoothing that gets smarter over time → **Kalman1D**
   - Like Holt but with principled adaptive gain. Better after restarts.
-- Need to chase a moving target without overshoot → [**CriticallyDampedSpring**](../algorithms/spring.md)
+- Need to chase a moving target without overshoot → **CriticallyDampedSpring**
   - Has velocity tracking, anticipates rather than lags. Unity's `SmoothDamp`.
-- Need to hard-limit how fast the output can change → [**SlewLimiter**](../algorithms/slew.md)
+- Need to hard-limit how fast the output can change → **SlewLimiter**
   - Not smoothing — hard clamp on rate of change
 
 ## "I want to detect a change in behavior"
 
 **What kind of change?**
 
-- Mean shifted up or down permanently → [**CUSUM**](../algorithms/cusum.md)
+- Mean shifted up or down permanently → **CUSUM**
   - "Exchange latency increased 20μs and stayed there"
   - Reports direction: `Direction::Rising` or `Direction::Falling`
-- Temporary spike, then back to normal → [**MOSUM**](../algorithms/mosum.md)
+- Temporary spike, then back to normal → **MOSUM**
   - "Latency spiked for 10 seconds, then recovered"
   - Windowed — forgets the spike after the window passes
-- Need best possible detection speed → [**ShiryaevRoberts**](../algorithms/shiryaev-roberts.md)
+- Need best possible detection speed → **ShiryaevRoberts**
   - Theoretically optimal detection delay. Costs one `exp()` per update.
-- Is this value trending upward/downward? → [**TrendAlert**](../algorithms/trend-alert.md)
+- Is this value trending upward/downward? → **TrendAlert**
   - "Not just high — getting worse over time"
-- Is this single sample anomalous? → [**AdaptiveThreshold**](../algorithms/adaptive-threshold.md)
+- Is this single sample anomalous? → **AdaptiveThreshold**
   - Z-score against recent baseline. Tells you High/Low direction.
 
 ## "I want to detect bad data / outliers"
 
 **How much do you need?**
 
-- Quick, cheap, O(1) → [**RobustZScore**](../algorithms/robust-z-score.md)
+- Quick, cheap, O(1) → **RobustZScore**
   - MAD-based z-score, freezes baseline on reject
-- Multi-level graded response → [**MultiGate**](../algorithms/multi-gate.md)
+- Multi-level graded response → **MultiGate**
   - Accept / Unusual / Suspect / Reject. Doesn't corrupt baseline.
-- Robust statistics (median, MAD, IQR, Tukey fences) → [**WindowedMedian**](../algorithms/windowed-median.md)
+- Robust statistics (median, MAD, IQR, Tukey fences) → **WindowedMedian**
   - O(N) per update but gives you everything: median, quartiles, MAD
-- Just clamp impossible rate of change → [**SlewLimiter**](../algorithms/slew.md)
+- Just clamp impossible rate of change → **SlewLimiter**
   - "Output can't change by more than X per sample"
 
 ## "I want to monitor system health"
@@ -67,22 +67,22 @@ type with timestamps, or `PollSaturation`, which is weighted per message.
 
 **What are you monitoring?**
 
-- Is a data source alive? → [**Liveness**](../algorithms/liveness.md)
+- Is a data source alive? → **Liveness**
   - EMA of inter-arrival times + deadline. Call `check(now)` periodically.
-- Is a queue building up? → [**CoDel**](../algorithms/codel.md)
+- Is a queue building up? → **CoDel**
   - CoDel-inspired. Detects standing queues before buffers fill.
-- Is my consumer thread saturated? → [**PollSaturation**](../algorithms/poll-saturation.md)
+- Is my consumer thread saturated? → **PollSaturation**
   - From poll outcomes alone, no timestamps: how many messages waited behind this thread, for how long at most.
-- Messages carry an enqueue stamp? → [**SojournSaturation**](../algorithms/sojourn-saturation.md)
+- Messages carry an enqueue stamp? → **SojournSaturation**
   - Exact per-message wait summarized per period: over-budget count, floor, worst, mean, standing queue.
 - Is a resource running hot? → smooth the busy fraction with **EMA** and compare it to your threshold. For a consumer thread's own saturation, PollSaturation / SojournSaturation above.
-- Is the error rate too high? → [**ErrorRate**](../algorithms/error-rate.md)
+- Is the error rate too high? → **ErrorRate**
   - EMA of success/failure outcomes. Supports weighted severity.
-- What's the worst since I last checked? → [**MaxGauge**](../algorithms/max-gauge.md)
+- What's the worst since I last checked? → **MaxGauge**
   - Reset-on-read maximum. For periodic scraping/alerting.
-- Has N consecutive failures occurred? → [**Debounce**](../algorithms/debounce.md)
+- Has N consecutive failures occurred? → **Debounce**
   - "3 timeouts in a row = dead." Simpler than CUSUM for discrete events.
-- How many events per second? → [**EventRate**](../algorithms/event-rate.md)
+- How many events per second? → **EventRate**
   - Smoothed rate from timestamps.
 
 ## "I want to track statistics"
@@ -97,106 +97,106 @@ type with timestamps, or `PollSaturation`, which is weighted per message.
   - Online Pearson correlation. Supports merge.
 - Average of rates/throughputs → **HarmonicMean**
   - Arithmetic mean of rates is wrong. Harmonic mean is correct.
-- Signal variability / jitter → [**Jitter**](../algorithms/jitter.md)
+- Signal variability / jitter → **Jitter**
   - EMA of consecutive absolute differences. `jitter_ratio()` for context.
 
 ## "I want to fit a trend or model"
 
 **What kind of relationship?**
 
-- Simple linear trend (slope + intercept) → [**LinearRegression**](../algorithms/linear-regression.md)
+- Simple linear trend (slope + intercept) → **LinearRegression**
   - Closed-form solve, 72 bytes, ~8 cycles. The default for trend estimation.
-- Linear trend that adapts to regime changes → [**EwLinearRegression**](../algorithms/linear-regression.md)
+- Linear trend that adapts to regime changes → **EwLinearRegression**
   - Same but with exponential decay. "What's the *current* slope?"
 - Proportional relationship through origin → `LinearRegression::through_origin()`
   - `y = ax`, no intercept. Rate estimation, calibration.
-- Quadratic / cubic / higher-degree curve → [**PolynomialRegression**](../algorithms/polynomial-regression.md)
+- Quadratic / cubic / higher-degree curve → **PolynomialRegression**
   - Builder: `.degree(3)`. Acceleration detection, complex curvature.
-- Exponential growth or decay → [**ExponentialRegression**](../algorithms/polynomial-regression.md#exponential-y--aebx)
+- Exponential growth or decay → **ExponentialRegression**
   - `y = ae^(bx)`. Growth rate estimation, half-life.
-- Logarithmic / diminishing returns → [**LogarithmicRegression**](../algorithms/polynomial-regression.md#logarithmic-y--alnx--b)
+- Logarithmic / diminishing returns → **LogarithmicRegression**
   - `y = a·ln(x) + b`. Saturation curves.
-- Power law / scaling → [**PowerRegression**](../algorithms/polynomial-regression.md#power-y--axb)
+- Power law / scaling → **PowerRegression**
   - `y = ax^b`. Scaling exponent estimation.
 
 ## "I want to analyze signal relationships"
 
-- Is this signal trending or mean-reverting? → [**Autocorrelation**](../algorithms/autocorrelation.md)
+- Is this signal trending or mean-reverting? → **Autocorrelation**
   - Positive lag-1 = trending, negative = reverting, zero = random walk.
-- Does signal A predict signal B? → [**CrossCorrelation**](../algorithms/cross-correlation.md)
+- Does signal A predict signal B? → **CrossCorrelation**
   - Finds the lag with peak correlation. `peak_lag()` = the delay.
-- WHICH signal drives the other? → [**TransferEntropy**](../algorithms/transfer-entropy.md)
+- WHICH signal drives the other? → **TransferEntropy**
   - Directed information flow. Cross-correlation is symmetric; transfer entropy is not.
-- How predictable is this signal? → [**Entropy**](../algorithms/entropy.md)
+- How predictable is this signal? → **Entropy**
   - Shannon entropy over categorized observations. Low = predictable, high = random.
 
 ## "I want to track extrema"
 
-- All-time min or max → [**RunningMin / RunningMax**](../algorithms/running-min-max.md)
-- Min/max over a time window → [**WindowedMin / WindowedMax**](../algorithms/windowed-min-max.md)
+- All-time min or max → **RunningMin / RunningMax**
+- Min/max over a time window → **WindowedMin / WindowedMax**
   - Nichols' algorithm (Linux `win_minmax`, from TCP BBR), 72 bytes. Approximate by
     design: the reported max is never above the truth and the min never below, but
     about 1 to 2% of updates on stationary input disagree with an exact window.
     For a per-reporting-interval maximum, prefer `MaxGauge`: exact and simpler.
-- Peak with hold + decay → [**PeakHoldDecay**](../algorithms/peak-hold.md)
+- Peak with hold + decay → **PeakHoldDecay**
   - "Worst recent spike, fading over time." Smooth envelope.
-- Peak-to-trough decline → [**Drawdown**](../algorithms/drawdown.md)
+- Peak-to-trough decline → **Drawdown**
   - Tracks max drawdown from peak. Risk circuit breaker.
 
 ## "I want to count / classify"
 
-- Top K most frequent items → [**TopK**](../algorithms/topk.md)
+- Top K most frequent items → **TopK**
   - Space-Saving algorithm. Fixed memory.
-- What share of recent events went to each key? → [**FlexProportion**](../algorithms/flex-proportion.md)
+- What share of recent events went to each key? → **FlexProportion**
   - Per-entity fraction with lazy decay. Shard balancing.
-- How active is this entity recently? → [**DecayingAccumulator**](../algorithms/decay-accum.md)
+- How active is this entity recently? → **DecayingAccumulator**
   - Event-driven score with time decay. Activity/heat scoring.
-- Pass/fail rate over last N events → [**BoolWindow**](../algorithms/bool-window.md)
+- Pass/fail rate over last N events → **BoolWindow**
   - Ring of boolean outcomes. Circuit breaker input.
 
 ## "I want signal processing utilities"
 
-- Rate of change (first derivative) → [**FirstDiff**](../algorithms/diff.md)
-- Acceleration (second derivative) → [**SecondDiff**](../algorithms/diff.md)
-- Detect peaks/troughs in a signal → [**PeakDetector**](../algorithms/peak-detector.md)
-- Count threshold crossings → [**LevelCrossing**](../algorithms/level-crossing.md)
-- Binary decision from noisy signal → [**Hysteresis**](../algorithms/hysteresis.md)
+- Rate of change (first derivative) → **FirstDiff**
+- Acceleration (second derivative) → **SecondDiff**
+- Detect peaks/troughs in a signal → **PeakDetector**
+- Count threshold crossings → **LevelCrossing**
+- Binary decision from noisy signal → **Hysteresis**
   - Schmitt trigger. Different thresholds for rising vs falling.
-- Suppress changes below threshold → [**DeadBand**](../algorithms/dead-band.md)
+- Suppress changes below threshold → **DeadBand**
   - "Don't tell me unless it changed by at least 5%."
 
 ## "I want to make a decision from streaming data"
 
 **What kind of decision?**
 
-- Is A better than B (binary outcome)? → [**SprtBernoulli**](../algorithms/sprt.md)
+- Is A better than B (binary outcome)? → **SprtBernoulli**
   - Controlled false positive/negative rates. Minimal samples.
-- Is the mean shifted (continuous)? → [**SprtGaussian**](../algorithms/sprt.md)
+- Is the mean shifted (continuous)? → **SprtGaussian**
   - Same as Bernoulli but for continuous observations.
-- What's the success rate with uncertainty? → [**BetaBinomial**](../algorithms/bayesian.md)
+- What's the success rate with uncertainty? → **BetaBinomial**
   - Not just "73%" but "73% ± 4% (95% CI)."
-- What's the event rate with uncertainty? → [**GammaPoisson**](../algorithms/bayesian.md)
+- What's the event rate with uncertainty? → **GammaPoisson**
   - Bayesian rate estimation with credible intervals.
 
 ## "I want to predict from features"
 
 **What type of prediction?**
 
-- Predict a continuous value from features → [**NlmsFilter**](../algorithms/adaptive-filters.md) (simple) or [**RlsFilter**](../algorithms/adaptive-filters.md) (fast convergence)
-- Predict a probability (yes/no) from features → [**LogisticRegression**](../algorithms/adaptive-filters.md#logistic-regression--binary-classification)
-- Classify into regimes/clusters → [**OnlineKMeans**](../algorithms/adaptive-filters.md#online-k-means--streaming-clustering)
-- Track correlated states with uncertainty → [**Kalman2D/3D**](../algorithms/kalman.md)
+- Predict a continuous value from features → **NlmsFilter** (simple) or **RlsFilter** (fast convergence)
+- Predict a probability (yes/no) from features → **LogisticRegression**
+- Classify into regimes/clusters → **OnlineKMeans**
+- Track correlated states with uncertainty → **Kalman2D/3D**
 
 ## "I want to optimize parameters from gradients"
 
-- Simple, no tuning needed → [**OnlineGD**](../algorithms/optimizers.md)
-- Sparse features, different scales → [**AdaGrad**](../algorithms/optimizers.md)
-- Best default, works everywhere → [**Adam**](../algorithms/optimizers.md)
-- Need regularization → [**Adam with weight_decay**](../algorithms/optimizers.md)
+- Simple, no tuning needed → **OnlineGD**
+- Sparse features, different scales → **AdaGrad**
+- Best default, works everywhere → **Adam**
+- Need regularization → **Adam with weight_decay**
 
 Note: these are background-thread types, not hot-path. If your loss
-is squared error, use [LinearRegression](../algorithms/linear-regression.md)
-or [RLS](../algorithms/adaptive-filters.md) instead.
+is squared error, use LinearRegression
+or RLS instead.
 
 ## Still not sure?
 

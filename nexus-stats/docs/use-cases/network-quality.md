@@ -71,6 +71,6 @@ avg_bw.update(delivery_rate);
 
 | Primitive | Role |
 |-----------|------|
-| [WindowedMin](../algorithms/windowed-min-max.md) | Baseline RTT (BBR) |
-| [WindowedMax](../algorithms/windowed-min-max.md) | Bandwidth estimation (BBR) |
-| [Jitter](../algorithms/jitter.md) | Inter-arrival jitter (RFC 3550) |
+| WindowedMin | Baseline RTT (BBR) |
+| WindowedMax | Bandwidth estimation (BBR) |
+| Jitter | Inter-arrival jitter (RFC 3550) |

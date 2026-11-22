@@ -57,6 +57,6 @@ if let Some(r) = rate.rate() {
 
 | Primitive | Role |
 |-----------|------|
-| [EventRate](../algorithms/event-rate.md) | Smoothed rate measurement |
-| [CUSUM](../algorithms/cusum.md) | Rate shift detection |
-| [LevelCrossing](../algorithms/level-crossing.md) | Count rate limit breaches |
+| EventRate | Smoothed rate measurement |
+| CUSUM | Rate shift detection |
+| LevelCrossing | Count rate limit breaches |

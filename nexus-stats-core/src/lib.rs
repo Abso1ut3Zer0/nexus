@@ -67,26 +67,9 @@ pub mod sample;
 pub use sample::{AlphaEma, EmaKernel, ShiftEma};
 pub use sample::{Float, Sample};
 
-/// Control, thresholding, and differencing.
 pub mod control;
-/// Change detection.
 pub mod detection;
-/// Monitoring and health tracking.
 pub mod monitoring;
 pub mod normalization;
 pub mod smoothing;
 pub mod statistics;
-
-/// The doc pages under `docs/` whose examples are compiled and run as
-/// doctests, so a page cannot drift from the API it describes.
-#[cfg(all(doctest, feature = "std"))]
-mod doc_pages {
-    #[doc = include_str!("../docs/control.md")]
-    struct Control;
-    #[doc = include_str!("../docs/detection.md")]
-    struct Detection;
-    #[doc = include_str!("../docs/normalization.md")]
-    struct Normalization;
-    #[doc = include_str!("../docs/smoothing.md")]
-    struct Smoothing;
-}

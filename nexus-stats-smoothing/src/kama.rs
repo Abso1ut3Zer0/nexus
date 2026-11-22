@@ -22,6 +22,13 @@ use nexus_stats_core::storage::Ring;
 /// - Adaptive smoothing that auto-tunes to market conditions
 /// - Noise-resistant trend following
 /// - Signal processing with variable noise levels
+///
+/// # Choosing parameters
+///
+/// `window_size(10)`, `fast_span(2)` and `slow_span(30)` are Kaufman's
+/// values and the usual place to start. Raise `slow_span` if the output is
+/// still jittery while the signal ranges; lower `fast_span` if it lags in a
+/// trend.
 #[derive(Clone)]
 pub struct Kama {
     ring: Ring<f64>,
