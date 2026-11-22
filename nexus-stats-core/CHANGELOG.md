@@ -64,10 +64,8 @@ contained.
   coin flip for the predictor in a trending series); `Drawdown` seeds its
   internal peak at `T::MIN`, so the first sample needs no special case.
   `HitRate` folds its four sign compares into flags, `Lpm` clamps the
-  shortfall instead of branching on it, `TwoScaleRv` and `VarianceRatio`
-  advance their ring index with a compare instead of a division, and
-  `VarianceRatio` keeps the last `q` values in a fixed ring (`Box<[f64]>`)
-  instead of a `VecDeque`. Same results; no `div` and fewer unpredictable
+  shortfall instead of branching on it, `TwoScaleRv` advances
+  its ring index with a compare instead of a division. Same results; no `div` and fewer unpredictable
   jumps on the update path.
 - **Construction validation is NaN-safe and complete.** `math::positive_finite`,
   `nonnegative_finite` and `in_unit_interval` replace the sign-only tests that
@@ -106,7 +104,7 @@ contained.
   `true`s that `update` compares to the threshold is `consecutive()` (was
   `count()`).
 - **Every builder with `alpha(a)` has `halflife(h)`** (`std` or `libm`):
-  `VarianceRatio` and `RollSpread` gain it, all of them computed by one
+  `RollSpread` gains it, all of them computed by one
   `math::alpha_from_halflife`. The missing-field error is
   `ConfigError::Missing("alpha")` everywhere (`HitRate` said "alpha or
   halflife"), the range test is `math::in_unit_interval` everywhere, and
@@ -218,12 +216,40 @@ contained.
   as `Ema` does: a converged state, with `count()` at 0 and `reset()`
   returning to it. A seed used to set `count()` to `min_samples`, and
   `reset()` discarded it.
-- **`ZScoreNorm` and `VarianceRatio` readings shift**, because the
-  variance under them is now unbiased (see Fixed). `ZScoreNorm` follows
-  `EwmVar` on the rest too: `min_samples` must be at least 2, a seeded
-  normalizer starts with `count()` at 0, and `reset()` returns to the seed.
-  `VarianceRatio` refuses a value whose return is above `1e120` in
-  magnitude.
+- **`ZScoreNorm` readings shift**, because the variance under it is now
+  unbiased (see Fixed). It follows `EwmVar` on the rest too: `min_samples`
+  must be at least 2, a seeded normalizer starts with `count()` at 0, and
+  `reset()` returns to the seed.
+- **`VarianceRatio`, `TwoScaleRv` and `Hurst` take a price and no longer
+  validate or return a `Result` from `update`.** Each takes the logarithm
+  itself. `checked_update` is the validating form and refuses NaN,
+  infinity, and a price that is zero or negative.
+- **`VarianceRatio` is the Lo and MacKinlay statistic over a sliding
+  window.** It was a ratio of two exponentially weighted variances, a
+  construction with no published counterpart. It now computes their
+  estimator on the log price over the last `window` returns (overlapping
+  `q`-period returns, endpoint drift, both bias corrections) and matches
+  `arch.unitroot.VarianceRatio`. The builder takes `q` and `window`;
+  `alpha` and `halflife` are gone. `estimate()` returns a
+  `VarianceRatioEstimate { ratio, z_statistic }`, replacing
+  `variance_ratio()`; `is_mean_reverting()` and `is_trending()` are removed
+  (compare `z_statistic` with a level you choose). Needs `std` or `libm`.
+- **`Hurst` is the multi-scale rescaled-range estimate.** It computed
+  `ln(R/S) / ln(n)` over one window, which is biased and shrinks toward
+  0.5. It now measures `R/S` at the window and each halving down to
+  `smallest_window`, corrects each by the Anis-Lloyd-Peters expectation,
+  and fits the slope, matching `nolds.hurst_rs`. `exponent()` replaces
+  `hurst()`; the builder's `window_size` is `window`, in returns;
+  `is_mean_reverting()` and `is_trending()` are removed.
+- **`TwoScaleRv` works on log prices and applies the paper's small-sample
+  adjustment** (Zhang, Mykland and Aït-Sahalia, 2005, equation 64, as R's
+  `highfrequency` does). It differenced raw prices. `estimate()` returns a
+  `TwoScaleEstimate { variance, realized_variance, noise_variance,
+  returns }`, replacing `realized_variance()`, `realized_volatility()`,
+  `fast_rv()` and `noise_variance()`. The variance is no longer clamped at
+  zero; `volatility()` takes a negative estimate as zero. The noise
+  variance is the paper's `[Y,Y]all / 2n`. `min_samples` must be at least
+  `k + 1`. Old readings are not comparable.
 - **`Amihud::update` and `HitRate::update` no longer validate or return a
   `Result`.** `checked_update` is the validating form on both.
 - **`Amihud::update` takes the period's return, signed or not,** and uses
@@ -375,6 +401,16 @@ contained.
   builder `seed`, `halflife_up`, `halflife_down`.
 - `ZScoreNorm::checked_update`, `ZScoreNorm::checked_normalize`,
   `ZScoreNorm::reset_with_seed`.
+- `VarianceRatio::checked_update`, `estimate`, `resync` and `window`;
+  `VarianceRatioEstimate`. The z statistic is Lo and MacKinlay's
+  heteroskedasticity-robust one. `update` and `estimate` cost time
+  proportional to `q`, from running totals; `resync()` recomputes them
+  from the stored prices to remove accumulated rounding error.
+- `Hurst::checked_update`, `exponent`, `window`, and the builder's
+  `smallest_window`. Its inner loop has SSE2 and AVX2 versions (AVX2 when
+  the build enables `avx2` and `fma`): a read is about twice as fast on a
+  default x86-64 build and about three times with AVX2.
+- `TwoScaleRv::checked_update`, `estimate`; `TwoScaleEstimate`.
 - `Amihud::checked_update` (refuses NaN, infinity, a negative volume, and
   a ratio that overflows) and `HitRate::checked_update` (NaN and infinity).
   Both builders accept `span`.
@@ -392,6 +428,12 @@ contained.
 
 ### Fixed
 
+- **`Hurst` read a random walk as trending when fed prices.** Its docs
+  allowed "a return or price level", and on price levels a random walk
+  read about 0.8. It takes prices and differences them itself.
+- **`Hurst` skips a stretch whose returns are equal to within rounding.**
+  Such a stretch contributed a ratio of rounding noise. The test is the one
+  SciPy applies to a variance, at the scale of the log price.
 - **`EwmVar` no longer reads low.** The variance came from the recursion
   `var = (1 - alpha) * (var + alpha * d^2)`, which gives about 18% of the
   true variance after two samples (alpha 0.1) and stays about 5% low. It
@@ -399,9 +441,6 @@ contained.
   deviations over `W - W2 / W`, which pandas (`ewm().var()`) and Polars
   (`ewm_var`) compute by default. Unbiased from the second sample on. Old
   readings are not comparable.
-- **`VarianceRatio` is unchanged by a value it refuses.** It counted the
-  value and fed the one-period return before the longer return was checked,
-  so a refusal left the two out of step.
 - **Builders refuse a weight too small to use, under every knob.** An
   `alpha` below half of machine epsilon (about `1.1e-16`), or a `span`
   large enough to give one, was accepted, though `1 - alpha` rounds to 1

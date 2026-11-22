@@ -109,6 +109,13 @@ one naming convention across the family. Migration guide:
   reports the side further over threshold and gains `restart_on_alarm()`;
   `halflife` / `span` errors name the knob. See the migration guide.
 
+- Carried from core: `VarianceRatio`, `Hurst` and `TwoScaleRv` take a
+  price, log it themselves, and are rebuilt on their published
+  definitions: `VarianceRatio` is the windowed Lo-MacKinlay statistic with
+  its robust z statistic (`estimate()`, `resync()`), `Hurst` the
+  multi-scale rescaled-range estimate (`exponent()`), `TwoScaleRv` the
+  adjusted estimator on log prices (`estimate()`). Old readings are not
+  comparable. See the migration guide.
 - Carried from core: `Amihud::update` and `HitRate::update` no longer
   validate or return a `Result` (`checked_update` validates), and `Amihud`
   takes a signed return.
@@ -145,7 +152,7 @@ one naming convention across the family. Migration guide:
   a consumer thread's saturation from its poll outcomes, or from stamped
   queue sojourns.
 - `count()` / `is_primed()` where they were missing (see the 4-of-4 entry);
-  `halflife(h)` on `VarianceRatio`, `RollSpread`, `MultiGate`,
+  `halflife(h)` on `RollSpread`, `MultiGate`,
   `RobustZScore`, `EwLinearRegression`, `EwPolynomialRegression`,
   `KyleLambda` and the EW transformed regressions; `Covariance::variance_x` /
   `variance_y`; `Welford::m2`; `Coefficients::eval`; `Debounce::consecutive`;
@@ -164,9 +171,8 @@ one naming convention across the family. Migration guide:
   longer reads low (it is the unbiased weighted variance pandas and Polars
   compute). `Ema::update` and `EwmVar::update` no longer validate or
   return a `Result`; `checked_update` is the validating form. `EwmVar`
-  returns a `MeanVariance`. Both gain `reset_with_seed`. `ZScoreNorm` and
-  `VarianceRatio` readings shift with the variance. See the migration
-  guide.
+  returns a `MeanVariance`. Both gain `reset_with_seed`. `ZScoreNorm`
+  readings shift with the variance. See the migration guide.
 - Carried from core: `BipowerVariation` works on log returns and reports
   period totals, as the definitions do, read as a `JumpDecomposition`
   from `decomposition()`. Readings are not comparable with earlier ones; see the
