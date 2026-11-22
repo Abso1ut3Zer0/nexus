@@ -274,7 +274,7 @@ contained.
   also accepts `span`.
 - **`update` returns a value only on a transform.** A type whose result the
   caller uses for each sample (a smoother, a normalizer) returns it from
-  `update`. A type that summarises many samples returns nothing and is
+  `update`. A type that summarizes many samples returns nothing and is
   read by a method named for what it returns. `BipowerVariation` follows:
   `decomposition()` replaces `last()`, and its `update` returns nothing.
 - **`BipowerVariation` works on log returns and reports period totals.**
@@ -595,7 +595,7 @@ contained.
 
 - `docs/normalization.md` is compiled and run as a doctest, and the
   `DistributionShift` section of `docs/detection.md` is rewritten against
-  the new behaviour. The `MinMaxNorm` example had its `update` arguments
+  the new behavior. The `MinMaxNorm` example had its `update` arguments
   reversed.
 
 - `docs/control.md`, `docs/detection.md` and `docs/smoothing.md` are compiled

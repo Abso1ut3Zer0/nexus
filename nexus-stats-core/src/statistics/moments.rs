@@ -41,6 +41,16 @@ pub struct Moments {
     m4: f64,
 }
 
+/// What each term of [`Moments::merge`] is built from: the two counts,
+/// their sum, and the second mean less the first.
+#[derive(Clone, Copy)]
+struct Pair {
+    n_a: f64,
+    n_b: f64,
+    n: f64,
+    delta: f64,
+}
+
 /// The shape of a distribution, from [`Moments::shape`].
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Shape {
@@ -210,7 +220,7 @@ impl Moments {
     ///   once rounding is allowed for. Just above it a one-pass estimate
     ///   keeps only a few digits;
     /// - the squared variance underflows, which that test misses for tiny
-    ///   data centred on zero.
+    ///   data centered on zero.
     ///
     /// # Examples
     ///
@@ -257,7 +267,6 @@ impl Moments {
     ///
     /// After merging, `self` contains the statistics of the combined
     /// dataset. The other accumulator is unchanged.
-    #[allow(clippy::suspicious_operation_groupings)]
     pub fn merge(&mut self, other: &Self) {
         if other.count == 0 {
             return;
@@ -269,35 +278,58 @@ impl Moments {
 
         let n_a = self.count as f64;
         let n_b = other.count as f64;
-        let n = n_a + n_b;
-        let delta = other.mean - self.mean;
-        let delta2 = delta * delta;
-        let delta3 = delta2 * delta;
-        let delta4 = delta2 * delta2;
+        let pair = Pair {
+            n_a,
+            n_b,
+            n: n_a + n_b,
+            delta: other.mean - self.mean,
+        };
+        // Each uses the lower sums as they were before the merge.
+        let m4 = self.merged_m4(other, pair);
+        let m3 = self.merged_m3(other, pair);
+        let m2 = self.merged_m2(other, pair);
 
-        let new_m4 = self.m4
-            + other.m4
-            + delta4 * n_a * n_b * n_b.fma(n_b, n_a.fma(n_a, -(n_a * n_b))) / (n * n * n)
-            + 6.0 * delta2 * (n_a * n_a).fma(other.m2, n_b * n_b * self.m2) / (n * n)
-            + 4.0 * delta * n_a.fma(other.m3, -(n_b * self.m3)) / n;
-
-        let new_m3 = self.m3
-            + other.m3
-            + delta3 * n_a * n_b * (n_a - n_b) / (n * n)
-            + 3.0 * delta * n_a.fma(other.m2, -(n_b * self.m2)) / n;
-
-        let new_m2 = self.m2 + other.m2 + delta2 * n_a * n_b / n;
-
-        self.mean += delta * n_b / n;
+        self.mean += pair.delta * pair.n_b / pair.n;
         self.count += other.count;
-        self.m2 = new_m2;
-        self.m3 = new_m3;
-        self.m4 = new_m4;
+        self.m2 = m2;
+        self.m3 = m3;
+        self.m4 = m4;
     }
 
     /// Resets to empty state.
     pub fn reset(&mut self) {
         *self = Self::new();
+    }
+
+    /// The sum of squared deviations of the two sets together, about their
+    /// common mean.
+    fn merged_m2(&self, other: &Self, pair: Pair) -> f64 {
+        let Pair { n_a, n_b, n, delta } = pair;
+        let delta2 = delta * delta;
+        self.m2 + other.m2 + delta2 * n_a * n_b / n
+    }
+
+    /// The sum of cubed deviations of the two sets together.
+    fn merged_m3(&self, other: &Self, pair: Pair) -> f64 {
+        let Pair { n_a, n_b, n, delta } = pair;
+        let delta3 = delta * delta * delta;
+        self.m3
+            + other.m3
+            + delta3 * n_a * n_b * (n_a - n_b) / (n * n)
+            + 3.0 * delta * n_a.fma(other.m2, -(n_b * self.m2)) / n
+    }
+
+    /// The sum of fourth-power deviations of the two sets together.
+    #[allow(clippy::suspicious_operation_groupings)]
+    fn merged_m4(&self, other: &Self, pair: Pair) -> f64 {
+        let Pair { n_a, n_b, n, delta } = pair;
+        let delta2 = delta * delta;
+        let delta4 = delta2 * delta2;
+        self.m4
+            + other.m4
+            + delta4 * n_a * n_b * n_b.fma(n_b, n_a.fma(n_a, -(n_a * n_b))) / (n * n * n)
+            + 6.0 * delta2 * (n_a * n_a).fma(other.m2, n_b * n_b * self.m2) / (n * n)
+            + 4.0 * delta * n_a.fma(other.m3, -(n_b * self.m3)) / n
     }
 }
 
