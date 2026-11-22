@@ -8,81 +8,42 @@ use crate::storage::SliceRing;
 /// Variance ratio over a sliding window: is the price a random walk?
 ///
 /// If returns are independent, the variance of a `q`-period return is `q`
-/// times the variance of a one-period return, so the ratio of the two is
-/// one. Below one points to mean reversion, above one to trending. `q` is
-/// the builder's [`horizon`](VarianceRatioBuilder::horizon).
+/// times the variance of a one-period return, so their ratio is one. Below
+/// one points to mean reversion, above one to trending.
 ///
 /// This is the statistic of Lo and MacKinlay (1988, "Stock Market Prices Do
-/// Not Follow Random Walks", *Review of Financial Studies*), computed on the
-/// log price over the last `window` returns: overlapping `q`-period returns,
-/// the drift taken from the window's two end prices, and their two bias
-/// corrections. It gives the value `arch.unitroot.VarianceRatio` reports
-/// with its defaults.
-///
-/// # Deciding
-///
-/// [`estimate`](Self::estimate) returns the two together. The ratio says
-/// which way and how far; the z statistic says whether that distance could
-/// be chance:
-///
-/// - `|z|` below about 2: consistent with a random walk, whatever the
-///   ratio. On a short window a ratio of 0.8 or 1.2 is ordinary.
-/// - `z` above about 2: trending. Below about -2: mean-reverting. Under a
-///   random walk `z` is standard normal, so 1.96 is the usual 5% level and
-///   2.58 the 1% level.
-/// - Read on every bar, a 5% level raises a false signal on about one bar
-///   in twenty. Use a higher level, or require it to hold for several
-///   reads, when a signal is costly to act on.
+/// Not Follow Random Walks"), on the log price. It gives the value
+/// `arch.unitroot.VarianceRatio` reports with its defaults.
 ///
 /// # Window and horizon
 ///
-/// The window is how much history the reading is computed over, in
-/// one-period returns: `n` in the paper. The horizon is the length of the
-/// longer return whose variance is compared with the one-period variance:
-/// `q` in the paper. With a window of 2000 and a horizon of 5, the reading
-/// asks, over the last 2000 returns, whether 5-period returns vary five
-/// times as much as one-period returns.
+/// The window is how much history the reading covers, in one-period
+/// returns. The horizon is `q`, the length of the longer return. With a
+/// window of 2000 and a horizon of 5, the reading asks, over the last 2000
+/// returns, whether 5-period returns vary five times as much as one-period
+/// returns. The window must be longer than the horizon, and in practice
+/// many times longer.
 ///
-/// A longer window makes `z` more sensitive and slower to notice a change;
-/// a larger horizon looks for memory over a longer span. The window has to
-/// be longer than the horizon, and in practice many times longer.
+/// # Reading it
 ///
-/// # Cost and rounding
+/// [`estimate`](Self::estimate) returns the ratio and its z statistic. The
+/// ratio says which way and how far; `z` says whether that could be chance:
 ///
-/// The sums behind the reading are running totals: `update` adds the
-/// newest terms and subtracts the oldest, at a cost proportional to `q`,
-/// whatever the window. It works out the reading as it goes, so
-/// [`estimate`](Self::estimate) only returns it. That keeps a reading cheap when many instruments are read on
-/// the same bar.
+/// - `|z|` below about 2: consistent with a random walk, whatever the ratio.
+/// - `z` above about 2: trending. Below about -2: mean-reverting.
 ///
-/// A running total is rounded at every add, by up to half a unit in the
-/// last place of the total as it is then. The errors stay in the total, so
-/// they matter once the total has become much smaller than it was: after
-/// volatility falls a long way, or after a price far off the market has
-/// come and gone. The z statistic sums fourth powers and feels this first;
-/// the ratio, which sums squares, is far less affected.
+/// Under a random walk `z` is standard normal, so read at the 5% level it
+/// raises a false signal about one time in twenty.
 ///
-/// `update` keeps an estimate of that error and returns
-/// [`Accuracy::ResyncRequired`] once it could reach one part in a thousand
-/// of the z statistic, and keeps returning it until
-/// [`resync`](Self::resync) is called. Until then there is no reading:
-/// [`estimate`](Self::estimate) returns `None`, and `update` only stores
-/// the price. So a reading that is given is good to that one part in a
-/// thousand. `resync` recomputes the totals from the stored prices; it
-/// costs the window times `q`, so it is for the caller to schedule when
-/// there is time to spare. pandas guards its rolling moments against the
-/// same loss, and never returns the suspect value either: it recomputes
-/// the window itself, at once.
+/// # Accuracy
 ///
-/// A resync is required after volatility has fallen far below what the
-/// totals went through earlier, after a price far off the market has
-/// passed through, when the trend has moved far from where it was at the
-/// last resync, or after a price that was not a number. It is also required
-/// on a quiet window that has no reading (no two returns within `q - 1` of
-/// each other both moved) while the totals still carry rounding from
-/// busier prices: the sum that should be exactly zero is not, and what is
-/// left would decide the reading. A resync leaves that sum exactly zero
-/// and is not required again.
+/// [`update`](Self::update) keeps running totals, so it costs time
+/// proportional to the horizon, whatever the window. Running totals lose
+/// accuracy to rounding, mostly after a collapse in volatility or a price
+/// far off the market. `update` then returns
+/// [`Accuracy::ResyncRequired`], and there is no reading until
+/// [`resync`](Self::resync) rebuilds the totals from the stored prices.
+/// A reading that is given is good to one part in a thousand of `z`.
 ///
 /// # Examples
 ///
@@ -430,17 +391,31 @@ impl VarianceRatio {
 
     /// Feeds a price. The logarithm is taken here.
     ///
-    /// Returns whether the reading is sound or a [`resync`](Self::resync)
-    /// is required. Once one is, every call says so and only stores the
-    /// price, and there is no reading until it is made.
+    /// Returns [`Accuracy::Sound`], or [`Accuracy::ResyncRequired`] once
+    /// rounding in the running totals could reach one part in a thousand of
+    /// the z statistic. From then on every call returns the same and only
+    /// stores the price, and there is no reading, until
+    /// [`resync`](Self::resync). Its `error` is that of the z statistic, as
+    /// a share of the larger of `|z|` and 1.
     ///
-    /// The `error` in [`Accuracy::ResyncRequired`] is that of the z
-    /// statistic, as a share of the larger of `|z|` and 1: four standard
-    /// deviations of the rounding the totals have accumulated, so the real
-    /// error is usually several times smaller.
+    /// A resync can also be required on a quiet window that has no reading,
+    /// while the totals still carry rounding from busier prices.
     ///
     /// Does not validate `price`; arithmetic follows IEEE 754. See
     /// [`checked_update`](Self::checked_update).
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use nexus_stats_core::{Accuracy, statistics::VarianceRatio};
+    ///
+    /// let mut vr = VarianceRatio::builder().horizon(2).window(64).build().unwrap();
+    /// match vr.update(100.0) {
+    ///     Accuracy::Sound => {}
+    ///     // Or note it and call `resync` when there is time.
+    ///     Accuracy::ResyncRequired { .. } => vr.resync(),
+    /// }
+    /// ```
     #[inline]
     pub fn update(&mut self, price: f64) -> Accuracy {
         let log_price = crate::math::ln(price);
@@ -502,29 +477,51 @@ impl VarianceRatio {
         Ok(self.update(price))
     }
 
-    /// The ratio and its test statistic over the window.
+    /// The ratio and its z statistic over the window.
     ///
     /// `None` until the window is full, while the price has not moved within
-    /// it, when the standard error cannot be estimated (no two returns
-    /// within `q - 1` periods of each other both moved), or while a
-    /// [`resync`](Self::resync) is due.
+    /// it, when no two returns within `q - 1` periods of each other both
+    /// moved (the z statistic has no standard error), or while a
+    /// [`resync`](Self::resync) is required.
     ///
-    /// It is computed by `update` and `resync`; this returns it.
+    /// The reading is worked out by `update`; this returns it.
     #[inline]
     #[must_use]
     pub fn estimate(&self) -> Option<VarianceRatioEstimate> {
         self.reading
     }
 
-    /// Recomputes the running totals from the stored prices, measured about
-    /// the window's current drift. That clears
-    /// [`Accuracy::ResyncRequired`] and brings the reading back, unless a
-    /// price that was not a number is still in the window.
+    /// Rebuilds the running totals from the stored prices, which clears
+    /// [`Accuracy::ResyncRequired`] and brings the reading back.
     ///
-    /// If a return far larger than the rest is still in the window, the
-    /// requirement comes back when it leaves: resync again then.
+    /// It stays required while a price that was not a number is in the
+    /// window. It comes back when a return far larger than the rest leaves
+    /// the window: resync again then.
     ///
-    /// For a slow path: it costs time proportional to the window times `q`.
+    /// Costs time proportional to the window times the horizon, so call it
+    /// off the hot path.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use nexus_stats_core::{Accuracy, statistics::VarianceRatio};
+    ///
+    /// let prices = [100.0, 101.0, 100.5, 102.0, 101.0, 103.0, 102.5, 104.0, 103.0, 105.0];
+    /// let mut vr = VarianceRatio::builder().horizon(2).window(8).build().unwrap();
+    /// for price in prices {
+    ///     vr.update(price);
+    /// }
+    /// // A price that is not a number: no reading from here on.
+    /// assert!(matches!(vr.update(f64::NAN), Accuracy::ResyncRequired { .. }));
+    /// assert_eq!(vr.estimate(), None);
+    ///
+    /// // Once it has left the window, a resync brings the reading back.
+    /// for price in prices {
+    ///     vr.update(price);
+    /// }
+    /// vr.resync();
+    /// assert!(vr.estimate().is_some());
+    /// ```
     pub fn resync(&mut self) {
         self.totals
             .rebuild(self.log_prices.as_slice(), self.horizon);
