@@ -46,7 +46,7 @@ For polynomial fits (degree 2+), see
 
 **Don't use regression when:**
 - You only need "is it going up or down?" → use [TrendAlert](trend-alert.md) (cheaper)
-- You need smoothing, not fitting → use [EMA](ema.md)
+- You need smoothing, not fitting → use EMA
 - You need change detection → use [CUSUM](cusum.md)
 
 ## How It Works

@@ -57,8 +57,8 @@ any slower would lag unnecessarily.
 - You need variable-dt stability (game loops, irregular updates)
 
 **Don't use Spring when:**
-- You just need simple signal smoothing → [EMA](ema.md)
-- You need statistics (variance, etc.) → [Welford](welford.md)
+- You just need simple signal smoothing → EMA
+- You need statistics (variance, etc.) → `Welford`
 - The target is the signal itself, not a separate goal
 
 ## Configuration

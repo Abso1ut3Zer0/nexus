@@ -18,7 +18,6 @@ All types follow the ecosystem conventions: O(1) per update, fixed memory, no al
 | [KAMA](kama.md) | `Kama` | Trending markets you need to follow aggressively, ranging markets you need to smooth heavily. |
 | [Kalman1d](kalman1d.md) | `Kalman1d` | You have an observation-noise model and want optimal position + velocity estimates. |
 | [Spring](spring.md) | `Spring` | UI / animation / chase targets without overshoot. |
-| [HuberEMA](huber-ema.md) | `HuberEma` | EMA but with per-step bounded influence — robust to outliers without throwing data away. |
 | [Hampel](hampel.md) | `Hampel` | Three-zone outlier filter — pass, Winsorize, or reject based on MAD distance. |
 | [WindowedMedian](windowed-median.md) | `WindowedMedian<f64>` / `WindowedMedian<i64>` | Robust median over a fixed-size sliding window. |
 

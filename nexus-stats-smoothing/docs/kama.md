@@ -91,6 +91,6 @@ Defaults `(10, 2, 30)` are Kaufman's classic. Adjust:
 
 ## Cross-references
 
-- [EMA](../../nexus-stats-core/docs/smoothing.md#ema) — fixed alpha.
+- EMA — fixed alpha.
 - [Holt](holt.md) — trend-aware, no regime adaptation.
 - [Kalman1d](kalman1d.md) — formal state estimation with noise model.

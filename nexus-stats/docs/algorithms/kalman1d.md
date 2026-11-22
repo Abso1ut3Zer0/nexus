@@ -44,8 +44,8 @@ it's reactive (high gain). Once it accumulates evidence, it stabilizes
 - You can characterize process noise and measurement noise
 
 **Use something simpler when:**
-- Fixed smoothing is sufficient → [EMA](ema.md)
-- You don't need velocity → [EMA](ema.md) or [KAMA](kama.md)
+- Fixed smoothing is sufficient → EMA
+- You don't need velocity → EMA or [KAMA](kama.md)
 - You know the signal is always trending → [Holt](holt.md) is simpler
 
 ## Timing Assumption

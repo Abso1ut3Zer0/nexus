@@ -43,7 +43,7 @@ covariance shrinks — the filter becomes more confident.
 **Don't use multivariate Kalman when:**
 - You only need to track one quantity → use [Kalman1D](kalman1d.md)
 - You need to track more than 3 states → consider RLS or an external Kalman library
-- You don't need uncertainty → use [EMA](ema.md) or [Holt](holt.md)
+- You don't need uncertainty → use EMA or [Holt](holt.md)
 
 ## How It Works
 

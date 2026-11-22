@@ -6,11 +6,11 @@ Start with your problem. Follow the tree to find the right primitive.
 
 **How noisy? What matters more — responsiveness or stability?**
 
-- Simple smoothing, good defaults → [**EMA**](../algorithms/ema.md)
+- Simple smoothing, good defaults → **EMA**
   - `Ema` is `f64`; cast integer samples at the call site (see [Integer vs Float](integer-vs-float.md))
 - Need to react fast when trending, slow when noisy → [**KAMA**](../algorithms/kama.md)
   - Adapts its smoothing factor based on signal efficiency ratio
-- Need to increase fast but decrease slow (or vice versa) → [**AsymmetricEMA**](../algorithms/asym-ema.md)
+- Need to increase fast but decrease slow (or vice versa) → **AsymmetricEMA**
   - Different alpha for each direction. TCP RTT uses this pattern.
 - Need to track a moving target without overshoot → [**CriticallyDampedSpring**](../algorithms/spring.md)
   - Better than EMA when chasing a target — has velocity, anticipates
@@ -75,7 +75,7 @@ type with timestamps, or `PollSaturation`, which is weighted per message.
   - From poll outcomes alone, no timestamps: how many messages waited behind this thread, for how long at most.
 - Messages carry an enqueue stamp? → [**SojournSaturation**](../algorithms/sojourn-saturation.md)
   - Exact per-message wait summarized per period: over-budget count, floor, worst, mean, standing queue.
-- Is a resource running hot? → smooth the busy fraction with [**EMA**](../algorithms/ema.md) and compare it to your threshold. For a consumer thread's own saturation, PollSaturation / SojournSaturation above.
+- Is a resource running hot? → smooth the busy fraction with **EMA** and compare it to your threshold. For a consumer thread's own saturation, PollSaturation / SojournSaturation above.
 - Is the error rate too high? → [**ErrorRate**](../algorithms/error-rate.md)
   - EMA of success/failure outcomes. Supports weighted severity.
 - What's the worst since I last checked? → [**MaxGauge**](../algorithms/max-gauge.md)
@@ -87,15 +87,15 @@ type with timestamps, or `PollSaturation`, which is weighted per message.
 
 ## "I want to track statistics"
 
-- Running mean + variance + std dev → [**Welford**](../algorithms/welford.md)
+- Running mean + variance + std dev → **`Welford`**
   - Numerically stable. Supports parallel merge (Chan's algorithm).
-- Skewness + kurtosis (distribution shape) → [**Moments**](../algorithms/moments.md)
+- Skewness + kurtosis (distribution shape) → **Moments**
   - Extends Welford to 3rd/4th moments. Fat tail and asymmetry detection.
-- Exponentially weighted variance (recent volatility) → [**EwmVar**](../algorithms/ewm-var.md)
+- Exponentially weighted variance (recent volatility) → **EwmVar**
   - More responsive than Welford. RiskMetrics pattern.
-- Are two signals correlated? → [**Covariance**](../algorithms/covariance.md)
+- Are two signals correlated? → **Covariance**
   - Online Pearson correlation. Supports merge.
-- Average of rates/throughputs → [**HarmonicMean**](../algorithms/harmonic-mean.md)
+- Average of rates/throughputs → **HarmonicMean**
   - Arithmetic mean of rates is wrong. Harmonic mean is correct.
 - Signal variability / jitter → [**Jitter**](../algorithms/jitter.md)
   - EMA of consecutive absolute differences. `jitter_ratio()` for context.

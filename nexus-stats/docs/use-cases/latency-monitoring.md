@@ -150,8 +150,7 @@ match gate.update(latency_us) {
 
 | Primitive | Role |
 |-----------|------|
-| [EMA](../algorithms/ema.md) | Smooth display value |
-| [Welford](../algorithms/welford.md) | Running mean/variance/std_dev |
+| `Welford` | Running mean/variance/std_dev |
 | [PeakHoldDecay](../algorithms/peak-hold.md) | Worst recent spike envelope |
 | [CUSUM](../algorithms/cusum.md) | Shift detection (up/down) |
 | [TrendAlert](../algorithms/trend-alert.md) | Trend direction (rising/stable/falling) |

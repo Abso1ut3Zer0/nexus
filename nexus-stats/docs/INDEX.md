@@ -20,8 +20,6 @@ examples.
 - [AdaptiveThreshold](algorithms/adaptive-threshold.md) — Z-score anomaly detection
 
 ### Smoothing & Filtering
-- [EMA](algorithms/ema.md) — Exponential moving average
-- [AsymmetricEMA](algorithms/asym-ema.md) — Different smoothing for rising vs falling
 - [KAMA](algorithms/kama.md) — Kaufman adaptive moving average
 - [Kalman1D](algorithms/kalman1d.md) — 1D Kalman filter with velocity
 - [Holt](algorithms/holt.md) — Double exponential smoothing with trend
@@ -30,11 +28,6 @@ examples.
 - [WindowedMedian](algorithms/windowed-median.md) — Robust median filter
 
 ### Statistics
-- [Welford](algorithms/welford.md) — Online mean, variance, standard deviation
-- [Moments](algorithms/moments.md) — Online skewness & kurtosis (Pebay, 2008)
-- [EwmVar](algorithms/ewm-var.md) — Exponentially weighted variance
-- [Covariance](algorithms/covariance.md) — Online covariance and Pearson correlation
-- [HarmonicMean](algorithms/harmonic-mean.md) — Correct average for rates
 
 ### Signal Analysis
 - [Autocorrelation](algorithms/autocorrelation.md) — Self-correlation at fixed lag (trending vs reverting)

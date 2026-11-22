@@ -53,7 +53,7 @@ internally.
 - You expect scaling laws → `PowerRegression`
 
 **Don't use polynomial regression when:**
-- You need windowed statistics → use [Welford](welford.md) or [Moments](moments.md)
+- You need windowed statistics → use `Welford` or Moments
 - You need change detection → use [CUSUM](cusum.md) or [TrendAlert](trend-alert.md)
 - You're fitting degree > 5 with large x values → numerical instability
 

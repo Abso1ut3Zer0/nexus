@@ -41,9 +41,9 @@ Both update in O(1) — just increment two parameters.
 - Events arrive in batches with varying observation windows
 
 **Don't use these when:**
-- You need smoothed values → use [EMA](ema.md) (cheaper, no Bayesian overhead)
+- You need smoothed values → use EMA (cheaper, no Bayesian overhead)
 - You need change detection → use [CUSUM](cusum.md)
-- Your data is continuous, not count-based → use [Welford](welford.md)
+- Your data is continuous, not count-based → use `Welford`
 
 ## How They Work
 

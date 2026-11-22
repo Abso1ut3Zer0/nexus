@@ -25,7 +25,7 @@ signal processing primitives.
 
 ## When to Use Them
 
-- FirstDiff + [EMA](ema.md) = smoothed rate of change
+- FirstDiff + EMA = smoothed rate of change
 - SecondDiff = inflection point detection (sign changes = curvature reversal)
 - FirstDiff + [LevelCrossing](level-crossing.md) = "rate exceeded threshold" detector
 

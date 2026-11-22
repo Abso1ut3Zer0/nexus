@@ -47,7 +47,7 @@ ER = direction / volatility                  (0 to 1)
 - You want one primitive that adapts to regime changes
 
 **Don't use KAMA when:**
-- Signal has consistent noise characteristics → [EMA](ema.md) is simpler
+- Signal has consistent noise characteristics → EMA is simpler
 - You need direction detection → use [TrendAlert](trend-alert.md) or [Holt](holt.md)
 - You need the absolute cheapest smoother → EMA at ~5 cycles vs KAMA at ~16
 

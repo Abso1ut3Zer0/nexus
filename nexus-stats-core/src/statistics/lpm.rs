@@ -1,4 +1,4 @@
-/// Lower Partial Moments — streaming downside risk.
+/// Lower partial moments: downside risk, one sample at a time.
 ///
 /// Measures deviations below a target threshold, raised to a
 /// configurable integer order:

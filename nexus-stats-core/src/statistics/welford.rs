@@ -1,16 +1,36 @@
 use crate::math::MulAdd;
 use crate::statistics::running_mean::step_mean;
 
-/// Welford — Online mean, variance, and standard deviation.
+/// Mean, variance and standard deviation of everything seen so far.
 ///
-/// Numerically stable single-pass computation using Welford's algorithm.
-/// No catastrophic cancellation. Supports merging partial results via
-/// Chan's algorithm for parallel aggregation.
+/// One pass and three numbers of state, without the loss of digits that
+/// subtracting two large sums causes: this is
+/// [Welford's online algorithm]. Two accumulators can be
+/// [merged](Self::merge), so results from separate threads or time ranges
+/// combine into the statistics of the whole.
 ///
-/// # Use Cases
-/// - Running statistics on latency, throughput, PnL
-/// - Z-score computation (combine with EMA for baseline)
-/// - Input to adaptive thresholds
+/// [`variance`](Self::variance) is the sample variance, with a divisor of
+/// `n - 1`; [`population_variance`](Self::population_variance) divides by
+/// `n`.
+///
+/// For statistics that follow recent samples and forget old ones, see
+/// [`EwmVar`](crate::statistics::EwmVar); for skewness and kurtosis,
+/// [`Moments`](crate::statistics::Moments).
+///
+/// [Welford's online algorithm]: https://en.wikipedia.org/wiki/Algorithms_for_calculating_variance#Welford's_online_algorithm
+///
+/// # Examples
+///
+/// ```
+/// use nexus_stats_core::statistics::Welford;
+///
+/// let mut latency = Welford::new();
+/// for micros in [120.0, 118.0, 125.0, 130.0, 119.0] {
+///     latency.update(micros);
+/// }
+/// assert!((latency.mean().unwrap() - 122.4).abs() < 1e-12);
+/// assert!((latency.variance().unwrap() - 25.3).abs() < 1e-12);
+/// ```
 #[derive(Debug, Clone)]
 pub struct Welford {
     count: u64,
@@ -120,7 +140,7 @@ impl Welford {
         self.count
     }
 
-    /// Whether enough data for variance/std_dev queries (>= 2 samples).
+    /// Whether there are the two samples a variance needs.
     #[must_use]
     pub fn is_primed(&self) -> bool {
         self.count >= 2
@@ -137,7 +157,21 @@ impl Welford {
         Some(self.mean)
     }
 
-    /// Sample variance (N-1 denominator), or `None` if < 2 samples.
+    /// Sample variance (a divisor of `n - 1`), or `None` with fewer than two
+    /// samples.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use nexus_stats_core::statistics::Welford;
+    ///
+    /// let mut w = Welford::new();
+    /// w.update(2.0);
+    /// assert_eq!(w.variance(), None);
+    /// w.update(4.0);
+    /// assert_eq!(w.variance(), Some(2.0));
+    /// assert_eq!(w.population_variance(), Some(1.0));
+    /// ```
     #[inline]
     #[must_use]
     pub fn variance(&self) -> Option<f64> {
@@ -148,7 +182,7 @@ impl Welford {
         Some(self.m2 / (self.count - 1) as f64)
     }
 
-    /// Population variance (N denominator), or `None` if empty.
+    /// Population variance (a divisor of `n`), or `None` if empty.
     #[must_use]
     pub fn population_variance(&self) -> Option<f64> {
         if self.count == 0 {
@@ -169,7 +203,7 @@ impl Welford {
         self.m2
     }
 
-    /// Sample standard deviation, or `None` if < 2 samples.
+    /// Sample standard deviation, or `None` with fewer than two samples.
     #[inline]
     #[must_use]
     #[cfg(any(feature = "std", feature = "libm"))]
@@ -177,10 +211,30 @@ impl Welford {
         self.variance().map(crate::math::sqrt)
     }
 
-    /// Merges another accumulator into this one (Chan's algorithm).
+    /// Merges another accumulator into this one, as if this one had also
+    /// seen its samples. `other` is unchanged.
     ///
-    /// After merging, `self` contains the statistics of the combined
-    /// dataset. The other accumulator is unchanged.
+    /// This is the [parallel algorithm] of Chan, Golub and LeVeque.
+    ///
+    /// [parallel algorithm]: https://en.wikipedia.org/wiki/Algorithms_for_calculating_variance#Parallel_algorithm
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use nexus_stats_core::statistics::Welford;
+    ///
+    /// let (mut first, mut second) = (Welford::new(), Welford::new());
+    /// for x in [1.0, 2.0, 3.0] {
+    ///     first.update(x);
+    /// }
+    /// for x in [4.0, 5.0] {
+    ///     second.update(x);
+    /// }
+    /// first.merge(&second);
+    /// assert_eq!(first.count(), 5);
+    /// assert_eq!(first.mean(), Some(3.0));
+    /// assert_eq!(first.variance(), Some(2.5));
+    /// ```
     pub fn merge(&mut self, other: &Self) {
         if other.count == 0 {
             return;

@@ -34,7 +34,7 @@ Spikes are slew-limited to a ramp. Gradual changes pass through unchanged.
 
 - Output conditioning: prevent actuator damage from sudden jumps
 - Anti-spike: limit how fast a control signal can change
-- Different from [EMA](ema.md) (smooths everything) and [MultiGate](multi-gate.md)
+- Different from EMA (smooths everything) and [MultiGate](multi-gate.md)
   (detects but doesn't correct)
 
 ## Configuration

@@ -101,7 +101,6 @@ if is_confirmed_down {
 |-----------|------|
 | [ErrorRate](../algorithms/error-rate.md) | SLO / error budget tracking |
 | [BoolWindow](../algorithms/bool-window.md) | Exact failure rate over last N |
-| [EMA](../algorithms/ema.md) | Utilization: smoothed busy fraction (USE method) |
 | [CoDel](../algorithms/codel.md) | Saturation / queueing (USE method) |
 | [PollSaturation](../algorithms/poll-saturation.md) | Saturation of a consumer thread from poll outcomes (USE method) |
 | [CUSUM](../algorithms/cusum.md) | Latency degradation detection |

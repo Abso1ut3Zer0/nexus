@@ -1,25 +1,19 @@
 use crate::math::MulAdd;
 use crate::statistics::running_mean::step_mean;
 
-/// Online skewness and kurtosis via Pébay's higher-moment extension
-/// of Welford's algorithm (Pébay, 2008).
+/// Mean, variance, skewness and kurtosis of everything seen so far.
 ///
-/// Numerically stable single-pass computation of mean, variance,
-/// skewness, and excess kurtosis. Supports merging partial results
-/// via Pébay's parallel aggregation formulas.
+/// [`Welford`](crate::statistics::Welford) carried to the third and fourth
+/// moments, in one pass and five numbers of state (Pébay, 2008; see
+/// [higher-order statistics]). Two accumulators can be
+/// [merged](Self::merge).
 ///
-/// # Use Cases
-/// - Distribution shape monitoring (is latency becoming skewed?)
-/// - Fat-tail detection (kurtosis spike → regime change)
-/// - Quality control (symmetric vs asymmetric error distributions)
+/// [`shape`](Self::shape) gives the population skewness and excess
+/// kurtosis, with no small-sample correction. Past a hundred samples or so
+/// the corrected and uncorrected forms agree closely; for inference on a
+/// few dozen samples, use a batch estimator that corrects.
 ///
-/// Computes population (not sample-corrected) skewness and kurtosis.
-/// For streaming use cases with n > 100, population and sample estimators
-/// are indistinguishable. For small-sample inference (n < 30), use a
-/// batch estimator with Bessel's correction instead.
-///
-/// # Complexity
-/// - O(1) per update, 40 bytes state, zero allocation.
+/// [higher-order statistics]: https://en.wikipedia.org/wiki/Algorithms_for_calculating_variance#Higher-order_statistics
 ///
 /// # Examples
 ///
@@ -263,10 +257,26 @@ impl Moments {
         self.count >= 4
     }
 
-    /// Merges another accumulator into this one (Pébay's parallel algorithm).
+    /// Merges another accumulator into this one, as if this one had also
+    /// seen its samples. `other` is unchanged.
     ///
-    /// After merging, `self` contains the statistics of the combined
-    /// dataset. The other accumulator is unchanged.
+    /// # Examples
+    ///
+    /// ```
+    /// use nexus_stats_core::statistics::Moments;
+    ///
+    /// let (mut first, mut second) = (Moments::new(), Moments::new());
+    /// for x in [1.0, 2.0, 3.0] {
+    ///     first.update(x);
+    /// }
+    /// for x in [4.0, 5.0] {
+    ///     second.update(x);
+    /// }
+    /// first.merge(&second);
+    /// assert_eq!(first.count(), 5);
+    /// assert_eq!(first.mean(), Some(3.0));
+    /// assert_eq!(first.shape().unwrap().skewness, 0.0);
+    /// ```
     pub fn merge(&mut self, other: &Self) {
         if other.count == 0 {
             return;

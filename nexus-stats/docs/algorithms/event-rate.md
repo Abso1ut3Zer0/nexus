@@ -28,5 +28,5 @@ shift-based smoothing), rate = 1.0 / interval. Same pattern as `Liveness`.
 ## When to Use Something Else
 
 - Need to detect silence → [Liveness](liveness.md) (adds deadline check)
-- Need throughput in bytes/sec → compute bytes/interval and use [EMA](ema.md)
+- Need throughput in bytes/sec → compute bytes/interval and use EMA
 - Need exact count in window → use a sliding window counter

@@ -89,4 +89,3 @@ Under Gaussian noise, `MAD * 1.4826 ≈ stddev`. The default `mad_scale` is 1.48
 ## Cross-references
 
 - [WindowedMedian](windowed-median.md) — just the median, no threshold logic.
-- [HuberEMA](huber-ema.md) — bounded-influence smoothing without window storage.

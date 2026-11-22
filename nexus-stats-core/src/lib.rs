@@ -73,11 +73,8 @@ pub mod control;
 pub mod detection;
 /// Monitoring and health tracking.
 pub mod monitoring;
-/// Online feature normalization.
 pub mod normalization;
-/// Smoothing and filtering primitives.
 pub mod smoothing;
-/// Core streaming statistics.
 pub mod statistics;
 
 /// The doc pages under `docs/` whose examples are compiled and run as

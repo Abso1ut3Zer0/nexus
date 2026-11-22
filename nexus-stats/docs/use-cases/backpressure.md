@@ -108,9 +108,7 @@ if let Some(smoothed) = pub_latency.update(pub_latency_ns as f64).unwrap() {
 | Primitive | Role |
 |-----------|------|
 | [CoDel](../algorithms/codel.md) | Standing queue detection (CoDel) |
-| [EMA](../algorithms/ema.md) | Resource utilization, smoothed and compared to a threshold |
 | [TrendAlert](../algorithms/trend-alert.md) | "Getting worse" detection |
-| [AsymmetricEMA](../algorithms/asym-ema.md) | Fast-rise/slow-fall tracking |
 | [CUSUM](../algorithms/cusum.md) | Persistent processing time shifts |
 
 ## Tips

@@ -62,5 +62,5 @@ If `sample_count` is much bigger than ~1024, consider whether an EW estimator gi
 ## Cross-references
 
 - [`ErrorRate`](../../nexus-stats-core/docs/monitoring.md#errorrate) — EW version with alert thresholds.
-- [`HitRate`](../../nexus-stats-core/docs/statistics.md#hitrate-directional-accuracy) — directional accuracy of a signal (sign of prediction against outcome).
+- `HitRate` — directional accuracy of a signal (sign of prediction against outcome).
 - [`BetaBinomial`](../../nexus-stats-regression/docs/estimation.md#betabinomial--bayesian-rate-estimation-for-successes) — Bayesian rate with credible intervals.

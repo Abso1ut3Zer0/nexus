@@ -41,7 +41,7 @@ F64 only — log-likelihood accumulation requires high precision.
 
 **Don't use SPRT when:**
 - You need continuous monitoring without a decision → use [CUSUM](cusum.md)
-- You're comparing distributions, not point hypotheses → use [Moments](moments.md)
+- You're comparing distributions, not point hypotheses → use Moments
 - You need an estimate, not a decision → use [BetaBinomial](bayesian.md)
 
 ## How It Works

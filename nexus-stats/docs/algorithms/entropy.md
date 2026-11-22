@@ -36,7 +36,7 @@ observations: `-ln(p_i)`. Rare events have high surprise.
 - Your data is naturally categorical or can be discretized
 
 **Don't use Entropy when:**
-- You need continuous distribution analysis → use [Moments](moments.md)
+- You need continuous distribution analysis → use Moments
 - You need directed information flow → use [TransferEntropy](transfer-entropy.md)
 - You need correlation → use [Autocorrelation](autocorrelation.md) or [CrossCorrelation](cross-correlation.md)
 

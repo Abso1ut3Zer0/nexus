@@ -52,7 +52,7 @@ Three choices, in order of increasing aggressiveness:
 
 A common pattern: `WindowedMedian` → `EMA` to get the best of both.
 
-See [huber-ema.md](huber-ema.md), [hampel.md](hampel.md), [windowed-median.md](windowed-median.md).
+See huber-ema.md, [hampel.md](hampel.md), [windowed-median.md](windowed-median.md).
 
 ## Do you only want to update the smoother when some condition holds?
 

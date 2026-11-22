@@ -67,7 +67,7 @@ peak_lag()     = argmax_k |cross_m[k]|
 ```
 
 Lag 0 uses the exact Welford co-moment formula (same as
-[Covariance](covariance.md)). Lags > 0 use an approximation with
+Covariance). Lags > 0 use an approximation with
 the current running mean — O(1/n) error, negligible for streaming.
 
 ## Configuration

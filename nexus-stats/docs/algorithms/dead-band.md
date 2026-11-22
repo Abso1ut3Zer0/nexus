@@ -59,7 +59,7 @@ processing by suppressing small, irrelevant fluctuations.
 
 **Don't use DeadBand when:**
 - Every change matters (order book updates, price ticks)
-- You want smoothing, not suppression → use [EMA](ema.md)
+- You want smoothing, not suppression → use EMA
 
 ## Configuration
 

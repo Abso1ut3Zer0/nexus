@@ -288,5 +288,5 @@ for obs in observations {
 
 ## Cross-references
 
-- [`nexus-stats-core::statistics::HalfLife`](../../nexus-stats-core/docs/statistics.md#halflife--mean-reversion-half-life) — mean-reversion half-life for a single series.
-- [`Covariance`](../../nexus-stats-core/docs/statistics.md#covariance--online-covariance-and-correlation) — lag-0 linear relationship.
+- `nexus-stats-core::statistics::HalfLife` — mean-reversion half-life for a single series.
+- `Covariance` — lag-0 linear relationship.

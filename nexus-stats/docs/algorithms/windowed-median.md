@@ -43,8 +43,8 @@ Provides:
 ## When to Use Something Else
 
 - O(1) is required → [RobustZScore](robust-z-score.md) (O(1) but less robust)
-- Just need smoothing → [EMA](ema.md) (5 cycles vs 136)
-- Just need all-time stats → [Welford](welford.md)
+- Just need smoothing → EMA (5 cycles vs 136)
+- Just need all-time stats → `Welford`
 
 ## Configuration
 

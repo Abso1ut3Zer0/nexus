@@ -63,7 +63,7 @@ low. Noise within the dead zone causes no state changes.
 
 **Don't use Hysteresis when:**
 - You want multi-level classification → use [MultiGate](multi-gate.md)
-- You want a smoothed continuous signal → use [EMA](ema.md)
+- You want a smoothed continuous signal → use EMA
 - You want change detection, not binary classification → use [CUSUM](cusum.md)
 
 ## Configuration
