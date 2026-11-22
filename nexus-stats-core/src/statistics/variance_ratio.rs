@@ -22,61 +22,68 @@ use crate::storage::Ring;
 /// The sums behind the reading are running totals: `update` adds the
 /// newest terms and subtracts the oldest, and both it and
 /// [`estimate`](Self::estimate) cost time proportional to `q`, whatever the
-/// window. Each update leaves a little rounding error in the totals. It
-/// stays negligible in steady conditions (a relative error near `1e-14` in
-/// the ratio after 100 million updates) and grows after bursts of very
-/// large moves (about `1e-12`, and `1e-7` in the z statistic, with a
-/// hundredfold volatility burst every million updates).
-/// [`resync`](Self::resync) removes it, by recomputing the totals from the
-/// stored prices. Call it when there is time to spare: once a session, or
-/// after a violent move.
+/// window. That keeps a reading cheap when many instruments are read on
+/// the same bar.
 ///
-/// # Deciding
+/// Three things keep the totals honest over a long run:
 ///
-/// [`estimate`](Self::estimate) returns the two together. The ratio says
-/// which way and how far; the z statistic says whether that distance could
-/// be chance:
+/// - Each total keeps the digits a plain sum would drop, so a price far
+///   off the market passes through and leaves nothing behind.
+/// - A window in which the price has not moved reads `None`, by a test
+///   that allows for rounding.
+/// - The totals are measured about the window's drift as of the last
+///   [`resync`](Self::resync), so a strong trend is not lost in the
+///   subtraction.
 ///
-/// - `|z|` below about 2: consistent with a random walk, whatever the
-///   ratio. On a short window a ratio of 0.8 or 1.2 is ordinary.
-/// - `z` above about 2: trending. Below about -2: mean-reverting. Under a
-///   random walk `z` is standard normal, so 1.96 is the usual 5% level and
-///   2.58 the 1% level.
-/// - Read on every bar, a 5% level raises a false signal on about one bar
-///   in twenty. Use a higher level, or require it to hold for several
-///   reads, when a signal is costly to act on.
-///
-/// A longer window makes `z` more sensitive and slower to notice a change;
-/// a larger `q` looks for memory over a longer horizon.
-///
-/// # Examples
-///
-/// ```
-/// use nexus_stats_core::statistics::VarianceRatio;
-///
-/// let mut vr = VarianceRatio::builder().q(2).window(64).build().unwrap();
-/// // A price that bounces between two levels reverts every step.
-/// for i in 0..100 {
-///     vr.update(if i % 2 == 0 { 100.0 } else { 101.0 });
-/// }
-/// let estimate = vr.estimate().unwrap();
-/// assert!(estimate.ratio < 0.1);
-/// assert!(estimate.z_statistic < -3.0);
-/// ```
+/// What remains is slow: rounding in the compensation itself, and the
+/// drift moving away from where it was at the last `resync`.
+/// [`resync`](Self::resync) recomputes everything from the stored prices.
+/// Call it when there is time to spare (once a session), and after the
+/// window first fills if the price trends far more than it wanders.
 #[derive(Debug, Clone)]
 pub struct VarianceRatio {
     q: usize,
     /// The last `window + 1` log prices.
     log_prices: Ring<f64>,
+    /// The return every total is measured about: zero, then the window's
+    /// drift as of the last `resync`.
+    pivot: f64,
     /// Sum of squared one-period returns in the window.
-    one_period_squares: f64,
+    one_period_squares: Total,
     /// Sum, and sum of squares, of the overlapping `q`-period returns.
-    long_sum: f64,
-    long_squares: f64,
+    long_sum: Total,
+    long_squares: Total,
     /// Totals over pairs of one-period returns `lag` apart, for lag 1 to
     /// `q - 1`.
     lags: Box<[LagTotals]>,
     count: u64,
+}
+
+/// A running total that keeps the digits a plain sum drops.
+///
+/// A term far larger than the total pushes the total's low digits out, and
+/// subtracting the term later does not bring them back. `lost` holds them.
+#[derive(Debug, Clone, Copy, Default)]
+struct Total {
+    sum: f64,
+    lost: f64,
+}
+
+impl Total {
+    /// Adds `term`. The rounding error of the addition is recovered exactly
+    /// (Knuth's two-sum) and kept.
+    #[inline]
+    fn add(&mut self, term: f64) {
+        let sum = self.sum + term;
+        let term_as_added = sum - self.sum;
+        self.lost += (self.sum - (sum - term_as_added)) + (term - term_as_added);
+        self.sum = sum;
+    }
+
+    #[inline]
+    fn value(&self) -> f64 {
+        self.sum + self.lost
+    }
 }
 
 /// Running totals over the pairs `(a, b)` of one-period returns a fixed lag
@@ -84,15 +91,15 @@ pub struct VarianceRatio {
 #[derive(Debug, Clone, Copy, Default)]
 struct LagTotals {
     /// Sum of `a^2 * b^2`.
-    squares: f64,
+    squares: Total,
     /// Sum of `a^2 * b + a * b^2`.
-    mixed: f64,
+    mixed: Total,
     /// Sum of `a * b`.
-    products: f64,
+    products: Total,
     /// Sum of `a^2 + b^2`.
-    sum_of_squares: f64,
+    sum_of_squares: Total,
     /// Sum of `a + b`.
-    sum: f64,
+    sum: Total,
 }
 
 impl LagTotals {
@@ -100,23 +107,23 @@ impl LagTotals {
     #[inline]
     fn add(&mut self, a: f64, b: f64, weight: f64) {
         let (a_squared, b_squared, product) = (a * a, b * b, a * b);
-        self.squares = (weight * a_squared).fma(b_squared, self.squares);
-        self.mixed = (weight * product).fma(a + b, self.mixed);
-        self.products = weight.fma(product, self.products);
-        self.sum_of_squares = weight.fma(a_squared + b_squared, self.sum_of_squares);
-        self.sum = weight.fma(a + b, self.sum);
+        self.squares.add(weight * a_squared * b_squared);
+        self.mixed.add(weight * product * (a + b));
+        self.products.add(weight * product);
+        self.sum_of_squares.add(weight * (a_squared + b_squared));
+        self.sum.add(weight * (a + b));
     }
 
-    /// Sum of `(a - drift)^2 * (b - drift)^2` over `pairs` pairs, expanded
-    /// in powers of `drift`.
+    /// Sum of `(a - shift)^2 * (b - shift)^2` over `pairs` pairs, expanded
+    /// in powers of `shift`.
     // Written as the expansion reads; fused forms would hide it.
     #[allow(clippy::suboptimal_flops)]
-    fn squares_about(&self, drift: f64, pairs: f64) -> f64 {
-        let drift_squared = drift * drift;
-        self.squares - 2.0 * drift * self.mixed
-            + drift_squared * (self.sum_of_squares + 4.0 * self.products)
-            - 2.0 * drift_squared * drift * self.sum
-            + pairs * drift_squared * drift_squared
+    fn squares_about(&self, shift: f64, pairs: f64) -> f64 {
+        let shift_squared = shift * shift;
+        self.squares.value() - 2.0 * shift * self.mixed.value()
+            + shift_squared * (self.sum_of_squares.value() + 4.0 * self.products.value())
+            - 2.0 * shift_squared * shift * self.sum.value()
+            + pairs * shift_squared * shift_squared
     }
 }
 
@@ -219,20 +226,24 @@ impl VarianceRatio {
 
         let n = (self.log_prices.capacity() - 1) as f64;
         let q = self.q as f64;
-        // The drift per period, from the window's two ends.
+        // The drift per period, from the window's two ends, and how far it
+        // is from the return the totals are measured about.
         let drift = (newest - oldest) / n;
+        let shift = drift - self.pivot;
 
-        // Sums of squares about the drift, from the totals about zero.
-        let one_period = (-n * drift).fma(drift, self.one_period_squares);
-        if one_period <= 0.0 {
+        // Sums of squares about the drift, from the totals about the pivot.
+        let one_period = (-n * shift).fma(shift, self.one_period_squares.value());
+        // SciPy's zero-variance test at the scale of the values subtracted,
+        // which are log prices: a variance this small is rounding.
+        if one_period / (n - 1.0) <= crate::math::rounding_variance(newest) {
             return None;
         }
         let long_terms = n - q + 1.0;
-        let expected = q * drift;
+        let expected = q * shift;
         // sum((D - e)^2) = sum(D^2) - 2e * sum(D) + terms * e^2
         let long = (long_terms * expected).fma(
             expected,
-            (-2.0 * expected).fma(self.long_sum, self.long_squares),
+            (-2.0 * expected).fma(self.long_sum.value(), self.long_squares.value()),
         );
 
         // Lo and MacKinlay's divisors: n - 1, and m for the overlapping sum.
@@ -245,7 +256,7 @@ impl VarianceRatio {
         let mut variance = 0.0;
         for (index, totals) in self.lags.iter().enumerate() {
             let lag = (index + 1) as f64;
-            let together = totals.squares_about(drift, n - lag);
+            let together = totals.squares_about(shift, n - lag);
             let weight = 2.0 * (1.0 - lag / q);
             variance += weight * weight * (n * together / one_period_squared);
         }
@@ -259,31 +270,44 @@ impl VarianceRatio {
         })
     }
 
-    /// Removes the rounding error accumulated in the running totals, by
-    /// recomputing them from the stored prices.
+    /// Recomputes the running totals from the stored prices, measured about
+    /// the window's current drift. Removes what rounding has accumulated.
     ///
     /// The reading does not need it to stay usable; see
-    /// [Cost and rounding](Self#cost-and-rounding) for how little builds up.
-    /// It is for a slow path. Costs time proportional to the window times
-    /// `q`.
+    /// [Cost and rounding](Self#cost-and-rounding). It is for a slow path:
+    /// it costs time proportional to the window times `q`.
     pub fn resync(&mut self) {
         self.clear_totals();
 
         let prices = &self.log_prices;
-        let returns_at = |lag: usize| {
+        // Measure about the drift of what is held, so the removal of the
+        // drift at read time subtracts little.
+        self.pivot = match (prices.oldest(), prices.newest()) {
+            (Some(&oldest), Some(&newest)) if prices.len() > 1 => {
+                (newest - oldest) / (prices.len() - 1) as f64
+            }
+            _ => 0.0,
+        };
+        // Returns over `lag` periods, less what the pivot expects of them.
+        let (pivot, long_pivot) = (self.pivot, self.q as f64 * self.pivot);
+        let returns_at = |lag: usize, expected: f64| {
             prices
                 .iter()
                 .zip(prices.iter().skip(lag))
-                .map(|(from, to)| to - from)
+                .map(move |(from, to)| to - from - expected)
         };
 
-        self.one_period_squares = returns_at(1).map(|r| r * r).sum();
+        for one_period in returns_at(1, pivot) {
+            self.one_period_squares.add(one_period * one_period);
+        }
         for (index, totals) in self.lags.iter_mut().enumerate() {
-            let pairs = returns_at(1).zip(returns_at(1).skip(index + 1));
+            let pairs = returns_at(1, pivot).zip(returns_at(1, pivot).skip(index + 1));
             pairs.for_each(|(earlier, later)| totals.add(earlier, later, 1.0));
         }
-        self.long_sum = returns_at(self.q).sum();
-        self.long_squares = returns_at(self.q).map(|r| r * r).sum();
+        for long in returns_at(self.q, long_pivot) {
+            self.long_sum.add(long);
+            self.long_squares.add(long * long);
+        }
     }
 
     /// The return horizon `q`.
@@ -318,9 +342,10 @@ impl VarianceRatio {
     }
 
     fn clear_totals(&mut self) {
-        self.one_period_squares = 0.0;
-        self.long_sum = 0.0;
-        self.long_squares = 0.0;
+        self.pivot = 0.0;
+        self.one_period_squares = Total::default();
+        self.long_sum = Total::default();
+        self.long_squares = Total::default();
         self.lags.fill(LagTotals::default());
     }
 
@@ -331,21 +356,22 @@ impl VarianceRatio {
         let (Some(&newest), Some(&before)) = (newest_first.next(), newest_first.next()) else {
             return;
         };
-        let newest_return = newest - before;
-        self.one_period_squares =
-            (weight * newest_return).fma(newest_return, self.one_period_squares);
+        let newest_return = newest - before - self.pivot;
+        self.one_period_squares
+            .add(weight * newest_return * newest_return);
 
         // Each earlier return, paired with the newest at its lag.
         let mut later_price = before;
         for (totals, &price) in self.lags.iter_mut().zip(newest_first) {
-            totals.add(later_price - price, newest_return, weight);
+            totals.add(later_price - price - self.pivot, newest_return, weight);
             later_price = price;
         }
 
         if let Some(&q_back) = self.log_prices.iter().rev().nth(self.q) {
-            let long_return = newest - q_back;
-            self.long_sum = weight.fma(long_return, self.long_sum);
-            self.long_squares = (weight * long_return).fma(long_return, self.long_squares);
+            let long_pivot = self.q as f64 * self.pivot;
+            let long_return = newest - q_back - long_pivot;
+            self.long_sum.add(weight * long_return);
+            self.long_squares.add(weight * long_return * long_return);
         }
     }
 
@@ -357,21 +383,22 @@ impl VarianceRatio {
         let (Some(&oldest), Some(&after)) = (oldest_first.next(), oldest_first.next()) else {
             return;
         };
-        let oldest_return = after - oldest;
-        self.one_period_squares =
-            (weight * oldest_return).fma(oldest_return, self.one_period_squares);
+        let oldest_return = after - oldest - self.pivot;
+        self.one_period_squares
+            .add(weight * oldest_return * oldest_return);
 
         // The oldest return, paired with each later one at its lag.
         let mut earlier_price = after;
         for (totals, &price) in self.lags.iter_mut().zip(oldest_first) {
-            totals.add(oldest_return, price - earlier_price, weight);
+            totals.add(oldest_return, price - earlier_price - self.pivot, weight);
             earlier_price = price;
         }
 
         if let Some(&q_on) = self.log_prices.iter().nth(self.q) {
-            let long_return = q_on - oldest;
-            self.long_sum = weight.fma(long_return, self.long_sum);
-            self.long_squares = (weight * long_return).fma(long_return, self.long_squares);
+            let long_pivot = self.q as f64 * self.pivot;
+            let long_return = q_on - oldest - long_pivot;
+            self.long_sum.add(weight * long_return);
+            self.long_squares.add(weight * long_return * long_return);
         }
     }
 }
@@ -411,9 +438,10 @@ impl VarianceRatioBuilder {
         Ok(VarianceRatio {
             q,
             log_prices: Ring::new(window + 1, 0.0)?,
-            one_period_squares: 0.0,
-            long_sum: 0.0,
-            long_squares: 0.0,
+            pivot: 0.0,
+            one_period_squares: Total::default(),
+            long_sum: Total::default(),
+            long_squares: Total::default(),
             lags: vec![LagTotals::default(); q - 1].into_boxed_slice(),
             count: 0,
         })
@@ -611,6 +639,205 @@ mod tests {
         // And updating carries on correctly from resynced totals.
         vr.update(101.0);
         assert!(vr.estimate().is_some());
+    }
+
+    /// The estimate from the stored prices alone: every deviation formed
+    /// directly, nothing expanded and nothing carried over.
+    fn exact(prices: &[f64], q: usize) -> Option<VarianceRatioEstimate> {
+        let x: Vec<f64> = prices.iter().map(|p| p.ln()).collect();
+        let n = x.len() - 1;
+        let mu = (x[n] - x[0]) / n as f64;
+        let z2: Vec<f64> = (1..=n).map(|k| (x[k] - x[k - 1] - mu).powi(2)).collect();
+        let one: f64 = z2.iter().sum();
+        if one <= 0.0 {
+            return None;
+        }
+        let long: f64 = (q..=n)
+            .map(|k| (x[k] - x[k - q] - q as f64 * mu).powi(2))
+            .sum();
+        let m = q as f64 * (n - q + 1) as f64 * (1.0 - q as f64 / n as f64);
+        let ratio = (long / m) / (one / (n - 1) as f64);
+        let mut variance = 0.0;
+        for lag in 1..q {
+            let together: f64 = (lag..n).map(|t| z2[t] * z2[t - lag]).sum();
+            let weight = 2.0 * (1.0 - lag as f64 / q as f64);
+            variance += weight * weight * n as f64 * together / (one * one);
+        }
+        (variance > 0.0).then(|| VarianceRatioEstimate {
+            ratio,
+            z_statistic: (n as f64).sqrt() * (ratio - 1.0) / variance.sqrt(),
+        })
+    }
+
+    struct Noise(u64);
+    impl Noise {
+        /// Uniform on [-1, 1].
+        fn next(&mut self) -> f64 {
+            self.0 ^= self.0 << 13;
+            self.0 ^= self.0 >> 7;
+            self.0 ^= self.0 << 17;
+            2.0 * ((self.0 >> 11) as f64 / (1u64 << 53) as f64) - 1.0
+        }
+    }
+
+    /// Feeds `prices` and, at every full window, compares the running
+    /// estimate with `exact` on that window.
+    fn assert_tracks_exact(prices: &[f64], q: usize, window: usize, ratio_tol: f64, z_tol: f64) {
+        let mut vr = VarianceRatio::builder()
+            .q(q)
+            .window(window)
+            .build()
+            .unwrap();
+        for (i, &p) in prices.iter().enumerate() {
+            vr.update(p);
+            if i < window {
+                continue;
+            }
+            let want = exact(&prices[i - window..=i], q);
+            let got = vr.estimate();
+            match (got, want) {
+                (Some(got), Some(want)) => assert!(
+                    (got.ratio - want.ratio).abs() <= ratio_tol * want.ratio.abs()
+                        && (got.z_statistic - want.z_statistic).abs()
+                            <= z_tol * want.z_statistic.abs().max(1.0),
+                    "price {i}: {got:?} vs {want:?}"
+                ),
+                (None, None) => {}
+                (got, want) => panic!("price {i}: {got:?} vs {want:?}"),
+            }
+        }
+    }
+
+    #[test]
+    fn a_halt_after_activity_reads_none() {
+        // A walk, then the price held: once the window holds no move, there
+        // is no reading, whatever passed through the totals before.
+        for (seed, size, q, window) in (1..=40u64).flat_map(|seed| {
+            [(1e-2, 2, 64), (5e-2, 8, 150), (1e-3, 4, 64)].map(|(s, q, w)| (seed, s, q, w))
+        }) {
+            let mut noise = Noise(seed.wrapping_mul(0x9E37_79B9_7F4A_7C15));
+            let mut price = 100.0f64;
+            let mut prices: Vec<f64> = (0..2 * window)
+                .map(|_| {
+                    price *= (size * noise.next()).exp();
+                    price
+                })
+                .collect();
+            prices.extend(core::iter::repeat_n(price, 2 * window));
+
+            let mut vr = VarianceRatio::builder()
+                .q(q)
+                .window(window)
+                .build()
+                .unwrap();
+            for (i, &p) in prices.iter().enumerate() {
+                vr.update(p);
+                // The window is all flat from here on.
+                if i >= 3 * window {
+                    assert_eq!(
+                        vr.estimate(),
+                        None,
+                        "seed {seed} size {size} q {q} price {i}"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn one_bad_print_does_not_outlast_its_stay_in_the_window() {
+        // Quiet noise with a single print far off the market, then back.
+        for (print, q, window, noise_size) in [
+            (0.01, 4, 64, 1e-5),
+            (1e6, 4, 64, 1e-5),
+            (0.01, 4, 500, 1e-4),
+            (0.9, 8, 64, 1e-5),
+        ] {
+            let mut noise = Noise(0x9E37_79B9_7F4A_7C15);
+            let mut price = 100.0f64;
+            let mut prices: Vec<f64> = Vec::new();
+            for i in 0..6 * window {
+                price *= (noise_size * noise.next()).exp();
+                prices.push(if i == 2 * window {
+                    price * print
+                } else {
+                    price
+                });
+            }
+            assert_tracks_exact(&prices, q, window, 1e-9, 1e-6);
+        }
+    }
+
+    #[test]
+    fn a_strong_trend_with_little_noise_is_read_correctly_after_resync() {
+        // The drift is a thousand times the noise.
+        let (q, window) = (4, 200);
+        let mut noise = Noise(0x9E37_79B9_7F4A_7C15);
+        let mut log_price = 100.0f64.ln();
+        let prices: Vec<f64> = (0..3 * window)
+            .map(|_| {
+                log_price += 1e-3 + 1e-6 * noise.next();
+                log_price.exp()
+            })
+            .collect();
+
+        let mut vr = VarianceRatio::builder()
+            .q(q)
+            .window(window)
+            .build()
+            .unwrap();
+        for (i, &p) in prices.iter().enumerate() {
+            vr.update(p);
+            if i == window {
+                vr.resync();
+            }
+            if i > window {
+                let (got, want) = (
+                    vr.estimate().unwrap(),
+                    exact(&prices[i - window..=i], q).unwrap(),
+                );
+                assert!(
+                    (got.ratio - want.ratio).abs() <= 1e-6 * want.ratio
+                        && (got.z_statistic - want.z_statistic).abs()
+                            <= 1e-4 * want.z_statistic.abs().max(1.0),
+                    "price {i}: {got:?} vs {want:?}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn a_long_run_with_bursts_stays_with_the_exact_estimate() {
+        let (q, window) = (6, 300);
+        let mut noise = Noise(0x9E37_79B9_7F4A_7C15);
+        let mut price = 100.0f64;
+        let prices: Vec<f64> = (0..200_000u32)
+            .map(|i| {
+                let size = if i % 20_000 < 30 { 1e-2 } else { 1e-4 };
+                price *= (size * noise.next()).exp();
+                price
+            })
+            .collect();
+        let mut vr = VarianceRatio::builder()
+            .q(q)
+            .window(window)
+            .build()
+            .unwrap();
+        for (i, &p) in prices.iter().enumerate() {
+            vr.update(p);
+            // Checked at intervals: the exact estimate costs the window.
+            if i >= window && i % 997 == 0 {
+                let (got, want) = (
+                    vr.estimate().unwrap(),
+                    exact(&prices[i - window..=i], q).unwrap(),
+                );
+                assert!(
+                    (got.ratio - want.ratio).abs() <= 1e-9 * want.ratio
+                        && (got.z_statistic - want.z_statistic).abs() <= 1e-6,
+                    "price {i}: {got:?} vs {want:?}"
+                );
+            }
+        }
     }
 
     #[test]

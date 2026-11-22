@@ -449,6 +449,16 @@ mod tests {
         let prices = prices_from(&logistic_returns(100));
         let got = exponent(&prices, 8).unwrap();
         assert!(got.is_finite() && (0.0..1.0).contains(&got), "{got}");
+
+        // Changing the four oldest returns, which only the two longest
+        // lengths use, must change the reading; so must changing the
+        // newest, which every length uses.
+        let mut older = logistic_returns(100);
+        older[1] += 0.004;
+        assert_ne!(exponent(&prices_from(&older), 8), Some(got));
+        let mut newer = logistic_returns(100);
+        newer[98] += 0.004;
+        assert_ne!(exponent(&prices_from(&newer), 8), Some(got));
     }
 
     #[test]

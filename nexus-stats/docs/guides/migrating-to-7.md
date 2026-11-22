@@ -543,7 +543,8 @@ let estimate = tsrv.estimate()?;
 let (variance, noise) = (estimate.variance, estimate.noise_variance);
 ```
 
-- The variance is a proportion of price squared, not price units squared.
+- The variance is of log returns, so it has no price units: a squared
+  proportional move, where it was in price units squared.
 - It is no longer clamped at zero; `estimate.volatility()` takes a
   negative estimate as zero.
 
