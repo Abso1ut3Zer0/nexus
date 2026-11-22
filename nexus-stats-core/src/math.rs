@@ -27,7 +27,7 @@ macro_rules! check_finite {
 ///   finite and larger in magnitude than `limit`.
 #[inline]
 pub fn check_input(value: f64, limit: f64) -> Result<(), crate::DataError> {
-    // Cold: naming the reason stays off the accepted path.
+    // PERF: cold, so naming the reason stays off the accepted path.
     #[cold]
     fn refusal(value: f64) -> crate::DataError {
         if value.is_nan() {
@@ -39,7 +39,7 @@ pub fn check_input(value: f64, limit: f64) -> Result<(), crate::DataError> {
         }
     }
 
-    // NaN and infinity fail this comparison too, so one test accepts.
+    // PERF: NaN and infinity fail this comparison too, so one test accepts.
     if value.abs() <= limit {
         return Ok(());
     }
@@ -263,8 +263,8 @@ macro_rules! impl_mul_add {
 macro_rules! impl_mul_add {
     ($t:ty) => {
         impl MulAdd for $t {
-            // The lint's suggestion is the software-fma call this path exists
-            // to avoid.
+            // PERF: the lint's suggestion is the software-fma call this path
+            // exists to avoid.
             #[allow(clippy::suboptimal_flops)]
             #[inline(always)]
             fn fma(self, b: $t, c: $t) -> $t {
