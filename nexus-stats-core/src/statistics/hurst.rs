@@ -4,6 +4,8 @@ use alloc::vec::Vec;
 
 use crate::math::MulAdd;
 
+mod kernel;
+
 /// Hurst exponent of a price series, by rescaled-range analysis.
 ///
 /// `H` measures memory in the returns: 0.5 for independent returns (a random
@@ -137,47 +139,35 @@ impl Hurst {
     }
 
     /// The Hurst exponent over the window, or `None` until the window is
-    /// full, or if the price did not move in any stretch of some length.
+    /// full, or if no stretch of some length had returns that differ.
     ///
-    /// A stretch in which the price did not move has no rescaled range and
-    /// is left out of its length's average, as `nolds` does.
+    /// A stretch whose returns are all equal has no rescaled range and is
+    /// left out of its length's average. `nolds` leaves out a stretch whose
+    /// range is exactly zero; here "equal" allows for rounding, by the test
+    /// SciPy applies to a variance (`skew`, `kurtosis`): returns are
+    /// differences of log prices, so a variance at or below
+    /// `(EPSILON * log_price)^2` is rounding.
     ///
     /// Costs time proportional to the window times the number of lengths.
     #[must_use]
     pub fn exponent(&self) -> Option<f64> {
         /// `R/S` of the returns between consecutive `log_prices`, or `None`
-        /// if they are all equal.
+        /// if they are equal to within rounding.
         fn rescaled_range(log_prices: &[f64]) -> Option<f64> {
             let returns = log_prices.len() - 1;
             let n = returns as f64;
-            let first = log_prices[0];
             // The running sum of returns is a difference of log prices.
-            let mean = (log_prices[returns] - first) / n;
+            let mean = (log_prices[returns] - log_prices[0]) / n;
+            let sums = kernel::stretch_sums(log_prices, mean);
 
-            let (mut squares, mut highest, mut lowest) = (0.0f64, 0.0f64, 0.0f64);
-            let mut previous = first;
-            let mut steps = 0.0;
-            for &log_price in &log_prices[1..] {
-                steps += 1.0;
-                let deviation = log_price - previous - mean;
-                squares += deviation * deviation;
-                previous = log_price;
-
-                let running = steps.fma(-mean, log_price - first);
-                // PERF: plain compares compile to one max and one min.
-                if running > highest {
-                    highest = running;
-                }
-                if running < lowest {
-                    lowest = running;
-                }
-            }
-
-            let range = highest - lowest;
-            if range <= 0.0 {
+            // SciPy's zero-variance test (`skew`, `kurtosis`): a variance at
+            // or below `(EPSILON * x)^2` is rounding, where `x` is the size
+            // of the values subtracted. Here those are log prices.
+            let variance = sums.squares / (n - 1.0);
+            if variance <= crate::math::rounding_variance(log_prices[0]) {
                 return None;
             }
-            Some(range / crate::math::sqrt(squares / (n - 1.0)))
+            Some((sums.highest - sums.lowest) / crate::math::sqrt(variance))
         }
 
         let capacity = self.log_prices.len() / 2;
@@ -479,6 +469,26 @@ mod tests {
         assert!(exponent(&prices_from(&returns), 8).is_some());
         // A price that never moves has no exponent.
         assert_eq!(exponent(&[100.0; 257], 8), None);
+    }
+
+    #[test]
+    fn returns_equal_to_within_rounding_are_left_out() {
+        // A price that grows by the same factor every tick: the log returns
+        // differ only in their last digits.
+        let steady: Vec<f64> = (0..257)
+            .map(|i| 100.0 * (0.001 * f64::from(i)).exp())
+            .collect();
+        assert_eq!(exponent(&steady, 8), None);
+
+        // The same steady growth for the oldest eighth of a moving series:
+        // those stretches are left out, and the rest still give a reading
+        // within the usual range.
+        let mut returns = logistic_returns(256);
+        for r in &mut returns[..32] {
+            *r = 0.001;
+        }
+        let got = exponent(&prices_from(&returns), 8).unwrap();
+        assert!((0.0..1.0).contains(&got), "{got}");
     }
 
     #[test]
