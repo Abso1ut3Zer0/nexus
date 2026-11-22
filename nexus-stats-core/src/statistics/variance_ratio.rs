@@ -288,12 +288,8 @@ impl VarianceRatio {
     /// Costs time proportional to `q`.
     #[must_use]
     pub fn estimate(&self) -> Option<VarianceRatioEstimate> {
-        let Centered {
-            n,
-            shift,
-            one_period,
-        } = self.centered()?;
-        let q = self.q as f64;
+        let centered = self.centered()?;
+        let Centered { n, one_period, .. } = centered;
 
         // A price that never moved leaves only rounding in the totals.
         if self.unchanged >= self.window() {
@@ -306,28 +302,8 @@ impl VarianceRatio {
             return None;
         }
 
-        let long_terms = n - q + 1.0;
-        let expected = q * shift;
-        // sum((D - e)^2) = sum(D^2) - 2e * sum(D) + terms * e^2
-        let long = (long_terms * expected).fma(
-            expected,
-            (-2.0 * expected).fma(self.long_sum, self.long_squares),
-        );
-
-        // Lo and MacKinlay's divisors: n - 1, and m for the overlapping sum.
-        let m = q * long_terms * (1.0 - q / n);
-        let ratio = (long / m) / (one_period / (n - 1.0));
-
-        // The variance of the ratio: each lag's weight times how much the
-        // squared one-period returns move together at that lag.
-        let mut together = 0.0;
-        for (index, totals) in self.lags.iter().enumerate() {
-            let lag = (index + 1) as f64;
-            let weight = 2.0 * (1.0 - lag / q);
-            together += weight * weight * totals.squares_about(shift, n - lag);
-        }
-        let one_period_squared = one_period * one_period;
-        let variance = n * together / one_period_squared;
+        let ratio = self.ratio(centered);
+        let variance = self.ratio_variance(centered);
         if variance <= 0.0 {
             return None;
         }
@@ -442,6 +418,51 @@ impl VarianceRatio {
             // Squares about the drift, from the total about the pivot.
             one_period: (-n * shift).fma(shift, self.one_period_squares),
         })
+    }
+
+    /// Lo and MacKinlay's variance ratio: the variance of `q`-period
+    /// returns over `q` times the variance of one-period returns.
+    ///
+    /// The `q`-period returns overlap, and both variances are debiased: the
+    /// one-period sum of squares is divided by `n - 1`, the `q`-period one
+    /// by `m = q * (n - q + 1) * (1 - q / n)`.
+    fn ratio(&self, centered: Centered) -> f64 {
+        let Centered {
+            n,
+            shift,
+            one_period,
+        } = centered;
+        let q = self.q as f64;
+        let long_terms = n - q + 1.0;
+        // The drift over `q` periods comes out of each `q`-period return.
+        let long =
+            crate::math::squares_about(self.long_squares, self.long_sum, long_terms, q * shift);
+        let m = q * long_terms * (1.0 - q / n);
+        (long / m) / (one_period / (n - 1.0))
+    }
+
+    /// Lo and MacKinlay's variance of the ratio when volatility changes
+    /// over time: the sum over lags `j` from 1 to `q - 1` of
+    /// `(2 * (1 - j / q))^2 * delta_j`.
+    ///
+    /// `delta_j` is `n` times the sum of `(a - mean)^2 * (b - mean)^2` over
+    /// one-period returns `a` and `b` that are `j` apart, over the square
+    /// of the one-period sum of squares.
+    fn ratio_variance(&self, centered: Centered) -> f64 {
+        let Centered {
+            n,
+            shift,
+            one_period,
+        } = centered;
+        let q = self.q as f64;
+        let mut together = 0.0;
+        for (index, totals) in self.lags.iter().enumerate() {
+            let lag = (index + 1) as f64;
+            let weight = 2.0 * (1.0 - lag / q);
+            together += weight * weight * totals.squares_about(shift, n - lag);
+        }
+        let one_period_squared = one_period * one_period;
+        n * together / one_period_squared
     }
 
     /// An estimate of the error rounding in the totals may put in the z

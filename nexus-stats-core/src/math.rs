@@ -100,6 +100,17 @@ pub const fn rounding_variance(mean: f64) -> f64 {
     rounding * rounding
 }
 
+/// The sum of `(x - center)^2` over `count` values, from the sums of
+/// `x^2` and of `x`: `squares - 2 * center * sum + count * center^2`.
+///
+/// The terms cancel when `center` is far from zero next to the spread of
+/// the values, and digits go with them.
+#[inline]
+#[must_use]
+pub fn squares_about(squares: f64, sum: f64, count: f64, center: f64) -> f64 {
+    (count * center).fma(center, (-2.0 * center).fma(sum, squares))
+}
+
 /// An estimate of the rounding error a running total has accumulated.
 ///
 /// Each add to a total is rounded by up to half a unit in the last place
@@ -707,6 +718,24 @@ mod tests {
         // The estimate is the right size, not merely large: about 68% of
         // normal errors fall inside one standard deviation.
         assert!((100..=190).contains(&within_one_sd), "{within_one_sd}");
+    }
+
+    #[test]
+    fn squares_about_matches_the_sum_taken_directly() {
+        let values = [3.0, -1.5, 0.25, 8.0, 2.0];
+        let (squares, sum): (f64, f64) = values
+            .iter()
+            .fold((0.0, 0.0), |(squares, sum), x| (squares + x * x, sum + x));
+        for center in [0.0, 2.35, -4.0] {
+            let direct: f64 = values.iter().map(|x| (x - center) * (x - center)).sum();
+            let got = super::squares_about(squares, sum, values.len() as f64, center);
+            assert!(
+                (got - direct).abs() <= 1e-12 * direct,
+                "{center}: {got} {direct}"
+            );
+        }
+        // About zero it is the sum of squares itself.
+        assert_eq!(super::squares_about(squares, sum, 5.0, 0.0), squares);
     }
 
     #[test]
