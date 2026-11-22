@@ -117,6 +117,13 @@ pub enum Resync {
     /// trend has moved far from where it was at the last
     /// [`resync`](VarianceRatio::resync), or a price was not a number. The
     /// reading is still produced; call `resync` when there is time.
+    ///
+    /// It is also returned on a quiet window that has no reading (no two
+    /// returns within `q - 1` of each other both moved) when the totals
+    /// still carry rounding from busier prices: the sum that should be
+    /// exactly zero is not, and whether the reading comes out `None` or a
+    /// meaningless number depends on the sign of what is left. A `resync`
+    /// leaves that sum exactly zero and the advice does not come back.
     Advised {
         /// An estimate of the error the z statistic may carry, as a share
         /// of the larger of `|z|` and 1, at the update that raised the
@@ -354,8 +361,10 @@ impl VarianceRatio {
             .record_n(self.fourth_powers, adds);
         self.squares_rounding
             .record_n(self.one_period_squares, adds);
-        self.long_squares_rounding.record_n(self.long_squares, adds);
-        self.long_sum_rounding.record_n(self.long_sum, adds);
+        let long_adds = (adds + 1).saturating_sub(self.q);
+        self.long_squares_rounding
+            .record_n(self.long_squares, long_adds);
+        self.long_sum_rounding.record_n(self.long_sum, long_adds);
         self.resync = self.assess();
     }
 
@@ -536,8 +545,8 @@ impl VarianceRatio {
         if lag_sums.sum == 0.0 {
             return 0.0;
         }
-        // Not above zero, or not a number: the sums hold only rounding
-        // residue, or a price that was not a number.
+        // Only rounding residue, or a NaN. Advised whatever the residue's
+        // sign, though below zero the reading comes out `None` (see `Resync`).
         if !(lag_sums.sum > 0.0 && one_period > 0.0) {
             return f64::INFINITY;
         }

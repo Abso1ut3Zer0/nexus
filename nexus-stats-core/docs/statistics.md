@@ -320,6 +320,8 @@ A running total is rounded at every add, and the errors stay in it. They matter 
 
 `z_error` is four standard deviations of that rounding, treating each add's error as independent (Higham and Mary, 2019), so the real error is usually several times smaller.
 
+It is also raised on a quiet window that has no reading (no two returns within `q - 1` of each other both moved) while the totals still carry rounding from busier prices: the sum that should be exactly zero is not, and its sign decides whether the reading is `None` or a meaningless number. A `resync()` leaves it exactly zero. On a 64-price window with a move on one update in ten this is about once in a thousand updates; on windows of 1,024 and up it is rare.
+
 Measured, at windows of 256 to 4096: a print 1,000 times the usual return does not raise it and one 3,000 times does. Volatility falling 100 times does not raise it; falling 300 times does after a hundred thousand busy updates, and 1,000 times does after ten thousand. Twenty million updates of a steady market do not. A price that trends far more than it wanders raises it when the window first fills; one `resync()` then settles it. A price that is not a number raises it.
 
 `checked_update` refuses NaN, infinity, and a price that is zero or negative.
