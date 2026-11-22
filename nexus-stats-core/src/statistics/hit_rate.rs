@@ -305,6 +305,7 @@ mod tests {
             checked.checked_update(p, r).unwrap();
             unchecked.update(p, r);
         }
+        assert_eq!(checked.count(), unchecked.count());
         assert_eq!(checked.hit_rate(), unchecked.hit_rate());
         assert_eq!(checked.ew_hit_rate(), unchecked.ew_hit_rate());
     }

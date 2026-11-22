@@ -50,13 +50,16 @@ pub fn check_input(value: f64, limit: f64) -> Result<(), crate::DataError> {
 /// `check_inputs!(limit; a, b)?`. Without a limit, `check_inputs!(a, b)?`
 /// refuses only NaN and infinity.
 ///
-/// Evaluates to a `Result`, naming the first value refused.
+/// Evaluates to a `Result`, naming the first value refused. The values are
+/// evaluated inside closures, so an argument cannot `return`, `break` or
+/// `.await`.
 #[doc(hidden)]
 #[macro_export]
 macro_rules! __check_inputs {
-    ($limit:expr; $($value:expr),+ $(,)?) => {
-        Ok(()) $(.and_then(|()| $crate::math::check_input($value, $limit)))+
-    };
+    ($limit:expr; $($value:expr),+ $(,)?) => {{
+        let limit: f64 = $limit;
+        Ok(()) $(.and_then(|()| $crate::math::check_input($value, limit)))+
+    }};
     ($($value:expr),+ $(,)?) => {
         $crate::math::check_inputs!(f64::MAX; $($value),+)
     };
@@ -527,9 +530,21 @@ mod tests {
         assert_eq!(check_inputs!(f64::NAN, f64::INFINITY), Err(NotANumber));
 
         assert_eq!(check_inputs!(10.0; 10.0, -10.0), Ok(()));
+        assert_eq!(check_inputs!(10.0; 1.0, 2.0,), Ok(()));
         assert_eq!(check_inputs!(10.0; 1.0, 11.0), Err(OutOfRange));
         assert_eq!(check_inputs!(10.0; 11.0, f64::NAN), Err(OutOfRange));
         assert_eq!(check_inputs!(10.0; 1.0, 2.0, f64::NAN), Err(NotANumber));
+    }
+
+    #[test]
+    fn check_inputs_evaluates_the_limit_once() {
+        let mut evaluated = 0;
+        let mut limit = || {
+            evaluated += 1;
+            10.0
+        };
+        assert_eq!(check_inputs!(limit(); 1.0, 2.0, 3.0), Ok(()));
+        assert_eq!(evaluated, 1);
     }
 
     #[test]

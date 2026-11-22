@@ -8,7 +8,7 @@ use crate::smoothing::Ema;
 /// unit of volume. The ratio is Amihud's (2002, "Illiquidity and stock
 /// returns", *Journal of Financial Markets*); he averages it equally over a
 /// period, and this type weights it exponentially. Periods with no volume
-/// are left out, as in the paper.
+/// are left out: the ratio is undefined there.
 ///
 /// The value is in return per unit of volume. Amihud reports it multiplied
 /// by `1e6`.
@@ -49,7 +49,7 @@ impl Amihud {
     /// [`checked_update`](Self::checked_update).
     #[inline]
     pub fn update(&mut self, period_return: f64, dollar_volume: f64) {
-        // No trading: Amihud leaves the period out.
+        // No trading: the ratio is undefined, so the period is left out.
         if dollar_volume == 0.0 {
             return;
         }
@@ -244,6 +244,8 @@ mod tests {
         let mut a = Amihud::builder().alpha(0.5).build().unwrap();
         assert_eq!(a.checked_update(0.01, 0.0), Ok(()));
         assert_eq!(a.checked_update(0.0, 0.0), Ok(()));
+        // Negative zero is zero, not a negative volume.
+        assert_eq!(a.checked_update(0.01, -0.0), Ok(()));
         assert_eq!((a.count(), a.illiq()), (0, None));
     }
 

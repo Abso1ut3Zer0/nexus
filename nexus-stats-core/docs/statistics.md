@@ -216,7 +216,7 @@ a.update(period_return, dollar_volume);
 let score = a.illiq().unwrap();
 ```
 
-Pass the period's return, signed or not; its magnitude is used. A period with zero volume is left out, as in the paper, and `count()` does not advance. `checked_update` refuses NaN, infinity, a negative volume, and a ratio that overflows.
+Pass the period's return, signed or not; its magnitude is used. A period with zero volume is left out (the ratio is undefined there), and `count()` does not advance. `checked_update` refuses NaN, infinity, a negative volume, and a ratio that overflows.
 
 **Use for:** liquidity monitoring on crypto venues. Cross-venue comparison. Signal input to smart order routing.
 
