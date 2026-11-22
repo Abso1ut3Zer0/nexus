@@ -1171,17 +1171,15 @@ fn bench_two_scale_rv_f64(samples: &mut [u64]) {
     let mut t = TwoScaleRv::builder().k(5).build().unwrap();
     let mut rng = 12345u64;
     for _ in 0..WARMUP {
-        t.update(100.0 + (next_val(&mut rng) % 200) as f64 / 100.0)
-            .unwrap();
+        t.update(100.0 + (next_val(&mut rng) % 200) as f64 / 100.0);
     }
     for s in samples.iter_mut() {
         let start = rdtsc_start();
         for _ in 0..BATCH {
-            t.update(black_box(100.0 + (next_val(&mut rng) % 200) as f64 / 100.0))
-                .unwrap();
+            t.update(black_box(100.0 + (next_val(&mut rng) % 200) as f64 / 100.0));
         }
         let end = rdtsc_end();
-        black_box(t.realized_variance());
+        black_box(t.estimate());
         *s = (end - start) / BATCH;
     }
 }
@@ -2460,14 +2458,18 @@ fn main() {
         h.update(v);
     });
     print_row("HalfLife::update", &mut buf);
-    let mut vr = VarianceRatio::builder().q(5).alpha(0.01).build().unwrap();
+    let mut vr = VarianceRatio::builder()
+        .horizon(5)
+        .window(256)
+        .build()
+        .unwrap();
     bench_feed(&mut buf, &mut vr, |r, v| {
-        let _ = r.update(v);
+        r.update(v);
     });
     print_row("VarianceRatio(5)::update", &mut buf);
-    let mut hurst = Hurst::builder().window_size(64).build().unwrap();
+    let mut hurst = Hurst::builder().window(64).build().unwrap();
     bench_feed(&mut buf, &mut hurst, |h, v| {
-        let _ = h.update(v);
+        h.update(v);
     });
     print_row("Hurst(64)::update", &mut buf);
     let mut lpm = Lpm::builder().target(100.0).order(2).build().unwrap();

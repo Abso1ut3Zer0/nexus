@@ -23,7 +23,7 @@ mod roll_spread;
 mod running_mean;
 #[cfg(all(feature = "alloc", any(feature = "std", feature = "libm")))]
 mod two_scale_rv;
-#[cfg(feature = "alloc")]
+#[cfg(all(feature = "alloc", any(feature = "std", feature = "libm")))]
 mod variance_ratio;
 mod welford;
 
@@ -49,6 +49,6 @@ pub use percentile::*;
 pub use roll_spread::*;
 #[cfg(all(feature = "alloc", any(feature = "std", feature = "libm")))]
 pub use two_scale_rv::*;
-#[cfg(feature = "alloc")]
+#[cfg(all(feature = "alloc", any(feature = "std", feature = "libm")))]
 pub use variance_ratio::*;
 pub use welford::*;

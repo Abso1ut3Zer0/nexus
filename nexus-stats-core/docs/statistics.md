@@ -17,8 +17,9 @@ Streaming, fixed-memory, O(1)-per-update statistical primitives. Module path: `n
 | `Amihud` | Amihud illiquidity measure (EW) | small |
 | `HitRate` | Directional accuracy of a prediction (cumulative and EW) | small |
 | `HalfLife` | Mean-reversion half-life estimator | small |
-| `Hurst` | Hurst exponent (R/S estimator) | alloc, windowed |
-| `VarianceRatio` | Lo-MacKinlay variance ratio (mean-reversion test) | small |
+| `Hurst` | Hurst exponent of a price series (multi-scale R/S) | alloc, windowed |
+| `VarianceRatio` | Lo-MacKinlay variance ratio and test statistic | alloc, windowed |
+| `TwoScaleRv` | Realized variance with tick noise removed | alloc, small |
 | `Lpm` | Lower partial moments (downside risk, semivariance) | 5 words |
 | `Cvar` | Conditional Value at Risk (expected shortfall) | small, fixed |
 
@@ -266,39 +267,91 @@ match hl.reversion() {
 
 ---
 
-## Hurst — Hurst exponent
+## Hurst: Hurst exponent
 
-Rescaled-range estimator. Classifies a series:
+Memory in the returns of a price series, by rescaled-range analysis:
 
-- `H = 0.5` → random walk.
-- `H < 0.5` → mean-reverting.
-- `H > 0.5` → persistent / trending.
+- `H = 0.5`: independent returns, a random walk.
+- `H < 0.5`: mean-reverting.
+- `H > 0.5`: persistent, trending.
 
 ```rust
 use nexus_stats_core::statistics::Hurst;
-let mut h = Hurst::builder().build().unwrap();
-for x in series { h.update(x).unwrap(); }
-let estimate = h.hurst().unwrap();
+let mut hurst = Hurst::builder().window(1024).build().unwrap();
+for price in prices { hurst.update(price); }
+let h = hurst.exponent().unwrap();
 ```
+
+Feed prices; the type takes the logarithm and differences them. The rescaled range `R/S` of a stretch of returns grows like `n^H` with its length, so `H` is the slope of `ln(R/S)` against `ln(n)`. `Hurst` measures `R/S` at the whole window, each half, each quarter and so on down to `smallest_window` (default 8), divides each by the value expected of independent returns (Anis and Lloyd, with Peters' term), and fits the slope. This is the procedure in Weron (2002), and matches `nolds.hurst_rs` with `fit="poly"` on the same lengths.
+
+**Reading it.** On independent returns the estimate spreads about 0.04 around 0.5 at a window of 1024 and 0.03 at 4096; a smaller difference is noise. Below a window of about 128 it is too noisy to use. Short-lived correlation moves it too: a larger `smallest_window` looks past that, at the cost of a wider spread.
+
+**Cost.** `update` stores the price. `exponent()` recomputes over the window: about 25,000 cycles at a window of 2048 on any x86-64 build, about 14,000 with AVX2 and FMA enabled. Read it per bar, not per tick. No incremental form exists: the mean the range is measured about moves as the window slides.
+
+`checked_update` refuses NaN, infinity, and a price that is zero or negative. A stretch whose returns are equal to within rounding has no rescaled range and is left out.
 
 **Use for:** regime detection, signal-vs-noise classification on slow timescales.
 
-**Caveats:** R/S estimator is noisy on small samples. Requires `alloc`.
-
 ---
 
-## VarianceRatio — Lo-MacKinlay variance ratio test
+## VarianceRatio: Lo-MacKinlay variance ratio
 
-`VR(k) = Var(k-period return) / (k * Var(1-period return))`. Under a random walk VR = 1; VR < 1 indicates mean-reversion, VR > 1 indicates momentum/persistence.
+Is the price a random walk? If returns are independent, the variance of a `q`-period return is `q` times the variance of a one-period return, and their ratio is 1 (`q` is the builder's `horizon`). Below 1 points to mean reversion, above 1 to trending.
 
 ```rust
 use nexus_stats_core::statistics::VarianceRatio;
-let mut vr = VarianceRatio::builder().build().unwrap();
-for price in prices { vr.update(price).unwrap(); }
-let ratio = vr.variance_ratio().unwrap();
+let mut vr = VarianceRatio::builder().horizon(5).window(2000).build().unwrap();
+for price in prices { vr.update(price); }
+let estimate = vr.estimate().unwrap();
+let (ratio, z) = (estimate.ratio, estimate.z_statistic);
 ```
 
+**Window and horizon.** The window is how much history the reading is computed over, in one-period returns (`n` in the paper). The horizon is the length of the longer return whose variance is compared with the one-period variance (`q`). With a window of 2000 and a horizon of 5, the reading asks, over the last 2000 returns, whether 5-period returns vary five times as much as one-period returns. The window has to be longer than the horizon, and in practice many times longer.
+
+This is the statistic of Lo and MacKinlay (1988) on the log price over the last `window` returns: overlapping `q`-period returns, the drift taken from the window's two ends, and their bias corrections. `z_statistic` is their heteroskedasticity-robust statistic. Both match `arch.unitroot.VarianceRatio` with its defaults (`vr` and `stat`).
+
+**Deciding.** The ratio says which way and how far; `z` says whether that could be chance.
+
+- `|z|` below about 2: consistent with a random walk, whatever the ratio.
+- `z` above about 2: trending. Below about -2: mean-reverting. 1.96 is the 5% level, 2.58 the 1% level.
+- Read on every bar, a 5% level gives a false signal about one bar in twenty. Use a higher level, or require it to hold for several reads.
+
+**Cost and rounding.** The sums are running totals: `update` costs time proportional to `q`, whatever the window, and works out the reading as it goes, so `estimate` only returns it; so a reading stays cheap when many instruments are read on the same bar.
+
+A running total is rounded at every add, and the errors stay in it. They matter once the total has become much smaller than it was: after volatility falls a long way, or after a price far off the market has come and gone. The z statistic sums fourth powers and feels this first; the ratio is far less affected. `update` keeps an estimate of the accumulated rounding and returns `Accuracy::ResyncRequired { error }` once it could reach one part in a thousand of z, and keeps returning it until `resync()` is called. Until then there is no reading: `estimate()` returns `None` and `update` only stores the price, so a reading that is given is good to that one part in a thousand. `resync()` recomputes the totals from the stored prices and costs the window times `q`, so schedule it when there is time. pandas guards its rolling moments against the same loss and never returns the suspect value either: it recomputes the window itself, at once.
+
+`error` is that of the z statistic, as a share of the larger of `|z|` and 1: four standard deviations of that rounding, treating each add's error as independent (Higham and Mary, 2019), so the real error is usually several times smaller.
+
+It is also raised on a quiet window that has no reading (no two returns within `q - 1` of each other both moved) while the totals still carry rounding from busier prices: the sum that should be exactly zero is not, and its sign decides whether the reading is `None` or a meaningless number. A `resync()` leaves it exactly zero. On a 64-price window with a move on one update in ten this is about once in a thousand updates; on windows of 1,024 and up it is rare.
+
+Measured, at windows of 256 to 4096: a print 1,000 times the usual return does not raise it and one 3,000 times does. Volatility falling 100 times does not raise it; falling 300 times does after a hundred thousand busy updates, and 1,000 times does after ten thousand. Twenty million updates of a steady market do not. A price that trends far more than it wanders raises it when the window first fills; one `resync()` then settles it. A price that is not a number raises it.
+
+`checked_update` refuses NaN, infinity, and a price that is zero or negative.
+
 **Use for:** quantitative mean-reversion testing, complement to `HalfLife` and `Hurst`.
+
+---
+
+## TwoScaleRv: realized variance without the noise
+
+Squared returns sampled at every tick are inflated by bid-ask bounce. Sampled every `k` ticks they are much less so. `TwoScaleRv` takes the slow-scale variance and subtracts the noise it still carries, which the fast scale measures (Zhang, Mykland and Aït-Sahalia, 2005).
+
+```rust
+use nexus_stats_core::statistics::TwoScaleRv;
+let mut tsrv = TwoScaleRv::builder().k(30).build().unwrap();
+for price in session_prices { tsrv.update(price); }
+let estimate = tsrv.estimate().unwrap();
+let (variance, noise) = (estimate.variance, estimate.noise_variance);
+tsrv.reset(); // start the next period
+```
+
+Feed prices; the type works on log prices, as the paper does. The sums run from the last `reset()`, so a reading covers one period. `estimate()` returns the corrected variance (with the paper's small-sample adjustment, as R's `highfrequency` applies), the uncorrected realized variance, the variance of the noise in one observed price, and the return count. `volatility()` is the square root, taking a slightly negative estimate as zero.
+
+The paper's guidance for `k` is the order of `n^(2/3)` for `n` returns in the period.
+
+`checked_update` refuses NaN, infinity, and a price that is zero or negative.
+
+**Use for:** intraday volatility from tick data; measuring how much of the tick-level variance is noise.
 
 ---
 

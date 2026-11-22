@@ -40,7 +40,7 @@ Use **`MultiGate`**. Layered threshold gates — configure multiple thresholds w
 
 Use **`Autocorrelation`** at lag 1 (or more). Positive autocorrelation at lag 1 = trending (if a step moved up, the next step is likely up too). Negative = mean-reverting. Near zero = random walk.
 
-For a full trend-vs-reversion suite, pair with [`HalfLife`](../../nexus-stats-core/docs/statistics.md#halflife--mean-reversion-half-life) and [`Hurst`](../../nexus-stats-core/docs/statistics.md#hurst--hurst-exponent).
+For a full trend-vs-reversion suite, pair with [`HalfLife`](../../nexus-stats-core/docs/statistics.md#halflife--mean-reversion-half-life) and [`Hurst`](../../nexus-stats-core/docs/statistics.md#hurst-hurst-exponent).
 
 ## "Which of these two streams leads?"
 

@@ -100,6 +100,192 @@ pub const fn rounding_variance(mean: f64) -> f64 {
     rounding * rounding
 }
 
+/// The sum of `(x - center)^2` over `count` values, from the sums of
+/// `x^2` and of `x`: `squares - 2 * center * sum + count * center^2`.
+///
+/// The terms cancel when `center` is far from zero next to the spread of
+/// the values, and digits go with them.
+#[inline]
+#[must_use]
+pub fn squares_about(squares: f64, sum: f64, count: f64, center: f64) -> f64 {
+    (count * center).fma(center, (-2.0 * center).fma(sum, squares))
+}
+
+/// An estimate of the rounding error a running total has accumulated.
+///
+/// Each add to a total is rounded by up to half a unit in the last place
+/// of the result, so the error depends on how large the total was at each
+/// add. It stays in the total, and matters once the total has become much
+/// smaller than it was: this is for totals that are added to and removed
+/// from, as over a sliding window.
+///
+/// This treats each add's error as independent and equally likely to fall
+/// either way, with variance `(f64::EPSILON * total)^2 / 12`. The errors
+/// then partly cancel, and their sum is close to normal (Higham and Mary,
+/// 2019, "A New Approach to Probabilistic Rounding Error Analysis"). It
+/// describes the error seen in practice; it is not a guarantee. See
+/// [`RoundingBound`] for one.
+///
+/// # Examples
+///
+/// ```
+/// use nexus_stats_core::math::RoundingEstimate;
+///
+/// let mut rounding = RoundingEstimate::new();
+/// let mut total = 0.0;
+/// for x in [1e8, 2.5, -1e8] {
+///     total += x;
+///     rounding.record(total);
+/// }
+/// // Four standard deviations: what `total` may be off by.
+/// let error = rounding.error(4.0);
+/// assert!(error > 1e-8 && error < 1e-7);
+/// ```
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
+pub struct RoundingEstimate {
+    /// Sum over the adds of the total squared.
+    squares: f64,
+    adds: usize,
+}
+
+impl RoundingEstimate {
+    /// Creates an estimate with no adds recorded.
+    #[must_use]
+    pub const fn new() -> Self {
+        Self {
+            squares: 0.0,
+            adds: 0,
+        }
+    }
+
+    /// Records one add that left the total at `total`.
+    #[inline]
+    pub fn record(&mut self, total: f64) {
+        self.record_n(total, 1);
+    }
+
+    /// Records `adds` adds, each of which left a total near `total`.
+    #[inline]
+    pub fn record_n(&mut self, total: f64, adds: usize) {
+        self.squares = (total * adds as f64).fma(total, self.squares);
+        self.adds += adds;
+    }
+
+    /// The variance of the accumulated rounding error.
+    #[inline]
+    #[must_use]
+    pub fn variance(&self) -> f64 {
+        Self::variance_of(1.0, 1) * self.squares
+    }
+
+    /// The accumulated rounding error at `confidence` standard deviations.
+    ///
+    /// At 4, a normal error is larger about once in 16,000.
+    #[cfg(any(feature = "std", feature = "libm"))]
+    #[inline]
+    #[must_use]
+    pub fn error(&self, confidence: f64) -> f64 {
+        confidence * sqrt(self.variance())
+    }
+
+    /// The variance of the rounding error of `adds` adds that each leave a
+    /// total near `total`: `adds * (f64::EPSILON * total)^2 / 12`.
+    #[inline]
+    #[must_use]
+    pub fn variance_of(total: f64, adds: usize) -> f64 {
+        let rounding = f64::EPSILON * total;
+        rounding * rounding * (adds as f64 / 12.0)
+    }
+
+    /// The number of adds recorded.
+    #[inline]
+    #[must_use]
+    pub const fn adds(&self) -> usize {
+        self.adds
+    }
+
+    /// Forgets every add, as when the total is recomputed.
+    #[inline]
+    pub fn reset(&mut self) {
+        *self = Self::new();
+    }
+}
+
+/// A bound on the rounding error a running total has accumulated.
+///
+/// The worst case of what [`RoundingEstimate`] estimates: every add is
+/// taken to be off by the full half unit in the last place,
+/// `f64::EPSILON / 2 * |total|`, all in the same direction. The total's
+/// error cannot be larger, as long as no add overflowed or was not a
+/// number. It grows with the number of adds where the estimate grows with
+/// its square root, so over a long run it is far above the error seen.
+///
+/// # Examples
+///
+/// ```
+/// use nexus_stats_core::math::RoundingBound;
+///
+/// let mut rounding = RoundingBound::new();
+/// let mut total = 0.0;
+/// for x in [1e8, 2.5, -1e8] {
+///     total += x;
+///     rounding.record(total);
+/// }
+/// assert!((total - 2.5).abs() <= rounding.error());
+/// ```
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
+pub struct RoundingBound {
+    /// Sum over the adds of the total's size.
+    sizes: f64,
+    adds: usize,
+}
+
+impl RoundingBound {
+    /// Creates a bound with no adds recorded.
+    #[must_use]
+    pub const fn new() -> Self {
+        Self {
+            sizes: 0.0,
+            adds: 0,
+        }
+    }
+
+    /// Records one add that left the total at `total`.
+    #[inline]
+    pub fn record(&mut self, total: f64) {
+        self.record_n(total, 1);
+    }
+
+    /// Records `adds` adds, each of which left a total no larger than
+    /// `total` in size.
+    #[inline]
+    pub fn record_n(&mut self, total: f64, adds: usize) {
+        self.sizes = (adds as f64).fma(total.abs(), self.sizes);
+        self.adds += adds;
+    }
+
+    /// The most the total can be off by.
+    #[inline]
+    #[must_use]
+    pub fn error(&self) -> f64 {
+        // Rounded up a little, so that summing the sizes cannot undercut it.
+        (0.5 * f64::EPSILON) * self.sizes * (self.adds as f64).fma(f64::EPSILON, 1.0)
+    }
+
+    /// The number of adds recorded.
+    #[inline]
+    #[must_use]
+    pub const fn adds(&self) -> usize {
+        self.adds
+    }
+
+    /// Forgets every add, as when the total is recomputed.
+    #[inline]
+    pub fn reset(&mut self) {
+        *self = Self::new();
+    }
+}
+
 /// f32 variant of [`check_finite`].
 #[doc(hidden)]
 #[inline]
@@ -473,6 +659,115 @@ pub fn in_unit_interval(x: f64) -> bool {
 
 #[cfg(test)]
 mod tests {
+    /// Uniform values in `[-1, 1)`.
+    fn noise(state: &mut u64) -> f64 {
+        *state ^= *state << 13;
+        *state ^= *state >> 7;
+        *state ^= *state << 17;
+        (*state >> 11) as f64 / (1u64 << 52) as f64 - 1.0
+    }
+
+    /// A sliding-window sum of `values * scale(i)`, kept as a running total
+    /// in `f64`, against the same window summed exactly: the error at the
+    /// end, with the trackers that watched every add.
+    fn running_total_error(
+        seed: u64,
+        steps: usize,
+        scale: impl Fn(usize) -> f64,
+    ) -> (f64, super::RoundingEstimate, super::RoundingBound) {
+        extern crate std;
+        const WINDOW: usize = 64;
+        let mut state = seed;
+        let mut window = std::collections::VecDeque::new();
+        let mut total = 0.0f64;
+        let (mut estimate, mut bound) =
+            (super::RoundingEstimate::new(), super::RoundingBound::new());
+        for i in 0..steps {
+            let x = noise(&mut state) * scale(i);
+            if window.len() == WINDOW {
+                total -= window.pop_front().unwrap();
+                estimate.record(total);
+                bound.record(total);
+            }
+            window.push_back(x);
+            total += x;
+            estimate.record(total);
+            bound.record(total);
+        }
+        // Every value is a multiple of 2^-80 below 2^10: exact in i128.
+        let exact: i128 = window.iter().map(|x| (x * 2f64.powi(80)) as i128).sum();
+        let error = (total * 2f64.powi(80)) as i128 - exact;
+        (error as f64 / 2f64.powi(80), estimate, bound)
+    }
+
+    #[test]
+    fn the_rounding_trackers_cover_a_running_total_that_shrinks() {
+        // Values near 1 for a long spell, then a million times smaller: the
+        // error left from the busy spell is what remains.
+        let scale = |i: usize| if i < 50_000 { 1.0 } else { 2f64.powi(-20) };
+        let mut within_one_sd = 0;
+        for seed in 1..=200u64 {
+            let (error, estimate, bound) = running_total_error(seed, 50_200, scale);
+            assert!(error != 0.0, "seed {seed}: no rounding to measure");
+            assert!(error.abs() <= bound.error(), "seed {seed}");
+            assert!(error.abs() <= estimate.error(4.0), "seed {seed}");
+            // The bound grows with the adds, the estimate with their root.
+            assert!(bound.error() > 50.0 * estimate.error(1.0), "seed {seed}");
+            within_one_sd += usize::from(error.abs() <= estimate.error(1.0));
+        }
+        // The estimate is the right size, not merely large: about 68% of
+        // normal errors fall inside one standard deviation.
+        assert!((100..=190).contains(&within_one_sd), "{within_one_sd}");
+    }
+
+    #[test]
+    fn squares_about_matches_the_sum_taken_directly() {
+        let values = [3.0, -1.5, 0.25, 8.0, 2.0];
+        let (squares, sum): (f64, f64) = values
+            .iter()
+            .fold((0.0, 0.0), |(squares, sum), x| (squares + x * x, sum + x));
+        for center in [0.0, 2.35, -4.0] {
+            let direct: f64 = values.iter().map(|x| (x - center) * (x - center)).sum();
+            let got = super::squares_about(squares, sum, values.len() as f64, center);
+            assert!(
+                (got - direct).abs() <= 1e-12 * direct,
+                "{center}: {got} {direct}"
+            );
+        }
+        // About zero it is the sum of squares itself.
+        assert_eq!(super::squares_about(squares, sum, 5.0, 0.0), squares);
+    }
+
+    #[test]
+    fn the_rounding_trackers_count_and_reset() {
+        let eps = f64::EPSILON;
+        let mut estimate = super::RoundingEstimate::new();
+        estimate.record(3.0);
+        estimate.record_n(-2.0, 4);
+        assert_eq!(estimate.adds(), 5);
+        // 3^2 + 4 * 2^2 = 25, over 12.
+        let close = |got: f64, want: f64| (got - want).abs() <= 1e-12 * want;
+        assert!(close(estimate.variance(), eps * eps * 25.0 / 12.0));
+        assert_eq!(estimate.error(2.0), 2.0 * super::sqrt(estimate.variance()));
+        assert!(close(
+            super::RoundingEstimate::variance_of(-2.0, 4),
+            eps * eps * 16.0 / 12.0
+        ));
+        estimate.reset();
+        assert_eq!(estimate, super::RoundingEstimate::new());
+        assert_eq!((estimate.adds(), estimate.error(4.0)), (0, 0.0));
+
+        let mut bound = super::RoundingBound::new();
+        bound.record(3.0);
+        bound.record_n(-2.0, 4);
+        assert_eq!(bound.adds(), 5);
+        // 3 + 4 * 2 = 11 half units, and never less.
+        assert!(bound.error() >= 0.5 * eps * 11.0);
+        assert!(close(bound.error(), 0.5 * eps * 11.0));
+        bound.reset();
+        assert_eq!((bound.adds(), bound.error()), (0, 0.0));
+    }
+
     #[test]
     fn rounding_variance_is_epsilon_times_the_mean_squared() {
         let eps = f64::EPSILON;

@@ -70,8 +70,8 @@ See [Integer vs Float](../guides/integer-vs-float.md) for the caller rules and
 | `RollSpread` (→ `RollEstimate`) | `f64` | `std\|libm` | core (`statistics`) |
 | `HalfLife` | `f64` | `std\|libm` | core (`statistics`) |
 | `Hurst` | `f64` | `alloc + std\|libm` | core (`statistics`) |
-| `VarianceRatio` | `f64` | `alloc` | core (`statistics`) |
-| `TwoScaleRv` | `f64` | `alloc + std\|libm` | core (`statistics`) |
+| `VarianceRatio` (→ `VarianceRatioEstimate`) | `f64` | `alloc + std\|libm` | core (`statistics`) |
+| `TwoScaleRv` (→ `TwoScaleEstimate`) | `f64` | `alloc + std\|libm` | core (`statistics`) |
 
 ## Normalization
 

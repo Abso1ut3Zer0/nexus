@@ -8,6 +8,9 @@
 //! lives in the slice and nowhere else, and the wrap is a compare, not a `%`:
 //! the two things that keep a ring's bounds checks folding on the hot path.
 //!
+//! `Ring` is for a window whose values are pushed and evicted; `SliceRing`
+//! is for one whose contents are read across as a slice.
+//!
 //! Which storage for what, across the stats crates:
 //! - fixed at build and always full (coefficient tables, histograms): `Box<[T]>`;
 //! - fixed capacity, variable occupancy, element type with a natural fill:
@@ -207,6 +210,142 @@ impl<T: Copy> core::fmt::Debug for Ring<T> {
     }
 }
 
+/// Fixed-capacity ring of `Copy` samples whose contents are always one
+/// slice: the newest sample overwrites the oldest, and
+/// [`as_slice`](Self::as_slice) reads the window oldest first with no
+/// wrap-around.
+///
+/// Use it where the window is read across (a loop over the whole window, a
+/// SIMD kernel); use [`Ring`] where samples are only pushed and evicted.
+///
+/// Each sample is stored twice, `capacity` slots apart, so the newest
+/// `capacity` samples are contiguous wherever the write position is. It
+/// costs twice the memory of a [`Ring`] and two stores per push. The idea is
+/// that of the `slice-deque` family of crates, which get the same effect by
+/// mapping memory twice; this one works in `no_std`.
+///
+/// # Examples
+///
+/// ```
+/// use nexus_stats_core::storage::SliceRing;
+///
+/// let mut window = SliceRing::new(3, 0.0).unwrap();
+/// window.push(1.0);
+/// window.push(2.0);
+/// assert_eq!(window.as_slice(), [1.0, 2.0]);
+/// window.push(3.0);
+/// assert_eq!(window.push(4.0), Some(1.0)); // full: the oldest is evicted
+/// assert_eq!(window.as_slice(), [2.0, 3.0, 4.0]);
+/// ```
+#[derive(Clone)]
+pub struct SliceRing<T> {
+    /// Every held sample twice: at its slot and `capacity` slots on.
+    buf: Box<[T]>,
+    /// Slot the next push writes, in the first half.
+    head: usize,
+    /// Samples held, up to the capacity.
+    len: usize,
+}
+
+impl<T: Copy> SliceRing<T> {
+    /// Allocates a ring of `capacity` samples. `fill` is what the unused
+    /// slots hold; it is never read back.
+    ///
+    /// # Errors
+    ///
+    /// `ConfigError::Invalid` if `capacity` is zero, or too large to store
+    /// twice.
+    pub fn new(capacity: usize, fill: T) -> Result<Self, ConfigError> {
+        if capacity == 0 {
+            return Err(ConfigError::Invalid("ring capacity must be > 0"));
+        }
+        let Some(slots) = capacity.checked_mul(2) else {
+            return Err(ConfigError::Invalid("ring capacity is too large"));
+        };
+        Ok(Self {
+            buf: vec![fill; slots].into_boxed_slice(),
+            head: 0,
+            len: 0,
+        })
+    }
+
+    /// Appends `sample`, overwriting the oldest once the ring is full.
+    ///
+    /// Returns the evicted sample, `None` while the ring is still filling.
+    #[inline]
+    pub fn push(&mut self, sample: T) -> Option<T> {
+        let capacity = self.capacity();
+        let was_full = self.len == capacity;
+        // PERF: stored twice, so the newest samples are always one slice.
+        let previous = core::mem::replace(&mut self.buf[self.head], sample);
+        self.buf[self.head + capacity] = sample;
+
+        self.head += 1;
+        if self.head == capacity {
+            self.head = 0;
+        }
+        if !was_full {
+            self.len += 1;
+        }
+        was_full.then_some(previous)
+    }
+
+    /// The held samples, oldest first.
+    #[inline]
+    #[must_use]
+    pub fn as_slice(&self) -> &[T] {
+        // The newest `len` samples end just before the second copy of the
+        // slot the next push writes.
+        let end = self.head + self.capacity();
+        &self.buf[end - self.len..end]
+    }
+
+    /// Samples held so far (saturates at the capacity).
+    #[inline]
+    #[must_use]
+    pub fn len(&self) -> usize {
+        self.len
+    }
+
+    /// Whether no sample has been pushed since construction or `clear`.
+    #[inline]
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.len == 0
+    }
+
+    /// Number of samples the ring holds when full, fixed at construction.
+    #[inline]
+    #[must_use]
+    pub fn capacity(&self) -> usize {
+        self.buf.len() / 2
+    }
+
+    /// Whether the ring holds `capacity` samples.
+    #[inline]
+    #[must_use]
+    pub fn is_full(&self) -> bool {
+        self.len == self.capacity()
+    }
+
+    /// Empties the ring. The slots keep their old contents, which
+    /// [`as_slice`](Self::as_slice) no longer reaches.
+    #[inline]
+    pub fn clear(&mut self) {
+        self.head = 0;
+        self.len = 0;
+    }
+}
+
+impl<T: Copy> core::fmt::Debug for SliceRing<T> {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("SliceRing")
+            .field("capacity", &self.capacity())
+            .field("len", &self.len())
+            .finish()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     extern crate std;
@@ -301,5 +440,73 @@ mod tests {
         assert_eq!(older, [1.0, 2.0]);
         assert!(newer.is_empty());
         assert!(ring.iter().all(|x| x.is_finite()));
+    }
+
+    /// `SliceRing` agrees with a deque oracle at every fill level, and its
+    /// slice is one contiguous run throughout.
+    #[test]
+    fn slice_ring_matches_a_deque_oracle_at_every_fill() {
+        for capacity in 1..=8usize {
+            let mut ring = SliceRing::new(capacity, -1i64).unwrap();
+            let mut oracle: VecDeque<i64> = VecDeque::new();
+            assert!(ring.is_empty());
+            assert_eq!(ring.as_slice(), &[] as &[i64]);
+            for step in 0..(4 * capacity + 3) {
+                let x = step as i64 * 10;
+                let evicted = if oracle.len() == capacity {
+                    oracle.pop_front()
+                } else {
+                    None
+                };
+                oracle.push_back(x);
+                assert_eq!(ring.push(x), evicted, "cap {capacity} step {step}");
+                assert_eq!(ring.len(), oracle.len());
+                assert_eq!(ring.is_full(), oracle.len() == capacity);
+                assert_eq!(
+                    ring.as_slice(),
+                    oracle.iter().copied().collect::<Vec<_>>(),
+                    "cap {capacity} step {step}"
+                );
+            }
+            assert_eq!(ring.capacity(), capacity);
+        }
+    }
+
+    /// After `clear` the old contents are out of reach, at every position
+    /// the write head can be in.
+    #[test]
+    fn slice_ring_clear_hides_the_old_contents() {
+        for pushed in 0..=9i64 {
+            let mut ring = SliceRing::new(4, 0i64).unwrap();
+            for x in 0..pushed {
+                ring.push(100 + x);
+            }
+            ring.clear();
+            assert!(ring.is_empty() && !ring.is_full());
+            assert_eq!(ring.as_slice(), &[] as &[i64]);
+            assert_eq!(ring.push(1), None);
+            assert_eq!(ring.push(2), None);
+            assert_eq!(ring.as_slice(), [1, 2]);
+        }
+    }
+
+    #[test]
+    fn slice_ring_zero_or_overflowing_capacity_is_rejected() {
+        assert!(SliceRing::new(0, 0.0f64).is_err());
+        assert!(SliceRing::new(usize::MAX, 0u8).is_err());
+    }
+
+    /// A clone holds the same window and then goes its own way.
+    #[test]
+    fn slice_ring_clone_is_independent() {
+        let mut ring = SliceRing::new(3, 0i64).unwrap();
+        for x in 1..=5 {
+            ring.push(x);
+        }
+        let mut copy = ring.clone();
+        assert_eq!(copy.as_slice(), ring.as_slice());
+        copy.push(6);
+        assert_eq!(ring.as_slice(), [3, 4, 5]);
+        assert_eq!(copy.as_slice(), [4, 5, 6]);
     }
 }

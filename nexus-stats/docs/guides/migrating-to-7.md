@@ -423,7 +423,9 @@ refuses a sample below `1e-120`, which covers zero and negatives),
 `Lpm` (its `checked_update` refuses the sample that would overflow the
 sum, with no fixed input limit), `HalfLife`, `BipowerVariation` (its
 `checked_update` refuses a zero or negative price, with no magnitude
-limit), `Ema`, `AsymEma` and `HuberEma` (NaN and infinity only),
+limit), `VarianceRatio`, `Hurst` and `TwoScaleRv` (a price: NaN, infinity,
+zero and negatives refused), `Ema`, `AsymEma` and `HuberEma` (NaN and
+infinity only),
 `EwmVar`, `ZScoreNorm`, `Amihud` (also refuses a negative volume and a
 ratio that overflows), `HitRate` (NaN and infinity only).
 
@@ -447,8 +449,8 @@ if let Some(smoothed) = ema.checked_update(x)? { /* ... */ } // outside input
   `Ew*Regression` types will be renamed to `Ewm*` later in this series.
 - The variance is the unbiased weighted variance those libraries compute.
   The old recursion read low (about 5% in steady state, far more in the
-  first samples), so readings rise. `ZScoreNorm` and `VarianceRatio` are
-  built on it and shift with it.
+  first samples), so readings rise. `ZScoreNorm` is built on it and
+  shifts with it.
 - `update` returns a `MeanVariance`, and `value()` replaces the readers on
   the tracker:
 
@@ -483,6 +485,71 @@ if let Some(z) = zs.update(x)? { /* ... */ }
 if let Some(z) = zs.update(x) { /* ... */ }          // trusted input
 if let Some(z) = zs.checked_update(x)? { /* ... */ } // outside input
 ```
+
+`VarianceRatio`, `Hurst` and `TwoScaleRv` were rebuilt on their published
+definitions. All three take a price and log it themselves; their old
+readings are not comparable with the new ones.
+
+`VarianceRatio` is now the Lo and MacKinlay statistic over a sliding
+window (it was a ratio of two exponentially weighted variances):
+
+```rust
+// before
+let mut vr = VarianceRatio::builder().q(5).alpha(0.0035).build()?;
+vr.update(price)?;
+let ratio = vr.variance_ratio()?;
+// after
+let mut vr = VarianceRatio::builder().horizon(5).window(2000).build()?;
+vr.update(price);
+let estimate = vr.estimate()?;       // ratio and z_statistic together
+```
+
+- `q` is now `horizon`.
+- Replace `alpha` with a `window`, in returns. There is no exact
+  equivalent: the old weights faded, the new window is a hard cut.
+- `is_mean_reverting()` and `is_trending()` are gone. Compare
+  `z_statistic` with a level: beyond about ±2 is significant at 5%.
+- `update` returns an `Accuracy`. When it is `Accuracy::ResyncRequired`, call
+  `resync()` on a slow path: the running totals have lost digits, to a
+  collapse in volatility or a price far off the market. `estimate()`
+  returns `None` until you do.
+
+`Hurst` is the multi-scale rescaled-range estimate (it was one window's
+`ln(R/S) / ln(n)`), and it takes prices, not returns:
+
+```rust
+// before
+let mut h = Hurst::builder().window_size(100).build()?;
+h.update(bar_return)?;
+let exponent = h.hurst()?;
+// after
+let mut h = Hurst::builder().window(1024).build()?;
+h.update(bar_close);
+let exponent = h.exponent()?;
+```
+
+- Feed prices. Feeding returns, as before, is now wrong.
+- Use a window of several hundred or more; below about 128 the estimate
+  is too noisy.
+- `is_mean_reverting()` and `is_trending()` are gone; compare the exponent
+  with 0.5 and leave a margin for its spread.
+
+`TwoScaleRv` works on log prices with the paper's small-sample adjustment,
+and reads through one struct:
+
+```rust
+// before
+let variance = tsrv.realized_variance()?;
+let noise = tsrv.noise_variance()?;
+// after
+let estimate = tsrv.estimate()?;
+let (variance, noise) = (estimate.variance, estimate.noise_variance);
+```
+
+- The variance is of log returns, so it has no price units: a squared
+  proportional move, where it was in price units squared.
+- It is no longer clamped at zero; `estimate.volatility()` takes a
+  negative estimate as zero.
 
 `BipowerVariation` changed in three ways:
 

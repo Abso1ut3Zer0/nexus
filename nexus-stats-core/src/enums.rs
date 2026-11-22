@@ -43,6 +43,47 @@ impl core::fmt::Display for ConfigError {
 #[cfg(feature = "std")]
 impl std::error::Error for ConfigError {}
 
+/// Whether the reading a windowed type gives is sound, as its `update`
+/// reports it.
+///
+/// A type that keeps running totals over a sliding window adds each new
+/// term and takes the oldest away, and every add is rounded. The errors
+/// stay in the totals, and matter once the totals have become much smaller
+/// than they were. Such a type estimates that error on each `update`. Once
+/// it could reach the reading, there is no reading until the type's
+/// `resync` method recomputes the totals from the samples it holds.
+/// `resync` costs the window, so it is for the caller to schedule.
+///
+/// # Examples
+///
+/// ```
+/// use nexus_stats_core::{Accuracy, statistics::VarianceRatio};
+///
+/// let mut vr = VarianceRatio::builder().horizon(2).window(64).build().unwrap();
+/// match vr.update(100.0) {
+///     Accuracy::Sound => {}
+///     // Call `vr.resync()` when there is time; no reading until then.
+///     Accuracy::ResyncRequired { error } => assert!(error > 0.0),
+/// }
+/// ```
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum Accuracy {
+    /// A reading that is given is good: rounding in the totals has not
+    /// reached it.
+    Sound,
+    /// Rounding in the totals may have reached the reading. There is no
+    /// reading until the type's `resync` is called; samples are still
+    /// stored.
+    ResyncRequired {
+        /// An estimate of the error, as a share of the reading, when this
+        /// was first returned. Each type's `update` says which reading it
+        /// is the error of. Never below zero and never NaN; 1 or more
+        /// means no correct digits are left, and it is infinite when
+        /// nothing can be said.
+        error: f64,
+    },
+}
+
 /// Error returned when a streaming update receives invalid data.
 ///
 /// The library distinguishes three failure categories:

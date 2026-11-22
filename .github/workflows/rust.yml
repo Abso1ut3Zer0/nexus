@@ -91,6 +91,10 @@ jobs:
       run: |
         CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS="-C target-feature=+avx2,+fma" \
           cargo test -p nexus-stats-detection --target x86_64-unknown-linux-gnu
+    - name: Test nexus-stats-core (AVX2+FMA SIMD path, parity against scalar)
+      run: |
+        CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS="-C target-feature=+avx2,+fma" \
+          cargo test -p nexus-stats-core --target x86_64-unknown-linux-gnu
 
   verify-pytorch:
     runs-on: ubuntu-latest

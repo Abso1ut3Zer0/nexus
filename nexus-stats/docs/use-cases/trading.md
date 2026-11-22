@@ -173,54 +173,65 @@ match hl.reversion() {
 
 **Type:** `Hurst` (nexus-stats-core)
 
-Rolling Hurst exponent via R/S analysis. H < 0.5 = mean-reverting,
-H > 0.5 = trending, H ≈ 0.5 = random walk.
+Hurst exponent of the price series by rescaled-range analysis. H < 0.5 is
+mean-reverting, H > 0.5 trending, H near 0.5 a random walk.
 
 ```rust
 use nexus_stats_core::statistics::Hurst;
 
-let mut hurst = Hurst::builder()
-    .window_size(100)
-    .build()
-    .unwrap();
+let mut hurst = Hurst::builder().window(1024).build()?;
 
-// Feed bar-level returns (not tick-by-tick):
-hurst.update(bar_return)?;
+// Feed prices; the type differences their logarithms itself.
+hurst.update(bar_close);
 
-if hurst.is_mean_reverting() {
-    // Tighter spreads, mean-reversion strategies
-} else if hurst.is_trending() {
-    // Wider spreads, trend-following bias
+// Read per bar: the exponent is recomputed over the window.
+if let Some(h) = hurst.exponent() {
+    // At this window the estimate spreads about 0.04 around 0.5 on a
+    // random walk, so leave a margin before calling a regime.
+    if h < 0.42 {
+        // Mean-reverting: tighter spreads, reversion strategies
+    } else if h > 0.58 {
+        // Trending: wider spreads, trend-following bias
+    }
 }
 ```
 
-**Pair with `VarianceRatio`** for confirmation — two independent
-tests of the same hypothesis.
+**Pair with `VarianceRatio`** for confirmation: two independent tests of
+the same hypothesis.
 
 ### Variance ratio test for random walk
 
 **Type:** `VarianceRatio` (nexus-stats-core)
 
-VR(q) = Var(q-period returns) / (q × Var(1-period returns)).
-VR = 1 → random walk. VR < 1 → mean-reverting. VR > 1 → trending.
+VR(q) = Var(q-period returns) / (q × Var(1-period returns)), with Lo and
+MacKinlay's test statistic. VR = 1 is a random walk, below 1
+mean-reverting, above 1 trending.
 
 ```rust
-use nexus_stats_core::statistics::VarianceRatio;
+use nexus_stats_core::{Accuracy, statistics::VarianceRatio};
 
 let mut vr = VarianceRatio::builder()
-    .q(5)            // compare 5-period vs 1-period variance
-    .alpha(0.0035)   // EW forgetting factor, about a 200-sample half-life
+    .horizon(5)    // compare 5-period with 1-period variance
+    .window(2000)  // over the last 2000 returns
     .build()?;
 
-vr.update(price)?;
+// Cheap enough for every tick. The return value says when the running
+// totals have lost digits (a bad print, a collapse in volatility) and a
+// resync is due. Until it is made, `estimate()` returns `None`.
+if let Accuracy::ResyncRequired { .. } = vr.update(price) {
+    schedule_on_slow_path(symbol); // call vr.resync() there
+}
 
-if let Some(ratio) = vr.variance_ratio() {
-    // ratio < 1.0 → mean-reverting at 5-tick scale
+if let Some(estimate) = vr.estimate() {
+    // The ratio says which way; z says whether it could be chance.
+    if estimate.z_statistic < -2.58 {
+        // Mean-reverting at the 5-tick scale, at the 1% level
+    }
 }
 ```
 
-Run at multiple q values (2, 5, 10, 20) for a multi-scale view.
-Cheaper to compute than Hurst.
+Run at several horizons (2, 5, 10, 20) for a multi-scale view. `resync()` costs
+the whole window, so do not run it for every symbol on the same bar.
 
 ---
 
@@ -341,11 +352,11 @@ if let Some(bar) = bars.update(tick_count as f64)? {
 ### Confirm mean-reversion with two tests
 
 ```rust
-// Hurst: structural, long-window
-let trending = hurst.is_trending();
+// Hurst: structural, long-window, read per bar
+let trending = hurst.exponent().is_some_and(|h| h > 0.58);
 
-// Variance ratio: fast, multi-scale
-let mean_reverting = vr.variance_ratio().map_or(false, |r| r < 0.95);
+// Variance ratio: fast, multi-scale, with a significance test
+let mean_reverting = vr.estimate().is_some_and(|e| e.z_statistic < -2.58);
 
 if !trending && mean_reverting {
     // High confidence: market is mean-reverting at this scale
