@@ -1,7 +1,7 @@
 use alloc::boxed::Box;
 use alloc::vec;
 
-use crate::math::MulAdd;
+use crate::math::{MulAdd, RoundingEstimate};
 use crate::storage::SliceRing;
 
 /// Variance ratio over a sliding window: is the price a random walk?
@@ -43,17 +43,21 @@ use crate::storage::SliceRing;
 /// window. That keeps a reading cheap when many instruments are read on
 /// the same bar.
 ///
-/// A running total cannot hold a very large term and small ones at once:
-/// a return far beyond the rest pushes their digits out, and they do not
-/// come back when it leaves the window. The z statistic sums fourth powers
-/// and feels this first; the ratio, which sums squares, is all but immune.
-/// `update` watches for it and returns [`Resync::Advised`] once the digits
-/// lost could matter (see [`Resync`]), and keeps returning it until
-/// [`resync`](Self::resync) is called. The reading stays available in the
-/// meantime. `resync` recomputes the totals from the stored prices; it
-/// costs the window times `q`, so it is for the caller to schedule when
-/// there is time to spare. pandas guards its rolling moments the same way,
-/// recomputing the window itself when it suspects the loss.
+/// A running total is rounded at every add, by up to half a unit in the
+/// last place of the total as it is then. The errors stay in the total, so
+/// they matter once the total has become much smaller than it was: after
+/// volatility falls a long way, or after a price far off the market has
+/// come and gone. The z statistic sums fourth powers and feels this first;
+/// the ratio, which sums squares, is far less affected.
+///
+/// `update` keeps an estimate of that error (see [`Resync`]) and returns
+/// [`Resync::Advised`] once it could reach one part in a thousand of the z
+/// statistic, and keeps returning it until [`resync`](Self::resync) is
+/// called. The reading stays available in the meantime. `resync` recomputes
+/// the totals from the stored prices; it costs the window times `q`, so it
+/// is for the caller to schedule when there is time to spare. pandas guards
+/// its rolling moments against the same loss, recomputing the window itself
+/// when it suspects it.
 ///
 /// # Examples
 ///
@@ -85,9 +89,13 @@ pub struct VarianceRatio {
     /// Totals over pairs of one-period returns `lag` apart, for lag 1 to
     /// `q - 1`.
     lags: Box<[LagTotals]>,
-    /// The largest squared one-period return the totals have absorbed since
-    /// the last `resync`.
-    peak_square: f64,
+    /// Sum of fourth powers of the one-period returns in the window: no
+    /// lag's total of `a^2 * b^2` is larger.
+    fourth_powers: f64,
+    /// The rounding `fourth_powers` and `one_period_squares` have
+    /// accumulated since the last `resync`.
+    fourth_powers_rounding: RoundingEstimate,
+    squares_rounding: RoundingEstimate,
     /// How many prices in a row have equalled the one before.
     unchanged: usize,
     /// What `update` last returned.
@@ -100,15 +108,19 @@ pub struct VarianceRatio {
 pub enum Resync {
     /// The totals hold all the digits the reading needs.
     NotNeeded,
-    /// Rounding left in the totals may exceed one part in a million of the
-    /// z statistic: a return far larger than the window's others has passed
-    /// through, or the trend has moved far from where it was at the last
-    /// [`resync`](VarianceRatio::resync). The reading is still produced;
-    /// call `resync` when there is time.
+    /// Rounding left in the totals may exceed one part in a thousand of the
+    /// z statistic. Volatility has fallen far below what the totals went
+    /// through earlier, a price far off the market has passed through, the
+    /// trend has moved far from where it was at the last
+    /// [`resync`](VarianceRatio::resync), or a price was not a number. The
+    /// reading is still produced; call `resync` when there is time.
     Advised {
-        /// The relative error the z statistic may carry, estimated at the
-        /// update that raised the advice. 1 or more means it has no
-        /// correct digits left. The ratio is far less affected.
+        /// An estimate of the error the z statistic may carry, as a share
+        /// of the larger of `|z|` and 1, at the update that raised the
+        /// advice. It is four standard deviations of the rounding the
+        /// totals have accumulated, so the real error is usually several
+        /// times smaller. 1 or more means no correct digits are left. The
+        /// ratio is far less affected.
         z_error: f64,
     },
 }
@@ -188,15 +200,13 @@ struct Centred {
 
 impl VarianceRatio {
     /// The share of the z statistic that rounding in the totals may reach
-    /// before [`Resync::Advised`] is returned: one part in a million.
-    const ADVISE_ABOVE: f64 = 1e-6;
+    /// before [`Resync::Advised`] is returned: one part in a thousand. A
+    /// test statistic read against 2 or 2.6 needs no more.
+    const ADVISE_ABOVE: f64 = 1e-3;
 
-    /// How the z statistic's error relates to the two estimates in
-    /// `z_error`: measured over outliers of 30 to 10,000 times the typical
-    /// return and drifts of 3 to 300 standard deviations, the error stayed
-    /// within these multiples of them.
-    const PEAK_FACTOR: f64 = 4.0;
-    const DRIFT_FACTOR: f64 = 32.0;
+    /// How many standard deviations of accumulated rounding `z_error`
+    /// reports: 4, which a normal error exceeds about once in 16,000.
+    const CONFIDENCE: f64 = 4.0;
 
     /// Creates a builder.
     #[must_use]
@@ -227,6 +237,9 @@ impl VarianceRatio {
         self.unchanged = if repeats { self.unchanged + 1 } else { 0 };
         self.log_prices.push(log_price);
         self.add_terms_to_the_newest(1.0);
+        // One term leaves each total and one enters.
+        self.fourth_powers_rounding.record_n(self.fourth_powers, 2);
+        self.squares_rounding.record_n(self.one_period_squares, 2);
 
         if self.resync == Resync::NotNeeded {
             self.resync = self.assess();
@@ -348,7 +361,7 @@ impl VarianceRatio {
         for one_period in returns.clone() {
             let square = one_period * one_period;
             self.one_period_squares += square;
-            self.peak_square = self.peak_square.max(square);
+            self.fourth_powers = square.fma(square, self.fourth_powers);
         }
         for (index, totals) in self.lags.iter_mut().enumerate() {
             let pairs = returns.clone().zip(returns.clone().skip(index + 1));
@@ -359,6 +372,12 @@ impl VarianceRatio {
             self.long_sum += long;
             self.long_squares = long.fma(long, self.long_squares);
         }
+        // The recomputation is itself one rounded add per term.
+        let adds = prices.len() - 1;
+        self.fourth_powers_rounding
+            .record_n(self.fourth_powers, adds);
+        self.squares_rounding
+            .record_n(self.one_period_squares, adds);
         self.resync = self.assess();
     }
 
@@ -400,7 +419,9 @@ impl VarianceRatio {
         self.long_sum = 0.0;
         self.long_squares = 0.0;
         self.lags.fill(LagTotals::default());
-        self.peak_square = 0.0;
+        self.fourth_powers = 0.0;
+        self.fourth_powers_rounding.reset();
+        self.squares_rounding.reset();
         self.resync = Resync::NotNeeded;
     }
 
@@ -423,14 +444,16 @@ impl VarianceRatio {
         })
     }
 
-    /// The relative error rounding in the totals may put in the z statistic.
+    /// An estimate of the error rounding in the totals may put in the z
+    /// statistic, as a share of it.
     ///
-    /// Two sources, each as a share of the fourth-power sums the statistic
-    /// is built from. A term the totals absorbed leaves rounding of about
-    /// `EPSILON` times its size, and the largest was the square of the peak
-    /// squared return; the sums themselves are near `one_period^2 / n`. And
-    /// taking a drift out of sums measured elsewhere loses about `EPSILON`
-    /// times the fourth power of the distance, in standard deviations.
+    /// The totals' accumulated rounding comes from [`RoundingEstimate`], at
+    /// [`CONFIDENCE`](Self::CONFIDENCE) standard deviations, for the
+    /// fourth-power sums the z statistic is built from and the squares it
+    /// is scaled by. Added to it is the rounding in taking the drift out,
+    /// which is `EPSILON` times the sizes of the terms subtracted.
+    // Bounds are written as they are derived; fused forms would hide them.
+    #[allow(clippy::suboptimal_flops)]
     #[inline]
     fn z_error(&self, centred: Centred) -> f64 {
         let Centred {
@@ -438,20 +461,31 @@ impl VarianceRatio {
             shift,
             one_period,
         } = centred;
-        if one_period <= 0.0 {
-            // Nothing left to compare with: anything absorbed dominates.
-            return if self.peak_square > 0.0 {
-                f64::INFINITY
-            } else {
-                0.0
-            };
-        }
+        let (squares, fourth) = (self.one_period_squares, self.fourth_powers);
+        let shift_2 = shift * shift;
+        let shift_4 = shift_2 * shift_2;
 
-        let peak = self.peak_square / one_period;
-        let from_peak = Self::PEAK_FACTOR * f64::EPSILON * n * peak * peak;
-        let distance = shift * shift * n / one_period;
-        let from_drift = Self::DRIFT_FACTOR * f64::EPSILON * distance * distance;
-        from_peak.max(from_drift)
+        // Each lag's sum about the drift is built from five totals. With
+        // `fourth` and `squares` bounding their sizes, the variance of its
+        // accumulated rounding is at most this.
+        let adds = self.squares_rounding.adds();
+        let variance = 9.0 * self.fourth_powers_rounding.variance()
+            + 36.0 * shift_4 * self.squares_rounding.variance()
+            + 8.0 * RoundingEstimate::variance_of(shift_4 * n, adds);
+        // And evaluating it subtracts terms of these sizes.
+        let evaluation =
+            f64::EPSILON * (3.0 * fourth + 10.0 * shift_2 * squares + 3.0 * n * shift_4);
+        // The sum itself is near `one_period^2 / n` for each lag.
+        let from_fourth_powers = (Self::CONFIDENCE * crate::math::sqrt(variance) + evaluation) * n
+            / (one_period * one_period);
+
+        // The squares the statistic is scaled by, the same way.
+        let squares_evaluation = f64::EPSILON * (squares + n * shift_2);
+        let from_squares =
+            (self.squares_rounding.error(Self::CONFIDENCE) + squares_evaluation) / one_period;
+
+        // z goes as the squares over the root of the fourth-power sum.
+        0.5 * from_fourth_powers + from_squares
     }
 
     #[inline]
@@ -460,10 +494,11 @@ impl VarianceRatio {
             return Resync::NotNeeded;
         };
         let z_error = self.z_error(centred);
-        if z_error > Self::ADVISE_ABOVE {
-            return Resync::Advised { z_error };
+        // Written so that a NaN, from a price that was not a number, advises.
+        if z_error <= Self::ADVISE_ABOVE {
+            return Resync::NotNeeded;
         }
-        Resync::NotNeeded
+        Resync::Advised { z_error }
     }
 
     /// Adds every term that ends at the newest price (`weight` 1).
@@ -477,7 +512,7 @@ impl VarianceRatio {
         let newest_return = prices[last] - prices[last - 1] - self.pivot;
         let square = newest_return * newest_return;
         self.one_period_squares = weight.fma(square, self.one_period_squares);
-        self.peak_square = self.peak_square.max(square);
+        self.fourth_powers = (weight * square).fma(square, self.fourth_powers);
 
         // Each earlier return, paired with the newest at its lag.
         for (index, totals) in self.lags.iter_mut().enumerate() {
@@ -504,8 +539,9 @@ impl VarianceRatio {
         // Full: `window + 1` prices, and `window > q`.
         let prices = self.log_prices.as_slice();
         let oldest_return = prices[1] - prices[0] - self.pivot;
-        self.one_period_squares =
-            (weight * oldest_return).fma(oldest_return, self.one_period_squares);
+        let square = oldest_return * oldest_return;
+        self.one_period_squares = weight.fma(square, self.one_period_squares);
+        self.fourth_powers = (weight * square).fma(square, self.fourth_powers);
 
         // The oldest return, paired with each later one at its lag.
         for (index, totals) in self.lags.iter_mut().enumerate() {
@@ -552,16 +588,21 @@ impl VarianceRatioBuilder {
         if window <= q {
             return Err(crate::ConfigError::Invalid("window must be more than q"));
         }
+        let Some(prices) = window.checked_add(1) else {
+            return Err(crate::ConfigError::Invalid("window is too large"));
+        };
 
         Ok(VarianceRatio {
             q,
-            log_prices: SliceRing::new(window + 1, 0.0)?,
+            log_prices: SliceRing::new(prices, 0.0)?,
             pivot: 0.0,
             one_period_squares: 0.0,
             long_sum: 0.0,
             long_squares: 0.0,
             lags: vec![LagTotals::default(); q - 1].into_boxed_slice(),
-            peak_square: 0.0,
+            fourth_powers: 0.0,
+            fourth_powers_rounding: RoundingEstimate::new(),
+            squares_rounding: RoundingEstimate::new(),
             unchanged: 0,
             resync: Resync::NotNeeded,
             count: 0,
@@ -907,55 +948,223 @@ mod tests {
         }
     }
 
-    #[test]
-    fn the_advice_carries_an_error_that_covers_the_actual_one() {
-        // Outliers large enough to advise a resync, small enough to leave
-        // the z statistic some digits. At the update that raises the advice,
-        // the error it reports is not below the real one.
-        let (q, window) = (4, 256);
-        let typical = 1e-5 / 3f64.sqrt();
-        for (seed, outlier) in (1..=20u64).flat_map(|seed| [1000.0, 3000.0].map(|k| (seed, k))) {
+    /// One scenario for the error estimate: `busy` returns of size `1e-4`,
+    /// then `quiet` more, smaller by `fall` (reached over `gradual` returns,
+    /// or at once), with an optional `spike` at the turn, in units of the
+    /// typical return.
+    struct Scenario {
+        window: usize,
+        q: usize,
+        busy: usize,
+        quiet: usize,
+        fall: f64,
+        gradual: usize,
+        spike: f64,
+    }
+
+    impl Scenario {
+        fn prices(&self, seed: u64) -> Vec<f64> {
             let mut noise = Noise(seed.wrapping_mul(0x9E37_79B9_7F4A_7C15));
             let mut log_price = 100.0f64.ln();
-            let prices: Vec<f64> = (0..5 * window)
+            (0..self.busy + self.quiet)
                 .map(|i| {
-                    log_price += 1e-5 * noise.next();
-                    if i == 2 * window {
-                        log_price += outlier * typical;
+                    let after = i.saturating_sub(self.busy);
+                    let scale = if i < self.busy {
+                        1.0
+                    } else if self.gradual > 0 {
+                        let done = after.min(self.gradual) as f64 / self.gradual as f64;
+                        self.fall.powf(-done)
+                    } else {
+                        1.0 / self.fall
+                    };
+                    log_price += 1e-4 * scale * noise.next();
+                    let typical = 1e-4 / 3f64.sqrt();
+                    if self.spike > 0.0 && i == self.busy {
+                        log_price += self.spike * typical;
                     }
-                    if i == 2 * window + 1 {
-                        log_price -= outlier * typical;
+                    if self.spike > 0.0 && i == self.busy + 1 {
+                        log_price -= self.spike * typical;
                     }
                     log_price.exp()
                 })
-                .collect();
+                .collect()
+        }
+    }
 
+    #[test]
+    fn the_error_estimate_is_never_below_the_actual_error() {
+        // Spikes, sudden and gradual falls in volatility, and a steady run:
+        // wherever it is checked, the z statistic is within the estimate.
+        let scenarios = [
+            Scenario {
+                window: 256,
+                q: 4,
+                busy: 2000,
+                quiet: 1500,
+                fall: 1.0,
+                gradual: 0,
+                spike: 1000.0,
+            },
+            Scenario {
+                window: 1024,
+                q: 4,
+                busy: 4000,
+                quiet: 4000,
+                fall: 1.0,
+                gradual: 0,
+                spike: 3000.0,
+            },
+            Scenario {
+                window: 256,
+                q: 4,
+                busy: 60_000,
+                quiet: 2000,
+                fall: 300.0,
+                gradual: 0,
+                spike: 0.0,
+            },
+            Scenario {
+                window: 1024,
+                q: 4,
+                busy: 60_000,
+                quiet: 12_000,
+                fall: 1000.0,
+                gradual: 8000,
+                spike: 0.0,
+            },
+            Scenario {
+                window: 500,
+                q: 8,
+                busy: 60_000,
+                quiet: 3000,
+                fall: 30.0,
+                gradual: 0,
+                spike: 0.0,
+            },
+            Scenario {
+                window: 300,
+                q: 8,
+                busy: 80_000,
+                quiet: 1000,
+                fall: 1.0,
+                gradual: 0,
+                spike: 0.0,
+            },
+        ];
+        for (index, scenario) in scenarios.iter().enumerate() {
+            let prices = scenario.prices(index as u64 + 1);
+            let (q, window) = (scenario.q, scenario.window);
             let mut vr = VarianceRatio::builder()
                 .q(q)
                 .window(window)
                 .build()
                 .unwrap();
-            let mut raised = false;
+            let mut first_notice = true;
             for (i, &p) in prices.iter().enumerate() {
-                let Resync::Advised { z_error } = vr.update(p) else {
-                    continue;
-                };
-                if raised {
+                let raised = matches!(vr.update(p), Resync::Advised { .. }) && first_notice;
+                first_notice &= !raised;
+                // The exact estimate costs the window: checked at intervals
+                // and at the update that raises the notice.
+                if i < scenario.busy || !(i % 97 == 0 || raised) {
                     continue;
                 }
-                raised = true;
-                assert!(z_error > 1e-6 && z_error < 1.0, "{z_error}");
-                let (got, want) = (
-                    vr.estimate().unwrap(),
-                    exact(&prices[i - window..=i], q).unwrap(),
-                );
-                let actual = ((got.z_statistic - want.z_statistic) / want.z_statistic).abs();
+                let (Some(got), Some(want)) = (vr.estimate(), exact(&prices[i - window..=i], q))
+                else {
+                    continue;
+                };
+                let actual =
+                    (got.z_statistic - want.z_statistic).abs() / want.z_statistic.abs().max(1.0);
+                let estimate = vr.z_error(vr.centred().unwrap());
                 assert!(
-                    actual <= 2.0 * z_error,
-                    "seed {seed} outlier {outlier}: {actual} vs {z_error}"
+                    actual <= estimate,
+                    "scenario {index} price {i}: actual {actual} estimate {estimate}"
                 );
             }
-            assert!(raised, "seed {seed} outlier {outlier}");
+        }
+    }
+
+    #[test]
+    fn falling_volatility_is_advised_and_a_steady_market_is_not() {
+        // A thousandfold fall after a long busy spell loses the z statistic
+        // its digits; thirtyfold does not, and nor does a hundredfold burst.
+        let collapse = Scenario {
+            window: 256,
+            q: 4,
+            busy: 60_000,
+            quiet: 2000,
+            fall: 1000.0,
+            gradual: 0,
+            spike: 0.0,
+        };
+        let easing = Scenario {
+            window: 256,
+            q: 4,
+            busy: 60_000,
+            quiet: 2000,
+            fall: 30.0,
+            gradual: 0,
+            spike: 0.0,
+        };
+        for (scenario, advised) in [(collapse, true), (easing, false)] {
+            let mut vr = VarianceRatio::builder()
+                .q(scenario.q)
+                .window(scenario.window)
+                .build()
+                .unwrap();
+            let mut last = Resync::NotNeeded;
+            for p in scenario.prices(1) {
+                last = vr.update(p);
+            }
+            assert_eq!(matches!(last, Resync::Advised { .. }), advised, "{last:?}");
+            vr.resync();
+            assert_eq!(vr.update(100.0), Resync::NotNeeded);
+        }
+    }
+
+    #[test]
+    fn a_price_that_is_not_a_number_is_advised_and_resync_recovers() {
+        let prices = prices(200);
+        let mut vr = VarianceRatio::builder().q(3).window(50).build().unwrap();
+        for &p in &prices[..100] {
+            vr.update(p);
+        }
+        assert!(matches!(vr.update(f64::NAN), Resync::Advised { .. }));
+        // The reading is not a number until the totals are rebuilt without
+        // it: 51 prices on, it has left the window.
+        for &p in &prices[100..152] {
+            assert!(matches!(vr.update(p), Resync::Advised { .. }));
+        }
+        vr.resync();
+        let got = vr.estimate().unwrap();
+        let want = exact(&prices[101..152], 3).unwrap();
+        assert!(
+            (got.ratio - want.ratio).abs() < 1e-9 * want.ratio,
+            "{got:?} {want:?}"
+        );
+        assert_eq!(vr.update(prices[152]), Resync::NotNeeded);
+    }
+
+    #[test]
+    fn resync_before_the_window_is_full_changes_nothing_that_is_read() {
+        let prices = prices(120);
+        let mut vr = VarianceRatio::builder().q(3).window(50).build().unwrap();
+        let mut plain = vr.clone();
+        // With no price, with one, and part way through filling.
+        vr.resync();
+        for (i, &p) in prices.iter().enumerate() {
+            vr.update(p);
+            plain.update(p);
+            if i == 0 || i == 20 {
+                vr.resync();
+            }
+            match (vr.estimate(), plain.estimate()) {
+                (Some(a), Some(b)) => assert!(
+                    (a.ratio - b.ratio).abs() < 1e-9 * b.ratio
+                        && (a.z_statistic - b.z_statistic).abs() < 1e-6,
+                    "price {i}: {a:?} {b:?}"
+                ),
+                (a, b) => assert_eq!(a, b, "price {i}"),
+            }
         }
     }
 
@@ -1035,11 +1244,15 @@ mod tests {
             .build()
             .unwrap();
         for (i, &p) in prices.iter().enumerate() {
-            vr.update(p);
+            let state = vr.update(p);
+            // Measured about zero, a trend this strong is advised as soon
+            // as the window fills; one resync settles it.
             if i == window {
+                assert!(matches!(state, Resync::Advised { .. }), "{state:?}");
                 vr.resync();
             }
             if i > window {
+                assert_eq!(state, Resync::NotNeeded, "price {i}");
                 let (got, want) = (
                     vr.estimate().unwrap(),
                     exact(&prices[i - window..=i], q).unwrap(),
@@ -1195,6 +1408,10 @@ mod tests {
         assert_eq!(
             b().q(5).window(5).build().unwrap_err(),
             Invalid("window must be more than q")
+        );
+        assert_eq!(
+            b().q(5).window(usize::MAX).build().unwrap_err(),
+            Invalid("window is too large")
         );
         let vr = b().q(5).window(6).build().unwrap();
         assert_eq!((vr.q(), vr.window()), (5, 6));

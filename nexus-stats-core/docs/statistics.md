@@ -316,9 +316,11 @@ This is the statistic of Lo and MacKinlay (1988) on the log price over the last 
 
 **Cost and rounding.** The sums are running totals: `update` and `estimate` cost time proportional to `q`, whatever the window, so a reading stays cheap when many instruments are read on the same bar.
 
-A running total cannot hold a very large term and small ones at once: a return far beyond the rest pushes their digits out, and they do not come back when it leaves the window. The z statistic sums fourth powers and feels this first. `update` watches for it and returns `Resync::Advised { z_error }` once rounding could exceed one part in a million of z, with an estimate of how large it is, and keeps returning it until `resync()` is called. The reading is still produced meanwhile; the ratio is far less affected. `resync()` recomputes the totals from the stored prices and costs the window times `q`, so schedule it when there is time. pandas guards its rolling moments the same way, recomputing the window itself.
+A running total is rounded at every add, and the errors stay in it. They matter once the total has become much smaller than it was: after volatility falls a long way, or after a price far off the market has come and gone. The z statistic sums fourth powers and feels this first; the ratio is far less affected. `update` keeps an estimate of the accumulated rounding and returns `Resync::Advised { z_error }` once it could reach one part in a thousand of z, and keeps returning it until `resync()` is called. The reading is still produced meanwhile. `resync()` recomputes the totals from the stored prices and costs the window times `q`, so schedule it when there is time. pandas guards its rolling moments against the same loss, recomputing the window itself.
 
-In practice: a burst a hundred times the usual size never raises it. A print about a thousand times the usual size does, once it has left the window. A price that trends far more than it wanders raises it when the window first fills; one `resync()` then settles it.
+`z_error` is four standard deviations of that rounding, treating each add's error as independent (Higham and Mary, 2019), so the real error is usually several times smaller.
+
+Measured, at windows of 256 to 4096: a print 1,000 times the usual return does not raise it and one 3,000 times does. Volatility falling 100 times does not raise it; falling 300 times does after a hundred thousand busy updates, and 1,000 times does after ten thousand. Twenty million updates of a steady market do not. A price that trends far more than it wanders raises it when the window first fills; one `resync()` then settles it. A price that is not a number raises it.
 
 `checked_update` refuses NaN, infinity, and a price that is zero or negative.
 

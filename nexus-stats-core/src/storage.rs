@@ -253,13 +253,17 @@ impl<T: Copy> SliceRing<T> {
     ///
     /// # Errors
     ///
-    /// `ConfigError::Invalid` if `capacity` is zero.
+    /// `ConfigError::Invalid` if `capacity` is zero, or too large to store
+    /// twice.
     pub fn new(capacity: usize, fill: T) -> Result<Self, ConfigError> {
         if capacity == 0 {
             return Err(ConfigError::Invalid("ring capacity must be > 0"));
         }
+        let Some(slots) = capacity.checked_mul(2) else {
+            return Err(ConfigError::Invalid("ring capacity is too large"));
+        };
         Ok(Self {
-            buf: vec![fill; 2 * capacity].into_boxed_slice(),
+            buf: vec![fill; slots].into_boxed_slice(),
             head: 0,
             len: 0,
         })
@@ -487,7 +491,22 @@ mod tests {
     }
 
     #[test]
-    fn slice_ring_zero_capacity_is_rejected() {
+    fn slice_ring_zero_or_overflowing_capacity_is_rejected() {
         assert!(SliceRing::new(0, 0.0f64).is_err());
+        assert!(SliceRing::new(usize::MAX, 0u8).is_err());
+    }
+
+    /// A clone holds the same window and then goes its own way.
+    #[test]
+    fn slice_ring_clone_is_independent() {
+        let mut ring = SliceRing::new(3, 0i64).unwrap();
+        for x in 1..=5 {
+            ring.push(x);
+        }
+        let mut copy = ring.clone();
+        assert_eq!(copy.as_slice(), ring.as_slice());
+        copy.push(6);
+        assert_eq!(ring.as_slice(), [3, 4, 5]);
+        assert_eq!(copy.as_slice(), [4, 5, 6]);
     }
 }

@@ -406,10 +406,17 @@ contained.
   `VarianceRatioEstimate`; `Resync`. The z statistic is Lo and MacKinlay's
   heteroskedasticity-robust one. `update` and `estimate` cost time
   proportional to `q`, from running totals. `update` returns
-  `Resync::Advised { z_error }` when rounding in the totals could matter
-  (after a price far off the market, or a trend far from where it was),
+  `Resync::Advised { z_error }` when rounding in the totals could reach
+  one part in a thousand of z (after volatility falls a long way, a price
+  far off the market, or a trend far from where it was),
   and keeps returning it until `resync()` recomputes them from the stored
   prices.
+- `math::RoundingEstimate` and `math::RoundingBound`: the rounding error a
+  running total has accumulated, from the size of the total at each add.
+  The estimate treats the errors as independent (Higham and Mary, 2019)
+  and matches what is seen; the bound is the worst case. For totals that
+  are added to and removed from. `VarianceRatio` decides its
+  `Resync::Advised` with the estimate.
 - `storage::SliceRing`: a fixed-capacity ring whose contents are always
   one slice, for windows that are read across. `Hurst` and `VarianceRatio`
   use it.

@@ -216,7 +216,8 @@ let mut vr = VarianceRatio::builder()
     .build()?;
 
 // Cheap enough for every tick. The return value says when the running
-// totals have lost digits (after a bad print, say) and a resync is due.
+// totals have lost digits (a bad print, a collapse in volatility) and a
+// resync is due.
 if let Resync::Advised { .. } = vr.update(price) {
     schedule_on_slow_path(symbol); // call vr.resync() there
 }
