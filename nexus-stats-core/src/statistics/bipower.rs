@@ -7,7 +7,7 @@ use crate::math::MulAdd;
 ///
 /// - realized variance, `sum r_i^2`, counts everything;
 /// - bipower variation, `pi/2 * sum |r_i| * |r_{i-1}|`, is moved far less by
-///   a jump: the jump enters once, times its neighbours, not squared.
+///   a jump: the jump enters once, times its neighbors, not squared.
 ///
 /// Both are totals since the last [`reset`](Self::reset), so reset at the
 /// start of each period.
@@ -308,7 +308,7 @@ mod tests {
 
     #[test]
     fn noise_without_jumps_has_almost_no_jump_share() {
-        // Roughly normal returns: twelve uniforms, summed and centred.
+        // Roughly normal returns: twelve uniforms, summed and centered.
         let mut state = 7u64;
         let mut uniform = || {
             state = state

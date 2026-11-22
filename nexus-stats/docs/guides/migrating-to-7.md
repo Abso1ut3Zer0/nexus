@@ -598,7 +598,7 @@ if let Some(estimate) = rs.estimate() {
 - `min_samples` must be at least 3.
 
 **Which types return a value from `update`:** only transforms, whose result
-is used for each sample (smoothers, normalizers). A type that summarises
+is used for each sample (smoothers, normalizers). A type that summarizes
 many samples returns nothing from `update` and is read by a named method.
 
 `HalfLife::autocorrelation()` is now `coefficient()`, and `half_life()` is

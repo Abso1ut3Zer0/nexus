@@ -541,48 +541,57 @@ impl EwWeight {
     /// `(0, 1)`, a `halflife` that is not positive and finite, a `span`
     /// below 2, or any of the three giving a weight too small to use.
     pub fn resolve(self) -> Result<f64, crate::ConfigError> {
-        let alpha = match self {
-            Self::Alpha(a) => {
-                if !in_unit_interval(a) {
-                    return Err(crate::ConfigError::Invalid("alpha must be in (0, 1)"));
-                }
-                if a < Self::SMALLEST {
-                    return Err(crate::ConfigError::Invalid(
-                        "alpha is too small for a usable weight",
-                    ));
-                }
-                a
-            }
+        match self {
+            Self::Alpha(alpha) => Self::from_alpha(alpha),
             #[cfg(any(feature = "std", feature = "libm"))]
-            Self::Halflife(h) => {
-                if !positive_finite(h) {
-                    return Err(crate::ConfigError::Invalid(
-                        "halflife must be positive and finite",
-                    ));
-                }
-                // A half-life so short that `1 - exp(-x)` rounds to one, or
-                // so long that it rounds to zero, has no usable weight.
-                let alpha = alpha_from_halflife(h);
-                if !in_unit_interval(alpha) {
-                    return Err(crate::ConfigError::Invalid(
-                        "halflife is too small or too large for a usable weight",
-                    ));
-                }
-                alpha
-            }
-            Self::Span(n) => {
-                if n < 2 {
-                    return Err(crate::ConfigError::Invalid("span must be at least 2"));
-                }
-                let alpha = alpha_from_span(n);
-                if alpha < Self::SMALLEST {
-                    return Err(crate::ConfigError::Invalid(
-                        "span is too large for a usable weight",
-                    ));
-                }
-                alpha
-            }
-        };
+            Self::Halflife(halflife) => Self::from_halflife(halflife),
+            Self::Span(span) => Self::from_span(span),
+        }
+    }
+
+    /// `alpha` itself, if it is in `(0, 1)` and large enough to use.
+    fn from_alpha(alpha: f64) -> Result<f64, crate::ConfigError> {
+        if !in_unit_interval(alpha) {
+            return Err(crate::ConfigError::Invalid("alpha must be in (0, 1)"));
+        }
+        if alpha < Self::SMALLEST {
+            return Err(crate::ConfigError::Invalid(
+                "alpha is too small for a usable weight",
+            ));
+        }
+        Ok(alpha)
+    }
+
+    /// The weight for a half-life in samples.
+    #[cfg(any(feature = "std", feature = "libm"))]
+    fn from_halflife(halflife: f64) -> Result<f64, crate::ConfigError> {
+        if !positive_finite(halflife) {
+            return Err(crate::ConfigError::Invalid(
+                "halflife must be positive and finite",
+            ));
+        }
+        // A half-life so short that `1 - exp(-x)` rounds to one, or so long
+        // that it rounds to zero, has no usable weight.
+        let alpha = alpha_from_halflife(halflife);
+        if !in_unit_interval(alpha) {
+            return Err(crate::ConfigError::Invalid(
+                "halflife is too small or too large for a usable weight",
+            ));
+        }
+        Ok(alpha)
+    }
+
+    /// The weight for a pandas `span`.
+    fn from_span(span: u64) -> Result<f64, crate::ConfigError> {
+        if span < 2 {
+            return Err(crate::ConfigError::Invalid("span must be at least 2"));
+        }
+        let alpha = alpha_from_span(span);
+        if alpha < Self::SMALLEST {
+            return Err(crate::ConfigError::Invalid(
+                "span is too large for a usable weight",
+            ));
+        }
         Ok(alpha)
     }
 }
