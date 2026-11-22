@@ -29,8 +29,10 @@ use crate::math::{EwWeight, MulAdd};
 /// ```
 #[derive(Debug, Clone)]
 pub struct AsymEma {
-    alpha_up: f64,
-    alpha_down: f64,
+    /// The weight by direction: `[falling, rising]`.
+    alpha: [f64; 2],
+    /// `1 - alpha`, in the same order.
+    one_minus_alpha: [f64; 2],
     value: f64,
     count: u64,
     /// Samples needed before the value is reported: `min_samples`, or 0 when
@@ -77,12 +79,9 @@ impl AsymEma {
             return self.value();
         }
 
-        let alpha = if sample > self.value {
-            self.alpha_up
-        } else {
-            self.alpha_down
-        };
-        self.value = alpha.fma(sample - self.value, self.value);
+        // PERF: indexed by direction, so the weight is a load, not a branch.
+        let rising = usize::from(sample > self.value);
+        self.value = self.alpha[rising].fma(sample, self.one_minus_alpha[rising] * self.value);
         self.value()
     }
 
@@ -255,8 +254,8 @@ impl AsymEmaBuilder {
 
         let start = self.seed.unwrap_or(0.0);
         Ok(AsymEma {
-            alpha_up,
-            alpha_down,
+            alpha: [alpha_down, alpha_up],
+            one_minus_alpha: [1.0 - alpha_down, 1.0 - alpha_up],
             value: start,
             count: 0,
             prime_at: if self.seed.is_some() {
@@ -415,6 +414,20 @@ mod tests {
     }
 
     #[test]
+    fn opposite_extremes_do_not_overflow() {
+        // `sample - value` would overflow here; the weighted sum does not.
+        let mut ema = AsymEma::builder()
+            .alpha_up(0.5)
+            .alpha_down(0.5)
+            .seed(-1e308)
+            .build()
+            .unwrap();
+        assert_eq!(ema.checked_update(1e308), Ok(Some(0.0)));
+        assert_eq!(ema.reset_with_seed(1e308), Ok(()));
+        assert_eq!(ema.checked_update(-1e308), Ok(Some(0.0)));
+    }
+
+    #[test]
     fn seed_is_a_value_not_a_sample() {
         let mut ema = AsymEma::builder()
             .alpha_up(0.5)
@@ -439,6 +452,30 @@ mod tests {
 
         assert!(ema.reset_with_seed(f64::NAN).is_err());
         assert_eq!((ema.count(), ema.value()), (1, Some(90.0)));
+
+        // On an instance built with a seed, the new one replaces it.
+        let mut seeded = AsymEma::builder()
+            .alpha_up(0.5)
+            .alpha_down(0.25)
+            .seed(1.0)
+            .build()
+            .unwrap();
+        seeded.reset_with_seed(50.0).unwrap();
+        seeded.update(60.0);
+        seeded.reset();
+        assert_eq!((seeded.count(), seeded.value()), (0, Some(50.0)));
+    }
+
+    #[test]
+    fn a_weight_too_small_to_use_is_refused() {
+        assert_eq!(
+            AsymEma::builder()
+                .alpha_up(1e-17)
+                .alpha_down(0.25)
+                .build()
+                .unwrap_err(),
+            crate::ConfigError::Invalid("alpha is too small for a usable weight")
+        );
     }
 
     #[test]

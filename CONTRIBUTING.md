@@ -234,6 +234,23 @@ standard library's policy
 
 "Small" means straight-line code with no loop.
 
+### Performance Notes
+
+Code that is shaped for speed gets a `// PERF:` comment saying what the shape
+buys:
+
+```rust
+// PERF: indexed by direction, so the weight is a load, not a branch.
+let rising = usize::from(sample > self.value);
+```
+
+- **One short line.** The fact, not the story. Assembly and measurements go
+  in the PR description.
+- **Use it where a reader might simplify the code and lose the property:** a
+  hand-written clamp, a reciprocal kept in a field, an index in place of an
+  `if`.
+- **State only what was checked,** in the assembly or with a benchmark.
+
 ### No Unsafe Without Justification
 
 Unsafe code requires a `// SAFETY:` comment explaining why it's sound. "It's faster" is not sufficient — explain the invariants being upheld.

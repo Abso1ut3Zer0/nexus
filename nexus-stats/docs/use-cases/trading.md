@@ -289,25 +289,22 @@ let rate = hits.ew_hit_rate();
 
 ### Conditional smoothing
 
-**Type:** `ConditionalEma` (nexus-stats-smoothing)
+**Type:** `Ema`, one per condition, updated only when its condition holds.
 
-EMA that only updates when a condition holds. "Mean markout when VPIN
-is high" vs "when VPIN is low."
+"Mean markout when VPIN is high" vs "when VPIN is low."
 
 ```rust
-use nexus_stats_smoothing::ConditionalEma;
+use nexus_stats::smoothing::Ema;
 
-let mut high_vpin_markout = ConditionalEma::builder()
-    .halflife(50.0)
-    .build()?;
-
-let mut low_vpin_markout = ConditionalEma::builder()
-    .halflife(50.0)
-    .build()?;
+let mut high_vpin_markout = Ema::builder().halflife(50.0).build()?;
+let mut low_vpin_markout = Ema::builder().halflife(50.0).build()?;
 
 // On each fill:
-high_vpin_markout.update(markout, vpin > 0.5)?;
-low_vpin_markout.update(markout, vpin <= 0.5)?;
+if vpin > 0.5 {
+    high_vpin_markout.update(markout);
+} else {
+    low_vpin_markout.update(markout);
+}
 
 // Discover: overall markout is -1bps (looks fine) but
 // high_vpin_markout = -8bps (terrible), low_vpin = +2bps (great)
@@ -380,6 +377,6 @@ let horizon = decay.useful_horizon(0.01);  // predictive horizon
 | Random walk test | `VarianceRatio` | core |
 | Distribution change | `DistributionShift` | core/detection |
 | Win rate | `HitRate` | core |
-| Conditional smoothing | `ConditionalEma` | smoothing |
+| Conditional smoothing | `Ema`, updated only when the condition holds | core |
 | Mean shift detection | `Cusum` | core |
 | Transient anomaly detection | `ShiryaevRoberts` | core |

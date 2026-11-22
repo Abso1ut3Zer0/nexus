@@ -1,5 +1,7 @@
 //! Huber EMA: outlier-robust exponential moving average.
 
+use core::hint::select_unpredictable;
+
 use nexus_stats_core::math::{EwWeight, MulAdd};
 
 /// Huber EMA: an EMA whose step per sample is bounded.
@@ -68,6 +70,15 @@ impl HuberEma {
     /// [`checked_update`](Self::checked_update).
     #[inline]
     pub fn update(&mut self, sample: f64) -> Option<f64> {
+        // PERF: `f64::clamp` without its `low <= high` check, which `build`
+        // guarantees. The hint keeps both selects branchless.
+        #[inline]
+        fn clamp(value: f64, low: f64, high: f64) -> f64 {
+            debug_assert!(low <= high);
+            let clamped = select_unpredictable(value < low, low, value);
+            select_unpredictable(clamped > high, high, clamped)
+        }
+
         let first_unseeded = self.count == 0 && self.prime_at != 0;
         self.count += 1;
         if first_unseeded {
@@ -75,7 +86,7 @@ impl HuberEma {
             return self.value();
         }
 
-        let deviation = (sample - self.value).clamp(-self.delta, self.delta);
+        let deviation = clamp(sample - self.value, -self.delta, self.delta);
         self.value = self.alpha.fma(deviation, self.value);
         self.value()
     }
@@ -397,6 +408,34 @@ mod tests {
 
         assert!(h.reset_with_seed(f64::INFINITY).is_err());
         assert_eq!((h.count(), h.value()), (1, Some(99.0)));
+
+        // On an instance built with a seed, the new one replaces it.
+        let mut seeded = HuberEma::builder()
+            .alpha(0.5)
+            .delta(4.0)
+            .seed(1.0)
+            .build()
+            .unwrap();
+        seeded.reset_with_seed(50.0).unwrap();
+        seeded.update(52.0);
+        seeded.reset();
+        assert_eq!((seeded.count(), seeded.value()), (0, Some(50.0)));
+    }
+
+    #[test]
+    fn span_and_halflife_set_the_weight() {
+        // Span 3 is alpha 0.5; a half-life of one sample is alpha 0.5.
+        let by_span = HuberEma::builder().span(3).delta(4.0).build().unwrap();
+        assert_eq!(by_span.alpha(), 0.5);
+        #[cfg(any(feature = "std", feature = "libm"))]
+        {
+            let by_halflife = HuberEma::builder()
+                .halflife(1.0)
+                .delta(4.0)
+                .build()
+                .unwrap();
+            assert_eq!(by_halflife.alpha(), 0.5);
+        }
     }
 
     #[test]
@@ -408,6 +447,10 @@ mod tests {
         assert_eq!(
             b().span(1).delta(1.0).build().unwrap_err(),
             Invalid("span must be at least 2")
+        );
+        assert_eq!(
+            b().alpha(1e-17).delta(1.0).build().unwrap_err(),
+            Invalid("alpha is too small for a usable weight")
         );
         for delta in [0.0, -1.0, f64::NAN, f64::INFINITY] {
             assert_eq!(

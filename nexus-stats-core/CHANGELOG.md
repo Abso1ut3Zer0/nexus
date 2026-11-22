@@ -202,6 +202,9 @@ contained.
   `ewm_var`) and pandas (`ewm().var()`) use. `Ema` keeps its name. The
   `Ew*Regression` types in `nexus-stats-regression` will take the `Ewm`
   stem when each is converted.
+- **`AsymEma::update` no longer validates or returns a `Result`**: it
+  returns `Option<f64>`, as `Ema` does. `checked_update` is the validating
+  form and refuses NaN and infinity.
 - **`Ema::update` no longer validates or returns a `Result`**: it returns
   `Option<f64>`. `checked_update` is the validating form and refuses NaN
   and infinity.
@@ -362,6 +365,8 @@ contained.
   input limit covers every order. The type docs give rough bounds and the
   libraries this follows.
 - `Ema::checked_update`, `Ema::reset_with_seed`.
+- `AsymEma::checked_update`, `AsymEma::reset_with_seed`, and on its
+  builder `seed`, `halflife_up`, `halflife_down`.
 - `ZScoreNorm::checked_update`, `ZScoreNorm::checked_normalize`,
   `ZScoreNorm::reset_with_seed`.
 - `EwmVar::checked_update` (refuses NaN, infinity, and a magnitude above

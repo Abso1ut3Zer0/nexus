@@ -304,7 +304,7 @@ See [`docs/use-cases/trading.md`](docs/use-cases/trading.md) for full guide with
 | Implicit spread estimation | `RollSpread` | core |
 | Noise-corrected realized vol | `TwoScaleRv` | core |
 | Bursty event intensity | `HawkesIntensity` | core |
-| Conditional smoothing | `ConditionalEma` | smoothing |
+| Conditional smoothing | `Ema`, updated only when the condition holds | core |
 | Venue selection | `ThompsonBeta` / `Ucb1` | regression |
 | Parameter A/B testing | `Ucb1` / `EpsilonGreedy` | regression |
 | Adversarial strategy | `Exp3` | regression |

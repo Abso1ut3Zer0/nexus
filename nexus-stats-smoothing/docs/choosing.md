@@ -56,9 +56,16 @@ See [huber-ema.md](huber-ema.md), [hampel.md](hampel.md), [windowed-median.md](w
 
 ## Do you only want to update the smoother when some condition holds?
 
-Use **`ConditionalEma`** — e.g. "update this fill-rate EMA only when an order was placed", "update this latency EMA only when the queue wasn't empty". Avoids poisoning the average with idle-time zero samples.
+Call `update` only when it does. No special type is needed:
 
-See [conditional-ema.md](conditional-ema.md).
+```rust
+// Smooth markout only while flow is toxic.
+if vpin > 0.5 {
+    markout_ema.update(markout);
+}
+```
+
+This keeps idle-time samples out of the average. If you also want the share of samples that passed the condition, keep two counters beside it.
 
 ## Still not sure?
 
