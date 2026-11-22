@@ -208,14 +208,18 @@ MacKinlay's test statistic. VR = 1 is a random walk, below 1
 mean-reverting, above 1 trending.
 
 ```rust
-use nexus_stats_core::statistics::VarianceRatio;
+use nexus_stats_core::statistics::{Resync, VarianceRatio};
 
 let mut vr = VarianceRatio::builder()
     .q(5)          // compare 5-period with 1-period variance
     .window(2000)  // over the last 2000 returns
     .build()?;
 
-vr.update(price); // cheap enough for every tick
+// Cheap enough for every tick. The return value says when the running
+// totals have lost digits (after a bad print, say) and a resync is due.
+if let Resync::Advised { .. } = vr.update(price) {
+    schedule_on_slow_path(symbol); // call vr.resync() there
+}
 
 if let Some(estimate) = vr.estimate() {
     // The ratio says which way; z says whether it could be chance.
@@ -225,9 +229,8 @@ if let Some(estimate) = vr.estimate() {
 }
 ```
 
-Run at several `q` (2, 5, 10, 20) for a multi-scale view. Call `resync()`
-on a slow path now and then (once a session) to clear rounding error from
-the running totals.
+Run at several `q` (2, 5, 10, 20) for a multi-scale view. `resync()` costs
+the whole window, so do not run it for every symbol on the same bar.
 
 ---
 

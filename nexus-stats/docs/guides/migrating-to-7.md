@@ -508,8 +508,9 @@ let estimate = vr.estimate()?;       // ratio and z_statistic together
   equivalent: the old weights faded, the new window is a hard cut.
 - `is_mean_reverting()` and `is_trending()` are gone. Compare
   `z_statistic` with a level: beyond about ±2 is significant at 5%.
-- Call `resync()` on a slow path now and then; it clears rounding error
-  from the running totals.
+- `update` returns a `Resync`. When it is `Resync::Advised`, call
+  `resync()` on a slow path: the running totals have lost digits, usually
+  to a price far off the market.
 
 `Hurst` is the multi-scale rescaled-range estimate (it was one window's
 `ln(R/S) / ln(n)`), and it takes prices, not returns:

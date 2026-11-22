@@ -221,7 +221,8 @@ contained.
   must be at least 2, a seeded normalizer starts with `count()` at 0, and
   `reset()` returns to the seed.
 - **`VarianceRatio`, `TwoScaleRv` and `Hurst` take a price and no longer
-  validate or return a `Result` from `update`.** Each takes the logarithm
+  validate or return a `Result` from `update`** (`VarianceRatio::update`
+  returns a `Resync` notice). Each takes the logarithm
   itself. `checked_update` is the validating form and refuses NaN,
   infinity, and a price that is zero or negative.
 - **`VarianceRatio` is the Lo and MacKinlay statistic over a sliding
@@ -402,10 +403,16 @@ contained.
 - `ZScoreNorm::checked_update`, `ZScoreNorm::checked_normalize`,
   `ZScoreNorm::reset_with_seed`.
 - `VarianceRatio::checked_update`, `estimate`, `resync` and `window`;
-  `VarianceRatioEstimate`. The z statistic is Lo and MacKinlay's
+  `VarianceRatioEstimate`; `Resync`. The z statistic is Lo and MacKinlay's
   heteroskedasticity-robust one. `update` and `estimate` cost time
-  proportional to `q`, from running totals; `resync()` recomputes them
-  from the stored prices to remove accumulated rounding error.
+  proportional to `q`, from running totals. `update` returns
+  `Resync::Advised { z_error }` when rounding in the totals could matter
+  (after a price far off the market, or a trend far from where it was),
+  and keeps returning it until `resync()` recomputes them from the stored
+  prices.
+- `storage::SliceRing`: a fixed-capacity ring whose contents are always
+  one slice, for windows that are read across. `Hurst` and `VarianceRatio`
+  use it.
 - `Hurst::checked_update`, `exponent`, `window`, and the builder's
   `smallest_window`. Its inner loop has SSE2 and AVX2 versions (AVX2 when
   the build enables `avx2` and `fma`): a read is about twice as fast on a

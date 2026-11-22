@@ -314,7 +314,11 @@ This is the statistic of Lo and MacKinlay (1988) on the log price over the last 
 - `z` above about 2: trending. Below about -2: mean-reverting. 1.96 is the 5% level, 2.58 the 1% level.
 - Read on every bar, a 5% level gives a false signal about one bar in twenty. Use a higher level, or require it to hold for several reads.
 
-**Cost and rounding.** The sums are running totals: `update` and `estimate` cost time proportional to `q`, whatever the window (about 300 and 70 cycles at `q = 8`), so a reading stays cheap when many instruments are read on the same bar. Each total keeps the digits a plain sum would drop, a window in which the price has not moved reads `None`, and the totals are measured about the window's drift as of the last `resync()`. Against an exact recompute over 20 million updates, the ratio stays within `1e-15` and the z statistic within `1e-9`, including with a price a million times off the market every half million updates. `resync()` recomputes everything from the stored prices: call it when there is time to spare (once a session), and after the window first fills if the price trends far more than it wanders.
+**Cost and rounding.** The sums are running totals: `update` and `estimate` cost time proportional to `q`, whatever the window, so a reading stays cheap when many instruments are read on the same bar.
+
+A running total cannot hold a very large term and small ones at once: a return far beyond the rest pushes their digits out, and they do not come back when it leaves the window. The z statistic sums fourth powers and feels this first. `update` watches for it and returns `Resync::Advised { z_error }` once rounding could exceed one part in a million of z, with an estimate of how large it is, and keeps returning it until `resync()` is called. The reading is still produced meanwhile; the ratio is far less affected. `resync()` recomputes the totals from the stored prices and costs the window times `q`, so schedule it when there is time. pandas guards its rolling moments the same way, recomputing the window itself.
+
+In practice: a burst a hundred times the usual size never raises it. A print about a thousand times the usual size does, once it has left the window. A price that trends far more than it wanders raises it when the window first fills; one `resync()` then settles it.
 
 `checked_update` refuses NaN, infinity, and a price that is zero or negative.
 

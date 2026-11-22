@@ -1,8 +1,8 @@
 use alloc::boxed::Box;
-use alloc::vec;
 use alloc::vec::Vec;
 
 use crate::math::MulAdd;
+use crate::storage::SliceRing;
 
 mod kernel;
 
@@ -48,10 +48,8 @@ mod kernel;
 /// ```
 #[derive(Debug, Clone)]
 pub struct Hurst {
-    /// Log prices, each stored twice, half the buffer apart.
-    log_prices: Box<[f64]>,
-    /// Where the next price goes, in the first half.
-    head: usize,
+    /// The last `window + 1` log prices.
+    log_prices: SliceRing<f64>,
     count: u64,
     /// The stretch lengths, longest first.
     scales: Box<[Scale]>,
@@ -92,17 +90,8 @@ impl Hurst {
     /// [`checked_update`](Self::checked_update).
     #[inline]
     pub fn update(&mut self, price: f64) {
-        let log_price = crate::math::ln(price);
-        let capacity = self.log_prices.len() / 2;
         self.count += 1;
-
-        // PERF: written twice, so the newest prices are always one slice.
-        self.log_prices[self.head] = log_price;
-        self.log_prices[self.head + capacity] = log_price;
-        self.head += 1;
-        if self.head == capacity {
-            self.head = 0;
-        }
+        self.log_prices.push(crate::math::ln(price));
     }
 
     /// Checked update. Feeds `price`, or returns an error and leaves the
@@ -170,13 +159,12 @@ impl Hurst {
             Some((sums.highest - sums.lowest) / crate::math::sqrt(variance))
         }
 
-        let capacity = self.log_prices.len() / 2;
-        if self.count < capacity as u64 {
+        if !self.log_prices.is_full() {
             return None;
         }
         // Oldest first.
-        let log_prices = &self.log_prices[self.head..self.head + capacity];
-        let returns = capacity - 1;
+        let log_prices = self.log_prices.as_slice();
+        let returns = log_prices.len() - 1;
 
         // Least-squares slope of `ln(R/S) - ln(expected)` on `ln(size)`.
         let mut slope = 0.0;
@@ -209,7 +197,7 @@ impl Hurst {
     /// The window, in returns.
     #[must_use]
     pub fn window(&self) -> usize {
-        self.log_prices.len() / 2 - 1
+        self.log_prices.capacity() - 1
     }
 
     /// Number of prices fed since construction or `reset`.
@@ -221,12 +209,12 @@ impl Hurst {
     /// Whether the window is full.
     #[must_use]
     pub fn is_primed(&self) -> bool {
-        self.count >= (self.log_prices.len() / 2) as u64
+        self.log_prices.is_full()
     }
 
     /// Empties the window. Parameters and allocation unchanged.
     pub fn reset(&mut self) {
-        self.head = 0;
+        self.log_prices.clear();
         self.count = 0;
     }
 }
@@ -293,8 +281,7 @@ impl HurstBuilder {
             .collect();
 
         Ok(Hurst {
-            log_prices: vec![0.0; 2 * (window + 1)].into_boxed_slice(),
-            head: 0,
+            log_prices: SliceRing::new(window + 1, 0.0)?,
             count: 0,
             scales: scales.into_boxed_slice(),
         })
