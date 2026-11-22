@@ -104,34 +104,10 @@ pub struct VarianceRatio {
     horizon: usize,
     /// The last `window + 1` log prices.
     log_prices: SliceRing<f64>,
-    /// The return every total is measured about: zero, then the window's
-    /// drift as of the last `resync`.
-    pivot: f64,
-    /// Sum of squared one-period returns in the window.
-    one_period_squares: f64,
-    /// Sum, and sum of squares, of the overlapping `q`-period returns.
-    long_sum: f64,
-    long_squares: f64,
-    /// Totals over pairs of one-period returns `lag` apart, for lag 1 to
-    /// `q - 1`.
-    lags: Box<[LagTotals]>,
-    /// Lo and MacKinlay's weight on each lag's total, `(2 * (1 - lag / q))^2`,
-    /// and their sum.
-    lag_weights: Box<[f64]>,
-    lag_weights_sum: f64,
-    /// Their divisor for the `q`-period sum of squares over a full window,
-    /// `m = q * (n - q + 1) * (1 - q / n)`.
-    long_divisor: f64,
-    /// Sum of fourth powers of the one-period returns in the window: no
-    /// lag's total of `a^2 * b^2` is larger.
-    fourth_powers: f64,
-    /// The rounding `fourth_powers` and `one_period_squares` have
-    /// accumulated since the last `resync`.
-    fourth_powers_rounding: RoundingEstimate,
-    squares_rounding: RoundingEstimate,
-    /// And `long_squares` and `long_sum`.
-    long_squares_rounding: RoundingEstimate,
-    long_sum_rounding: RoundingEstimate,
+    /// The running totals the reading is built from.
+    totals: Totals,
+    /// Lo and MacKinlay's constants for this horizon and window.
+    constants: Constants,
     /// How many prices in a row have equalled the one before.
     unchanged: usize,
     /// What `update` last returned.
@@ -179,6 +155,211 @@ impl LagTotals {
             + shift_squared * (self.sum_of_squares + 4.0 * self.products)
             - 2.0 * shift_squared * shift * self.sum
             + pairs * shift_squared * shift_squared
+    }
+}
+
+/// A running total and the rounding it has accumulated.
+#[derive(Debug, Clone, Copy, Default)]
+struct Tracked {
+    total: f64,
+    rounding: RoundingEstimate,
+}
+
+impl Tracked {
+    /// Records `adds` adds that left the total where it is now.
+    #[inline]
+    fn record(&mut self, adds: usize) {
+        self.rounding.record_n(self.total, adds);
+    }
+}
+
+/// The running totals the reading is built from: what `update` keeps and
+/// `resync` rebuilds.
+#[derive(Debug, Clone)]
+struct Totals {
+    /// The return every total is measured about: zero, then the window's
+    /// drift as of the last `resync`.
+    pivot: f64,
+    /// Sum of squared one-period returns in the window.
+    squares: Tracked,
+    /// Sum of their fourth powers: no lag's total of `a^2 * b^2` is larger.
+    fourth_powers: Tracked,
+    /// Sum, and sum of squares, of the overlapping `q`-period returns.
+    long_sum: Tracked,
+    long_squares: Tracked,
+    /// Totals over pairs of one-period returns `lag` apart, for lag 1 to
+    /// `q - 1`.
+    lags: Box<[LagTotals]>,
+}
+
+impl Totals {
+    fn new(horizon: usize) -> Self {
+        Self {
+            pivot: 0.0,
+            squares: Tracked::default(),
+            fourth_powers: Tracked::default(),
+            long_sum: Tracked::default(),
+            long_squares: Tracked::default(),
+            lags: vec![LagTotals::default(); horizon - 1].into_boxed_slice(),
+        }
+    }
+
+    fn clear(&mut self) {
+        self.pivot = 0.0;
+        self.squares = Tracked::default();
+        self.fourth_powers = Tracked::default();
+        self.long_sum = Tracked::default();
+        self.long_squares = Tracked::default();
+        self.lags.fill(LagTotals::default());
+    }
+
+    /// Records `adds` adds to each one-period total and `long_adds` to each
+    /// `q`-period one.
+    #[inline]
+    fn record(&mut self, adds: usize, long_adds: usize) {
+        self.fourth_powers.record(adds);
+        self.squares.record(adds);
+        self.long_squares.record(long_adds);
+        self.long_sum.record(long_adds);
+    }
+
+    /// Recomputes every total from `log_prices`, measured about their
+    /// drift.
+    fn rebuild(&mut self, log_prices: &[f64], horizon: usize) {
+        self.clear();
+        if log_prices.len() < 2 {
+            return;
+        }
+        let returns = log_prices.len() - 1;
+        // Measure about the drift of what is held, so taking the drift out
+        // at read time subtracts little.
+        self.pivot = (log_prices[returns] - log_prices[0]) / returns as f64;
+
+        self.sum_one_period_returns(log_prices);
+        self.sum_pairs_at_each_lag(log_prices);
+        self.sum_long_returns(log_prices, horizon);
+
+        // The recomputation is itself one rounded add per term.
+        self.record(returns, (returns + 1).saturating_sub(horizon));
+    }
+
+    /// For `rebuild`: the squares and fourth powers of the one-period
+    /// returns, about the pivot.
+    fn sum_one_period_returns(&mut self, log_prices: &[f64]) {
+        for pair in log_prices.windows(2) {
+            let one_period = pair[1] - pair[0] - self.pivot;
+            let square = one_period * one_period;
+            self.squares.total += square;
+            self.fourth_powers.total = square.fma(square, self.fourth_powers.total);
+        }
+    }
+
+    /// For `rebuild`: each lag's totals, over every pair of one-period
+    /// returns that far apart.
+    fn sum_pairs_at_each_lag(&mut self, log_prices: &[f64]) {
+        let pivot = self.pivot;
+        let returns = log_prices.windows(2).map(|pair| pair[1] - pair[0] - pivot);
+        for (index, totals) in self.lags.iter_mut().enumerate() {
+            let pairs = returns.clone().zip(returns.clone().skip(index + 1));
+            pairs.for_each(|(earlier, later)| totals.add(earlier, later, 1.0));
+        }
+    }
+
+    /// For `rebuild`: the sum and squares of the overlapping `q`-period
+    /// returns, about `q` times the pivot.
+    fn sum_long_returns(&mut self, log_prices: &[f64], horizon: usize) {
+        let long_pivot = horizon as f64 * self.pivot;
+        let ends = &log_prices[horizon.min(log_prices.len())..];
+        for (from, to) in log_prices.iter().zip(ends) {
+            let long = to - from - long_pivot;
+            self.long_sum.total += long;
+            self.long_squares.total = long.fma(long, self.long_squares.total);
+        }
+    }
+
+    /// Adds every term that ends at the newest of `log_prices` (`weight`
+    /// 1).
+    #[inline]
+    fn add_terms_to_the_newest(&mut self, log_prices: &[f64], horizon: usize, weight: f64) {
+        let last = log_prices.len() - 1;
+        if last == 0 {
+            return;
+        }
+        let newest_return = log_prices[last] - log_prices[last - 1] - self.pivot;
+        let square = newest_return * newest_return;
+        self.squares.total = weight.fma(square, self.squares.total);
+        self.fourth_powers.total = (weight * square).fma(square, self.fourth_powers.total);
+
+        // Each earlier return, paired with the newest at its lag.
+        for (index, totals) in self.lags.iter_mut().enumerate() {
+            let lag = index + 1;
+            if last <= lag {
+                break;
+            }
+            let earlier = log_prices[last - lag] - log_prices[last - lag - 1] - self.pivot;
+            totals.add(earlier, newest_return, weight);
+        }
+
+        if last >= horizon {
+            let long_pivot = horizon as f64 * self.pivot;
+            let long_return = log_prices[last] - log_prices[last - horizon] - long_pivot;
+            self.long_sum.total = weight.fma(long_return, self.long_sum.total);
+            self.long_squares.total =
+                (weight * long_return).fma(long_return, self.long_squares.total);
+        }
+    }
+
+    /// Adds every term that starts at the oldest of `log_prices` (`weight`
+    /// 1), or removes them (`weight` -1). The window must be full.
+    #[inline]
+    fn add_terms_from_the_oldest(&mut self, log_prices: &[f64], horizon: usize, weight: f64) {
+        // Full: `window + 1` prices, and `window > q`.
+        let oldest_return = log_prices[1] - log_prices[0] - self.pivot;
+        let square = oldest_return * oldest_return;
+        self.squares.total = weight.fma(square, self.squares.total);
+        self.fourth_powers.total = (weight * square).fma(square, self.fourth_powers.total);
+
+        // The oldest return, paired with each later one at its lag.
+        for (index, totals) in self.lags.iter_mut().enumerate() {
+            let lag = index + 1;
+            let later = log_prices[lag + 1] - log_prices[lag] - self.pivot;
+            totals.add(oldest_return, later, weight);
+        }
+
+        let long_pivot = horizon as f64 * self.pivot;
+        let long_return = log_prices[horizon] - log_prices[0] - long_pivot;
+        self.long_sum.total = weight.fma(long_return, self.long_sum.total);
+        self.long_squares.total = (weight * long_return).fma(long_return, self.long_squares.total);
+    }
+}
+
+/// Lo and MacKinlay's constants for one horizon and window, fixed at build.
+#[derive(Debug, Clone)]
+struct Constants {
+    /// The weight on each lag's total, `(2 * (1 - lag / q))^2` for lag 1 to
+    /// `q - 1`, and their sum.
+    lag_weights: Box<[f64]>,
+    lag_weights_sum: f64,
+    /// The divisor for the `q`-period sum of squares over a full window,
+    /// `m = q * (n - q + 1) * (1 - q / n)`.
+    long_divisor: f64,
+}
+
+impl Constants {
+    fn new(horizon: usize, window: usize) -> Self {
+        // `n` and `q`, as the formulas use them.
+        let (returns, periods) = (window as f64, horizon as f64);
+        let lag_weights: Box<[f64]> = (1..horizon)
+            .map(|lag| {
+                let weight = 2.0 * (1.0 - lag as f64 / periods);
+                weight * weight
+            })
+            .collect();
+        Self {
+            lag_weights_sum: lag_weights.iter().fold(0.0, |sum, weight| sum + weight),
+            lag_weights,
+            long_divisor: periods * (returns - periods + 1.0) * (1.0 - periods / returns),
+        }
     }
 }
 
@@ -271,15 +452,16 @@ impl VarianceRatio {
 
         // The terms the oldest price is part of leave the totals.
         if self.log_prices.is_full() {
-            self.add_terms_from_the_oldest(-1.0);
+            let prices = self.log_prices.as_slice();
+            self.totals
+                .add_terms_from_the_oldest(prices, self.horizon, -1.0);
         }
         self.hold(log_price);
-        self.add_terms_to_the_newest(1.0);
+        let prices = self.log_prices.as_slice();
+        self.totals
+            .add_terms_to_the_newest(prices, self.horizon, 1.0);
         // One term leaves each total and one enters.
-        self.fourth_powers_rounding.record_n(self.fourth_powers, 2);
-        self.squares_rounding.record_n(self.one_period_squares, 2);
-        self.long_squares_rounding.record_n(self.long_squares, 2);
-        self.long_sum_rounding.record_n(self.long_sum, 2);
+        self.totals.record(2, 2);
 
         self.read();
         self.accuracy
@@ -340,30 +522,8 @@ impl VarianceRatio {
     ///
     /// For a slow path: it costs time proportional to the window times `q`.
     pub fn resync(&mut self) {
-        self.clear_totals();
-
-        let prices = self.log_prices.as_slice();
-        if prices.len() < 2 {
-            return;
-        }
-        // Measure about the drift of what is held, so taking the drift out
-        // at read time subtracts little.
-        self.pivot = (prices[prices.len() - 1] - prices[0]) / (prices.len() - 1) as f64;
-        let adds = prices.len() - 1;
-
-        self.sum_one_period_returns();
-        self.sum_pairs_at_each_lag();
-        self.sum_long_returns();
-
-        // The recomputation is itself one rounded add per term.
-        self.fourth_powers_rounding
-            .record_n(self.fourth_powers, adds);
-        self.squares_rounding
-            .record_n(self.one_period_squares, adds);
-        let long_adds = (adds + 1).saturating_sub(self.horizon);
-        self.long_squares_rounding
-            .record_n(self.long_squares, long_adds);
-        self.long_sum_rounding.record_n(self.long_sum, long_adds);
+        self.totals
+            .rebuild(self.log_prices.as_slice(), self.horizon);
         self.read();
     }
 
@@ -394,47 +554,11 @@ impl VarianceRatio {
     /// Empties the window. Parameters and allocation unchanged.
     pub fn reset(&mut self) {
         self.log_prices.clear();
-        self.clear_totals();
+        self.totals.clear();
+        self.accuracy = Accuracy::Sound;
+        self.reading = None;
         self.unchanged = 0;
         self.count = 0;
-    }
-
-    /// For `resync`: the squares and fourth powers of the one-period
-    /// returns held, about the pivot.
-    fn sum_one_period_returns(&mut self) {
-        for pair in self.log_prices.as_slice().windows(2) {
-            let one_period = pair[1] - pair[0] - self.pivot;
-            let square = one_period * one_period;
-            self.one_period_squares += square;
-            self.fourth_powers = square.fma(square, self.fourth_powers);
-        }
-    }
-
-    /// For `resync`: each lag's totals, over every pair of one-period
-    /// returns that far apart.
-    fn sum_pairs_at_each_lag(&mut self) {
-        let pivot = self.pivot;
-        let returns = self
-            .log_prices
-            .as_slice()
-            .windows(2)
-            .map(|pair| pair[1] - pair[0] - pivot);
-        for (index, totals) in self.lags.iter_mut().enumerate() {
-            let pairs = returns.clone().zip(returns.clone().skip(index + 1));
-            pairs.for_each(|(earlier, later)| totals.add(earlier, later, 1.0));
-        }
-    }
-
-    /// For `resync`: the sum and squares of the overlapping `q`-period
-    /// returns held, about `q` times the pivot.
-    fn sum_long_returns(&mut self) {
-        let prices = self.log_prices.as_slice();
-        let long_pivot = self.horizon as f64 * self.pivot;
-        for (from, to) in prices.iter().zip(&prices[self.horizon.min(prices.len())..]) {
-            let long = to - from - long_pivot;
-            self.long_sum += long;
-            self.long_squares = long.fma(long, self.long_squares);
-        }
     }
 
     /// Stores a log price, counting how long the price has not changed.
@@ -443,21 +567,6 @@ impl VarianceRatio {
         let repeats = self.log_prices.as_slice().last() == Some(&log_price);
         self.unchanged = if repeats { self.unchanged + 1 } else { 0 };
         self.log_prices.push(log_price);
-    }
-
-    fn clear_totals(&mut self) {
-        self.pivot = 0.0;
-        self.one_period_squares = 0.0;
-        self.long_sum = 0.0;
-        self.long_squares = 0.0;
-        self.lags.fill(LagTotals::default());
-        self.fourth_powers = 0.0;
-        self.fourth_powers_rounding.reset();
-        self.squares_rounding.reset();
-        self.long_squares_rounding.reset();
-        self.long_sum_rounding.reset();
-        self.accuracy = Accuracy::Sound;
-        self.reading = None;
     }
 
     /// `None` until the window is full.
@@ -470,12 +579,12 @@ impl VarianceRatio {
         let n = (prices.len() - 1) as f64;
         // The drift per period, from the window's two ends, and how far it
         // is from the return the totals are measured about.
-        let shift = (prices[prices.len() - 1] - prices[0]) / n - self.pivot;
+        let shift = (prices[prices.len() - 1] - prices[0]) / n - self.totals.pivot;
         Some(Centered {
             n,
             shift,
             // Squares about the drift, from the total about the pivot.
-            one_period: (-n * shift).fma(shift, self.one_period_squares),
+            one_period: (-n * shift).fma(shift, self.totals.squares.total),
         })
     }
 
@@ -488,7 +597,7 @@ impl VarianceRatio {
     /// `m = q * (n - q + 1) * (1 - q / n)`.
     fn ratio(&self, centered: Centered, long_squares: f64) -> f64 {
         let Centered { n, one_period, .. } = centered;
-        (long_squares / self.long_divisor) / (one_period / (n - 1.0))
+        (long_squares / self.constants.long_divisor) / (one_period / (n - 1.0))
     }
 
     /// The sum of squared `q`-period returns, each less the drift over `q`
@@ -496,7 +605,12 @@ impl VarianceRatio {
     fn long_squares_about_the_drift(&self, centered: Centered) -> f64 {
         let q = self.horizon as f64;
         let terms = centered.n - q + 1.0;
-        crate::math::squares_about(self.long_squares, self.long_sum, terms, q * centered.shift)
+        crate::math::squares_about(
+            self.totals.long_squares.total,
+            self.totals.long_sum.total,
+            terms,
+            q * centered.shift,
+        )
     }
 
     /// Lo and MacKinlay's variance of the ratio when volatility changes
@@ -518,7 +632,13 @@ impl VarianceRatio {
     fn weighted_lag_sum(&self, centered: Centered) -> f64 {
         let Centered { n, shift, .. } = centered;
         let mut sum = 0.0;
-        for (index, (totals, &weight)) in self.lags.iter().zip(&self.lag_weights).enumerate() {
+        for (index, (totals, &weight)) in self
+            .totals
+            .lags
+            .iter()
+            .zip(&self.constants.lag_weights)
+            .enumerate()
+        {
             let lag = (index + 1) as f64;
             sum = weight.fma(totals.squares_about(shift, n - lag), sum);
         }
@@ -575,29 +695,30 @@ impl VarianceRatio {
     #[allow(clippy::suboptimal_flops)]
     fn lag_sums_error(&self, centered: Centered) -> f64 {
         let Centered { n, shift, .. } = centered;
-        let (squares, fourth) = (self.one_period_squares, self.fourth_powers);
+        let (squares, fourth) = (self.totals.squares.total, self.totals.fourth_powers.total);
         let shift_2 = shift * shift;
         let shift_4 = shift_2 * shift_2;
 
         // Each lag's sum about the drift is built from five totals. With
         // `fourth` and `squares` bounding their sizes, the variance of its
         // accumulated rounding is at most this.
-        let adds = self.squares_rounding.adds();
-        let variance = 9.0 * self.fourth_powers_rounding.variance()
-            + 36.0 * shift_4 * self.squares_rounding.variance()
+        let adds = self.totals.squares.rounding.adds();
+        let variance = 9.0 * self.totals.fourth_powers.rounding.variance()
+            + 36.0 * shift_4 * self.totals.squares.rounding.variance()
             + 8.0 * RoundingEstimate::variance_of(shift_4 * n, adds);
         // And evaluating it subtracts terms of these sizes.
         let evaluation =
             f64::EPSILON * (3.0 * fourth + 10.0 * shift_2 * squares + 3.0 * n * shift_4);
-        (Self::CONFIDENCE * crate::math::sqrt(variance) + evaluation) * self.lag_weights_sum
+        (Self::CONFIDENCE * crate::math::sqrt(variance) + evaluation)
+            * self.constants.lag_weights_sum
     }
 
     /// The error in the one-period squares about the drift.
     #[allow(clippy::suboptimal_flops)]
     fn squares_error(&self, centered: Centered) -> f64 {
         let Centered { n, shift, .. } = centered;
-        let evaluation = f64::EPSILON * (self.one_period_squares + n * shift * shift);
-        self.squares_rounding.error(Self::CONFIDENCE) + evaluation
+        let evaluation = f64::EPSILON * (self.totals.squares.total + n * shift * shift);
+        self.totals.squares.rounding.error(Self::CONFIDENCE) + evaluation
     }
 
     /// The error in the `q`-period squares about the drift.
@@ -607,10 +728,12 @@ impl VarianceRatio {
         let drift = q * centered.shift;
         let terms = centered.n - q + 1.0;
         // `squares - 2 * drift * sum + terms * drift^2`.
-        let variance = self.long_squares_rounding.variance()
-            + 4.0 * drift * drift * self.long_sum_rounding.variance();
+        let variance = self.totals.long_squares.rounding.variance()
+            + 4.0 * drift * drift * self.totals.long_sum.rounding.variance();
         let evaluation = f64::EPSILON
-            * (self.long_squares + 2.0 * (drift * self.long_sum).abs() + terms * drift * drift);
+            * (self.totals.long_squares.total
+                + 2.0 * (drift * self.totals.long_sum.total).abs()
+                + terms * drift * drift);
         Self::CONFIDENCE * crate::math::sqrt(variance) + evaluation
     }
 
@@ -672,61 +795,6 @@ impl VarianceRatio {
                 / crate::math::sqrt(parts.variance),
         })
     }
-
-    /// Adds every term that ends at the newest price (`weight` 1).
-    #[inline]
-    fn add_terms_to_the_newest(&mut self, weight: f64) {
-        let prices = self.log_prices.as_slice();
-        let last = prices.len() - 1;
-        if last == 0 {
-            return;
-        }
-        let newest_return = prices[last] - prices[last - 1] - self.pivot;
-        let square = newest_return * newest_return;
-        self.one_period_squares = weight.fma(square, self.one_period_squares);
-        self.fourth_powers = (weight * square).fma(square, self.fourth_powers);
-
-        // Each earlier return, paired with the newest at its lag.
-        for (index, totals) in self.lags.iter_mut().enumerate() {
-            let lag = index + 1;
-            if last <= lag {
-                break;
-            }
-            let earlier = prices[last - lag] - prices[last - lag - 1] - self.pivot;
-            totals.add(earlier, newest_return, weight);
-        }
-
-        if last >= self.horizon {
-            let long_pivot = self.horizon as f64 * self.pivot;
-            let long_return = prices[last] - prices[last - self.horizon] - long_pivot;
-            self.long_sum = weight.fma(long_return, self.long_sum);
-            self.long_squares = (weight * long_return).fma(long_return, self.long_squares);
-        }
-    }
-
-    /// Adds every term that starts at the oldest price (`weight` 1), or
-    /// removes them (`weight` -1). The window must be full.
-    #[inline]
-    fn add_terms_from_the_oldest(&mut self, weight: f64) {
-        // Full: `window + 1` prices, and `window > q`.
-        let prices = self.log_prices.as_slice();
-        let oldest_return = prices[1] - prices[0] - self.pivot;
-        let square = oldest_return * oldest_return;
-        self.one_period_squares = weight.fma(square, self.one_period_squares);
-        self.fourth_powers = (weight * square).fma(square, self.fourth_powers);
-
-        // The oldest return, paired with each later one at its lag.
-        for (index, totals) in self.lags.iter_mut().enumerate() {
-            let lag = index + 1;
-            let later = prices[lag + 1] - prices[lag] - self.pivot;
-            totals.add(oldest_return, later, weight);
-        }
-
-        let long_pivot = self.horizon as f64 * self.pivot;
-        let long_return = prices[self.horizon] - prices[0] - long_pivot;
-        self.long_sum = weight.fma(long_return, self.long_sum);
-        self.long_squares = (weight * long_return).fma(long_return, self.long_squares);
-    }
 }
 
 impl VarianceRatioBuilder {
@@ -766,43 +834,18 @@ impl VarianceRatioBuilder {
         let Some(prices) = window.checked_add(1) else {
             return Err(crate::ConfigError::Invalid("window is too large"));
         };
-        // A full window's returns, and the horizon, as the formulas use them.
-        let (returns, periods) = (window as f64, horizon as f64);
-        let lag_weights = lag_weights(horizon);
 
         Ok(VarianceRatio {
             horizon,
             log_prices: SliceRing::new(prices, 0.0)?,
-            pivot: 0.0,
-            one_period_squares: 0.0,
-            long_sum: 0.0,
-            long_squares: 0.0,
-            lags: vec![LagTotals::default(); horizon - 1].into_boxed_slice(),
-            lag_weights_sum: lag_weights.iter().fold(0.0, |sum, weight| sum + weight),
-            lag_weights,
-            long_divisor: periods * (returns - periods + 1.0) * (1.0 - periods / returns),
-            fourth_powers: 0.0,
-            fourth_powers_rounding: RoundingEstimate::new(),
-            squares_rounding: RoundingEstimate::new(),
-            long_squares_rounding: RoundingEstimate::new(),
-            long_sum_rounding: RoundingEstimate::new(),
+            totals: Totals::new(horizon),
+            constants: Constants::new(horizon, window),
             unchanged: 0,
             accuracy: Accuracy::Sound,
             reading: None,
             count: 0,
         })
     }
-}
-
-/// Lo and MacKinlay's weight on each lag's total, for lag 1 to `q - 1`:
-/// `(2 * (1 - lag / q))^2`.
-fn lag_weights(q: usize) -> Box<[f64]> {
-    (1..q)
-        .map(|lag| {
-            let weight = 2.0 * (1.0 - lag as f64 / q as f64);
-            weight * weight
-        })
-        .collect()
 }
 
 /// `error` as a share of `size`: infinite if there is an error and nothing
