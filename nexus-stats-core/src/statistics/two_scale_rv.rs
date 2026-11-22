@@ -1,49 +1,77 @@
-use alloc::boxed::Box;
-use alloc::vec;
+use crate::math::MulAdd;
+use crate::storage::Ring;
 
-/// Two-scale realized variance — noise-corrected volatility estimator.
+/// Two-scale realized variance: the variance of a price path, with the
+/// noise of tick-by-tick trading removed.
 ///
-/// Combines high-frequency (all-tick) and subsampled (every K ticks)
-/// realized variance to cancel microstructure noise bias.
+/// Squared returns sampled at every tick are inflated by bid-ask bounce.
+/// Sampled every `k` ticks they are much less so. The estimator takes the
+/// slow-scale variance and subtracts the noise it still carries, which the
+/// fast scale measures (Zhang, Mykland and Aït-Sahalia, 2005, "A Tale of
+/// Two Time Scales", *Journal of the American Statistical Association*):
 ///
-/// TSRV = `[Y,Y]^{(avg)}` - (n̄ / n) · `[Y,Y]^{(all)}`
+/// ```text
+/// TSRV = (1 - n̄/n)⁻¹ · ( [Y,Y]avg − (n̄/n) · [Y,Y]all )
+/// ```
 ///
-/// where `[Y,Y]^{(avg)}` = Σ(K-tick returns²) / K and n̄ = n_slow / K.
+/// `Y` is the log price, `[Y,Y]all` the sum of squared one-tick returns,
+/// `[Y,Y]avg` the sum of squared `k`-tick returns divided by `k`, `n` the
+/// number of one-tick returns and `n̄ = (n − k + 1) / k`. The leading factor
+/// is the paper's small-sample adjustment (its equation 64).
 ///
-/// Zhang, Mykland, Aït-Sahalia (2005).
-///
-/// # Parameters
-///
-/// - `k` — subsampling frequency (typically 5–20)
+/// The sums run from the last [`reset`](Self::reset): reset at the start of
+/// each period you want a variance for. The paper's guidance is a `k` on
+/// the order of `n^(2/3)`.
 ///
 /// # Examples
 ///
 /// ```
 /// use nexus_stats_core::statistics::TwoScaleRv;
 ///
-/// let mut tsrv = TwoScaleRv::builder()
-///     .k(5)
-///     .min_samples(20)
-///     .build()
-///     .unwrap();
-///
-/// for i in 0..100 {
-///     tsrv.update(100.0 + (i as f64) * 0.01).unwrap();
+/// let mut tsrv = TwoScaleRv::builder().k(5).build().unwrap();
+/// for i in 0..200 {
+///     tsrv.update(100.0 + f64::from(i % 7) * 0.01);
 /// }
-/// assert!(tsrv.realized_variance().is_some());
+/// let estimate = tsrv.estimate().unwrap();
+/// assert!(estimate.noise_variance > 0.0);
 /// ```
 #[derive(Debug, Clone)]
 pub struct TwoScaleRv {
-    fast_sum_sq: f64,
-    slow_sum_sq: f64,
-    buffer: Box<[f64]>,
-    write_idx: usize,
-    filled: bool,
-    prev_price: f64,
-    k: usize,
-    n_slow: u64,
+    /// Sum of squared one-tick log returns: `[Y,Y]all`.
+    fast: f64,
+    /// Sum of squared `k`-tick log returns, over every starting tick.
+    slow: f64,
+    /// The last `k` log prices.
+    log_prices: Ring<f64>,
+    prev_log_price: f64,
     count: u64,
     min_samples: u64,
+}
+
+/// A [`TwoScaleRv`] reading.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct TwoScaleEstimate {
+    /// Noise-corrected variance of the log price over the period. The
+    /// subtraction can leave it slightly negative on a short or very noisy
+    /// sample.
+    pub variance: f64,
+    /// Sum of squared one-tick log returns: the uncorrected realized
+    /// variance, noise included.
+    pub realized_variance: f64,
+    /// Variance of the noise in one observed price: `[Y,Y]all / 2n`.
+    pub noise_variance: f64,
+    /// One-tick returns in the period.
+    pub returns: u64,
+}
+
+impl TwoScaleEstimate {
+    /// Square root of the corrected variance, taking a negative estimate as
+    /// zero.
+    #[inline]
+    #[must_use]
+    pub fn volatility(&self) -> f64 {
+        crate::math::sqrt(self.variance.max(0.0))
+    }
 }
 
 /// Builder for [`TwoScaleRv`].
@@ -55,182 +83,153 @@ pub struct TwoScaleRvBuilder {
 
 impl TwoScaleRv {
     /// Creates a builder.
-    #[inline]
     #[must_use]
     pub fn builder() -> TwoScaleRvBuilder {
         TwoScaleRvBuilder {
-            k: Option::None,
-            min_samples: Option::None,
+            k: None,
+            min_samples: None,
         }
     }
 
-    /// Feeds a trade price.
+    /// Feeds a price. The logarithm is taken here.
     ///
-    /// # Errors
-    ///
-    /// Returns `DataError::NotANumber` if the price is NaN, or
-    /// `DataError::Infinite` if the price is infinite.
+    /// Does not validate `price`; arithmetic follows IEEE 754. See
+    /// [`checked_update`](Self::checked_update).
     #[inline]
-    pub fn update(&mut self, price: f64) -> Result<(), crate::DataError> {
-        check_finite!(price);
+    pub fn update(&mut self, price: f64) {
+        let log_price = crate::math::ln(price);
         self.count += 1;
 
         if self.count >= 2 {
-            let fast_diff = price - self.prev_price;
-            self.fast_sum_sq += fast_diff * fast_diff;
+            let fast_return = log_price - self.prev_log_price;
+            self.fast = fast_return.fma(fast_return, self.fast);
         }
-
-        let oldest = if self.filled {
-            Some(self.buffer[self.write_idx])
-        } else {
-            None
-        };
-        self.buffer[self.write_idx] = price;
-
-        if let Some(old_price) = oldest {
-            let slow_diff = price - old_price;
-            self.slow_sum_sq += slow_diff * slow_diff;
-            self.n_slow += 1;
+        // The price evicted is the one `k` ticks back.
+        if let Some(earlier) = self.log_prices.push(log_price) {
+            let slow_return = log_price - earlier;
+            self.slow = slow_return.fma(slow_return, self.slow);
         }
+        self.prev_log_price = log_price;
+    }
 
-        self.write_idx += 1;
-        if self.write_idx == self.k {
-            self.write_idx = 0;
-            self.filled = true;
+    /// Checked update. Feeds `price`, or returns an error and leaves the
+    /// estimator unchanged if `price` is NaN, infinite, zero or negative.
+    ///
+    /// # Errors
+    ///
+    /// - [`DataError::NotANumber`](crate::DataError::NotANumber) if `price`
+    ///   is NaN.
+    /// - [`DataError::Infinite`](crate::DataError::Infinite) if `price` is
+    ///   infinite.
+    /// - [`DataError::OutOfRange`](crate::DataError::OutOfRange) if `price`
+    ///   is zero or negative.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use nexus_stats_core::{DataError, statistics::TwoScaleRv};
+    ///
+    /// let mut tsrv = TwoScaleRv::builder().k(5).build().unwrap();
+    /// assert_eq!(tsrv.checked_update(100.0), Ok(()));
+    /// assert_eq!(tsrv.checked_update(0.0), Err(DataError::OutOfRange));
+    /// assert_eq!(tsrv.count(), 1);
+    /// ```
+    #[inline]
+    pub fn checked_update(&mut self, price: f64) -> Result<(), crate::DataError> {
+        // Any positive price is allowed: its logarithm is small.
+        crate::math::check_input(price, f64::MAX)?;
+        if price <= 0.0 {
+            return Err(crate::DataError::OutOfRange);
         }
-
-        self.prev_price = price;
+        self.update(price);
         Ok(())
     }
 
-    /// Noise-corrected two-scale realized variance.
-    ///
-    /// Returns `None` if not primed.
-    #[inline]
+    /// The reading since the last reset, or `None` until `min_samples`
+    /// prices have been fed.
     #[must_use]
-    pub fn realized_variance(&self) -> Option<f64> {
-        if !self.is_primed() {
-            return Option::None;
-        }
-        let n_fast = self.count - 1;
-        if n_fast == 0 || self.n_slow == 0 {
-            return Option::None;
+    pub fn estimate(&self) -> Option<TwoScaleEstimate> {
+        if self.count < self.min_samples {
+            return None;
         }
 
-        let n_bar = self.n_slow as f64 / self.k as f64;
-        let correction = n_bar / n_fast as f64;
-        let tsrv = crate::math::MulAdd::fma(
-            -correction,
-            self.fast_sum_sq,
-            self.slow_sum_sq / self.k as f64,
-        );
+        let k = self.log_prices.capacity() as f64;
+        let returns = self.count - 1;
+        let n = returns as f64;
+        let n_bar = (n - k + 1.0) / k;
+        let share = n_bar / n;
 
-        Option::Some(if tsrv > 0.0 { tsrv } else { 0.0 })
+        let averaged = self.slow / k;
+        let variance = (-share).fma(self.fast, averaged) / (1.0 - share);
+        Some(TwoScaleEstimate {
+            variance,
+            realized_variance: self.fast,
+            noise_variance: self.fast / (2.0 * n),
+            returns,
+        })
     }
 
-    /// Noise-corrected realized volatility: `√(TSRV)`.
-    ///
-    /// Returns `None` if not primed.
-    #[inline]
-    #[must_use]
-    pub fn realized_volatility(&self) -> Option<f64> {
-        self.realized_variance().map(crate::math::sqrt)
-    }
-
-    /// Raw all-tick realized variance (noisy, unnormalized).
-    ///
-    /// Returns the sum of squared one-tick returns: `[Y,Y]^{(all)}`.
-    /// Returns `None` if not primed.
-    #[inline]
-    #[must_use]
-    pub fn fast_rv(&self) -> Option<f64> {
-        if !self.is_primed() || self.count < 2 {
-            return Option::None;
-        }
-        Option::Some(self.fast_sum_sq)
-    }
-
-    /// Estimated noise variance per observation: `([Y,Y]^{(all)} - TSRV) / 2n`.
-    ///
-    /// Returns `None` if not primed.
-    #[inline]
-    #[must_use]
-    pub fn noise_variance(&self) -> Option<f64> {
-        let fast = self.fast_rv()?;
-        let tsrv = self.realized_variance()?;
-        let n_fast = (self.count - 1) as f64;
-        let noise = (fast - tsrv) / (2.0 * n_fast);
-        Option::Some(if noise > 0.0 { noise } else { 0.0 })
-    }
-
-    /// Number of prices seen.
-    #[inline]
+    /// Number of prices fed since construction or `reset`.
     #[must_use]
     pub fn count(&self) -> u64 {
         self.count
     }
 
-    /// Whether enough samples have been observed.
-    #[inline]
+    /// Whether `min_samples` prices have been fed.
     #[must_use]
     pub fn is_primed(&self) -> bool {
         self.count >= self.min_samples
     }
 
-    /// Resets to empty state. Parameters and allocation preserved.
-    #[inline]
+    /// Starts a new period. Parameters and allocation unchanged.
     pub fn reset(&mut self) {
-        self.fast_sum_sq = 0.0;
-        self.slow_sum_sq = 0.0;
-        self.buffer.fill(0.0);
-        self.write_idx = 0;
-        self.filled = false;
-        self.prev_price = 0.0;
-        self.n_slow = 0;
+        self.fast = 0.0;
+        self.slow = 0.0;
+        self.log_prices.clear(0.0);
+        self.prev_log_price = 0.0;
         self.count = 0;
     }
 }
 
 impl TwoScaleRvBuilder {
-    /// Subsampling frequency (required, >= 2).
-    #[inline]
+    /// The slow scale, in ticks. Required, at least 2.
     #[must_use]
     pub fn k(mut self, k: usize) -> Self {
-        self.k = Option::Some(k);
+        self.k = Some(k);
         self
     }
 
-    /// Minimum prices before results are valid. Default: `k * 10`.
-    #[inline]
+    /// Minimum prices before a reading. Default `10 * k`; at least `k + 1`,
+    /// the first price count with a `k`-tick return.
     #[must_use]
     pub fn min_samples(mut self, min: u64) -> Self {
-        self.min_samples = Option::Some(min);
+        self.min_samples = Some(min);
         self
     }
 
-    /// Builds the two-scale RV estimator.
+    /// Builds the estimator.
     ///
     /// # Errors
     ///
-    /// - `k` must have been set and be >= 2.
-    #[inline]
+    /// - `Missing("k")` if `k` was not set.
+    /// - `Invalid` if `k` is below 2 or `min_samples` is below `k + 1`.
     pub fn build(self) -> Result<TwoScaleRv, crate::ConfigError> {
         let k = self.k.ok_or(crate::ConfigError::Missing("k"))?;
         if k < 2 {
-            return Err(crate::ConfigError::Invalid("TwoScaleRv k must be >= 2"));
+            return Err(crate::ConfigError::Invalid("k must be >= 2"));
+        }
+        let min_samples = self.min_samples.unwrap_or(10 * k as u64);
+        if min_samples <= k as u64 {
+            return Err(crate::ConfigError::Invalid(
+                "min_samples must be at least k + 1",
+            ));
         }
 
-        let min_samples = self.min_samples.unwrap_or((k * 10) as u64);
-
         Ok(TwoScaleRv {
-            fast_sum_sq: 0.0,
-            slow_sum_sq: 0.0,
-            buffer: vec![0.0; k].into_boxed_slice(),
-            write_idx: 0,
-            filled: false,
-            prev_price: 0.0,
-            k,
-            n_slow: 0,
+            fast: 0.0,
+            slow: 0.0,
+            log_prices: Ring::new(k, 0.0)?,
+            prev_log_price: 0.0,
             count: 0,
             min_samples,
         })
@@ -238,142 +237,219 @@ impl TwoScaleRvBuilder {
 }
 
 #[cfg(test)]
+// Expected values are written as plain arithmetic, independent of the fused
+// forms the code under test uses.
+#[allow(clippy::suboptimal_flops)]
 mod tests {
     use super::*;
+    use alloc::vec::Vec;
 
-    #[test]
-    fn white_noise_correction() {
-        let mut tsrv = TwoScaleRv::builder().k(5).min_samples(10).build().unwrap();
-
-        // Noisy prices: smooth trend + noise
-        for i in 0..500 {
-            let noise = if i % 3 == 0 {
-                0.1
-            } else if i % 3 == 1 {
-                -0.1
-            } else {
-                0.0
-            };
-            tsrv.update((i as f64).mul_add(0.001, 100.0) + noise)
-                .unwrap();
-        }
-
-        let fast = tsrv.fast_rv().unwrap();
-        let corrected = tsrv.realized_variance().unwrap();
-        assert!(
-            corrected < fast,
-            "TSRV ({corrected}) should be less than fast RV ({fast}) for noisy data"
-        );
+    fn close(a: f64, b: f64) -> bool {
+        (a - b).abs() <= 1e-12 * b.abs().max(1e-12)
     }
 
-    #[test]
-    fn clean_signal_produces_valid_result() {
-        let mut tsrv = TwoScaleRv::builder().k(5).min_samples(10).build().unwrap();
-
-        for i in 0..200 {
-            tsrv.update((i as f64).mul_add(0.01, 100.0)).unwrap();
+    /// The paper's definitions, from the stored log prices: the average over
+    /// the `k` subgrids, each started one tick later.
+    fn reference(prices: &[f64], k: usize) -> TwoScaleEstimate {
+        let y: Vec<f64> = prices.iter().map(|p| p.ln()).collect();
+        let n = y.len() - 1;
+        let all: f64 = (1..=n).map(|i| (y[i] - y[i - 1]).powi(2)).sum();
+        let mut averaged = 0.0;
+        for start in 0..k {
+            let mut i = start;
+            while i + k <= n {
+                averaged += (y[i + k] - y[i]).powi(2);
+                i += k;
+            }
         }
-
-        let corrected = tsrv.realized_variance().unwrap();
-        assert!(
-            corrected >= 0.0,
-            "TSRV should be non-negative for clean data, got {corrected}"
-        );
-        let vol = tsrv.realized_volatility().unwrap();
-        assert!(vol >= 0.0, "volatility should be non-negative, got {vol}");
+        averaged /= k as f64;
+        let n_bar = (n - k + 1) as f64 / k as f64;
+        let share = n_bar / n as f64;
+        TwoScaleEstimate {
+            variance: (averaged - share * all) / (1.0 - share),
+            realized_variance: all,
+            noise_variance: all / (2.0 * n as f64),
+            returns: n as u64,
+        }
     }
 
-    #[test]
-    fn noise_variance_positive() {
-        let mut tsrv = TwoScaleRv::builder().k(5).min_samples(10).build().unwrap();
-
-        for i in 0..500 {
-            let noise = if i % 2 == 0 { 0.1 } else { -0.1 };
-            tsrv.update(100.0 + noise).unwrap();
-        }
-
-        let nv = tsrv.noise_variance().unwrap();
-        assert!(nv >= 0.0, "noise variance should be non-negative, got {nv}");
-    }
-
-    #[test]
-    fn volatility_is_sqrt() {
-        let mut tsrv = TwoScaleRv::builder().k(5).min_samples(10).build().unwrap();
-
-        for i in 0..200 {
-            tsrv.update((i as f64).mul_add(0.01, 100.0)).unwrap();
-        }
-
-        let var = tsrv.realized_variance().unwrap();
-        let vol = tsrv.realized_volatility().unwrap();
-        assert!(
-            (vol * vol - var).abs() < 1e-10,
-            "vol² ({}) should equal var ({var})",
-            vol * vol
-        );
-    }
-
-    #[test]
-    fn k_sensitivity() {
-        let prices: alloc::vec::Vec<f64> = (0..500)
+    fn prices(len: usize) -> Vec<f64> {
+        (0..len)
             .map(|i| {
-                let noise = if i % 2 == 0 { 0.1 } else { -0.1 };
-                (i as f64).mul_add(0.001, 100.0) + noise
+                let i = i as f64;
+                100.0 * (0.002 * (i * 0.37).sin() + 0.0005 * (i * 2.9).cos() + 0.0001 * i).exp()
             })
-            .collect();
-
-        let mut tsrv_small = TwoScaleRv::builder().k(3).min_samples(10).build().unwrap();
-        let mut tsrv_large = TwoScaleRv::builder().k(10).min_samples(10).build().unwrap();
-
-        for &p in &prices {
-            tsrv_small.update(p).unwrap();
-            tsrv_large.update(p).unwrap();
-        }
-
-        // Both should produce valid results
-        assert!(tsrv_small.realized_variance().is_some());
-        assert!(tsrv_large.realized_variance().is_some());
+            .collect()
     }
 
     #[test]
-    fn reset_clears() {
-        let mut tsrv = TwoScaleRv::builder().k(5).min_samples(10).build().unwrap();
+    fn matches_the_papers_definitions_at_every_step() {
+        for k in [2, 3, 5, 8] {
+            let series = prices(120);
+            let mut tsrv = TwoScaleRv::builder()
+                .k(k)
+                .min_samples(k as u64 + 1)
+                .build()
+                .unwrap();
+            for (i, &p) in series.iter().enumerate() {
+                tsrv.update(p);
+                let got = tsrv.estimate();
+                if i < k {
+                    assert_eq!(got, None, "k {k} step {i}");
+                    continue;
+                }
+                let (got, want) = (got.unwrap(), reference(&series[..=i], k));
+                assert!(
+                    close(got.variance, want.variance)
+                        && close(got.realized_variance, want.realized_variance)
+                        && close(got.noise_variance, want.noise_variance)
+                        && got.returns == want.returns,
+                    "k {k} step {i}: {got:?} vs {want:?}"
+                );
+            }
+        }
+    }
 
-        for i in 0..50 {
-            tsrv.update((i as f64).mul_add(0.01, 100.0)).unwrap();
+    #[test]
+    fn noise_is_removed_from_the_variance() {
+        // A smooth path, and the same path with independent noise on every
+        // tick: uniform on [-a, a] in the log price, so its variance is
+        // a^2 / 3.
+        let (k, a) = (10, 0.0005);
+        let mut clean = TwoScaleRv::builder().k(k).build().unwrap();
+        let mut noisy = TwoScaleRv::builder().k(k).build().unwrap();
+        let mut state = 0x9E37_79B9_7F4A_7C15u64;
+        for i in 0..20_000u32 {
+            state ^= state << 13;
+            state ^= state >> 7;
+            state ^= state << 17;
+            let uniform = (state >> 11) as f64 / (1u64 << 53) as f64;
+            let path = 100.0 * (0.01 * (f64::from(i) * 0.0005).sin()).exp();
+            clean.update(path);
+            noisy.update(path * (a * (2.0 * uniform - 1.0)).exp());
+        }
+        let (clean, noisy) = (clean.estimate().unwrap(), noisy.estimate().unwrap());
+
+        // Tick-by-tick realized variance is swamped by the noise.
+        assert!(noisy.realized_variance > 1000.0 * clean.realized_variance);
+        // The corrected variance is not.
+        assert!(
+            (noisy.variance - clean.variance).abs() < 0.02 * noisy.realized_variance,
+            "{noisy:?} {clean:?}"
+        );
+        // And the noise estimate recovers a^2 / 3.
+        let truth = a * a / 3.0;
+        assert!(
+            (noisy.noise_variance - truth).abs() < 0.05 * truth,
+            "{noisy:?}"
+        );
+    }
+
+    #[test]
+    fn scaling_every_price_changes_nothing() {
+        let series = prices(100);
+        let mut a = TwoScaleRv::builder().k(4).build().unwrap();
+        let mut b = TwoScaleRv::builder().k(4).build().unwrap();
+        for &p in &series {
+            a.update(p);
+            b.update(p * 1000.0);
+        }
+        let (a, b) = (a.estimate().unwrap(), b.estimate().unwrap());
+        assert!((a.variance - b.variance).abs() < 1e-12, "{a:?} {b:?}");
+    }
+
+    #[test]
+    fn volatility_is_the_root_and_never_nan() {
+        let positive = TwoScaleEstimate {
+            variance: 0.04,
+            realized_variance: 0.0,
+            noise_variance: 0.0,
+            returns: 1,
+        };
+        assert_eq!(positive.volatility(), 0.2);
+        let negative = TwoScaleEstimate {
+            variance: -1e-9,
+            ..positive
+        };
+        assert_eq!(negative.volatility(), 0.0);
+    }
+
+    #[test]
+    fn min_samples_withholds_the_reading() {
+        let mut tsrv = TwoScaleRv::builder().k(3).min_samples(10).build().unwrap();
+        for i in 0..9u32 {
+            tsrv.update(100.0 + f64::from(i));
+            assert_eq!(tsrv.estimate(), None);
+            assert!(!tsrv.is_primed());
+        }
+        tsrv.update(110.0);
+        assert!(tsrv.estimate().is_some());
+    }
+
+    #[test]
+    fn reset_starts_a_new_period() {
+        let series = prices(60);
+        let mut tsrv = TwoScaleRv::builder().k(3).min_samples(4).build().unwrap();
+        for &p in &series {
+            tsrv.update(p);
         }
         tsrv.reset();
-        assert_eq!(tsrv.count(), 0);
-        assert!(tsrv.realized_variance().is_none());
-    }
-
-    #[test]
-    fn nan_rejected() {
-        let mut tsrv = TwoScaleRv::builder().k(5).build().unwrap();
-        assert!(matches!(
-            tsrv.update(f64::NAN),
-            Err(crate::DataError::NotANumber)
-        ));
-    }
-
-    #[test]
-    fn inf_rejected() {
-        let mut tsrv = TwoScaleRv::builder().k(5).build().unwrap();
-        assert!(matches!(
-            tsrv.update(f64::INFINITY),
-            Err(crate::DataError::Infinite)
-        ));
+        assert_eq!((tsrv.count(), tsrv.estimate()), (0, None));
+        for &p in &series[..20] {
+            tsrv.update(p);
+        }
+        let (got, want) = (tsrv.estimate().unwrap(), reference(&series[..20], 3));
+        assert!(close(got.variance, want.variance), "{got:?} vs {want:?}");
     }
 
     #[test]
     fn builder_validation() {
-        assert!(matches!(
-            TwoScaleRv::builder().build(),
-            Err(crate::ConfigError::Missing("k"))
-        ));
-        assert!(matches!(
-            TwoScaleRv::builder().k(1).build(),
-            Err(crate::ConfigError::Invalid(_))
-        ));
+        use crate::ConfigError::{Invalid, Missing};
+        let b = TwoScaleRv::builder;
+        assert_eq!(b().build().unwrap_err(), Missing("k"));
+        assert_eq!(b().k(1).build().unwrap_err(), Invalid("k must be >= 2"));
+        assert_eq!(
+            b().k(5).min_samples(5).build().unwrap_err(),
+            Invalid("min_samples must be at least k + 1")
+        );
+        assert!(b().k(5).min_samples(6).build().is_ok());
+    }
+
+    #[test]
+    fn checked_update_refuses_bad_input_and_changes_nothing() {
+        use crate::DataError::{Infinite, NotANumber, OutOfRange};
+
+        let mut tsrv = TwoScaleRv::builder().k(2).min_samples(3).build().unwrap();
+        for p in [100.0, 101.0, 100.5, 102.0] {
+            tsrv.checked_update(p).unwrap();
+        }
+        let before = (tsrv.count(), tsrv.estimate());
+
+        assert_eq!(tsrv.checked_update(f64::NAN), Err(NotANumber));
+        assert_eq!(tsrv.checked_update(f64::INFINITY), Err(Infinite));
+        assert_eq!(tsrv.checked_update(0.0), Err(OutOfRange));
+        assert_eq!(tsrv.checked_update(-1.0), Err(OutOfRange));
+
+        assert_eq!((tsrv.count(), tsrv.estimate()), before);
+    }
+
+    #[test]
+    fn checked_update_gives_the_same_result_as_update() {
+        let mut checked = TwoScaleRv::builder().k(3).min_samples(4).build().unwrap();
+        let mut unchecked = checked.clone();
+        for &p in &prices(40) {
+            checked.checked_update(p).unwrap();
+            unchecked.update(p);
+        }
+        assert_eq!(checked.estimate(), unchecked.estimate());
+    }
+
+    #[test]
+    fn update_does_not_validate() {
+        let mut tsrv = TwoScaleRv::builder().k(2).min_samples(3).build().unwrap();
+        for p in [100.0, f64::NAN, 101.0, 102.0] {
+            tsrv.update(p);
+        }
+        assert!(tsrv.estimate().unwrap().variance.is_nan());
     }
 }
