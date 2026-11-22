@@ -316,7 +316,7 @@ This is the statistic of Lo and MacKinlay (1988) on the log price over the last 
 - `z` above about 2: trending. Below about -2: mean-reverting. 1.96 is the 5% level, 2.58 the 1% level.
 - Read on every bar, a 5% level gives a false signal about one bar in twenty. Use a higher level, or require it to hold for several reads.
 
-**Cost and rounding.** The sums are running totals: `update` and `estimate` cost time proportional to `q`, whatever the window, so a reading stays cheap when many instruments are read on the same bar.
+**Cost and rounding.** The sums are running totals: `update` costs time proportional to `q`, whatever the window, and works out the reading as it goes, so `estimate` only returns it; so a reading stays cheap when many instruments are read on the same bar.
 
 A running total is rounded at every add, and the errors stay in it. They matter once the total has become much smaller than it was: after volatility falls a long way, or after a price far off the market has come and gone. The z statistic sums fourth powers and feels this first; the ratio is far less affected. `update` keeps an estimate of the accumulated rounding and returns `Accuracy::ResyncRequired { error }` once it could reach one part in a thousand of z, and keeps returning it until `resync()` is called. Until then there is no reading: `estimate()` returns `None` and `update` only stores the price, so a reading that is given is good to that one part in a thousand. `resync()` recomputes the totals from the stored prices and costs the window times `q`, so schedule it when there is time. pandas guards its rolling moments against the same loss and never returns the suspect value either: it recomputes the window itself, at once.
 

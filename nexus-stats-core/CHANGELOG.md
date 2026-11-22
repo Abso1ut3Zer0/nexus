@@ -404,8 +404,9 @@ contained.
   `ZScoreNorm::reset_with_seed`.
 - `VarianceRatio::checked_update`, `estimate`, `resync` and `window`;
   `VarianceRatioEstimate`. The z statistic is Lo and MacKinlay's
-  heteroskedasticity-robust one. `update` and `estimate` cost time
-  proportional to `q`, from running totals. `update` returns
+  heteroskedasticity-robust one. `update` costs time proportional to `q`,
+  from running totals, and works out the reading; `estimate` returns it.
+  `update` returns
   `Accuracy::ResyncRequired { error }` when rounding in the totals could reach
   one part in a thousand of z (after volatility falls a long way, a price
   far off the market, or a trend far from where it was),

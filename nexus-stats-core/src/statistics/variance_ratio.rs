@@ -50,9 +50,9 @@ use crate::storage::SliceRing;
 /// # Cost and rounding
 ///
 /// The sums behind the reading are running totals: `update` adds the
-/// newest terms and subtracts the oldest, and both it and
-/// [`estimate`](Self::estimate) cost time proportional to `q`, whatever the
-/// window. That keeps a reading cheap when many instruments are read on
+/// newest terms and subtracts the oldest, at a cost proportional to `q`,
+/// whatever the window. It works out the reading as it goes, so
+/// [`estimate`](Self::estimate) only returns it. That keeps a reading cheap when many instruments are read on
 /// the same bar.
 ///
 /// A running total is rounded at every add, by up to half a unit in the
@@ -136,6 +136,8 @@ pub struct VarianceRatio {
     unchanged: usize,
     /// What `update` last returned.
     accuracy: Accuracy,
+    /// The reading as of the last `update` or `resync`.
+    reading: Option<VarianceRatioEstimate>,
     count: u64,
 }
 
@@ -212,6 +214,17 @@ struct Centered {
     one_period: f64,
 }
 
+/// What the reading and its error estimate are both built from: the two
+/// sums about the drift, and the ratio and its variance from them.
+#[derive(Clone, Copy)]
+struct Parts {
+    centered: Centered,
+    lag_sum: f64,
+    long_squares: f64,
+    ratio: f64,
+    variance: f64,
+}
+
 impl VarianceRatio {
     /// The share of the z statistic that rounding in the totals may reach
     /// before [`Accuracy::ResyncRequired`] is returned: one part in a
@@ -268,7 +281,7 @@ impl VarianceRatio {
         self.long_squares_rounding.record_n(self.long_squares, 2);
         self.long_sum_rounding.record_n(self.long_sum, 2);
 
-        self.accuracy = self.assess();
+        self.read();
         self.accuracy
     }
 
@@ -311,36 +324,11 @@ impl VarianceRatio {
     /// within `q - 1` periods of each other both moved), or while a
     /// [`resync`](Self::resync) is due.
     ///
-    /// Costs time proportional to `q`.
+    /// It is computed by `update` and `resync`; this returns it.
+    #[inline]
     #[must_use]
     pub fn estimate(&self) -> Option<VarianceRatioEstimate> {
-        if self.accuracy != Accuracy::Sound {
-            return None;
-        }
-        let centered = self.centered()?;
-        let Centered { n, one_period, .. } = centered;
-
-        // A price that never moved leaves only rounding in the totals.
-        if self.unchanged >= self.window() {
-            return None;
-        }
-        // SciPy's zero-variance test at the scale of the values subtracted,
-        // which are log prices: a variance this small is rounding.
-        let newest = *self.log_prices.as_slice().last()?;
-        if one_period / (n - 1.0) <= crate::math::rounding_variance(newest) {
-            return None;
-        }
-
-        let ratio = self.ratio(centered, self.long_squares_about_the_drift(centered));
-        let variance = Self::ratio_variance(centered, self.weighted_lag_sum(centered));
-        if variance <= 0.0 {
-            return None;
-        }
-
-        Some(VarianceRatioEstimate {
-            ratio,
-            z_statistic: crate::math::sqrt(n) * (ratio - 1.0) / crate::math::sqrt(variance),
-        })
+        self.reading
     }
 
     /// Recomputes the running totals from the stored prices, measured about
@@ -376,7 +364,7 @@ impl VarianceRatio {
         self.long_squares_rounding
             .record_n(self.long_squares, long_adds);
         self.long_sum_rounding.record_n(self.long_sum, long_adds);
-        self.accuracy = self.assess();
+        self.read();
     }
 
     /// The return horizon `q`.
@@ -469,6 +457,7 @@ impl VarianceRatio {
         self.long_squares_rounding.reset();
         self.long_sum_rounding.reset();
         self.accuracy = Accuracy::Sound;
+        self.reading = None;
     }
 
     /// `None` until the window is full.
@@ -549,9 +538,15 @@ impl VarianceRatio {
     /// is now, whatever size that is.
     // Bounds are written as they are derived; fused forms would hide them.
     #[allow(clippy::suboptimal_flops)]
-    fn z_error(&self, centered: Centered) -> f64 {
+    fn z_error(&self, parts: Parts) -> f64 {
+        let Parts {
+            centered,
+            lag_sum,
+            long_squares,
+            ratio,
+            variance,
+        } = parts;
         let Centered { n, one_period, .. } = centered;
-        let lag_sum = self.weighted_lag_sum(centered);
         // Exactly nothing: no pair of returns both moved, and there is no
         // reading.
         if lag_sum == 0.0 {
@@ -562,16 +557,13 @@ impl VarianceRatio {
         if !(lag_sum > 0.0 && one_period > 0.0) {
             return f64::INFINITY;
         }
-        let long = self.long_squares_about_the_drift(centered);
-
         let of_lag_sums = share(self.lag_sums_error(centered), lag_sum);
         let of_squares = share(self.squares_error(centered), one_period);
-        let of_long = share(self.long_squares_error(centered), long);
+        let of_long = share(self.long_squares_error(centered), long_squares);
 
         // The ratio's own error reaches z through `ratio - 1`, which may be
         // far smaller than the ratio.
-        let ratio = self.ratio(centered, long);
-        let scale = crate::math::sqrt(n / Self::ratio_variance(centered, lag_sum));
+        let scale = crate::math::sqrt(n / variance);
         let z = scale * (ratio - 1.0);
         let through_the_ratio = scale * ratio / z.abs().max(1.0);
 
@@ -622,17 +614,63 @@ impl VarianceRatio {
         Self::CONFIDENCE * crate::math::sqrt(variance) + evaluation
     }
 
+    /// Reads the totals: whether a reading can be trusted, and the reading
+    /// if so. One pass, as both are built from the same sums.
     #[inline]
-    fn assess(&self) -> Accuracy {
-        let Some(centered) = self.centered() else {
-            return Accuracy::Sound;
+    fn read(&mut self) {
+        self.reading = None;
+        self.accuracy = Accuracy::Sound;
+        let Some(parts) = self.parts() else {
+            return;
         };
-        let z_error = self.z_error(centered);
+        let z_error = self.z_error(parts);
         // Written so that a NaN, from a price that was not a number, requires one.
         if z_error <= Self::RESYNC_ABOVE {
-            return Accuracy::Sound;
+            self.reading = self.reading_from(parts);
+            return;
         }
-        Accuracy::ResyncRequired { error: z_error }
+        self.accuracy = Accuracy::ResyncRequired { error: z_error };
+    }
+
+    /// `None` until the window is full.
+    #[inline]
+    fn parts(&self) -> Option<Parts> {
+        let centered = self.centered()?;
+        let lag_sum = self.weighted_lag_sum(centered);
+        let long_squares = self.long_squares_about_the_drift(centered);
+        Some(Parts {
+            centered,
+            lag_sum,
+            long_squares,
+            ratio: self.ratio(centered, long_squares),
+            variance: Self::ratio_variance(centered, lag_sum),
+        })
+    }
+
+    /// The ratio and its z statistic, or `None` while the price has not
+    /// moved within the window or the standard error cannot be estimated.
+    fn reading_from(&self, parts: Parts) -> Option<VarianceRatioEstimate> {
+        let Centered { n, one_period, .. } = parts.centered;
+
+        // A price that never moved leaves only rounding in the totals.
+        if self.unchanged >= self.window() {
+            return None;
+        }
+        // SciPy's zero-variance test at the scale of the values subtracted,
+        // which are log prices: a variance this small is rounding.
+        let newest = *self.log_prices.as_slice().last()?;
+        if one_period / (n - 1.0) <= crate::math::rounding_variance(newest) {
+            return None;
+        }
+        if parts.variance <= 0.0 {
+            return None;
+        }
+
+        Some(VarianceRatioEstimate {
+            ratio: parts.ratio,
+            z_statistic: crate::math::sqrt(n) * (parts.ratio - 1.0)
+                / crate::math::sqrt(parts.variance),
+        })
     }
 
     /// Adds every term that ends at the newest price (`weight` 1).
@@ -750,6 +788,7 @@ impl VarianceRatioBuilder {
             long_sum_rounding: RoundingEstimate::new(),
             unchanged: 0,
             accuracy: Accuracy::Sound,
+            reading: None,
             count: 0,
         })
     }
@@ -1289,7 +1328,7 @@ mod tests {
             };
             let actual =
                 (got.z_statistic - want.z_statistic).abs() / want.z_statistic.abs().max(1.0);
-            let estimate = vr.z_error(vr.centered().unwrap());
+            let estimate = vr.z_error(vr.parts().unwrap());
             // Below one part in a billion the direct computation's own
             // rounding is as large as what it is compared with.
             assert!(
