@@ -55,7 +55,7 @@ pub fn check_input(value: f64, limit: f64) -> Result<(), crate::DataError> {
 /// `.await`.
 #[doc(hidden)]
 #[macro_export]
-macro_rules! __check_inputs {
+macro_rules! check_inputs {
     ($limit:expr; $($value:expr),+ $(,)?) => {{
         let limit: f64 = $limit;
         Ok(()) $(.and_then(|()| $crate::math::check_input($value, limit)))+
@@ -64,7 +64,7 @@ macro_rules! __check_inputs {
         $crate::math::check_inputs!(f64::MAX; $($value),+)
     };
 }
-pub use crate::__check_inputs as check_inputs;
+pub use crate::check_inputs;
 
 /// `2^64`: more samples than a `u64` count can hold.
 const TWO_POW_64: f64 = 18_446_744_073_709_551_616.0;
