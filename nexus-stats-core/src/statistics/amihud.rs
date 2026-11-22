@@ -1,131 +1,165 @@
+use crate::math::EwWeight;
 use crate::smoothing::Ema;
 
-/// Streaming Amihud ILLIQ ratio — illiquidity measure.
+/// Amihud illiquidity: the exponentially weighted average of
+/// `|return| / dollar_volume`.
 ///
-/// Computes the exponentially weighted average of |return| / dollar_volume.
-/// Higher values indicate less liquid instruments (larger price impact per
-/// unit of volume). This is the standard Amihud (2002) illiquidity measure.
+/// A higher value means a less liquid instrument: more price movement per
+/// unit of volume. The ratio is Amihud's (2002, "Illiquidity and stock
+/// returns", *Journal of Financial Markets*); he averages it equally over a
+/// period, and this type weights it exponentially. Periods with no volume
+/// are left out, as in the paper.
+///
+/// The value is in return per unit of volume. Amihud reports it multiplied
+/// by `1e6`.
 ///
 /// # Examples
 ///
 /// ```
 /// use nexus_stats_core::statistics::Amihud;
 ///
-/// let mut amihud = Amihud::builder()
-///     .alpha(0.05)
-///     .build()
-///     .unwrap();
-///
-/// amihud.update(0.01, 1_000_000.0).unwrap(); // 1% return, $1M volume
-/// let illiq = amihud.illiq().unwrap();
-/// assert!(illiq > 0.0);
+/// let mut amihud = Amihud::builder().alpha(0.5).build().unwrap();
+/// amihud.update(-0.01, 1_000_000.0); // a 1% fall on $1M of volume
+/// assert_eq!(amihud.illiq(), Some(1e-8));
 /// ```
 #[derive(Debug, Clone)]
 pub struct Amihud {
-    ema: Ema,
-    count: u64,
+    ratio: Ema,
 }
 
 /// Builder for [`Amihud`].
 #[derive(Debug, Clone)]
 pub struct AmihudBuilder {
-    alpha: Option<f64>,
+    weight: Option<EwWeight>,
 }
 
 impl Amihud {
     /// Creates a builder.
-    #[inline]
     #[must_use]
     pub fn builder() -> AmihudBuilder {
-        AmihudBuilder { alpha: None }
+        AmihudBuilder { weight: None }
     }
 
-    /// Feed an absolute return and dollar volume for one period.
+    /// Feeds one period's return and dollar volume.
     ///
-    /// `abs_return` should be the absolute value of the return (e.g., `|r|`).
-    /// A `dollar_volume` of zero means no trading happened: the period is
-    /// skipped and `count()` does not advance, so a caller can tell.
+    /// The return may be signed; its magnitude is used. A period with zero
+    /// volume is left out and `count()` does not advance.
+    ///
+    /// Does not validate its inputs; arithmetic follows IEEE 754. See
+    /// [`checked_update`](Self::checked_update).
+    #[inline]
+    pub fn update(&mut self, period_return: f64, dollar_volume: f64) {
+        // No trading: Amihud leaves the period out.
+        if dollar_volume == 0.0 {
+            return;
+        }
+        self.ratio.update(period_return.abs() / dollar_volume);
+    }
+
+    /// Checked update. Feeds the period, or returns an error and leaves the
+    /// tracker unchanged.
     ///
     /// # Errors
     ///
-    /// Returns `DataError::NotANumber` / `Infinite` if either value is NaN or
-    /// infinite, `DataError::Negative` for a negative volume, and
-    /// `DataError::Infinite` if the ratio itself overflows.
+    /// - [`DataError::NotANumber`](crate::DataError::NotANumber) if either
+    ///   value is NaN.
+    /// - [`DataError::Infinite`](crate::DataError::Infinite) if either value
+    ///   is infinite.
+    /// - [`DataError::Negative`](crate::DataError::Negative) if
+    ///   `dollar_volume` is negative.
+    /// - [`DataError::OutOfRange`](crate::DataError::OutOfRange) if the
+    ///   ratio overflows.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use nexus_stats_core::{DataError, statistics::Amihud};
+    ///
+    /// let mut amihud = Amihud::builder().alpha(0.5).build().unwrap();
+    /// assert_eq!(amihud.checked_update(0.01, 1_000_000.0), Ok(()));
+    /// assert_eq!(amihud.checked_update(0.01, -1.0), Err(DataError::Negative));
+    /// assert_eq!(amihud.count(), 1);
+    /// ```
     #[inline]
-    pub fn update(&mut self, abs_return: f64, dollar_volume: f64) -> Result<(), crate::DataError> {
-        check_finite!(abs_return);
-        check_finite!(dollar_volume);
+    pub fn checked_update(
+        &mut self,
+        period_return: f64,
+        dollar_volume: f64,
+    ) -> Result<(), crate::DataError> {
+        crate::math::check_input(period_return, f64::MAX)?;
+        crate::math::check_input(dollar_volume, f64::MAX)?;
         if dollar_volume < 0.0 {
             return Err(crate::DataError::Negative);
         }
-        if dollar_volume == 0.0 {
-            return Ok(());
+        if dollar_volume > 0.0 && (period_return.abs() / dollar_volume).is_infinite() {
+            return Err(crate::DataError::OutOfRange);
         }
-        let ratio = abs_return / dollar_volume;
-        self.ema.checked_update(ratio)?;
-        self.count += 1;
+        self.update(period_return, dollar_volume);
         Ok(())
     }
 
-    /// Current ILLIQ ratio (EMA of |return| / volume), or `None` before the
-    /// first positive-volume period.
-    #[inline]
+    /// The illiquidity ratio, or `None` before the first period with volume.
     #[must_use]
     pub fn illiq(&self) -> Option<f64> {
-        self.ema.value()
+        self.ratio.value()
     }
 
-    /// Number of valid observations (positive-volume periods).
-    #[inline]
+    /// Number of periods fed that had volume.
     #[must_use]
     pub fn count(&self) -> u64 {
-        self.count
+        self.ratio.count()
     }
 
-    /// Whether enough observations have been fed.
-    #[inline]
+    /// Whether a period with volume has been fed.
     #[must_use]
     pub fn is_primed(&self) -> bool {
-        self.ema.is_primed()
+        self.ratio.is_primed()
     }
 
-    /// Reset all state.
+    /// Resets to no periods. Parameters unchanged.
     pub fn reset(&mut self) {
-        self.ema.reset();
-        self.count = 0;
+        self.ratio.reset();
     }
 }
 
 impl AmihudBuilder {
-    /// Direct smoothing factor. Must be in (0, 1).
-    #[inline]
+    /// Direct smoothing factor. Must be in (0, 1) exclusive.
     #[must_use]
     pub fn alpha(mut self, alpha: f64) -> Self {
-        self.alpha = Some(alpha);
+        self.weight = Some(EwWeight::Alpha(alpha));
         self
     }
 
-    /// Samples for weight to decay by half.
-    #[inline]
+    /// Periods for weight to decay by half. Must be positive and finite.
     #[must_use]
     #[cfg(any(feature = "std", feature = "libm"))]
     pub fn halflife(mut self, halflife: f64) -> Self {
-        self.alpha = Some(crate::math::alpha_from_halflife(halflife));
+        self.weight = Some(EwWeight::Halflife(halflife));
         self
     }
 
-    /// Build the Amihud ILLIQ tracker.
+    /// Span in periods (`alpha = 2 / (n + 1)`). Must be at least 2.
+    #[must_use]
+    pub fn span(mut self, n: u64) -> Self {
+        self.weight = Some(EwWeight::Span(n));
+        self
+    }
+
+    /// Builds the tracker.
     ///
     /// # Errors
     ///
-    /// Returns `ConfigError` if alpha is missing or invalid.
-    #[inline]
+    /// - `Missing("alpha")` if none of `alpha`, `halflife`, `span` was set.
+    /// - `Invalid` if the weight is out of range; the message names the knob
+    ///   set.
     pub fn build(self) -> Result<Amihud, crate::ConfigError> {
-        let alpha = self.alpha.ok_or(crate::ConfigError::Missing("alpha"))?;
-
-        let ema = Ema::builder().alpha(alpha).build()?;
-
-        Ok(Amihud { ema, count: 0 })
+        let alpha = self
+            .weight
+            .ok_or(crate::ConfigError::Missing("alpha"))?
+            .resolve()?;
+        Ok(Amihud {
+            ratio: Ema::builder().alpha(alpha).build()?,
+        })
     }
 }
 
@@ -136,7 +170,7 @@ mod tests {
     #[test]
     fn basic_illiq() {
         let mut a = Amihud::builder().alpha(0.1).build().unwrap();
-        a.update(0.01, 1_000_000.0).unwrap();
+        a.update(0.01, 1_000_000.0);
         let illiq = a.illiq().unwrap();
         assert!(illiq > 0.0);
         assert!((illiq - 1e-8).abs() < 1e-10);
@@ -148,8 +182,8 @@ mod tests {
         let mut illiquid = Amihud::builder().alpha(0.5).build().unwrap();
 
         for _ in 0..50 {
-            liquid.update(0.001, 10_000_000.0).unwrap();
-            illiquid.update(0.01, 100_000.0).unwrap();
+            liquid.update(0.001, 10_000_000.0);
+            illiquid.update(0.01, 100_000.0);
         }
 
         assert!(
@@ -163,7 +197,7 @@ mod tests {
     #[test]
     fn zero_volume_skipped() {
         let mut a = Amihud::builder().alpha(0.1).build().unwrap();
-        a.update(0.01, 0.0).unwrap();
+        a.update(0.01, 0.0);
         assert_eq!(a.count(), 0);
         assert!(!a.is_primed());
     }
@@ -171,22 +205,77 @@ mod tests {
     #[test]
     fn reset_clears_state() {
         let mut a = Amihud::builder().alpha(0.1).build().unwrap();
-        a.update(0.01, 1_000_000.0).unwrap();
+        a.update(0.01, 1_000_000.0);
         a.reset();
         assert_eq!(a.count(), 0);
         assert!(!a.is_primed());
     }
 
     #[test]
-    fn nan_rejected() {
-        let mut a = Amihud::builder().alpha(0.1).build().unwrap();
-        assert!(a.update(f64::NAN, 1.0).is_err());
-        assert!(a.update(1.0, f64::NAN).is_err());
+    fn the_magnitude_of_a_signed_return_is_used() {
+        let mut up = Amihud::builder().alpha(0.5).build().unwrap();
+        let mut down = up.clone();
+        up.update(0.01, 1_000_000.0);
+        down.update(-0.01, 1_000_000.0);
+        assert_eq!(up.illiq(), Some(1e-8));
+        assert_eq!(down.illiq(), Some(1e-8));
     }
 
     #[test]
-    fn inf_rejected() {
-        let mut a = Amihud::builder().alpha(0.1).build().unwrap();
-        assert!(a.update(f64::INFINITY, 1.0).is_err());
+    fn checked_update_refuses_bad_input_and_changes_nothing() {
+        use crate::DataError::{Infinite, Negative, NotANumber, OutOfRange};
+
+        let mut a = Amihud::builder().alpha(0.5).build().unwrap();
+        a.checked_update(0.01, 1_000_000.0).unwrap();
+        let before = (a.count(), a.illiq());
+
+        assert_eq!(a.checked_update(f64::NAN, 1.0), Err(NotANumber));
+        assert_eq!(a.checked_update(1.0, f64::NAN), Err(NotANumber));
+        assert_eq!(a.checked_update(f64::INFINITY, 1.0), Err(Infinite));
+        assert_eq!(a.checked_update(1.0, f64::INFINITY), Err(Infinite));
+        assert_eq!(a.checked_update(0.01, -1.0), Err(Negative));
+        // Finite inputs whose ratio is not.
+        assert_eq!(a.checked_update(1e300, 1e-300), Err(OutOfRange));
+
+        assert_eq!((a.count(), a.illiq()), before);
+    }
+
+    #[test]
+    fn checked_update_skips_zero_volume_like_update() {
+        let mut a = Amihud::builder().alpha(0.5).build().unwrap();
+        assert_eq!(a.checked_update(0.01, 0.0), Ok(()));
+        assert_eq!(a.checked_update(0.0, 0.0), Ok(()));
+        assert_eq!((a.count(), a.illiq()), (0, None));
+    }
+
+    #[test]
+    fn checked_update_gives_the_same_result_as_update() {
+        let mut checked = Amihud::builder().alpha(0.2).build().unwrap();
+        let mut unchecked = checked.clone();
+        for (r, v) in [(0.01, 1e6), (-0.02, 5e5), (0.0, 1e6), (0.03, 0.0)] {
+            checked.checked_update(r, v).unwrap();
+            unchecked.update(r, v);
+        }
+        assert_eq!(checked.count(), unchecked.count());
+        assert_eq!(checked.illiq(), unchecked.illiq());
+    }
+
+    #[test]
+    fn update_does_not_validate() {
+        let mut a = Amihud::builder().alpha(0.5).build().unwrap();
+        a.update(f64::NAN, 1.0);
+        assert!(a.illiq().unwrap().is_nan());
+    }
+
+    #[test]
+    fn a_bad_knob_is_reported_under_its_own_name() {
+        use crate::ConfigError::{Invalid, Missing};
+        let b = Amihud::builder;
+        assert_eq!(b().build().unwrap_err(), Missing("alpha"));
+        assert_eq!(
+            b().span(1).build().unwrap_err(),
+            Invalid("span must be at least 2")
+        );
+        assert_eq!(b().span(3).build().unwrap().illiq(), None);
     }
 }

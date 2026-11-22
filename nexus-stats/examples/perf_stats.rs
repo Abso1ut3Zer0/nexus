@@ -2447,12 +2447,12 @@ fn main() {
     bench_feed(&mut buf, &mut hit, |h, v| {
         // Realized sign decorrelated from the predicted one: a cheap hash.
         let realized = ((v as u64).wrapping_mul(0x9E37_79B9_7F4A_7C15) >> 60) as f64 - 7.5;
-        let _ = h.update(v - 100.0, realized);
+        h.update(v - 100.0, realized);
     });
     print_row("HitRate::update", &mut buf);
     let mut amihud = Amihud::builder().alpha(0.05).build().unwrap();
     bench_feed(&mut buf, &mut amihud, |a, v| {
-        let _ = a.update(v * 1e-4, v * 1e3);
+        a.update(v * 1e-4, v * 1e3);
     });
     print_row("Amihud::update", &mut buf);
     let mut hl = HalfLife::new();
