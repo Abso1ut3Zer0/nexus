@@ -20,7 +20,6 @@ All types follow the ecosystem conventions: O(1) per update, fixed memory, no al
 | [Spring](spring.md) | `Spring` | UI / animation / chase targets without overshoot. |
 | [HuberEMA](huber-ema.md) | `HuberEma` | EMA but with per-step bounded influence — robust to outliers without throwing data away. |
 | [Hampel](hampel.md) | `Hampel` | Three-zone outlier filter — pass, Winsorize, or reject based on MAD distance. |
-| [ConditionalEMA](conditional-ema.md) | `ConditionalEma` | EMA that only updates when a side-condition (e.g. "queue non-empty") is true. |
 | [WindowedMedian](windowed-median.md) | `WindowedMedian<f64>` / `WindowedMedian<i64>` | Robust median over a fixed-size sliding window. |
 
 ## Cross-References

@@ -45,7 +45,6 @@ See [Integer vs Float](../guides/integer-vs-float.md) for the caller rules and
 | `Holt` | `f64` | — | smoothing |
 | `Kalman1d` | `f64` | — | smoothing |
 | `Spring` | `f64` | — | smoothing |
-| `ConditionalEma` | `f64` | — | smoothing |
 | `HuberEma` | `f64` | — | smoothing |
 | `Kama` | `f64` | `alloc` | smoothing |
 | `Hampel` | `f64` | `alloc` | smoothing |

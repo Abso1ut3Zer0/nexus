@@ -55,7 +55,7 @@ assert_eq!(ema.value(), Some(100.0)); // reset returns to the as-built state
 
 ## AsymEMA
 
-Two different alphas: one for `sample > current`, one for `sample < current`. Useful when you want to react fast to degradation but smooth slowly on recovery (or vice versa).
+Two different alphas: one for `sample > current`, one otherwise. Useful when you want to react fast to degradation but smooth slowly on recovery (or vice versa).
 
 ```rust
 use nexus_stats_core::smoothing::AsymEma;
@@ -67,11 +67,13 @@ let mut aema = AsymEma::builder()
     .unwrap();
 
 let latencies = [100.0, 100.0, 400.0, 100.0];
-for us in latencies { aema.update(us).unwrap(); }
+for us in latencies { aema.update(us); }
 // The spike pulled the value up fast (span 5); one sample of recovery has
 // barely moved it back (span 50).
 assert!(aema.value().unwrap() > 190.0);
 ```
+
+Each weight can be set as `alpha_up` / `alpha_down`, `halflife_up` / `halflife_down`, or `span_up` / `span_down`. `seed`, `reset_with_seed` and `checked_update` work as on `Ema`.
 
 **Use for:** SLO monitoring (stay on top of degradations, don't flap on recoveries), drawdown tracking, queue-depth monitoring.
 

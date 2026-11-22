@@ -95,8 +95,12 @@ one naming convention across the family. Migration guide:
   `Counter { key, count, error }` over the sorted table, `top().take(k)` the
   top k, `guaranteed_top()` the number of ranks that are provably exact.
   `K: Eq + Hash` (was `Eq + Clone`).
-- `libm` also enables `nexus-stats-smoothing/libm`, so `HuberEma` /
-  `ConditionalEma::halflife` exist on a `no_std` + `libm` build.
+- `libm` also enables `nexus-stats-smoothing/libm`, so `HuberEma::halflife`
+  exists on a `no_std` + `libm` build.
+- Carried from core and smoothing: `AsymEma::update` and `HuberEma::update`
+  return `Option<f64>` with no `Result`; `checked_update` validates. Both
+  have `seed` and `reset_with_seed` with `Ema`'s meaning. See the migration
+  guide.
 
 - Carried from core (blind audit, PR C1): `LevelCrossing::update` returns
   the crossing's `Direction` and no longer counts a touch as a crossing;
@@ -128,7 +132,8 @@ one naming convention across the family. Migration guide:
   extrema and CoDel, `CoDel::min_sojourn` (core); `MosumI64`,
   `AutocorrelationI64` ([#379](https://github.com/Abso1ut3Zer0/nexus/issues/379),
   detection); `DecayAccumF64` (control); `HalfLifeBuilder` (core; it had no
-  knobs, use `HalfLife::new()`).
+  knobs, use `HalfLife::new()`); `ConditionalEma` (smoothing; call
+  `Ema::update` only when the condition holds).
 
 ### Added
 

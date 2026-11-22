@@ -64,7 +64,6 @@ information. Builders follow their type: `EmaF64Builder` → `EmaBuilder`,
 
 | 6.x | 7.0 |
 |-----|-----|
-| `ConditionalEmaF64` | `ConditionalEma` |
 | `HampelF64` | `Hampel` |
 | `HoltF64` | `Holt` |
 | `HuberEmaF64` | `HuberEma` |
@@ -231,6 +230,7 @@ on `f32` accumulation for speed, measure: the hot path gains a convert.
 | `DecayAccumF64` | `DecayAccum` (`u64` ticks) |
 | `update_i64(timestamp, ..)` on `WindowedMax`, `WindowedMin`, `CoDel` | `update(timestamp as u64, ..)` |
 | `HalfLifeBuilder` | `HalfLife::new()` (the builder had no knobs) |
+| `ConditionalEmaF64` | `Ema`, with `update` called only when the condition holds (the type was that `if` plus two counters) |
 | `CoDel::min_sojourn()` | the detector no longer keeps a windowed minimum (it implements RFC 8289 directly); keep a `WindowedMin<i64>` beside it if you report one |
 
 ## 4. Behavior changes
@@ -423,7 +423,8 @@ refuses a sample below `1e-120`, which covers zero and negatives),
 `Lpm` (its `checked_update` refuses the sample that would overflow the
 sum, with no fixed input limit), `HalfLife`, `BipowerVariation` (its
 `checked_update` refuses a zero or negative price, with no magnitude
-limit), `Ema` (NaN and infinity only), `EwmVar`, `ZScoreNorm`.
+limit), `Ema`, `AsymEma` and `HuberEma` (NaN and infinity only),
+`EwmVar`, `ZScoreNorm`.
 
 `Ema` and `EwmVar` are transforms, so `update` still returns the value,
 without the `Result`:
@@ -461,6 +462,12 @@ let sd = ew.value()?.std_dev();
 - `min_samples` must be at least 2, and a seed no longer counts as
   samples: `count()` starts at 0 and `reset()` returns to the seed.
   `ZScoreNorm` is built on `EwmVar` and changes the same way.
+
+`AsymEma` and `HuberEma` follow `Ema`: `update` returns `Option<f64>`,
+`checked_update` validates, and both gain `seed` semantics that match
+(`HuberEma`'s seed no longer counts as a sample, and `reset()` returns to
+it) plus `reset_with_seed`. `HuberEma` results differ from 6.x in the last
+bit: its step is now one fused multiply-add.
 
 `ZScoreNorm` has moved too. `update` and `normalize` return `Option<T>`;
 `checked_update` and `checked_normalize` are the validating forms:

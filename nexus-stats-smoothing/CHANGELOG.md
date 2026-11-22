@@ -10,7 +10,24 @@ contained.
 
 ## [Unreleased]
 
+### Removed
+
+- **`ConditionalEma`.** It was an `Ema` behind an `if`, plus two counters.
+  Call `Ema::update` only when the condition holds.
+
 ### Changed
+
+- **`HuberEma::update` no longer validates or returns a `Result`**: it
+  returns `Option<f64>`. `checked_update` is the validating form and refuses
+  NaN and infinity.
+- **A `HuberEma` seed is a value, not a sample**, as on `Ema`: `count()`
+  starts at 0 and `reset()` returns to the seed. The seed used to count as
+  one sample, and `reset()` discarded it. A NaN or infinite seed is refused
+  by `build` (it was accepted), and so is a NaN or infinite `delta`.
+- **`HuberEma` clips with one clamp and one fused multiply-add.** Results
+  differ from before in the last bit. Its builder uses the shared weight
+  resolver, so a bad `alpha`, `halflife` or `span` is reported under its own
+  name and a weight too small to use is refused.
 
 - **No numeric suffixes** (the stats major, [#773](https://github.com/Abso1ut3Zer0/nexus/issues/773)). Every type here exists for one numeric
   type and is named plainly: `HoltF64` → `Holt`, `KamaF64` → `Kama`,
@@ -42,9 +59,10 @@ contained.
 
 ### Added
 
+- `HuberEma::checked_update`, `HuberEma::reset_with_seed`, and
+  `HuberEmaBuilder::span`.
 - **`libm` feature** (forwards to `nexus-stats-core/libm`): the `halflife(h)`
-  builder option of `HuberEma` and `ConditionalEma` is available without
-  `std`. The umbrella's `libm` forwards here too.
+  builder option of `HuberEma` is available without `std`. The umbrella's `libm` forwards here too.
 
 ### Fixed
 
@@ -60,9 +78,7 @@ contained.
 - Docs: the crate doc claimed O(1) per update for every type; the windowed
   types (`WindowedMedian`, `Kama`, `Hampel`) are O(window) and the doc now
   says so. `Kama`'s doc states its per-update cost and the N-1 intervals its
-  volatility spans; the types table lists `ConditionalEma`.
-- Docs: `ConditionalEma::active_fraction` says it reads `0.0` before any
-  sample.
+  volatility spans.
 
 ## [2.0.0] — 2026-05-28
 

@@ -235,6 +235,19 @@ if let (Some(slow), Some(fast_val)) = (baseline.update(x), fast.update(x)) {
 }
 ```
 
+### Conditional update
+
+"Smooth this only while a condition holds." Call `update` only then:
+
+```rust
+// Smooth markout only while flow is toxic.
+if vpin > 0.5 {
+    markout_ema.update(markout);
+}
+```
+
+There is no separate type for this (`ConditionalEma` was removed in 7.0).
+
 ## Performance
 
 | Operation | p50 | p99 |

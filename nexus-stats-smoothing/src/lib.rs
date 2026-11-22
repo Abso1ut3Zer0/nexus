@@ -13,7 +13,6 @@
 //! | Type | Description | Feature |
 //! |------|-------------|---------|
 //! | [`Holt`] | Double exponential smoothing (level + trend) | — |
-//! | [`ConditionalEma`] | EMA that only folds samples flagged active | — |
 //! | [`Spring`] | Critically damped spring (chase without overshoot) | — |
 //! | [`Kalman1d`] | 1D Kalman filter (position + velocity) | — |
 //! | [`HuberEma`] | Outlier-robust EMA (bounded step per observation) | — |
@@ -33,7 +32,6 @@ extern crate alloc;
 #[macro_use]
 extern crate nexus_stats_core;
 
-mod conditional_ema;
 mod holt;
 mod kalman1d;
 mod spring;
@@ -47,7 +45,6 @@ mod kama;
 #[cfg(feature = "alloc")]
 mod windowed_median;
 
-pub use conditional_ema::*;
 pub use holt::*;
 pub use huber_ema::*;
 pub use kalman1d::*;

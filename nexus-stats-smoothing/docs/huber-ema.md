@@ -22,18 +22,21 @@ Not for: data that's routinely garbage (use `WindowedMedian<f64>` or `Hampel`), 
 ```rust
 impl HuberEma {
     pub fn builder() -> HuberEmaBuilder;
-    pub fn update(&mut self, x: f64) -> Result<Option<f64>, DataError>;
+    pub fn update(&mut self, sample: f64) -> Option<f64>;
+    pub fn checked_update(&mut self, sample: f64) -> Result<Option<f64>, DataError>;
     pub fn value(&self) -> Option<f64>;
     pub fn alpha(&self) -> f64;
     pub fn delta(&self) -> f64;
     pub fn count(&self) -> u64;
     pub fn is_primed(&self) -> bool;
     pub fn reset(&mut self);
+    pub fn reset_with_seed(&mut self, value: f64) -> Result<(), ConfigError>;
 }
 
 impl HuberEmaBuilder {
     pub fn alpha(self, alpha: f64) -> Self;
     pub fn halflife(self, halflife: f64) -> Self; // alternative to alpha
+    pub fn span(self, n: u64) -> Self;            // alternative to alpha
     pub fn delta(self, delta: f64) -> Self;       // clip threshold in units of x
     pub fn min_samples(self, n: u64) -> Self;
     pub fn seed(self, value: f64) -> Self;
@@ -57,12 +60,16 @@ let mut robust = HuberEma::builder()
     .unwrap();
 
 for &us in &latencies {
-    robust.update(us).unwrap();
+    robust.update(us);
 }
 
 println!("robust mean latency = {:.1}us", robust.value().unwrap());
 // ~125us, not dragged by the 8500 spike.
 ```
+
+`update` does not validate; `checked_update` refuses NaN and infinity. One sample moves the value by at most `alpha * delta`.
+
+A seed is a value, not a sample: `seed(v)` starts the average at `v`, `count()` still counts only samples fed, and `reset()` returns to the seed. `reset_with_seed(v)` moves a live average to a new seed.
 
 ## Parameter tuning
 

@@ -52,14 +52,19 @@ let mut ema = AsymEma::builder()
     .build().unwrap();
 ```
 
+`update` returns the smoothed value and does not validate;
+`checked_update` refuses NaN and infinity. `halflife_up` / `halflife_down`
+set the weights as half-lives. `seed(v)` starts the average at `v`, and
+`reset_with_seed(v)` moves a live one to a new seed, as on [EMA](ema.md).
+
 ## Performance
 
 | Operation | p50 | p99 |
 |-----------|-----|-----|
 | `AsymEma::update` | 12 cycles | 12 cycles |
 
-One branch (rising vs falling) + one multiply-add. The branch is
-well-predicted for signals with consistent direction.
+One select of the weight (rising vs falling) and one multiply-add. The
+select compiles to an indexed load, not a branch.
 
 ## Background
 
