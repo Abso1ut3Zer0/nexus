@@ -331,25 +331,13 @@ impl VarianceRatio {
         // Measure about the drift of what is held, so taking the drift out
         // at read time subtracts little.
         self.pivot = (prices[prices.len() - 1] - prices[0]) / (prices.len() - 1) as f64;
-        let (pivot, long_pivot) = (self.pivot, self.q as f64 * self.pivot);
-
-        let returns = prices.windows(2).map(|pair| pair[1] - pair[0] - pivot);
-        for one_period in returns.clone() {
-            let square = one_period * one_period;
-            self.one_period_squares += square;
-            self.fourth_powers = square.fma(square, self.fourth_powers);
-        }
-        for (index, totals) in self.lags.iter_mut().enumerate() {
-            let pairs = returns.clone().zip(returns.clone().skip(index + 1));
-            pairs.for_each(|(earlier, later)| totals.add(earlier, later, 1.0));
-        }
-        for (from, to) in prices.iter().zip(&prices[self.q.min(prices.len())..]) {
-            let long = to - from - long_pivot;
-            self.long_sum += long;
-            self.long_squares = long.fma(long, self.long_squares);
-        }
-        // The recomputation is itself one rounded add per term.
         let adds = prices.len() - 1;
+
+        self.sum_one_period_returns();
+        self.sum_pairs_at_each_lag();
+        self.sum_long_returns();
+
+        // The recomputation is itself one rounded add per term.
         self.fourth_powers_rounding
             .record_n(self.fourth_powers, adds);
         self.squares_rounding
@@ -387,6 +375,44 @@ impl VarianceRatio {
         self.clear_totals();
         self.unchanged = 0;
         self.count = 0;
+    }
+
+    /// For `resync`: the squares and fourth powers of the one-period
+    /// returns held, about the pivot.
+    fn sum_one_period_returns(&mut self) {
+        for pair in self.log_prices.as_slice().windows(2) {
+            let one_period = pair[1] - pair[0] - self.pivot;
+            let square = one_period * one_period;
+            self.one_period_squares += square;
+            self.fourth_powers = square.fma(square, self.fourth_powers);
+        }
+    }
+
+    /// For `resync`: each lag's totals, over every pair of one-period
+    /// returns that far apart.
+    fn sum_pairs_at_each_lag(&mut self) {
+        let pivot = self.pivot;
+        let returns = self
+            .log_prices
+            .as_slice()
+            .windows(2)
+            .map(|pair| pair[1] - pair[0] - pivot);
+        for (index, totals) in self.lags.iter_mut().enumerate() {
+            let pairs = returns.clone().zip(returns.clone().skip(index + 1));
+            pairs.for_each(|(earlier, later)| totals.add(earlier, later, 1.0));
+        }
+    }
+
+    /// For `resync`: the sum and squares of the overlapping `q`-period
+    /// returns held, about `q` times the pivot.
+    fn sum_long_returns(&mut self) {
+        let prices = self.log_prices.as_slice();
+        let long_pivot = self.q as f64 * self.pivot;
+        for (from, to) in prices.iter().zip(&prices[self.q.min(prices.len())..]) {
+            let long = to - from - long_pivot;
+            self.long_sum += long;
+            self.long_squares = long.fma(long, self.long_squares);
+        }
     }
 
     fn clear_totals(&mut self) {

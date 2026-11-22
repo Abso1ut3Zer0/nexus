@@ -140,52 +140,17 @@ impl Hurst {
     /// Costs time proportional to the window times the number of lengths.
     #[must_use]
     pub fn exponent(&self) -> Option<f64> {
-        /// `R/S` of the returns between consecutive `log_prices`, or `None`
-        /// if they are equal to within rounding.
-        fn rescaled_range(log_prices: &[f64]) -> Option<f64> {
-            let returns = log_prices.len() - 1;
-            let n = returns as f64;
-            // The running sum of returns is a difference of log prices.
-            let mean = (log_prices[returns] - log_prices[0]) / n;
-            let sums = kernel::stretch_sums(log_prices, mean);
-
-            // SciPy's zero-variance test (`skew`, `kurtosis`): a variance at
-            // or below `(EPSILON * x)^2` is rounding, where `x` is the size
-            // of the values subtracted. Here those are log prices.
-            let variance = sums.squares / (n - 1.0);
-            if variance <= crate::math::rounding_variance(log_prices[0]) {
-                return None;
-            }
-            Some((sums.highest - sums.lowest) / crate::math::sqrt(variance))
-        }
-
         if !self.log_prices.is_full() {
             return None;
         }
         // Oldest first.
         let log_prices = self.log_prices.as_slice();
-        let returns = log_prices.len() - 1;
 
         // Least-squares slope of `ln(R/S) - ln(expected)` on `ln(size)`.
         let mut slope = 0.0;
         for scale in &self.scales {
-            let stretches = returns / scale.size;
-            // Stretches end at the newest price; older leftovers are unused.
-            let unused = returns - stretches * scale.size;
-
-            let (mut total, mut moved) = (0.0, 0u32);
-            for stretch in 0..stretches {
-                let start = unused + stretch * scale.size;
-                if let Some(ratio) = rescaled_range(&log_prices[start..=start + scale.size]) {
-                    total += ratio;
-                    moved += 1;
-                }
-            }
-            if moved == 0 {
-                return None;
-            }
-
-            let excess = crate::math::ln(total / f64::from(moved)) - scale.ln_expected;
+            let excess =
+                crate::math::ln(mean_rescaled_range(log_prices, scale.size)?) - scale.ln_expected;
             slope = scale.slope_weight.fma(excess, slope);
         }
 
@@ -286,6 +251,49 @@ impl HurstBuilder {
             scales: scales.into_boxed_slice(),
         })
     }
+}
+
+/// The average `R/S` over the stretches of `size` returns that fit in
+/// `log_prices`, or `None` if none of them moved.
+///
+/// Stretches end at the newest price; older prices left over are unused.
+fn mean_rescaled_range(log_prices: &[f64], size: usize) -> Option<f64> {
+    let returns = log_prices.len() - 1;
+    let stretches = returns / size;
+    let unused = returns - stretches * size;
+
+    let (mut total, mut moved) = (0.0, 0u32);
+    for stretch in 0..stretches {
+        let start = unused + stretch * size;
+        if let Some(ratio) = rescaled_range(&log_prices[start..=start + size]) {
+            total += ratio;
+            moved += 1;
+        }
+    }
+    if moved == 0 {
+        return None;
+    }
+    Some(total / f64::from(moved))
+}
+
+/// `R/S` of the returns between consecutive `log_prices`: the range of
+/// their running sum about its trend, over their standard deviation.
+/// `None` if the returns are equal to within rounding.
+fn rescaled_range(log_prices: &[f64]) -> Option<f64> {
+    let returns = log_prices.len() - 1;
+    let n = returns as f64;
+    // The running sum of returns is a difference of log prices.
+    let mean = (log_prices[returns] - log_prices[0]) / n;
+    let sums = kernel::stretch_sums(log_prices, mean);
+
+    // SciPy's zero-variance test (`skew`, `kurtosis`): a variance at or
+    // below `(EPSILON * x)^2` is rounding, where `x` is the size of the
+    // values subtracted. Here those are log prices.
+    let variance = sums.squares / (n - 1.0);
+    if variance <= crate::math::rounding_variance(log_prices[0]) {
+        return None;
+    }
+    Some((sums.highest - sums.lowest) / crate::math::sqrt(variance))
 }
 
 /// The rescaled range expected of `n` independent returns: Anis and Lloyd
