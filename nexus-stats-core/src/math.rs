@@ -535,6 +535,91 @@ pub fn alpha_from_span(n: u64) -> f64 {
     2.0 / (n as f64 + 1.0)
 }
 
+/// The warm-up of a streaming type: samples fed, and how many are needed
+/// before it gives a reading.
+#[doc(hidden)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Warmup {
+    count: u64,
+    prime_at: u64,
+}
+
+impl Warmup {
+    /// A warm-up of `min_samples` samples. `seeded` types need none: they
+    /// have a reading from the start.
+    #[must_use]
+    pub fn new(min_samples: u64, seeded: bool) -> Self {
+        Self {
+            count: 0,
+            prime_at: if seeded { 0 } else { min_samples },
+        }
+    }
+
+    /// Counts one sample and returns the new count.
+    #[inline]
+    pub fn tick(&mut self) -> u64 {
+        self.count += 1;
+        self.count
+    }
+
+    /// Samples counted since construction or the last reset.
+    #[inline]
+    #[must_use]
+    pub fn count(self) -> u64 {
+        self.count
+    }
+
+    /// Whether enough samples have been counted for a reading.
+    #[inline]
+    #[must_use]
+    pub fn is_primed(self) -> bool {
+        self.count >= self.prime_at
+    }
+
+    /// Back to no samples. The samples needed are unchanged.
+    pub fn reset(&mut self) {
+        self.count = 0;
+    }
+
+    /// Back to no samples, with a seed: a reading is available at once.
+    pub fn reset_seeded(&mut self) {
+        self.count = 0;
+        self.prime_at = 0;
+    }
+}
+
+/// A smoothing weight with its complement, `1 - alpha`.
+#[doc(hidden)]
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Weight {
+    alpha: f64,
+    complement: f64,
+}
+
+impl Weight {
+    /// The weight `alpha`. Not validated: resolve an [`EwWeight`] first.
+    #[must_use]
+    pub fn new(alpha: f64) -> Self {
+        Self {
+            alpha,
+            complement: 1.0 - alpha,
+        }
+    }
+
+    /// The weight itself.
+    #[must_use]
+    pub fn alpha(self) -> f64 {
+        self.alpha
+    }
+
+    /// `alpha * new + (1 - alpha) * old`.
+    #[inline]
+    #[must_use]
+    pub fn blend(self, new: f64, old: f64) -> f64 {
+        self.alpha.fma(new, self.complement * old)
+    }
+}
+
 /// How a builder was told its exponential weight: directly, as a half-life,
 /// or as a span. Builders store the knob the caller set and resolve it in
 /// `build`, so a bad value is reported under the name the caller used.

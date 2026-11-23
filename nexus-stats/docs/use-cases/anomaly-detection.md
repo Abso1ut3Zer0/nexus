@@ -120,8 +120,8 @@ Sometimes the simplest check is the most effective:
 use nexus_stats::smoothing::Slew;
 
 // Reject samples that change too fast
-let mut slew = Slew::<f64>::new(max_allowed_change).unwrap();
-let clamped = slew.update(sample).unwrap();
+let mut slew = Slew::new(max_allowed_change).unwrap();
+let clamped = slew.update(sample);
 
 if (clamped - sample).abs() > 0.001 {
     // Sample was clamped — original exceeded rate limit
@@ -136,12 +136,12 @@ if (clamped - sample).abs() > 0.001 {
 | MultiGate | Graded severity filter |
 | RobustZScore | O(1) outlier scoring |
 | CUSUM | Regime change detection |
-| SlewLimiter | Rate-of-change guard |
+| Slew | Rate-of-change guard |
 | WindowedMedian | Robust baseline for outlier thresholds |
 
 ## Tips
 
-- **Layer your defenses.** Hard limits (SlewLimiter) catch impossible values.
+- **Layer your defenses.** Hard limits (Slew) catch impossible values.
   Statistical tests (MultiGate) catch subtle anomalies. Use both.
 
 - **Never update estimators with rejected data.** MultiGate does this

@@ -10,6 +10,40 @@ contained.
 
 ## [Unreleased]
 
+### Changed (breaking)
+
+- **`Slew` is `f64` only;** `Slew<i64>` is removed (cast to `f64`, exact up
+  to 2^53). `update` returns the value with no `Result`; `checked_update`
+  refuses NaN and infinity. `Slew::with_limits(rising, falling)` sets the
+  rising and falling limits separately, as slew rate limiters usually do.
+- **`Holt::update` returns `Option<Trend>`** (`Trend { level, slope }`) with
+  no `Result`; `checked_update` refuses NaN and infinity. `level()` and
+  `trend()` are replaced by `reading()`. The arithmetic is unchanged.
+- **`Holt` refuses `min_samples` below 2:** one sample gives no slope, and
+  it used to report a slope of zero.
+- **A `Holt` seed is a value, not samples,** as on `Ema`: `count()` starts
+  at 0, `reset()` returns to the seed, and `reset_with_seed` replaces it.
+- **`Spring::update` returns the value with no `Result`;** `checked_update`
+  refuses a NaN or infinite `target`, a NaN, infinite or negative `dt`, and
+  a step that overflows.
+  `value()` and `velocity()` are replaced by `reading() -> Option<Motion>`,
+  and `reset_to` by `reset_with_seed`.
+- **`Slew::new` and `Spring::new` refuse an infinite setting.**
+
+### Fixed
+
+- **`Spring` follows the published method.** It approximated the decay as
+  `1 / (1 + x + x²/2)` while its docs named a Padé approximant. It now uses
+  `1 / (1 + x + 0.48x² + 0.235x³)` from *Game Programming Gems 4*, as
+  Unity's `SmoothDamp` does, and holds at the target if a step would cross
+  it (the crossing test of Unity's vector form, which treats both
+  directions alike). Values differ from earlier releases.
+- **`Spring` no longer returns NaN for a step that has fully settled.** A
+  step long enough for the decay to reach zero puts the spring at rest on
+  the target. `Spring::new` refuses a `smooth_time` so small that
+  `2 / smooth_time` overflows, and `checked_update` refuses any other step
+  that overflows (`DataError::OutOfRange`), leaving the spring unchanged.
+
 ### Added (moved in)
 
 - `Ema`, `AsymEma`, `Slew` and `EwmVar` (with `MeanVariance`), from

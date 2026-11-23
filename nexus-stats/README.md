@@ -25,7 +25,7 @@ without latency jitter.
 **Not yet migrated.** These types have not been moved to these guarantees. Most still validate in `update` and return a `Result`. The list shrinks with each release of the 7.0 series.
 
 - `statistics`: `BucketAccumulator`, `CovarianceMatrix`, `FirstDiff`, `Percentile`, `SecondDiff`
-- `smoothing`: `Hampel`, `Holt`, `Kama`, `Slew`, `Spring`, `WindowedMedian`
+- `smoothing`: `Hampel`, `Kama`, `WindowedMedian`
 - `monitoring`: `CoDel`, `Drawdown`, `ErrorRate`, `EventRate`, `HawkesIntensity`, `Jitter`, `Liveness`, `PollSaturation`, `SojournSaturation`
 - `normalization`: `MinMaxNorm`, `QuantileNorm`
 - `trading`: `Cvar`, `KyleLambda`
@@ -100,7 +100,7 @@ docs, and each module's docs say which type to use for what.
 | `Kalman1d` | 1D Kalman filter with velocity tracking | 26 |
 | `Holt` | Double exponential (level + trend) | 11 |
 | `Spring` | Critically damped spring (smooth target chasing) | 13 |
-| `Slew<f64>` | Hard rate-of-change clamp | 8 |
+| `Slew` | Slew rate limiter: caps the change per sample | 8 |
 | `WindowedMedian<f64>` | Robust median filter (outlier-immune) | 80 |
 
 ### Statistics
@@ -203,7 +203,7 @@ sealed `Sample` trait, instantiated for `f64` and `i64`:
 | `Drawdown`, `WindowedMax`, `WindowedMin`, `PeakHold`, `CoDel`, `Jitter` | `monitoring` |
 | `DeadBand`, `Hysteresis`, `LevelCrossing`, `PeakDetector` *(control feature)* | `control` |
 | `FirstDiff`, `SecondDiff` | `statistics` |
-| `Slew`, `WindowedMedian` *(smoothing feature)* | `smoothing` |
+| `WindowedMedian` *(smoothing feature)* | `smoothing` |
 
 On the migrated types (`WindowedMax`, `WindowedMin`, `PeakHold`) there is
 one `update` for both. On the others, `update` still returns `Result` on

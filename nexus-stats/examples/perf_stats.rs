@@ -433,7 +433,7 @@ fn bench_holt_f64(samples: &mut [u64]) {
             let _ = h.update(90.0 + (next_val(&mut rng) % 20) as f64);
         }
         let end = rdtsc_end();
-        black_box(h.level());
+        black_box(h.reading());
         *s = (end - start) / BATCH;
     }
 }
@@ -613,7 +613,7 @@ fn bench_spring_f64(samples: &mut [u64]) {
             let _ = sp.update(90.0 + (next_val(&mut rng) % 20) as f64, 0.016);
         }
         let end = rdtsc_end();
-        black_box(sp.value());
+        black_box(sp.reading());
         *s = (end - start) / BATCH;
     }
 }
@@ -704,7 +704,7 @@ fn bench_kalman1d_f64(samples: &mut [u64]) {
 // ============================================================================
 
 fn bench_slew_f64(samples: &mut [u64]) {
-    let mut sl = Slew::<f64>::new(5.0).unwrap();
+    let mut sl = Slew::new(5.0).unwrap();
     let mut rng = 12345u64;
     let _ = sl.update(100.0);
     for _ in 0..WARMUP {
@@ -2310,7 +2310,7 @@ fn main() {
     section("Utilities");
     print_header();
     bench_slew_f64(&mut buf);
-    print_row("Slew::<f64>::update", &mut buf);
+    print_row("Slew::update", &mut buf);
     bench_bool_window(&mut buf);
     print_row("BoolWindow(64)::update", &mut buf);
     bench_hysteresis_f64(&mut buf);

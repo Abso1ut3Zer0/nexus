@@ -11,7 +11,7 @@ Smoothers for [nexus-stats](https://crates.io/crates/nexus-stats): each takes a 
 - **A reading is an `Option`.** `None` until there is enough data, never a placeholder value.
 - **A published algorithm is implemented as published.** A type that comes from a paper or a standard follows it. Where floating point needs more care than the source gives (cancellation, overflow, a divisor near zero), the type adds the guard practitioners use, and its docs say which.
 
-**Not yet migrated:** `Hampel`, `Holt`, `Kama`, `Slew`, `Spring`, `WindowedMedian`. They have not been moved to these guarantees. Most still validate in `update` and return a `Result`.
+**Not yet migrated:** `Hampel`, `Kama`, `WindowedMedian`. They have not been moved to these guarantees. Most still validate in `update` and return a `Result`.
 
 ## Which smoother?
 
@@ -19,7 +19,7 @@ Start with **Ema**, an exponential moving average. It is usually the right answe
 
 - **EwmVar**: the spread around the average too (exponentially weighted mean and variance)
 - **AsymEma**: an average that rises and falls at different speeds
-- **Slew**: follows the input, but moves only so far per sample
+- **Slew**: a slew rate limiter; follows the input, but moves only so far per sample
 - **Holt**: the signal has a trend, and an average lags it
 - **Kama**: it swings between trending and ranging (requires `alloc`)
 - **Spring**: a moving target chased without overshoot

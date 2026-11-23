@@ -265,6 +265,10 @@ The standard library is the model: `update` is `+`, `checked_update` is
 - **Integers follow std too.** `update` uses the plain operator;
   `checked_update` refuses an overflow, as `checked_sub` does. Saturate
   only where clamping is the type's purpose, and say so in the docs.
+- **An integer form needs a real use.** Add `i64` beside `f64` only where
+  the algorithm is the same in integers and integer data is a natural
+  input (a windowed maximum of latencies). A type that smooths or needs a
+  fraction is `f64` only.
 - **A constructor returns `Result` only if it can fail.**
 - **Implement a published algorithm as published.** Follow the paper or
   the standard, and cite it. Where floating point needs more care than the

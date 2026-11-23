@@ -24,6 +24,12 @@ contained.
   `Cusum` and `DistributionShift` in `nexus-stats-detection`. The crate is
   now the shared foundation and the descriptive statistics.
 
+### Added (internal)
+
+- `math::Weight` and `math::Warmup` (doc-hidden): a smoothing weight with
+  its complement, and the sample count with the number needed before a
+  reading. Shared by the smoothers.
+
 ### Changed (internal)
 
 - `math::step_mean` (doc-hidden): the running-mean step the accumulators
