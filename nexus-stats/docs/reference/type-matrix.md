@@ -86,9 +86,7 @@ See [Integer vs Float](../guides/integer-vs-float.md) for the caller rules and
 | Type | Numeric | Feature | Crate (module) |
 |------|---------|---------|----------------|
 | `Drawdown<T>` | `T: Sample` | — | monitoring |
-| `RunningMax<T>`, `RunningMin<T>` | `T: Sample` | — | monitoring |
 | `WindowedMax<T>`, `WindowedMin<T>` | `T: Sample`, `u64` ticks | — | monitoring |
-| `MaxGauge<T>` | `T: Sample` | — | monitoring |
 | `PeakHold<T>` | `T: Sample` | — | monitoring |
 | `CoDel<T>` | `T: Sample` sojourn, `u64` ticks | — | monitoring |
 | `Jitter<T>` | `T: Sample` | — | monitoring |

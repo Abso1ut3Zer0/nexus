@@ -173,12 +173,9 @@ there is now one type, generic over a sealed trait: `Sample` for `f64` /
 | `HysteresisF64` / `HysteresisI64` | `Hysteresis<f64>` / `Hysteresis<i64>` | `Sample` | nexus-stats-core |
 | `JitterF64` / `JitterI64` | `Jitter<f64>` / `Jitter<i64>` | `Sample` | nexus-stats-core |
 | `LevelCrossingF64` / `LevelCrossingI64` | `LevelCrossing<f64>` / `LevelCrossing<i64>` | `Sample` | nexus-stats-core |
-| `MaxGaugeF64` / `MaxGaugeI64` | `MaxGauge<f64>` / `MaxGauge<i64>` | `Sample` | nexus-stats-core |
 | `MinMaxNormF64` / `MinMaxNormF32` | `MinMaxNorm<f64>` / `MinMaxNorm<f32>` | `Float` | nexus-stats-core |
 | `PeakHoldF64` / `PeakHoldI64` | `PeakHold<f64>` / `PeakHold<i64>` | `Sample` | nexus-stats-core |
 | `QuantileNormF64` / `QuantileNormF32` | `QuantileNorm<f64>` / `QuantileNorm<f32>` | `Float` | nexus-stats-core |
-| `RunningMaxF64` / `RunningMaxI64` | `RunningMax<f64>` / `RunningMax<i64>` | `Sample` | nexus-stats-core |
-| `RunningMinF64` / `RunningMinI64` | `RunningMin<f64>` / `RunningMin<i64>` | `Sample` | nexus-stats-core |
 | `SecondDiffF64` / `SecondDiffI64` | `SecondDiff<f64>` / `SecondDiff<i64>` | `Sample` | nexus-stats-core |
 | `SlewF64` / `SlewI64` | `Slew<f64>` / `Slew<i64>` | `Sample` | nexus-stats-core |
 | `WindowedMaxF64` / `WindowedMaxI64` | `WindowedMax<f64>` / `WindowedMax<i64>` | `Sample` | nexus-stats-core |
@@ -252,6 +249,9 @@ on `f32` accumulation for speed, measure: the hot path gains a convert.
 | `DecayAccumF64` | `DecayAccum` (`u64` ticks) |
 | `update_i64(timestamp, ..)` on `WindowedMax`, `WindowedMin`, `CoDel` | `update(timestamp as u64, ..)` |
 | `HalfLifeBuilder` | `HalfLife::new()` (the builder had no knobs) |
+| `RunningMaxF64`, `RunningMaxI64` | a variable and `max = max.max(x)` |
+| `RunningMinF64`, `RunningMinI64` | a variable and `min = min.min(x)` |
+| `MaxGaugeF64`, `MaxGaugeI64` | an `Option<T>`: `gauge = Some(gauge.map_or(x, \|m\| m.max(x)))` to update, `gauge.take()` to read and clear |
 | `ConditionalEmaF64` | `Ema`, with `update` called only when the condition holds (the type was that `if` plus two counters) |
 | `CoDel::min_sojourn()` | the detector no longer keeps a windowed minimum (it implements RFC 8289 directly); keep a `WindowedMin<i64>` beside it if you report one |
 
@@ -655,6 +655,35 @@ for its shape to be resolved.
 
 `Covariance::correlation` is now always within `[-1, 1]` and no longer
 reads 0 or `None` for very large or very small inputs.
+
+### Windowed extremes and `PeakHold`
+
+`WindowedMax`, `WindowedMin` and `PeakHold` have one `update` for `f64`
+and `i64`, returning `Option<T>`:
+
+```rust
+// before
+let max = wm.update(tick, x)?;          // f64: Result<f64, DataError>
+let max = wm.update(tick, n);           // i64: i64
+// after
+let max = wm.update(tick, x);           // Option<T>, None before the first value
+```
+
+- A NaN is ignored, as `f64::max` ignores one, and so is a timestamp
+  before the last one taken. To be told, call `checked_update`: it
+  returns `DataError::NotANumber` or `DataError::NonMonotonicTime` and
+  leaves the tracker unchanged. A run of `NonMonotonicTime` errors means a
+  bad timestamp got ahead of your clock: call `reset()`.
+- Infinity is accepted. In a window it ages out like any value.
+- Timestamps are compared plainly. A `u64` tick counter that wraps is no
+  longer followed across the wrap.
+
+`PeakHold` tracks the magnitude of each sample, so `-5` is a level of `5`.
+If you fed it signed values and read a signed peak, track the sign
+yourself. `peak()` returns `Option<T>` (`None` before the first sample),
+and `PeakHold::<i64>::builder().build()` returns the tracker with no
+`Result`. To refuse NaN and infinity on the float form, call
+`checked_update`.
 
 ## 5. Checklist
 

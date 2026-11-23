@@ -10,6 +10,29 @@ marked *(alloc)* or *(std|libm)* in the tables below need those features.
 Designed for event loops, trading systems, and anywhere you need statistics
 without latency jitter.
 
+## Guarantees
+
+- **Fixed memory.** A type allocates only when it is built. `update` never allocates.
+- **Configuration is checked once, when the type is built,** and reported as a `ConfigError`.
+- **`update` does the arithmetic and nothing else.** No validation, no `Result`. Floats follow IEEE 754, as `+` does. After an input the type cannot use, it promises nothing unless its docs say otherwise.
+- **`checked_update` exists only where it has a job.** A type has one when some input can leave it unable to give a right reading until `reset()`. It refuses exactly those inputs, its docs list them, and a refusal leaves the type unchanged. A type without one has no such input.
+- **A reading is an `Option`.** `None` until there is enough data, never a placeholder value.
+- **A published algorithm is implemented as published.** A type that comes from a paper or a standard follows it. Where floating point needs more care than the source gives (cancellation, overflow, a divisor near zero), the type adds the guard practitioners use, and its docs say which.
+- **Maxima and minima ignore NaN and accept infinity,** as `f64::max` does.
+- **A windowed type with running totals reports its own accuracy.** `update` returns `Accuracy`. A reading that is given is sound. `resync()` is never run for you.
+- **Misuse panics.** A wrong dimension or an out-of-range argument to a method is a bug in the calling code.
+
+**Not yet migrated.** These types have not been moved to these guarantees. Most still validate in `update` and return a `Result`. The list shrinks with each release of the 7.0 series.
+
+- `statistics`: `BucketAccumulator`, `CovarianceMatrix`, `FirstDiff`, `Percentile`, `SecondDiff`
+- `smoothing`: `Hampel`, `Holt`, `Kama`, `Slew`, `Spring`, `WindowedMedian`
+- `monitoring`: `CoDel`, `Drawdown`, `ErrorRate`, `EventRate`, `HawkesIntensity`, `Jitter`, `Liveness`, `PollSaturation`, `SojournSaturation`
+- `normalization`: `MinMaxNorm`, `QuantileNorm`
+- `trading`: `Cvar`, `KyleLambda`
+- `control`, `frequency`: every type
+- `detection`, `signal`: every type except `HalfLife` and `Hurst`
+- `regression`, `learning`, `estimation`: every type except `HitRate`
+
 ## Quick Start
 
 ```rust
@@ -135,10 +158,8 @@ docs, and each module's docs say which type to use for what.
 | Type | What It Tracks | p50 |
 |------|---------------|-----|
 | `Drawdown<f64>` | Peak-to-trough decline, max drawdown | 5 |
-| `RunningMin<f64>` / `RunningMax<f64>` | All-time extrema | 5 |
 | `WindowedMax<f64>` / `WindowedMin<f64>` | Sliding window extrema (Nichols'/BBR) | 9 |
-| `PeakHold<f64>` | Peak envelope with hold + decay | 8 |
-| `MaxGauge<f64>` | Reset-on-read maximum (Netflix pattern) | 6 |
+| `PeakHold<f64>` | Amplitude tracker: instant attack, hold, decay | 8 |
 | `Liveness` | Source alive/dead detection | 7 |
 | `EventRate` | Smoothed events per unit time | 7 |
 | `CoDel<i64>` | Queue backpressure detection (CoDel-inspired) | 5 |
@@ -179,13 +200,14 @@ sealed `Sample` trait, instantiated for `f64` and `i64`:
 
 | Generic over `Sample` (`f64`, `i64`) | Module |
 |--------------------------------------|--------|
-| `Drawdown`, `RunningMax`, `RunningMin`, `WindowedMax`, `WindowedMin`, `MaxGauge`, `PeakHold`, `CoDel`, `Jitter` | `monitoring` |
+| `Drawdown`, `WindowedMax`, `WindowedMin`, `PeakHold`, `CoDel`, `Jitter` | `monitoring` |
 | `DeadBand`, `Hysteresis`, `LevelCrossing`, `PeakDetector` *(control feature)* | `control` |
 | `FirstDiff`, `SecondDiff` | `statistics` |
 | `Slew`, `WindowedMedian` *(smoothing feature)* | `smoothing` |
 
-`update` returns `Result` on the `f64` instantiation (NaN and infinity are
-rejected) and the plain value on `i64`, where there is nothing to reject.
+On the migrated types (`WindowedMax`, `WindowedMin`, `PeakHold`) there is
+one `update` for both. On the others, `update` still returns `Result` on
+the `f64` instantiation and the plain value on `i64`.
 Constructors are shared, so name the type once: `Drawdown::<i64>::new()`,
 `CoDel::<i64>::builder()`, `let dd: Drawdown<f64> = Drawdown::new()`.
 
@@ -239,25 +261,6 @@ including p99:
 ```bash
 cargo build --release --example perf_stats -p nexus-stats
 taskset -c 0 ./target/release/examples/perf_stats
-```
-
-## Data Quality & Error Policy
-
-nexus-stats distinguishes two failure categories:
-
-- **Data errors** (NaN, Inf): the validating method returns `Result<_, DataError>`, rejects the input and leaves state unchanged. The caller declares the policy: `.unwrap()` to crash, log and continue, or trigger a circuit breaker. The types are moving one at a time to the standard library's `+` / `checked_add` shape: on a moved type (the migration guide lists them) the validating method is `checked_update`, and `update` does the arithmetic without validating (IEEE 754). On the others `update` itself validates and returns the `Result`.
-- **Programmer errors** (wrong dimensions, out-of-range) — The library panics. Fix the code.
-
-The library makes no assumptions about which policy is correct. Each system has different implications.
-
-```rust
-// Production: log and continue
-if let Err(e) = stats.checked_update(sample) {
-    warn!("bad data: {e:?}");
-}
-
-// Testing: crash hard
-stats.checked_update(sample).unwrap();
 ```
 
 ## Features

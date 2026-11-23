@@ -31,8 +31,8 @@ use nexus_stats::{
         RlsFilter, ThompsonBeta, ThompsonGamma, Ucb1,
     },
     monitoring::{
-        CoDel, Drawdown, ErrorRate, EventRate, HawkesIntensity, Jitter, Liveness, MaxGauge,
-        PeakHold, RunningMax, RunningMin, WindowedMax, WindowedMin,
+        CoDel, Drawdown, ErrorRate, EventRate, HawkesIntensity, Jitter, Liveness, PeakHold,
+        WindowedMax, WindowedMin,
     },
     regression::{
         EwLinearRegression, EwPolynomialRegression, ExponentialRegression, HitRate,
@@ -485,42 +485,8 @@ fn bench_topk(samples: &mut [u64]) {
 }
 
 // ============================================================================
-// New types: RunningMin/Max, EventRate, CoDel
+// New types: EventRate, CoDel
 // ============================================================================
-
-fn bench_running_min_f64(samples: &mut [u64]) {
-    let mut rm = RunningMin::<f64>::new();
-    let mut rng = 12345u64;
-    for _ in 0..WARMUP {
-        let _ = rm.update(90.0 + (next_val(&mut rng) % 20) as f64);
-    }
-    for s in samples.iter_mut() {
-        let start = rdtsc_start();
-        for _ in 0..BATCH {
-            let _ = rm.update(90.0 + (next_val(&mut rng) % 20) as f64);
-        }
-        let end = rdtsc_end();
-        black_box(rm.min());
-        *s = (end - start) / BATCH;
-    }
-}
-
-fn bench_running_max_f64(samples: &mut [u64]) {
-    let mut rm = RunningMax::<f64>::new();
-    let mut rng = 12345u64;
-    for _ in 0..WARMUP {
-        let _ = rm.update(90.0 + (next_val(&mut rng) % 20) as f64);
-    }
-    for s in samples.iter_mut() {
-        let start = rdtsc_start();
-        for _ in 0..BATCH {
-            let _ = rm.update(90.0 + (next_val(&mut rng) % 20) as f64);
-        }
-        let end = rdtsc_end();
-        black_box(rm.max());
-        *s = (end - start) / BATCH;
-    }
-}
 
 fn bench_event_rate_u64(samples: &mut [u64]) {
     let mut er = EventRate::builder().span(15).build().unwrap();
@@ -1094,24 +1060,6 @@ fn bench_second_diff_f64(samples: &mut [u64]) {
         }
         let end = rdtsc_end();
         black_box(&v);
-        *s = (end - start) / BATCH;
-    }
-}
-
-fn bench_max_gauge_f64(samples: &mut [u64]) {
-    let mut m = MaxGauge::<f64>::new();
-    let mut rng = 12345u64;
-    for _ in 0..WARMUP {
-        m.update(90.0 + (next_val(&mut rng) % 20) as f64).unwrap();
-    }
-    for s in samples.iter_mut() {
-        let start = rdtsc_start();
-        for _ in 0..BATCH {
-            m.update(black_box(90.0 + (next_val(&mut rng) % 20) as f64))
-                .unwrap();
-        }
-        let end = rdtsc_end();
-        black_box(m.peek());
         *s = (end - start) / BATCH;
     }
 }
@@ -1700,25 +1648,6 @@ fn bench_liveness_check(samples: &mut [u64]) {
         for _ in 0..BATCH {
             t += 1;
             let _ = black_box(lv.check(black_box(t)));
-        }
-        let end = rdtsc_end();
-        *s = (end - start) / BATCH;
-    }
-}
-
-fn bench_max_gauge_update_take(samples: &mut [u64]) {
-    let mut g = MaxGauge::<f64>::new();
-    let mut rng = 12345u64;
-    for _ in 0..WARMUP {
-        g.update(90.0 + (next_val(&mut rng) % 20) as f64).unwrap();
-        let _ = g.take();
-    }
-    for s in samples.iter_mut() {
-        let start = rdtsc_start();
-        for _ in 0..BATCH {
-            g.update(black_box(90.0 + (next_val(&mut rng) % 20) as f64))
-                .unwrap();
-            let _ = black_box(g.take());
         }
         let end = rdtsc_end();
         *s = (end - start) / BATCH;
@@ -2343,16 +2272,10 @@ fn main() {
     print_row("SojournSaturation::update", &mut buf);
     bench_liveness_u64(&mut buf);
     print_row("Liveness::update", &mut buf);
-    bench_running_min_f64(&mut buf);
-    print_row("RunningMin::<f64>::update", &mut buf);
-    bench_running_max_f64(&mut buf);
-    print_row("RunningMax::<f64>::update", &mut buf);
     bench_event_rate_u64(&mut buf);
     print_row("EventRate::update", &mut buf);
     bench_codel_i64(&mut buf);
     print_row("CoDel::<i64>::update", &mut buf);
-    bench_max_gauge_f64(&mut buf);
-    print_row("MaxGauge::<f64>::update", &mut buf);
     bench_jitter_f64(&mut buf);
     print_row("Jitter::<f64>::update", &mut buf);
     bench_error_rate(&mut buf);
@@ -2514,8 +2437,6 @@ fn main() {
     print_header();
     bench_liveness_check(&mut buf);
     print_row("Liveness::check", &mut buf);
-    bench_max_gauge_update_take(&mut buf);
-    print_row("MaxGauge::<f64>::update + take", &mut buf);
     bench_moments_merge(&mut buf);
     print_row("Moments::merge", &mut buf);
     let ac = warm_autocorrelation(1);

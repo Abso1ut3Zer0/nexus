@@ -2,14 +2,24 @@
 
 Monitors for a running system, for [nexus-stats](https://crates.io/crates/nexus-stats): extremes, rates, liveness and queue health, each updated in fixed memory.
 
+## Guarantees
+
+- **Fixed memory.** A type allocates only when it is built. `update` never allocates.
+- **Configuration is checked once, when the type is built,** and reported as a `ConfigError`.
+- **`update` does the arithmetic and nothing else.** No validation, no `Result`. Floats follow IEEE 754, as `+` does. After an input the type cannot use, it promises nothing unless its docs say otherwise.
+- **`checked_update` exists only where it has a job.** A type has one when some input can leave it unable to give a right reading until `reset()`. It refuses exactly those inputs, its docs list them, and a refusal leaves the type unchanged. A type without one has no such input.
+- **A reading is an `Option`.** `None` until there is enough data, never a placeholder value.
+- **A published algorithm is implemented as published.** A type that comes from a paper or a standard follows it. Where floating point needs more care than the source gives (cancellation, overflow, a divisor near zero), the type adds the guard practitioners use, and its docs say which.
+- **Maxima and minima ignore NaN and accept infinity,** as `f64::max` does.
+
+**Not yet migrated:** `CoDel`, `Drawdown`, `ErrorRate`, `EventRate`, `HawkesIntensity`, `Jitter`, `Liveness`, `PollSaturation`, `SojournSaturation`. They have not been moved to these guarantees. Most still validate in `update` and return a `Result`.
+
 ## Which type do I use?
 
 **Highs and lows**
 
-- **RunningMax / RunningMin**: the extreme since the last reset
 - **WindowedMax / WindowedMin**: the extreme over a sliding window of time
-- **PeakHold**: a peak that decays
-- **MaxGauge**: the maximum since it was last read
+- **PeakHold**: the magnitude of a signal, followed up at once, held, then left to decay
 - **Drawdown**: the fall from the highest value seen
 
 **Rates and timing**
@@ -31,12 +41,12 @@ Each type's docs give its definition, what one `update` is worth (its weighting 
 ## Example
 
 ```rust
-use nexus_stats_monitoring::RunningMax;
+use nexus_stats_monitoring::WindowedMax;
 
-// The slowest request seen, in microseconds.
-let mut slowest = RunningMax::<i64>::new();
-for micros in [120, 118, 431, 125] {
-    slowest.update(micros);
+// The slowest request over the last 1,000 ticks, in microseconds.
+let mut slowest = WindowedMax::<i64>::new(1_000).unwrap();
+for (tick, micros) in [(0, 120), (300, 431), (600, 118), (900, 125)] {
+    slowest.update(tick, micros);
 }
 assert_eq!(slowest.max(), Some(431));
 ```
@@ -56,13 +66,13 @@ assert_eq!(slowest.max(), Some(431));
 Enable the `monitoring` feature on `nexus-stats` for unified import paths:
 
 ```rust,ignore
-use nexus_stats::monitoring::RunningMax;
+use nexus_stats::monitoring::WindowedMax;
 ```
 
 Or depend on this crate directly:
 
 ```rust
-use nexus_stats_monitoring::RunningMax;
+use nexus_stats_monitoring::WindowedMax;
 ```
 
 ## License

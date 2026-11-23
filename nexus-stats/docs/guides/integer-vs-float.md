@@ -15,7 +15,7 @@ type over the sealed `Sample` trait, instantiated for `f64` and `i64`:
 
 | Module | `T: Sample` types |
 |--------|-------------------|
-| `monitoring` | `Drawdown<T>`, `RunningMax<T>`, `RunningMin<T>`, `WindowedMax<T>`, `WindowedMin<T>`, `MaxGauge<T>`, `PeakHold<T>`, `CoDel<T>`, `Jitter<T>` |
+| `monitoring` | `Drawdown<T>`, `WindowedMax<T>`, `WindowedMin<T>`, `PeakHold<T>`, `CoDel<T>`, `Jitter<T>` |
 | `control` | `DeadBand<T>`, `Hysteresis<T>`, `LevelCrossing<T>`, `FirstDiff<T>`, `SecondDiff<T>`, `PeakDetector<T>` |
 | `smoothing` | `Slew<T>`, `WindowedMedian<T>` |
 

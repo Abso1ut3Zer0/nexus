@@ -54,10 +54,8 @@ costs a branch mispredict, about 20 cycles.
 | HarmonicMean | 6 | 7 | one reciprocal |
 | **Monitoring** | | | |
 | Drawdown<f64> | 5 | 6 | compare + max |
-| RunningMin/Max<f64> | 5 | 5 | single comparison |
 | WindowedMax/Min<f64> | 9 | 11 | 3-sample promotion |
 | PeakHold<f64> | 8 | 10 | compare + decay |
-| MaxGauge<f64> | 6 | 6 | compare-and-swap |
 | Liveness | 7 | 16 | EMA + deadline |
 | EventRate | 7 | 7 | bit-shift EMA + inversion |
 | CoDel<i64> | 5 | 6 | first_above deadline (RFC 8289) |

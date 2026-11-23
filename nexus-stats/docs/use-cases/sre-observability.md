@@ -105,4 +105,3 @@ if is_confirmed_down {
 | PollSaturation | Saturation of a consumer thread from poll outcomes (USE method) |
 | CUSUM | Latency degradation detection |
 | Debounce | Confirm outage (N consecutive failures) |
-| MaxGauge | Worst-case per scrape interval |

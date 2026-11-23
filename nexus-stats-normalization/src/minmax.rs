@@ -75,8 +75,8 @@ impl<T: Float> MinMaxNorm<T> {
     ) -> Result<Option<T>, nexus_stats_core::DataError> {
         check_finite!(sample);
         let x = sample.to_f64();
-        self.min_tracker.update(timestamp, x)?;
-        self.max_tracker.update(timestamp, x)?;
+        self.min_tracker.update(timestamp, x);
+        self.max_tracker.update(timestamp, x);
         // A no-op for a sample that entered the window, which always lies
         // within it; a late sample may not.
         Ok(self

@@ -10,6 +10,30 @@ contained.
 
 ## [Unreleased]
 
+### Removed
+
+- **`monitoring::RunningMax`, `RunningMin`, `MaxGauge`.** Each is one line
+  of std; the migration guide has the replacements.
+
+### Changed (breaking)
+
+- **`WindowedMax`, `WindowedMin` and `PeakHold` move to the 7.0 contract:**
+  one `update` returning `Option<T>` for both `f64` and `i64`, NaN ignored,
+  infinity accepted. `PeakHold<f64>::checked_update` refuses NaN and
+  infinity; `WindowedMax` and `WindowedMin` have a `checked_update` that
+  refuses a NaN and a timestamp that goes back
+  (`DataError::NonMonotonicTime`, new).
+- **`PeakHold` is an amplitude tracker:** it tracks the magnitude of each
+  sample. `peak()` returns `Option<T>`, and the integer builder returns the
+  tracker directly.
+- **`WindowedMax` and `WindowedMin` compare timestamps plainly,** not as a
+  wrapping counter: a forward jump of any size is a long gap.
+
+### Documentation
+
+- The README opens with a **Guarantees** list, followed by the types not
+  yet migrated to it. It replaces the "Data Quality & Error Policy" section.
+
 ### Changed (crate layout, step 3)
 
 - **`smoothing` and `detection` come wholly from their crates,** behind

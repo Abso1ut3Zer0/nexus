@@ -22,7 +22,7 @@ use nexus_stats::{
         AdaGrad, Adam, EpsilonGreedy, Exp3, LmsFilter, NlmsFilter, OnlineGd, OnlineKMeans,
         RlsFilter, ThompsonBeta, ThompsonGamma, Ucb1,
     },
-    monitoring::{Drawdown, ErrorRate, Jitter, RunningMax, RunningMin},
+    monitoring::{Drawdown, ErrorRate, Jitter},
     normalization::{MinMaxNorm, ZScoreNorm},
     regression::{EwLinearRegression, LinearRegression, LogisticRegression, PolynomialRegression},
     signal::{Autocorrelation, CrossCorrelation, Entropy, TransferEntropy},
@@ -206,28 +206,6 @@ fn bench_drawdown(c: &mut Criterion) {
     }
     c.bench_function("Drawdown::<f64>::update", |b| {
         b.iter(|| d.update(black_box(rng.next_f64())).unwrap())
-    });
-}
-
-fn bench_running_min(c: &mut Criterion) {
-    let mut rng = Lcg::new(42);
-    let mut r = RunningMin::<f64>::new();
-    for _ in 0..1000 {
-        r.update(rng.next_f64());
-    }
-    c.bench_function("RunningMin::<f64>::update", |b| {
-        b.iter(|| r.update(black_box(rng.next_f64())))
-    });
-}
-
-fn bench_running_max(c: &mut Criterion) {
-    let mut rng = Lcg::new(42);
-    let mut r = RunningMax::<f64>::new();
-    for _ in 0..1000 {
-        r.update(rng.next_f64());
-    }
-    c.bench_function("RunningMax::<f64>::update", |b| {
-        b.iter(|| r.update(black_box(rng.next_f64())))
     });
 }
 
@@ -1169,8 +1147,6 @@ criterion_group!(
     bench_percentile_p99,
     bench_jitter,
     bench_drawdown,
-    bench_running_min,
-    bench_running_max,
     bench_slew,
     bench_spring,
     bench_dead_band,
