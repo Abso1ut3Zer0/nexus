@@ -1,4 +1,5 @@
 use nexus_stats_core::math::MulAdd;
+use nexus_stats_core::parts::Warmup;
 
 /// Splits a period's price variation into a continuous part and a jump
 /// part (Barndorff-Nielsen & Shephard, 2004).
@@ -32,8 +33,7 @@ pub struct BipowerVariation {
     products: f64,
     prev_log_price: f64,
     prev_abs_return: f64,
-    count: u64,
-    min_samples: u64,
+    warmup: Warmup,
 }
 
 /// A [`BipowerVariation`] reading.
@@ -96,8 +96,7 @@ impl BipowerVariation {
             products: 0.0,
             prev_log_price: 0.0,
             prev_abs_return: 0.0,
-            count: 0,
-            min_samples: 30,
+            warmup: Warmup::new(30, false),
         }
     }
 
@@ -128,9 +127,9 @@ impl BipowerVariation {
     #[inline]
     pub fn update(&mut self, price: f64) {
         let log_price = nexus_stats_core::math::ln(price);
-        self.count += 1;
+        let count = self.warmup.tick();
 
-        if self.count >= 2 {
+        if count >= 2 {
             let abs_return = (log_price - self.prev_log_price).abs();
             self.realized = abs_return.fma(abs_return, self.realized);
             // The first return pairs with the initial zero.
@@ -177,27 +176,27 @@ impl BipowerVariation {
     /// prices have been fed.
     #[must_use]
     pub fn decomposition(&self) -> Option<JumpDecomposition> {
-        if self.count < self.min_samples {
+        if !self.warmup.is_primed() {
             return None;
         }
 
         Some(JumpDecomposition {
             realized_variance: self.realized,
             bipower_variation: Self::SCALE * self.products,
-            returns: self.count - 1,
+            returns: self.warmup.count() - 1,
         })
     }
 
     /// Number of prices fed.
     #[must_use]
     pub fn count(&self) -> u64 {
-        self.count
+        self.warmup.count()
     }
 
     /// Whether `min_samples` prices have been fed.
     #[must_use]
     pub fn is_primed(&self) -> bool {
-        self.count >= self.min_samples
+        self.warmup.is_primed()
     }
 
     /// Resets to the empty state. `min_samples` is unchanged.
@@ -206,7 +205,7 @@ impl BipowerVariation {
         self.products = 0.0;
         self.prev_log_price = 0.0;
         self.prev_abs_return = 0.0;
-        self.count = 0;
+        self.warmup.reset();
     }
 }
 
@@ -237,7 +236,7 @@ impl BipowerVariationBuilder {
             ));
         }
         Ok(BipowerVariation {
-            min_samples: self.min_samples,
+            warmup: Warmup::new(self.min_samples, false),
             ..BipowerVariation::new()
         })
     }

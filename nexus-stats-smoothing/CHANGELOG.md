@@ -10,6 +10,12 @@ contained.
 
 ## [Unreleased]
 
+### Changed (internal)
+
+- `Ema`, `AsymEma`, `HuberEma` and `EwmVar` are built from the shared
+  `Weight` and `Warmup` parts, as `Holt` and `Spring` are. No change in
+  results.
+
 ### Changed (breaking)
 
 - **`Slew` is `f64` only;** `Slew<i64>` is removed (cast to `f64`, exact up

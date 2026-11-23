@@ -10,6 +10,12 @@ contained.
 
 ## [Unreleased]
 
+### Changed (internal)
+
+- `RollSpread`, `Lpm`, `BipowerVariation` and `TwoScaleRv` keep their
+  sample count and warm-up threshold in the shared `Warmup` part, and
+  `RollSpread` its weight in `Weight`. No change in results.
+
 ### Changed (dependencies)
 
 - `Amihud` now takes `Ema` from `nexus-stats-smoothing`, a new dependency of this crate.

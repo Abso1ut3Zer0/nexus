@@ -1,3 +1,5 @@
+use nexus_stats_core::parts::Warmup;
+
 /// Lower partial moments: downside risk, one sample at a time.
 ///
 /// Measures deviations below a target threshold, raised to a
@@ -36,10 +38,9 @@
 #[derive(Debug, Clone)]
 pub struct Lpm {
     sum: f64,
-    count: u64,
     target: f64,
     order: u32,
-    min_samples: u64,
+    warmup: Warmup,
 }
 
 /// Builder for [`Lpm`].
@@ -84,7 +85,7 @@ impl Lpm {
     #[inline]
     pub fn update(&mut self, sample: f64) {
         self.sum += self.term(sample);
-        self.count += 1;
+        self.warmup.tick();
     }
 
     /// Checked update. Feeds `sample`, or returns an error and leaves the
@@ -126,11 +127,11 @@ impl Lpm {
     /// Returns `None` if not primed.
     #[must_use]
     pub fn lpm(&self) -> Option<f64> {
-        if self.count < self.min_samples {
+        if !self.warmup.is_primed() {
             return None;
         }
 
-        Some(self.sum / self.count as f64)
+        Some(self.sum / self.warmup.count() as f64)
     }
 
     /// The target threshold.
@@ -148,19 +149,19 @@ impl Lpm {
     /// Total samples processed.
     #[must_use]
     pub fn count(&self) -> u64 {
-        self.count
+        self.warmup.count()
     }
 
     /// Whether enough samples have been observed.
     #[must_use]
     pub fn is_primed(&self) -> bool {
-        self.count >= self.min_samples
+        self.warmup.is_primed()
     }
 
     /// Resets accumulated state. Target and order are preserved.
     pub fn reset(&mut self) {
         self.sum = 0.0;
-        self.count = 0;
+        self.warmup.reset();
     }
 
     /// The sample's shortfall below the target, raised to the order.
@@ -234,10 +235,9 @@ impl LpmBuilder {
         }
         Ok(Lpm {
             sum: 0.0,
-            count: 0,
             target,
             order,
-            min_samples: self.min_samples,
+            warmup: Warmup::new(self.min_samples, false),
         })
     }
 }

@@ -1,4 +1,5 @@
-use nexus_stats_core::math::{MulAdd, Warmup};
+use nexus_stats_core::math::MulAdd;
+use nexus_stats_core::parts::Warmup;
 
 /// Critically damped spring: chases a target and settles without ringing.
 ///
@@ -194,7 +195,7 @@ impl Spring {
     #[inline]
     fn next(&self, target: f64, dt: f64) -> Motion {
         // The first target of an unseeded spring is where it starts.
-        if self.warmup.count() == 0 && self.seed.is_none() {
+        if self.warmup.awaits_first_sample() {
             return Motion::at_rest(target);
         }
         let next = self.step(target, dt);

@@ -226,8 +226,10 @@ Every public item needs documentation that explains:
   (`monitoring`), a gate or switch (`control`), a rescaled sample
   (`normalization`). Not by how the type weights its samples.
 - **`nexus-stats-core` holds the foundation and the descriptive
-  statistics:** the error types, the `Sample` and `Float` traits, `math`,
-  `storage`, and the summaries other crates build on. The test for a
+  statistics:** the error types, the `Sample` and `Float` traits, `math`
+  (operations on numbers), `parts` (small pieces of state that several
+  types share, such as a weight with its complement), `storage`, and the
+  summaries other crates build on. The test for a
   descriptive statistic: shuffle the samples and the answer does not
   change. A measure that depends on their order belongs elsewhere.
 - **Trading-specific types go in `nexus-stats-trading`**, documented in

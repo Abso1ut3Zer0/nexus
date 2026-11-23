@@ -1,4 +1,4 @@
-use nexus_stats_core::math::MulAdd;
+use nexus_stats_core::parts::{Warmup, Weight};
 
 /// Exponential moving average: a smoothed value in which recent samples
 /// count more and old ones fade.
@@ -39,14 +39,9 @@ use nexus_stats_core::math::MulAdd;
 /// ```
 #[derive(Debug, Clone)]
 pub struct Ema {
-    alpha: f64,
-    one_minus_alpha: f64,
+    weight: Weight,
     value: f64,
-    count: u64,
-    /// Samples needed before the value is reported: `min_samples`, or 0 when
-    /// seeded (a seed is a value from the start). Zero therefore also means
-    /// "do not initialize from the first sample".
-    prime_at: u64,
+    warmup: Warmup,
     /// What `reset` restores: the seed, or 0.0 when unseeded.
     start: f64,
 }
@@ -54,7 +49,7 @@ pub struct Ema {
 /// Builder for [`Ema`].
 #[derive(Debug, Clone)]
 pub struct EmaBuilder {
-    weight: Option<nexus_stats_core::math::EwWeight>,
+    weight: Option<nexus_stats_core::parts::EwWeight>,
     min_samples: u64,
     seed: Option<f64>,
 }
@@ -89,12 +84,12 @@ impl Ema {
     /// ```
     #[inline]
     pub fn update(&mut self, sample: f64) -> Option<f64> {
-        let first_unseeded = self.count == 0 && self.prime_at != 0;
-        self.count += 1;
+        let first_unseeded = self.warmup.awaits_first_sample();
+        self.warmup.tick();
         self.value = if first_unseeded {
             sample
         } else {
-            self.alpha.fma(sample, self.one_minus_alpha * self.value)
+            self.weight.blend(sample, self.value)
         };
         self.value()
     }
@@ -140,28 +135,28 @@ impl Ema {
     /// The smoothing factor alpha.
     #[must_use]
     pub fn alpha(&self) -> f64 {
-        self.alpha
+        self.weight.alpha()
     }
 
     /// Number of samples processed since construction or `reset`. A seed is
     /// not a sample.
     #[must_use]
     pub fn count(&self) -> u64 {
-        self.count
+        self.warmup.count()
     }
 
     /// Whether a value is available: `min_samples` reached, or seeded.
     #[inline]
     #[must_use]
     pub fn is_primed(&self) -> bool {
-        self.count >= self.prime_at
+        self.warmup.is_primed()
     }
 
     /// Returns to the as-built state: no samples, and the seed if one was
     /// configured. Parameters unchanged.
     pub fn reset(&mut self) {
         self.value = self.start;
-        self.count = 0;
+        self.warmup.reset();
     }
 
     /// Resets to no samples, starting from `value` as a new seed.
@@ -191,8 +186,8 @@ impl Ema {
             ));
         }
         self.start = value;
-        self.prime_at = 0;
-        self.reset();
+        self.value = value;
+        self.warmup.reset_seeded();
         Ok(())
     }
 
@@ -207,8 +202,7 @@ impl Ema {
                 "EMA alpha must be in (0, 1)",
             ));
         }
-        self.alpha = alpha;
-        self.one_minus_alpha = 1.0 - alpha;
+        self.weight = Weight::new(alpha);
         Ok(())
     }
 }
@@ -217,7 +211,7 @@ impl EmaBuilder {
     /// Direct smoothing factor. Must be in (0, 1) exclusive.
     #[must_use]
     pub fn alpha(mut self, alpha: f64) -> Self {
-        self.weight = Some(nexus_stats_core::math::EwWeight::Alpha(alpha));
+        self.weight = Some(nexus_stats_core::parts::EwWeight::Alpha(alpha));
         self
     }
 
@@ -227,7 +221,7 @@ impl EmaBuilder {
     #[must_use]
     #[cfg(any(feature = "std", feature = "libm"))]
     pub fn halflife(mut self, halflife: f64) -> Self {
-        self.weight = Some(nexus_stats_core::math::EwWeight::Halflife(halflife));
+        self.weight = Some(nexus_stats_core::parts::EwWeight::Halflife(halflife));
         self
     }
 
@@ -236,7 +230,7 @@ impl EmaBuilder {
     /// Computes: `alpha = 2 / (n + 1)`
     #[must_use]
     pub fn span(mut self, n: u64) -> Self {
-        self.weight = Some(nexus_stats_core::math::EwWeight::Span(n));
+        self.weight = Some(nexus_stats_core::parts::EwWeight::Span(n));
         self
     }
 
@@ -284,15 +278,9 @@ impl EmaBuilder {
 
         let start = self.seed.unwrap_or(0.0);
         Ok(Ema {
-            alpha,
-            one_minus_alpha: 1.0 - alpha,
+            weight: Weight::new(alpha),
             value: start,
-            count: 0,
-            prime_at: if self.seed.is_some() {
-                0
-            } else {
-                self.min_samples
-            },
+            warmup: Warmup::new(self.min_samples, self.seed.is_some()),
             start,
         })
     }

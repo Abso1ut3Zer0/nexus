@@ -38,7 +38,7 @@ pub struct ZScoreNorm<T: Float> {
 /// Builder for [`ZScoreNorm`].
 #[derive(Debug, Clone)]
 pub struct ZScoreNormBuilder<T: Float> {
-    weight: Option<nexus_stats_core::math::EwWeight>,
+    weight: Option<nexus_stats_core::parts::EwWeight>,
     min_samples: u64,
     seed: Option<MeanVariance>,
     _sample: PhantomData<T>,
@@ -200,14 +200,14 @@ impl<T: Float> ZScoreNormBuilder<T> {
     /// Direct smoothing factor. Must be in (0, 1) exclusive.
     #[must_use]
     pub fn alpha(mut self, alpha: T) -> Self {
-        self.weight = Some(nexus_stats_core::math::EwWeight::Alpha(alpha.to_f64()));
+        self.weight = Some(nexus_stats_core::parts::EwWeight::Alpha(alpha.to_f64()));
         self
     }
 
     /// Samples for weight to decay by half. Must be positive and finite.
     #[must_use]
     pub fn halflife(mut self, halflife: T) -> Self {
-        self.weight = Some(nexus_stats_core::math::EwWeight::Halflife(
+        self.weight = Some(nexus_stats_core::parts::EwWeight::Halflife(
             halflife.to_f64(),
         ));
         self
@@ -217,7 +217,7 @@ impl<T: Float> ZScoreNormBuilder<T> {
     /// Must be at least 2.
     #[must_use]
     pub fn span(mut self, n: u64) -> Self {
-        self.weight = Some(nexus_stats_core::math::EwWeight::Span(n));
+        self.weight = Some(nexus_stats_core::parts::EwWeight::Span(n));
         self
     }
 

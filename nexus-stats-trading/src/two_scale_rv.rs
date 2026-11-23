@@ -1,4 +1,5 @@
 use nexus_stats_core::math::MulAdd;
+use nexus_stats_core::parts::Warmup;
 use nexus_stats_core::storage::Ring;
 
 /// Two-scale realized variance: the variance of a price path, with the
@@ -44,8 +45,7 @@ pub struct TwoScaleRv {
     /// The last `k` log prices.
     log_prices: Ring<f64>,
     prev_log_price: f64,
-    count: u64,
-    min_samples: u64,
+    warmup: Warmup,
 }
 
 /// A [`TwoScaleRv`] reading.
@@ -98,9 +98,9 @@ impl TwoScaleRv {
     #[inline]
     pub fn update(&mut self, price: f64) {
         let log_price = nexus_stats_core::math::ln(price);
-        self.count += 1;
+        let count = self.warmup.tick();
 
-        if self.count >= 2 {
+        if count >= 2 {
             let fast_return = log_price - self.prev_log_price;
             self.fast = fast_return.fma(fast_return, self.fast);
         }
@@ -149,12 +149,12 @@ impl TwoScaleRv {
     /// prices have been fed.
     #[must_use]
     pub fn estimate(&self) -> Option<TwoScaleEstimate> {
-        if self.count < self.min_samples {
+        if !self.warmup.is_primed() {
             return None;
         }
 
         let k = self.log_prices.capacity() as f64;
-        let returns = self.count - 1;
+        let returns = self.warmup.count() - 1;
         let n = returns as f64;
         let n_bar = (n - k + 1.0) / k;
         let share = n_bar / n;
@@ -172,13 +172,13 @@ impl TwoScaleRv {
     /// Number of prices fed since construction or `reset`.
     #[must_use]
     pub fn count(&self) -> u64 {
-        self.count
+        self.warmup.count()
     }
 
     /// Whether `min_samples` prices have been fed.
     #[must_use]
     pub fn is_primed(&self) -> bool {
-        self.count >= self.min_samples
+        self.warmup.is_primed()
     }
 
     /// Starts a new period. Parameters and allocation unchanged.
@@ -187,7 +187,7 @@ impl TwoScaleRv {
         self.slow = 0.0;
         self.log_prices.clear(0.0);
         self.prev_log_price = 0.0;
-        self.count = 0;
+        self.warmup.reset();
     }
 }
 
@@ -230,8 +230,7 @@ impl TwoScaleRvBuilder {
             slow: 0.0,
             log_prices: Ring::new(k, 0.0)?,
             prev_log_price: 0.0,
-            count: 0,
-            min_samples,
+            warmup: Warmup::new(min_samples, false),
         })
     }
 }

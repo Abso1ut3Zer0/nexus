@@ -1,4 +1,5 @@
-use nexus_stats_core::math::{EwWeight, MulAdd, Warmup, Weight};
+use nexus_stats_core::math::MulAdd;
+use nexus_stats_core::parts::{EwWeight, Warmup, Weight};
 
 /// Holt's linear method: an exponentially weighted level and trend.
 ///

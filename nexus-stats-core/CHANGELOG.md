@@ -26,9 +26,11 @@ contained.
 
 ### Added (internal)
 
-- `math::Weight` and `math::Warmup` (doc-hidden): a smoothing weight with
-  its complement, and the sample count with the number needed before a
-  reading. Shared by the smoothers.
+- **`parts` module (doc-hidden):** the small pieces of state several types
+  share. `Weight` (a smoothing weight with its complement) and `Warmup`
+  (the sample count with the number needed before a reading) are new;
+  `EwWeight`, `RoundingEstimate` and `RoundingBound` move there from
+  `math`, which now holds operations on numbers only.
 
 ### Changed (internal)
 

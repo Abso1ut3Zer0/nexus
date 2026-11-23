@@ -2,7 +2,8 @@ use alloc::boxed::Box;
 use alloc::vec;
 
 use nexus_stats_core::Accuracy;
-use nexus_stats_core::math::{MulAdd, RoundingEstimate};
+use nexus_stats_core::math::MulAdd;
+use nexus_stats_core::parts::RoundingEstimate;
 use nexus_stats_core::storage::SliceRing;
 
 /// Variance ratio over a sliding window: is the price a random walk?
