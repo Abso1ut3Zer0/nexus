@@ -80,3 +80,8 @@ pub use variance_ratio::*;
 
 // What appears in this crate's signatures, so it can be used on its own.
 pub use nexus_stats_core::{Accuracy, ConfigError, DataError};
+
+/// The README's examples, compiled and run as doc tests.
+#[cfg(all(doctest, feature = "std"))]
+#[doc = include_str!("../README.md")]
+struct Readme;
