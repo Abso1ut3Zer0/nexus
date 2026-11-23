@@ -1,4 +1,4 @@
-use nexus_stats_core::math::{EwWeight, MulAdd};
+use nexus_stats_core::parts::{EwWeight, Warmup, Weight};
 
 /// Asymmetric EMA: one smoothing factor for rising samples, another for
 /// falling ones.
@@ -30,14 +30,9 @@ use nexus_stats_core::math::{EwWeight, MulAdd};
 #[derive(Debug, Clone)]
 pub struct AsymEma {
     /// The weight by direction: `[falling, rising]`.
-    alpha: [f64; 2],
-    /// `1 - alpha`, in the same order.
-    one_minus_alpha: [f64; 2],
+    weights: [Weight; 2],
     value: f64,
-    count: u64,
-    /// Samples needed before the value is reported: `min_samples`, or 0 when
-    /// seeded. Zero also means "do not take the first sample as the value".
-    prime_at: u64,
+    warmup: Warmup,
     /// What `reset` restores: the seed, or 0.0 when unseeded.
     start: f64,
 }
@@ -72,8 +67,8 @@ impl AsymEma {
     /// [`checked_update`](Self::checked_update).
     #[inline]
     pub fn update(&mut self, sample: f64) -> Option<f64> {
-        let first_unseeded = self.count == 0 && self.prime_at != 0;
-        self.count += 1;
+        let first_unseeded = self.warmup.awaits_first_sample();
+        self.warmup.tick();
         if first_unseeded {
             self.value = sample;
             return self.value();
@@ -81,7 +76,7 @@ impl AsymEma {
 
         // PERF: indexed by direction, so the weight is a load, not a branch.
         let rising = usize::from(sample > self.value);
-        self.value = self.alpha[rising].fma(sample, self.one_minus_alpha[rising] * self.value);
+        self.value = self.weights[rising].blend(sample, self.value);
         self.value()
     }
 
@@ -131,21 +126,21 @@ impl AsymEma {
     /// sample.
     #[must_use]
     pub fn count(&self) -> u64 {
-        self.count
+        self.warmup.count()
     }
 
     /// Whether a value is available: `min_samples` reached, or seeded.
     #[inline]
     #[must_use]
     pub fn is_primed(&self) -> bool {
-        self.count >= self.prime_at
+        self.warmup.is_primed()
     }
 
     /// Returns to no samples, and to the seed if there is one. Parameters
     /// unchanged.
     pub fn reset(&mut self) {
         self.value = self.start;
-        self.count = 0;
+        self.warmup.reset();
     }
 
     /// Resets to no samples, starting from `value` as a new seed.
@@ -163,8 +158,8 @@ impl AsymEma {
             ));
         }
         self.start = value;
-        self.prime_at = 0;
-        self.reset();
+        self.value = value;
+        self.warmup.reset_seeded();
         Ok(())
     }
 }
@@ -264,15 +259,9 @@ impl AsymEmaBuilder {
 
         let start = self.seed.unwrap_or(0.0);
         Ok(AsymEma {
-            alpha: [alpha_down, alpha_up],
-            one_minus_alpha: [1.0 - alpha_down, 1.0 - alpha_up],
+            weights: [Weight::new(alpha_down), Weight::new(alpha_up)],
             value: start,
-            count: 0,
-            prime_at: if self.seed.is_some() {
-                0
-            } else {
-                self.min_samples
-            },
+            warmup: Warmup::new(self.min_samples, self.seed.is_some()),
             start,
         })
     }

@@ -1,4 +1,5 @@
 use nexus_stats_core::math::MulAdd;
+use nexus_stats_core::parts::{Warmup, Weight};
 
 /// Roll's implicit bid-ask spread estimator (Roll, 1984).
 ///
@@ -30,15 +31,14 @@ use nexus_stats_core::math::MulAdd;
 /// ```
 #[derive(Debug, Clone)]
 pub struct RollSpread {
-    alpha: f64,
+    weight: Weight,
     /// Changes in the log price.
     changes: WeightedMean,
     /// Products of consecutive changes.
     products: WeightedMean,
     prev_log_price: f64,
     prev_change: f64,
-    count: u64,
-    min_samples: u64,
+    warmup: Warmup,
 }
 
 /// A [`RollSpread`] reading.
@@ -57,7 +57,7 @@ pub struct RollEstimate {
 /// Builder for [`RollSpread`].
 #[derive(Debug, Clone)]
 pub struct RollSpreadBuilder {
-    weight: Option<nexus_stats_core::math::EwWeight>,
+    weight: Option<nexus_stats_core::parts::EwWeight>,
     min_samples: u64,
 }
 
@@ -76,10 +76,9 @@ impl WeightedMean {
     };
 
     #[inline]
-    fn update(&mut self, sample: f64, alpha: f64) {
-        let keep = 1.0 - alpha;
-        self.sum = alpha.fma(sample, keep * self.sum);
-        self.weight = keep.fma(self.weight, alpha);
+    fn update(&mut self, sample: f64, alpha: Weight) {
+        self.sum = alpha.blend(sample, self.sum);
+        self.weight = alpha.complement().fma(self.weight, alpha.alpha());
     }
 
     fn value(&self) -> f64 {
@@ -117,14 +116,14 @@ impl RollSpread {
     #[inline]
     pub fn update(&mut self, price: f64) {
         let log_price = nexus_stats_core::math::ln(price);
-        self.count += 1;
+        let count = self.warmup.tick();
 
-        if self.count >= 2 {
+        if count >= 2 {
             let change = log_price - self.prev_log_price;
-            self.changes.update(change, self.alpha);
+            self.changes.update(change, self.weight);
             // The first change has no predecessor to pair with.
-            if self.count >= 3 {
-                self.products.update(change * self.prev_change, self.alpha);
+            if count >= 3 {
+                self.products.update(change * self.prev_change, self.weight);
             }
             self.prev_change = change;
         }
@@ -168,7 +167,7 @@ impl RollSpread {
     /// fed.
     #[must_use]
     pub fn estimate(&self) -> Option<RollEstimate> {
-        if self.count < self.min_samples {
+        if !self.warmup.is_primed() {
             return None;
         }
 
@@ -191,13 +190,13 @@ impl RollSpread {
     /// Number of prices fed.
     #[must_use]
     pub fn count(&self) -> u64 {
-        self.count
+        self.warmup.count()
     }
 
     /// Whether `min_samples` prices have been fed.
     #[must_use]
     pub fn is_primed(&self) -> bool {
-        self.count >= self.min_samples
+        self.warmup.is_primed()
     }
 
     /// Resets to the empty state. Parameters are unchanged.
@@ -206,7 +205,7 @@ impl RollSpread {
         self.products = WeightedMean::EMPTY;
         self.prev_log_price = 0.0;
         self.prev_change = 0.0;
-        self.count = 0;
+        self.warmup.reset();
     }
 }
 
@@ -214,21 +213,21 @@ impl RollSpreadBuilder {
     /// Weight of the newest sample. Must be in (0, 1) exclusive.
     #[must_use]
     pub fn alpha(mut self, alpha: f64) -> Self {
-        self.weight = Some(nexus_stats_core::math::EwWeight::Alpha(alpha));
+        self.weight = Some(nexus_stats_core::parts::EwWeight::Alpha(alpha));
         self
     }
 
     /// Samples for a weight to decay by half. Must be positive and finite.
     #[must_use]
     pub fn halflife(mut self, halflife: f64) -> Self {
-        self.weight = Some(nexus_stats_core::math::EwWeight::Halflife(halflife));
+        self.weight = Some(nexus_stats_core::parts::EwWeight::Halflife(halflife));
         self
     }
 
     /// Span in samples (the pandas `span` convention). Must be at least 2.
     #[must_use]
     pub fn span(mut self, n: u64) -> Self {
-        self.weight = Some(nexus_stats_core::math::EwWeight::Span(n));
+        self.weight = Some(nexus_stats_core::parts::EwWeight::Span(n));
         self
     }
 
@@ -259,13 +258,12 @@ impl RollSpreadBuilder {
         }
 
         Ok(RollSpread {
-            alpha,
+            weight: Weight::new(alpha),
             changes: WeightedMean::EMPTY,
             products: WeightedMean::EMPTY,
             prev_log_price: 0.0,
             prev_change: 0.0,
-            count: 0,
-            min_samples: self.min_samples,
+            warmup: Warmup::new(self.min_samples, false),
         })
     }
 }

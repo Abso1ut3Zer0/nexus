@@ -2,7 +2,8 @@
 
 use core::hint::select_unpredictable;
 
-use nexus_stats_core::math::{EwWeight, MulAdd};
+use nexus_stats_core::math::MulAdd;
+use nexus_stats_core::parts::EwWeight;
 
 /// Huber EMA: an EMA whose step per sample is bounded.
 ///

@@ -1,4 +1,4 @@
-use nexus_stats_core::math::EwWeight;
+use nexus_stats_core::parts::EwWeight;
 use nexus_stats_smoothing::Ema;
 
 /// Amihud illiquidity: the exponentially weighted average of

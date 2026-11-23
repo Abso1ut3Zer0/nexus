@@ -1,5 +1,6 @@
+use nexus_stats_core::math::MulAdd;
 use nexus_stats_core::math::step_mean;
-use nexus_stats_core::math::{EwWeight, MulAdd};
+use nexus_stats_core::parts::{EwWeight, Warmup};
 
 /// Exponentially weighted mean and variance.
 ///
@@ -40,9 +41,7 @@ pub struct EwmVar {
     weight: f64,
     /// Sum of the squared weights.
     weight_squares: f64,
-    count: u64,
-    /// Samples needed before a reading: `min_samples`, or 0 when seeded.
-    prime_at: u64,
+    warmup: Warmup,
     /// What `reset` restores.
     seed: Option<MeanVariance>,
 }
@@ -91,7 +90,7 @@ impl EwmVar {
     /// [`checked_update`](Self::checked_update).
     #[inline]
     pub fn update(&mut self, sample: f64) -> Option<MeanVariance> {
-        self.count += 1;
+        self.warmup.tick();
 
         // Every earlier weight decays; the new sample enters at weight 1.
         self.weight = self.decay.fma(self.weight, 1.0);
@@ -174,20 +173,20 @@ impl EwmVar {
     /// sample.
     #[must_use]
     pub fn count(&self) -> u64 {
-        self.count
+        self.warmup.count()
     }
 
     /// Whether a reading is available: `min_samples` reached, or seeded.
     #[inline]
     #[must_use]
     pub fn is_primed(&self) -> bool {
-        self.count >= self.prime_at
+        self.warmup.is_primed()
     }
 
     /// Returns to no samples, and to the seed if there is one. Parameters
     /// unchanged.
     pub fn reset(&mut self) {
-        self.count = 0;
+        self.warmup.reset();
 
         let Some(seed) = self.seed else {
             self.mean = 0.0;
@@ -236,7 +235,7 @@ impl EwmVar {
         let seed = MeanVariance { mean, variance };
         check_seed(seed)?;
         self.seed = Some(seed);
-        self.prime_at = 0;
+        self.warmup.reset_seeded();
         self.reset();
         Ok(())
     }
@@ -314,12 +313,7 @@ impl EwmVarBuilder {
             squared_deviations: 0.0,
             weight: 0.0,
             weight_squares: 0.0,
-            count: 0,
-            prime_at: if self.seed.is_some() {
-                0
-            } else {
-                self.min_samples
-            },
+            warmup: Warmup::new(self.min_samples, self.seed.is_some()),
             seed: self.seed,
         };
         tracker.reset();

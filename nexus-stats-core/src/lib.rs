@@ -20,6 +20,8 @@ mod enums;
 #[doc(hidden)]
 pub mod math;
 mod feature_vector;
+#[doc(hidden)]
+pub mod parts;
 
 /// Clock trait and implementations.
 pub mod clock;
