@@ -97,9 +97,7 @@ impl<T: Sample> PeakHold<T> {
         self.count += 1;
         // Instant attack: a new peak, or the very first sample.
         if sample >= self.peak || self.count == 1 {
-            self.peak = sample;
-            self.hold_remaining = self.hold_samples;
-            return Some(self.peak);
+            return Some(self.capture(sample));
         }
         // Hold period.
         if self.hold_remaining > 0 {
@@ -109,10 +107,17 @@ impl<T: Sample> PeakHold<T> {
         // Hold expired: decay, then capture anything at or above the decayed peak.
         self.peak = T::decay(self.peak, self.decay, sample);
         if sample >= self.peak {
-            self.peak = sample;
-            self.hold_remaining = self.hold_samples;
+            return Some(self.capture(sample));
         }
         Some(self.peak)
+    }
+
+    /// Takes `sample` as the peak and restarts the hold.
+    #[inline]
+    fn capture(&mut self, sample: T) -> T {
+        self.peak = sample;
+        self.hold_remaining = self.hold_samples;
+        sample
     }
 }
 
