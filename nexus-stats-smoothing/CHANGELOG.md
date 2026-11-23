@@ -10,6 +10,11 @@ contained.
 
 ## [Unreleased]
 
+### Removed (moved)
+
+- `Kalman1d` is now in `nexus-stats-regression` (`estimation`), beside
+  `Kalman2d` and `Kalman3d`.
+
 ### Removed
 
 - **`ConditionalEma`.** It was an `Ema` behind an `if`, plus two counters.

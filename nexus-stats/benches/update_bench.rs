@@ -13,11 +13,11 @@
 
 use criterion::{Criterion, black_box, criterion_group, criterion_main};
 use nexus_stats::{
-    control::{DeadBand, FirstDiff, Hysteresis, LevelCrossing, SecondDiff},
+    control::{DeadBand, Hysteresis, LevelCrossing},
     detection::{
         AdaptiveThreshold, Bocpd, Cusum, DistDrift, RobustZScore, ShiryaevRoberts, TrendAlert,
     },
-    estimation::{Kalman2d, Kalman3d},
+    estimation::{Kalman1d, Kalman2d, Kalman3d},
     learning::{
         AdaGrad, Adam, EpsilonGreedy, Exp3, LmsFilter, NlmsFilter, OnlineGd, OnlineKMeans,
         RlsFilter, ThompsonBeta, ThompsonGamma, Ucb1,
@@ -26,8 +26,11 @@ use nexus_stats::{
     normalization::{MinMaxNorm, ZScoreNorm},
     regression::{EwLinearRegression, LinearRegression, LogisticRegression, PolynomialRegression},
     signal::{Autocorrelation, CrossCorrelation, Entropy, TransferEntropy},
-    smoothing::{AsymEma, Ema, Holt, Kalman1d, Slew, Spring},
-    statistics::{Covariance, Cvar, EwmVar, HarmonicMean, Lpm, Moments, Percentile, Welford},
+    smoothing::{AsymEma, Ema, Holt, Slew, Spring},
+    statistics::{
+        Covariance, EwmVar, FirstDiff, HarmonicMean, Moments, Percentile, SecondDiff, Welford,
+    },
+    trading::{Cvar, Lpm},
 };
 
 // Simple LCG for deterministic pseudo-random data in benchmarks.

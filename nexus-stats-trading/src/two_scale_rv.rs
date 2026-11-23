@@ -1,5 +1,5 @@
-use crate::math::MulAdd;
-use crate::storage::Ring;
+use nexus_stats_core::math::MulAdd;
+use nexus_stats_core::storage::Ring;
 
 /// Two-scale realized variance: the variance of a price path, with the
 /// noise of tick-by-tick trading removed.
@@ -26,7 +26,7 @@ use crate::storage::Ring;
 /// # Examples
 ///
 /// ```
-/// use nexus_stats_core::statistics::TwoScaleRv;
+/// use nexus_stats_trading::TwoScaleRv;
 ///
 /// let mut tsrv = TwoScaleRv::builder().k(5).build().unwrap();
 /// for i in 0..200 {
@@ -70,7 +70,7 @@ impl TwoScaleEstimate {
     #[inline]
     #[must_use]
     pub fn volatility(&self) -> f64 {
-        crate::math::sqrt(self.variance.max(0.0))
+        nexus_stats_core::math::sqrt(self.variance.max(0.0))
     }
 }
 
@@ -97,7 +97,7 @@ impl TwoScaleRv {
     /// [`checked_update`](Self::checked_update).
     #[inline]
     pub fn update(&mut self, price: f64) {
-        let log_price = crate::math::ln(price);
+        let log_price = nexus_stats_core::math::ln(price);
         self.count += 1;
 
         if self.count >= 2 {
@@ -117,17 +117,17 @@ impl TwoScaleRv {
     ///
     /// # Errors
     ///
-    /// - [`DataError::NotANumber`](crate::DataError::NotANumber) if `price`
+    /// - [`DataError::NotANumber`](nexus_stats_core::DataError::NotANumber) if `price`
     ///   is NaN.
-    /// - [`DataError::Infinite`](crate::DataError::Infinite) if `price` is
+    /// - [`DataError::Infinite`](nexus_stats_core::DataError::Infinite) if `price` is
     ///   infinite.
-    /// - [`DataError::OutOfRange`](crate::DataError::OutOfRange) if `price`
+    /// - [`DataError::OutOfRange`](nexus_stats_core::DataError::OutOfRange) if `price`
     ///   is zero or negative.
     ///
     /// # Examples
     ///
     /// ```
-    /// use nexus_stats_core::{DataError, statistics::TwoScaleRv};
+    /// use nexus_stats_trading::{DataError, TwoScaleRv};
     ///
     /// let mut tsrv = TwoScaleRv::builder().k(5).build().unwrap();
     /// assert_eq!(tsrv.checked_update(100.0), Ok(()));
@@ -135,11 +135,11 @@ impl TwoScaleRv {
     /// assert_eq!(tsrv.count(), 1);
     /// ```
     #[inline]
-    pub fn checked_update(&mut self, price: f64) -> Result<(), crate::DataError> {
+    pub fn checked_update(&mut self, price: f64) -> Result<(), nexus_stats_core::DataError> {
         // Any positive price is allowed: its logarithm is small.
-        crate::math::check_input(price, f64::MAX)?;
+        nexus_stats_core::math::check_input(price, f64::MAX)?;
         if price <= 0.0 {
-            return Err(crate::DataError::OutOfRange);
+            return Err(nexus_stats_core::DataError::OutOfRange);
         }
         self.update(price);
         Ok(())
@@ -213,14 +213,14 @@ impl TwoScaleRvBuilder {
     ///
     /// - `Missing("k")` if `k` was not set.
     /// - `Invalid` if `k` is below 2 or `min_samples` is below `k + 1`.
-    pub fn build(self) -> Result<TwoScaleRv, crate::ConfigError> {
-        let k = self.k.ok_or(crate::ConfigError::Missing("k"))?;
+    pub fn build(self) -> Result<TwoScaleRv, nexus_stats_core::ConfigError> {
+        let k = self.k.ok_or(nexus_stats_core::ConfigError::Missing("k"))?;
         if k < 2 {
-            return Err(crate::ConfigError::Invalid("k must be >= 2"));
+            return Err(nexus_stats_core::ConfigError::Invalid("k must be >= 2"));
         }
         let min_samples = self.min_samples.unwrap_or(10 * k as u64);
         if min_samples <= k as u64 {
-            return Err(crate::ConfigError::Invalid(
+            return Err(nexus_stats_core::ConfigError::Invalid(
                 "min_samples must be at least k + 1",
             ));
         }
@@ -404,7 +404,7 @@ mod tests {
 
     #[test]
     fn builder_validation() {
-        use crate::ConfigError::{Invalid, Missing};
+        use nexus_stats_core::ConfigError::{Invalid, Missing};
         let b = TwoScaleRv::builder;
         assert_eq!(b().build().unwrap_err(), Missing("k"));
         assert_eq!(b().k(1).build().unwrap_err(), Invalid("k must be >= 2"));
@@ -417,7 +417,7 @@ mod tests {
 
     #[test]
     fn checked_update_refuses_bad_input_and_changes_nothing() {
-        use crate::DataError::{Infinite, NotANumber, OutOfRange};
+        use nexus_stats_core::DataError::{Infinite, NotANumber, OutOfRange};
 
         let mut tsrv = TwoScaleRv::builder().k(2).min_samples(3).build().unwrap();
         for p in [100.0, 101.0, 100.5, 102.0] {

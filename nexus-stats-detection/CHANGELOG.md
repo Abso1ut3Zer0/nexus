@@ -10,6 +10,11 @@ contained.
 
 ## [Unreleased]
 
+### Added (moved in)
+
+- `signal::Hurst` and `signal::HalfLife`, from `nexus-stats-core`'s
+  `statistics`. No change to either.
+
 ### Changed
 
 - **No numeric suffixes** (the stats major, [#773](https://github.com/Abso1ut3Zer0/nexus/issues/773)): `CusumF64`-style names become plain

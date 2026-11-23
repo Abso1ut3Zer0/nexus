@@ -141,6 +141,7 @@ re-exports everything; the subcrates allow fine-grained dependency control.
 | [**nexus-stats-detection**](./nexus-stats-detection) | Change detection and signal analysis. CUSUM, MOSUM, BOCPD, Shiryaev-Roberts, ADWIN, Page-Hinkley, distribution shift/drift, adaptive threshold, trend alert, entropy, transfer entropy, predictive information bound, autocorrelation, cross-correlation. |
 | [**nexus-stats-regression**](./nexus-stats-regression) | Online regression, learning, and estimation. Linear/polynomial/power/log/exponential regression (OLS + EW), Huber-robust regression, RLS/LMS/NLMS adaptive filters, logistic regression, online K-means, Kalman 2d/3d, online gradient descent, AdaGrad, Adam. |
 | [**nexus-stats-control**](./nexus-stats-control) | Control and frequency primitives. Dead band, hysteresis, debounce, level crossing, peak detector, bool window, TopK, proportion tracking, decay accumulator. |
+| [**nexus-stats-trading**](./nexus-stats-trading) | Trading and market-microstructure statistics. Variance ratio, two-scale realized variance, bipower variation, Amihud illiquidity, Roll spread, Kyle's lambda, lower partial moments, CVaR. |
 
 ### Inference
 

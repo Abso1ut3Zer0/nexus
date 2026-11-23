@@ -16,16 +16,14 @@ use nexus_stats::monitoring::{PollSaturation, SojournSaturation};
 use nexus_stats::normalization::{MinMaxNorm, QuantileNorm, ZScoreNorm};
 
 use nexus_stats::{
-    control::{
-        BoolWindow, DeadBand, Debounce, FirstDiff, Hysteresis, LevelCrossing, PeakDetector,
-        SecondDiff,
-    },
+    control::{BoolWindow, DeadBand, Debounce, Hysteresis, LevelCrossing, PeakDetector},
     detection::{
         AdaptiveThreshold, Adwin, Bocpd, Cusum, DistributionShift, Mosum, MultiGate, PageHinkley,
         RobustZScore, ShiryaevRoberts, TrendAlert,
     },
     estimation::{
-        BetaBinomial, Decision, GammaPoisson, Kalman2d, Kalman3d, SprtBernoulli, SprtGaussian,
+        BetaBinomial, Decision, GammaPoisson, Kalman1d, Kalman2d, Kalman3d, SprtBernoulli,
+        SprtGaussian,
     },
     frequency::{FlexProportionGlobal, FlexProportionLocal, TopK},
     learning::{
@@ -37,15 +35,19 @@ use nexus_stats::{
         PeakHold, RunningMax, RunningMin, WindowedMax, WindowedMin,
     },
     regression::{
-        EwLinearRegression, EwPolynomialRegression, ExponentialRegression, LinearRegression,
-        LogarithmicRegression, LogisticRegression, PolynomialRegression, PowerRegression,
+        EwLinearRegression, EwPolynomialRegression, ExponentialRegression, HitRate,
+        LinearRegression, LogarithmicRegression, LogisticRegression, PolynomialRegression,
+        PowerRegression,
     },
-    signal::{Autocorrelation, CrossCorrelation, Entropy, PredictiveInfoBound, TransferEntropy},
-    smoothing::{AsymEma, Ema, Hampel, Holt, Kalman1d, Kama, Slew, Spring, WindowedMedian},
+    signal::{
+        Autocorrelation, CrossCorrelation, Entropy, HalfLife, Hurst, PredictiveInfoBound,
+        TransferEntropy,
+    },
+    smoothing::{AsymEma, Ema, Hampel, Holt, Kama, Slew, Spring, WindowedMedian},
     statistics::{
-        Amihud, BipowerVariation, Covariance, Cvar, EwmVar, HalfLife, HarmonicMean, HitRate, Hurst,
-        Lpm, Moments, Percentile, RollSpread, TwoScaleRv, VarianceRatio, Welford,
+        Covariance, EwmVar, FirstDiff, HarmonicMean, Moments, Percentile, SecondDiff, Welford,
     },
+    trading::{Amihud, BipowerVariation, Cvar, Lpm, RollSpread, TwoScaleRv, VarianceRatio},
 };
 
 // ============================================================================

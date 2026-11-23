@@ -1,7 +1,7 @@
 //! Regression and classification.
 
 mod ew_polynomial_regression;
-mod kyle_lambda;
+mod hit_rate;
 #[cfg(all(feature = "alloc", any(feature = "std", feature = "libm")))]
 mod lagged_predictor;
 pub(crate) mod linear_regression;
@@ -15,7 +15,7 @@ mod logistic_regression;
 mod transformed_regression;
 
 pub use ew_polynomial_regression::*;
-pub use kyle_lambda::*;
+pub use hit_rate::*;
 #[cfg(all(feature = "alloc", any(feature = "std", feature = "libm")))]
 pub use lagged_predictor::*;
 pub use linear_regression::*;

@@ -1,4 +1,4 @@
-use crate::regression::EwLinearRegression;
+use nexus_stats_regression::regression::EwLinearRegression;
 
 /// Kyle's Lambda — streaming price impact coefficient.
 ///
@@ -15,7 +15,7 @@ use crate::regression::EwLinearRegression;
 /// # Examples
 ///
 /// ```
-/// use nexus_stats_regression::regression::KyleLambda;
+/// use nexus_stats_trading::KyleLambda;
 ///
 /// let mut kyle = KyleLambda::builder()
 ///     .alpha(0.05)

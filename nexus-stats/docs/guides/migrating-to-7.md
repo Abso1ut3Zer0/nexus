@@ -135,6 +135,23 @@ information. Builders follow their type: `EmaF64Builder` → `EmaBuilder`,
 | `intercept_value()` (linear, EW and transformed regressions) | `intercept()` |
 | `total_pulls()` on the bandits | `count()` |
 
+## 1a. Types that moved
+
+Every concept now lives in one crate, and the trading measures have their own. Through the umbrella crate only the module changes:
+
+| Type | Was | Now |
+|---|---|---|
+| `VarianceRatio`, `TwoScaleRv`, `BipowerVariation`, `Amihud`, `RollSpread`, `Lpm`, `Cvar` | `statistics` | `trading` |
+| `KyleLambda` | `regression` | `trading` |
+| `Hurst`, `HalfLife` | `statistics` | `signal` |
+| `HitRate` | `statistics` | `regression` |
+| `Kalman1d` | `smoothing` | `estimation` |
+| `FirstDiff`, `SecondDiff` | `control` | `statistics` |
+
+`trading` is the new `nexus-stats-trading` crate, behind the `trading` feature. Depending on a sub-crate directly, the paths are `nexus_stats_trading::VarianceRatio`, `nexus_stats_detection::signal::Hurst`, `nexus_stats_regression::regression::HitRate` and `nexus_stats_regression::estimation::Kalman1d`.
+
+**Every feature is on by default.** `nexus-stats` used to enable only `std`; it now enables `full` as well. To compile less, set `default-features = false` and name what you need: `std`, plus any of `smoothing`, `detection`, `regression`, `control`, `trading`.
+
 ## 2. Pairs become one generic type
 
 Where the `F64` and `I64` (or `F64` and `F32`) forms were the same algorithm,

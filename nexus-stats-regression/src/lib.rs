@@ -15,6 +15,7 @@
 //! | `EwPolynomialRegression` | Exponentially weighted polynomial regression | — |
 //! | `ExponentialRegression`, `LogarithmicRegression`, `PowerRegression` (+ `Ew*`) | Linearized exp/log/power fits | `std` or `libm` |
 //! | `LogisticRegression` | Online logistic regression | `alloc` + (`std` or `libm`) |
+//! | `HitRate` | How often a forecast has the direction right | — |
 //!
 //! # Learning Types
 //!
@@ -31,6 +32,7 @@
 //!
 //! | Type | Description | Feature |
 //! |------|-------------|---------|
+//! | `Kalman1d` | 1D Kalman filter (position and velocity) | — |
 //! | `Kalman2d` | 2D Kalman filter | — |
 //! | `Kalman3d` | 3D Kalman filter | — |
 //! | `BetaBinomial` | Beta-Binomial conjugate estimator | `std` or `libm` |

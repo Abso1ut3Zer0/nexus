@@ -1,4 +1,4 @@
-use super::Percentile;
+use nexus_stats_core::statistics::Percentile;
 
 /// Conditional Value at Risk (Expected Shortfall).
 ///
@@ -14,7 +14,7 @@ use super::Percentile;
 /// # Examples
 ///
 /// ```
-/// use nexus_stats_core::statistics::Cvar;
+/// use nexus_stats_trading::Cvar;
 ///
 /// let mut cvar = Cvar::builder().alpha(0.05).build().unwrap();
 /// // Cycling input so tail samples accumulate after P² converges
@@ -59,7 +59,7 @@ impl Cvar {
     /// Returns `DataError::NotANumber` if the sample is NaN, or
     /// `DataError::Infinite` if the sample is infinite.
     #[inline]
-    pub fn update(&mut self, sample: f64) -> Result<(), crate::DataError> {
+    pub fn update(&mut self, sample: f64) -> Result<(), nexus_stats_core::DataError> {
         check_finite!(sample);
         self.percentile.update(sample)?;
         self.count += 1;
@@ -152,10 +152,12 @@ impl CvarBuilder {
     ///
     /// Returns `ConfigError` if alpha is missing or not in (0, 1).
     #[inline]
-    pub fn build(self) -> Result<Cvar, crate::ConfigError> {
-        let alpha = self.alpha.ok_or(crate::ConfigError::Missing("alpha"))?;
-        if !crate::math::in_unit_interval(alpha) {
-            return Err(crate::ConfigError::Invalid(
+    pub fn build(self) -> Result<Cvar, nexus_stats_core::ConfigError> {
+        let alpha = self
+            .alpha
+            .ok_or(nexus_stats_core::ConfigError::Missing("alpha"))?;
+        if !nexus_stats_core::math::in_unit_interval(alpha) {
+            return Err(nexus_stats_core::ConfigError::Invalid(
                 "alpha must be in (0, 1) exclusive",
             ));
         }

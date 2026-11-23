@@ -57,14 +57,18 @@ impl std::error::Error for ConfigError {}
 /// # Examples
 ///
 /// ```
-/// use nexus_stats_core::{Accuracy, statistics::VarianceRatio};
+/// use nexus_stats_core::Accuracy;
 ///
-/// let mut vr = VarianceRatio::builder().horizon(2).window(64).build().unwrap();
-/// match vr.update(100.0) {
-///     Accuracy::Sound => {}
-///     // Call `vr.resync()` when there is time; no reading until then.
-///     Accuracy::ResyncRequired { error } => assert!(error > 0.0),
+/// // What a caller does with the value an `update` returns.
+/// fn resync_is_due(accuracy: Accuracy) -> bool {
+///     match accuracy {
+///         Accuracy::Sound => false,
+///         // Call the type's `resync` when there is time; no reading until then.
+///         Accuracy::ResyncRequired { .. } => true,
+///     }
 /// }
+/// assert!(!resync_is_due(Accuracy::Sound));
+/// assert!(resync_is_due(Accuracy::ResyncRequired { error: 0.01 }));
 /// ```
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum Accuracy {

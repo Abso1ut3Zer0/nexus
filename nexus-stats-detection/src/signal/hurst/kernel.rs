@@ -7,7 +7,7 @@
 //! fuses its multiply-adds. AVX2 is used when the build enables `avx2` and
 //! `fma`; SSE2 is part of every x86-64 build.
 
-use crate::math::MulAdd;
+use nexus_stats_core::math::MulAdd;
 
 /// What one pass over a stretch yields.
 #[derive(Debug, Clone, Copy, PartialEq)]

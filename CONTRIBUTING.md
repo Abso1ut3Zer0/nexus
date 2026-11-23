@@ -216,6 +216,30 @@ Every public item needs documentation that explains:
 - Miri for undefined behavior detection where applicable
 - Stress tests that run longer than you think necessary
 
+### Where a Type Lives (nexus-stats)
+
+- **One concept, one crate.** Smoothing is in the smoothing crate, all of
+  it. There is no "basic" tier in one crate and "advanced" tier in another.
+- **The module is decided by what the caller gets back:** a smoothed signal
+  (`smoothing`), a summary of the samples (`statistics`), a decision that
+  something changed (`detection`), the health of a running system
+  (`monitoring`), a gate or switch (`control`), a rescaled sample
+  (`normalization`). Not by how the type weights its samples.
+- **`nexus-stats-core` holds the foundation and the descriptive
+  statistics:** the error types, the `Sample` and `Float` traits, `math`,
+  `storage`, and the summaries other crates build on. The test for a
+  descriptive statistic: shuffle the samples and the answer does not
+  change. A measure that depends on their order belongs elsewhere.
+- **Trading-specific types go in `nexus-stats-trading`**, documented in
+  trading terms. A general type is documented in general terms, even when
+  trading is its main use.
+- **The specific crate depends on the general one,** never the reverse, and
+  re-exports anything from upstream that appears in its own signatures, so
+  a user needs one dependency.
+- **Feature flags:** every crate passes `std`, `alloc` and `libm` through,
+  and puts an optional upstream crate behind a feature. The umbrella has
+  one feature per crate, all on by default.
+
 ### Inlining
 
 `#[inline]` trades speed against compile time and code size. We follow the

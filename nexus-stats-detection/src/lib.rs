@@ -17,7 +17,9 @@
 //!   data, `RobustZScore` for heavy tails.
 //! - Is the trend heading for a limit? `TrendAlert`.
 //! - Normal, warning or critical? `MultiGate`.
-//! - Is the stream trending or reverting? `Autocorrelation`.
+//! - Is the stream trending or reverting? `Autocorrelation` at one lag,
+//!   `Hurst` for an exponent over a window, `HalfLife` for how fast it
+//!   reverts.
 //! - Which of two streams leads? `CrossCorrelation`. Does one drive the
 //!   other? `TransferEntropy`, at a much higher cost.
 //! - A decision as soon as the evidence allows? `SprtBernoulli` for rates,
@@ -25,7 +27,7 @@
 //!
 //! Types are organized into submodules:
 //! - [`detection`] — MOSUM, Shiryaev-Roberts, AdaptiveThreshold, RobustZ, TrendAlert, MultiGate, PageHinkley, ADWIN, DistDrift, BOCPD
-//! - [`signal`] — Autocorrelation, CrossCorrelation, Entropy, TransferEntropy, PredictiveInfoBound
+//! - [`signal`] — Autocorrelation, CrossCorrelation, Hurst, HalfLife, Entropy, TransferEntropy, PredictiveInfoBound
 //! - [`estimation`] — SPRT (Bernoulli, Gaussian)
 
 #[cfg(feature = "alloc")]

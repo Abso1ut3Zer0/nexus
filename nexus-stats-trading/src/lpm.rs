@@ -24,7 +24,7 @@
 /// # Examples
 ///
 /// ```
-/// use nexus_stats_core::statistics::Lpm;
+/// use nexus_stats_trading::Lpm;
 ///
 /// let mut lpm = Lpm::semivariance(0.0).unwrap();
 /// for &v in &[-3.0, -1.0, 0.0, 2.0, 5.0] {
@@ -62,7 +62,7 @@ impl Lpm {
     }
 
     /// Convenience constructor for semivariance (order = 2).
-    pub fn semivariance(target: f64) -> Result<Self, crate::ConfigError> {
+    pub fn semivariance(target: f64) -> Result<Self, nexus_stats_core::ConfigError> {
         Self::builder().target(target).order(2).build()
     }
 
@@ -74,7 +74,7 @@ impl Lpm {
     /// # Examples
     ///
     /// ```
-    /// use nexus_stats_core::statistics::Lpm;
+    /// use nexus_stats_trading::Lpm;
     ///
     /// let mut lpm = Lpm::semivariance(0.0).unwrap();
     /// lpm.update(-3.0);
@@ -93,17 +93,17 @@ impl Lpm {
     ///
     /// # Errors
     ///
-    /// - [`DataError::NotANumber`](crate::DataError::NotANumber) if `sample`
+    /// - [`DataError::NotANumber`](nexus_stats_core::DataError::NotANumber) if `sample`
     ///   is NaN.
-    /// - [`DataError::Infinite`](crate::DataError::Infinite) if `sample` is
+    /// - [`DataError::Infinite`](nexus_stats_core::DataError::Infinite) if `sample` is
     ///   infinite.
-    /// - [`DataError::OutOfRange`](crate::DataError::OutOfRange) if the sum
+    /// - [`DataError::OutOfRange`](nexus_stats_core::DataError::OutOfRange) if the sum
     ///   would overflow.
     ///
     /// # Examples
     ///
     /// ```
-    /// use nexus_stats_core::{DataError, statistics::Lpm};
+    /// use nexus_stats_trading::{DataError, Lpm};
     ///
     /// let mut lpm = Lpm::semivariance(0.0).unwrap();
     /// assert_eq!(lpm.checked_update(-3.0), Ok(()));
@@ -111,11 +111,11 @@ impl Lpm {
     /// assert_eq!(lpm.lpm(), Some(9.0));
     /// ```
     #[inline]
-    pub fn checked_update(&mut self, sample: f64) -> Result<(), crate::DataError> {
+    pub fn checked_update(&mut self, sample: f64) -> Result<(), nexus_stats_core::DataError> {
         // Any finite sample is allowed: it is the sum that can overflow.
-        crate::math::check_input(sample, f64::MAX)?;
+        nexus_stats_core::math::check_input(sample, f64::MAX)?;
         if !(self.sum + self.term(sample)).is_finite() {
-            return Err(crate::DataError::OutOfRange);
+            return Err(nexus_stats_core::DataError::OutOfRange);
         }
         self.update(sample);
         Ok(())
@@ -168,7 +168,7 @@ impl Lpm {
         // PERF: clamped, not branched: the side of the target is a coin flip.
         let shortfall = (self.target - sample).max(0.0);
         match self.order {
-            0 => crate::math::indicator(shortfall > 0.0),
+            0 => nexus_stats_core::math::indicator(shortfall > 0.0),
             1 => shortfall,
             2 => shortfall * shortfall,
             order => {
@@ -210,19 +210,27 @@ impl LpmBuilder {
     ///
     /// Returns `ConfigError` if target is missing/non-finite or
     /// order is missing.
-    pub fn build(self) -> Result<Lpm, crate::ConfigError> {
-        let target = self.target.ok_or(crate::ConfigError::Missing("target"))?;
+    pub fn build(self) -> Result<Lpm, nexus_stats_core::ConfigError> {
+        let target = self
+            .target
+            .ok_or(nexus_stats_core::ConfigError::Missing("target"))?;
         if !target.is_finite() {
-            return Err(crate::ConfigError::Invalid("target must be finite"));
+            return Err(nexus_stats_core::ConfigError::Invalid(
+                "target must be finite",
+            ));
         }
-        let order = self.order.ok_or(crate::ConfigError::Missing("order"))?;
+        let order = self
+            .order
+            .ok_or(nexus_stats_core::ConfigError::Missing("order"))?;
         if order > 16 {
-            return Err(crate::ConfigError::Invalid(
+            return Err(nexus_stats_core::ConfigError::Invalid(
                 "order must be <= 16 (each update costs O(order) multiplies)",
             ));
         }
         if self.min_samples == 0 {
-            return Err(crate::ConfigError::Invalid("min_samples must be >= 1"));
+            return Err(nexus_stats_core::ConfigError::Invalid(
+                "min_samples must be >= 1",
+            ));
         }
         Ok(Lpm {
             sum: 0.0,
@@ -312,7 +320,7 @@ mod tests {
 
     #[test]
     fn checked_update_refuses_bad_input_and_changes_nothing() {
-        use crate::DataError::{Infinite, NotANumber, OutOfRange};
+        use nexus_stats_core::DataError::{Infinite, NotANumber, OutOfRange};
 
         let mut lpm = Lpm::builder().target(0.0).order(16).build().unwrap();
         lpm.checked_update(-2.0).unwrap();
@@ -335,7 +343,7 @@ mod tests {
         assert_eq!(lpm.checked_update(-1e154), Ok(()));
         assert_eq!(
             lpm.checked_update(-1e154),
-            Err(crate::DataError::OutOfRange)
+            Err(nexus_stats_core::DataError::OutOfRange)
         );
         assert_eq!(lpm.count(), 1);
         assert!(lpm.lpm().unwrap().is_finite());
@@ -348,7 +356,7 @@ mod tests {
             let mut lpm = Lpm::builder().target(1e308).order(order).build().unwrap();
             (lpm.checked_update(-1e308), lpm.count())
         };
-        assert_eq!(fed(1), (Err(crate::DataError::OutOfRange), 0));
+        assert_eq!(fed(1), (Err(nexus_stats_core::DataError::OutOfRange), 0));
         // Order 0 only counts shortfalls, so the size does not matter.
         assert_eq!(fed(0), (Ok(()), 1));
     }

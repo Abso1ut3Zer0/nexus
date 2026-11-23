@@ -9,6 +9,7 @@ Online regression, learning, and estimation for [nexus-stats](https://crates.io/
 - **EwPolynomialRegression** — Exponentially weighted polynomial regression
 - **ExponentialRegression / LogarithmicRegression / PowerRegression** (+ `Ew*` forgetful forms) — Linearized exp/log/power fits (requires `std` or `libm`)
 - **LogisticRegression** — Online logistic regression (requires `alloc` + (`std` or `libm`))
+- **HitRate** — How often a forecast has the direction right
 
 ## Learning Types
 
@@ -26,7 +27,7 @@ Online regression, learning, and estimation for [nexus-stats](https://crates.io/
 
 ## Estimation Types
 
-- **Kalman2d / Kalman3d** — 2D/3D Kalman filters
+- **Kalman1d / Kalman2d / Kalman3d** — 1D/2D/3D Kalman filters
 - **BetaBinomial** — Beta-Binomial conjugate estimator
 - **GammaPoisson** — Gamma-Poisson conjugate estimator
 

@@ -11,15 +11,16 @@ keywords.workspace = true
 categories.workspace = true
 
 [features]
-default = ["std"]
-std = ["alloc", "nexus-stats-core/std", "nexus-stats-smoothing?/std", "nexus-stats-detection?/std", "nexus-stats-regression?/std", "nexus-stats-control?/std"]
-alloc = ["nexus-stats-core/alloc", "nexus-stats-smoothing?/alloc", "nexus-stats-detection?/alloc", "nexus-stats-regression?/alloc", "nexus-stats-control?/alloc"]
-libm = ["nexus-stats-core/libm", "nexus-stats-smoothing?/libm", "nexus-stats-detection?/libm", "nexus-stats-regression?/libm", "nexus-stats-control?/libm"]
+default = ["std", "full"]
+std = ["alloc", "nexus-stats-core/std", "nexus-stats-smoothing?/std", "nexus-stats-detection?/std", "nexus-stats-regression?/std", "nexus-stats-control?/std", "nexus-stats-trading?/std"]
+alloc = ["nexus-stats-core/alloc", "nexus-stats-smoothing?/alloc", "nexus-stats-detection?/alloc", "nexus-stats-regression?/alloc", "nexus-stats-control?/alloc", "nexus-stats-trading?/alloc"]
+libm = ["nexus-stats-core/libm", "nexus-stats-smoothing?/libm", "nexus-stats-detection?/libm", "nexus-stats-regression?/libm", "nexus-stats-control?/libm", "nexus-stats-trading?/libm"]
 smoothing = ["dep:nexus-stats-smoothing"]
 detection = ["dep:nexus-stats-detection", "smoothing"]
-regression = ["dep:nexus-stats-regression"]
+regression = ["dep:nexus-stats-regression", "nexus-stats-trading?/regression"]
 control = ["dep:nexus-stats-control"]
-full = ["smoothing", "detection", "regression", "control"]
+trading = ["dep:nexus-stats-trading"]
+full = ["smoothing", "detection", "regression", "control", "trading"]
 
 [package.metadata.docs.rs]
 all-features = true
@@ -30,6 +31,7 @@ nexus-stats-smoothing = { version = "2.0.0", path = "../nexus-stats-smoothing", 
 nexus-stats-detection = { version = "2.0.0", path = "../nexus-stats-detection", default-features = false, optional = true }
 nexus-stats-regression = { version = "2.0.0", path = "../nexus-stats-regression", default-features = false, optional = true }
 nexus-stats-control = { version = "2.0.0", path = "../nexus-stats-control", default-features = false, optional = true }
+nexus-stats-trading = { version = "0.1.0", path = "../nexus-stats-trading", default-features = false, optional = true }
 
 [[example]]
 name = "perf_stats"
