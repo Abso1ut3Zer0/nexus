@@ -13,7 +13,8 @@ contained.
 ### Changed
 
 - `TrendAlert` refuses `min_samples(1)` at build: `Holt`, which it is built
-  on, needs two samples for a slope.
+  on, needs two samples for a slope. It also refuses an `alpha` or `beta`
+  too small to have an effect (below half of machine epsilon).
 
 ### Added (moved in, step 3)
 

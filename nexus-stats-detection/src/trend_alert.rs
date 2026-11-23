@@ -192,7 +192,8 @@ impl TrendAlertBuilder {
     ///
     /// # Errors
     ///
-    /// - Alpha and beta must have been set.
+    /// - Alpha and beta must have been set, and be weights `Holt` accepts.
+    /// - `min_samples` must be at least 2.
     /// - At least one threshold (absolute or relative) must be set.
     #[inline]
     pub fn build(self) -> Result<TrendAlert, nexus_stats_core::ConfigError> {

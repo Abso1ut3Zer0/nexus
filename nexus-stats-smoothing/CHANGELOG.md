@@ -34,8 +34,12 @@ contained.
 - **`Spring` follows the published method.** It approximated the decay as
   `1 / (1 + x + x²/2)` while its docs named a Padé approximant. It now uses
   `1 / (1 + x + 0.48x² + 0.235x³)` from *Game Programming Gems 4*, as
-  Unity's `SmoothDamp` does, and holds at the target if a step would pass
-  it. Values differ from earlier releases.
+  Unity's `SmoothDamp` does, and holds at the target if a step would cross
+  it (the crossing test of Unity's vector form, which treats both
+  directions alike). Values differ from earlier releases.
+- **`Spring` cannot return NaN from finite inputs.** A `dt` so long or a
+  `smooth_time` so short that the step overflows lands the spring at rest
+  on the target.
 
 ### Added (moved in)
 

@@ -5,7 +5,9 @@
 /// ramp; a move within the limits passes through unchanged. The first
 /// sample is the first output.
 ///
-/// The limits are per update, so they suit evenly spaced samples. See
+/// The limits are per update, so they suit evenly spaced samples. A limit
+/// smaller than the spacing of floats at the output's size cannot move it:
+/// at `1e20`, a limit of 1 holds the output still. See
 /// [slew rate](https://en.wikipedia.org/wiki/Slew_rate) for the term.
 ///
 /// # Examples
@@ -216,6 +218,14 @@ mod tests {
             }
             previous = out;
         }
+    }
+
+    #[test]
+    fn a_limit_below_the_float_spacing_holds_the_output_still() {
+        let mut slew = Slew::new(1.0).unwrap();
+        slew.update(1e20);
+        assert_eq!(slew.update(0.0), 1e20);
+        assert_eq!(slew.update(2e20), 1e20);
     }
 
     #[test]

@@ -251,15 +251,20 @@ impl HoltBuilder {
     /// # Errors
     ///
     /// - `Missing` if `alpha` or `beta` was not set.
-    /// - `Invalid` if either is outside `(0, 1)`, if `min_samples` is below
+    /// - `Invalid` if either is outside `(0, 1)` or too small to have an
+    ///   effect (below half of machine epsilon), if `min_samples` is below
     ///   2, or if the seed is not finite.
     pub fn build(self) -> Result<Holt, nexus_stats_core::ConfigError> {
         use nexus_stats_core::ConfigError::{Invalid, Missing};
 
         let alpha = EwWeight::Alpha(self.alpha.ok_or(Missing("alpha"))?).resolve()?;
-        let beta = EwWeight::Alpha(self.beta.ok_or(Missing("beta"))?)
+        let beta = self.beta.ok_or(Missing("beta"))?;
+        if !nexus_stats_core::math::in_unit_interval(beta) {
+            return Err(Invalid("beta must be in (0, 1)"));
+        }
+        let beta = EwWeight::Alpha(beta)
             .resolve()
-            .map_err(|_| Invalid("beta must be in (0, 1)"))?;
+            .map_err(|_| Invalid("beta is too small for a usable weight"))?;
         if self.min_samples < 2 {
             return Err(Invalid("min_samples must be >= 2"));
         }
@@ -422,6 +427,31 @@ mod tests {
     }
 
     #[test]
+    fn a_seed_overrides_min_samples() {
+        let mut h = Holt::builder()
+            .alpha(0.5)
+            .beta(0.5)
+            .min_samples(10)
+            .seed(1.0, 0.0)
+            .build()
+            .unwrap();
+        assert!(h.is_primed());
+        assert!(h.update(2.0).is_some());
+        // A refusal on the seeded path changes nothing, the count included.
+        let before = (h.reading(), h.count());
+        assert_eq!(h.checked_update(f64::NAN), Err(NotANumber));
+        assert_eq!((h.reading(), h.count()), before);
+    }
+
+    #[test]
+    fn a_weight_too_small_to_act_is_refused_by_name() {
+        let tiny = Holt::builder().alpha(0.5).beta(1e-17).build();
+        assert!(matches!(tiny, Err(ConfigError::Invalid(m)) if m.contains("too small")));
+        let out = Holt::builder().alpha(0.5).beta(1.5).build();
+        assert!(matches!(out, Err(ConfigError::Invalid(m)) if m.contains("(0, 1)")));
+    }
+
+    #[test]
     fn reset_with_seed_replaces_the_start() {
         let mut h = holt(0.5, 0.5);
         h.update(1.0);
@@ -433,6 +463,9 @@ mod tests {
         // A bad seed is refused and changes nothing.
         assert!(h.reset_with_seed(f64::NAN, 0.0).is_err());
         assert!(h.reset_with_seed(0.0, f64::INFINITY).is_err());
+        assert_eq!((h.forecast(0), h.count()), (Some(50.0), 0));
+        h.update(60.0);
+        h.reset();
         assert_eq!(h.forecast(0), Some(50.0));
     }
 

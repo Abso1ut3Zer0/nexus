@@ -715,7 +715,7 @@ let level = holt.reading().map(|r| r.level);
 
 **`Spring`** now uses the published approximation of the decay
 (*Game Programming Gems 4*, as in Unity's `SmoothDamp`) and holds at the
-target if a step would pass it, so its values differ from 6.x.
+target if a step would cross it, so its values differ from 6.x.
 
 ```rust
 // before

@@ -1,6 +1,6 @@
 use nexus_stats_core::math::{MulAdd, Warmup};
 
-/// Critically damped spring: chases a target and settles without overshoot.
+/// Critically damped spring: chases a target and settles without ringing.
 ///
 /// Each update moves the value toward the target as a spring with exactly
 /// enough damping not to oscillate. It keeps a velocity, so it eases in
@@ -12,7 +12,13 @@ use nexus_stats_core::math::{MulAdd, Warmup};
 ///
 /// The method is from *Game Programming Gems 4*, chapter 1.10, in the form
 /// used by Unity's `Mathf.SmoothDamp`: a rational approximation of the
-/// decay, with the output held at the target if a step would pass it.
+/// decay, with the output held at the target if a step would cross it.
+/// The crossing test is the one Unity's vector form uses: a spring that
+/// is on the target with some velocity carries through it, either way.
+///
+/// One guard is added to the published form. Where `dt` is so long, or
+/// `smooth_time` so short, that the step overflows, the spring is placed
+/// at rest on the target, which is where such a step ends.
 ///
 /// # Examples
 ///
@@ -24,7 +30,7 @@ use nexus_stats_core::math::{MulAdd, Warmup};
 /// let mut value = 0.0;
 /// for _ in 0..100 {
 ///     value = spring.update(10.0, 0.1);
-///     assert!(value <= 10.0); // never past the target
+///     assert!(value <= 10.0); // from rest, never past the target
 /// }
 /// assert!((value - 10.0).abs() < 1e-6);
 /// ```
@@ -54,6 +60,12 @@ impl Motion {
             value,
             velocity: 0.0,
         }
+    }
+
+    /// Whether both parts are finite.
+    #[inline]
+    fn is_finite(&self) -> bool {
+        self.value.is_finite() && self.velocity.is_finite()
     }
 }
 
@@ -95,6 +107,10 @@ impl Spring {
         }
         let start = self.motion;
         self.motion = self.step(target, dt);
+        if !self.motion.is_finite() {
+            // A step too long to resolve: the spring has settled.
+            self.motion = Motion::at_rest(target);
+        }
         if passed(start.value, self.motion.value, target) {
             self.motion = stopped_at(target, start.velocity, dt);
         }
@@ -210,10 +226,11 @@ fn decay(x: f64) -> f64 {
     1.0 / x.fma(x.fma(x.fma(0.235, 0.48), 1.0), 1.0)
 }
 
-/// Whether a step from `start` to `value` reached or passed `target`.
+/// Whether a step from `start` to `value` crossed `target`: began on one
+/// side and ended on the other. A step that begins on the target does not.
 #[inline]
 fn passed(start: f64, value: f64, target: f64) -> bool {
-    (target - start > 0.0) == (value > target)
+    (start < target && value > target) || (start > target && value < target)
 }
 
 #[cfg(test)]
@@ -282,6 +299,59 @@ mod tests {
                 }
                 assert!((value - target).abs() < 1e-6, "ended at {value}");
             }
+        }
+    }
+
+    /// Finite settings at which the published arithmetic overflows to NaN.
+    #[test]
+    fn a_step_too_long_to_resolve_lands_at_rest_on_the_target() {
+        for (smooth_time, dt) in [
+            (1e-308, 0.1),
+            (1e-300, 0.1),
+            (1e-160, 0.1),
+            (0.5, 1e308),
+            (0.5, f64::MAX),
+            (1e-200, 1e200),
+        ] {
+            let mut spring = Spring::new(smooth_time).unwrap();
+            spring.update(0.0, dt);
+            for target in [10.0, -3.0, -3.0, 1e100] {
+                let value = spring.checked_update(target, dt).unwrap();
+                assert_eq!(value, target, "smooth_time {smooth_time:e} dt {dt:e}");
+                assert_eq!(spring.reading(), Some(Motion::at_rest(target)));
+            }
+        }
+    }
+
+    /// On the target with velocity, the spring carries through, the same
+    /// way in both directions, then eases back.
+    #[test]
+    fn a_spring_on_the_target_with_velocity_carries_through_either_way() {
+        for direction in [1.0, -1.0] {
+            let mut spring = Spring::new(0.5).unwrap();
+            spring.update(0.0, 0.1);
+            let on = spring.update(10.0 * direction, 0.1);
+            let velocity = spring.reading().unwrap().velocity;
+            assert!(velocity * direction > 0.0);
+            // Retarget to where it is: it keeps moving the way it was going.
+            let after = spring.update(on, 0.1);
+            assert!(
+                (after - on) * direction > 0.0,
+                "{direction}: {on} -> {after}"
+            );
+            // Mirror images of each other.
+            if direction < 0.0 {
+                let mut mirror = Spring::new(0.5).unwrap();
+                mirror.update(0.0, 0.1);
+                let m_on = mirror.update(10.0, 0.1);
+                assert_eq!(mirror.update(m_on, 0.1), -after);
+            }
+            // It then eases back toward the target.
+            let mut value = after;
+            for _ in 0..200 {
+                value = spring.update(on, 0.1);
+            }
+            assert!((value - on).abs() < 1e-9, "{direction}: ended at {value}");
         }
     }
 
