@@ -613,7 +613,7 @@ fn bench_spring_f64(samples: &mut [u64]) {
             let _ = sp.update(90.0 + (next_val(&mut rng) % 20) as f64, 0.016);
         }
         let end = rdtsc_end();
-        black_box(sp.value());
+        black_box(sp.reading());
         *s = (end - start) / BATCH;
     }
 }

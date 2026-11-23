@@ -1,4 +1,4 @@
-use nexus_stats_core::math::{EwWeight, MulAdd};
+use nexus_stats_core::math::{EwWeight, MulAdd, Warmup, Weight};
 
 /// Holt's linear method: an exponentially weighted level and trend.
 ///
@@ -37,15 +37,10 @@ use nexus_stats_core::math::{EwWeight, MulAdd};
 /// ```
 #[derive(Debug, Clone)]
 pub struct Holt {
-    alpha: f64,
-    beta: f64,
-    one_minus_alpha: f64,
-    one_minus_beta: f64,
-    level: f64,
-    slope: f64,
-    count: u64,
-    /// Samples needed before a reading: `min_samples`, or 0 when seeded.
-    prime_at: u64,
+    level_weight: Weight,
+    slope_weight: Weight,
+    state: Trend,
+    warmup: Warmup,
     /// What `reset` restores.
     seed: Option<Trend>,
 }
@@ -100,9 +95,9 @@ impl Holt {
     /// [`checked_update`](Self::checked_update).
     #[inline]
     pub fn update(&mut self, sample: f64) -> Option<Trend> {
-        self.count += 1;
-        if self.is_starting() {
-            self.start(sample);
+        let count = self.warmup.tick();
+        if self.seed.is_none() && count <= 2 {
+            self.start(sample, count);
         } else {
             self.step(sample);
         }
@@ -130,13 +125,10 @@ impl Holt {
     /// The level and slope, or `None` until primed.
     #[must_use]
     pub fn reading(&self) -> Option<Trend> {
-        if self.count < self.prime_at {
+        if !self.warmup.is_primed() {
             return None;
         }
-        Some(Trend {
-            level: self.level,
-            slope: self.slope,
-        })
+        Some(self.state)
     }
 
     /// The value expected `steps` samples ahead, or `None` until primed.
@@ -148,34 +140,32 @@ impl Holt {
     /// The level weight.
     #[must_use]
     pub fn alpha(&self) -> f64 {
-        self.alpha
+        self.level_weight.alpha()
     }
 
     /// The trend weight.
     #[must_use]
     pub fn beta(&self) -> f64 {
-        self.beta
+        self.slope_weight.alpha()
     }
 
     /// Samples fed since construction or `reset`.
     #[must_use]
     pub fn count(&self) -> u64 {
-        self.count
+        self.warmup.count()
     }
 
     /// Whether a reading is available.
     #[must_use]
     pub fn is_primed(&self) -> bool {
-        self.count >= self.prime_at
+        self.warmup.is_primed()
     }
 
     /// Returns to the as-built state: no samples, and the seed if one was
     /// configured. Parameters unchanged.
     pub fn reset(&mut self) {
-        let start = self.seed.unwrap_or(Trend::REST);
-        self.level = start.level;
-        self.slope = start.slope;
-        self.count = 0;
+        self.state = self.seed.unwrap_or(Trend::REST);
+        self.warmup.reset();
     }
 
     /// Resets to no samples, starting from `level` and `slope` as a new
@@ -192,39 +182,35 @@ impl Holt {
         level: f64,
         slope: f64,
     ) -> Result<(), nexus_stats_core::ConfigError> {
-        self.seed = Some(checked_seed(level, slope)?);
-        self.prime_at = 0;
-        self.reset();
+        let seed = checked_seed(level, slope)?;
+        self.seed = Some(seed);
+        self.state = seed;
+        self.warmup.reset_seeded();
         Ok(())
     }
 
-    /// Whether this sample is one of the two that start an unseeded
-    /// smoother.
+    /// The published start of an unseeded smoother: the first sample is the
+    /// level, and the second sets the slope to the difference.
     #[inline]
-    fn is_starting(&self) -> bool {
-        self.seed.is_none() && self.count <= 2
-    }
-
-    /// The published start: the first sample is the level, and the second
-    /// sets the slope to the difference.
-    #[inline]
-    fn start(&mut self, sample: f64) {
-        if self.count == 2 {
-            self.slope = sample - self.level;
+    fn start(&mut self, sample: f64, count: u64) {
+        if count == 2 {
+            self.state.slope = sample - self.state.level;
         }
-        self.level = sample;
+        self.state.level = sample;
     }
 
     /// One step of Holt's recursion.
     #[inline]
     fn step(&mut self, sample: f64) {
-        let previous = self.level;
-        self.level = self
-            .alpha
-            .fma(sample, self.one_minus_alpha * (previous + self.slope));
-        self.slope = self
-            .beta
-            .fma(self.level - previous, self.one_minus_beta * self.slope);
+        let Trend {
+            level: previous,
+            slope,
+        } = self.state;
+        let level = self.level_weight.blend(sample, previous + slope);
+        self.state = Trend {
+            level,
+            slope: self.slope_weight.blend(level - previous, slope),
+        };
     }
 }
 
@@ -281,19 +267,13 @@ impl HoltBuilder {
             Some(seed) => Some(checked_seed(seed.level, seed.slope)?),
             None => None,
         };
-        let mut holt = Holt {
-            alpha,
-            beta,
-            one_minus_alpha: 1.0 - alpha,
-            one_minus_beta: 1.0 - beta,
-            level: 0.0,
-            slope: 0.0,
-            count: 0,
-            prime_at: if seed.is_some() { 0 } else { self.min_samples },
+        Ok(Holt {
+            level_weight: Weight::new(alpha),
+            slope_weight: Weight::new(beta),
+            state: seed.unwrap_or(Trend::REST),
+            warmup: Warmup::new(self.min_samples, seed.is_some()),
             seed,
-        };
-        holt.reset();
-        Ok(holt)
+        })
     }
 }
 

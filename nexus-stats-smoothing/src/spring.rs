@@ -1,4 +1,4 @@
-use nexus_stats_core::math::MulAdd;
+use nexus_stats_core::math::{MulAdd, Warmup};
 
 /// Critically damped spring: chases a target and settles without overshoot.
 ///
@@ -32,11 +32,29 @@ use nexus_stats_core::math::MulAdd;
 pub struct Spring {
     smooth_time: f64,
     omega: f64,
-    value: f64,
-    velocity: f64,
-    count: u64,
+    motion: Motion,
+    warmup: Warmup,
     /// What `reset` restores.
     seed: Option<f64>,
+}
+
+/// A [`Spring`] reading: where it is and how fast it is moving.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Motion {
+    /// The current value.
+    pub value: f64,
+    /// The rate of change, in value per unit of `dt`.
+    pub velocity: f64,
+}
+
+impl Motion {
+    /// At rest at `value`.
+    const fn at_rest(value: f64) -> Self {
+        Self {
+            value,
+            velocity: 0.0,
+        }
+    }
 }
 
 impl Spring {
@@ -55,9 +73,8 @@ impl Spring {
         Ok(Self {
             smooth_time,
             omega: 2.0 / smooth_time,
-            value: 0.0,
-            velocity: 0.0,
-            count: 0,
+            motion: Motion::at_rest(0.0),
+            warmup: Warmup::new(1, false),
             seed: None,
         })
     }
@@ -71,17 +88,17 @@ impl Spring {
     /// [`checked_update`](Self::checked_update).
     #[inline]
     pub fn update(&mut self, target: f64, dt: f64) -> f64 {
-        self.count += 1;
-        if self.is_first_target() {
-            self.value = target;
+        let count = self.warmup.tick();
+        if count == 1 && self.seed.is_none() {
+            self.motion = Motion::at_rest(target);
             return target;
         }
-        let (start, start_velocity) = (self.value, self.velocity);
-        self.step(target, dt);
-        if passed(start, self.value, target) {
-            self.stop_at(target, start_velocity, dt);
+        let start = self.motion;
+        self.motion = self.step(target, dt);
+        if passed(start.value, self.motion.value, target) {
+            self.motion = stopped_at(target, start.velocity, dt);
         }
-        self.value
+        self.motion.value
     }
 
     /// Checked update. Moves toward `target`, or returns an error and
@@ -109,24 +126,14 @@ impl Spring {
         Ok(self.update(target, dt))
     }
 
-    /// The current value, or `None` before the first target of an unseeded
-    /// spring.
+    /// The value and velocity, or `None` before the first target of an
+    /// unseeded spring.
     #[must_use]
-    pub fn value(&self) -> Option<f64> {
-        if !self.is_primed() {
+    pub fn reading(&self) -> Option<Motion> {
+        if !self.warmup.is_primed() {
             return None;
         }
-        Some(self.value)
-    }
-
-    /// The current velocity, in value per unit of `dt`, or `None` where
-    /// [`value`](Self::value) is.
-    #[must_use]
-    pub fn velocity(&self) -> Option<f64> {
-        if !self.is_primed() {
-            return None;
-        }
-        Some(self.velocity)
+        Some(self.motion)
     }
 
     /// The configured smooth time.
@@ -138,20 +145,19 @@ impl Spring {
     /// Updates since construction or `reset`.
     #[must_use]
     pub fn count(&self) -> u64 {
-        self.count
+        self.warmup.count()
     }
 
     /// Whether the spring has a value: it was seeded or has taken a target.
     #[must_use]
     pub fn is_primed(&self) -> bool {
-        self.count > 0 || self.seed.is_some()
+        self.warmup.is_primed()
     }
 
     /// Returns to the as-built state: at rest, at the seed if there is one.
     pub fn reset(&mut self) {
-        self.value = self.seed.unwrap_or(0.0);
-        self.velocity = 0.0;
-        self.count = 0;
+        self.motion = Motion::at_rest(self.seed.unwrap_or(0.0));
+        self.warmup.reset();
     }
 
     /// Resets to rest at `value`, which becomes the seed: the next update
@@ -168,33 +174,32 @@ impl Spring {
             ));
         }
         self.seed = Some(value);
-        self.reset();
+        self.motion = Motion::at_rest(value);
+        self.warmup.reset_seeded();
         Ok(())
     }
 
-    /// Whether this target is the starting value: the first one of an
-    /// unseeded spring.
+    /// The published update: where the spring is after `dt`.
     #[inline]
-    fn is_first_target(&self) -> bool {
-        self.count == 1 && self.seed.is_none()
-    }
-
-    /// The published update of the value and the velocity.
-    #[inline]
-    fn step(&mut self, target: f64, dt: f64) {
+    fn step(&self, target: f64, dt: f64) -> Motion {
+        let Motion { value, velocity } = self.motion;
         let decay = decay(self.omega * dt);
-        let offset = self.value - target;
-        let temp = self.omega.fma(offset, self.velocity) * dt;
-        self.velocity = self.omega.fma(-temp, self.velocity) * decay;
-        self.value = (offset + temp).fma(decay, target);
+        let offset = value - target;
+        let temp = self.omega.fma(offset, velocity) * dt;
+        Motion {
+            value: (offset + temp).fma(decay, target),
+            velocity: self.omega.fma(-temp, velocity) * decay,
+        }
     }
+}
 
-    /// Stops at the target. With no time elapsed nothing moved, so the
-    /// velocity is kept.
-    #[inline]
-    fn stop_at(&mut self, target: f64, start_velocity: f64, dt: f64) {
-        self.value = target;
-        self.velocity = if dt == 0.0 { start_velocity } else { 0.0 };
+/// Stopped at the target. With no time elapsed nothing moved, so the
+/// velocity is kept.
+#[inline]
+fn stopped_at(target: f64, start_velocity: f64, dt: f64) -> Motion {
+    Motion {
+        value: target,
+        velocity: if dt == 0.0 { start_velocity } else { 0.0 },
     }
 }
 
@@ -254,7 +259,7 @@ mod tests {
             for (i, &(target, value, velocity)) in steps.iter().enumerate() {
                 let got = spring.update(target, dt);
                 assert!((got - value).abs() <= 1e-13 * value.abs().max(1.0), "{i}");
-                let got = spring.velocity().unwrap();
+                let got = spring.reading().map(|m| m.velocity).unwrap();
                 assert!(
                     (got - velocity).abs() <= 1e-12 * velocity.abs().max(1.0),
                     "velocity at {i}: {got} vs {velocity}"
@@ -285,28 +290,40 @@ mod tests {
         let mut spring = Spring::new(0.5).unwrap();
         spring.update(0.0, 0.1);
         let value = spring.update(10.0, 0.1);
-        let velocity = spring.velocity();
+        let velocity = spring.reading().map(|m| m.velocity);
         // Up to the rounding of `target + (value - target)`.
         assert!((spring.update(10.0, 0.0) - value).abs() < 1e-14);
-        assert_eq!(spring.velocity(), velocity);
+        assert_eq!(spring.reading().map(|m| m.velocity), velocity);
     }
 
     #[test]
     fn a_seed_is_the_starting_value() {
         let mut spring = Spring::new(0.5).unwrap();
-        assert_eq!((spring.value(), spring.velocity()), (None, None));
+        assert_eq!(
+            (
+                spring.reading().map(|m| m.value),
+                spring.reading().map(|m| m.velocity)
+            ),
+            (None, None)
+        );
         spring.reset_with_seed(100.0).unwrap();
         assert_eq!(
-            (spring.value(), spring.velocity()),
+            (
+                spring.reading().map(|m| m.value),
+                spring.reading().map(|m| m.velocity)
+            ),
             (Some(100.0), Some(0.0))
         );
         // The first update moves from the seed; it is not the starting value.
         let value = spring.update(0.0, 0.1);
         assert!(value < 100.0 && value > 0.0);
         spring.reset();
-        assert_eq!((spring.value(), spring.count()), (Some(100.0), 0));
+        assert_eq!(
+            (spring.reading().map(|m| m.value), spring.count()),
+            (Some(100.0), 0)
+        );
         assert!(spring.reset_with_seed(f64::NAN).is_err());
-        assert_eq!(spring.value(), Some(100.0));
+        assert_eq!(spring.reading().map(|m| m.value), Some(100.0));
     }
 
     #[test]
@@ -315,9 +332,12 @@ mod tests {
         spring.update(0.0, 0.1);
         spring.update(10.0, 0.1);
         spring.reset();
-        assert_eq!((spring.value(), spring.is_primed()), (None, false));
+        assert_eq!(
+            (spring.reading().map(|m| m.value), spring.is_primed()),
+            (None, false)
+        );
         assert_eq!(spring.update(7.0, 0.1), 7.0);
-        assert_eq!(spring.velocity(), Some(0.0));
+        assert_eq!(spring.reading().map(|m| m.velocity), Some(0.0));
     }
 
     #[test]
@@ -335,12 +355,23 @@ mod tests {
         assert_eq!(spring.count(), 0);
         spring.checked_update(0.0, 0.1).unwrap();
         spring.checked_update(10.0, 0.1).unwrap();
-        let before = (spring.value(), spring.velocity(), spring.count());
+        let before = (
+            spring.reading().map(|m| m.value),
+            spring.reading().map(|m| m.velocity),
+            spring.count(),
+        );
         assert_eq!(spring.checked_update(f64::INFINITY, 0.1), Err(Infinite));
         assert_eq!(spring.checked_update(1.0, f64::NAN), Err(NotANumber));
         assert_eq!(spring.checked_update(1.0, f64::INFINITY), Err(Infinite));
         assert_eq!(spring.checked_update(1.0, -0.1), Err(Negative));
-        assert_eq!((spring.value(), spring.velocity(), spring.count()), before);
+        assert_eq!(
+            (
+                spring.reading().map(|m| m.value),
+                spring.reading().map(|m| m.velocity),
+                spring.count()
+            ),
+            before
+        );
         assert!(spring.checked_update(1.0, 0.0).is_ok());
     }
 
