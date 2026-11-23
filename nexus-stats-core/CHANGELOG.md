@@ -10,6 +10,14 @@ contained.
 
 ## [Unreleased]
 
+### Added
+
+- `DataError::NonMonotonicTime`: a timestamp before the last one taken.
+  Returned by `checked_update` on `WindowedMax` and `WindowedMin`.
+- `Sample::is_nan` and `Sample::magnitude` (the absolute value; `i64::MIN`
+  saturates to `i64::MAX`), for the generic `update` of the windowed
+  extremes and `PeakHold`.
+
 ### Removed (moved to other crates, step 3)
 
 - `Ema`, `AsymEma`, `Slew` and `EwmVar` are now in `nexus-stats-smoothing`;

@@ -78,8 +78,7 @@ type with timestamps, or `PollSaturation`, which is weighted per message.
 - Is a resource running hot? → smooth the busy fraction with **EMA** and compare it to your threshold. For a consumer thread's own saturation, PollSaturation / SojournSaturation above.
 - Is the error rate too high? → **ErrorRate**
   - EMA of success/failure outcomes. Supports weighted severity.
-- What's the worst since I last checked? → **MaxGauge**
-  - Reset-on-read maximum. For periodic scraping/alerting.
+- What's the worst since I last checked? → an `Option<T>` you fold with `max` and read with `take()`
 - Has N consecutive failures occurred? → **Debounce**
   - "3 timeouts in a row = dead." Simpler than CUSUM for discrete events.
 - How many events per second? → **EventRate**
@@ -132,13 +131,13 @@ type with timestamps, or `PollSaturation`, which is weighted per message.
 
 ## "I want to track extrema"
 
-- All-time min or max → **RunningMin / RunningMax**
+- All-time min or max → `f64::max` / `Ord::max` on a variable; no type needed
 - Min/max over a time window → **WindowedMin / WindowedMax**
   - Nichols' algorithm (Linux `win_minmax`, from TCP BBR), 72 bytes. Approximate by
     design: the reported max is never above the truth and the min never below, but
     about 1 to 2% of updates on stationary input disagree with an exact window.
-    For a per-reporting-interval maximum, prefer `MaxGauge`: exact and simpler.
-- Peak with hold + decay → **PeakHoldDecay**
+    For a per-reporting-interval maximum, fold with `max` and reset on read: exact and simpler.
+- Magnitude of a signal with hold + decay → **PeakHold**
   - "Worst recent spike, fading over time." Smooth envelope.
 - Peak-to-trough decline → **Drawdown**
   - Tracks max drawdown from peak. Risk circuit breaker.
@@ -211,7 +210,7 @@ Common combinations:
 | "Smooth a signal, detect when it goes anomalous" | EMA for smoothing, AdaptiveThreshold for detection |
 | "Track failure rate, trip a circuit breaker" | ErrorRate or BoolWindow → Debounce |
 | "Load-balance across shards" | FlexibleProportions per shard |
-| "Display smoothed latency with worst-case envelope" | EMA (display) + PeakHoldDecay (envelope) |
+| "Display smoothed latency with worst-case envelope" | EMA (display) + PeakHold (envelope) |
 | "Is latency distribution getting fat-tailed?" | Moments (kurtosis) |
 | "Which signal leads the other?" | CrossCorrelation to find lag, TransferEntropy to confirm direction |
 | "Is this signal becoming more/less predictable?" | Entropy over categorized values |

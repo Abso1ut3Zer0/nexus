@@ -108,6 +108,8 @@ pub enum DataError {
     /// Input was finite but outside the range the method accepts: zero where
     /// strictly positive is required, a probability above one, and the like.
     OutOfRange,
+    /// A timestamp was before the last one taken: time must not go back.
+    NonMonotonicTime,
 }
 
 impl core::fmt::Display for DataError {
@@ -117,6 +119,7 @@ impl core::fmt::Display for DataError {
             Self::Infinite => write!(f, "input contained infinity"),
             Self::Negative => write!(f, "input contained a negative value"),
             Self::OutOfRange => write!(f, "input outside the accepted range"),
+            Self::NonMonotonicTime => write!(f, "timestamp before the last one taken"),
         }
     }
 }

@@ -8,7 +8,8 @@ use nexus_stats_core::Sample;
 /// `hold_samples` updates. After the hold, `PeakHold<f64>` multiplies the
 /// peak by `decay_rate` per sample, taking any sample at or above the
 /// decayed peak; `PeakHold<i64>` drops the peak to the current sample
-/// (integers have no fractional decay).
+/// (integers have no fractional decay). Every peak taken restarts the hold,
+/// so the integer form steps down, holding each level.
 ///
 /// A NaN is ignored. An infinite sample becomes a peak that holds until
 /// [`reset`](Self::reset); `PeakHold<f64>` has a `checked_update` that

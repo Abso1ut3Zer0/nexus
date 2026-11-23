@@ -11,7 +11,8 @@
 //!
 //! - [`WindowedMax`] and [`WindowedMin`]: the extreme over a sliding window
 //!   of time.
-//! - [`PeakHold`]: a peak that decays.
+//! - [`PeakHold`]: the magnitude of a signal, followed up at once, held,
+//!   then left to decay.
 //! - [`Drawdown`]: the fall from the highest value seen.
 //!
 //! ## Rates and timing

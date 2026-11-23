@@ -10,6 +10,48 @@ contained.
 
 ## [Unreleased]
 
+### Removed
+
+- **`RunningMax`, `RunningMin`, `MaxGauge`.** Each is one line of std:
+  `max = max.max(x)`, `min = min.min(x)`, and an `Option<T>` read with
+  `take()` for the maximum since the last read.
+
+### Changed (breaking)
+
+- **`WindowedMax` and `WindowedMin` have one `update(timestamp, value) ->
+  Option<T>`** for `f64` and `i64`, in place of a float form returning
+  `Result` and an integer form returning the value. A NaN is ignored, as
+  `f64::max` ignores one: the window, the count and the clock stay as they
+  were. Infinity is a value like any other.
+- **`WindowedMax` and `WindowedMin` gain `checked_update`,** which returns
+  an error where `update` skips in silence: `DataError::NotANumber` for a
+  NaN, `DataError::NonMonotonicTime` for a timestamp before the last one
+  taken. One tick far ahead of the real clock makes every later sample
+  late until `reset()`; the error is how a caller finds out.
+- **Timestamps are compared plainly, not as a wrapping counter.** A forward
+  jump of any size is a long gap (a jump of 2^63 ticks or more used to
+  read as late and freeze the tracker). A `u64` counter that wraps is no
+  longer followed across the wrap.
+- **`PeakHold` is an amplitude tracker.** It tracks the magnitude of each
+  sample: `-5` is a level of `5`, and `i64::MIN` counts as `i64::MAX`.
+  Fed signed values, it could report a decayed peak above every sample
+  seen. A negative-only stream now reports magnitudes (this replaces the
+  behavior from #763).
+- **`PeakHold` has one `update(sample) -> Option<T>`.** A NaN is ignored.
+  An infinite sample becomes a peak that holds until `reset()`;
+  `PeakHold<f64>::checked_update` refuses NaN and infinity and leaves the
+  tracker unchanged. The integer form has no `checked_update`.
+- **`PeakHold::peak()` returns `Option<T>`:** `None` before the first
+  sample, where it returned zero.
+- **`PeakHold::<i64>::builder().build()` returns the tracker,** not a
+  `Result` that could never be an error.
+
+### Fixed
+
+- `WindowedMax` and `WindowedMin` report an infinite first value. The
+  starting values were `T::MIN` and `T::MAX`, which an infinity of the
+  same sign could not beat.
+
 ### Added
 
 - The crate. The fifteen monitors move here from `nexus-stats-core`'s

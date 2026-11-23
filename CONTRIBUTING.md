@@ -240,6 +240,40 @@ Every public item needs documentation that explains:
   and puts an optional upstream crate behind a feature. The umbrella has
   one feature per crate, all on by default.
 
+### `update` and `checked_update` (nexus-stats)
+
+The standard library is the model: `update` is `+`, `checked_update` is
+`checked_add`.
+
+- **`update` does the arithmetic and nothing else.** No validation, no
+  `Result`. It does what the operation does in std and in the libraries
+  people know.
+- **`checked_update` exists only where it has a job.** Add one when some
+  input can leave the type unable to give a right reading until `reset()`.
+  It refuses exactly those inputs, lists them in its docs, and leaves the
+  type unchanged. Do not add one to keep a uniform shape: a type with no
+  such input has no `checked_update`.
+- **A reading is an `Option`:** `None` until there is enough data, never a
+  placeholder value.
+- **Maxima and minima ignore NaN and accept infinity.** This is what
+  `f64::max`, pandas' rolling max and NumPy's `fmax` do. Skip a NaN before
+  any state changes, the count and a window's clock included.
+- **Time must not go back.** A clocked type's `update` ignores a timestamp
+  before the last one taken; its `checked_update` returns
+  `DataError::NonMonotonicTime`. Compare timestamps plainly, not as a
+  wrapping counter.
+- **Integers follow std too.** `update` uses the plain operator;
+  `checked_update` refuses an overflow, as `checked_sub` does. Saturate
+  only where clamping is the type's purpose, and say so in the docs.
+- **A constructor returns `Result` only if it can fail.**
+- **Implement a published algorithm as published.** Follow the paper or
+  the standard, and cite it. Where floating point needs more care than the
+  source gives, add the guard practitioners use (check a real library
+  first) and say which in the type's docs.
+- **Say it in the README.** Each stats README has a Guarantees list and a
+  list of types not yet migrated. A conversion PR removes its types from
+  the second list.
+
 ### Inlining
 
 `#[inline]` trades speed against compile time and code size. We follow the

@@ -175,7 +175,7 @@ impl<T: Float> MinMaxNormBuilder<T> {
     ///
     /// # Errors
     ///
-    /// Returns `ConfigError` if the window is missing, zero, or 2^63 ticks or more.
+    /// Returns `ConfigError` if window is missing or zero.
     #[inline]
     pub fn build(self) -> Result<MinMaxNorm<T>, nexus_stats_core::ConfigError> {
         let window = self

@@ -52,14 +52,15 @@ impl<T: Sample> Stamped<T> {
 /// input keeps returning its last extremum until a later `update` ages it
 /// out. A periodic reader that needs the window to expire without new data
 /// should feed the current tick with a neutral value or treat the result as
-/// stale by its own clock.
+/// stale by its own clock. A NaN is not such a value: it is skipped and
+/// does not move the clock.
 ///
-/// Ticks must be non-decreasing. A sample timestamped before the previous
-/// accepted one is ignored: the state and the count stay as they were and
-/// `update` returns the current extremum, so a late extreme value is dropped
-/// too. Elapsed time is computed with wrapping subtraction, so a counter
-/// that wraps is fine as long as the window and any real gap between
-/// samples fit in half its range.
+/// Ticks must not go back. `update` ignores a sample timestamped before the
+/// last one taken: the state and the count stay as they were, so a late
+/// extreme value is dropped too. One tick far ahead of the real clock
+/// therefore makes every later sample late until [`reset`](Self::reset);
+/// `checked_update` reports a late sample as an error, which is how a
+/// caller finds out.
 #[derive(Debug, Clone)]
 pub struct WindowedMax<T: Sample> {
     window: Window<T>,
@@ -70,8 +71,7 @@ impl<T: Sample> WindowedMax<T> {
     ///
     /// # Errors
     ///
-    /// Returns `ConfigError::Invalid` if `window` is zero or is 2^63 ticks
-    /// or more.
+    /// Returns `ConfigError::Invalid` if `window` is zero.
     #[inline]
     pub fn new(window: u64) -> Result<Self, nexus_stats_core::ConfigError> {
         Ok(Self {
@@ -123,6 +123,26 @@ impl<T: Sample> WindowedMax<T> {
     pub fn update(&mut self, timestamp: u64, value: T) -> Option<T> {
         self.window.update(timestamp, value, |a, b| a >= b)
     }
+
+    /// Checked update. Feeds `value`, or returns an error and leaves the
+    /// tracker unchanged if `value` is NaN or `timestamp` is before the
+    /// last one taken.
+    ///
+    /// # Errors
+    ///
+    /// - [`DataError::NotANumber`](nexus_stats_core::DataError::NotANumber)
+    ///   if `value` is NaN.
+    /// - [`DataError::NonMonotonicTime`](nexus_stats_core::DataError::NonMonotonicTime)
+    ///   if `timestamp` is before the last one taken.
+    #[inline]
+    pub fn checked_update(
+        &mut self,
+        timestamp: u64,
+        value: T,
+    ) -> Result<Option<T>, nexus_stats_core::DataError> {
+        self.window.check(timestamp, value)?;
+        Ok(self.update(timestamp, value))
+    }
 }
 
 /// Streaming windowed minimum over a sliding time window (Nichols' algorithm).
@@ -145,14 +165,15 @@ impl<T: Sample> WindowedMax<T> {
 /// input keeps returning its last extremum until a later `update` ages it
 /// out. A periodic reader that needs the window to expire without new data
 /// should feed the current tick with a neutral value or treat the result as
-/// stale by its own clock.
+/// stale by its own clock. A NaN is not such a value: it is skipped and
+/// does not move the clock.
 ///
-/// Ticks must be non-decreasing. A sample timestamped before the previous
-/// accepted one is ignored: the state and the count stay as they were and
-/// `update` returns the current extremum, so a late extreme value is dropped
-/// too. Elapsed time is computed with wrapping subtraction, so a counter
-/// that wraps is fine as long as the window and any real gap between
-/// samples fit in half its range.
+/// Ticks must not go back. `update` ignores a sample timestamped before the
+/// last one taken: the state and the count stay as they were, so a late
+/// extreme value is dropped too. One tick far ahead of the real clock
+/// therefore makes every later sample late until [`reset`](Self::reset);
+/// `checked_update` reports a late sample as an error, which is how a
+/// caller finds out.
 #[derive(Debug, Clone)]
 pub struct WindowedMin<T: Sample> {
     window: Window<T>,
@@ -163,8 +184,7 @@ impl<T: Sample> WindowedMin<T> {
     ///
     /// # Errors
     ///
-    /// Returns `ConfigError::Invalid` if `window` is zero or is 2^63 ticks
-    /// or more.
+    /// Returns `ConfigError::Invalid` if `window` is zero.
     #[inline]
     pub fn new(window: u64) -> Result<Self, nexus_stats_core::ConfigError> {
         Ok(Self {
@@ -216,10 +236,27 @@ impl<T: Sample> WindowedMin<T> {
     pub fn update(&mut self, timestamp: u64, value: T) -> Option<T> {
         self.window.update(timestamp, value, |a, b| a <= b)
     }
-}
 
-/// The longest window: half the range of the tick counter.
-const MAX_WINDOW: u64 = i64::MAX as u64;
+    /// Checked update. Feeds `value`, or returns an error and leaves the
+    /// tracker unchanged if `value` is NaN or `timestamp` is before the
+    /// last one taken.
+    ///
+    /// # Errors
+    ///
+    /// - [`DataError::NotANumber`](nexus_stats_core::DataError::NotANumber)
+    ///   if `value` is NaN.
+    /// - [`DataError::NonMonotonicTime`](nexus_stats_core::DataError::NonMonotonicTime)
+    ///   if `timestamp` is before the last one taken.
+    #[inline]
+    pub fn checked_update(
+        &mut self,
+        timestamp: u64,
+        value: T,
+    ) -> Result<Option<T>, nexus_stats_core::DataError> {
+        self.window.check(timestamp, value)?;
+        Ok(self.update(timestamp, value))
+    }
+}
 
 /// The three choices and the clock, shared by the maximum and the minimum.
 #[derive(Debug, Clone)]
@@ -237,12 +274,6 @@ impl<T: Sample> Window<T> {
         if span == 0 {
             return Err(nexus_stats_core::ConfigError::Invalid(
                 "window must be positive",
-            ));
-        }
-        // An age of 2^63 ticks or more reads as a late timestamp.
-        if span > MAX_WINDOW {
-            return Err(nexus_stats_core::ConfigError::Invalid(
-                "window must be below 2^63 ticks",
             ));
         }
         Ok(Self {
@@ -272,7 +303,25 @@ impl<T: Sample> Window<T> {
     /// last value taken.
     #[inline]
     fn skips(&self, timestamp: u64, value: T) -> bool {
-        value.is_nan() || (self.count > 0 && is_late(timestamp, self.last))
+        value.is_nan() || self.is_late(timestamp)
+    }
+
+    /// Whether `timestamp` is before the last one taken.
+    #[inline]
+    fn is_late(&self, timestamp: u64) -> bool {
+        self.count > 0 && timestamp < self.last
+    }
+
+    /// Why a value would be skipped, if it would be.
+    #[inline]
+    fn check(&self, timestamp: u64, value: T) -> Result<(), nexus_stats_core::DataError> {
+        if value.is_nan() {
+            return Err(nexus_stats_core::DataError::NotANumber);
+        }
+        if self.is_late(timestamp) {
+            return Err(nexus_stats_core::DataError::NonMonotonicTime);
+        }
+        Ok(())
     }
 
     /// Takes a value and returns the best choice. `better(a, b)` says
@@ -299,19 +348,11 @@ impl<T: Sample> Window<T> {
     }
 }
 
-/// Whether `timestamp` is before `last` on a wrapping tick counter: the
-/// signed difference, so a forward step across the wrap is not late.
-#[inline]
-fn is_late(timestamp: u64, last: u64) -> bool {
-    (timestamp.wrapping_sub(last) as i64) < 0
-}
-
 /// `minmax_running_max` / `minmax_running_min` from `lib/win_minmax.c`.
 ///
 /// `better(a, b)` is `a >= b` for a maximum and `a <= b` for a minimum.
 /// Returns the current extremum, `s[0].value`. Timestamps must be
-/// non-decreasing (the callers drop late samples); subtraction wraps, as in
-/// the kernel's `u32` arithmetic.
+/// non-decreasing (the callers drop late samples), so no age is negative.
 #[inline]
 fn running<T: Copy>(
     s: &mut [Stamped<T>; 3],
@@ -324,7 +365,7 @@ fn running<T: Copy>(
 
     // Found a new extremum, or nothing left in the window: forget earlier
     // samples (`minmax_reset`).
-    if better(value, s[0].value) || timestamp.wrapping_sub(s[2].timestamp) > win {
+    if better(value, s[0].value) || timestamp - s[2].timestamp > win {
         *s = [val; 3];
         return value;
     }
@@ -343,7 +384,7 @@ fn running<T: Copy>(
 /// the 1st, 2nd and 3rd choices.
 #[inline]
 fn subwin_update<T: Copy>(s: &mut [Stamped<T>; 3], win: u64, val: Stamped<T>) -> T {
-    let dt = val.timestamp.wrapping_sub(s[0].timestamp);
+    let dt = val.timestamp - s[0].timestamp;
 
     if dt > win {
         // Passed the entire window without a new extremum: the 2nd choice
@@ -353,7 +394,7 @@ fn subwin_update<T: Copy>(s: &mut [Stamped<T>; 3], win: u64, val: Stamped<T>) ->
         s[0] = s[1];
         s[1] = s[2];
         s[2] = val;
-        if val.timestamp.wrapping_sub(s[0].timestamp) > win {
+        if val.timestamp - s[0].timestamp > win {
             s[0] = s[1];
             s[1] = s[2];
             s[2] = val;
@@ -409,13 +450,83 @@ mod raw_tests {
     }
 
     #[test]
-    fn a_window_of_half_the_counter_range_is_refused() {
-        let longest = i64::MAX as u64;
-        assert!(WindowedMax::<i64>::new(longest).is_ok());
-        assert!(WindowedMin::<i64>::new(longest).is_ok());
-        for window in [longest + 1, u64::MAX] {
-            assert!(WindowedMax::<i64>::new(window).is_err());
-            assert!(WindowedMin::<f64>::new(window).is_err());
+    fn any_window_and_any_forward_jump_are_taken() {
+        let mut wm = WindowedMax::<i64>::new(u64::MAX).unwrap();
+        assert_eq!(wm.update(0, 5), Some(5));
+        assert_eq!(wm.update(u64::MAX, 3), Some(5));
+
+        // A jump of more than half the counter range is only a long gap.
+        let mut wn = WindowedMin::<i64>::new(100).unwrap();
+        assert_eq!(wn.update(0, 5), Some(5));
+        assert_eq!(wn.update(1 << 63, 9), Some(9));
+        assert_eq!(wn.update(u64::MAX, 7), Some(7));
+        assert_eq!(wn.count(), 3);
+    }
+
+    #[test]
+    fn checked_update_reports_what_update_skips() {
+        use nexus_stats_core::DataError::{NonMonotonicTime, NotANumber};
+
+        let mut wm = WindowedMax::<f64>::new(100).unwrap();
+        // Nothing is late before the first value, whatever its timestamp.
+        assert_eq!(wm.checked_update(1000, f64::NAN), Err(NotANumber));
+        assert_eq!(wm.checked_update(1000, 4.0), Ok(Some(4.0)));
+        assert_eq!(wm.checked_update(999, 9.0), Err(NonMonotonicTime));
+        assert_eq!(wm.checked_update(1001, f64::NAN), Err(NotANumber));
+        assert_eq!((wm.max(), wm.count()), (Some(4.0), 1));
+        // An equal timestamp and an infinity are both taken.
+        assert_eq!(
+            wm.checked_update(1000, f64::INFINITY),
+            Ok(Some(f64::INFINITY))
+        );
+
+        let mut wn = WindowedMin::<i64>::new(100).unwrap();
+        assert_eq!(wn.checked_update(50, 4), Ok(Some(4)));
+        assert_eq!(wn.checked_update(49, -9), Err(NonMonotonicTime));
+        assert_eq!((wn.min(), wn.count()), (Some(4), 1));
+    }
+
+    /// One tick far ahead makes later samples late: `update` drops them in
+    /// silence, `checked_update` says so, and `reset` recovers.
+    #[test]
+    fn a_tick_far_ahead_is_found_through_checked_update() {
+        use nexus_stats_core::DataError::NonMonotonicTime;
+
+        let mut wm = WindowedMax::<i64>::new(100).unwrap();
+        wm.update(10, 1);
+        wm.update(u64::MAX - 1, 2);
+        assert_eq!(wm.update(11, 50), Some(2));
+        assert_eq!(wm.checked_update(12, 50), Err(NonMonotonicTime));
+        wm.reset();
+        assert_eq!(wm.checked_update(12, 50), Ok(Some(50)));
+    }
+
+    #[test]
+    fn checked_update_gives_the_same_result_as_update() {
+        let mut state = 0x9E37_79B9_7F4A_7C15u64;
+        let (mut checked_max, mut plain_max) = (
+            WindowedMax::<f64>::new(20).unwrap(),
+            WindowedMax::<f64>::new(20).unwrap(),
+        );
+        let (mut checked_min, mut plain_min) = (
+            WindowedMin::<i64>::new(20).unwrap(),
+            WindowedMin::<i64>::new(20).unwrap(),
+        );
+        let mut t = 0u64;
+        for _ in 0..20_000 {
+            state ^= state << 13;
+            state ^= state >> 7;
+            state ^= state << 17;
+            t += state % 7;
+            let v = (state >> 8) % 1000;
+            assert_eq!(
+                checked_max.checked_update(t, v as f64),
+                Ok(plain_max.update(t, v as f64))
+            );
+            assert_eq!(
+                checked_min.checked_update(t, v as i64),
+                Ok(plain_min.update(t, v as i64))
+            );
         }
     }
 
@@ -561,7 +672,7 @@ mod raw_tests {
         fn push(&mut self, t: u64, v: i64) {
             self.samples.push_back((t, v));
             while let Some(&(ts, _)) = self.samples.front() {
-                if t.wrapping_sub(ts) > self.win {
+                if t - ts > self.win {
                     self.samples.pop_front();
                 } else {
                     break;
@@ -735,21 +846,6 @@ mod late_sample_tests {
         let _ = wm.update(1000, 10);
         assert_eq!(wm.update(1000, 30), Some(30));
         assert_eq!(wm.count(), 2);
-    }
-
-    #[test]
-    fn lateness_follows_the_wrapping_counter() {
-        let mut wm = WindowedMax::<i64>::new(100).unwrap();
-        let _ = wm.update(u64::MAX - 5, 10);
-        assert_eq!(wm.update(3, 5), Some(10)); // forward across the wrap: 10 still in window
-        assert_eq!(wm.update(u64::MAX - 1, 99), Some(10)); // late across the wrap: ignored
-        assert_eq!(wm.count(), 2);
-
-        let mut wn = WindowedMin::<i64>::new(100).unwrap();
-        let _ = wn.update(u64::MAX - 5, 10);
-        assert_eq!(wn.update(3, 20), Some(10));
-        assert_eq!(wn.update(u64::MAX - 1, -99), Some(10));
-        assert_eq!(wn.count(), 2);
     }
 
     #[test]

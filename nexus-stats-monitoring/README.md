@@ -2,12 +2,24 @@
 
 Monitors for a running system, for [nexus-stats](https://crates.io/crates/nexus-stats): extremes, rates, liveness and queue health, each updated in fixed memory.
 
+## Guarantees
+
+- **Fixed memory.** A type allocates only when it is built. `update` never allocates.
+- **Configuration is checked once, when the type is built,** and reported as a `ConfigError`.
+- **`update` does the arithmetic and nothing else.** No validation, no `Result`. Floats follow IEEE 754, as `+` does. After an input the type cannot use, it promises nothing unless its docs say otherwise.
+- **`checked_update` exists only where it has a job.** A type has one when some input can leave it unable to give a right reading until `reset()`. It refuses exactly those inputs, its docs list them, and a refusal leaves the type unchanged. A type without one has no such input.
+- **A reading is an `Option`.** `None` until there is enough data, never a placeholder value.
+- **A published algorithm is implemented as published.** A type that comes from a paper or a standard follows it. Where floating point needs more care than the source gives (cancellation, overflow, a divisor near zero), the type adds the guard practitioners use, and its docs say which.
+- **Maxima and minima ignore NaN and accept infinity,** as `f64::max` does.
+
+**Not yet migrated:** `CoDel`, `Drawdown`, `ErrorRate`, `EventRate`, `HawkesIntensity`, `Jitter`, `Liveness`, `PollSaturation`, `SojournSaturation`. They have not been moved to these guarantees. Most still validate in `update` and return a `Result`.
+
 ## Which type do I use?
 
 **Highs and lows**
 
 - **WindowedMax / WindowedMin**: the extreme over a sliding window of time
-- **PeakHold**: a peak that decays
+- **PeakHold**: the magnitude of a signal, followed up at once, held, then left to decay
 - **Drawdown**: the fall from the highest value seen
 
 **Rates and timing**

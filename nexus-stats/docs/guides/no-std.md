@@ -22,11 +22,11 @@ Most algorithms are pure arithmetic — no `sqrt` or `exp` needed:
 
 | Algorithm | Needs `std` or `libm`? |
 |-----------|----------------------|
-| EMA, CUSUM, Drawdown, RunningMin/Max | No |
+| EMA, CUSUM, Drawdown | No |
 | WindowedMin/Max, SlewLimiter, DeadBand | No |
 | Debounce, Hysteresis, PeakDetector | No |
 | FirstDiff, SecondDiff, LevelCrossing | No |
-| BoolWindow, MaxGauge | No |
+| BoolWindow | No |
 | Jitter<i64>, Liveness, EventRate, PollSaturation | No |
 | Welford (`std_dev()` query) | Yes (`sqrt`) |
 | ShiryaevRoberts | Yes (`exp`) |
@@ -40,8 +40,8 @@ skip both `std` and `libm` features entirely.
 
 The cheap primitives are generic over `f64` and `i64`: `Slew<i64>`,
 `DeadBand<i64>`, `Hysteresis<i64>`, `LevelCrossing<i64>`, `FirstDiff<i64>`,
-`SecondDiff<i64>`, `Drawdown<i64>`, `RunningMax<i64>`, `RunningMin<i64>`,
-`WindowedMax<i64>`, `WindowedMin<i64>`, `MaxGauge<i64>`, `PeakHold<i64>`,
+`SecondDiff<i64>`, `Drawdown<i64>`,
+`WindowedMax<i64>`, `WindowedMin<i64>`, `PeakHold<i64>`,
 `CoDel<i64>`, `Jitter<i64>`, `WindowedMedian<i64>`, `PeakDetector<i64>`. The
 tick-based monitors (`Liveness`, `EventRate`, `PollSaturation`,
 `SojournSaturation`) are integer throughout. Where these need smoothing they
