@@ -17,7 +17,7 @@ type over the sealed `Sample` trait, instantiated for `f64` and `i64`:
 |--------|-------------------|
 | `monitoring` | `Drawdown<T>`, `WindowedMax<T>`, `WindowedMin<T>`, `PeakHold<T>`, `CoDel<T>`, `Jitter<T>` |
 | `control` | `DeadBand<T>`, `Hysteresis<T>`, `LevelCrossing<T>`, `FirstDiff<T>`, `SecondDiff<T>`, `PeakDetector<T>` |
-| `smoothing` | `Slew<T>`, `WindowedMedian<T>` |
+| `smoothing` | `WindowedMedian<T>` |
 
 Timestamps are a third kind. `Liveness`, `EventRate`, `PollSaturation`,
 `SojournSaturation`, `DecayAccum` and the `timestamp` argument of the

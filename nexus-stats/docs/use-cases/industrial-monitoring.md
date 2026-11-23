@@ -11,7 +11,7 @@ use nexus_stats::detection::RobustZScore;
 use nexus_stats::control::DeadBand;
 
 // Hard limits (physical impossibility)
-let mut slew = Slew::<f64>::new(10.0).unwrap();  // max 10°C change per sample
+let mut slew = Slew::new(10.0).unwrap();  // max 10°C change per sample
 
 // Statistical outlier detection
 let mut robust = RobustZScore::<f64>::builder()
@@ -65,7 +65,7 @@ if let Some(shift) = drift.update(measurement).unwrap() {
 
 | Primitive | Role |
 |-----------|------|
-| SlewLimiter | Physical rate-of-change limits |
+| Slew | Physical rate-of-change limits |
 | RobustZScore | Outlier detection |
 | DeadBand | Stuck sensor detection |
 | CUSUM | Process drift |

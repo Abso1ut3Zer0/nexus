@@ -12,7 +12,7 @@ Start with your problem. Follow the tree to find the right primitive.
   - Adapts its smoothing factor based on signal efficiency ratio
 - Need to increase fast but decrease slow (or vice versa) → **AsymmetricEMA**
   - Different alpha for each direction. TCP RTT uses this pattern.
-- Need to track a moving target without overshoot → **CriticallyDampedSpring**
+- Need to track a moving target without overshoot → **Spring**
   - Better than EMA when chasing a target — has velocity, anticipates
 - Need to remove impulse noise / outlier spikes → **WindowedMedian**
   - Median ignores outliers entirely; EMA smears them
@@ -20,9 +20,9 @@ Start with your problem. Follow the tree to find the right primitive.
   - Double exponential smoothing. Separates level from trend.
 - Need adaptive smoothing that gets smarter over time → **Kalman1D**
   - Like Holt but with principled adaptive gain. Better after restarts.
-- Need to chase a moving target without overshoot → **CriticallyDampedSpring**
+- Need to chase a moving target without overshoot → **Spring**
   - Has velocity tracking, anticipates rather than lags. Unity's `SmoothDamp`.
-- Need to hard-limit how fast the output can change → **SlewLimiter**
+- Need to hard-limit how fast the output can change → **Slew**
   - Not smoothing — hard clamp on rate of change
 
 ## "I want to detect a change in behavior"
@@ -52,7 +52,7 @@ Start with your problem. Follow the tree to find the right primitive.
   - Accept / Unusual / Suspect / Reject. Doesn't corrupt baseline.
 - Robust statistics (median, MAD, IQR, Tukey fences) → **WindowedMedian**
   - O(N) per update but gives you everything: median, quartiles, MAD
-- Just clamp impossible rate of change → **SlewLimiter**
+- Just clamp impossible rate of change → **Slew**
   - "Output can't change by more than X per sample"
 
 ## "I want to monitor system health"

@@ -10,6 +10,33 @@ contained.
 
 ## [Unreleased]
 
+### Changed (breaking)
+
+- **`Slew` is `f64` only;** `Slew<i64>` is removed (cast to `f64`, exact up
+  to 2^53). `update` returns the value with no `Result`; `checked_update`
+  refuses NaN and infinity. `Slew::with_limits(rising, falling)` sets the
+  rising and falling limits separately, as slew rate limiters usually do.
+- **`Holt::update` returns `Option<Trend>`** (`Trend { level, slope }`) with
+  no `Result`; `checked_update` refuses NaN and infinity. `level()` and
+  `trend()` are replaced by `reading()`. The arithmetic is unchanged.
+- **`Holt` refuses `min_samples` below 2:** one sample gives no slope, and
+  it used to report a slope of zero.
+- **A `Holt` seed is a value, not samples,** as on `Ema`: `count()` starts
+  at 0, `reset()` returns to the seed, and `reset_with_seed` replaces it.
+- **`Spring::update` returns the value with no `Result`;** `checked_update`
+  refuses a NaN or infinite `target` and a NaN, infinite or negative `dt`.
+  `value()` and `velocity()` are replaced by `reading() -> Option<Motion>`,
+  and `reset_to` by `reset_with_seed`.
+- **`Slew::new` and `Spring::new` refuse an infinite setting.**
+
+### Fixed
+
+- **`Spring` follows the published method.** It approximated the decay as
+  `1 / (1 + x + x²/2)` while its docs named a Padé approximant. It now uses
+  `1 / (1 + x + 0.48x² + 0.235x³)` from *Game Programming Gems 4*, as
+  Unity's `SmoothDamp` does, and holds at the target if a step would pass
+  it. Values differ from earlier releases.
+
 ### Added (moved in)
 
 - `Ema`, `AsymEma`, `Slew` and `EwmVar` (with `MeanVariance`), from

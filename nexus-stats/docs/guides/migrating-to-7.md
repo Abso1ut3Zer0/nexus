@@ -177,7 +177,6 @@ there is now one type, generic over a sealed trait: `Sample` for `f64` /
 | `PeakHoldF64` / `PeakHoldI64` | `PeakHold<f64>` / `PeakHold<i64>` | `Sample` | nexus-stats-core |
 | `QuantileNormF64` / `QuantileNormF32` | `QuantileNorm<f64>` / `QuantileNorm<f32>` | `Float` | nexus-stats-core |
 | `SecondDiffF64` / `SecondDiffI64` | `SecondDiff<f64>` / `SecondDiff<i64>` | `Sample` | nexus-stats-core |
-| `SlewF64` / `SlewI64` | `Slew<f64>` / `Slew<i64>` | `Sample` | nexus-stats-core |
 | `WindowedMaxF64` / `WindowedMaxI64` | `WindowedMax<f64>` / `WindowedMax<i64>` | `Sample` | nexus-stats-core |
 | `WindowedMinF64` / `WindowedMinI64` | `WindowedMin<f64>` / `WindowedMin<i64>` | `Sample` | nexus-stats-core |
 | `ZScoreNormF64` / `ZScoreNormF32` | `ZScoreNorm<f64>` / `ZScoreNorm<f32>` | `Float` | nexus-stats-core |
@@ -249,6 +248,8 @@ on `f32` accumulation for speed, measure: the hot path gains a convert.
 | `DecayAccumF64` | `DecayAccum` (`u64` ticks) |
 | `update_i64(timestamp, ..)` on `WindowedMax`, `WindowedMin`, `CoDel` | `update(timestamp as u64, ..)` |
 | `HalfLifeBuilder` | `HalfLife::new()` (the builder had no knobs) |
+| `SlewF64` | `Slew` |
+| `SlewI64` | `Slew` on `as f64` (exact up to 2^53); the integer form is gone |
 | `RunningMaxF64`, `RunningMaxI64` | a variable and `max = max.max(x)` |
 | `RunningMinF64`, `RunningMinI64` | a variable and `min = min.min(x)` |
 | `MaxGaugeF64`, `MaxGaugeI64` | an `Option<T>`: `gauge = Some(gauge.map_or(x, \|m\| m.max(x)))` to update, `gauge.take()` to read and clear |
@@ -262,8 +263,6 @@ on `f32` accumulation for speed, measure: the hot path gains a convert.
   threshold (was `u64`); the `abs_diff` arithmetic is the same.
 - **`PeakHold<T>`**: after the hold expires, a sample *equal* to the decayed
   peak restarts the hold (`>=`, was `>`).
-- **`Slew<f64>`** clamps with `max().min()` instead of `clamp()`: identical
-  for finite inputs, without the `lo <= hi` assertion.
 - **Normalizers** accumulate in `f64` for both `T` (above).
 - **`FlexProportionEntity` is `FlexProportionLocal`**, the kernel's name, and
   the protocol changed with the algorithm fix below: `global.update(&mut
@@ -382,7 +381,7 @@ CHANGELOG entry in `nexus-stats-core`:
   explicit thresholds is rejected at `build()` with the message that names
   the cause. When both sides are over threshold the side further over is
   reported (it was always `Rising`).
-- **`Slew::value()` returns `Option<T>`**: `None` before the first sample
+- **`Slew::value()` returns `Option<f64>`**: `None` before the first sample
   (it was a fabricated 0).
 - **`Ema::builder().span(n)` needs `n >= 2`** and `.halflife(h)` a positive
   finite `h`; the error names the knob that was set. `AsymEma`'s
@@ -392,8 +391,8 @@ CHANGELOG entry in `nexus-stats-core`:
   results can differ from 7.0 pre-releases in the last bit.
 - **`Hysteresis::new` rejects infinite thresholds.**
 - Additive: `CusumBuilder::restart_on_alarm()`, `SecondDiff::count()`,
-  `math::alpha_from_span`. The `i64` forms of `FirstDiff`, `SecondDiff` and
-  `Slew` saturate instead of overflowing.
+  `math::alpha_from_span`. The `i64` forms of `FirstDiff` and `SecondDiff`
+  saturate instead of overflowing.
 
 ### Normalizers and DistributionShift (blind audit, PR C2)
 
@@ -684,6 +683,53 @@ yourself. `peak()` returns `Option<T>` (`None` before the first sample),
 and `PeakHold::<i64>::builder().build()` returns the tracker with no
 `Result`. To refuse NaN and infinity on the float form, call
 `checked_update`.
+
+### `Slew`, `Holt` and `Spring`
+
+**`Slew`** is `f64` only, and `update` returns the value:
+
+```rust
+// before
+let out = slew.update(x)?;              // Slew<f64>: Result<f64, DataError>
+// after
+let out = slew.update(x);               // f64
+let out = slew.checked_update(x)?;      // refuses NaN and infinity
+```
+
+`Slew::with_limits(rising, falling)` sets the two limits separately.
+
+**`Holt`** returns a `Trend` in place of a tuple, and has one reader:
+
+```rust
+// before
+if let Some((level, trend)) = holt.update(x)? { /* ... */ }
+let level = holt.level();
+// after
+if let Some(Trend { level, slope }) = holt.update(x) { /* ... */ }
+let level = holt.reading().map(|r| r.level);
+```
+
+- `min_samples` below 2 is refused: one sample gives no slope.
+- A seed is a value, not samples, as on `Ema`: `count()` starts at 0,
+  `reset()` returns to the seed, and `reset_with_seed` replaces it.
+
+**`Spring`** now uses the published approximation of the decay
+(*Game Programming Gems 4*, as in Unity's `SmoothDamp`) and holds at the
+target if a step would pass it, so its values differ from 6.x.
+
+```rust
+// before
+let value = spring.update(target, dt)?;
+let velocity = spring.velocity();
+spring.reset_to(v);
+// after
+let value = spring.update(target, dt);           // or checked_update(..)?
+let velocity = spring.reading().map(|m| m.velocity);
+spring.reset_with_seed(v)?;
+```
+
+`checked_update` refuses a NaN or infinite `target`, and a NaN, infinite
+or negative `dt`.
 
 ## 5. Checklist
 

@@ -49,8 +49,9 @@ leave the window.
 **Nichols' Algorithm** — 3-sample sliding window min/max from the Linux
 kernel. Used by TCP BBR for bandwidth and RTT estimation.
 
-**Padé Approximant** — Rational function approximation of `exp(-x)` used
-in the CriticallyDampedSpring for variable-dt stability without transcendentals.
+**Rational approximation of `exp(-x)`**: `1 / (1 + x + 0.48x² + 0.235x³)`,
+used by `Spring` (from *Game Programming Gems 4*) so an uneven time step
+needs no transcendental function.
 
 **PELT** — Per-Entity Load Tracking. Linux kernel scheduler's geometric
 decay model for CPU utilization estimation.

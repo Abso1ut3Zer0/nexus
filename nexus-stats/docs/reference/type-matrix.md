@@ -41,7 +41,7 @@ See [Integer vs Float](../guides/integer-vs-float.md) for the caller rules and
 |------|---------|---------|----------------|
 | `Ema` | `f64` | — | smoothing |
 | `AsymEma` | `f64` | — | smoothing |
-| `Slew<T>` | `T: Sample` | — | smoothing |
+| `Slew` | `f64` | — | smoothing |
 | `Holt` | `f64` | — | smoothing |
 | `Kalman1d` | `f64` | — | regression (`estimation`) |
 | `Spring` | `f64` | — | smoothing |

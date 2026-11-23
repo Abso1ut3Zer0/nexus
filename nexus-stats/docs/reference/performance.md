@@ -43,9 +43,9 @@ costs a branch mispredict, about 20 cycles.
 | Kama (window 10) | 15 | 25 | O(N) volatility recompute |
 | Kalman1d | 26 | 27 | 2x2 predict + update |
 | Holt | 11 | 11 | two smoothing steps |
-| Spring | 13 | 14 | Padé approximant |
+| Spring | 13 | 14 | rational approximation of the decay |
 | WindowedMedian<f64> (window 32) | 80 | 99 | O(N) sorted array |
-| Slew<f64> | 8 | 8 | clamp (maxsd/minsd) |
+| Slew | 8 | 8 | two comparisons |
 | **Statistics** | | | |
 | Welford | 7 | 7 | one reciprocal of the count, off the running mean's dependency chain |
 | Welford query | 9 | 10 | includes vsqrtsd |

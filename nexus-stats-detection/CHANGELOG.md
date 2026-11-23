@@ -10,6 +10,11 @@ contained.
 
 ## [Unreleased]
 
+### Changed
+
+- `TrendAlert` refuses `min_samples(1)` at build: `Holt`, which it is built
+  on, needs two samples for a slope.
+
 ### Added (moved in, step 3)
 
 - `detection::Cusum` and `detection::DistributionShift`, from

@@ -23,7 +23,7 @@ Most algorithms are pure arithmetic — no `sqrt` or `exp` needed:
 | Algorithm | Needs `std` or `libm`? |
 |-----------|----------------------|
 | EMA, CUSUM, Drawdown | No |
-| WindowedMin/Max, SlewLimiter, DeadBand | No |
+| WindowedMin/Max, Slew, DeadBand | No |
 | Debounce, Hysteresis, PeakDetector | No |
 | FirstDiff, SecondDiff, LevelCrossing | No |
 | BoolWindow | No |
@@ -31,14 +31,14 @@ Most algorithms are pure arithmetic — no `sqrt` or `exp` needed:
 | Welford (`std_dev()` query) | Yes (`sqrt`) |
 | ShiryaevRoberts | Yes (`exp`) |
 | `halflife()` on any builder | Yes (`exp`) |
-| Kalman1D, Spring | No (Padé approximant, no transcendentals) |
+| Kalman1D, Spring | No (rational approximation, no transcendentals) |
 
 If you only use algorithms that don't need math functions, you can
 skip both `std` and `libm` features entirely.
 
 ## Integer Forms for Embedded
 
-The cheap primitives are generic over `f64` and `i64`: `Slew<i64>`,
+The cheap primitives are generic over `f64` and `i64`:
 `DeadBand<i64>`, `Hysteresis<i64>`, `LevelCrossing<i64>`, `FirstDiff<i64>`,
 `SecondDiff<i64>`, `Drawdown<i64>`,
 `WindowedMax<i64>`, `WindowedMin<i64>`, `PeakHold<i64>`,

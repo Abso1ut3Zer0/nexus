@@ -10,6 +10,19 @@ contained.
 
 ## [Unreleased]
 
+### Changed (breaking)
+
+- **`Slew`, `Holt` and `Spring` move to the 7.0 contract:** `update`
+  validates nothing and returns no `Result`; each has a `checked_update`.
+  `Slew` is `f64` only and gains separate rising and falling limits;
+  `Holt` returns a `Trend`; `Spring` returns its value and has a
+  `reading()` with the velocity. The migration guide has the details.
+
+### Fixed
+
+- **`Spring` follows the published method** (*Game Programming Gems 4*);
+  its values change.
+
 ### Removed
 
 - **`monitoring::RunningMax`, `RunningMin`, `MaxGauge`.** Each is one line
