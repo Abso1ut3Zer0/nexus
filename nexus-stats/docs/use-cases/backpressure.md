@@ -21,7 +21,7 @@ use nexus_stats::monitoring::CoDel;
 
 // Detect standing queues via sojourn time
 let mut qd = CoDel::<i64>::builder()
-    .target(10_000)          // 10μs acceptable queue wait
+    .target(10_000)          // waits under 10μs are acceptable
     .interval(100_000_000)     // 100ms observation window
     .min_samples(20)
     .build().unwrap();

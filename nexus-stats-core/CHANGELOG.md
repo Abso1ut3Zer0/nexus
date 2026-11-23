@@ -588,9 +588,10 @@ contained.
 - **`CoDel<T>`** reported `Degraded` on a single sample above
   target. RFC 8289 requires sojourn to stay above target for a whole
   interval. It now implements the RFC's `first_above_time` rule directly:
-  a sample above target arms a deadline at `now + interval`, a sample at or
+  a sample above target arms a deadline at `now + interval`, a sample
   below target disarms it, and only a sample above target at or after the
-  deadline is `Degraded`. The windowed minimum the
+  deadline is `Degraded`. A sample equal to the target counts as above
+  ([#791](https://github.com/Abso1ut3Zer0/nexus/issues/791)). The windowed minimum the
   old composition relied on (and its own inaccuracy, #758) is gone.
   the builder's `interval` is the RFC's. `CoDelBuilder<f64>::build` now rejects a
   non-finite target ([#759](https://github.com/Abso1ut3Zer0/nexus/issues/759)).

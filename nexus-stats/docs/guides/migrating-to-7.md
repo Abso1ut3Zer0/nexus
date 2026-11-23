@@ -284,6 +284,8 @@ CHANGELOG entry in `nexus-stats-core`:
   updates on stationary input ([#758](https://github.com/Abso1ut3Zer0/nexus/issues/758)).
 - `CoDel` implements RFC 8289's `first_above_time` rule and no longer reports
   `Degraded` on a single sample above target ([#759](https://github.com/Abso1ut3Zer0/nexus/issues/759)).
+  A sojourn equal to the target counts as above, as in the RFC
+  ([#791](https://github.com/Abso1ut3Zer0/nexus/issues/791)).
 - `Liveness::update` could never report dead once `deadline_multiple >= 2^k`
   and ignored the absolute deadline when both were configured
   ([#760](https://github.com/Abso1ut3Zer0/nexus/issues/760)).

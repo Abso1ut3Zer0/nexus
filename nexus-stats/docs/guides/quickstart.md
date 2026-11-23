@@ -97,7 +97,7 @@ if !live.check(now_ns) {
 use nexus_stats::{Condition, monitoring::CoDel};
 
 let mut qd = CoDel::<i64>::builder()
-    .target(10_000)       // 10μs max wait
+    .target(10_000)       // waits under 10μs are fine
     .interval(100_000_000)  // 100ms observation
     .build().unwrap();
 
