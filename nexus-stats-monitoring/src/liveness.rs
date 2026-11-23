@@ -1,4 +1,4 @@
-use crate::sample::{EmaKernel, ShiftEma};
+use nexus_stats_core::sample::{EmaKernel, ShiftEma};
 
 /// Liveness detector (`u64` ticks) — fixed-point EMA of inter-arrival ticks.
 ///
@@ -206,16 +206,24 @@ impl LivenessBuilder {
     /// - Span must have been set and >= 1.
     /// - At least one deadline must be set.
     #[inline]
-    pub fn build(self) -> Result<Liveness, crate::ConfigError> {
-        let requested = self.span.ok_or(crate::ConfigError::Missing("span"))?;
+    pub fn build(self) -> Result<Liveness, nexus_stats_core::ConfigError> {
+        let requested = self
+            .span
+            .ok_or(nexus_stats_core::ConfigError::Missing("span"))?;
         if requested < 1 {
-            return Err(crate::ConfigError::Invalid("Liveness span must be >= 1"));
+            return Err(nexus_stats_core::ConfigError::Invalid(
+                "Liveness span must be >= 1",
+            ));
         }
         if requested > (1u64 << 62) {
-            return Err(crate::ConfigError::Invalid("Liveness span must be <= 2^62"));
+            return Err(nexus_stats_core::ConfigError::Invalid(
+                "Liveness span must be <= 2^62",
+            ));
         }
         if self.deadline_multiple.is_none() && self.deadline_absolute.is_none() {
-            return Err(crate::ConfigError::Invalid("Liveness requires a deadline"));
+            return Err(nexus_stats_core::ConfigError::Invalid(
+                "Liveness requires a deadline",
+            ));
         }
 
         Ok(Liveness {
@@ -339,13 +347,19 @@ mod tests {
     #[test]
     fn errors_without_span_u64() {
         let result = Liveness::builder().deadline_multiple(3).build();
-        assert!(matches!(result, Err(crate::ConfigError::Missing("span"))));
+        assert!(matches!(
+            result,
+            Err(nexus_stats_core::ConfigError::Missing("span"))
+        ));
     }
 
     #[test]
     fn errors_without_deadline_u64() {
         let result = Liveness::builder().span(7).build();
-        assert!(matches!(result, Err(crate::ConfigError::Invalid(_))));
+        assert!(matches!(
+            result,
+            Err(nexus_stats_core::ConfigError::Invalid(_))
+        ));
     }
 
     // Regression for #760: `update()` folded the gap into the EMA before

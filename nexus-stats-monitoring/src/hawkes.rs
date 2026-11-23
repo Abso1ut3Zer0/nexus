@@ -19,7 +19,7 @@
 /// # Examples
 ///
 /// ```
-/// use nexus_stats_core::monitoring::HawkesIntensity;
+/// use nexus_stats_monitoring::HawkesIntensity;
 ///
 /// let mut h = HawkesIntensity::builder()
 ///     .mu(1.0)
@@ -85,8 +85,8 @@ impl HawkesIntensity {
         }
 
         let dt = time.saturating_sub(self.last_time);
-        let decay = crate::math::exp(-(self.beta * dt as f64));
-        self.excitation = crate::math::MulAdd::fma(decay, self.excitation, self.alpha);
+        let decay = nexus_stats_core::math::exp(-(self.beta * dt as f64));
+        self.excitation = nexus_stats_core::math::MulAdd::fma(decay, self.excitation, self.alpha);
         self.last_time = time;
     }
 
@@ -113,8 +113,8 @@ impl HawkesIntensity {
             return self.mu;
         }
         let dt = time.saturating_sub(self.last_time);
-        let decay = crate::math::exp(-(self.beta * dt as f64));
-        crate::math::MulAdd::fma(decay, self.excitation, self.mu)
+        let decay = nexus_stats_core::math::exp(-(self.beta * dt as f64));
+        nexus_stats_core::math::MulAdd::fma(decay, self.excitation, self.mu)
     }
 
     /// Baseline intensity mu.
@@ -196,30 +196,36 @@ impl HawkesIntensityBuilder {
     /// - `beta` must be positive and finite.
     /// - `alpha` must be < `beta` (branching ratio < 1).
     #[inline]
-    pub fn build(self) -> Result<HawkesIntensity, crate::ConfigError> {
-        let mu = self.mu.ok_or(crate::ConfigError::Missing("mu"))?;
+    pub fn build(self) -> Result<HawkesIntensity, nexus_stats_core::ConfigError> {
+        let mu = self
+            .mu
+            .ok_or(nexus_stats_core::ConfigError::Missing("mu"))?;
         if mu <= 0.0 || !mu.is_finite() {
-            return Err(crate::ConfigError::Invalid(
+            return Err(nexus_stats_core::ConfigError::Invalid(
                 "Hawkes mu must be positive and finite",
             ));
         }
 
-        let alpha = self.alpha.ok_or(crate::ConfigError::Missing("alpha"))?;
-        if !crate::math::nonnegative_finite(alpha) {
-            return Err(crate::ConfigError::Invalid(
+        let alpha = self
+            .alpha
+            .ok_or(nexus_stats_core::ConfigError::Missing("alpha"))?;
+        if !nexus_stats_core::math::nonnegative_finite(alpha) {
+            return Err(nexus_stats_core::ConfigError::Invalid(
                 "Hawkes alpha must be non-negative and finite",
             ));
         }
 
-        let beta = self.beta.ok_or(crate::ConfigError::Missing("beta"))?;
+        let beta = self
+            .beta
+            .ok_or(nexus_stats_core::ConfigError::Missing("beta"))?;
         if beta <= 0.0 || !beta.is_finite() {
-            return Err(crate::ConfigError::Invalid(
+            return Err(nexus_stats_core::ConfigError::Invalid(
                 "Hawkes beta must be positive and finite",
             ));
         }
 
         if alpha >= beta {
-            return Err(crate::ConfigError::Invalid(
+            return Err(nexus_stats_core::ConfigError::Invalid(
                 "Hawkes alpha must be < beta (branching ratio < 1)",
             ));
         }
@@ -330,14 +336,20 @@ mod tests {
             .alpha(1.0)
             .beta(1.0)
             .build();
-        assert!(matches!(result, Err(crate::ConfigError::Invalid(_))));
+        assert!(matches!(
+            result,
+            Err(nexus_stats_core::ConfigError::Invalid(_))
+        ));
 
         let result = HawkesIntensity::builder()
             .mu(1.0)
             .alpha(2.0)
             .beta(1.0)
             .build();
-        assert!(matches!(result, Err(crate::ConfigError::Invalid(_))));
+        assert!(matches!(
+            result,
+            Err(nexus_stats_core::ConfigError::Invalid(_))
+        ));
     }
 
     #[test]

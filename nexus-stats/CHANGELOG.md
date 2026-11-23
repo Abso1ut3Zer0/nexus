@@ -10,6 +10,16 @@ contained.
 
 ## [Unreleased]
 
+### Changed (crate layout, step 2)
+
+- **`monitoring`, `normalization` and all of `control` come from their own
+  crates,** each behind a feature of the same name, all on by default: the
+  new `nexus-stats-monitoring` and `nexus-stats-normalization`, and
+  `nexus-stats-control`, which now also holds `DeadBand`, `Hysteresis`,
+  `Debounce` and `LevelCrossing`. Module paths through this crate are
+  unchanged. With default features off, those three modules are no longer
+  always present.
+
 ### Changed (crate layout)
 
 - **Every concept lives in one crate, and trading measures have their own.**

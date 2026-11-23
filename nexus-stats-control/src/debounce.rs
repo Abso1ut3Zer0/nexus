@@ -21,9 +21,11 @@ impl Debounce {
     /// `threshold` is the number of consecutive active samples required
     /// to trigger (return `true`).
     #[inline]
-    pub fn new(threshold: u64) -> Result<Self, crate::ConfigError> {
+    pub fn new(threshold: u64) -> Result<Self, nexus_stats_core::ConfigError> {
         if threshold == 0 {
-            return Err(crate::ConfigError::Invalid("threshold must be positive"));
+            return Err(nexus_stats_core::ConfigError::Invalid(
+                "threshold must be positive",
+            ));
         }
         Ok(Self {
             threshold,
@@ -128,7 +130,7 @@ mod tests {
     fn rejects_zero_threshold() {
         assert!(matches!(
             Debounce::new(0),
-            Err(crate::ConfigError::Invalid(_))
+            Err(nexus_stats_core::ConfigError::Invalid(_))
         ));
     }
 }

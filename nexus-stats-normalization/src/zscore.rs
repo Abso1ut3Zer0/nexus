@@ -1,7 +1,7 @@
 use core::marker::PhantomData;
 
-use crate::Float;
-use crate::statistics::{EwmVar, MeanVariance};
+use nexus_stats_core::Float;
+use nexus_stats_core::statistics::{EwmVar, MeanVariance};
 
 /// Z-score normalizer over an exponentially weighted mean and variance.
 ///
@@ -19,7 +19,7 @@ use crate::statistics::{EwmVar, MeanVariance};
 /// # Examples
 ///
 /// ```
-/// use nexus_stats_core::normalization::ZScoreNorm;
+/// use nexus_stats_normalization::ZScoreNorm;
 ///
 /// let mut zs = ZScoreNorm::<f64>::builder().span(20).build().unwrap();
 /// for i in 0..100 {
@@ -38,7 +38,7 @@ pub struct ZScoreNorm<T: Float> {
 /// Builder for [`ZScoreNorm`].
 #[derive(Debug, Clone)]
 pub struct ZScoreNormBuilder<T: Float> {
-    weight: Option<crate::math::EwWeight>,
+    weight: Option<nexus_stats_core::math::EwWeight>,
     min_samples: u64,
     seed: Option<MeanVariance>,
     _sample: PhantomData<T>,
@@ -74,29 +74,32 @@ impl<T: Float> ZScoreNorm<T> {
 
     /// Checked update. Scores and feeds `sample`, or returns an error and
     /// leaves the normalizer unchanged if `sample` is NaN, infinite, or
-    /// above `1e120` in magnitude (see [input limits](crate#input-limits)).
+    /// above `1e120` in magnitude (see [input limits](nexus_stats_core#input-limits)).
     ///
     /// # Errors
     ///
-    /// - [`DataError::NotANumber`](crate::DataError::NotANumber) if `sample`
+    /// - [`DataError::NotANumber`](nexus_stats_core::DataError::NotANumber) if `sample`
     ///   is NaN.
-    /// - [`DataError::Infinite`](crate::DataError::Infinite) if `sample` is
+    /// - [`DataError::Infinite`](nexus_stats_core::DataError::Infinite) if `sample` is
     ///   infinite.
-    /// - [`DataError::OutOfRange`](crate::DataError::OutOfRange) if `sample`
+    /// - [`DataError::OutOfRange`](nexus_stats_core::DataError::OutOfRange) if `sample`
     ///   is finite and above the limit.
     ///
     /// # Examples
     ///
     /// ```
-    /// use nexus_stats_core::{DataError, normalization::ZScoreNorm};
+    /// use nexus_stats_normalization::{DataError, ZScoreNorm};
     ///
     /// let mut zs = ZScoreNorm::<f64>::builder().alpha(0.5).build().unwrap();
     /// assert_eq!(zs.checked_update(1.0), Ok(None));
     /// assert_eq!(zs.checked_update(f64::NAN), Err(DataError::NotANumber));
     /// assert_eq!(zs.count(), 1);
     /// ```
-    pub fn checked_update(&mut self, sample: T) -> Result<Option<T>, crate::DataError> {
-        crate::math::check_input(sample.to_f64(), crate::math::LIMIT_FOR_SQUARES)?;
+    pub fn checked_update(&mut self, sample: T) -> Result<Option<T>, nexus_stats_core::DataError> {
+        nexus_stats_core::math::check_input(
+            sample.to_f64(),
+            nexus_stats_core::math::LIMIT_FOR_SQUARES,
+        )?;
         Ok(self.update(sample))
     }
 
@@ -117,14 +120,17 @@ impl<T: Float> ZScoreNorm<T> {
     ///
     /// # Errors
     ///
-    /// - [`DataError::NotANumber`](crate::DataError::NotANumber) if `value`
+    /// - [`DataError::NotANumber`](nexus_stats_core::DataError::NotANumber) if `value`
     ///   is NaN.
-    /// - [`DataError::Infinite`](crate::DataError::Infinite) if `value` is
+    /// - [`DataError::Infinite`](nexus_stats_core::DataError::Infinite) if `value` is
     ///   infinite.
-    /// - [`DataError::OutOfRange`](crate::DataError::OutOfRange) if `value`
+    /// - [`DataError::OutOfRange`](nexus_stats_core::DataError::OutOfRange) if `value`
     ///   is finite and above the limit.
-    pub fn checked_normalize(&self, value: T) -> Result<Option<T>, crate::DataError> {
-        crate::math::check_input(value.to_f64(), crate::math::LIMIT_FOR_SQUARES)?;
+    pub fn checked_normalize(&self, value: T) -> Result<Option<T>, nexus_stats_core::DataError> {
+        nexus_stats_core::math::check_input(
+            value.to_f64(),
+            nexus_stats_core::math::LIMIT_FOR_SQUARES,
+        )?;
         Ok(self.normalize(value))
     }
 
@@ -170,7 +176,11 @@ impl<T: Float> ZScoreNorm<T> {
     ///
     /// `Invalid` if `mean` is not finite or `variance` is not finite and
     /// non-negative. The normalizer is left unchanged.
-    pub fn reset_with_seed(&mut self, mean: T, variance: T) -> Result<(), crate::ConfigError> {
+    pub fn reset_with_seed(
+        &mut self,
+        mean: T,
+        variance: T,
+    ) -> Result<(), nexus_stats_core::ConfigError> {
         self.inner.reset_with_seed(mean.to_f64(), variance.to_f64())
     }
 
@@ -178,7 +188,7 @@ impl<T: Float> ZScoreNorm<T> {
         let reading = self.inner.value()?;
 
         // No spread beyond rounding: no scale to score against.
-        if reading.variance <= crate::math::rounding_variance(reading.mean) {
+        if reading.variance <= nexus_stats_core::math::rounding_variance(reading.mean) {
             return None;
         }
 
@@ -190,14 +200,16 @@ impl<T: Float> ZScoreNormBuilder<T> {
     /// Direct smoothing factor. Must be in (0, 1) exclusive.
     #[must_use]
     pub fn alpha(mut self, alpha: T) -> Self {
-        self.weight = Some(crate::math::EwWeight::Alpha(alpha.to_f64()));
+        self.weight = Some(nexus_stats_core::math::EwWeight::Alpha(alpha.to_f64()));
         self
     }
 
     /// Samples for weight to decay by half. Must be positive and finite.
     #[must_use]
     pub fn halflife(mut self, halflife: T) -> Self {
-        self.weight = Some(crate::math::EwWeight::Halflife(halflife.to_f64()));
+        self.weight = Some(nexus_stats_core::math::EwWeight::Halflife(
+            halflife.to_f64(),
+        ));
         self
     }
 
@@ -205,7 +217,7 @@ impl<T: Float> ZScoreNormBuilder<T> {
     /// Must be at least 2.
     #[must_use]
     pub fn span(mut self, n: u64) -> Self {
-        self.weight = Some(crate::math::EwWeight::Span(n));
+        self.weight = Some(nexus_stats_core::math::EwWeight::Span(n));
         self
     }
 
@@ -240,10 +252,10 @@ impl<T: Float> ZScoreNormBuilder<T> {
     ///   and finite, or `span` is below 2; the message names the knob set.
     /// - `Invalid` if `min_samples` is below 2, or the seed is not a finite
     ///   mean and a finite non-negative variance.
-    pub fn build(self) -> Result<ZScoreNorm<T>, crate::ConfigError> {
+    pub fn build(self) -> Result<ZScoreNorm<T>, nexus_stats_core::ConfigError> {
         let alpha = self
             .weight
-            .ok_or(crate::ConfigError::Missing("alpha"))?
+            .ok_or(nexus_stats_core::ConfigError::Missing("alpha"))?
             .resolve()?;
         let mut statistics = EwmVar::builder().alpha(alpha).min_samples(self.min_samples);
         if let Some(seed) = self.seed {
@@ -434,7 +446,7 @@ mod tests {
 
     #[test]
     fn checked_update_refuses_bad_input_and_changes_nothing() {
-        use crate::DataError::{Infinite, NotANumber, OutOfRange};
+        use nexus_stats_core::DataError::{Infinite, NotANumber, OutOfRange};
 
         let mut zs = warmed(0.1);
         let before = (zs.count(), zs.mean(), zs.std_dev());
@@ -449,7 +461,7 @@ mod tests {
 
     #[test]
     fn checked_normalize_refuses_what_checked_update_refuses() {
-        use crate::DataError::{Infinite, NotANumber, OutOfRange};
+        use nexus_stats_core::DataError::{Infinite, NotANumber, OutOfRange};
 
         let zs = warmed(0.1);
         assert_eq!(zs.checked_normalize(f64::NAN), Err(NotANumber));
@@ -481,7 +493,7 @@ mod tests {
 
     #[test]
     fn a_bad_knob_is_reported_under_its_own_name() {
-        use crate::ConfigError::{Invalid, Missing};
+        use nexus_stats_core::ConfigError::{Invalid, Missing};
         let b = ZScoreNorm::<f64>::builder;
         assert_eq!(b().build().unwrap_err(), Missing("alpha"));
         assert_eq!(

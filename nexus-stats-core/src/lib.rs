@@ -8,8 +8,8 @@
 //! import from `nexus-stats` instead.
 //!
 //! Includes: error types, math utilities, core smoothing (EMA, AsymEma, Slew),
-//! statistics (Welford, Moments, EwmVar, Covariance, HarmonicMean, Percentile),
-//! monitoring, core detection (CUSUM), and core control types.
+//! the descriptive statistics (Welford, Moments, EwmVar, Covariance,
+//! HarmonicMean, Percentile), and core detection (CUSUM).
 //!
 //! # `update` and `checked_update`
 //!
@@ -67,9 +67,6 @@ pub mod sample;
 pub use sample::{AlphaEma, EmaKernel, ShiftEma};
 pub use sample::{Float, Sample};
 
-pub mod control;
 pub mod detection;
-pub mod monitoring;
-pub mod normalization;
 pub mod smoothing;
 pub mod statistics;

@@ -1,5 +1,9 @@
-//! Monitors for a running system: extremes, rates, liveness and queue
-//! health.
+#![cfg_attr(not(feature = "std"), no_std)]
+#![warn(missing_docs)]
+
+//! Monitors for a running system, for
+//! [`nexus-stats`](https://docs.rs/nexus-stats): extremes, rates, liveness and
+//! queue health.
 //!
 //! # Which type do I use?
 //!
@@ -41,6 +45,11 @@
 //! timestamps, or `PollSaturation`, which is weighted per message by
 //! construction.
 
+#[cfg(feature = "alloc")]
+extern crate alloc;
+#[macro_use]
+extern crate nexus_stats_core;
+
 mod codel;
 mod drawdown;
 mod error_rate;
@@ -54,8 +63,7 @@ mod peak_hold;
 mod poll_saturation;
 mod running;
 mod sojourn_saturation;
-pub(crate) mod windowed;
-
+mod windowed;
 pub use codel::*;
 pub use drawdown::*;
 pub use error_rate::*;
@@ -70,3 +78,11 @@ pub use poll_saturation::*;
 pub use running::*;
 pub use sojourn_saturation::*;
 pub use windowed::*;
+
+// What appears in this crate's signatures, so it can be used on its own.
+pub use nexus_stats_core::{Condition, ConfigError, DataError, Sample};
+
+/// The README's examples, compiled and run as doc tests.
+#[cfg(all(doctest, feature = "std"))]
+#[doc = include_str!("../README.md")]
+struct Readme;

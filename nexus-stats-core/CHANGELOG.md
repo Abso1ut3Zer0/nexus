@@ -10,6 +10,12 @@ contained.
 
 ## [Unreleased]
 
+### Removed (moved to other crates, step 2)
+
+- The `monitoring` module is now `nexus-stats-monitoring`, `normalization`
+  is `nexus-stats-normalization`, and the `control` types (`DeadBand`,
+  `Hysteresis`, `Debounce`, `LevelCrossing`) are in `nexus-stats-control`.
+
 ### Removed (moved to other crates)
 
 - `VarianceRatio`, `TwoScaleRv`, `BipowerVariation`, `Amihud`, `RollSpread`,

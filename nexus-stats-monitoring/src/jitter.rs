@@ -1,5 +1,5 @@
-use crate::Sample;
-use crate::sample::EmaKernel;
+use nexus_stats_core::Sample;
+use nexus_stats_core::sample::EmaKernel;
 
 /// Jitter tracker — smoothed absolute deviation between consecutive samples.
 ///
@@ -128,7 +128,7 @@ impl Jitter<f64> {
     /// Returns `DataError::NotANumber` if the sample is NaN, or
     /// `DataError::Infinite` if the sample is infinite.
     #[inline]
-    pub fn update(&mut self, sample: f64) -> Result<Option<f64>, crate::DataError> {
+    pub fn update(&mut self, sample: f64) -> Result<Option<f64>, nexus_stats_core::DataError> {
         check_finite!(sample);
         Ok(self.fold(sample, |a, b| (a - b).abs()))
     }
@@ -213,23 +213,25 @@ impl<T: Sample> JitterBuilder<T> {
     /// `ConfigError::Invalid` if it is out of range (alpha outside (0, 1),
     /// span below 1).
     #[inline]
-    pub fn build(self) -> Result<Jitter<T>, crate::ConfigError> {
+    pub fn build(self) -> Result<Jitter<T>, nexus_stats_core::ConfigError> {
         let config = self
             .ema
-            .ok_or(crate::ConfigError::Missing(T::EMA_CONFIG_NAME))?;
+            .ok_or(nexus_stats_core::ConfigError::Missing(T::EMA_CONFIG_NAME))?;
         // One sample has no deviation, so an unseeded Jitter cannot report
         // before its second; a seed supplies the deviation and may prime at one.
         let seeded = self.seed_value.is_some() && self.seed_jitter.is_some();
         let floor = if seeded { 1 } else { 2 };
         if self.min_samples < floor {
-            return Err(crate::ConfigError::Invalid(
+            return Err(nexus_stats_core::ConfigError::Invalid(
                 "Jitter min_samples must be >= 2 unseeded, >= 1 seeded",
             ));
         }
         if let (Some(v), Some(j)) = (self.seed_value, self.seed_jitter)
             && (!v.is_finite() || !j.is_finite())
         {
-            return Err(crate::ConfigError::Invalid("Jitter seed must be finite"));
+            return Err(nexus_stats_core::ConfigError::Invalid(
+                "Jitter seed must be finite",
+            ));
         }
         let mut deviation = T::Ema::new(config)?;
         let mut mean = T::Ema::new(config)?;
@@ -266,7 +268,7 @@ impl JitterBuilder<f64> {
     #[must_use]
     #[cfg(any(feature = "std", feature = "libm"))]
     pub fn halflife(mut self, halflife: f64) -> Self {
-        self.ema = Some(crate::math::alpha_from_halflife(halflife));
+        self.ema = Some(nexus_stats_core::math::alpha_from_halflife(halflife));
         self
     }
 }
@@ -394,7 +396,10 @@ mod tests {
     #[test]
     fn errors_without_alpha() {
         let result = Jitter::<f64>::builder().build();
-        assert!(matches!(result, Err(crate::ConfigError::Missing("alpha"))));
+        assert!(matches!(
+            result,
+            Err(nexus_stats_core::ConfigError::Missing("alpha"))
+        ));
     }
 
     #[test]
@@ -402,15 +407,15 @@ mod tests {
         let mut j = Jitter::<f64>::builder().alpha(0.3).build().unwrap();
         assert!(matches!(
             j.update(f64::NAN),
-            Err(crate::DataError::NotANumber)
+            Err(nexus_stats_core::DataError::NotANumber)
         ));
         assert!(matches!(
             j.update(f64::INFINITY),
-            Err(crate::DataError::Infinite)
+            Err(nexus_stats_core::DataError::Infinite)
         ));
         assert!(matches!(
             j.update(f64::NEG_INFINITY),
-            Err(crate::DataError::Infinite)
+            Err(nexus_stats_core::DataError::Infinite)
         ));
     }
 }

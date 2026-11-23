@@ -1,4 +1,4 @@
-use crate::sample::{EmaKernel, ShiftEma};
+use nexus_stats_core::sample::{EmaKernel, ShiftEma};
 
 /// Smoothed event rate tracker (unsigned integer timestamps).
 ///
@@ -143,13 +143,17 @@ impl EventRateBuilder {
     ///
     /// - Span must have been set and >= 1.
     #[inline]
-    pub fn build(self) -> Result<EventRate, crate::ConfigError> {
-        let requested = self.span.ok_or(crate::ConfigError::Missing("span"))?;
+    pub fn build(self) -> Result<EventRate, nexus_stats_core::ConfigError> {
+        let requested = self
+            .span
+            .ok_or(nexus_stats_core::ConfigError::Missing("span"))?;
         if requested < 1 {
-            return Err(crate::ConfigError::Invalid("EventRate span must be >= 1"));
+            return Err(nexus_stats_core::ConfigError::Invalid(
+                "EventRate span must be >= 1",
+            ));
         }
         if requested > (1u64 << 62) {
-            return Err(crate::ConfigError::Invalid(
+            return Err(nexus_stats_core::ConfigError::Invalid(
                 "EventRate span must be <= 2^62",
             ));
         }
@@ -240,7 +244,10 @@ mod tests {
     #[test]
     fn errors_without_span() {
         let result = EventRate::builder().build();
-        assert!(matches!(result, Err(crate::ConfigError::Missing("span"))));
+        assert!(matches!(
+            result,
+            Err(nexus_stats_core::ConfigError::Missing("span"))
+        ));
     }
 
     #[test]

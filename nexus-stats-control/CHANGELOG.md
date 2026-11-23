@@ -10,6 +10,12 @@ contained.
 
 ## [Unreleased]
 
+### Added (moved in)
+
+- `control::DeadBand`, `control::Hysteresis`, `control::Debounce` and
+  `control::LevelCrossing`, from `nexus-stats-core`. No change to any of
+  them. The crate now holds every control type.
+
 ### Changed
 
 - **No numeric suffixes** (the stats major, [#773](https://github.com/Abso1ut3Zer0/nexus/issues/773)): `BoolWindow`, `TopK`, `FlexProportion*`

@@ -1,4 +1,4 @@
-use crate::Sample;
+use nexus_stats_core::Sample;
 
 /// Hysteresis filter — Schmitt trigger with separate high/low thresholds.
 ///
@@ -32,13 +32,15 @@ impl<T: Sample> Hysteresis<T> {
     /// below `high_threshold`.
     #[inline]
     #[allow(clippy::neg_cmp_op_on_partial_ord)]
-    pub fn new(low_threshold: T, high_threshold: T) -> Result<Self, crate::ConfigError> {
+    pub fn new(low_threshold: T, high_threshold: T) -> Result<Self, nexus_stats_core::ConfigError> {
         if !low_threshold.is_finite() || !high_threshold.is_finite() {
-            return Err(crate::ConfigError::Invalid("thresholds must be finite"));
+            return Err(nexus_stats_core::ConfigError::Invalid(
+                "thresholds must be finite",
+            ));
         }
         // Negated form rejects NaN (all NaN comparisons are false).
         if !(low_threshold < high_threshold) {
-            return Err(crate::ConfigError::Invalid(
+            return Err(nexus_stats_core::ConfigError::Invalid(
                 "low threshold must be less than high",
             ));
         }
@@ -99,7 +101,7 @@ impl Hysteresis<f64> {
     /// Returns `DataError::NotANumber` if the sample is NaN, or
     /// `DataError::Infinite` if the sample is infinite.
     #[inline]
-    pub fn update(&mut self, sample: f64) -> Result<bool, crate::DataError> {
+    pub fn update(&mut self, sample: f64) -> Result<bool, nexus_stats_core::DataError> {
         check_finite!(sample);
         Ok(self.fold(sample))
     }
@@ -190,15 +192,24 @@ mod tests {
     fn rejects_invalid_thresholds() {
         assert!(matches!(
             Hysteresis::<f64>::new(70.0, 30.0),
-            Err(crate::ConfigError::Invalid(_))
+            Err(nexus_stats_core::ConfigError::Invalid(_))
         ));
     }
 
     #[test]
     fn rejects_nan_and_inf() {
         let mut h = Hysteresis::<f64>::new(30.0, 70.0).unwrap();
-        assert_eq!(h.update(f64::NAN), Err(crate::DataError::NotANumber));
-        assert_eq!(h.update(f64::INFINITY), Err(crate::DataError::Infinite));
-        assert_eq!(h.update(f64::NEG_INFINITY), Err(crate::DataError::Infinite));
+        assert_eq!(
+            h.update(f64::NAN),
+            Err(nexus_stats_core::DataError::NotANumber)
+        );
+        assert_eq!(
+            h.update(f64::INFINITY),
+            Err(nexus_stats_core::DataError::Infinite)
+        );
+        assert_eq!(
+            h.update(f64::NEG_INFINITY),
+            Err(nexus_stats_core::DataError::Infinite)
+        );
     }
 }

@@ -23,7 +23,8 @@
 //!
 //! Every crate is on by default. To compile less, turn the defaults off and
 //! name the features you need (`smoothing`, `detection`, `regression`,
-//! `control`, `trading`); their types come through the same module paths:
+//! `control`, `trading`, `monitoring`, `normalization`); their types come
+//! through the same module paths:
 //!
 //! ```rust,ignore
 //! // Requires `smoothing` feature
@@ -72,9 +73,6 @@
 //! | [`smoothing`] | Ema, AsymEma, Slew |
 //! | [`detection`] | Cusum, DistributionShift *(std\|libm)* |
 //! | [`statistics`] | Welford, Moments, EwmVar, Covariance, HarmonicMean, Percentile, BucketAccumulator, FirstDiff, SecondDiff, CovarianceMatrix *(alloc)* |
-//! | [`monitoring`] | Drawdown, RunningMax, RunningMin, WindowedMax, WindowedMin, MaxGauge, PeakHold, CoDel, PollSaturation, SojournSaturation, Liveness, EventRate, Jitter, ErrorRate, HawkesIntensity *(std\|libm)* |
-//! | [`control`] | DeadBand, Hysteresis, Debounce, LevelCrossing |
-//! | [`normalization`] | MinMaxNorm, ZScoreNorm *(std\|libm)*, QuantileNorm *(alloc)* |
 //! | `storage` *(alloc)* | Ring, the fixed-capacity ring the windowed types share |
 //!
 //! ## Behind a feature (all on by default)
@@ -88,8 +86,10 @@
 //! | `regression` | `regression` | LinearRegression, PolynomialRegression, EwLinearRegression, EwPolynomialRegression, ExponentialRegression, LogarithmicRegression, PowerRegression (+ `Ew*`), LogisticRegression, HitRate, LaggedPredictor, SignalDecayCurve |
 //! | `regression` + `alloc` | `learning` | LmsFilter, NlmsFilter, RlsFilter, HuberRegression, OnlineKMeans, OnlineGd, AdaGrad, Adam, Ucb1, ThompsonBeta, ThompsonGamma, EpsilonGreedy, Exp3 |
 //! | `regression` | `estimation` | + Kalman1d, Kalman2d, Kalman3d, BetaBinomial, GammaPoisson |
-//! | `control` | `control` | + PeakDetector, BoolWindow *(alloc)* |
+//! | `control` | `control` | DeadBand, Hysteresis, Debounce, LevelCrossing, PeakDetector, BoolWindow *(alloc)* |
 //! | `control` | `frequency` | FlexProportionGlobal, FlexProportionLocal, TopK *(alloc)*, DecayAccum *(std\|libm)* |
+//! | `monitoring` | `monitoring` | Drawdown, RunningMax, RunningMin, WindowedMax, WindowedMin, MaxGauge, PeakHold, CoDel, PollSaturation, SojournSaturation, Liveness, EventRate, Jitter, ErrorRate, HawkesIntensity *(std\|libm)* |
+//! | `normalization` | `normalization` | MinMaxNorm, ZScoreNorm *(std\|libm)*, QuantileNorm *(alloc)* |
 //! | `trading` | `trading` | Amihud, Lpm, Cvar, BipowerVariation *(std\|libm)*, RollSpread *(std\|libm)*, TwoScaleRv *(alloc, std\|libm)*, VarianceRatio *(alloc, std\|libm)*, KyleLambda *(with `regression`)* |
 //! | `full` | all | Everything above |
 //!
@@ -105,7 +105,9 @@
 //! | `regression` | yes | Regression, learning and estimation types |
 //! | `control` | yes | PeakDetector, BoolWindow, and the frequency types |
 //! | `trading` | yes | Trading and market-microstructure statistics |
-//! | `full` | yes | All of the five above |
+//! | `monitoring` | yes | Monitors for a running system |
+//! | `normalization` | yes | Normalizers (brings in `nexus-stats-monitoring`) |
+//! | `full` | yes | All of the seven above |
 
 // Re-export core types at crate root
 pub use nexus_stats_core::{Accuracy, Condition, ConfigError, DataError, Direction};
@@ -154,25 +156,32 @@ pub mod detection {
     pub use nexus_stats_detection::detection::*;
 }
 
-/// Online feature normalization.
-pub use nexus_stats_core::normalization;
+/// Normalizers: put a stream on a common scale.
+///
+/// Requires the `normalization` feature.
+#[cfg(feature = "normalization")]
+pub mod normalization {
+    pub use nexus_stats_normalization::*;
+}
 
 /// Core streaming statistics.
 pub use nexus_stats_core::statistics;
 
-/// Monitoring and health tracking.
-pub use nexus_stats_core::monitoring;
+/// Monitors for a running system: extremes, rates, liveness, queue health.
+///
+/// Requires the `monitoring` feature.
+#[cfg(feature = "monitoring")]
+pub mod monitoring {
+    pub use nexus_stats_monitoring::*;
+}
 #[cfg(feature = "alloc")]
 pub use nexus_stats_core::storage;
 
-/// Thresholds and switches.
+/// Thresholds, switches and peak detection.
 ///
-/// `DeadBand`, `Hysteresis`, `Debounce` and `LevelCrossing` are always
-/// available. `PeakDetector` and `BoolWindow` require the `control` feature.
+/// Requires the `control` feature.
+#[cfg(feature = "control")]
 pub mod control {
-    pub use nexus_stats_core::control::*;
-
-    #[cfg(feature = "control")]
     pub use nexus_stats_control::control::*;
 }
 

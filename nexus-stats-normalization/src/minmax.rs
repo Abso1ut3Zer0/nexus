@@ -1,7 +1,7 @@
 use core::marker::PhantomData;
 
-use crate::Float;
-use crate::monitoring::{WindowedMax, WindowedMin};
+use nexus_stats_core::Float;
+use nexus_stats_monitoring::{WindowedMax, WindowedMin};
 
 /// Windowed min-max normalizer.
 ///
@@ -23,7 +23,7 @@ use crate::monitoring::{WindowedMax, WindowedMin};
 /// # Examples
 ///
 /// ```
-/// use nexus_stats_core::normalization::MinMaxNorm;
+/// use nexus_stats_normalization::MinMaxNorm;
 ///
 /// let mut mm = MinMaxNorm::<f32>::builder().window(100).build().unwrap();
 /// let _ = mm.update(0, 10.0);
@@ -68,7 +68,11 @@ impl<T: Float> MinMaxNorm<T> {
     /// Returns `DataError::NotANumber` if the sample is NaN, or
     /// `DataError::Infinite` if the sample is infinite.
     #[inline]
-    pub fn update(&mut self, timestamp: u64, sample: T) -> Result<Option<T>, crate::DataError> {
+    pub fn update(
+        &mut self,
+        timestamp: u64,
+        sample: T,
+    ) -> Result<Option<T>, nexus_stats_core::DataError> {
         check_finite!(sample);
         let x = sample.to_f64();
         self.min_tracker.update(timestamp, x)?;
@@ -94,7 +98,7 @@ impl<T: Float> MinMaxNorm<T> {
     /// Returns `DataError::NotANumber` if the value is NaN, or
     /// `DataError::Infinite` if the value is infinite.
     #[inline]
-    pub fn normalize(&self, value: T) -> Result<Option<T>, crate::DataError> {
+    pub fn normalize(&self, value: T) -> Result<Option<T>, nexus_stats_core::DataError> {
         check_finite!(value);
         Ok(self.compute_normalized(value.to_f64()))
     }
@@ -173,8 +177,10 @@ impl<T: Float> MinMaxNormBuilder<T> {
     ///
     /// Returns `ConfigError` if window is missing or zero.
     #[inline]
-    pub fn build(self) -> Result<MinMaxNorm<T>, crate::ConfigError> {
-        let window = self.window.ok_or(crate::ConfigError::Missing("window"))?;
+    pub fn build(self) -> Result<MinMaxNorm<T>, nexus_stats_core::ConfigError> {
+        let window = self
+            .window
+            .ok_or(nexus_stats_core::ConfigError::Missing("window"))?;
         Ok(MinMaxNorm {
             min_tracker: WindowedMin::new(window)?,
             max_tracker: WindowedMax::new(window)?,
@@ -266,8 +272,14 @@ mod tests {
         assert!(mm.update(0, f64::NAN).is_err());
         assert!(mm.update(0, f64::INFINITY).is_err());
         assert!(mm.update(0, f64::NEG_INFINITY).is_err());
-        assert_eq!(mm.normalize(f64::NAN), Err(crate::DataError::NotANumber));
-        assert_eq!(mm.normalize(f64::INFINITY), Err(crate::DataError::Infinite));
+        assert_eq!(
+            mm.normalize(f64::NAN),
+            Err(nexus_stats_core::DataError::NotANumber)
+        );
+        assert_eq!(
+            mm.normalize(f64::INFINITY),
+            Err(nexus_stats_core::DataError::Infinite)
+        );
         assert_eq!(mm.count(), 0);
     }
 

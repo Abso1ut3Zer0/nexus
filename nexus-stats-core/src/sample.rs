@@ -25,7 +25,7 @@ mod private {
 ///
 /// Sealed: implemented for `f64` and `i64` here and nowhere else. It appears
 /// as the bound on generic monitors such as
-/// [`Drawdown<T>`](crate::monitoring::Drawdown), and that bound is the only
+/// `Drawdown<T>`, and that bound is the only
 /// place a caller writes it.
 pub trait Sample:
     Copy + PartialOrd + Debug + Add<Output = Self> + Sub<Output = Self> + private::Sealed + 'static

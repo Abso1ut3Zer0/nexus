@@ -1,19 +1,25 @@
 # nexus-stats-control
 
-Advanced control and frequency primitives for [nexus-stats](https://crates.io/crates/nexus-stats).
+Control and frequency primitives for [nexus-stats](https://crates.io/crates/nexus-stats): thresholds, switches, peak detection, and counting what is frequent.
 
-## Control Types
+## Which type do I use?
 
-- **PeakDetector<f64>** — Peak detection with hysteresis
-- **BoolWindow** — Sliding boolean window with bit-packed storage (requires `alloc`)
+**Acting on a stream** (`control`)
 
-## Frequency Types
+- **DeadBand**: passes a value on only once it has changed by more than a threshold
+- **Hysteresis**: an on/off decision with one threshold to turn on and another to turn off, so it does not chatter
+- **Debounce**: triggers only after a number of events in a row
+- **LevelCrossing**: detects crossings of a level, with their direction, and counts them
+- **PeakDetector**: local highs and lows that stand out by a set margin
+- **BoolWindow**: the share of passes over the last so many events (requires `alloc`)
 
-- **TopK** — Top-K frequency tracking
-- **FlexProportionGlobal / FlexProportionLocal** — Each key's share of a decaying event count (kernel `flex_proportions`)
-- **DecayAccum** — Exponential decay accumulator, `u64` ticks (requires `std` or `libm`)
+**Counting** (`frequency`)
 
-The crate docs say which type to use for what.
+- **TopK**: the most frequent items in a stream, in fixed memory (requires `alloc`)
+- **FlexProportionGlobal / FlexProportionLocal**: each key's share of an event count that decays (the kernel's `flex_proportions`)
+- **DecayAccum**: a score that builds with events and decays with time, in `u64` ticks (requires `std` or `libm`)
+
+Each type's docs give its definition and how to read it.
 
 ## Usage
 
