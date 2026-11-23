@@ -1,6 +1,6 @@
 use nexus_stats_core::Direction;
-use nexus_stats_core::smoothing::Ema;
 use nexus_stats_core::statistics::Welford;
+use nexus_stats_smoothing::Ema;
 
 /// Adaptive threshold — z-score anomaly detection using EMA baseline + Welford std dev.
 ///

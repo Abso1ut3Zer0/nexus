@@ -7,7 +7,7 @@ estimation for networked systems.
 
 ```rust
 use nexus_stats::smoothing::AsymEma;
-use nexus_stats::statistics::EwmVar;
+use nexus_stats::smoothing::EwmVar;
 use nexus_stats::monitoring::WindowedMin;
 
 // Asymmetric EMA: react fast to RTT increases, slow to decreases

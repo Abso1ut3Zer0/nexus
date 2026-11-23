@@ -1,21 +1,38 @@
 # nexus-stats-smoothing
 
-Advanced smoothing algorithms for [nexus-stats](https://crates.io/crates/nexus-stats).
+Smoothers for [nexus-stats](https://crates.io/crates/nexus-stats): each takes a sample and returns the smoothed value, in fixed memory.
 
-## Types
+## Which smoother?
 
-- **Holt** — Double exponential smoothing (level + trend)
-- **Spring** — Critically damped spring (chase without overshoot)
-- **Kama** — Kaufman Adaptive Moving Average (requires `alloc`)
-- **WindowedMedian<f64> / WindowedMedian<i64>** — Running median (requires `alloc`)
+Start with **Ema**, an exponential moving average. It is usually the right answer. Move off it for a reason:
 
-Start with `Ema` from the core crate and move to one of these for a reason: a trend (`Holt`), alternating regimes (`Kama`), a known noise model (`Kalman1d`, in the regression crate), a target to chase (`Spring`), or outliers (`HuberEma`, `Hampel`, `WindowedMedian`). The crate docs say which to use for what.
+- **EwmVar**: the spread around the average too (exponentially weighted mean and variance)
+- **AsymEma**: an average that rises and falls at different speeds
+- **Slew**: follows the input, but moves only so far per sample
+- **Holt**: the signal has a trend, and an average lags it
+- **Kama**: it swings between trending and ranging (requires `alloc`)
+- **Spring**: a moving target chased without overshoot
+- **HuberEma**: outliers, with each step bounded
+- **Hampel**: outliers, shrunk or rejected (requires `alloc`)
+- **WindowedMedian**: outliers, up to half the window ignored (requires `alloc`)
+
+Each type's docs give its definition, how to choose its parameters, and an example.
+
+## Example
+
+```rust
+use nexus_stats_smoothing::Ema;
+
+let mut ema = Ema::builder().alpha(0.5).build().unwrap();
+assert_eq!(ema.update(10.0), Some(10.0));
+assert_eq!(ema.update(20.0), Some(15.0)); // half the way
+```
 
 ## Usage
 
 Enable the `smoothing` feature on `nexus-stats` for unified import paths:
 
-```rust
+```rust,ignore
 use nexus_stats::smoothing::Holt;
 ```
 

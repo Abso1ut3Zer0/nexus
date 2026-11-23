@@ -10,6 +10,10 @@ contained.
 
 ## [Unreleased]
 
+### Changed (dependencies)
+
+- `ZScoreNorm` now takes `EwmVar` from `nexus-stats-smoothing`, a new dependency of this crate.
+
 ### Added
 
 - The crate. `ZScoreNorm`, `MinMaxNorm` and `QuantileNorm` move here from

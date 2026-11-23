@@ -1,5 +1,5 @@
 use crate::math::MulAdd;
-use crate::statistics::running_mean::step_mean;
+use crate::math::step_mean;
 
 /// Mean, variance, skewness and kurtosis of everything seen so far.
 ///

@@ -1,5 +1,5 @@
 use crate::math::MulAdd;
-use crate::statistics::running_mean::step_mean;
+use crate::math::step_mean;
 
 /// Mean, variance and standard deviation of everything seen so far.
 ///
@@ -14,7 +14,7 @@ use crate::statistics::running_mean::step_mean;
 /// `n`.
 ///
 /// For statistics that follow recent samples and forget old ones, see
-/// [`EwmVar`](crate::statistics::EwmVar); for skewness and kurtosis,
+/// `EwmVar` in the smoothing crate; for skewness and kurtosis,
 /// [`Moments`](crate::statistics::Moments).
 ///
 /// [Welford's online algorithm]: https://en.wikipedia.org/wiki/Algorithms_for_calculating_variance#Welford's_online_algorithm

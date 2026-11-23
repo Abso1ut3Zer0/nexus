@@ -1,4 +1,4 @@
-use crate::math::{EwWeight, MulAdd};
+use nexus_stats_core::math::{EwWeight, MulAdd};
 
 /// Asymmetric EMA: one smoothing factor for rising samples, another for
 /// falling ones.
@@ -16,7 +16,7 @@ use crate::math::{EwWeight, MulAdd};
 /// # Examples
 ///
 /// ```
-/// use nexus_stats_core::smoothing::AsymEma;
+/// use nexus_stats_smoothing::AsymEma;
 ///
 /// let mut ema = AsymEma::builder()
 ///     .alpha_up(0.5)
@@ -91,15 +91,16 @@ impl AsymEma {
     ///
     /// # Errors
     ///
-    /// - [`DataError::NotANumber`](crate::DataError::NotANumber) if `sample`
+    /// - [`DataError::NotANumber`](nexus_stats_core::DataError::NotANumber) if `sample`
     ///   is NaN.
-    /// - [`DataError::Infinite`](crate::DataError::Infinite) if `sample` is
+    /// - [`DataError::Infinite`](nexus_stats_core::DataError::Infinite) if `sample` is
     ///   infinite.
     ///
     /// # Examples
     ///
     /// ```
-    /// use nexus_stats_core::{DataError, smoothing::AsymEma};
+    /// use nexus_stats_core::DataError;
+    /// use nexus_stats_smoothing::AsymEma;
     ///
     /// let mut ema = AsymEma::builder()
     ///     .alpha_up(0.5)
@@ -111,8 +112,11 @@ impl AsymEma {
     /// assert_eq!(ema.value(), Some(8.0));
     /// ```
     #[inline]
-    pub fn checked_update(&mut self, sample: f64) -> Result<Option<f64>, crate::DataError> {
-        crate::math::check_input(sample, f64::MAX)?;
+    pub fn checked_update(
+        &mut self,
+        sample: f64,
+    ) -> Result<Option<f64>, nexus_stats_core::DataError> {
+        nexus_stats_core::math::check_input(sample, f64::MAX)?;
         Ok(self.update(sample))
     }
 
@@ -152,9 +156,11 @@ impl AsymEma {
     /// # Errors
     ///
     /// `Invalid` if `value` is not finite. The average is left unchanged.
-    pub fn reset_with_seed(&mut self, value: f64) -> Result<(), crate::ConfigError> {
+    pub fn reset_with_seed(&mut self, value: f64) -> Result<(), nexus_stats_core::ConfigError> {
         if !value.is_finite() {
-            return Err(crate::ConfigError::Invalid("seed must be finite"));
+            return Err(nexus_stats_core::ConfigError::Invalid(
+                "seed must be finite",
+            ));
         }
         self.start = value;
         self.prime_at = 0;
@@ -236,20 +242,24 @@ impl AsymEmaBuilder {
     /// - `Invalid` if a weight is out of range; the message names the knob
     ///   set.
     /// - `Invalid` if `min_samples` is 0 or the seed is not finite.
-    pub fn build(self) -> Result<AsymEma, crate::ConfigError> {
+    pub fn build(self) -> Result<AsymEma, nexus_stats_core::ConfigError> {
         let alpha_up = self
             .alpha_up
-            .ok_or(crate::ConfigError::Missing("alpha_up"))?
+            .ok_or(nexus_stats_core::ConfigError::Missing("alpha_up"))?
             .resolve()?;
         let alpha_down = self
             .alpha_down
-            .ok_or(crate::ConfigError::Missing("alpha_down"))?
+            .ok_or(nexus_stats_core::ConfigError::Missing("alpha_down"))?
             .resolve()?;
         if self.min_samples == 0 {
-            return Err(crate::ConfigError::Invalid("min_samples must be >= 1"));
+            return Err(nexus_stats_core::ConfigError::Invalid(
+                "min_samples must be >= 1",
+            ));
         }
         if self.seed.is_some_and(|seed| !seed.is_finite()) {
-            return Err(crate::ConfigError::Invalid("seed must be finite"));
+            return Err(nexus_stats_core::ConfigError::Invalid(
+                "seed must be finite",
+            ));
         }
 
         let start = self.seed.unwrap_or(0.0);
@@ -291,7 +301,7 @@ mod tests {
 
     #[test]
     fn rejects_bad_weights_and_zero_min_samples() {
-        use crate::ConfigError::Invalid;
+        use nexus_stats_core::ConfigError::Invalid;
         let base = || AsymEma::builder().alpha_up(0.5).alpha_down(0.5);
         assert_eq!(
             base().alpha_up(1.0).build().unwrap_err(),
@@ -390,7 +400,7 @@ mod tests {
         let result = AsymEma::builder().alpha_down(0.5).build();
         assert!(matches!(
             result,
-            Err(crate::ConfigError::Missing("alpha_up"))
+            Err(nexus_stats_core::ConfigError::Missing("alpha_up"))
         ));
     }
 
@@ -474,7 +484,7 @@ mod tests {
                 .alpha_down(0.25)
                 .build()
                 .unwrap_err(),
-            crate::ConfigError::Invalid("alpha is too small for a usable weight")
+            nexus_stats_core::ConfigError::Invalid("alpha is too small for a usable weight")
         );
     }
 
@@ -508,7 +518,7 @@ mod tests {
 
     #[test]
     fn checked_update_refuses_bad_input_and_changes_nothing() {
-        use crate::DataError::{Infinite, NotANumber};
+        use nexus_stats_core::DataError::{Infinite, NotANumber};
 
         let mut ema = pair();
         ema.checked_update(8.0).unwrap();

@@ -1,5 +1,5 @@
-use crate::math::{EwWeight, MulAdd};
-use crate::statistics::running_mean::step_mean;
+use nexus_stats_core::math::step_mean;
+use nexus_stats_core::math::{EwWeight, MulAdd};
 
 /// Exponentially weighted mean and variance.
 ///
@@ -19,7 +19,7 @@ use crate::statistics::running_mean::step_mean;
 /// # Examples
 ///
 /// ```
-/// use nexus_stats_core::statistics::EwmVar;
+/// use nexus_stats_smoothing::EwmVar;
 ///
 /// let mut ew = EwmVar::builder().alpha(0.5).build().unwrap();
 /// assert_eq!(ew.update(0.0), None); // one sample has no variance
@@ -62,7 +62,7 @@ impl MeanVariance {
     #[must_use]
     #[cfg(any(feature = "std", feature = "libm"))]
     pub fn std_dev(&self) -> f64 {
-        crate::math::sqrt(self.variance)
+        nexus_stats_core::math::sqrt(self.variance)
     }
 }
 
@@ -107,21 +107,22 @@ impl EwmVar {
 
     /// Checked update. Feeds `sample` and returns the reading, or returns an
     /// error and leaves the tracker unchanged if `sample` is NaN, infinite,
-    /// or above `1e120` in magnitude (see [input limits](crate#input-limits)).
+    /// or above `1e120` in magnitude (see [input limits](nexus_stats_core#input-limits)).
     ///
     /// # Errors
     ///
-    /// - [`DataError::NotANumber`](crate::DataError::NotANumber) if `sample`
+    /// - [`DataError::NotANumber`](nexus_stats_core::DataError::NotANumber) if `sample`
     ///   is NaN.
-    /// - [`DataError::Infinite`](crate::DataError::Infinite) if `sample` is
+    /// - [`DataError::Infinite`](nexus_stats_core::DataError::Infinite) if `sample` is
     ///   infinite.
-    /// - [`DataError::OutOfRange`](crate::DataError::OutOfRange) if `sample`
+    /// - [`DataError::OutOfRange`](nexus_stats_core::DataError::OutOfRange) if `sample`
     ///   is finite and above the limit.
     ///
     /// # Examples
     ///
     /// ```
-    /// use nexus_stats_core::{DataError, statistics::EwmVar};
+    /// use nexus_stats_core::DataError;
+    /// use nexus_stats_smoothing::EwmVar;
     ///
     /// let mut ew = EwmVar::builder().alpha(0.5).build().unwrap();
     /// assert_eq!(ew.checked_update(1.0), Ok(None));
@@ -132,8 +133,8 @@ impl EwmVar {
     pub fn checked_update(
         &mut self,
         sample: f64,
-    ) -> Result<Option<MeanVariance>, crate::DataError> {
-        crate::math::check_input(sample, crate::math::LIMIT_FOR_SQUARES)?;
+    ) -> Result<Option<MeanVariance>, nexus_stats_core::DataError> {
+        nexus_stats_core::math::check_input(sample, nexus_stats_core::math::LIMIT_FOR_SQUARES)?;
         Ok(self.update(sample))
     }
 
@@ -218,7 +219,7 @@ impl EwmVar {
     /// # Examples
     ///
     /// ```
-    /// use nexus_stats_core::statistics::EwmVar;
+    /// use nexus_stats_smoothing::EwmVar;
     ///
     /// let mut ew = EwmVar::builder().alpha(0.1).build().unwrap();
     /// ew.update(3.0);
@@ -227,7 +228,11 @@ impl EwmVar {
     /// assert!((reading.mean - 100.0).abs() < 1e-12);
     /// assert!((reading.variance - 25.0).abs() < 1e-12);
     /// ```
-    pub fn reset_with_seed(&mut self, mean: f64, variance: f64) -> Result<(), crate::ConfigError> {
+    pub fn reset_with_seed(
+        &mut self,
+        mean: f64,
+        variance: f64,
+    ) -> Result<(), nexus_stats_core::ConfigError> {
         let seed = MeanVariance { mean, variance };
         check_seed(seed)?;
         self.seed = Some(seed);
@@ -288,13 +293,13 @@ impl EwmVarBuilder {
     ///   and finite, or `span` is below 2; the message names the knob set.
     /// - `Invalid` if `min_samples` is below 2, or the seed is not a finite
     ///   mean and a finite non-negative variance.
-    pub fn build(self) -> Result<EwmVar, crate::ConfigError> {
+    pub fn build(self) -> Result<EwmVar, nexus_stats_core::ConfigError> {
         let alpha = self
             .weight
-            .ok_or(crate::ConfigError::Missing("alpha"))?
+            .ok_or(nexus_stats_core::ConfigError::Missing("alpha"))?
             .resolve()?;
         if self.min_samples < 2 {
-            return Err(crate::ConfigError::Invalid(
+            return Err(nexus_stats_core::ConfigError::Invalid(
                 "min_samples must be >= 2: one sample has no variance",
             ));
         }
@@ -322,9 +327,9 @@ impl EwmVarBuilder {
     }
 }
 
-fn check_seed(seed: MeanVariance) -> Result<(), crate::ConfigError> {
-    if !seed.mean.is_finite() || !crate::math::nonnegative_finite(seed.variance) {
-        return Err(crate::ConfigError::Invalid(
+fn check_seed(seed: MeanVariance) -> Result<(), nexus_stats_core::ConfigError> {
+    if !seed.mean.is_finite() || !nexus_stats_core::math::nonnegative_finite(seed.variance) {
+        return Err(nexus_stats_core::ConfigError::Invalid(
             "seed needs a finite mean and a finite non-negative variance",
         ));
     }
@@ -602,7 +607,7 @@ mod tests {
 
     #[test]
     fn builder_validation() {
-        use crate::ConfigError::{Invalid, Missing};
+        use nexus_stats_core::ConfigError::{Invalid, Missing};
         let b = EwmVar::builder;
         assert_eq!(b().build().unwrap_err(), Missing("alpha"));
         assert_eq!(
@@ -635,7 +640,7 @@ mod tests {
 
     #[test]
     fn checked_update_refuses_bad_input_and_changes_nothing() {
-        use crate::DataError::{Infinite, NotANumber, OutOfRange};
+        use nexus_stats_core::DataError::{Infinite, NotANumber, OutOfRange};
 
         let mut ew = EwmVar::builder().alpha(0.1).build().unwrap();
         ew.checked_update(1.0).unwrap();
@@ -653,7 +658,7 @@ mod tests {
 
     #[test]
     fn checked_update_accepts_the_limit_without_overflow() {
-        let limit = crate::math::LIMIT_FOR_SQUARES;
+        let limit = nexus_stats_core::math::LIMIT_FOR_SQUARES;
         let mut ew = EwmVar::builder().alpha(1e-9).build().unwrap();
         for i in 0..10_000u32 {
             let x = if i % 2 == 0 { limit } else { -limit };

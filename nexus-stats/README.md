@@ -276,9 +276,9 @@ and construction (`halflife()`).
 
 nexus-stats is split into workspace crates for independent compilation and feature gating. Every concept lives in one crate, and all of them are on by default:
 
-- **nexus-stats-core** — shared traits, error types, clock (`Clock`, `MonotonicClock`, `EpochClock`), and builder infrastructure
-- **nexus-stats-smoothing** — KAMA, Holt, Spring, HuberEma, Hampel, WindowedMedian
-- **nexus-stats-detection** — MOSUM, Shiryaev-Roberts, MultiGate, RobustZScore, AdaptiveThreshold, and signal analysis (Autocorrelation, Hurst, HalfLife)
+- **nexus-stats-core** — shared traits, error types, clock (`Clock`, `MonotonicClock`, `EpochClock`), and the descriptive statistics (Welford, Moments, Covariance, Percentile)
+- **nexus-stats-smoothing** — EMA, AsymEma, Slew, EwmVar, KAMA, Holt, Spring, HuberEma, Hampel, WindowedMedian
+- **nexus-stats-detection** — CUSUM, DistributionShift, MOSUM, Shiryaev-Roberts, MultiGate, RobustZScore, AdaptiveThreshold, and signal analysis (Autocorrelation, Hurst, HalfLife)
 - **nexus-stats-regression** — Linear, polynomial, exponential, logarithmic, power regression; learning; Kalman and Bayesian estimation
 - **nexus-stats-control** — DeadBand, Hysteresis, Debounce, LevelCrossing, PeakDetector, BoolWindow, and the frequency types
 - **nexus-stats-monitoring** — Drawdown, running and windowed extremes, EventRate, ErrorRate, Jitter, Liveness, CoDel, the saturation monitors
@@ -302,13 +302,13 @@ See [`docs/use-cases/trading.md`](docs/use-cases/trading.md) for full guide with
 | Mean-reversion speed | `HalfLife` | detection (`signal`) |
 | Trending vs mean-reverting | `Hurst` | detection (`signal`) |
 | Random walk test | `VarianceRatio` | trading |
-| Distribution change | `DistributionShift` | core |
+| Distribution change | `DistributionShift` | detection |
 | Directional accuracy | `HitRate` | regression |
 | Jump-robust volatility | `BipowerVariation` | trading |
 | Implicit spread estimation | `RollSpread` | trading |
 | Noise-corrected realized vol | `TwoScaleRv` | trading |
 | Bursty event intensity | `HawkesIntensity` | monitoring |
-| Conditional smoothing | `Ema`, updated only when the condition holds | core |
+| Conditional smoothing | `Ema`, updated only when the condition holds | smoothing |
 | Venue selection | `ThompsonBeta` / `Ucb1` | regression |
 | Parameter A/B testing | `Ucb1` / `EpsilonGreedy` | regression |
 | Adversarial strategy | `Exp3` | regression |

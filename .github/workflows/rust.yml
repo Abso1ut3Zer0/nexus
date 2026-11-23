@@ -68,7 +68,7 @@ jobs:
           cargo check -p $c --no-default-features --features alloc
           cargo check -p $c --no-default-features --features std
         done
-        for c in nexus-stats-core nexus-stats-detection nexus-stats-control nexus-stats-regression nexus-stats-trading nexus-stats-monitoring nexus-stats-normalization; do
+        for c in nexus-stats-core nexus-stats-smoothing nexus-stats-detection nexus-stats-control nexus-stats-regression nexus-stats-trading nexus-stats-monitoring nexus-stats-normalization; do
           cargo check -p $c --no-default-features --features libm
           cargo check -p $c --no-default-features --features alloc,libm
         done

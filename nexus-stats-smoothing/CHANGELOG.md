@@ -10,6 +10,14 @@ contained.
 
 ## [Unreleased]
 
+### Added (moved in)
+
+- `Ema`, `AsymEma`, `Slew` and `EwmVar` (with `MeanVariance`), from
+  `nexus-stats-core`. No change to any of them. The crate now holds every
+  smoother.
+- `ConfigError`, `DataError` and `Sample` are re-exported, so the crate can
+  be used without a direct dependency on `nexus-stats-core`.
+
 ### Removed (moved)
 
 - `Kalman1d` is now in `nexus-stats-regression` (`estimation`), beside

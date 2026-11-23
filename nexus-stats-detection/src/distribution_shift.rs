@@ -1,4 +1,4 @@
-use crate::statistics::Moments;
+use nexus_stats_core::statistics::Moments;
 
 /// Detects distribution shape changes by comparing each completed window of
 /// samples against everything before it.
@@ -23,7 +23,7 @@ use crate::statistics::Moments;
 /// # Examples
 ///
 /// ```
-/// use nexus_stats_core::detection::DistributionShift;
+/// use nexus_stats_detection::detection::DistributionShift;
 ///
 /// let mut det = DistributionShift::builder()
 ///     .fast_window(50)
@@ -98,7 +98,10 @@ impl DistributionShift {
     /// Returns `DataError::NotANumber` if the value is NaN, or
     /// `DataError::Infinite` if the value is infinite.
     #[inline]
-    pub fn update(&mut self, value: f64) -> Result<Option<ShapeShift>, crate::DataError> {
+    pub fn update(
+        &mut self,
+        value: f64,
+    ) -> Result<Option<ShapeShift>, nexus_stats_core::DataError> {
         check_finite!(value);
         self.fast.update(value);
         self.count += 1;
@@ -184,10 +187,10 @@ impl DistributionShiftBuilder {
     ///
     /// `ConfigError::Invalid` if `fast_window` is below 4.
     #[inline]
-    pub fn build(self) -> Result<DistributionShift, crate::ConfigError> {
+    pub fn build(self) -> Result<DistributionShift, nexus_stats_core::ConfigError> {
         let fast_window = self.fast_window.unwrap_or(50);
         if fast_window < 4 {
-            return Err(crate::ConfigError::Invalid(
+            return Err(nexus_stats_core::ConfigError::Invalid(
                 "fast_window must be at least 4",
             ));
         }
@@ -310,8 +313,14 @@ mod tests {
     #[test]
     fn rejects_nan_and_inf_without_counting_them() {
         let mut det = DistributionShift::builder().fast_window(8).build().unwrap();
-        assert_eq!(det.update(f64::NAN), Err(crate::DataError::NotANumber));
-        assert_eq!(det.update(f64::INFINITY), Err(crate::DataError::Infinite));
+        assert_eq!(
+            det.update(f64::NAN),
+            Err(nexus_stats_core::DataError::NotANumber)
+        );
+        assert_eq!(
+            det.update(f64::INFINITY),
+            Err(nexus_stats_core::DataError::Infinite)
+        );
         assert_eq!(det.count(), 0);
         // Rejected samples interleaved with two windows of valid ones do
         // not advance the window: the reading still arrives on the 16th
@@ -354,7 +363,7 @@ mod tests {
                     .fast_window(w)
                     .build()
                     .unwrap_err(),
-                crate::ConfigError::Invalid("fast_window must be at least 4")
+                nexus_stats_core::ConfigError::Invalid("fast_window must be at least 4")
             );
         }
         let det = DistributionShift::builder().build().unwrap();

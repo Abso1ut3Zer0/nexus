@@ -187,10 +187,10 @@ impl EmaKernel<i64> for ShiftEma {
         if span < 1 {
             return Err(crate::ConfigError::Invalid("span must be >= 1"));
         }
-        let effective = crate::smoothing::ema::next_power_of_two_minus_one(span);
+        let effective = next_power_of_two_minus_one(span);
         Ok(Self {
             acc: 0,
-            shift: crate::smoothing::ema::log2_of_span_plus_one(effective),
+            shift: log2_of_span_plus_one(effective),
             span: effective,
             initialized: false,
         })
@@ -388,4 +388,25 @@ impl Float for f32 {
     fn from_f64(x: f64) -> Self {
         x as f32
     }
+}
+/// Rounds `n` up to the next value of the form `2^k - 1`.
+///
+/// Examples: 1->1, 2->3, 3->3, 4->7, 5->7, 10->15, 20->31.
+#[inline]
+const fn next_power_of_two_minus_one(n: u64) -> u64 {
+    if n == 0 {
+        return 0;
+    }
+    // next_power_of_two(n + 1) - 1
+    // But we need to handle the case where n+1 is already a power of 2
+    let v = n + 1;
+    let p = v.next_power_of_two();
+    p - 1
+}
+
+/// Returns log2 of (n + 1), where n must be of the form 2^k - 1.
+#[inline]
+const fn log2_of_span_plus_one(span: u64) -> u32 {
+    // span = 2^k - 1, so span + 1 = 2^k
+    (span + 1).trailing_zeros()
 }

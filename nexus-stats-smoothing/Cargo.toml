@@ -1,7 +1,7 @@
 [package]
 name = "nexus-stats-smoothing"
 version = "2.0.0"
-description = "Advanced smoothing algorithms for nexus-stats: KAMA, Holt, Spring, Kalman1d, WindowedMedian"
+description = "Smoothers for nexus-stats: EMA, EwmVar, KAMA, Holt, Spring, WindowedMedian"
 readme = "README.md"
 edition.workspace = true
 rust-version.workspace = true

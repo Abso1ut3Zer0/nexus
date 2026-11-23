@@ -9,8 +9,6 @@
 //! - [`Welford`]: mean, variance and standard deviation of everything seen.
 //!   The default choice.
 //! - [`Moments`]: those, plus skewness and kurtosis.
-//! - [`EwmVar`]: a mean and variance that follow recent samples and forget
-//!   old ones.
 //! - [`HarmonicMean`]: the right average for rates.
 //! - [`Percentile`]: one quantile, without storing the samples.
 //!
@@ -29,19 +27,19 @@
 //! - [`BucketAccumulator`]: open, high, low, close and volume-weighted
 //!   price over a bucket.
 //!
-//! Measures of whether a series trends or reverts are in the detection
-//! crate's `signal` module, and trading measures in `nexus-stats-trading`.
+//! A mean and variance that follow recent samples (`EwmVar`) are in the
+//! smoothing crate, measures of whether a series trends or reverts in the
+//! detection crate's `signal` module, and trading measures in
+//! `nexus-stats-trading`.
 
 mod bucket;
 mod covariance;
 #[cfg(feature = "alloc")]
 mod covariance_matrix;
 mod diff;
-mod ewm_var;
 mod harmonic_mean;
 mod moments;
 mod percentile;
-mod running_mean;
 mod welford;
 
 pub use bucket::*;
@@ -49,7 +47,6 @@ pub use covariance::*;
 #[cfg(feature = "alloc")]
 pub use covariance_matrix::*;
 pub use diff::*;
-pub use ewm_var::*;
 pub use harmonic_mean::*;
 pub use moments::*;
 pub use percentile::*;

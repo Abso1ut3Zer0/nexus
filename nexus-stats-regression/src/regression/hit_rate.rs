@@ -1,5 +1,5 @@
 use nexus_stats_core::math::EwWeight;
-use nexus_stats_core::smoothing::Ema;
+use nexus_stats_smoothing::Ema;
 
 /// Directional accuracy: the fraction of predictions whose sign matched the
 /// outcome.

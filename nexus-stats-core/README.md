@@ -2,11 +2,12 @@
 
 Core types shared across the nexus-stats ecosystem.
 
-This crate provides the fundamental streaming statistics types: error enums,
-math utilities, clock trait (`Clock`, `MonotonicClock`, `EpochClock`), core smoothing
-(EMA, AsymEma, Slew), the descriptive statistics (Welford, Moments, EwmVar,
-Covariance, HarmonicMean, Percentile, BucketAccumulator, FirstDiff, SecondDiff),
-and core detection (CUSUM).
+The foundation of the nexus-stats crates, and the descriptive statistics they build on:
+
+- the shared pieces: error enums, the `Accuracy` report, the `Sample` and `Float` traits, math utilities, ring storage, and the clock trait (`Clock`, `MonotonicClock`, `EpochClock`);
+- the descriptive statistics: Welford, Moments, Covariance, CovarianceMatrix, HarmonicMean, Percentile, BucketAccumulator, FirstDiff, SecondDiff.
+
+Every other concept (smoothing, detection, monitoring, control, normalization, regression, trading) has its own crate.
 
 **Not intended for direct use** — import from
 [`nexus-stats`](https://crates.io/crates/nexus-stats) instead.
