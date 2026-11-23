@@ -70,7 +70,8 @@ impl<T: Sample> WindowedMax<T> {
     ///
     /// # Errors
     ///
-    /// Returns `ConfigError::Invalid` if `window` is zero.
+    /// Returns `ConfigError::Invalid` if `window` is zero or is 2^63 ticks
+    /// or more.
     #[inline]
     pub fn new(window: u64) -> Result<Self, nexus_stats_core::ConfigError> {
         Ok(Self {
@@ -162,7 +163,8 @@ impl<T: Sample> WindowedMin<T> {
     ///
     /// # Errors
     ///
-    /// Returns `ConfigError::Invalid` if `window` is zero.
+    /// Returns `ConfigError::Invalid` if `window` is zero or is 2^63 ticks
+    /// or more.
     #[inline]
     pub fn new(window: u64) -> Result<Self, nexus_stats_core::ConfigError> {
         Ok(Self {
@@ -216,6 +218,9 @@ impl<T: Sample> WindowedMin<T> {
     }
 }
 
+/// The longest window: half the range of the tick counter.
+const MAX_WINDOW: u64 = i64::MAX as u64;
+
 /// The three choices and the clock, shared by the maximum and the minimum.
 #[derive(Debug, Clone)]
 struct Window<T: Sample> {
@@ -232,6 +237,12 @@ impl<T: Sample> Window<T> {
         if span == 0 {
             return Err(nexus_stats_core::ConfigError::Invalid(
                 "window must be positive",
+            ));
+        }
+        // An age of 2^63 ticks or more reads as a late timestamp.
+        if span > MAX_WINDOW {
+            return Err(nexus_stats_core::ConfigError::Invalid(
+                "window must be below 2^63 ticks",
             ));
         }
         Ok(Self {
@@ -398,6 +409,17 @@ mod raw_tests {
     }
 
     #[test]
+    fn a_window_of_half_the_counter_range_is_refused() {
+        let longest = i64::MAX as u64;
+        assert!(WindowedMax::<i64>::new(longest).is_ok());
+        assert!(WindowedMin::<i64>::new(longest).is_ok());
+        for window in [longest + 1, u64::MAX] {
+            assert!(WindowedMax::<i64>::new(window).is_err());
+            assert!(WindowedMin::<f64>::new(window).is_err());
+        }
+    }
+
+    #[test]
     fn nothing_is_reported_before_the_first_value() {
         let wm = WindowedMax::<f64>::new(100).unwrap();
         assert_eq!(wm.max(), None);
@@ -469,10 +491,10 @@ mod raw_tests {
                     9 => f64::NEG_INFINITY,
                     _ => (next() % 2001) as f64 - 1000.0,
                 };
-                let before = (wm.max(), wn.min(), wm.count());
+                let before = (wm.max(), wn.min(), wm.count(), wn.count());
                 let (got_max, got_min) = (wm.update(t, v), wn.update(t, v));
                 if v.is_nan() {
-                    assert_eq!((got_max, got_min, wm.count()), before, "t {t}");
+                    assert_eq!((got_max, got_min, wm.count(), wn.count()), before, "t {t}");
                     continue;
                 }
                 kept.push((t, v));
@@ -731,18 +753,42 @@ mod late_sample_tests {
     }
 
     #[test]
-    fn first_sample_and_reset_have_no_floor() {
+    fn reset_forgets_the_last_timestamp() {
+        // 5 is before 1000: late without the reset, taken after it.
         let mut wm = WindowedMax::<i64>::new(100).unwrap();
-        assert_eq!(wm.update(u64::MAX, 7), Some(7));
+        assert_eq!(wm.update(1000, 7), Some(7));
+        assert_eq!(wm.update(5, 9), Some(7));
         wm.reset();
         assert_eq!(wm.update(5, 3), Some(3));
         assert_eq!(wm.count(), 1);
 
         let mut wn = WindowedMin::<i64>::new(100).unwrap();
-        assert_eq!(wn.update(u64::MAX, 7), Some(7));
+        assert_eq!(wn.update(1000, 7), Some(7));
+        assert_eq!(wn.update(5, 1), Some(7));
         wn.reset();
         assert_eq!(wn.update(5, 9), Some(9));
         assert_eq!(wn.count(), 1);
+    }
+
+    #[test]
+    fn the_integer_limits_are_values_like_any_other() {
+        let mut wm = WindowedMax::<i64>::new(10).unwrap();
+        assert_eq!(wm.update(0, i64::MIN), Some(i64::MIN));
+        assert_eq!(wm.update(1, i64::MAX), Some(i64::MAX));
+        assert_eq!(wm.update(12, i64::MIN), Some(i64::MIN));
+
+        let mut wn = WindowedMin::<i64>::new(10).unwrap();
+        assert_eq!(wn.update(0, i64::MAX), Some(i64::MAX));
+        assert_eq!(wn.update(1, i64::MIN), Some(i64::MIN));
+        assert_eq!(wn.update(12, i64::MAX), Some(i64::MAX));
+    }
+
+    #[test]
+    fn equal_timestamps_are_taken_by_the_minimum_too() {
+        let mut wn = WindowedMin::<i64>::new(100).unwrap();
+        assert_eq!(wn.update(10, 5), Some(5));
+        assert_eq!(wn.update(10, 3), Some(3));
+        assert_eq!(wn.count(), 2);
     }
 
     proptest! {

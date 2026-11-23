@@ -5,10 +5,9 @@
 //! one of the sealed traits here. The traits are implemented for exactly the
 //! supported primitive types and cannot be implemented outside this crate;
 //! you name them only as bounds (`fn f<T: Sample>(d: &mut Drawdown<T>)`),
-//! never implement them. Where a method's
-//! signature differs by type (float `update` returns `Result` because it
-//! rejects NaN and infinity; integer `update` cannot fail), the method is
-//! implemented per instantiation and documented on it.
+//! never implement them. Where a method exists for one type only (a float
+//! `checked_update`, say), it is implemented for that instantiation and
+//! documented on it.
 
 use core::fmt::Debug;
 use core::ops::{Add, Sub};
@@ -43,6 +42,9 @@ pub trait Sample:
 
     /// Whether the value is a NaN. Never true for integers.
     fn is_nan(self) -> bool;
+
+    /// The absolute value. `i64::MIN` saturates to `i64::MAX`.
+    fn magnitude(self) -> Self;
 
     /// Whether `self` lies more than `threshold` away from `other`, exactly:
     /// `|self - other| > threshold`, computed without overflow for integers.
@@ -241,6 +243,11 @@ impl Sample for f64 {
     }
 
     #[inline]
+    fn magnitude(self) -> f64 {
+        self.abs()
+    }
+
+    #[inline]
     fn further_than(self, other: Self, threshold: Self) -> bool {
         (self - other).abs() > threshold
     }
@@ -297,6 +304,11 @@ impl Sample for i64 {
     #[inline]
     fn is_nan(self) -> bool {
         false
+    }
+
+    #[inline]
+    fn magnitude(self) -> i64 {
+        self.saturating_abs()
     }
 
     #[inline]

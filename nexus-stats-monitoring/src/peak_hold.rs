@@ -1,22 +1,24 @@
 use nexus_stats_core::Sample;
 
-/// Peak hold with decay — instant attack, configurable hold, then decay.
+/// Amplitude tracker: follows the magnitude of a signal up at once, holds
+/// each peak, then lets it decay.
 ///
-/// Captures peaks instantly and holds them for a configurable number of
-/// samples. After the hold, `PeakHold<f64>` decays the peak exponentially
-/// by `decay_rate` per sample, capturing any sample above the decayed
-/// peak; `PeakHold<i64>` drops the peak to the current sample (integers
-/// have no fractional decay).
+/// The magnitude of every sample is tracked, so `-5` is a level of `5`.
+/// A larger magnitude is taken as the peak immediately and held for
+/// `hold_samples` updates. After the hold, `PeakHold<f64>` multiplies the
+/// peak by `decay_rate` per sample, taking any sample at or above the
+/// decayed peak; `PeakHold<i64>` drops the peak to the current sample
+/// (integers have no fractional decay).
 ///
 /// A NaN is ignored. An infinite sample becomes a peak that holds until
 /// [`reset`](Self::reset); `PeakHold<f64>` has a `checked_update` that
-/// refuses it. The decay multiplies the peak, so it suits magnitudes: a
-/// negative peak moves up toward zero.
+/// refuses it.
 ///
 /// # Use Cases
-/// - VU meter / level indicator behavior
-/// - Peak envelope tracking
-/// - "What was the recent peak?" with graceful decay
+/// - A level that stays up for a while after a burst ends, so a control
+///   driven by it does not release and trigger again
+/// - A recent worst case that fades: latency, queue depth, message size
+/// - A scale for normalizing a signal by its recent peak magnitude
 ///
 /// # Weighting clock
 ///
@@ -86,17 +88,20 @@ impl<T: Sample> PeakHold<T> {
     /// Feeds a sample and returns the peak, or `None` if no sample has been
     /// taken yet.
     ///
-    /// A NaN is ignored, as [`f64::max`] ignores one: it is not a peak and
-    /// does not count as a step. An infinite sample becomes a peak that
-    /// does not decay; [`PeakHold::<f64>::checked_update`] refuses it.
+    /// The magnitude of `sample` is what is tracked. A NaN is ignored, as
+    /// [`f64::max`] ignores one: it is not a peak and does not count as a
+    /// step. An infinite sample becomes a peak that does not decay;
+    /// [`PeakHold::<f64>::checked_update`] refuses it. For integers,
+    /// `i64::MIN` counts as `i64::MAX`.
     #[inline]
     pub fn update(&mut self, sample: T) -> Option<T> {
         if sample.is_nan() {
             return self.peak();
         }
+        let sample = sample.magnitude();
         self.count += 1;
-        // Instant attack: a new peak, or the very first sample.
-        if sample >= self.peak || self.count == 1 {
+        // Instant attack: a new peak. The first sample always is one.
+        if sample >= self.peak {
             return Some(self.capture(sample));
         }
         // Hold period.
@@ -191,19 +196,16 @@ impl PeakHoldBuilder<f64> {
 
 impl PeakHoldBuilder<i64> {
     /// Builds the tracker.
-    ///
-    /// # Errors
-    ///
-    /// Never fails for `i64`; the `Result` keeps the builder shape uniform.
     #[inline]
-    pub fn build(self) -> Result<PeakHold<i64>, nexus_stats_core::ConfigError> {
-        Ok(PeakHold {
+    #[must_use]
+    pub fn build(self) -> PeakHold<i64> {
+        PeakHold {
             peak: 0,
             hold_samples: self.hold_samples,
             hold_remaining: 0,
             decay: (),
             count: 0,
-        })
+        }
     }
 }
 
@@ -211,18 +213,50 @@ impl PeakHoldBuilder<i64> {
 mod tests {
     use super::*;
 
-    // #763: the float form used to return 0.0 for a negative-only stream
-    // because the peak started at zero. It now seeds from the first sample.
     #[test]
-    fn negative_only_stream_returns_its_true_peak() {
+    fn the_magnitude_of_a_sample_is_tracked() {
         let mut ph = PeakHold::<f64>::builder()
             .hold_samples(1)
-            .decay_rate(0.9)
+            .decay_rate(0.5)
             .build()
             .unwrap();
-        assert_eq!(ph.update(-5.0).unwrap(), -5.0);
-        assert_eq!(ph.update(-3.0).unwrap(), -3.0);
-        assert_eq!(ph.update(-4.0).unwrap(), -3.0, "held");
+        assert_eq!(ph.update(-5.0), Some(5.0));
+        assert_eq!(ph.update(3.0), Some(5.0), "held");
+        assert_eq!(ph.update(-1.0), Some(2.5), "decayed");
+        assert_eq!(ph.update(-4.0), Some(4.0), "a new peak");
+
+        let mut ph = PeakHold::<i64>::builder().build();
+        assert_eq!(ph.update(-5), Some(5));
+        assert_eq!(ph.update(-3), Some(3));
+        assert_eq!(ph.update(i64::MIN), Some(i64::MAX));
+    }
+
+    /// The peak is never negative and never below the magnitude just fed.
+    #[test]
+    fn the_peak_is_at_least_the_newest_magnitude() {
+        let mut state = 0x2545_F491_4F6C_DD1Du64;
+        for (hold, rate) in [(0, 0.5), (3, 0.9), (1, 1.0), (7, 1e-3)] {
+            let mut ph = PeakHold::<f64>::builder()
+                .hold_samples(hold)
+                .decay_rate(rate)
+                .build()
+                .unwrap();
+            let mut previous = 0.0f64;
+            for _ in 0..50_000 {
+                state ^= state << 13;
+                state ^= state >> 7;
+                state ^= state << 17;
+                let x = (state % 2001) as f64 - 1000.0;
+                let peak = ph.update(x).unwrap();
+                assert!(peak >= x.abs(), "peak {peak} below |{x}|");
+                // It only rises to the new magnitude, never past it.
+                assert!(
+                    peak <= previous.max(x.abs()),
+                    "peak {peak} after {previous}, {x}"
+                );
+                previous = peak;
+            }
+        }
     }
 
     #[test]
@@ -281,7 +315,7 @@ mod tests {
 
     #[test]
     fn i64_hold() {
-        let mut ph = PeakHold::<i64>::builder().hold_samples(3).build().unwrap();
+        let mut ph = PeakHold::<i64>::builder().hold_samples(3).build();
         let _ = ph.update(100);
         assert_eq!(ph.update(50), Some(100)); // held
         assert_eq!(ph.update(50), Some(100)); // held
@@ -310,7 +344,7 @@ mod tests {
     fn there_is_no_peak_before_the_first_sample() {
         let ph = PeakHold::<f64>::builder().decay_rate(0.9).build().unwrap();
         assert_eq!(ph.peak(), None);
-        let ph = PeakHold::<i64>::builder().build().unwrap();
+        let ph = PeakHold::<i64>::builder().build();
         assert_eq!(ph.peak(), None);
     }
 
@@ -354,10 +388,10 @@ mod tests {
         }
         ph.reset();
         assert_eq!(ph.update(1.0), Some(1.0));
-        // Negative infinity is only a very low sample: the next one beats it.
+        // Negative infinity has the same magnitude.
         ph.reset();
-        assert_eq!(ph.update(f64::NEG_INFINITY), Some(f64::NEG_INFINITY));
-        assert_eq!(ph.update(-3.0), Some(-3.0));
+        assert_eq!(ph.update(f64::NEG_INFINITY), Some(f64::INFINITY));
+        assert_eq!(ph.update(-3.0), Some(f64::INFINITY));
     }
 
     #[test]
@@ -383,6 +417,35 @@ mod tests {
             assert_eq!(ph.checked_update(x).unwrap(), untouched.update(x));
         }
         assert_eq!(ph.count(), untouched.count());
+    }
+
+    #[test]
+    fn a_refused_first_sample_leaves_no_peak() {
+        let mut ph = PeakHold::<f64>::builder().decay_rate(0.5).build().unwrap();
+        assert!(ph.checked_update(f64::NAN).is_err());
+        assert!(ph.checked_update(f64::INFINITY).is_err());
+        assert_eq!((ph.peak(), ph.count()), (None, 0));
+        assert_eq!(ph.checked_update(-2.0), Ok(Some(2.0)));
+    }
+
+    #[test]
+    fn no_hold_and_no_decay_keeps_the_highest_magnitude() {
+        let mut ph = PeakHold::<f64>::builder().decay_rate(1.0).build().unwrap();
+        for (x, want) in [(3.0, 3.0), (1.0, 3.0), (5.0, 5.0), (-4.0, 5.0), (-9.0, 9.0)] {
+            assert_eq!(ph.update(x), Some(want));
+        }
+    }
+
+    #[test]
+    fn the_integer_form_starts_over_after_reset() {
+        let mut ph = PeakHold::<i64>::builder().hold_samples(1).build();
+        ph.update(100);
+        ph.reset();
+        assert_eq!(ph.peak(), None);
+        // The first sample is the peak even below the old one.
+        assert_eq!(ph.update(7), Some(7));
+        assert_eq!(ph.update(2), Some(7));
+        assert_eq!(ph.update(2), Some(2));
     }
 
     #[test]
