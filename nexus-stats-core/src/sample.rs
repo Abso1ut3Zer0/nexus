@@ -41,6 +41,9 @@ pub trait Sample:
     /// constructors to validate configuration.
     fn is_finite(self) -> bool;
 
+    /// Whether the value is a NaN. Never true for integers.
+    fn is_nan(self) -> bool;
+
     /// Whether `self` lies more than `threshold` away from `other`, exactly:
     /// `|self - other| > threshold`, computed without overflow for integers.
     fn further_than(self, other: Self, threshold: Self) -> bool;
@@ -233,6 +236,11 @@ impl Sample for f64 {
     }
 
     #[inline]
+    fn is_nan(self) -> bool {
+        f64::is_nan(self)
+    }
+
+    #[inline]
     fn further_than(self, other: Self, threshold: Self) -> bool {
         (self - other).abs() > threshold
     }
@@ -284,6 +292,11 @@ impl Sample for i64 {
     #[inline]
     fn is_finite(self) -> bool {
         true
+    }
+
+    #[inline]
+    fn is_nan(self) -> bool {
+        false
     }
 
     #[inline]

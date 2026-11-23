@@ -29,8 +29,8 @@ struct Stamped<T: Copy> {
 ///
 /// Tracks the maximum value within a `u64` timestamp window using only
 /// 3 stored samples. O(1) amortized per update, `no_std` compatible.
-/// `WindowedMax<f64>` rejects NaN and infinity and returns `Result`;
-/// `WindowedMax<i64>` cannot fail.
+/// A NaN is ignored, as [`f64::max`] ignores one; infinity is a value
+/// like any other.
 ///
 /// # Use Cases
 /// - Max throughput tracking
@@ -129,42 +129,31 @@ impl<T: Sample> WindowedMax<T> {
         self.count = 0;
     }
 
+    /// Feeds a value at `timestamp` and returns the maximum over the
+    /// window, or `None` if no value has been taken yet.
+    ///
+    /// A NaN is ignored, as [`f64::max`] ignores one, and so is a value
+    /// timestamped before the last one taken: the window and the count stay
+    /// as they were. Infinity is a value like any other.
     #[inline]
-    fn fold(&mut self, timestamp: u64, value: T) -> T {
-        if self.count > 0 && is_late(timestamp, self.last) {
-            return self.samples[0].value;
+    pub fn update(&mut self, timestamp: u64, value: T) -> Option<T> {
+        if value.is_nan() || (self.count > 0 && is_late(timestamp, self.last)) {
+            return self.max();
         }
-        self.count += 1;
         self.last = timestamp;
-        running(&mut self.samples, self.window, timestamp, value, |a, b| {
-            a >= b
-        })
-    }
-}
-
-impl WindowedMax<f64> {
-    /// Feeds a sample at `timestamp`. Returns the current windowed maximum.
-    ///
-    /// # Errors
-    ///
-    /// Returns `DataError::NotANumber` if the value is NaN, or
-    /// `DataError::Infinite` if the value is infinite.
-    #[inline]
-    pub fn update(
-        &mut self,
-        timestamp: u64,
-        value: f64,
-    ) -> Result<f64, nexus_stats_core::DataError> {
-        check_finite!(value);
-        Ok(self.fold(timestamp, value))
-    }
-}
-
-impl WindowedMax<i64> {
-    /// Feeds a sample at `timestamp`. Returns the current windowed maximum.
-    #[inline]
-    pub fn update(&mut self, timestamp: u64, value: i64) -> i64 {
-        self.fold(timestamp, value)
+        self.count += 1;
+        // The first value is the maximum, whatever it is.
+        if self.count == 1 {
+            self.samples = [Stamped { timestamp, value }; 3];
+            return Some(value);
+        }
+        Some(running(
+            &mut self.samples,
+            self.window,
+            timestamp,
+            value,
+            |a, b| a >= b,
+        ))
     }
 }
 
@@ -172,8 +161,8 @@ impl WindowedMax<i64> {
 ///
 /// Tracks the minimum value within a `u64` timestamp window using only
 /// 3 stored samples. O(1) amortized per update, `no_std` compatible.
-/// `WindowedMin<f64>` rejects NaN and infinity and returns `Result`;
-/// `WindowedMin<i64>` cannot fail.
+/// A NaN is ignored, as [`f64::min`] ignores one; infinity is a value
+/// like any other.
 ///
 /// # Use Cases
 /// - Min RTT tracking (BBR)
@@ -273,42 +262,31 @@ impl<T: Sample> WindowedMin<T> {
         self.count = 0;
     }
 
+    /// Feeds a value at `timestamp` and returns the minimum over the
+    /// window, or `None` if no value has been taken yet.
+    ///
+    /// A NaN is ignored, as [`f64::min`] ignores one, and so is a value
+    /// timestamped before the last one taken: the window and the count stay
+    /// as they were. Infinity is a value like any other.
     #[inline]
-    fn fold(&mut self, timestamp: u64, value: T) -> T {
-        if self.count > 0 && is_late(timestamp, self.last) {
-            return self.samples[0].value;
+    pub fn update(&mut self, timestamp: u64, value: T) -> Option<T> {
+        if value.is_nan() || (self.count > 0 && is_late(timestamp, self.last)) {
+            return self.min();
         }
-        self.count += 1;
         self.last = timestamp;
-        running(&mut self.samples, self.window, timestamp, value, |a, b| {
-            a <= b
-        })
-    }
-}
-
-impl WindowedMin<f64> {
-    /// Feeds a sample at `timestamp`. Returns the current windowed minimum.
-    ///
-    /// # Errors
-    ///
-    /// Returns `DataError::NotANumber` if the value is NaN, or
-    /// `DataError::Infinite` if the value is infinite.
-    #[inline]
-    pub fn update(
-        &mut self,
-        timestamp: u64,
-        value: f64,
-    ) -> Result<f64, nexus_stats_core::DataError> {
-        check_finite!(value);
-        Ok(self.fold(timestamp, value))
-    }
-}
-
-impl WindowedMin<i64> {
-    /// Feeds a sample at `timestamp`. Returns the current windowed minimum.
-    #[inline]
-    pub fn update(&mut self, timestamp: u64, value: i64) -> i64 {
-        self.fold(timestamp, value)
+        self.count += 1;
+        // The first value is the minimum, whatever it is.
+        if self.count == 1 {
+            self.samples = [Stamped { timestamp, value }; 3];
+            return Some(value);
+        }
+        Some(running(
+            &mut self.samples,
+            self.window,
+            timestamp,
+            value,
+            |a, b| a <= b,
+        ))
     }
 }
 
@@ -412,8 +390,8 @@ mod raw_tests {
     #[test]
     fn raw_min_basic() {
         let mut wm = WindowedMin::<i64>::new(100).unwrap();
-        assert_eq!(wm.update(0, 100), 100);
-        assert_eq!(wm.update(1, 50), 50);
+        assert_eq!(wm.update(0, 100), Some(100));
+        assert_eq!(wm.update(1, 50), Some(50));
     }
 
     #[test]
@@ -422,26 +400,99 @@ mod raw_tests {
     }
 
     #[test]
-    fn rejects_nan_and_inf() {
-        let mut wm = WindowedMax::<f64>::new(100).unwrap();
-        assert!(matches!(
-            wm.update(0, f64::NAN),
-            Err(nexus_stats_core::DataError::NotANumber)
-        ));
-        assert!(matches!(
-            wm.update(0, f64::INFINITY),
-            Err(nexus_stats_core::DataError::Infinite)
-        ));
+    fn nothing_is_reported_before_the_first_value() {
+        let wm = WindowedMax::<f64>::new(100).unwrap();
+        assert_eq!(wm.max(), None);
+        let wn = WindowedMin::<i64>::new(100).unwrap();
+        assert_eq!(wn.min(), None);
+    }
 
+    #[test]
+    fn a_nan_is_ignored_and_changes_nothing() {
+        let mut wm = WindowedMax::<f64>::new(100).unwrap();
         let mut wn = WindowedMin::<f64>::new(100).unwrap();
-        assert!(matches!(
-            wn.update(0, f64::NAN),
-            Err(nexus_stats_core::DataError::NotANumber)
-        ));
-        assert!(matches!(
-            wn.update(0, f64::NEG_INFINITY),
-            Err(nexus_stats_core::DataError::Infinite)
-        ));
+        // Before any value there is nothing to report.
+        assert_eq!(wm.update(0, f64::NAN), None);
+        assert_eq!(wn.update(0, f64::NAN), None);
+        assert_eq!((wm.count(), wn.count()), (0, 0));
+
+        assert_eq!(wm.update(10, 5.0), Some(5.0));
+        assert_eq!(wn.update(10, 5.0), Some(5.0));
+        // Later, even at a timestamp far ahead: the window does not move.
+        assert_eq!(wm.update(10_000, f64::NAN), Some(5.0));
+        assert_eq!(wn.update(10_000, f64::NAN), Some(5.0));
+        assert_eq!((wm.count(), wn.count()), (1, 1));
+        // So a value at an earlier timestamp than the NaN's is still taken.
+        assert_eq!(wm.update(20, 7.0), Some(7.0));
+        assert_eq!(wn.update(20, 3.0), Some(3.0));
+    }
+
+    #[test]
+    fn infinity_is_a_value_like_any_other() {
+        let mut wm = WindowedMax::<f64>::new(10).unwrap();
+        assert_eq!(wm.update(0, 1.0), Some(1.0));
+        assert_eq!(wm.update(1, f64::INFINITY), Some(f64::INFINITY));
+        assert_eq!(wm.update(5, 2.0), Some(f64::INFINITY));
+        // And it ages out of the window like one.
+        assert_eq!(wm.update(12, 3.0), Some(3.0));
+
+        // An infinity is the extreme even as the very first value.
+        let mut low = WindowedMax::<f64>::new(10).unwrap();
+        assert_eq!(low.update(0, f64::NEG_INFINITY), Some(f64::NEG_INFINITY));
+        assert_eq!(low.max(), Some(f64::NEG_INFINITY));
+        let mut high = WindowedMin::<f64>::new(10).unwrap();
+        assert_eq!(high.update(0, f64::INFINITY), Some(f64::INFINITY));
+        assert_eq!(high.min(), Some(f64::INFINITY));
+    }
+
+    /// Floats with infinities and NaNs mixed in, against the window kept
+    /// in full: a NaN changes nothing, and what is reported is always a
+    /// value from inside the window that does not beat the true extreme.
+    #[test]
+    fn floats_with_nans_and_infinities_stay_inside_the_window() {
+        let mut state = 0x9E37_79B9_7F4A_7C15u64;
+        let mut next = move || {
+            state ^= state << 13;
+            state ^= state >> 7;
+            state ^= state << 17;
+            state
+        };
+        for win in [1u64, 7, 50, 400] {
+            let mut wm = WindowedMax::<f64>::new(win).unwrap();
+            let mut wn = WindowedMin::<f64>::new(win).unwrap();
+            let mut kept: Vec<(u64, f64)> = Vec::new();
+            let mut t = 0u64;
+            for _ in 0..20_000 {
+                t += next() % 5;
+                let draw = next() % 100;
+                let v = match draw {
+                    0..=7 => f64::NAN,
+                    8 => f64::INFINITY,
+                    9 => f64::NEG_INFINITY,
+                    _ => (next() % 2001) as f64 - 1000.0,
+                };
+                let before = (wm.max(), wn.min(), wm.count());
+                let (got_max, got_min) = (wm.update(t, v), wn.update(t, v));
+                if v.is_nan() {
+                    assert_eq!((got_max, got_min, wm.count()), before, "t {t}");
+                    continue;
+                }
+                kept.push((t, v));
+                kept.retain(|&(ts, _)| t - ts <= win);
+                let inside = || kept.iter().map(|&(_, v)| v);
+                let exact_max = inside().fold(f64::NEG_INFINITY, f64::max);
+                let exact_min = inside().fold(f64::INFINITY, f64::min);
+                let (got_max, got_min) = (got_max.unwrap(), got_min.unwrap());
+                assert!(
+                    got_max <= exact_max && got_min >= exact_min,
+                    "win {win} t {t}"
+                );
+                assert!(inside().any(|v| v == got_max), "win {win} t {t}: {got_max}");
+                assert!(inside().any(|v| v == got_min), "win {win} t {t}: {got_min}");
+                // The newest value is always in the window.
+                assert!(got_max >= v && got_min <= v, "win {win} t {t}");
+            }
+        }
     }
 
     // The four-sample counterexample from #758: window 100, samples (t, v).
@@ -536,8 +587,8 @@ mod raw_tests {
             t += 1 + rng.below(4); // 1..=4 ticks apart
             let v = value(&mut rng);
             exact.push(t, v);
-            let got_max = pmax.update(t, v);
-            let got_min = pmin.update(t, v);
+            let got_max = pmax.update(t, v).unwrap();
+            let got_min = pmin.update(t, v).unwrap();
             assert!(
                 got_max <= exact.max(),
                 "max over-reported at t={t}: {got_max} > {}",
@@ -612,8 +663,8 @@ mod proptests {
                 hist.push((t, v));
                 let exact_max = hist.iter().filter(|&&(ts, _)| t - ts <= win).map(|&(_, v)| v).max().unwrap();
                 let exact_min = hist.iter().filter(|&&(ts, _)| t - ts <= win).map(|&(_, v)| v).min().unwrap();
-                prop_assert!(pmax.update(t, v) <= exact_max);
-                prop_assert!(pmin.update(t, v) >= exact_min);
+                prop_assert!(pmax.update(t, v).unwrap() <= exact_max);
+                prop_assert!(pmin.update(t, v).unwrap() >= exact_min);
             }
         }
     }
@@ -631,14 +682,14 @@ mod late_sample_tests {
         let mut wm = WindowedMax::<i64>::new(100).unwrap();
         let _ = wm.update(1000, 50);
         let _ = wm.update(1030, 40);
-        assert_eq!(wm.update(1020, 1), 50);
+        assert_eq!(wm.update(1020, 1), Some(50));
         assert_eq!(wm.max(), Some(50));
         assert_eq!(wm.count(), 2);
 
         let mut wn = WindowedMin::<i64>::new(100).unwrap();
         let _ = wn.update(1000, 5);
         let _ = wn.update(1030, 6);
-        assert_eq!(wn.update(1020, 99), 5);
+        assert_eq!(wn.update(1020, 99), Some(5));
         assert_eq!(wn.min(), Some(5));
         assert_eq!(wn.count(), 2);
     }
@@ -662,7 +713,7 @@ mod late_sample_tests {
     fn equal_timestamp_is_accepted() {
         let mut wm = WindowedMax::<i64>::new(100).unwrap();
         let _ = wm.update(1000, 10);
-        assert_eq!(wm.update(1000, 30), 30);
+        assert_eq!(wm.update(1000, 30), Some(30));
         assert_eq!(wm.count(), 2);
     }
 
@@ -670,29 +721,29 @@ mod late_sample_tests {
     fn lateness_follows_the_wrapping_counter() {
         let mut wm = WindowedMax::<i64>::new(100).unwrap();
         let _ = wm.update(u64::MAX - 5, 10);
-        assert_eq!(wm.update(3, 5), 10); // forward across the wrap: 10 still in window
-        assert_eq!(wm.update(u64::MAX - 1, 99), 10); // late across the wrap: ignored
+        assert_eq!(wm.update(3, 5), Some(10)); // forward across the wrap: 10 still in window
+        assert_eq!(wm.update(u64::MAX - 1, 99), Some(10)); // late across the wrap: ignored
         assert_eq!(wm.count(), 2);
 
         let mut wn = WindowedMin::<i64>::new(100).unwrap();
         let _ = wn.update(u64::MAX - 5, 10);
-        assert_eq!(wn.update(3, 20), 10);
-        assert_eq!(wn.update(u64::MAX - 1, -99), 10);
+        assert_eq!(wn.update(3, 20), Some(10));
+        assert_eq!(wn.update(u64::MAX - 1, -99), Some(10));
         assert_eq!(wn.count(), 2);
     }
 
     #[test]
     fn first_sample_and_reset_have_no_floor() {
         let mut wm = WindowedMax::<i64>::new(100).unwrap();
-        assert_eq!(wm.update(u64::MAX, 7), 7);
+        assert_eq!(wm.update(u64::MAX, 7), Some(7));
         wm.reset();
-        assert_eq!(wm.update(5, 3), 3);
+        assert_eq!(wm.update(5, 3), Some(3));
         assert_eq!(wm.count(), 1);
 
         let mut wn = WindowedMin::<i64>::new(100).unwrap();
-        assert_eq!(wn.update(u64::MAX, 7), 7);
+        assert_eq!(wn.update(u64::MAX, 7), Some(7));
         wn.reset();
-        assert_eq!(wn.update(5, 9), 9);
+        assert_eq!(wn.update(5, 9), Some(9));
         assert_eq!(wn.count(), 1);
     }
 
@@ -715,8 +766,8 @@ mod late_sample_tests {
             let mut t = 1_000_000u64; // far from the wrap: plain `>=` is the reference
             for (step, v) in steps {
                 t = t.wrapping_add_signed(step);
-                let got_max = pmax.update(t, v);
-                let got_min = pmin.update(t, v);
+                let got_max = pmax.update(t, v).unwrap();
+                let got_min = pmin.update(t, v).unwrap();
                 let last = kept.last().map(|&(ts, _)| ts);
                 if last.is_none_or(|l| t >= l) {
                     kept.push((t, v));

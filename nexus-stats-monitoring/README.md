@@ -6,10 +6,8 @@ Monitors for a running system, for [nexus-stats](https://crates.io/crates/nexus-
 
 **Highs and lows**
 
-- **RunningMax / RunningMin**: the extreme since the last reset
 - **WindowedMax / WindowedMin**: the extreme over a sliding window of time
 - **PeakHold**: a peak that decays
-- **MaxGauge**: the maximum since it was last read
 - **Drawdown**: the fall from the highest value seen
 
 **Rates and timing**
@@ -31,12 +29,12 @@ Each type's docs give its definition, what one `update` is worth (its weighting 
 ## Example
 
 ```rust
-use nexus_stats_monitoring::RunningMax;
+use nexus_stats_monitoring::WindowedMax;
 
-// The slowest request seen, in microseconds.
-let mut slowest = RunningMax::<i64>::new();
-for micros in [120, 118, 431, 125] {
-    slowest.update(micros);
+// The slowest request over the last 1,000 ticks, in microseconds.
+let mut slowest = WindowedMax::<i64>::new(1_000).unwrap();
+for (tick, micros) in [(0, 120), (300, 431), (600, 118), (900, 125)] {
+    slowest.update(tick, micros);
 }
 assert_eq!(slowest.max(), Some(431));
 ```
@@ -56,13 +54,13 @@ assert_eq!(slowest.max(), Some(431));
 Enable the `monitoring` feature on `nexus-stats` for unified import paths:
 
 ```rust,ignore
-use nexus_stats::monitoring::RunningMax;
+use nexus_stats::monitoring::WindowedMax;
 ```
 
 Or depend on this crate directly:
 
 ```rust
-use nexus_stats_monitoring::RunningMax;
+use nexus_stats_monitoring::WindowedMax;
 ```
 
 ## License

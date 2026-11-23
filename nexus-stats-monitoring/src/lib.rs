@@ -9,11 +9,9 @@
 //!
 //! ## Highs and lows
 //!
-//! - [`RunningMax`] and [`RunningMin`]: the extreme since the last reset.
 //! - [`WindowedMax`] and [`WindowedMin`]: the extreme over a sliding window
 //!   of time.
 //! - [`PeakHold`]: a peak that decays.
-//! - [`MaxGauge`]: the maximum since it was last read.
 //! - [`Drawdown`]: the fall from the highest value seen.
 //!
 //! ## Rates and timing
@@ -58,10 +56,8 @@ mod event_rate;
 mod hawkes;
 mod jitter;
 mod liveness;
-mod max_gauge;
 mod peak_hold;
 mod poll_saturation;
-mod running;
 mod sojourn_saturation;
 mod windowed;
 pub use codel::*;
@@ -72,10 +68,8 @@ pub use event_rate::*;
 pub use hawkes::*;
 pub use jitter::*;
 pub use liveness::*;
-pub use max_gauge::*;
 pub use peak_hold::*;
 pub use poll_saturation::*;
-pub use running::*;
 pub use sojourn_saturation::*;
 pub use windowed::*;
 
