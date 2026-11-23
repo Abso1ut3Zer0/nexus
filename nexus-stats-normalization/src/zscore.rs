@@ -1,7 +1,7 @@
 use core::marker::PhantomData;
 
 use nexus_stats_core::Float;
-use nexus_stats_core::statistics::{EwmVar, MeanVariance};
+use nexus_stats_smoothing::{EwmVar, MeanVariance};
 
 /// Z-score normalizer over an exponentially weighted mean and variance.
 ///

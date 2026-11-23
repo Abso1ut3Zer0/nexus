@@ -1,4 +1,4 @@
-use crate::Sample;
+use nexus_stats_core::Sample;
 
 /// Slew rate limiter — clamps output change per sample.
 ///
@@ -29,9 +29,9 @@ impl<T: Sample> Slew<T> {
     /// strictly positive.
     #[inline]
     #[allow(clippy::neg_cmp_op_on_partial_ord)]
-    pub fn new(max_rate: T) -> Result<Self, crate::ConfigError> {
+    pub fn new(max_rate: T) -> Result<Self, nexus_stats_core::ConfigError> {
         if !max_rate.is_finite() || !(max_rate > T::ZERO) {
-            return Err(crate::ConfigError::Invalid(
+            return Err(nexus_stats_core::ConfigError::Invalid(
                 "slew max_rate must be finite and positive",
             ));
         }
@@ -93,7 +93,7 @@ impl Slew<f64> {
     /// Returns `DataError::NotANumber` if the sample is NaN, or
     /// `DataError::Infinite` if the sample is infinite.
     #[inline]
-    pub fn update(&mut self, sample: f64) -> Result<f64, crate::DataError> {
+    pub fn update(&mut self, sample: f64) -> Result<f64, nexus_stats_core::DataError> {
         check_finite!(sample);
         Ok(self.fold(sample))
     }
@@ -173,11 +173,11 @@ mod tests {
     fn rejects_zero_max_rate() {
         assert!(matches!(
             Slew::<f64>::new(0.0),
-            Err(crate::ConfigError::Invalid(_))
+            Err(nexus_stats_core::ConfigError::Invalid(_))
         ));
         assert!(matches!(
             Slew::<i64>::new(0),
-            Err(crate::ConfigError::Invalid(_))
+            Err(nexus_stats_core::ConfigError::Invalid(_))
         ));
     }
 
@@ -186,15 +186,15 @@ mod tests {
         let mut s = Slew::<f64>::new(10.0).unwrap();
         assert!(matches!(
             s.update(f64::NAN),
-            Err(crate::DataError::NotANumber)
+            Err(nexus_stats_core::DataError::NotANumber)
         ));
         assert!(matches!(
             s.update(f64::INFINITY),
-            Err(crate::DataError::Infinite)
+            Err(nexus_stats_core::DataError::Infinite)
         ));
         assert!(matches!(
             s.update(f64::NEG_INFINITY),
-            Err(crate::DataError::Infinite)
+            Err(nexus_stats_core::DataError::Infinite)
         ));
     }
 }

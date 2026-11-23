@@ -43,10 +43,8 @@ use nexus_stats::{
         Autocorrelation, CrossCorrelation, Entropy, HalfLife, Hurst, PredictiveInfoBound,
         TransferEntropy,
     },
-    smoothing::{AsymEma, Ema, Hampel, Holt, Kama, Slew, Spring, WindowedMedian},
-    statistics::{
-        Covariance, EwmVar, FirstDiff, HarmonicMean, Moments, Percentile, SecondDiff, Welford,
-    },
+    smoothing::{AsymEma, Ema, EwmVar, Hampel, Holt, Kama, Slew, Spring, WindowedMedian},
+    statistics::{Covariance, FirstDiff, HarmonicMean, Moments, Percentile, SecondDiff, Welford},
     trading::{Amihud, BipowerVariation, Cvar, Lpm, RollSpread, TwoScaleRv, VarianceRatio},
 };
 

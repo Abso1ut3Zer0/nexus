@@ -10,6 +10,12 @@ contained.
 
 ## [Unreleased]
 
+### Added (moved in, step 3)
+
+- `detection::Cusum` and `detection::DistributionShift`, from
+  `nexus-stats-core`. No change to either. The crate now holds every
+  detector.
+
 ### Added (moved in)
 
 - `signal::Hurst` and `signal::HalfLife`, from `nexus-stats-core`'s

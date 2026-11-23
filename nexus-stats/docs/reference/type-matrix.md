@@ -22,8 +22,8 @@ See [Integer vs Float](../guides/integer-vs-float.md) for the caller rules and
 
 | Type | Numeric | Feature | Crate (module) |
 |------|---------|---------|----------------|
-| `Cusum` | `f64` | — | core (`detection`) |
-| `DistributionShift` | `f64` | `std\|libm` | core (`detection`) |
+| `Cusum` | `f64` | — | detection (`detection`) |
+| `DistributionShift` | `f64` | `std\|libm` | detection (`detection`) |
 | `Mosum` | `f64` | `alloc` | detection (`detection`) |
 | `ShiryaevRoberts` | `f64` | `std\|libm` | detection (`detection`) |
 | `MultiGate` | `f64` | — | detection (`detection`) |
@@ -39,9 +39,9 @@ See [Integer vs Float](../guides/integer-vs-float.md) for the caller rules and
 
 | Type | Numeric | Feature | Crate (module) |
 |------|---------|---------|----------------|
-| `Ema` | `f64` | — | core (`smoothing`) |
-| `AsymEma` | `f64` | — | core (`smoothing`) |
-| `Slew<T>` | `T: Sample` | — | core (`smoothing`) |
+| `Ema` | `f64` | — | smoothing |
+| `AsymEma` | `f64` | — | smoothing |
+| `Slew<T>` | `T: Sample` | — | smoothing |
 | `Holt` | `f64` | — | smoothing |
 | `Kalman1d` | `f64` | — | regression (`estimation`) |
 | `Spring` | `f64` | — | smoothing |
@@ -56,7 +56,7 @@ See [Integer vs Float](../guides/integer-vs-float.md) for the caller rules and
 |------|---------|---------|----------------|
 | `Welford` | `f64` | — | core (`statistics`) |
 | `Moments` | `f64` | — | core (`statistics`) |
-| `EwmVar` | `f64` | — | core (`statistics`) |
+| `EwmVar` | `f64` | — | smoothing |
 | `Covariance` | `f64` | — | core (`statistics`) |
 | `CovarianceMatrix` | `f64` | `alloc` | core (`statistics`) |
 | `HarmonicMean` | `f64` | — | core (`statistics`) |

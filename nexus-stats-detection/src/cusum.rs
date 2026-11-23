@@ -1,4 +1,4 @@
-use crate::Direction;
+use nexus_stats_core::Direction;
 
 /// CUSUM — Cumulative Sum change detector (Page, 1954).
 ///
@@ -60,7 +60,7 @@ pub struct Cusum {
 /// # Example
 ///
 /// ```
-/// use nexus_stats_core::detection::*;
+/// use nexus_stats_detection::detection::*;
 /// let mut cusum = Cusum::builder(100.0)
 ///     .slack(5.0)
 ///     .threshold(50.0)
@@ -111,7 +111,10 @@ impl Cusum {
     /// Returns `DataError::NotANumber` if the sample is NaN, or
     /// `DataError::Infinite` if the sample is infinite.
     #[inline]
-    pub fn update(&mut self, sample: f64) -> Result<Option<Direction>, crate::DataError> {
+    pub fn update(
+        &mut self,
+        sample: f64,
+    ) -> Result<Option<Direction>, nexus_stats_core::DataError> {
         check_finite!(sample);
         self.count += 1;
 
@@ -205,16 +208,21 @@ impl Cusum {
     /// while a threshold is left to its default (which would be zero and fire
     /// on any deviation). The detector is left unchanged on error.
     #[inline]
-    pub fn reset_with_target(&mut self, new_target: f64) -> Result<(), crate::ConfigError> {
+    pub fn reset_with_target(
+        &mut self,
+        new_target: f64,
+    ) -> Result<(), nexus_stats_core::ConfigError> {
         if !new_target.is_finite() {
-            return Err(crate::ConfigError::Invalid("target must be finite"));
+            return Err(nexus_stats_core::ConfigError::Invalid(
+                "target must be finite",
+            ));
         }
         let slack = CusumBuilder::default_slack(new_target);
         let threshold = CusumBuilder::default_threshold(new_target);
         let default_threshold_in_use =
             !self.threshold_upper_explicit || !self.threshold_lower_explicit;
-        if default_threshold_in_use && !crate::math::positive_finite(threshold) {
-            return Err(crate::ConfigError::Invalid(
+        if default_threshold_in_use && !nexus_stats_core::math::positive_finite(threshold) {
+            return Err(nexus_stats_core::ConfigError::Invalid(
                 "default threshold is zero for target 0; set thresholds explicitly",
             ));
         }
@@ -296,27 +304,29 @@ impl Cusum {
         slack_lower: f64,
         threshold_upper: f64,
         threshold_lower: f64,
-    ) -> Result<(), crate::ConfigError> {
+    ) -> Result<(), nexus_stats_core::ConfigError> {
         if !target.is_finite() {
-            return Err(crate::ConfigError::Invalid("target must be finite"));
+            return Err(nexus_stats_core::ConfigError::Invalid(
+                "target must be finite",
+            ));
         }
-        if !crate::math::nonnegative_finite(slack_upper) {
-            return Err(crate::ConfigError::Invalid(
+        if !nexus_stats_core::math::nonnegative_finite(slack_upper) {
+            return Err(nexus_stats_core::ConfigError::Invalid(
                 "slack_upper must be finite and non-negative",
             ));
         }
-        if !crate::math::nonnegative_finite(slack_lower) {
-            return Err(crate::ConfigError::Invalid(
+        if !nexus_stats_core::math::nonnegative_finite(slack_lower) {
+            return Err(nexus_stats_core::ConfigError::Invalid(
                 "slack_lower must be finite and non-negative",
             ));
         }
-        if !crate::math::positive_finite(threshold_upper) {
-            return Err(crate::ConfigError::Invalid(
+        if !nexus_stats_core::math::positive_finite(threshold_upper) {
+            return Err(nexus_stats_core::ConfigError::Invalid(
                 "threshold_upper must be finite and positive",
             ));
         }
-        if !crate::math::positive_finite(threshold_lower) {
-            return Err(crate::ConfigError::Invalid(
+        if !nexus_stats_core::math::positive_finite(threshold_lower) {
+            return Err(nexus_stats_core::ConfigError::Invalid(
                 "threshold_lower must be finite and positive",
             ));
         }
@@ -464,9 +474,11 @@ impl CusumBuilder {
     ///   the default threshold is 0, so thresholds must be set explicitly.
     /// - Seeds must be finite and non-negative.
     #[inline]
-    pub fn build(self) -> Result<Cusum, crate::ConfigError> {
+    pub fn build(self) -> Result<Cusum, nexus_stats_core::ConfigError> {
         if !self.target.is_finite() {
-            return Err(crate::ConfigError::Invalid("target must be finite"));
+            return Err(nexus_stats_core::ConfigError::Invalid(
+                "target must be finite",
+            ));
         }
         let slack_upper_explicit = self.slack_upper.is_some();
         let slack_lower_explicit = self.slack_lower.is_some();
@@ -486,41 +498,41 @@ impl CusumBuilder {
             .threshold_lower
             .unwrap_or_else(|| Self::default_threshold(self.target));
 
-        if !crate::math::nonnegative_finite(slack_upper) {
-            return Err(crate::ConfigError::Invalid(
+        if !nexus_stats_core::math::nonnegative_finite(slack_upper) {
+            return Err(nexus_stats_core::ConfigError::Invalid(
                 "slack_upper must be finite and non-negative",
             ));
         }
-        if !crate::math::nonnegative_finite(slack_lower) {
-            return Err(crate::ConfigError::Invalid(
+        if !nexus_stats_core::math::nonnegative_finite(slack_lower) {
+            return Err(nexus_stats_core::ConfigError::Invalid(
                 "slack_lower must be finite and non-negative",
             ));
         }
         #[allow(clippy::float_cmp)]
         if self.target == 0.0 && !(threshold_upper_explicit && threshold_lower_explicit) {
-            return Err(crate::ConfigError::Invalid(
+            return Err(nexus_stats_core::ConfigError::Invalid(
                 "default threshold is zero for target 0; set thresholds explicitly",
             ));
         }
-        if !crate::math::positive_finite(threshold_upper) {
-            return Err(crate::ConfigError::Invalid(
+        if !nexus_stats_core::math::positive_finite(threshold_upper) {
+            return Err(nexus_stats_core::ConfigError::Invalid(
                 "threshold_upper must be finite and positive",
             ));
         }
-        if !crate::math::positive_finite(threshold_lower) {
-            return Err(crate::ConfigError::Invalid(
+        if !nexus_stats_core::math::positive_finite(threshold_lower) {
+            return Err(nexus_stats_core::ConfigError::Invalid(
                 "threshold_lower must be finite and positive",
             ));
         }
 
         if self
             .seed_upper
-            .is_some_and(|s| !crate::math::nonnegative_finite(s))
+            .is_some_and(|s| !nexus_stats_core::math::nonnegative_finite(s))
             || self
                 .seed_lower
-                .is_some_and(|s| !crate::math::nonnegative_finite(s))
+                .is_some_and(|s| !nexus_stats_core::math::nonnegative_finite(s))
         {
-            return Err(crate::ConfigError::Invalid(
+            return Err(nexus_stats_core::ConfigError::Invalid(
                 "seed values must be finite and non-negative",
             ));
         }
@@ -691,7 +703,7 @@ mod tests {
 
     #[test]
     fn config_errors_name_the_real_problem() {
-        use crate::ConfigError::Invalid;
+        use nexus_stats_core::ConfigError::Invalid;
         assert_eq!(
             Cusum::builder(f64::NAN).build().unwrap_err(),
             Invalid("target must be finite")
@@ -964,7 +976,7 @@ mod tests {
         let result = Cusum::builder(100.0).slack_upper(-1.0).build();
         assert!(matches!(
             result,
-            Err(crate::ConfigError::Invalid(
+            Err(nexus_stats_core::ConfigError::Invalid(
                 "slack_upper must be finite and non-negative"
             ))
         ));
@@ -975,7 +987,7 @@ mod tests {
         let result = Cusum::builder(100.0).slack_lower(-1.0).build();
         assert!(matches!(
             result,
-            Err(crate::ConfigError::Invalid(
+            Err(nexus_stats_core::ConfigError::Invalid(
                 "slack_lower must be finite and non-negative"
             ))
         ));
@@ -986,7 +998,7 @@ mod tests {
         let result = Cusum::builder(100.0).threshold(0.0).build();
         assert!(matches!(
             result,
-            Err(crate::ConfigError::Invalid(
+            Err(nexus_stats_core::ConfigError::Invalid(
                 "threshold_upper must be finite and positive"
             ))
         ));
@@ -997,7 +1009,7 @@ mod tests {
         let result = Cusum::builder(100.0).threshold_lower(-1.0).build();
         assert!(matches!(
             result,
-            Err(crate::ConfigError::Invalid(
+            Err(nexus_stats_core::ConfigError::Invalid(
                 "threshold_lower must be finite and positive"
             ))
         ));
@@ -1109,15 +1121,15 @@ mod tests {
 
         assert_eq!(
             cusum.update(f64::NAN).unwrap_err(),
-            crate::DataError::NotANumber
+            nexus_stats_core::DataError::NotANumber
         );
         assert_eq!(
             cusum.update(f64::INFINITY).unwrap_err(),
-            crate::DataError::Infinite
+            nexus_stats_core::DataError::Infinite
         );
         assert_eq!(
             cusum.update(f64::NEG_INFINITY).unwrap_err(),
-            crate::DataError::Infinite
+            nexus_stats_core::DataError::Infinite
         );
         // State unchanged after rejected inputs
         assert_eq!(cusum.count(), 0);

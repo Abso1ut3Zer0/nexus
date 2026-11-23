@@ -10,6 +10,10 @@ contained.
 
 ## [Unreleased]
 
+### Changed (dependencies)
+
+- `Amihud` now takes `Ema` from `nexus-stats-smoothing`, a new dependency of this crate.
+
 ### Added
 
 - The crate. `VarianceRatio`, `TwoScaleRv`, `BipowerVariation`, `Amihud`,

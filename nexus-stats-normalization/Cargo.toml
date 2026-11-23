@@ -12,12 +12,13 @@ categories.workspace = true
 
 [features]
 default = ["std"]
-std = ["nexus-stats-core/std", "nexus-stats-monitoring/std", "alloc"]
-alloc = ["nexus-stats-core/alloc", "nexus-stats-monitoring/alloc"]
-libm = ["nexus-stats-core/libm", "nexus-stats-monitoring/libm"]
+std = ["nexus-stats-core/std", "nexus-stats-smoothing/std", "nexus-stats-monitoring/std", "alloc"]
+alloc = ["nexus-stats-core/alloc", "nexus-stats-smoothing/alloc", "nexus-stats-monitoring/alloc"]
+libm = ["nexus-stats-core/libm", "nexus-stats-smoothing/libm", "nexus-stats-monitoring/libm"]
 
 [dependencies]
 nexus-stats-core = { version = "3.0.1", path = "../nexus-stats-core", default-features = false }
+nexus-stats-smoothing = { version = "2.0.0", path = "../nexus-stats-smoothing", default-features = false }
 nexus-stats-monitoring = { version = "0.1.0", path = "../nexus-stats-monitoring", default-features = false }
 
 [lints]

@@ -1,17 +1,19 @@
 #![cfg_attr(not(feature = "std"), no_std)]
 #![warn(missing_docs)]
 
-//! Advanced change detection and signal analysis for [`nexus-stats`](https://docs.rs/nexus-stats).
-//!
-//! This crate provides change detection, anomaly detection, signal analysis,
-//! and hypothesis testing types separated from the core `nexus-stats` crate.
+//! Change detection and signal analysis for
+//! [`nexus-stats`](https://docs.rs/nexus-stats): detectors that say when a
+//! stream's behavior has shifted, measures of how a series behaves over
+//! time, and sequential tests.
 //!
 //! # Which detector?
 //!
 //! Each tests a different question:
 //!
-//! - Has the mean shifted for good? `Cusum` in the core crate, or
-//!   `ShiryaevRoberts` when the size of the shift is known in advance.
+//! - Has the mean shifted for good? `Cusum`, or `ShiryaevRoberts` when the
+//!   size of the shift is known in advance.
+//! - Has the shape changed, with the mean where it was?
+//!   `DistributionShift`.
 //! - Was there a spike that has since passed? `Mosum`.
 //! - Is this one sample an outlier? `AdaptiveThreshold` for roughly normal
 //!   data, `RobustZScore` for heavy tails.
@@ -26,7 +28,7 @@
 //!   `SprtGaussian` for means.
 //!
 //! Types are organized into submodules:
-//! - [`detection`] — MOSUM, Shiryaev-Roberts, AdaptiveThreshold, RobustZ, TrendAlert, MultiGate, PageHinkley, ADWIN, DistDrift, BOCPD
+//! - [`detection`] — Cusum, DistributionShift, MOSUM, Shiryaev-Roberts, AdaptiveThreshold, RobustZ, TrendAlert, MultiGate, PageHinkley, ADWIN, DistDrift, BOCPD
 //! - [`signal`] — Autocorrelation, CrossCorrelation, Hurst, HalfLife, Entropy, TransferEntropy, PredictiveInfoBound
 //! - [`estimation`] — SPRT (Bernoulli, Gaussian)
 
@@ -36,6 +38,7 @@ extern crate alloc;
 extern crate nexus_stats_core;
 
 // Internal modules
+mod cusum;
 mod multi_gate;
 mod page_hinkley;
 mod robust_z;
@@ -51,6 +54,8 @@ mod adwin;
 mod bocpd;
 #[cfg(all(feature = "alloc", any(feature = "std", feature = "libm")))]
 mod dist_drift;
+#[cfg(any(feature = "std", feature = "libm"))]
+mod distribution_shift;
 #[cfg(feature = "alloc")]
 mod mosum;
 #[cfg(any(feature = "std", feature = "libm"))]
@@ -58,8 +63,9 @@ mod shiryaev_roberts;
 #[cfg(any(feature = "std", feature = "libm"))]
 mod sprt;
 
-/// Advanced change detection types.
+/// Change detectors.
 pub mod detection {
+    pub use super::cusum::*;
     pub use super::multi_gate::*;
     pub use super::page_hinkley::*;
     pub use super::robust_z::*;
@@ -73,6 +79,8 @@ pub mod detection {
     pub use super::bocpd::*;
     #[cfg(all(feature = "alloc", any(feature = "std", feature = "libm")))]
     pub use super::dist_drift::*;
+    #[cfg(any(feature = "std", feature = "libm"))]
+    pub use super::distribution_shift::*;
     #[cfg(feature = "alloc")]
     pub use super::mosum::*;
     #[cfg(any(feature = "std", feature = "libm"))]

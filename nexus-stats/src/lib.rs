@@ -70,17 +70,15 @@
 //!
 //! | Module | Contents |
 //! |--------|----------|
-//! | [`smoothing`] | Ema, AsymEma, Slew |
-//! | [`detection`] | Cusum, DistributionShift *(std\|libm)* |
-//! | [`statistics`] | Welford, Moments, EwmVar, Covariance, HarmonicMean, Percentile, BucketAccumulator, FirstDiff, SecondDiff, CovarianceMatrix *(alloc)* |
+//! | [`statistics`] | Welford, Moments, Covariance, HarmonicMean, Percentile, BucketAccumulator, FirstDiff, SecondDiff, CovarianceMatrix *(alloc)* |
 //! | `storage` *(alloc)* | Ring, the fixed-capacity ring the windowed types share |
 //!
 //! ## Behind a feature (all on by default)
 //!
 //! | Feature | Module | Contents |
 //! |---------|--------|----------|
-//! | `smoothing` | `smoothing` | + Holt, Spring, HuberEma, Kama *(alloc)*, Hampel *(alloc)*, WindowedMedian *(alloc)* |
-//! | `detection` | `detection` | + Mosum, ShiryaevRoberts, AdaptiveThreshold, RobustZScore, TrendAlert, MultiGate, PageHinkley, Adwin, Bocpd, DistDrift |
+//! | `smoothing` | `smoothing` | Ema, AsymEma, Slew, EwmVar, Holt, Spring, HuberEma, Kama *(alloc)*, Hampel *(alloc)*, WindowedMedian *(alloc)* |
+//! | `detection` | `detection` | Cusum, DistributionShift *(std\|libm)*, Mosum, ShiryaevRoberts, AdaptiveThreshold, RobustZScore, TrendAlert, MultiGate, PageHinkley, Adwin, Bocpd, DistDrift |
 //! | `detection` | `signal` | HalfLife *(std\|libm)*, Hurst *(alloc, std\|libm)*, Autocorrelation *(alloc)*, CrossCorrelation *(alloc)*, Entropy, TransferEntropy, PredictiveInfoBound *(all three alloc, std\|libm)* |
 //! | `detection` | `estimation` | + SprtBernoulli, SprtGaussian |
 //! | `regression` | `regression` | LinearRegression, PolynomialRegression, EwLinearRegression, EwPolynomialRegression, ExponentialRegression, LogarithmicRegression, PowerRegression (+ `Ew*`), LogisticRegression, HitRate, LaggedPredictor, SignalDecayCurve |
@@ -100,8 +98,8 @@
 //! | `std` | yes | `MonotonicClock`, `sqrt`/`exp` intrinsics; implies `alloc` |
 //! | `alloc` | no (implied by `std`) | Mosum, Kama, Hampel, WindowedMedian, BoolWindow, TopK, the correlations and entropies, adaptive filters, optimizers, bandits |
 //! | `libm` | no | Pure Rust `sqrt`/`exp` fallback for `no_std` (enables ShiryaevRoberts, AdaptiveThreshold, HalfLife, ...) |
-//! | `smoothing` | yes | Holt, Kama, Spring, HuberEma, Hampel, WindowedMedian |
-//! | `detection` | yes | More detectors, and signal analysis (implies `smoothing`) |
+//! | `smoothing` | yes | The smoothers, and `EwmVar` |
+//! | `detection` | yes | The detectors, and signal analysis (implies `smoothing`) |
 //! | `regression` | yes | Regression, learning and estimation types |
 //! | `control` | yes | PeakDetector, BoolWindow, and the frequency types |
 //! | `trading` | yes | Trading and market-microstructure statistics |
@@ -128,31 +126,28 @@ pub use nexus_stats_core::math;
 // Re-export the feature_vector macro
 pub use nexus_stats_core::feature_vector;
 
-// ---- Core modules (always available, from nexus-stats-core) ----
+// ---- Always available, from nexus-stats-core ----
 
-/// Smoothing and filtering primitives.
+/// Descriptive statistics: summaries of the samples seen.
+pub use nexus_stats_core::statistics;
+#[cfg(feature = "alloc")]
+pub use nexus_stats_core::storage;
+
+// ---- From the sub-crates, each behind a feature (all on by default) ----
+
+/// Smoothers, and the exponentially weighted mean and variance.
 ///
-/// `Ema`, `AsymEma` and `Slew` are always available. `Holt`, `Spring`,
-/// `HuberEma`, `Kama`, `Hampel` and `WindowedMedian` require the `smoothing`
-/// feature.
+/// Requires the `smoothing` feature.
+#[cfg(feature = "smoothing")]
 pub mod smoothing {
-    pub use nexus_stats_core::smoothing::*;
-
-    #[cfg(feature = "smoothing")]
     pub use nexus_stats_smoothing::*;
 }
 
 /// Change detection and anomaly detection.
 ///
-/// `Cusum` is always available and `DistributionShift` needs `std` or `libm`
-/// (no `detection` feature). Advanced types (`Mosum`, `ShiryaevRoberts`,
-/// `AdaptiveThreshold`, `RobustZScore`, `TrendAlert`, `MultiGate`,
-/// `PageHinkley`, `Adwin`, `Bocpd`, `DistDrift`) require the `detection`
-/// feature.
+/// Requires the `detection` feature.
+#[cfg(feature = "detection")]
 pub mod detection {
-    pub use nexus_stats_core::detection::*;
-
-    #[cfg(feature = "detection")]
     pub use nexus_stats_detection::detection::*;
 }
 
@@ -164,9 +159,6 @@ pub mod normalization {
     pub use nexus_stats_normalization::*;
 }
 
-/// Core streaming statistics.
-pub use nexus_stats_core::statistics;
-
 /// Monitors for a running system: extremes, rates, liveness, queue health.
 ///
 /// Requires the `monitoring` feature.
@@ -174,9 +166,6 @@ pub use nexus_stats_core::statistics;
 pub mod monitoring {
     pub use nexus_stats_monitoring::*;
 }
-#[cfg(feature = "alloc")]
-pub use nexus_stats_core::storage;
-
 /// Thresholds, switches and peak detection.
 ///
 /// Requires the `control` feature.
@@ -184,8 +173,6 @@ pub use nexus_stats_core::storage;
 pub mod control {
     pub use nexus_stats_control::control::*;
 }
-
-// ---- Advanced modules (from subcrates, feature-gated) ----
 
 /// Signal analysis and information theory.
 ///

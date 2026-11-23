@@ -26,10 +26,8 @@ use nexus_stats::{
     normalization::{MinMaxNorm, ZScoreNorm},
     regression::{EwLinearRegression, LinearRegression, LogisticRegression, PolynomialRegression},
     signal::{Autocorrelation, CrossCorrelation, Entropy, TransferEntropy},
-    smoothing::{AsymEma, Ema, Holt, Slew, Spring},
-    statistics::{
-        Covariance, EwmVar, FirstDiff, HarmonicMean, Moments, Percentile, SecondDiff, Welford,
-    },
+    smoothing::{AsymEma, Ema, EwmVar, Holt, Slew, Spring},
+    statistics::{Covariance, FirstDiff, HarmonicMean, Moments, Percentile, SecondDiff, Welford},
     trading::{Cvar, Lpm},
 };
 

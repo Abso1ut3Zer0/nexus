@@ -1,26 +1,4 @@
-use crate::math::MulAdd;
-
-/// Rounds `n` up to the next value of the form `2^k - 1`.
-///
-/// Examples: 1->1, 2->3, 3->3, 4->7, 5->7, 10->15, 20->31.
-#[inline]
-pub(crate) const fn next_power_of_two_minus_one(n: u64) -> u64 {
-    if n == 0 {
-        return 0;
-    }
-    // next_power_of_two(n + 1) - 1
-    // But we need to handle the case where n+1 is already a power of 2
-    let v = n + 1;
-    let p = v.next_power_of_two();
-    p - 1
-}
-
-/// Returns log2 of (n + 1), where n must be of the form 2^k - 1.
-#[inline]
-pub(crate) const fn log2_of_span_plus_one(span: u64) -> u32 {
-    // span = 2^k - 1, so span + 1 = 2^k
-    (span + 1).trailing_zeros()
-}
+use nexus_stats_core::math::MulAdd;
 
 /// Exponential moving average: a smoothed value in which recent samples
 /// count more and old ones fade.
@@ -52,7 +30,7 @@ pub(crate) const fn log2_of_span_plus_one(span: u64) -> u32 {
 /// # Examples
 ///
 /// ```
-/// use nexus_stats_core::smoothing::Ema;
+/// use nexus_stats_smoothing::Ema;
 ///
 /// let mut ema = Ema::builder().alpha(0.5).build().unwrap();
 /// assert_eq!(ema.update(10.0), Some(10.0));
@@ -76,7 +54,7 @@ pub struct Ema {
 /// Builder for [`Ema`].
 #[derive(Debug, Clone)]
 pub struct EmaBuilder {
-    weight: Option<crate::math::EwWeight>,
+    weight: Option<nexus_stats_core::math::EwWeight>,
     min_samples: u64,
     seed: Option<f64>,
 }
@@ -103,7 +81,7 @@ impl Ema {
     /// # Examples
     ///
     /// ```
-    /// use nexus_stats_core::smoothing::Ema;
+    /// use nexus_stats_smoothing::Ema;
     ///
     /// let mut ema = Ema::builder().alpha(0.5).build().unwrap();
     /// assert_eq!(ema.update(10.0), Some(10.0));
@@ -127,15 +105,16 @@ impl Ema {
     ///
     /// # Errors
     ///
-    /// - [`DataError::NotANumber`](crate::DataError::NotANumber) if `sample`
+    /// - [`DataError::NotANumber`](nexus_stats_core::DataError::NotANumber) if `sample`
     ///   is NaN.
-    /// - [`DataError::Infinite`](crate::DataError::Infinite) if `sample` is
+    /// - [`DataError::Infinite`](nexus_stats_core::DataError::Infinite) if `sample` is
     ///   infinite.
     ///
     /// # Examples
     ///
     /// ```
-    /// use nexus_stats_core::{DataError, smoothing::Ema};
+    /// use nexus_stats_core::DataError;
+    /// use nexus_stats_smoothing::Ema;
     ///
     /// let mut ema = Ema::builder().alpha(0.5).build().unwrap();
     /// assert_eq!(ema.checked_update(10.0), Ok(Some(10.0)));
@@ -143,8 +122,11 @@ impl Ema {
     /// assert_eq!(ema.value(), Some(10.0));
     /// ```
     #[inline]
-    pub fn checked_update(&mut self, sample: f64) -> Result<Option<f64>, crate::DataError> {
-        crate::math::check_input(sample, f64::MAX)?;
+    pub fn checked_update(
+        &mut self,
+        sample: f64,
+    ) -> Result<Option<f64>, nexus_stats_core::DataError> {
+        nexus_stats_core::math::check_input(sample, f64::MAX)?;
         Ok(self.update(sample))
     }
 
@@ -194,7 +176,7 @@ impl Ema {
     /// # Examples
     ///
     /// ```
-    /// use nexus_stats_core::smoothing::Ema;
+    /// use nexus_stats_smoothing::Ema;
     ///
     /// let mut ema = Ema::builder().alpha(0.5).build().unwrap();
     /// ema.update(10.0);
@@ -202,9 +184,11 @@ impl Ema {
     /// assert_eq!(ema.value(), Some(100.0));
     /// assert_eq!(ema.update(200.0), Some(150.0));
     /// ```
-    pub fn reset_with_seed(&mut self, value: f64) -> Result<(), crate::ConfigError> {
+    pub fn reset_with_seed(&mut self, value: f64) -> Result<(), nexus_stats_core::ConfigError> {
         if !value.is_finite() {
-            return Err(crate::ConfigError::Invalid("EMA seed must be finite"));
+            return Err(nexus_stats_core::ConfigError::Invalid(
+                "EMA seed must be finite",
+            ));
         }
         self.start = value;
         self.prime_at = 0;
@@ -217,9 +201,11 @@ impl Ema {
     /// # Errors
     ///
     /// Alpha must be in (0, 1) exclusive.
-    pub fn reconfigure_alpha(&mut self, alpha: f64) -> Result<(), crate::ConfigError> {
-        if !crate::math::in_unit_interval(alpha) {
-            return Err(crate::ConfigError::Invalid("EMA alpha must be in (0, 1)"));
+    pub fn reconfigure_alpha(&mut self, alpha: f64) -> Result<(), nexus_stats_core::ConfigError> {
+        if !nexus_stats_core::math::in_unit_interval(alpha) {
+            return Err(nexus_stats_core::ConfigError::Invalid(
+                "EMA alpha must be in (0, 1)",
+            ));
         }
         self.alpha = alpha;
         self.one_minus_alpha = 1.0 - alpha;
@@ -231,7 +217,7 @@ impl EmaBuilder {
     /// Direct smoothing factor. Must be in (0, 1) exclusive.
     #[must_use]
     pub fn alpha(mut self, alpha: f64) -> Self {
-        self.weight = Some(crate::math::EwWeight::Alpha(alpha));
+        self.weight = Some(nexus_stats_core::math::EwWeight::Alpha(alpha));
         self
     }
 
@@ -241,7 +227,7 @@ impl EmaBuilder {
     #[must_use]
     #[cfg(any(feature = "std", feature = "libm"))]
     pub fn halflife(mut self, halflife: f64) -> Self {
-        self.weight = Some(crate::math::EwWeight::Halflife(halflife));
+        self.weight = Some(nexus_stats_core::math::EwWeight::Halflife(halflife));
         self
     }
 
@@ -250,7 +236,7 @@ impl EmaBuilder {
     /// Computes: `alpha = 2 / (n + 1)`
     #[must_use]
     pub fn span(mut self, n: u64) -> Self {
-        self.weight = Some(crate::math::EwWeight::Span(n));
+        self.weight = Some(nexus_stats_core::math::EwWeight::Span(n));
         self
     }
 
@@ -280,16 +266,20 @@ impl EmaBuilder {
     /// - `Invalid` if `alpha` is outside (0, 1), `halflife` is not positive
     ///   and finite, or `span` is below 2; the message names the knob set.
     /// - `Invalid` if `min_samples` is 0 or the seed is not finite.
-    pub fn build(self) -> Result<Ema, crate::ConfigError> {
+    pub fn build(self) -> Result<Ema, nexus_stats_core::ConfigError> {
         let alpha = self
             .weight
-            .ok_or(crate::ConfigError::Missing("alpha"))?
+            .ok_or(nexus_stats_core::ConfigError::Missing("alpha"))?
             .resolve()?;
         if self.min_samples == 0 {
-            return Err(crate::ConfigError::Invalid("EMA min_samples must be >= 1"));
+            return Err(nexus_stats_core::ConfigError::Invalid(
+                "EMA min_samples must be >= 1",
+            ));
         }
         if self.seed.is_some_and(|s| !s.is_finite()) {
-            return Err(crate::ConfigError::Invalid("EMA seed must be finite"));
+            return Err(nexus_stats_core::ConfigError::Invalid(
+                "EMA seed must be finite",
+            ));
         }
 
         let start = self.seed.unwrap_or(0.0);
@@ -365,7 +355,7 @@ mod tests {
 
     #[test]
     fn a_bad_knob_is_reported_under_its_own_name() {
-        use crate::ConfigError::Invalid;
+        use nexus_stats_core::ConfigError::Invalid;
         let err = |b: EmaBuilder| b.build().unwrap_err();
         assert_eq!(
             err(Ema::builder().alpha(1.0)),
@@ -498,19 +488,28 @@ mod tests {
     #[test]
     fn errors_without_alpha() {
         let result = Ema::builder().build();
-        assert!(matches!(result, Err(crate::ConfigError::Missing("alpha"))));
+        assert!(matches!(
+            result,
+            Err(nexus_stats_core::ConfigError::Missing("alpha"))
+        ));
     }
 
     #[test]
     fn errors_on_alpha_zero() {
         let result = Ema::builder().alpha(0.0).build();
-        assert!(matches!(result, Err(crate::ConfigError::Invalid(_))));
+        assert!(matches!(
+            result,
+            Err(nexus_stats_core::ConfigError::Invalid(_))
+        ));
     }
 
     #[test]
     fn errors_on_alpha_one() {
         let result = Ema::builder().alpha(1.0).build();
-        assert!(matches!(result, Err(crate::ConfigError::Invalid(_))));
+        assert!(matches!(
+            result,
+            Err(nexus_stats_core::ConfigError::Invalid(_))
+        ));
     }
 
     // =========================================================================
@@ -568,7 +567,7 @@ mod tests {
 
     #[test]
     fn checked_update_refuses_bad_input_and_changes_nothing() {
-        use crate::DataError::{Infinite, NotANumber};
+        use nexus_stats_core::DataError::{Infinite, NotANumber};
 
         let mut ema = Ema::builder().alpha(0.5).build().unwrap();
         ema.checked_update(10.0).unwrap();

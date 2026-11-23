@@ -10,6 +10,10 @@ contained.
 
 ## [Unreleased]
 
+### Changed (dependencies)
+
+- `HitRate` now takes `Ema` from `nexus-stats-smoothing`, a new dependency of this crate.
+
 ### Added (moved in)
 
 - `regression::HitRate`, from `nexus-stats-core`'s `statistics`, and

@@ -1,34 +1,38 @@
 # nexus-stats-detection
 
-Advanced change detection and signal analysis for [nexus-stats](https://crates.io/crates/nexus-stats).
+Change detection and signal analysis for [nexus-stats](https://crates.io/crates/nexus-stats): detectors that say when a stream's behavior has shifted, measures of how a series behaves over time, and sequential tests.
 
-## Detection Types
+## Which type do I use?
 
-- **Mosum** — Moving sum change detection (requires `alloc`)
-- **ShiryaevRoberts** — Shiryaev-Roberts change detection (requires `std` or `libm`)
-- **AdaptiveThreshold** — EMA + Welford adaptive threshold (requires `std` or `libm`)
-- **RobustZScore<f64>** — Robust z-score on an EMA of mean absolute deviation (outliers cannot inflate the scale)
-- **TrendAlert** — Holt-based trend alerting
-- **MultiGate** — Multi-threshold gating
-- **PageHinkley** — Sequential mean drift detection (Page-Hinkley test)
-- **Adwin** — Adaptive window distribution change detection (requires `alloc` + (`std` or `libm`))
+**Has something changed?** (`detection`)
 
-## Signal Types
+- **Cusum**: a lasting shift in the mean, up or down
+- **ShiryaevRoberts**: the same, when the size of the shift is known in advance (requires `std` or `libm`)
+- **PageHinkley**: a drift in the mean, by the Page-Hinkley test
+- **Mosum**: a spike that has since passed (requires `alloc`)
+- **AdaptiveThreshold**: one sample that is an outlier, for roughly normal data (requires `std` or `libm`)
+- **RobustZScore**: one sample that is an outlier, for heavy tails
+- **TrendAlert**: a trend heading for a limit
+- **MultiGate**: graded severity, from normal to critical
+- **DistributionShift**: a change in shape (skewness, kurtosis) with the mean where it was (requires `std` or `libm`)
+- **Adwin**: a change in distribution, over a window that adapts (requires `alloc` + (`std` or `libm`))
 
-- **Autocorrelation** — Lagged autocorrelation (requires `alloc`)
-- **CrossCorrelation** — Lagged cross-correlation (requires `alloc`)
-- **Hurst** — Hurst exponent by rescaled-range analysis (requires `alloc` + (`std` or `libm`))
-- **HalfLife** — How fast a series reverts to its mean (requires `std` or `libm`)
-- **Entropy** — Shannon entropy estimation (requires `alloc` + (`std` or `libm`))
-- **TransferEntropy** — Transfer entropy between series (requires `alloc` + (`std` or `libm`))
-- **PredictiveInfoBound** — Binned mutual information estimation (requires `alloc` + (`std` or `libm`))
+**How does the series behave over time?** (`signal`)
 
-## Estimation Types
+- **Autocorrelation**: trending or reverting, at one lag (requires `alloc`)
+- **Hurst**: trending or reverting, as an exponent over a window (requires `alloc` + (`std` or `libm`))
+- **HalfLife**: how fast a series reverts to its mean (requires `std` or `libm`)
+- **CrossCorrelation**: which of two streams leads (requires `alloc`)
+- **Entropy**: how unpredictable a stream is (requires `alloc` + (`std` or `libm`))
+- **TransferEntropy**: whether one stream drives another (requires `alloc` + (`std` or `libm`))
+- **PredictiveInfoBound**: binned mutual information (requires `alloc` + (`std` or `libm`))
 
-- **SprtBernoulli** — Sequential Probability Ratio Test (requires `std` or `libm`)
-- **SprtGaussian** — Gaussian SPRT (requires `std` or `libm`)
+**A decision as soon as the evidence allows** (`estimation`)
 
-Each detector answers a different question: a lasting shift, a passing spike, a single outlier, a trend toward a limit. The crate docs say which to use for what.
+- **SprtBernoulli**: a sequential test on a rate (requires `std` or `libm`)
+- **SprtGaussian**: a sequential test on a mean (requires `std` or `libm`)
+
+Each type's docs give its definition and how to read it.
 
 ## Usage
 

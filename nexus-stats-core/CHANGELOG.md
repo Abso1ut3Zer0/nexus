@@ -10,6 +10,17 @@ contained.
 
 ## [Unreleased]
 
+### Removed (moved to other crates, step 3)
+
+- `Ema`, `AsymEma`, `Slew` and `EwmVar` are now in `nexus-stats-smoothing`;
+  `Cusum` and `DistributionShift` in `nexus-stats-detection`. The crate is
+  now the shared foundation and the descriptive statistics.
+
+### Changed (internal)
+
+- `math::step_mean` (doc-hidden): the running-mean step the accumulators
+  share, moved out of `statistics` so `EwmVar` can use it from its new crate.
+
 ### Removed (moved to other crates, step 2)
 
 - The `monitoring` module is now `nexus-stats-monitoring`, `normalization`

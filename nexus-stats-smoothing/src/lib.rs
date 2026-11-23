@@ -1,39 +1,31 @@
 #![cfg_attr(not(feature = "std"), no_std)]
 #![warn(missing_docs)]
 
-//! Advanced smoothing algorithms for [`nexus-stats`](https://docs.rs/nexus-stats).
-//!
-//! This crate provides smoothing types that are separated from the core
-//! `nexus-stats` crate to keep the base dependency lightweight. All types
-//! stream with fixed memory after construction; the EMA family is O(1) per
-//! update, the windowed types (`WindowedMedian`, `Kama`, `Hampel`) O(window).
-//!
-//! # Types
-//!
-//! | Type | Description | Feature |
-//! |------|-------------|---------|
-//! | [`Holt`] | Double exponential smoothing (level + trend) | — |
-//! | [`Spring`] | Critically damped spring (chase without overshoot) | — |
-//! | [`HuberEma`] | Outlier-robust EMA (bounded step per observation) | — |
-//! | [`Kama`] | Kaufman Adaptive Moving Average | `alloc` |
-//! | [`Hampel`] | Three-zone outlier filter (pass / Winsorize / reject) | `alloc` |
-//! | [`WindowedMedian<f64>`] | Running median over a sliding window (f64) | `alloc` |
-//! | [`WindowedMedian<i64>`] | Running median over a sliding window (i64) | `alloc` |
+//! Smoothers for [`nexus-stats`](https://docs.rs/nexus-stats): each takes a
+//! sample and returns the smoothed value, in fixed memory. The exponentially
+//! weighted types cost the same for every update; the windowed ones
+//! ([`WindowedMedian`], [`Kama`], [`Hampel`]) cost the window.
 //!
 //! # Which smoother?
 //!
-//! Start with `Ema` from the core crate; it is usually the right answer.
+//! Start with [`Ema`]: an exponential moving average, in which recent
+//! samples count more and old ones fade. It is usually the right answer.
 //! Move off it for a reason:
 //!
+//! - The spread around the average is wanted too: [`EwmVar`], the
+//!   exponentially weighted mean and variance.
+//! - It should rise and fall at different speeds: [`AsymEma`].
+//! - It may move only so far per sample: [`Slew`].
 //! - The signal has a trend, and an average lags it: [`Holt`].
 //! - It swings between trending and ranging: [`Kama`], which smooths more
 //!   when the signal is choppy.
-//! - The noise is known or can be measured, and velocity is wanted too:
-//!   `Kalman1d`, in the regression crate's `estimation` module.
 //! - A moving target is to be chased without overshoot: [`Spring`].
 //! - Some samples are outliers. In order of how hard they are discounted:
 //!   [`HuberEma`] bounds each step, [`Hampel`] shrinks or rejects them, and
 //!   [`WindowedMedian`] ignores up to half the window.
+//!
+//! A filter with a noise model, for position and velocity, is `Kalman1d`
+//! in the regression crate's `estimation` module.
 //!
 //! # Re-export
 //!
@@ -46,7 +38,11 @@ extern crate alloc;
 #[macro_use]
 extern crate nexus_stats_core;
 
+mod asym_ema;
+mod ema;
+mod ewm_var;
 mod holt;
+mod slew;
 mod spring;
 
 mod huber_ema;
@@ -58,8 +54,12 @@ mod kama;
 #[cfg(feature = "alloc")]
 mod windowed_median;
 
+pub use asym_ema::*;
+pub use ema::*;
+pub use ewm_var::*;
 pub use holt::*;
 pub use huber_ema::*;
+pub use slew::*;
 pub use spring::*;
 
 #[cfg(feature = "alloc")]
@@ -68,3 +68,11 @@ pub use hampel::*;
 pub use kama::*;
 #[cfg(feature = "alloc")]
 pub use windowed_median::*;
+
+// What appears in this crate's signatures, so it can be used on its own.
+pub use nexus_stats_core::{ConfigError, DataError, Sample};
+
+/// The README's examples, compiled and run as doc tests.
+#[cfg(all(doctest, feature = "std"))]
+#[doc = include_str!("../README.md")]
+struct Readme;

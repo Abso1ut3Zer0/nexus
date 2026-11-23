@@ -10,6 +10,17 @@ contained.
 
 ## [Unreleased]
 
+### Changed (crate layout, step 3)
+
+- **`smoothing` and `detection` come wholly from their crates,** behind
+  features of the same name, both on by default. `Ema`, `AsymEma` and `Slew`
+  join the other smoothers in `nexus-stats-smoothing`; `Cusum` and
+  `DistributionShift` join the other detectors in `nexus-stats-detection`.
+- **`EwmVar` moves from `statistics` to `smoothing`**: it is an
+  exponentially weighted average with its variance, and sits with `Ema`.
+- With default features off, only `statistics` (and `storage`) are always
+  present; every other module needs its feature.
+
 ### Changed (crate layout, step 2)
 
 - **`monitoring`, `normalization` and all of `control` come from their own

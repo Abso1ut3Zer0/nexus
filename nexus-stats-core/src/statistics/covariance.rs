@@ -1,5 +1,5 @@
 use crate::math::MulAdd;
-use crate::statistics::running_mean::step_mean;
+use crate::math::step_mean;
 
 /// Covariance and correlation of two streams, over everything seen so far.
 ///
