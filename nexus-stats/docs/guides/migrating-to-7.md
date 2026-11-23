@@ -728,8 +728,8 @@ let velocity = spring.reading().map(|m| m.velocity);
 spring.reset_with_seed(v)?;
 ```
 
-`checked_update` refuses a NaN or infinite `target`, and a NaN, infinite
-or negative `dt`.
+`checked_update` refuses a NaN or infinite `target`, a NaN, infinite or
+negative `dt`, and a step that overflows.
 
 ## 5. Checklist
 

@@ -24,7 +24,8 @@ contained.
 - **A `Holt` seed is a value, not samples,** as on `Ema`: `count()` starts
   at 0, `reset()` returns to the seed, and `reset_with_seed` replaces it.
 - **`Spring::update` returns the value with no `Result`;** `checked_update`
-  refuses a NaN or infinite `target` and a NaN, infinite or negative `dt`.
+  refuses a NaN or infinite `target`, a NaN, infinite or negative `dt`, and
+  a step that overflows.
   `value()` and `velocity()` are replaced by `reading() -> Option<Motion>`,
   and `reset_to` by `reset_with_seed`.
 - **`Slew::new` and `Spring::new` refuse an infinite setting.**
@@ -37,9 +38,11 @@ contained.
   Unity's `SmoothDamp` does, and holds at the target if a step would cross
   it (the crossing test of Unity's vector form, which treats both
   directions alike). Values differ from earlier releases.
-- **`Spring` cannot return NaN from finite inputs.** A `dt` so long or a
-  `smooth_time` so short that the step overflows lands the spring at rest
-  on the target.
+- **`Spring` no longer returns NaN for a step that has fully settled.** A
+  step long enough for the decay to reach zero puts the spring at rest on
+  the target. `Spring::new` refuses a `smooth_time` so small that
+  `2 / smooth_time` overflows, and `checked_update` refuses any other step
+  that overflows (`DataError::OutOfRange`), leaving the spring unchanged.
 
 ### Added (moved in)
 

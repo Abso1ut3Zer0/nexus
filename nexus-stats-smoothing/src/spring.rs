@@ -16,9 +16,9 @@ use nexus_stats_core::math::{MulAdd, Warmup};
 /// The crossing test is the one Unity's vector form uses: a spring that
 /// is on the target with some velocity carries through it, either way.
 ///
-/// One guard is added to the published form. Where `dt` is so long, or
-/// `smooth_time` so short, that the step overflows, the spring is placed
-/// at rest on the target, which is where such a step ends.
+/// One rule is added to the published form: a step long enough for the
+/// decay to reach zero puts the spring at rest on the target, where the
+/// formula alone would multiply an overflow by that zero.
 ///
 /// # Examples
 ///
@@ -75,16 +75,17 @@ impl Spring {
     /// # Errors
     ///
     /// Returns `ConfigError::Invalid` if `smooth_time` is not finite and
-    /// positive.
+    /// positive, or is so small that `2 / smooth_time` overflows.
     pub fn new(smooth_time: f64) -> Result<Self, nexus_stats_core::ConfigError> {
-        if !(smooth_time.is_finite() && smooth_time > 0.0) {
+        let omega = 2.0 / smooth_time;
+        if !(smooth_time.is_finite() && smooth_time > 0.0 && omega.is_finite()) {
             return Err(nexus_stats_core::ConfigError::Invalid(
-                "smooth_time must be finite and positive",
+                "smooth_time must be finite, positive, and large enough to divide into 2",
             ));
         }
         Ok(Self {
             smooth_time,
-            omega: 2.0 / smooth_time,
+            omega,
             motion: Motion::at_rest(0.0),
             warmup: Warmup::new(1, false),
             seed: None,
@@ -100,26 +101,13 @@ impl Spring {
     /// [`checked_update`](Self::checked_update).
     #[inline]
     pub fn update(&mut self, target: f64, dt: f64) -> f64 {
-        let count = self.warmup.tick();
-        if count == 1 && self.seed.is_none() {
-            self.motion = Motion::at_rest(target);
-            return target;
-        }
-        let start = self.motion;
-        self.motion = self.step(target, dt);
-        if !self.motion.is_finite() {
-            // A step too long to resolve: the spring has settled.
-            self.motion = Motion::at_rest(target);
-        }
-        if passed(start.value, self.motion.value, target) {
-            self.motion = stopped_at(target, start.velocity, dt);
-        }
-        self.motion.value
+        let next = self.next(target, dt);
+        self.take(next)
     }
 
     /// Checked update. Moves toward `target`, or returns an error and
-    /// leaves the spring unchanged if `target` is NaN or infinite, or `dt`
-    /// is NaN, infinite or negative.
+    /// leaves the spring unchanged if `target` is NaN or infinite, if `dt`
+    /// is NaN, infinite or negative, or if the step overflows.
     ///
     /// # Errors
     ///
@@ -129,6 +117,8 @@ impl Spring {
     ///   `target` or `dt` is infinite.
     /// - [`DataError::Negative`](nexus_stats_core::DataError::Negative) if
     ///   `dt` is negative.
+    /// - [`DataError::OutOfRange`](nexus_stats_core::DataError::OutOfRange)
+    ///   if the value or the velocity after the step would not be finite.
     #[inline]
     pub fn checked_update(
         &mut self,
@@ -139,7 +129,11 @@ impl Spring {
         if dt < 0.0 {
             return Err(nexus_stats_core::DataError::Negative);
         }
-        Ok(self.update(target, dt))
+        let next = self.next(target, dt);
+        if !next.is_finite() {
+            return Err(nexus_stats_core::DataError::OutOfRange);
+        }
+        Ok(self.take(next))
     }
 
     /// The value and velocity, or `None` before the first target of an
@@ -195,11 +189,38 @@ impl Spring {
         Ok(())
     }
 
+    /// Where the spring is after moving toward `target` for `dt`. Changes
+    /// nothing.
+    #[inline]
+    fn next(&self, target: f64, dt: f64) -> Motion {
+        // The first target of an unseeded spring is where it starts.
+        if self.warmup.count() == 0 && self.seed.is_none() {
+            return Motion::at_rest(target);
+        }
+        let next = self.step(target, dt);
+        if passed(self.motion.value, next.value, target) {
+            return stopped_at(target, self.motion.velocity, dt);
+        }
+        next
+    }
+
+    /// Moves to `next`, counts the update and returns the new value.
+    #[inline]
+    fn take(&mut self, next: Motion) -> f64 {
+        self.motion = next;
+        self.warmup.tick();
+        next.value
+    }
+
     /// The published update: where the spring is after `dt`.
     #[inline]
     fn step(&self, target: f64, dt: f64) -> Motion {
         let Motion { value, velocity } = self.motion;
         let decay = decay(self.omega * dt);
+        if decay == 0.0 {
+            // Fully settled. The formula would multiply an overflow by zero.
+            return Motion::at_rest(target);
+        }
         let offset = value - target;
         let temp = self.omega.fma(offset, velocity) * dt;
         Motion {
@@ -302,11 +323,43 @@ mod tests {
         }
     }
 
-    /// Finite settings at which the published arithmetic overflows to NaN.
+    /// A step that overflows without having settled: the unchecked form
+    /// follows the arithmetic, the checked form refuses and changes nothing.
+    #[test]
+    fn a_step_that_overflows_is_refused_by_checked_update() {
+        use nexus_stats_core::DataError::OutOfRange;
+
+        // (smooth_time, start, target, dt)
+        for (smooth_time, start, target, dt) in [
+            (0.5, 1e308, -1e308, 0.1),
+            (1e-300, 0.0, 1e10, 0.0),
+            (1e-300, -5e7, 0.0, 1e-300),
+        ] {
+            let mut spring = Spring::new(smooth_time).unwrap();
+            spring.update(start, 0.1);
+            let before = (spring.reading(), spring.count());
+            assert_eq!(spring.checked_update(target, dt), Err(OutOfRange));
+            assert_eq!((spring.reading(), spring.count()), before);
+            spring.update(target, dt);
+            let after = spring.reading().unwrap();
+            assert!(!(after.value.is_finite() && after.velocity.is_finite()));
+        }
+    }
+
+    #[test]
+    fn update_follows_the_arithmetic_on_a_nan() {
+        let mut spring = Spring::new(0.5).unwrap();
+        spring.update(0.0, 0.1);
+        assert!(spring.update(10.0, f64::NAN).is_nan());
+        spring.reset();
+        spring.update(0.0, 0.1);
+        assert!(spring.update(f64::NAN, 0.1).is_nan());
+    }
+
+    /// Finite settings at which the decay is exactly zero.
     #[test]
     fn a_step_too_long_to_resolve_lands_at_rest_on_the_target() {
         for (smooth_time, dt) in [
-            (1e-308, 0.1),
             (1e-300, 0.1),
             (1e-160, 0.1),
             (0.5, 1e308),
@@ -415,6 +468,10 @@ mod tests {
         for bad in [0.0, -1.0, f64::NAN, f64::INFINITY] {
             assert!(Spring::new(bad).is_err(), "{bad}");
         }
+        // So small that 2 / smooth_time overflows.
+        assert!(Spring::new(1e-308).is_err());
+        assert!(Spring::new(5e-324).is_err());
+        assert!(Spring::new(f64::MIN_POSITIVE).is_ok());
         assert_eq!(Spring::new(0.25).unwrap().smooth_time(), 0.25);
     }
 

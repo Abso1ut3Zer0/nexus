@@ -463,8 +463,12 @@ mod tests {
         // A bad seed is refused and changes nothing.
         assert!(h.reset_with_seed(f64::NAN, 0.0).is_err());
         assert!(h.reset_with_seed(0.0, f64::INFINITY).is_err());
-        assert_eq!((h.forecast(0), h.count()), (Some(50.0), 0));
+        assert_eq!(h.forecast(0), Some(50.0));
+        // Refused with samples in: the count and the old seed are kept.
         h.update(60.0);
+        let before = (h.reading(), h.count());
+        assert!(h.reset_with_seed(f64::NAN, 0.0).is_err());
+        assert_eq!((h.reading(), h.count()), before);
         h.reset();
         assert_eq!(h.forecast(0), Some(50.0));
     }
