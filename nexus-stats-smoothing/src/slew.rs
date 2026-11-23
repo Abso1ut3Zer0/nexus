@@ -1,200 +1,280 @@
-use nexus_stats_core::Sample;
-
-/// Slew rate limiter — clamps output change per sample.
+/// Slew rate limiter: caps how far the output may move per sample.
 ///
-/// Limits how fast the output can change between consecutive samples: the
-/// output follows the input but moves at most `max_rate` per update, in
-/// either direction. The first sample is passed through.
-/// `Slew<f64>` rejects NaN and infinity and returns `Result`;
-/// `Slew<i64>` cannot fail: the allowed band saturates at the `i64` bounds.
+/// The output follows the input, but rises by at most `rising` and falls
+/// by at most `falling` in one update. A jump in the input comes out as a
+/// ramp; a move within the limits passes through unchanged. The first
+/// sample is the first output.
 ///
-/// # Use Cases
-/// - Smoothing displayed values without an EMA's lag
-/// - Rate-limiting a control output (quote moves per tick)
-/// - Protecting downstream consumers from step changes
+/// The limits are per update, so they suit evenly spaced samples. See
+/// [slew rate](https://en.wikipedia.org/wiki/Slew_rate) for the term.
+///
+/// # Examples
+///
+/// ```
+/// use nexus_stats_smoothing::Slew;
+///
+/// let mut slew = Slew::new(2.0).unwrap();
+/// assert_eq!(slew.update(10.0), 10.0);
+/// assert_eq!(slew.update(11.0), 11.0); // within the limit
+/// assert_eq!(slew.update(20.0), 13.0); // a jump becomes a ramp
+/// assert_eq!(slew.update(20.0), 15.0);
+/// ```
 #[derive(Debug, Clone)]
-pub struct Slew<T: Sample> {
-    max_rate: T,
-    value: T,
-    /// Samples processed; the first one seeds the state.
+pub struct Slew {
+    rising: f64,
+    falling: f64,
+    value: f64,
     count: u64,
 }
 
-impl<T: Sample> Slew<T> {
-    /// Creates a limiter allowing at most `max_rate` of change per sample.
+impl Slew {
+    /// Creates a limiter that moves at most `max_rate` per sample in either
+    /// direction.
     ///
     /// # Errors
     ///
-    /// Returns `ConfigError::Invalid` if `max_rate` is not finite or not
-    /// strictly positive.
-    #[inline]
-    #[allow(clippy::neg_cmp_op_on_partial_ord)]
-    pub fn new(max_rate: T) -> Result<Self, nexus_stats_core::ConfigError> {
-        if !max_rate.is_finite() || !(max_rate > T::ZERO) {
+    /// Returns `ConfigError::Invalid` if `max_rate` is not finite and
+    /// positive.
+    pub fn new(max_rate: f64) -> Result<Self, nexus_stats_core::ConfigError> {
+        Self::with_limits(max_rate, max_rate)
+    }
+
+    /// Creates a limiter that rises at most `rising` and falls at most
+    /// `falling` per sample. Both are given as positive amounts.
+    ///
+    /// # Errors
+    ///
+    /// Returns `ConfigError::Invalid` if either limit is not finite and
+    /// positive.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use nexus_stats_smoothing::Slew;
+    ///
+    /// // Quick to fall, slow to rise.
+    /// let mut slew = Slew::with_limits(1.0, 5.0).unwrap();
+    /// slew.update(10.0);
+    /// assert_eq!(slew.update(20.0), 11.0);
+    /// assert_eq!(slew.update(0.0), 6.0);
+    /// ```
+    pub fn with_limits(rising: f64, falling: f64) -> Result<Self, nexus_stats_core::ConfigError> {
+        if !is_limit(rising) || !is_limit(falling) {
             return Err(nexus_stats_core::ConfigError::Invalid(
-                "slew max_rate must be finite and positive",
+                "slew limits must be finite and positive",
             ));
         }
         Ok(Self {
-            max_rate,
-            value: T::ZERO,
+            rising,
+            falling,
+            value: 0.0,
             count: 0,
         })
     }
 
-    /// Current output value, or `None` before the first sample.
+    /// Feeds a sample and returns the limited output.
+    ///
+    /// Does not validate: an infinite first sample pins the output until
+    /// [`reset`](Self::reset), and a NaN is returned as the output. See
+    /// [`checked_update`](Self::checked_update).
     #[inline]
-    #[must_use]
-    pub fn value(&self) -> Option<T> {
-        self.is_primed().then_some(self.value)
-    }
-
-    /// Samples processed since construction or `reset`.
-    #[inline]
-    #[must_use]
-    pub fn count(&self) -> u64 {
-        self.count
-    }
-
-    /// Whether at least one sample has been seen.
-    #[inline]
-    #[must_use]
-    pub fn is_primed(&self) -> bool {
-        self.count > 0
-    }
-
-    /// Resets to uninitialized state. `max_rate` is kept.
-    #[inline]
-    pub fn reset(&mut self) {
-        self.value = T::ZERO;
-        self.count = 0;
-    }
-
-    #[inline]
-    fn fold(&mut self, sample: T) -> T {
+    pub fn update(&mut self, sample: f64) -> f64 {
         self.count += 1;
         if self.count == 1 {
             self.value = sample;
             return sample;
         }
-        self.value = sample.clamp_to(
-            self.value.sat_sub(self.max_rate),
-            self.value.sat_add(self.max_rate),
-        );
+        self.value = limit(sample, self.value - self.falling, self.value + self.rising);
         self.value
     }
-}
 
-impl Slew<f64> {
-    /// Feeds a sample. Returns the rate-limited output.
+    /// Checked update. Feeds `sample`, or returns an error and leaves the
+    /// limiter unchanged if `sample` is NaN or infinite.
     ///
     /// # Errors
     ///
-    /// Returns `DataError::NotANumber` if the sample is NaN, or
-    /// `DataError::Infinite` if the sample is infinite.
+    /// - [`DataError::NotANumber`](nexus_stats_core::DataError::NotANumber)
+    ///   if `sample` is NaN.
+    /// - [`DataError::Infinite`](nexus_stats_core::DataError::Infinite) if
+    ///   `sample` is infinite.
     #[inline]
-    pub fn update(&mut self, sample: f64) -> Result<f64, nexus_stats_core::DataError> {
-        check_finite!(sample);
-        Ok(self.fold(sample))
+    pub fn checked_update(&mut self, sample: f64) -> Result<f64, nexus_stats_core::DataError> {
+        nexus_stats_core::math::check_input(sample, f64::MAX)?;
+        Ok(self.update(sample))
+    }
+
+    /// The current output, or `None` before the first sample.
+    #[must_use]
+    pub fn value(&self) -> Option<f64> {
+        if self.count == 0 {
+            return None;
+        }
+        Some(self.value)
+    }
+
+    /// The most the output may rise per sample.
+    #[must_use]
+    pub fn rising(&self) -> f64 {
+        self.rising
+    }
+
+    /// The most the output may fall per sample.
+    #[must_use]
+    pub fn falling(&self) -> f64 {
+        self.falling
+    }
+
+    /// Samples fed since construction or `reset`.
+    #[must_use]
+    pub fn count(&self) -> u64 {
+        self.count
+    }
+
+    /// Whether at least one sample has been fed.
+    #[must_use]
+    pub fn is_primed(&self) -> bool {
+        self.count > 0
+    }
+
+    /// Forgets the output. The limits are kept.
+    pub fn reset(&mut self) {
+        self.value = 0.0;
+        self.count = 0;
     }
 }
 
-impl Slew<i64> {
-    /// Feeds a sample. Returns the rate-limited output.
-    #[must_use]
-    #[inline]
-    pub fn update(&mut self, sample: i64) -> i64 {
-        self.fold(sample)
+/// Whether `rate` can be a limit: finite and above zero.
+fn is_limit(rate: f64) -> bool {
+    rate.is_finite() && rate > 0.0
+}
+
+/// `sample` held to `[low, high]`. Unlike `f64::clamp`, never panics: with
+/// a NaN on either side the sample is returned.
+#[inline]
+fn limit(sample: f64, low: f64, high: f64) -> f64 {
+    if sample > high {
+        return high;
     }
+    if sample < low {
+        return low;
+    }
+    sample
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use nexus_stats_core::DataError::{Infinite, NotANumber};
 
     #[test]
-    fn i64_band_saturates_at_the_type_bounds() {
-        let mut s = Slew::<i64>::new(10).unwrap();
-        assert_eq!(s.value(), None);
-        assert_eq!(s.update(i64::MAX - 3), i64::MAX - 3);
-        // The band's upper edge would overflow; it saturates and the sample
-        // inside it passes.
-        assert_eq!(s.update(i64::MAX), i64::MAX);
-        assert_eq!(s.update(0), i64::MAX - 10);
-
-        let mut s = Slew::<i64>::new(i64::MAX).unwrap();
-        assert_eq!(s.update(i64::MIN), i64::MIN);
-        assert_eq!(s.update(i64::MAX), -1);
-        assert_eq!(s.value(), Some(-1));
+    fn a_move_within_the_limits_passes_through_exactly() {
+        let mut slew = Slew::new(10.0).unwrap();
+        for x in [100.0, 105.0, 95.5, 95.5, 105.5, 0.1 + 0.2 + 95.5] {
+            assert_eq!(slew.update(x).to_bits(), x.to_bits());
+        }
     }
 
     #[test]
-    #[allow(clippy::float_cmp)]
-    fn spike_clamped() {
-        let mut s = Slew::<f64>::new(10.0).unwrap();
-        assert_eq!(s.update(100.0).unwrap(), 100.0); // first sample, pass through
-        assert_eq!(s.update(200.0).unwrap(), 110.0); // clamped: 100 + 10
-        assert_eq!(s.update(200.0).unwrap(), 120.0); // clamped: 110 + 10
+    fn a_jump_becomes_a_ramp_that_arrives_exactly() {
+        let mut slew = Slew::new(2.0).unwrap();
+        slew.update(11.0);
+        let outputs: Vec<f64> = (0..6).map(|_| slew.update(20.0)).collect();
+        assert_eq!(outputs, [13.0, 15.0, 17.0, 19.0, 20.0, 20.0]);
+        assert_eq!(slew.update(12.0), 18.0);
     }
 
     #[test]
-    #[allow(clippy::float_cmp)]
-    fn gradual_passes_through() {
-        let mut s = Slew::<f64>::new(10.0).unwrap();
-        assert_eq!(s.update(100.0).unwrap(), 100.0);
-        assert_eq!(s.update(105.0).unwrap(), 105.0); // within rate, passes through
+    fn rising_and_falling_limits_are_separate() {
+        let mut slew = Slew::with_limits(1.0, 5.0).unwrap();
+        assert_eq!((slew.rising(), slew.falling()), (1.0, 5.0));
+        slew.update(10.0);
+        assert_eq!(slew.update(100.0), 11.0);
+        assert_eq!(slew.update(-100.0), 6.0);
+        // `new` is the same limit both ways.
+        let slew = Slew::new(3.0).unwrap();
+        assert_eq!((slew.rising(), slew.falling()), (3.0, 3.0));
+    }
+
+    /// Against the rule written out directly, over a random walk with jumps.
+    #[test]
+    fn each_step_is_the_sample_or_the_nearest_limit() {
+        let mut state = 0x9E37_79B9_7F4A_7C15u64;
+        let mut slew = Slew::with_limits(1.5, 4.0).unwrap();
+        let mut previous = slew.update(0.0);
+        for _ in 0..50_000 {
+            state ^= state << 13;
+            state ^= state >> 7;
+            state ^= state << 17;
+            let x = (state % 4001) as f64 / 100.0 - 20.0;
+            let out = slew.update(x);
+            let step = out - previous;
+            assert!(step <= 1.5 + 1e-12 && step >= -4.0 - 1e-12, "step {step}");
+            // Limited only when the sample is out of reach.
+            if out.to_bits() != x.to_bits() {
+                assert!(out == previous + 1.5 || out == previous - 4.0);
+                assert!((x > out) == (out > previous));
+            }
+            previous = out;
+        }
     }
 
     #[test]
-    #[allow(clippy::float_cmp)]
-    fn negative_clamped() {
-        let mut s = Slew::<f64>::new(10.0).unwrap();
-        assert_eq!(s.update(100.0).unwrap(), 100.0);
-        assert_eq!(s.update(50.0).unwrap(), 90.0); // clamped: 100 - 10
+    fn there_is_no_value_before_the_first_sample_or_after_reset() {
+        let mut slew = Slew::new(1.0).unwrap();
+        assert_eq!((slew.value(), slew.is_primed()), (None, false));
+        slew.update(100.0);
+        assert_eq!(slew.value(), Some(100.0));
+        slew.reset();
+        assert_eq!((slew.value(), slew.count()), (None, 0));
+        // The first sample after a reset passes through, however far away.
+        assert_eq!(slew.update(-50.0), -50.0);
     }
 
     #[test]
-    fn i64_basic() {
-        let mut s = Slew::<i64>::new(5).unwrap();
-        assert_eq!(s.update(100), 100);
-        assert_eq!(s.update(200), 105);
+    fn limits_must_be_finite_and_positive() {
+        for bad in [0.0, -1.0, f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
+            assert!(Slew::new(bad).is_err(), "{bad}");
+            assert!(Slew::with_limits(1.0, bad).is_err(), "{bad}");
+            assert!(Slew::with_limits(bad, 1.0).is_err(), "{bad}");
+        }
+        assert!(Slew::new(f64::MIN_POSITIVE).is_ok());
     }
 
     #[test]
-    #[allow(clippy::float_cmp)]
-    fn reset() {
-        let mut s = Slew::<f64>::new(10.0).unwrap();
-        s.update(100.0).unwrap();
-        s.reset();
-        assert_eq!(s.update(50.0).unwrap(), 50.0); // re-initialized
+    fn checked_update_refuses_nan_and_infinity_and_changes_nothing() {
+        let mut slew = Slew::new(1.0).unwrap();
+        // Refused as the first sample too.
+        assert_eq!(slew.checked_update(f64::INFINITY), Err(Infinite));
+        assert_eq!((slew.value(), slew.count()), (None, 0));
+
+        slew.checked_update(5.0).unwrap();
+        assert_eq!(slew.checked_update(f64::NAN), Err(NotANumber));
+        assert_eq!(slew.checked_update(f64::NEG_INFINITY), Err(Infinite));
+        assert_eq!((slew.value(), slew.count()), (Some(5.0), 1));
+        assert_eq!(slew.checked_update(9.0), Ok(6.0));
     }
 
     #[test]
-    fn rejects_zero_max_rate() {
-        assert!(matches!(
-            Slew::<f64>::new(0.0),
-            Err(nexus_stats_core::ConfigError::Invalid(_))
-        ));
-        assert!(matches!(
-            Slew::<i64>::new(0),
-            Err(nexus_stats_core::ConfigError::Invalid(_))
-        ));
+    fn checked_update_gives_the_same_result_as_update() {
+        let (mut checked, mut plain) = (Slew::new(0.75).unwrap(), Slew::new(0.75).unwrap());
+        for x in [3.0, 4.0, -9.0, 1e300, f64::MAX, f64::MIN, 0.0, 1e-300] {
+            assert_eq!(checked.checked_update(x), Ok(plain.update(x)));
+        }
     }
 
+    /// What the unchecked form does with the inputs the checked form refuses.
     #[test]
-    fn rejects_nan_and_inf() {
-        let mut s = Slew::<f64>::new(10.0).unwrap();
-        assert!(matches!(
-            s.update(f64::NAN),
-            Err(nexus_stats_core::DataError::NotANumber)
-        ));
-        assert!(matches!(
-            s.update(f64::INFINITY),
-            Err(nexus_stats_core::DataError::Infinite)
-        ));
-        assert!(matches!(
-            s.update(f64::NEG_INFINITY),
-            Err(nexus_stats_core::DataError::Infinite)
-        ));
+    fn update_never_panics_on_a_nan_or_an_infinity() {
+        let mut slew = Slew::new(1.0).unwrap();
+        slew.update(5.0);
+        // An infinite sample is only a far target.
+        assert_eq!(slew.update(f64::INFINITY), 6.0);
+        // A NaN comes out as the output; the next sample then passes through.
+        assert!(slew.update(f64::NAN).is_nan());
+        assert_eq!(slew.update(50.0), 50.0);
+        // An infinite first sample pins the output until reset.
+        slew.reset();
+        slew.update(f64::INFINITY);
+        assert_eq!(slew.update(0.0), f64::INFINITY);
     }
 }

@@ -211,11 +211,11 @@ fn bench_drawdown(c: &mut Criterion) {
 
 fn bench_slew(c: &mut Criterion) {
     let mut rng = Lcg::new(42);
-    let mut s = Slew::<f64>::new(5.0).unwrap();
+    let mut s = Slew::new(5.0).unwrap();
     for _ in 0..1000 {
         s.update(rng.next_f64());
     }
-    c.bench_function("Slew::<f64>::update", |b| {
+    c.bench_function("Slew::update", |b| {
         b.iter(|| s.update(black_box(rng.next_f64())))
     });
 }

@@ -35,7 +35,8 @@
 
 #[cfg(feature = "alloc")]
 extern crate alloc;
-#[macro_use]
+// The old validation macro: only the unconverted `alloc` types still use it.
+#[cfg_attr(feature = "alloc", macro_use)]
 extern crate nexus_stats_core;
 
 mod asym_ema;

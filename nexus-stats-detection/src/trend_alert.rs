@@ -1,5 +1,5 @@
 use nexus_stats_core::Direction;
-use nexus_stats_smoothing::Holt;
+use nexus_stats_smoothing::{Holt, Trend};
 
 /// Trend alert — Holt's double exponential with threshold on the trend component.
 ///
@@ -54,14 +54,17 @@ impl TrendAlert {
         sample: f64,
     ) -> Result<Option<Direction>, nexus_stats_core::DataError> {
         check_finite!(sample);
-        // Holt already validated by check_finite above
-        let result = self.holt.update(sample)?;
+        let result = self.holt.update(sample);
 
         if self.holt.count() < self.min_samples {
             return Ok(None);
         }
 
-        let Some((level, trend)) = result else {
+        let Some(Trend {
+            level,
+            slope: trend,
+        }) = result
+        else {
             return Ok(None);
         };
 
@@ -94,14 +97,14 @@ impl TrendAlert {
     #[inline]
     #[must_use]
     pub fn level(&self) -> Option<f64> {
-        self.holt.level()
+        Some(self.holt.reading()?.level)
     }
 
     /// Current trend (rate of change), or `None` if not primed.
     #[inline]
     #[must_use]
     pub fn trend(&self) -> Option<f64> {
-        self.holt.trend()
+        Some(self.holt.reading()?.slope)
     }
 
     /// Number of samples processed.
