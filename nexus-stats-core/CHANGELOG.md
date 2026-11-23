@@ -10,6 +10,18 @@ contained.
 
 ## [Unreleased]
 
+### Removed (moved to other crates)
+
+- `VarianceRatio`, `TwoScaleRv`, `BipowerVariation`, `Amihud`, `RollSpread`,
+  `Lpm` and `Cvar` are now in `nexus-stats-trading`; `Hurst` and `HalfLife`
+  in `nexus-stats-detection` (`signal`); `HitRate` in
+  `nexus-stats-regression`. `statistics` now holds the descriptive
+  statistics only.
+
+### Changed (module)
+
+- `FirstDiff` and `SecondDiff` move from `control` to `statistics`.
+
 ### Changed
 
 - **Thresholds are named, documented and built from the float type.** Each

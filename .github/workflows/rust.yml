@@ -63,12 +63,12 @@ jobs:
     - name: nexus-stats crates under every feature combination
       run: |
         set -e
-        for c in nexus-stats-core nexus-stats-smoothing nexus-stats-detection nexus-stats-control nexus-stats-regression; do
+        for c in nexus-stats-core nexus-stats-smoothing nexus-stats-detection nexus-stats-control nexus-stats-regression nexus-stats-trading; do
           cargo check -p $c --no-default-features
           cargo check -p $c --no-default-features --features alloc
           cargo check -p $c --no-default-features --features std
         done
-        for c in nexus-stats-core nexus-stats-detection nexus-stats-control nexus-stats-regression; do
+        for c in nexus-stats-core nexus-stats-detection nexus-stats-control nexus-stats-regression nexus-stats-trading; do
           cargo check -p $c --no-default-features --features libm
           cargo check -p $c --no-default-features --features alloc,libm
         done
@@ -77,6 +77,13 @@ jobs:
         cargo check -p nexus-stats --no-default-features --features full,libm
         cargo check -p nexus-stats --no-default-features --features full,alloc,libm
         cargo check -p nexus-stats --no-default-features --features std,full
+        # Each sub-crate alone through the umbrella, and the trading crate
+        # with and without the regression crate behind `KyleLambda`.
+        for f in smoothing detection regression control trading; do
+          cargo check -p nexus-stats --no-default-features --features std,$f
+        done
+        cargo check -p nexus-stats-trading --no-default-features --features std,regression
+        cargo check -p nexus-stats-trading --no-default-features --features alloc,libm,regression
 
   test-avx2:
     runs-on: ubuntu-latest
@@ -91,10 +98,10 @@ jobs:
       run: |
         CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS="-C target-feature=+avx2,+fma" \
           cargo test -p nexus-stats-detection --target x86_64-unknown-linux-gnu
-    - name: Test nexus-stats-core (AVX2+FMA SIMD path, parity against scalar)
+    - name: Test nexus-stats-core and nexus-stats-trading (AVX2+FMA build, fused arithmetic)
       run: |
         CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS="-C target-feature=+avx2,+fma" \
-          cargo test -p nexus-stats-core --target x86_64-unknown-linux-gnu
+          cargo test -p nexus-stats-core -p nexus-stats-trading --target x86_64-unknown-linux-gnu
 
   verify-pytorch:
     runs-on: ubuntu-latest

@@ -1,4 +1,4 @@
-use crate::math::MulAdd;
+use nexus_stats_core::math::MulAdd;
 
 /// Roll's implicit bid-ask spread estimator (Roll, 1984).
 ///
@@ -18,7 +18,7 @@ use crate::math::MulAdd;
 /// # Examples
 ///
 /// ```
-/// use nexus_stats_core::statistics::RollSpread;
+/// use nexus_stats_trading::RollSpread;
 ///
 /// let mut rs = RollSpread::builder().alpha(0.05).min_samples(3).build().unwrap();
 /// // Trades alternating between bid and ask. (Strict alternation reads
@@ -57,7 +57,7 @@ pub struct RollEstimate {
 /// Builder for [`RollSpread`].
 #[derive(Debug, Clone)]
 pub struct RollSpreadBuilder {
-    weight: Option<crate::math::EwWeight>,
+    weight: Option<nexus_stats_core::math::EwWeight>,
     min_samples: u64,
 }
 
@@ -105,7 +105,7 @@ impl RollSpread {
     /// # Examples
     ///
     /// ```
-    /// use nexus_stats_core::statistics::RollSpread;
+    /// use nexus_stats_trading::RollSpread;
     ///
     /// let mut rs = RollSpread::builder().alpha(0.1).min_samples(3).build().unwrap();
     /// for price in [100.0, 100.0, 100.0] {
@@ -116,7 +116,7 @@ impl RollSpread {
     /// ```
     #[inline]
     pub fn update(&mut self, price: f64) {
-        let log_price = crate::math::ln(price);
+        let log_price = nexus_stats_core::math::ln(price);
         self.count += 1;
 
         if self.count >= 2 {
@@ -136,17 +136,17 @@ impl RollSpread {
     ///
     /// # Errors
     ///
-    /// - [`DataError::NotANumber`](crate::DataError::NotANumber) if `price`
+    /// - [`DataError::NotANumber`](nexus_stats_core::DataError::NotANumber) if `price`
     ///   is NaN.
-    /// - [`DataError::Infinite`](crate::DataError::Infinite) if `price` is
+    /// - [`DataError::Infinite`](nexus_stats_core::DataError::Infinite) if `price` is
     ///   infinite.
-    /// - [`DataError::OutOfRange`](crate::DataError::OutOfRange) if `price`
+    /// - [`DataError::OutOfRange`](nexus_stats_core::DataError::OutOfRange) if `price`
     ///   is zero or negative.
     ///
     /// # Examples
     ///
     /// ```
-    /// use nexus_stats_core::{DataError, statistics::RollSpread};
+    /// use nexus_stats_trading::{DataError, RollSpread};
     ///
     /// let mut rs = RollSpread::builder().alpha(0.1).build().unwrap();
     /// assert_eq!(rs.checked_update(100.0), Ok(()));
@@ -154,11 +154,11 @@ impl RollSpread {
     /// assert_eq!(rs.count(), 1);
     /// ```
     #[inline]
-    pub fn checked_update(&mut self, price: f64) -> Result<(), crate::DataError> {
+    pub fn checked_update(&mut self, price: f64) -> Result<(), nexus_stats_core::DataError> {
         // Any positive price is allowed: its logarithm is small.
-        crate::math::check_input(price, f64::MAX)?;
+        nexus_stats_core::math::check_input(price, f64::MAX)?;
         if price <= 0.0 {
-            return Err(crate::DataError::OutOfRange);
+            return Err(nexus_stats_core::DataError::OutOfRange);
         }
         self.update(price);
         Ok(())
@@ -177,7 +177,7 @@ impl RollSpread {
         let mean_change = self.changes.value();
         let autocovariance = (-mean_change).fma(mean_change, self.products.value());
         let spread = if autocovariance < 0.0 {
-            2.0 * crate::math::sqrt(-autocovariance)
+            2.0 * nexus_stats_core::math::sqrt(-autocovariance)
         } else {
             0.0
         };
@@ -214,21 +214,21 @@ impl RollSpreadBuilder {
     /// Weight of the newest sample. Must be in (0, 1) exclusive.
     #[must_use]
     pub fn alpha(mut self, alpha: f64) -> Self {
-        self.weight = Some(crate::math::EwWeight::Alpha(alpha));
+        self.weight = Some(nexus_stats_core::math::EwWeight::Alpha(alpha));
         self
     }
 
     /// Samples for a weight to decay by half. Must be positive and finite.
     #[must_use]
     pub fn halflife(mut self, halflife: f64) -> Self {
-        self.weight = Some(crate::math::EwWeight::Halflife(halflife));
+        self.weight = Some(nexus_stats_core::math::EwWeight::Halflife(halflife));
         self
     }
 
     /// Span in samples (the pandas `span` convention). Must be at least 2.
     #[must_use]
     pub fn span(mut self, n: u64) -> Self {
-        self.weight = Some(crate::math::EwWeight::Span(n));
+        self.weight = Some(nexus_stats_core::math::EwWeight::Span(n));
         self
     }
 
@@ -247,13 +247,15 @@ impl RollSpreadBuilder {
     ///   set.
     /// - `ConfigError::Invalid` if the one that was set is out of range, or
     ///   if `min_samples` is below 3: one product needs two changes.
-    pub fn build(self) -> Result<RollSpread, crate::ConfigError> {
+    pub fn build(self) -> Result<RollSpread, nexus_stats_core::ConfigError> {
         let alpha = self
             .weight
-            .ok_or(crate::ConfigError::Missing("alpha"))?
+            .ok_or(nexus_stats_core::ConfigError::Missing("alpha"))?
             .resolve()?;
         if self.min_samples < 3 {
-            return Err(crate::ConfigError::Invalid("min_samples must be >= 3"));
+            return Err(nexus_stats_core::ConfigError::Invalid(
+                "min_samples must be >= 3",
+            ));
         }
 
         Ok(RollSpread {
@@ -473,7 +475,7 @@ mod tests {
 
     #[test]
     fn checked_update_refuses_bad_input_and_changes_nothing() {
-        use crate::DataError::{Infinite, NotANumber, OutOfRange};
+        use nexus_stats_core::DataError::{Infinite, NotANumber, OutOfRange};
 
         let mut rs = estimator(0.1);
         let mut untouched = estimator(0.1);

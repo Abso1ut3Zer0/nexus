@@ -1,4 +1,4 @@
-use crate::statistics::Covariance;
+use nexus_stats_core::statistics::Covariance;
 
 /// Estimates how fast a series reverts to its mean.
 ///
@@ -17,7 +17,7 @@ use crate::statistics::Covariance;
 /// # Examples
 ///
 /// ```
-/// use nexus_stats_core::statistics::{HalfLife, Reversion};
+/// use nexus_stats_detection::signal::{HalfLife, Reversion};
 ///
 /// let mut hl = HalfLife::new();
 /// for x in [8.0, 4.0, 2.0, 1.0] {
@@ -79,7 +79,7 @@ impl HalfLife {
     /// # Examples
     ///
     /// ```
-    /// use nexus_stats_core::statistics::HalfLife;
+    /// use nexus_stats_detection::signal::HalfLife;
     ///
     /// let mut hl = HalfLife::new();
     /// for x in [8.0, 4.0, 2.0, 1.0] {
@@ -98,21 +98,22 @@ impl HalfLife {
 
     /// Checked update. Feeds `value`, or returns an error and leaves the
     /// estimator unchanged if `value` is NaN, infinite, or larger in
-    /// magnitude than `1e120` (see [input limits](crate#input-limits)).
+    /// magnitude than `1e120` (see [input limits](nexus_stats_core#input-limits)).
     ///
     /// # Errors
     ///
-    /// - [`DataError::NotANumber`](crate::DataError::NotANumber) if `value`
+    /// - [`DataError::NotANumber`](nexus_stats_core::DataError::NotANumber) if `value`
     ///   is NaN.
-    /// - [`DataError::Infinite`](crate::DataError::Infinite) if `value` is
+    /// - [`DataError::Infinite`](nexus_stats_core::DataError::Infinite) if `value` is
     ///   infinite.
-    /// - [`DataError::OutOfRange`](crate::DataError::OutOfRange) if `value`
+    /// - [`DataError::OutOfRange`](nexus_stats_core::DataError::OutOfRange) if `value`
     ///   is finite and larger in magnitude than `1e120`.
     ///
     /// # Examples
     ///
     /// ```
-    /// use nexus_stats_core::{DataError, statistics::HalfLife};
+    /// use nexus_stats_core::DataError;
+    /// use nexus_stats_detection::signal::HalfLife;
     ///
     /// let mut hl = HalfLife::new();
     /// assert_eq!(hl.checked_update(1.0), Ok(()));
@@ -120,8 +121,8 @@ impl HalfLife {
     /// assert_eq!(hl.count(), 1);
     /// ```
     #[inline]
-    pub fn checked_update(&mut self, value: f64) -> Result<(), crate::DataError> {
-        crate::math::check_input(value, crate::math::LIMIT_FOR_SQUARES)?;
+    pub fn checked_update(&mut self, value: f64) -> Result<(), nexus_stats_core::DataError> {
+        nexus_stats_core::math::check_input(value, nexus_stats_core::math::LIMIT_FOR_SQUARES)?;
         self.update(value);
         Ok(())
     }
@@ -136,7 +137,7 @@ impl HalfLife {
     #[must_use]
     pub fn coefficient(&self) -> Option<f64> {
         let lagged_variance = self.pairs.variance_y()?;
-        if lagged_variance <= crate::math::rounding_variance(self.pairs.mean_y()?) {
+        if lagged_variance <= nexus_stats_core::math::rounding_variance(self.pairs.mean_y()?) {
             return None;
         }
 
@@ -157,7 +158,7 @@ impl HalfLife {
 
         // At `phi = 0` the logarithm is `-inf` and the half-life is 0.
         Some(Reversion::Reverting {
-            half_life: -core::f64::consts::LN_2 / crate::math::ln(phi),
+            half_life: -core::f64::consts::LN_2 / nexus_stats_core::math::ln(phi),
         })
     }
 
@@ -324,7 +325,7 @@ mod tests {
 
     #[test]
     fn checked_update_refuses_bad_input_and_changes_nothing() {
-        use crate::DataError::{Infinite, NotANumber, OutOfRange};
+        use nexus_stats_core::DataError::{Infinite, NotANumber, OutOfRange};
 
         let mut hl = HalfLife::new();
         for x in [8.0, 4.0, 2.0, 1.0] {
@@ -346,7 +347,7 @@ mod tests {
 
     #[test]
     fn checked_update_accepts_the_limit_without_overflow() {
-        let limit = crate::math::LIMIT_FOR_SQUARES;
+        let limit = nexus_stats_core::math::LIMIT_FOR_SQUARES;
         let mut hl = HalfLife::new();
         for i in 0..100_000 {
             hl.checked_update(if i % 2 == 0 { limit } else { -limit })

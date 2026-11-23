@@ -10,6 +10,15 @@ contained.
 
 ## [Unreleased]
 
+### Added (moved in)
+
+- `regression::HitRate`, from `nexus-stats-core`'s `statistics`, and
+  `estimation::Kalman1d`, from `nexus-stats-smoothing`. No change to either.
+
+### Removed (moved)
+
+- `KyleLambda` is now in `nexus-stats-trading`.
+
 ### Changed
 
 - **No numeric suffixes** (the stats major, [#773](https://github.com/Abso1ut3Zer0/nexus/issues/773)). Every type here is `f64` and is named

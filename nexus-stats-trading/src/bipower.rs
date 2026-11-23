@@ -1,4 +1,4 @@
-use crate::math::MulAdd;
+use nexus_stats_core::math::MulAdd;
 
 /// Splits a period's price variation into a continuous part and a jump
 /// part (Barndorff-Nielsen & Shephard, 2004).
@@ -15,7 +15,7 @@ use crate::math::MulAdd;
 /// # Examples
 ///
 /// ```
-/// use nexus_stats_core::statistics::BipowerVariation;
+/// use nexus_stats_trading::BipowerVariation;
 ///
 /// let mut bv = BipowerVariation::builder().min_samples(3).build().unwrap();
 /// for price in [100.0, 101.0, 100.0, 101.0, 150.0, 151.0, 150.0] {
@@ -115,7 +115,7 @@ impl BipowerVariation {
     /// # Examples
     ///
     /// ```
-    /// use nexus_stats_core::statistics::BipowerVariation;
+    /// use nexus_stats_trading::BipowerVariation;
     ///
     /// let mut bv = BipowerVariation::builder().min_samples(3).build().unwrap();
     /// for _ in 0..3 {
@@ -127,7 +127,7 @@ impl BipowerVariation {
     /// ```
     #[inline]
     pub fn update(&mut self, price: f64) {
-        let log_price = crate::math::ln(price);
+        let log_price = nexus_stats_core::math::ln(price);
         self.count += 1;
 
         if self.count >= 2 {
@@ -145,17 +145,17 @@ impl BipowerVariation {
     ///
     /// # Errors
     ///
-    /// - [`DataError::NotANumber`](crate::DataError::NotANumber) if `price`
+    /// - [`DataError::NotANumber`](nexus_stats_core::DataError::NotANumber) if `price`
     ///   is NaN.
-    /// - [`DataError::Infinite`](crate::DataError::Infinite) if `price` is
+    /// - [`DataError::Infinite`](nexus_stats_core::DataError::Infinite) if `price` is
     ///   infinite.
-    /// - [`DataError::OutOfRange`](crate::DataError::OutOfRange) if `price`
+    /// - [`DataError::OutOfRange`](nexus_stats_core::DataError::OutOfRange) if `price`
     ///   is zero or negative.
     ///
     /// # Examples
     ///
     /// ```
-    /// use nexus_stats_core::{DataError, statistics::BipowerVariation};
+    /// use nexus_stats_trading::{DataError, BipowerVariation};
     ///
     /// let mut bv = BipowerVariation::new();
     /// assert_eq!(bv.checked_update(100.0), Ok(()));
@@ -163,11 +163,11 @@ impl BipowerVariation {
     /// assert_eq!(bv.count(), 1);
     /// ```
     #[inline]
-    pub fn checked_update(&mut self, price: f64) -> Result<(), crate::DataError> {
+    pub fn checked_update(&mut self, price: f64) -> Result<(), nexus_stats_core::DataError> {
         // Any positive price is allowed: its logarithm is small.
-        crate::math::check_input(price, f64::MAX)?;
+        nexus_stats_core::math::check_input(price, f64::MAX)?;
         if price <= 0.0 {
-            return Err(crate::DataError::OutOfRange);
+            return Err(nexus_stats_core::DataError::OutOfRange);
         }
         self.update(price);
         Ok(())
@@ -230,9 +230,11 @@ impl BipowerVariationBuilder {
     ///
     /// `ConfigError::Invalid` if `min_samples` is below 3: bipower variation
     /// needs two returns.
-    pub fn build(self) -> Result<BipowerVariation, crate::ConfigError> {
+    pub fn build(self) -> Result<BipowerVariation, nexus_stats_core::ConfigError> {
         if self.min_samples < 3 {
-            return Err(crate::ConfigError::Invalid("min_samples must be >= 3"));
+            return Err(nexus_stats_core::ConfigError::Invalid(
+                "min_samples must be >= 3",
+            ));
         }
         Ok(BipowerVariation {
             min_samples: self.min_samples,
@@ -388,7 +390,7 @@ mod tests {
 
     #[test]
     fn checked_update_refuses_bad_input_and_changes_nothing() {
-        use crate::DataError::{Infinite, NotANumber, OutOfRange};
+        use nexus_stats_core::DataError::{Infinite, NotANumber, OutOfRange};
 
         let mut bv = tracker();
         let mut untouched = tracker();

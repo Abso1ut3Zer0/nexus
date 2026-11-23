@@ -21,8 +21,9 @@
 //! use nexus_stats::{DataError, ConfigError, Direction};
 //! ```
 //!
-//! With the `full` feature (or individual subcrate features), advanced types
-//! are available through the same module paths:
+//! Every crate is on by default. To compile less, turn the defaults off and
+//! name the features you need (`smoothing`, `detection`, `regression`,
+//! `control`, `trading`); their types come through the same module paths:
 //!
 //! ```rust,ignore
 //! // Requires `smoothing` feature
@@ -64,31 +65,32 @@
 //!
 //! # Categories
 //!
-//! ## Core (always available)
+//! ## Always available
 //!
 //! | Module | Contents |
 //! |--------|----------|
 //! | [`smoothing`] | Ema, AsymEma, Slew |
 //! | [`detection`] | Cusum, DistributionShift *(std\|libm)* |
-//! | [`statistics`] | Welford, Moments, EwmVar, Covariance, HarmonicMean, Percentile, BipowerVariation, Cvar, Lpm, HitRate, Amihud, BucketAccumulator, HalfLife *(std\|libm)*, RollSpread *(std\|libm)*, Hurst *(alloc, std\|libm)*, TwoScaleRv *(alloc, std\|libm)*, CovarianceMatrix *(alloc)*, VarianceRatio *(alloc, std\|libm)* |
+//! | [`statistics`] | Welford, Moments, EwmVar, Covariance, HarmonicMean, Percentile, BucketAccumulator, FirstDiff, SecondDiff, CovarianceMatrix *(alloc)* |
 //! | [`monitoring`] | Drawdown, RunningMax, RunningMin, WindowedMax, WindowedMin, MaxGauge, PeakHold, CoDel, PollSaturation, SojournSaturation, Liveness, EventRate, Jitter, ErrorRate, HawkesIntensity *(std\|libm)* |
-//! | [`control`] | DeadBand, Hysteresis, Debounce, LevelCrossing, FirstDiff, SecondDiff |
+//! | [`control`] | DeadBand, Hysteresis, Debounce, LevelCrossing |
 //! | [`normalization`] | MinMaxNorm, ZScoreNorm *(std\|libm)*, QuantileNorm *(alloc)* |
 //! | `storage` *(alloc)* | Ring, the fixed-capacity ring the windowed types share |
 //!
-//! ## Advanced (feature-gated, re-exported from subcrates)
+//! ## Behind a feature (all on by default)
 //!
 //! | Feature | Module | Contents |
 //! |---------|--------|----------|
-//! | `smoothing` | `smoothing` | + Holt, Spring, Kalman1d, HuberEma, Kama *(alloc)*, Hampel *(alloc)*, WindowedMedian *(alloc)* |
+//! | `smoothing` | `smoothing` | + Holt, Spring, HuberEma, Kama *(alloc)*, Hampel *(alloc)*, WindowedMedian *(alloc)* |
 //! | `detection` | `detection` | + Mosum, ShiryaevRoberts, AdaptiveThreshold, RobustZScore, TrendAlert, MultiGate, PageHinkley, Adwin, Bocpd, DistDrift |
-//! | `detection` + `alloc` | `signal` | Autocorrelation, CrossCorrelation, Entropy *(std\|libm)*, TransferEntropy *(std\|libm)*, PredictiveInfoBound *(std\|libm)* |
+//! | `detection` | `signal` | HalfLife *(std\|libm)*, Hurst *(alloc, std\|libm)*, Autocorrelation *(alloc)*, CrossCorrelation *(alloc)*, Entropy, TransferEntropy, PredictiveInfoBound *(all three alloc, std\|libm)* |
 //! | `detection` | `estimation` | + SprtBernoulli, SprtGaussian |
-//! | `regression` | `regression` | LinearRegression, PolynomialRegression, EwLinearRegression, EwPolynomialRegression, ExponentialRegression, LogarithmicRegression, PowerRegression (+ `Ew*`), LogisticRegression, KyleLambda, LaggedPredictor, SignalDecayCurve |
+//! | `regression` | `regression` | LinearRegression, PolynomialRegression, EwLinearRegression, EwPolynomialRegression, ExponentialRegression, LogarithmicRegression, PowerRegression (+ `Ew*`), LogisticRegression, HitRate, LaggedPredictor, SignalDecayCurve |
 //! | `regression` + `alloc` | `learning` | LmsFilter, NlmsFilter, RlsFilter, HuberRegression, OnlineKMeans, OnlineGd, AdaGrad, Adam, Ucb1, ThompsonBeta, ThompsonGamma, EpsilonGreedy, Exp3 |
-//! | `regression` | `estimation` | + Kalman2d, Kalman3d, BetaBinomial, GammaPoisson |
+//! | `regression` | `estimation` | + Kalman1d, Kalman2d, Kalman3d, BetaBinomial, GammaPoisson |
 //! | `control` | `control` | + PeakDetector, BoolWindow *(alloc)* |
 //! | `control` | `frequency` | FlexProportionGlobal, FlexProportionLocal, TopK *(alloc)*, DecayAccum *(std\|libm)* |
+//! | `trading` | `trading` | Amihud, Lpm, Cvar, BipowerVariation *(std\|libm)*, RollSpread *(std\|libm)*, TwoScaleRv *(alloc, std\|libm)*, VarianceRatio *(alloc, std\|libm)*, KyleLambda *(with `regression`)* |
 //! | `full` | all | Everything above |
 //!
 //! # Features
@@ -98,11 +100,12 @@
 //! | `std` | yes | `MonotonicClock`, `sqrt`/`exp` intrinsics; implies `alloc` |
 //! | `alloc` | no (implied by `std`) | Mosum, Kama, Hampel, WindowedMedian, BoolWindow, TopK, the correlations and entropies, adaptive filters, optimizers, bandits |
 //! | `libm` | no | Pure Rust `sqrt`/`exp` fallback for `no_std` (enables ShiryaevRoberts, AdaptiveThreshold, HalfLife, ...) |
-//! | `smoothing` | no | Advanced smoothing types (Holt, Kama, Spring, Kalman1d, WindowedMedian, ...) |
-//! | `detection` | no | Advanced detection + signal analysis (implies `smoothing`) |
-//! | `regression` | no | Regression, learning, estimation types |
-//! | `control` | no | Advanced control + frequency types |
-//! | `full` | no | All subcrates |
+//! | `smoothing` | yes | Holt, Kama, Spring, HuberEma, Hampel, WindowedMedian |
+//! | `detection` | yes | More detectors, and signal analysis (implies `smoothing`) |
+//! | `regression` | yes | Regression, learning and estimation types |
+//! | `control` | yes | PeakDetector, BoolWindow, and the frequency types |
+//! | `trading` | yes | Trading and market-microstructure statistics |
+//! | `full` | yes | All of the five above |
 
 // Re-export core types at crate root
 pub use nexus_stats_core::{Accuracy, Condition, ConfigError, DataError, Direction};
@@ -127,9 +130,9 @@ pub use nexus_stats_core::feature_vector;
 
 /// Smoothing and filtering primitives.
 ///
-/// Core types (`Ema`, `AsymEma`, `Slew`) are always available. Advanced types
-/// (`Holt`, `Spring`, `Kalman1d`, `HuberEma`, `Kama`, `Hampel`,
-/// `WindowedMedian`) require the `smoothing` feature.
+/// `Ema`, `AsymEma` and `Slew` are always available. `Holt`, `Spring`,
+/// `HuberEma`, `Kama`, `Hampel` and `WindowedMedian` require the `smoothing`
+/// feature.
 pub mod smoothing {
     pub use nexus_stats_core::smoothing::*;
 
@@ -162,11 +165,10 @@ pub use nexus_stats_core::monitoring;
 #[cfg(feature = "alloc")]
 pub use nexus_stats_core::storage;
 
-/// Control, thresholding, and differencing.
+/// Thresholds and switches.
 ///
-/// Core types (`DeadBand`, `Hysteresis`, `Debounce`, `LevelCrossing`, `FirstDiff`,
-/// `SecondDiff`) are always available. `PeakDetector` and `BoolWindow` require the
-/// `control` feature.
+/// `DeadBand`, `Hysteresis`, `Debounce` and `LevelCrossing` are always
+/// available. `PeakDetector` and `BoolWindow` require the `control` feature.
 pub mod control {
     pub use nexus_stats_core::control::*;
 
@@ -178,17 +180,20 @@ pub mod control {
 
 /// Signal analysis and information theory.
 ///
-/// Requires the `detection` and `alloc` features: every type here holds a
-/// lag window or a frequency table.
-#[cfg(all(feature = "detection", feature = "alloc"))]
+/// Requires the `detection` feature. Most types here hold a lag window or a
+/// frequency table and need `alloc` as well.
+#[cfg(all(
+    feature = "detection",
+    any(feature = "alloc", feature = "std", feature = "libm")
+))]
 pub mod signal {
     pub use nexus_stats_detection::signal::*;
 }
 
 /// State estimation, Bayesian inference, and hypothesis testing.
 ///
-/// Kalman1d is available via [`smoothing`] with the `smoothing` feature.
-/// Kalman2d/3d, BetaBinomial, GammaPoisson require the `regression` feature.
+/// `Kalman1d`, `Kalman2d`, `Kalman3d`, `BetaBinomial` and `GammaPoisson`
+/// require the `regression` feature.
 /// `SprtBernoulli` / `SprtGaussian` require the `detection` feature.
 #[cfg(any(feature = "regression", feature = "detection"))]
 pub mod estimation {
@@ -221,4 +226,12 @@ pub mod learning {
 #[cfg(feature = "control")]
 pub mod frequency {
     pub use nexus_stats_control::frequency::*;
+}
+
+/// Trading and market-microstructure statistics.
+///
+/// Requires the `trading` feature. `KyleLambda` also needs `regression`.
+#[cfg(feature = "trading")]
+pub mod trading {
+    pub use nexus_stats_trading::*;
 }

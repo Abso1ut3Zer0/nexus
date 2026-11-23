@@ -1,0 +1,26 @@
+[package]
+name = "nexus-stats-trading"
+version = "0.1.0"
+description = "Trading and market-microstructure statistics for nexus-stats"
+readme = "README.md"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+keywords.workspace = true
+categories.workspace = true
+
+[features]
+default = ["std", "regression"]
+std = ["nexus-stats-core/std", "nexus-stats-regression?/std", "alloc"]
+alloc = ["nexus-stats-core/alloc", "nexus-stats-regression?/alloc"]
+libm = ["nexus-stats-core/libm", "nexus-stats-regression?/libm"]
+# `KyleLambda`, which is built on the regression crate.
+regression = ["dep:nexus-stats-regression"]
+
+[dependencies]
+nexus-stats-core = { version = "3.0.1", path = "../nexus-stats-core", default-features = false }
+nexus-stats-regression = { version = "2.0.0", path = "../nexus-stats-regression", default-features = false, optional = true }
+
+[lints]
+workspace = true

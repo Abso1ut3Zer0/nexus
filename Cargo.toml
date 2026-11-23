@@ -25,6 +25,7 @@ members = [
 	"nexus-stats-detection",
 	"nexus-stats-regression",
 	"nexus-stats-control",
+	"nexus-stats-trading",
 	"nexus-rate",
 	"nexus-notify",
 	"nexus-decimal",

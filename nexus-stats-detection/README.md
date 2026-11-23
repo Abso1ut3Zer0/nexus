@@ -17,6 +17,8 @@ Advanced change detection and signal analysis for [nexus-stats](https://crates.i
 
 - **Autocorrelation** — Lagged autocorrelation (requires `alloc`)
 - **CrossCorrelation** — Lagged cross-correlation (requires `alloc`)
+- **Hurst** — Hurst exponent by rescaled-range analysis (requires `alloc` + (`std` or `libm`))
+- **HalfLife** — How fast a series reverts to its mean (requires `std` or `libm`)
 - **Entropy** — Shannon entropy estimation (requires `alloc` + (`std` or `libm`))
 - **TransferEntropy** — Transfer entropy between series (requires `alloc` + (`std` or `libm`))
 - **PredictiveInfoBound** — Binned mutual information estimation (requires `alloc` + (`std` or `libm`))

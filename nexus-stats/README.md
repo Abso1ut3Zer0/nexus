@@ -180,7 +180,8 @@ sealed `Sample` trait, instantiated for `f64` and `i64`:
 | Generic over `Sample` (`f64`, `i64`) | Module |
 |--------------------------------------|--------|
 | `Drawdown`, `RunningMax`, `RunningMin`, `WindowedMax`, `WindowedMin`, `MaxGauge`, `PeakHold`, `CoDel`, `Jitter` | `monitoring` |
-| `DeadBand`, `Hysteresis`, `LevelCrossing`, `FirstDiff`, `SecondDiff`, `PeakDetector` *(control feature)* | `control` |
+| `DeadBand`, `Hysteresis`, `LevelCrossing`, `PeakDetector` *(control feature)* | `control` |
+| `FirstDiff`, `SecondDiff` | `statistics` |
 | `Slew`, `WindowedMedian` *(smoothing feature)* | `smoothing` |
 
 `update` returns `Result` on the `f64` instantiation (NaN and infinity are
@@ -273,13 +274,14 @@ and construction (`halflife()`).
 
 ## Sub-Crates
 
-nexus-stats is split into five workspace crates for independent compilation and feature gating:
+nexus-stats is split into workspace crates for independent compilation and feature gating. Every concept lives in one crate, and all of them are on by default:
 
 - **nexus-stats-core** — shared traits, error types, clock (`Clock`, `MonotonicClock`, `EpochClock`), and builder infrastructure
-- **nexus-stats-smoothing** — EMA, KAMA, Kalman, Holt, Spring, Slew, WindowedMedian
-- **nexus-stats-detection** — CUSUM, MOSUM, Shiryaev-Roberts, MultiGate, RobustZScore, AdaptiveThreshold
-- **nexus-stats-regression** — Linear, polynomial, exponential, logarithmic, power regression
-- **nexus-stats-control** — DeadBand, Hysteresis, Debounce, LevelCrossing, PeakDetector, BoolWindow
+- **nexus-stats-smoothing** — KAMA, Holt, Spring, HuberEma, Hampel, WindowedMedian
+- **nexus-stats-detection** — MOSUM, Shiryaev-Roberts, MultiGate, RobustZScore, AdaptiveThreshold, and signal analysis (Autocorrelation, Hurst, HalfLife)
+- **nexus-stats-regression** — Linear, polynomial, exponential, logarithmic, power regression; learning; Kalman and Bayesian estimation
+- **nexus-stats-control** — PeakDetector, BoolWindow, and the frequency types
+- **nexus-stats-trading** — VarianceRatio, TwoScaleRv, BipowerVariation, Amihud, RollSpread, KyleLambda, Lpm, Cvar
 
 The top-level `nexus-stats` crate re-exports everything. Use the sub-crates directly if you only need a subset.
 
@@ -290,19 +292,19 @@ See [`docs/use-cases/trading.md`](docs/use-cases/trading.md) for full guide with
 
 | Use Case | Type | Crate |
 |----------|------|-------|
-| Market impact | `KyleLambda` | regression |
-| Illiquidity | `Amihud` | core |
+| Market impact | `KyleLambda` | trading |
+| Illiquidity | `Amihud` | trading |
 | Bar construction | `BucketAccumulator` | core |
 | Signal decay curve | `SignalDecayCurve` | regression |
 | Lagged prediction / markout | `LaggedPredictor` | regression |
-| Mean-reversion speed | `HalfLife` | core |
-| Trending vs mean-reverting | `Hurst` | core |
-| Random walk test | `VarianceRatio` | core |
+| Mean-reversion speed | `HalfLife` | detection (`signal`) |
+| Trending vs mean-reverting | `Hurst` | detection (`signal`) |
+| Random walk test | `VarianceRatio` | trading |
 | Distribution change | `DistributionShift` | core |
-| Directional accuracy | `HitRate` | core |
-| Jump-robust volatility | `BipowerVariation` | core |
-| Implicit spread estimation | `RollSpread` | core |
-| Noise-corrected realized vol | `TwoScaleRv` | core |
+| Directional accuracy | `HitRate` | regression |
+| Jump-robust volatility | `BipowerVariation` | trading |
+| Implicit spread estimation | `RollSpread` | trading |
+| Noise-corrected realized vol | `TwoScaleRv` | trading |
 | Bursty event intensity | `HawkesIntensity` | core |
 | Conditional smoothing | `Ema`, updated only when the condition holds | core |
 | Venue selection | `ThompsonBeta` / `Ucb1` | regression |

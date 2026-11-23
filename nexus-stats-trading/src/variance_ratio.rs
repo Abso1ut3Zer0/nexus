@@ -1,9 +1,9 @@
 use alloc::boxed::Box;
 use alloc::vec;
 
-use crate::Accuracy;
-use crate::math::{MulAdd, RoundingEstimate};
-use crate::storage::SliceRing;
+use nexus_stats_core::Accuracy;
+use nexus_stats_core::math::{MulAdd, RoundingEstimate};
+use nexus_stats_core::storage::SliceRing;
 
 /// Variance ratio over a sliding window: is the price a random walk?
 ///
@@ -48,7 +48,7 @@ use crate::storage::SliceRing;
 /// # Examples
 ///
 /// ```
-/// use nexus_stats_core::statistics::VarianceRatio;
+/// use nexus_stats_trading::VarianceRatio;
 ///
 /// let mut vr = VarianceRatio::builder().horizon(2).window(64).build().unwrap();
 /// // A price that bounces between two levels reverts every step.
@@ -407,7 +407,7 @@ impl VarianceRatio {
     /// # Examples
     ///
     /// ```
-    /// use nexus_stats_core::{Accuracy, statistics::VarianceRatio};
+    /// use nexus_stats_trading::{Accuracy, VarianceRatio};
     ///
     /// let mut vr = VarianceRatio::builder().horizon(2).window(64).build().unwrap();
     /// match vr.update(100.0) {
@@ -418,7 +418,7 @@ impl VarianceRatio {
     /// ```
     #[inline]
     pub fn update(&mut self, price: f64) -> Accuracy {
-        let log_price = crate::math::ln(price);
+        let log_price = nexus_stats_core::math::ln(price);
         self.count += 1;
 
         // With a resync due the totals are not kept: `resync` rebuilds them
@@ -450,17 +450,17 @@ impl VarianceRatio {
     ///
     /// # Errors
     ///
-    /// - [`DataError::NotANumber`](crate::DataError::NotANumber) if `price`
+    /// - [`DataError::NotANumber`](nexus_stats_core::DataError::NotANumber) if `price`
     ///   is NaN.
-    /// - [`DataError::Infinite`](crate::DataError::Infinite) if `price` is
+    /// - [`DataError::Infinite`](nexus_stats_core::DataError::Infinite) if `price` is
     ///   infinite.
-    /// - [`DataError::OutOfRange`](crate::DataError::OutOfRange) if `price`
+    /// - [`DataError::OutOfRange`](nexus_stats_core::DataError::OutOfRange) if `price`
     ///   is zero or negative.
     ///
     /// # Examples
     ///
     /// ```
-    /// use nexus_stats_core::{Accuracy, DataError, statistics::VarianceRatio};
+    /// use nexus_stats_trading::{Accuracy, DataError, VarianceRatio};
     ///
     /// let mut vr = VarianceRatio::builder().horizon(2).window(64).build().unwrap();
     /// assert_eq!(vr.checked_update(100.0), Ok(Accuracy::Sound));
@@ -468,11 +468,11 @@ impl VarianceRatio {
     /// assert_eq!(vr.count(), 1);
     /// ```
     #[inline]
-    pub fn checked_update(&mut self, price: f64) -> Result<Accuracy, crate::DataError> {
+    pub fn checked_update(&mut self, price: f64) -> Result<Accuracy, nexus_stats_core::DataError> {
         // Any positive price is allowed: its logarithm is small.
-        crate::math::check_input(price, f64::MAX)?;
+        nexus_stats_core::math::check_input(price, f64::MAX)?;
         if price <= 0.0 {
-            return Err(crate::DataError::OutOfRange);
+            return Err(nexus_stats_core::DataError::OutOfRange);
         }
         Ok(self.update(price))
     }
@@ -504,7 +504,7 @@ impl VarianceRatio {
     /// # Examples
     ///
     /// ```
-    /// use nexus_stats_core::{Accuracy, statistics::VarianceRatio};
+    /// use nexus_stats_trading::{Accuracy, VarianceRatio};
     ///
     /// let prices = [100.0, 101.0, 100.5, 102.0, 101.0, 103.0, 102.5, 104.0, 103.0, 105.0];
     /// let mut vr = VarianceRatio::builder().horizon(2).window(8).build().unwrap();
@@ -606,7 +606,7 @@ impl VarianceRatio {
     fn long_squares_about_the_drift(&self, centered: Centered) -> f64 {
         let q = self.horizon as f64;
         let terms = centered.n - q + 1.0;
-        let squares = crate::math::squares_about(
+        let squares = nexus_stats_core::math::squares_about(
             self.totals.long_squares.total,
             self.totals.long_sum.total,
             terms,
@@ -697,7 +697,7 @@ impl VarianceRatio {
             + ratio * of_squares;
 
         // The ratio's error reaches z through `ratio - 1`.
-        let scale = crate::math::sqrt(n / variance);
+        let scale = nexus_stats_core::math::sqrt(n / variance);
         let z = scale * (ratio - 1.0);
 
         // z goes as the squares over the root of the lag sums.
@@ -722,7 +722,7 @@ impl VarianceRatio {
         // And evaluating it subtracts terms of these sizes.
         let evaluation =
             f64::EPSILON * (3.0 * fourth + 10.0 * shift_2 * squares + 3.0 * n * shift_4);
-        (Self::CONFIDENCE * crate::math::sqrt(variance) + evaluation)
+        (Self::CONFIDENCE * nexus_stats_core::math::sqrt(variance) + evaluation)
             * self.constants.lag_weights_sum
     }
 
@@ -747,7 +747,7 @@ impl VarianceRatio {
             * (self.totals.long_squares.total
                 + 2.0 * (drift * self.totals.long_sum.total).abs()
                 + terms * drift * drift);
-        Self::CONFIDENCE * crate::math::sqrt(variance) + evaluation
+        Self::CONFIDENCE * nexus_stats_core::math::sqrt(variance) + evaluation
     }
 
     /// Reads the totals: whether a reading can be trusted, and the reading
@@ -803,7 +803,7 @@ impl VarianceRatio {
         // scale is the larger of the window's two ends, which set the drift.
         let prices = self.log_prices.as_slice();
         let scale = prices.first()?.abs().max(prices.last()?.abs());
-        if one_period / (n - 1.0) <= crate::math::rounding_variance(scale) {
+        if one_period / (n - 1.0) <= nexus_stats_core::math::rounding_variance(scale) {
             return None;
         }
         if parts.variance <= 0.0 {
@@ -812,8 +812,8 @@ impl VarianceRatio {
 
         Some(VarianceRatioEstimate {
             ratio: parts.ratio,
-            z_statistic: crate::math::sqrt(n) * (parts.ratio - 1.0)
-                / crate::math::sqrt(parts.variance),
+            z_statistic: nexus_stats_core::math::sqrt(n) * (parts.ratio - 1.0)
+                / nexus_stats_core::math::sqrt(parts.variance),
         })
     }
 }
@@ -841,19 +841,27 @@ impl VarianceRatioBuilder {
     ///
     /// - `Missing` if `horizon` or `window` was not set.
     /// - `Invalid` if `horizon` is below 2 or `window` is not more than it.
-    pub fn build(self) -> Result<VarianceRatio, crate::ConfigError> {
-        let horizon = self.horizon.ok_or(crate::ConfigError::Missing("horizon"))?;
-        let window = self.window.ok_or(crate::ConfigError::Missing("window"))?;
+    pub fn build(self) -> Result<VarianceRatio, nexus_stats_core::ConfigError> {
+        let horizon = self
+            .horizon
+            .ok_or(nexus_stats_core::ConfigError::Missing("horizon"))?;
+        let window = self
+            .window
+            .ok_or(nexus_stats_core::ConfigError::Missing("window"))?;
         if horizon < 2 {
-            return Err(crate::ConfigError::Invalid("horizon must be >= 2"));
+            return Err(nexus_stats_core::ConfigError::Invalid(
+                "horizon must be >= 2",
+            ));
         }
         if window <= horizon {
-            return Err(crate::ConfigError::Invalid(
+            return Err(nexus_stats_core::ConfigError::Invalid(
                 "window must be more than horizon",
             ));
         }
         let Some(prices) = window.checked_add(1) else {
-            return Err(crate::ConfigError::Invalid("window is too large"));
+            return Err(nexus_stats_core::ConfigError::Invalid(
+                "window is too large",
+            ));
         };
 
         Ok(VarianceRatio {
@@ -1922,7 +1930,7 @@ mod tests {
 
     #[test]
     fn builder_validation() {
-        use crate::ConfigError::{Invalid, Missing};
+        use nexus_stats_core::ConfigError::{Invalid, Missing};
         let b = VarianceRatio::builder;
         assert_eq!(b().window(10).build().unwrap_err(), Missing("horizon"));
         assert_eq!(b().horizon(2).build().unwrap_err(), Missing("window"));
@@ -1944,7 +1952,7 @@ mod tests {
 
     #[test]
     fn checked_update_refuses_bad_input_and_changes_nothing() {
-        use crate::DataError::{Infinite, NotANumber, OutOfRange};
+        use nexus_stats_core::DataError::{Infinite, NotANumber, OutOfRange};
 
         let mut vr = VarianceRatio::builder()
             .horizon(2)

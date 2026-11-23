@@ -1,5 +1,5 @@
-use crate::math::EwWeight;
-use crate::smoothing::Ema;
+use nexus_stats_core::math::EwWeight;
+use nexus_stats_core::smoothing::Ema;
 
 /// Directional accuracy: the fraction of predictions whose sign matched the
 /// outcome.
@@ -20,7 +20,7 @@ use crate::smoothing::Ema;
 /// # Examples
 ///
 /// ```
-/// use nexus_stats_core::statistics::HitRate;
+/// use nexus_stats_regression::regression::HitRate;
 ///
 /// let mut hits = HitRate::builder().alpha(0.5).build().unwrap();
 /// hits.update(1.0, 0.5); // both up: a hit
@@ -69,7 +69,7 @@ impl HitRate {
         let hit = same_sign(predicted, realized);
         self.total += 1;
         self.hits += u64::from(hit);
-        self.ew_hits.update(crate::math::indicator(hit));
+        self.ew_hits.update(nexus_stats_core::math::indicator(hit));
     }
 
     /// Checked update. Feeds the pair, or returns an error and leaves the
@@ -77,15 +77,16 @@ impl HitRate {
     ///
     /// # Errors
     ///
-    /// - [`DataError::NotANumber`](crate::DataError::NotANumber) if either
+    /// - [`DataError::NotANumber`](nexus_stats_core::DataError::NotANumber) if either
     ///   value is NaN.
-    /// - [`DataError::Infinite`](crate::DataError::Infinite) if either value
+    /// - [`DataError::Infinite`](nexus_stats_core::DataError::Infinite) if either value
     ///   is infinite.
     ///
     /// # Examples
     ///
     /// ```
-    /// use nexus_stats_core::{DataError, statistics::HitRate};
+    /// use nexus_stats_core::DataError;
+    /// use nexus_stats_regression::regression::HitRate;
     ///
     /// let mut hits = HitRate::builder().alpha(0.5).build().unwrap();
     /// assert_eq!(hits.checked_update(1.0, 0.5), Ok(()));
@@ -97,8 +98,8 @@ impl HitRate {
         &mut self,
         predicted: f64,
         realized: f64,
-    ) -> Result<(), crate::DataError> {
-        crate::math::check_inputs!(predicted, realized)?;
+    ) -> Result<(), nexus_stats_core::DataError> {
+        nexus_stats_core::math::check_inputs!(predicted, realized)?;
         self.update(predicted, realized);
         Ok(())
     }
@@ -169,10 +170,10 @@ impl HitRateBuilder {
     /// - `Missing("alpha")` if none of `alpha`, `halflife`, `span` was set.
     /// - `Invalid` if the weight is out of range; the message names the knob
     ///   set.
-    pub fn build(self) -> Result<HitRate, crate::ConfigError> {
+    pub fn build(self) -> Result<HitRate, nexus_stats_core::ConfigError> {
         let alpha = self
             .weight
-            .ok_or(crate::ConfigError::Missing("alpha"))?
+            .ok_or(nexus_stats_core::ConfigError::Missing("alpha"))?
             .resolve()?;
         Ok(HitRate {
             hits: 0,
@@ -283,7 +284,7 @@ mod tests {
 
     #[test]
     fn checked_update_refuses_bad_input_and_changes_nothing() {
-        use crate::DataError::{Infinite, NotANumber};
+        use nexus_stats_core::DataError::{Infinite, NotANumber};
 
         let mut hr = HitRate::builder().alpha(0.5).build().unwrap();
         hr.checked_update(1.0, 1.0).unwrap();
@@ -320,7 +321,7 @@ mod tests {
 
     #[test]
     fn a_bad_knob_is_reported_under_its_own_name() {
-        use crate::ConfigError::{Invalid, Missing};
+        use nexus_stats_core::ConfigError::{Invalid, Missing};
         let b = HitRate::builder;
         assert_eq!(b().build().unwrap_err(), Missing("alpha"));
         assert_eq!(

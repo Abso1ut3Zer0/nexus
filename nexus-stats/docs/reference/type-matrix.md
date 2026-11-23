@@ -43,7 +43,7 @@ See [Integer vs Float](../guides/integer-vs-float.md) for the caller rules and
 | `AsymEma` | `f64` | — | core (`smoothing`) |
 | `Slew<T>` | `T: Sample` | — | core (`smoothing`) |
 | `Holt` | `f64` | — | smoothing |
-| `Kalman1d` | `f64` | — | smoothing |
+| `Kalman1d` | `f64` | — | regression (`estimation`) |
 | `Spring` | `f64` | — | smoothing |
 | `HuberEma` | `f64` | — | smoothing |
 | `Kama` | `f64` | `alloc` | smoothing |
@@ -61,17 +61,17 @@ See [Integer vs Float](../guides/integer-vs-float.md) for the caller rules and
 | `CovarianceMatrix` | `f64` | `alloc` | core (`statistics`) |
 | `HarmonicMean` | `f64` | — | core (`statistics`) |
 | `Percentile` | `f64` | — | core (`statistics`) |
-| `Lpm` | `f64` | — | core (`statistics`) |
-| `Cvar` | `f64` | — | core (`statistics`) |
-| `HitRate` | `f64` pairs (signs compared) | — | core (`statistics`) |
+| `Lpm` | `f64` | — | trading |
+| `Cvar` | `f64` | — | trading |
+| `HitRate` | `f64` pairs (signs compared) | — | regression (`regression`) |
 | `BucketAccumulator` (→ `BucketSummary`) | `f64` | — | core (`statistics`) |
-| `Amihud` | `f64` | — | core (`statistics`) |
-| `BipowerVariation` (→ `JumpDecomposition`) | `f64` | `std\|libm` | core (`statistics`) |
-| `RollSpread` (→ `RollEstimate`) | `f64` | `std\|libm` | core (`statistics`) |
-| `HalfLife` | `f64` | `std\|libm` | core (`statistics`) |
-| `Hurst` | `f64` | `alloc + std\|libm` | core (`statistics`) |
-| `VarianceRatio` (→ `VarianceRatioEstimate`) | `f64` | `alloc + std\|libm` | core (`statistics`) |
-| `TwoScaleRv` (→ `TwoScaleEstimate`) | `f64` | `alloc + std\|libm` | core (`statistics`) |
+| `Amihud` | `f64` | — | trading |
+| `BipowerVariation` (→ `JumpDecomposition`) | `f64` | `std\|libm` | trading |
+| `RollSpread` (→ `RollEstimate`) | `f64` | `std\|libm` | trading |
+| `HalfLife` | `f64` | `std\|libm` | detection (`signal`) |
+| `Hurst` | `f64` | `alloc + std\|libm` | detection (`signal`) |
+| `VarianceRatio` (→ `VarianceRatioEstimate`) | `f64` | `alloc + std\|libm` | trading |
+| `TwoScaleRv` (→ `TwoScaleEstimate`) | `f64` | `alloc + std\|libm` | trading |
 
 ## Normalization
 
@@ -106,7 +106,7 @@ See [Integer vs Float](../guides/integer-vs-float.md) for the caller rules and
 | `DeadBand<T>` | `T: Sample` | — | core (`control`) |
 | `Hysteresis<T>` | `T: Sample` | — | core (`control`) |
 | `LevelCrossing<T>` | `T: Sample` | — | core (`control`) |
-| `FirstDiff<T>`, `SecondDiff<T>` | `T: Sample` | — | core (`control`) |
+| `FirstDiff<T>`, `SecondDiff<T>` | `T: Sample` | — | core (`statistics`) |
 | `Debounce` | `u64` count | — | core (`control`) |
 | `PeakDetector<T>` (→ `Peak<T>`) | `T: Sample` | — | control (`control`) |
 | `BoolWindow` | `bool` | `alloc` | control (`control`) |
@@ -127,7 +127,7 @@ See [Integer vs Float](../guides/integer-vs-float.md) for the caller rules and
 | `PolynomialRegression`, `EwPolynomialRegression` | `f64` | — | regression (`regression`) |
 | `ExponentialRegression`, `LogarithmicRegression`, `PowerRegression` (+ `Ew*`) | `f64` | `std\|libm` | regression (`regression`) |
 | `LogisticRegression` | `f64` | `alloc + std\|libm` | regression (`regression`) |
-| `KyleLambda` | `f64` | — | regression (`regression`) |
+| `KyleLambda` | `f64` | — | trading |
 | `LaggedPredictor` | `f64` | `alloc + std\|libm` | regression (`regression`) |
 | `SignalDecayCurve` | `f64` | `alloc + std\|libm` | regression (`regression`) |
 

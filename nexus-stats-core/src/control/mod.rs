@@ -10,17 +10,13 @@
 //! - [`Debounce`]: triggers only after a number of events in a row.
 //! - [`LevelCrossing`]: detects crossings of a level, with their direction,
 //!   and counts them.
-//! - [`FirstDiff`] and [`SecondDiff`]: the change from one sample to the
-//!   next, and the change in that.
 
 mod dead_band;
 mod debounce;
-mod diff;
 mod hysteresis;
 mod level_crossing;
 
 pub use dead_band::*;
 pub use debounce::*;
-pub use diff::*;
 pub use hysteresis::*;
 pub use level_crossing::*;

@@ -1,8 +1,8 @@
 use alloc::boxed::Box;
 use alloc::vec::Vec;
 
-use crate::math::MulAdd;
-use crate::storage::SliceRing;
+use nexus_stats_core::math::MulAdd;
+use nexus_stats_core::storage::SliceRing;
 
 mod kernel;
 
@@ -35,7 +35,7 @@ mod kernel;
 /// # Examples
 ///
 /// ```
-/// use nexus_stats_core::statistics::Hurst;
+/// use nexus_stats_detection::signal::Hurst;
 ///
 /// let mut hurst = Hurst::builder().window(256).build().unwrap();
 /// // A price that reverses every step is strongly mean-reverting.
@@ -89,7 +89,7 @@ impl Hurst {
     #[inline]
     pub fn update(&mut self, price: f64) {
         self.count += 1;
-        self.log_prices.push(crate::math::ln(price));
+        self.log_prices.push(nexus_stats_core::math::ln(price));
     }
 
     /// Checked update. Feeds `price`, or returns an error and leaves the
@@ -97,17 +97,18 @@ impl Hurst {
     ///
     /// # Errors
     ///
-    /// - [`DataError::NotANumber`](crate::DataError::NotANumber) if `price`
+    /// - [`DataError::NotANumber`](nexus_stats_core::DataError::NotANumber) if `price`
     ///   is NaN.
-    /// - [`DataError::Infinite`](crate::DataError::Infinite) if `price` is
+    /// - [`DataError::Infinite`](nexus_stats_core::DataError::Infinite) if `price` is
     ///   infinite.
-    /// - [`DataError::OutOfRange`](crate::DataError::OutOfRange) if `price`
+    /// - [`DataError::OutOfRange`](nexus_stats_core::DataError::OutOfRange) if `price`
     ///   is zero or negative.
     ///
     /// # Examples
     ///
     /// ```
-    /// use nexus_stats_core::{DataError, statistics::Hurst};
+    /// use nexus_stats_core::DataError;
+    /// use nexus_stats_detection::signal::Hurst;
     ///
     /// let mut hurst = Hurst::builder().window(256).build().unwrap();
     /// assert_eq!(hurst.checked_update(100.0), Ok(()));
@@ -115,11 +116,11 @@ impl Hurst {
     /// assert_eq!(hurst.count(), 1);
     /// ```
     #[inline]
-    pub fn checked_update(&mut self, price: f64) -> Result<(), crate::DataError> {
+    pub fn checked_update(&mut self, price: f64) -> Result<(), nexus_stats_core::DataError> {
         // Any positive price is allowed: its logarithm is small.
-        crate::math::check_input(price, f64::MAX)?;
+        nexus_stats_core::math::check_input(price, f64::MAX)?;
         if price <= 0.0 {
-            return Err(crate::DataError::OutOfRange);
+            return Err(nexus_stats_core::DataError::OutOfRange);
         }
         self.update(price);
         Ok(())
@@ -147,8 +148,8 @@ impl Hurst {
         // Least-squares slope of `ln(R/S) - ln(expected)` on `ln(size)`.
         let mut slope = 0.0;
         for scale in &self.scales {
-            let excess =
-                crate::math::ln(mean_rescaled_range(log_prices, scale.size)?) - scale.ln_expected;
+            let excess = nexus_stats_core::math::ln(mean_rescaled_range(log_prices, scale.size)?)
+                - scale.ln_expected;
             slope = scale.slope_weight.fma(excess, slope);
         }
 
@@ -209,13 +210,17 @@ impl HurstBuilder {
     /// - `Invalid` if `smallest_window` is below 4, or `window` is less than
     ///   four times `smallest_window` (three lengths are needed for the
     ///   fit).
-    pub fn build(self) -> Result<Hurst, crate::ConfigError> {
-        let window = self.window.ok_or(crate::ConfigError::Missing("window"))?;
+    pub fn build(self) -> Result<Hurst, nexus_stats_core::ConfigError> {
+        let window = self
+            .window
+            .ok_or(nexus_stats_core::ConfigError::Missing("window"))?;
         if self.smallest_window < 4 {
-            return Err(crate::ConfigError::Invalid("smallest_window must be >= 4"));
+            return Err(nexus_stats_core::ConfigError::Invalid(
+                "smallest_window must be >= 4",
+            ));
         }
         if window / 4 < self.smallest_window {
-            return Err(crate::ConfigError::Invalid(
+            return Err(nexus_stats_core::ConfigError::Invalid(
                 "window must be at least 4 times smallest_window",
             ));
         }
@@ -228,7 +233,7 @@ impl HurstBuilder {
         }
 
         // The slope's weights depend only on the lengths.
-        let ln_size = |size: usize| crate::math::ln(size as f64);
+        let ln_size = |size: usize| nexus_stats_core::math::ln(size as f64);
         let mean = sizes.iter().map(|&s| ln_size(s)).sum::<f64>() / sizes.len() as f64;
         let spread: f64 = sizes
             .iter()
@@ -238,7 +243,7 @@ impl HurstBuilder {
             .iter()
             .map(|&size| Scale {
                 size,
-                ln_expected: crate::math::ln(expected_rescaled_range(size)),
+                ln_expected: nexus_stats_core::math::ln(expected_rescaled_range(size)),
                 slope_weight: (ln_size(size) - mean) / spread,
             })
             .collect();
@@ -290,10 +295,10 @@ fn rescaled_range(log_prices: &[f64]) -> Option<f64> {
     // stretch's two ends, which set its mean return.
     let variance = sums.squares / (n - 1.0);
     let scale = log_prices[0].abs().max(log_prices[returns].abs());
-    if variance <= crate::math::rounding_variance(scale) {
+    if variance <= nexus_stats_core::math::rounding_variance(scale) {
         return None;
     }
-    Some((sums.highest - sums.lowest) / crate::math::sqrt(variance))
+    Some((sums.highest - sums.lowest) / nexus_stats_core::math::sqrt(variance))
 }
 
 /// The rescaled range expected of `n` independent returns: Anis and Lloyd
@@ -303,14 +308,14 @@ fn rescaled_range(log_prices: &[f64]) -> Option<f64> {
 fn expected_rescaled_range(n: usize) -> f64 {
     let size = n as f64;
     let sum: f64 = (1..n)
-        .map(|i| crate::math::sqrt((n - i) as f64 / i as f64))
+        .map(|i| nexus_stats_core::math::sqrt((n - i) as f64 / i as f64))
         .sum();
     let gamma_ratio = if n <= 340 {
-        let ln_ratio =
-            crate::math::ln_gamma((size - 1.0) / 2.0) - crate::math::ln_gamma(size / 2.0);
-        crate::math::exp(ln_ratio) / crate::math::sqrt(core::f64::consts::PI)
+        let ln_ratio = nexus_stats_core::math::ln_gamma((size - 1.0) / 2.0)
+            - nexus_stats_core::math::ln_gamma(size / 2.0);
+        nexus_stats_core::math::exp(ln_ratio) / nexus_stats_core::math::sqrt(core::f64::consts::PI)
     } else {
-        1.0 / crate::math::sqrt(size * core::f64::consts::FRAC_PI_2)
+        1.0 / nexus_stats_core::math::sqrt(size * core::f64::consts::FRAC_PI_2)
     };
     (size - 0.5) / size * gamma_ratio * sum
 }
@@ -539,7 +544,7 @@ mod tests {
 
     #[test]
     fn builder_validation() {
-        use crate::ConfigError::{Invalid, Missing};
+        use nexus_stats_core::ConfigError::{Invalid, Missing};
         let b = Hurst::builder;
         assert_eq!(b().build().unwrap_err(), Missing("window"));
         assert_eq!(
@@ -555,7 +560,7 @@ mod tests {
 
     #[test]
     fn checked_update_refuses_bad_input_and_changes_nothing() {
-        use crate::DataError::{Infinite, NotANumber, OutOfRange};
+        use nexus_stats_core::DataError::{Infinite, NotANumber, OutOfRange};
 
         let prices = prices_from(&logistic_returns(64));
         let mut hurst = Hurst::builder().window(64).build().unwrap();

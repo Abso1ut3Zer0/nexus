@@ -1,5 +1,5 @@
-use crate::math::EwWeight;
-use crate::smoothing::Ema;
+use nexus_stats_core::math::EwWeight;
+use nexus_stats_core::smoothing::Ema;
 
 /// Amihud illiquidity: the exponentially weighted average of
 /// `|return| / dollar_volume`.
@@ -16,7 +16,7 @@ use crate::smoothing::Ema;
 /// # Examples
 ///
 /// ```
-/// use nexus_stats_core::statistics::Amihud;
+/// use nexus_stats_trading::Amihud;
 ///
 /// let mut amihud = Amihud::builder().alpha(0.5).build().unwrap();
 /// amihud.update(-0.01, 1_000_000.0); // a 1% fall on $1M of volume
@@ -61,19 +61,19 @@ impl Amihud {
     ///
     /// # Errors
     ///
-    /// - [`DataError::NotANumber`](crate::DataError::NotANumber) if either
+    /// - [`DataError::NotANumber`](nexus_stats_core::DataError::NotANumber) if either
     ///   value is NaN.
-    /// - [`DataError::Infinite`](crate::DataError::Infinite) if either value
+    /// - [`DataError::Infinite`](nexus_stats_core::DataError::Infinite) if either value
     ///   is infinite.
-    /// - [`DataError::Negative`](crate::DataError::Negative) if
+    /// - [`DataError::Negative`](nexus_stats_core::DataError::Negative) if
     ///   `dollar_volume` is negative.
-    /// - [`DataError::OutOfRange`](crate::DataError::OutOfRange) if the
+    /// - [`DataError::OutOfRange`](nexus_stats_core::DataError::OutOfRange) if the
     ///   ratio overflows.
     ///
     /// # Examples
     ///
     /// ```
-    /// use nexus_stats_core::{DataError, statistics::Amihud};
+    /// use nexus_stats_trading::{DataError, Amihud};
     ///
     /// let mut amihud = Amihud::builder().alpha(0.5).build().unwrap();
     /// assert_eq!(amihud.checked_update(0.01, 1_000_000.0), Ok(()));
@@ -85,13 +85,13 @@ impl Amihud {
         &mut self,
         period_return: f64,
         dollar_volume: f64,
-    ) -> Result<(), crate::DataError> {
-        crate::math::check_inputs!(period_return, dollar_volume)?;
+    ) -> Result<(), nexus_stats_core::DataError> {
+        nexus_stats_core::math::check_inputs!(period_return, dollar_volume)?;
         if dollar_volume < 0.0 {
-            return Err(crate::DataError::Negative);
+            return Err(nexus_stats_core::DataError::Negative);
         }
         if dollar_volume > 0.0 && (period_return.abs() / dollar_volume).is_infinite() {
-            return Err(crate::DataError::OutOfRange);
+            return Err(nexus_stats_core::DataError::OutOfRange);
         }
         self.update(period_return, dollar_volume);
         Ok(())
@@ -151,10 +151,10 @@ impl AmihudBuilder {
     /// - `Missing("alpha")` if none of `alpha`, `halflife`, `span` was set.
     /// - `Invalid` if the weight is out of range; the message names the knob
     ///   set.
-    pub fn build(self) -> Result<Amihud, crate::ConfigError> {
+    pub fn build(self) -> Result<Amihud, nexus_stats_core::ConfigError> {
         let alpha = self
             .weight
-            .ok_or(crate::ConfigError::Missing("alpha"))?
+            .ok_or(nexus_stats_core::ConfigError::Missing("alpha"))?
             .resolve()?;
         Ok(Amihud {
             ratio: Ema::builder().alpha(alpha).build()?,
@@ -222,7 +222,7 @@ mod tests {
 
     #[test]
     fn checked_update_refuses_bad_input_and_changes_nothing() {
-        use crate::DataError::{Infinite, Negative, NotANumber, OutOfRange};
+        use nexus_stats_core::DataError::{Infinite, Negative, NotANumber, OutOfRange};
 
         let mut a = Amihud::builder().alpha(0.5).build().unwrap();
         a.checked_update(0.01, 1_000_000.0).unwrap();
@@ -270,7 +270,7 @@ mod tests {
 
     #[test]
     fn a_bad_knob_is_reported_under_its_own_name() {
-        use crate::ConfigError::{Invalid, Missing};
+        use nexus_stats_core::ConfigError::{Invalid, Missing};
         let b = Amihud::builder;
         assert_eq!(b().build().unwrap_err(), Missing("alpha"));
         assert_eq!(

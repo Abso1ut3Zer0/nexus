@@ -10,6 +10,19 @@ contained.
 
 ## [Unreleased]
 
+### Changed (crate layout)
+
+- **Every concept lives in one crate, and trading measures have their own.**
+  New `trading` module and feature (`nexus-stats-trading`): `VarianceRatio`,
+  `TwoScaleRv`, `BipowerVariation`, `Amihud`, `RollSpread`, `Lpm`, `Cvar`
+  (from `statistics`) and `KyleLambda` (from `regression`). `Hurst` and
+  `HalfLife` move from `statistics` to `signal`, `HitRate` to `regression`,
+  `Kalman1d` from `smoothing` to `estimation`, and `FirstDiff` and
+  `SecondDiff` from `control` to `statistics`. No type changed.
+- **`full` is on by default.** `default = ["std", "full"]`; turn the
+  defaults off to compile less.
+- `signal` no longer needs `alloc` to exist (`HalfLife` does not allocate).
+
 The stats major ([#773](https://github.com/Abso1ut3Zer0/nexus/issues/773)):
 one naming convention across the family. Migration guide:
 [`docs/guides/migrating-to-7.md`](docs/guides/migrating-to-7.md).

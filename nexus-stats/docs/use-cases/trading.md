@@ -39,7 +39,7 @@ The average of `|return| / dollar_volume` (Amihud, 2002): higher means
 more illiquid, wider spreads needed. Simpler than Kyle's lambda (no regression, just a ratio).
 
 ```rust
-use nexus_stats_core::statistics::Amihud;
+use nexus_stats::trading::Amihud;
 
 let mut illiq = Amihud::builder()
     .halflife(100.0)
@@ -151,7 +151,7 @@ Fits `x_t = c + phi * x_{t-1}` and reports the half-life of a deviation,
 `-ln(2) / ln(phi)`.
 
 ```rust
-use nexus_stats_core::statistics::{HalfLife, Reversion};
+use nexus_stats::signal::{HalfLife, Reversion};
 
 let mut hl = HalfLife::new();
 
@@ -177,7 +177,7 @@ Hurst exponent of the price series by rescaled-range analysis. H < 0.5 is
 mean-reverting, H > 0.5 trending, H near 0.5 a random walk.
 
 ```rust
-use nexus_stats_core::statistics::Hurst;
+use nexus_stats::signal::Hurst;
 
 let mut hurst = Hurst::builder().window(1024).build()?;
 
@@ -208,7 +208,7 @@ MacKinlay's test statistic. VR = 1 is a random walk, below 1
 mean-reverting, above 1 trending.
 
 ```rust
-use nexus_stats_core::{Accuracy, statistics::VarianceRatio};
+use nexus_stats::{Accuracy, trading::VarianceRatio};
 
 let mut vr = VarianceRatio::builder()
     .horizon(5)    // compare 5-period with 1-period variance
@@ -287,7 +287,7 @@ Timmermann, 1992), cumulative and exponentially weighted. A zero on either
 side is a miss.
 
 ```rust
-use nexus_stats_core::statistics::HitRate;
+use nexus_stats::regression::HitRate;
 
 let mut hits = HitRate::builder()
     .halflife(100.0)
