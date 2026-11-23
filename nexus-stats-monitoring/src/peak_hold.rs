@@ -1,4 +1,4 @@
-use crate::Sample;
+use nexus_stats_core::Sample;
 
 /// Peak hold with decay — instant attack, configurable hold, then decay.
 ///
@@ -108,7 +108,7 @@ impl PeakHold<f64> {
     /// Returns `DataError::NotANumber` if the sample is NaN, or
     /// `DataError::Infinite` if the sample is infinite.
     #[inline]
-    pub fn update(&mut self, sample: f64) -> Result<f64, crate::DataError> {
+    pub fn update(&mut self, sample: f64) -> Result<f64, nexus_stats_core::DataError> {
         check_finite!(sample);
         Ok(self.fold(sample))
     }
@@ -148,12 +148,14 @@ impl PeakHoldBuilder<f64> {
     /// `ConfigError::Missing` if `decay_rate` was not set;
     /// `ConfigError::Invalid` if it is outside (0, 1].
     #[inline]
-    pub fn build(self) -> Result<PeakHold<f64>, crate::ConfigError> {
+    pub fn build(self) -> Result<PeakHold<f64>, nexus_stats_core::ConfigError> {
         let rate = self
             .decay
-            .ok_or(crate::ConfigError::Missing("decay_rate"))?;
+            .ok_or(nexus_stats_core::ConfigError::Missing("decay_rate"))?;
         if !(rate > 0.0 && rate <= 1.0) {
-            return Err(crate::ConfigError::Invalid("decay_rate must be in (0, 1]"));
+            return Err(nexus_stats_core::ConfigError::Invalid(
+                "decay_rate must be in (0, 1]",
+            ));
         }
         Ok(PeakHold {
             peak: 0.0,
@@ -172,7 +174,7 @@ impl PeakHoldBuilder<i64> {
     ///
     /// Never fails for `i64`; the `Result` keeps the builder shape uniform.
     #[inline]
-    pub fn build(self) -> Result<PeakHold<i64>, crate::ConfigError> {
+    pub fn build(self) -> Result<PeakHold<i64>, nexus_stats_core::ConfigError> {
         Ok(PeakHold {
             peak: 0,
             hold_samples: self.hold_samples,
@@ -278,7 +280,7 @@ mod tests {
         let result = PeakHold::<f64>::builder().build();
         assert!(matches!(
             result,
-            Err(crate::ConfigError::Missing("decay_rate"))
+            Err(nexus_stats_core::ConfigError::Missing("decay_rate"))
         ));
     }
 
@@ -287,15 +289,15 @@ mod tests {
         let mut ph = PeakHold::<f64>::builder().decay_rate(0.95).build().unwrap();
         assert!(matches!(
             ph.update(f64::NAN),
-            Err(crate::DataError::NotANumber)
+            Err(nexus_stats_core::DataError::NotANumber)
         ));
         assert!(matches!(
             ph.update(f64::INFINITY),
-            Err(crate::DataError::Infinite)
+            Err(nexus_stats_core::DataError::Infinite)
         ));
         assert!(matches!(
             ph.update(f64::NEG_INFINITY),
-            Err(crate::DataError::Infinite)
+            Err(nexus_stats_core::DataError::Infinite)
         ));
     }
 }

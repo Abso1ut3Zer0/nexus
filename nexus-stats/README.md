@@ -280,7 +280,9 @@ nexus-stats is split into workspace crates for independent compilation and featu
 - **nexus-stats-smoothing** — KAMA, Holt, Spring, HuberEma, Hampel, WindowedMedian
 - **nexus-stats-detection** — MOSUM, Shiryaev-Roberts, MultiGate, RobustZScore, AdaptiveThreshold, and signal analysis (Autocorrelation, Hurst, HalfLife)
 - **nexus-stats-regression** — Linear, polynomial, exponential, logarithmic, power regression; learning; Kalman and Bayesian estimation
-- **nexus-stats-control** — PeakDetector, BoolWindow, and the frequency types
+- **nexus-stats-control** — DeadBand, Hysteresis, Debounce, LevelCrossing, PeakDetector, BoolWindow, and the frequency types
+- **nexus-stats-monitoring** — Drawdown, running and windowed extremes, EventRate, ErrorRate, Jitter, Liveness, CoDel, the saturation monitors
+- **nexus-stats-normalization** — ZScoreNorm, MinMaxNorm, QuantileNorm
 - **nexus-stats-trading** — VarianceRatio, TwoScaleRv, BipowerVariation, Amihud, RollSpread, KyleLambda, Lpm, Cvar
 
 The top-level `nexus-stats` crate re-exports everything. Use the sub-crates directly if you only need a subset.
@@ -305,7 +307,7 @@ See [`docs/use-cases/trading.md`](docs/use-cases/trading.md) for full guide with
 | Jump-robust volatility | `BipowerVariation` | trading |
 | Implicit spread estimation | `RollSpread` | trading |
 | Noise-corrected realized vol | `TwoScaleRv` | trading |
-| Bursty event intensity | `HawkesIntensity` | core |
+| Bursty event intensity | `HawkesIntensity` | monitoring |
 | Conditional smoothing | `Ema`, updated only when the condition holds | core |
 | Venue selection | `ThompsonBeta` / `Ucb1` | regression |
 | Parameter A/B testing | `Ucb1` / `EpsilonGreedy` | regression |

@@ -63,12 +63,12 @@ jobs:
     - name: nexus-stats crates under every feature combination
       run: |
         set -e
-        for c in nexus-stats-core nexus-stats-smoothing nexus-stats-detection nexus-stats-control nexus-stats-regression nexus-stats-trading; do
+        for c in nexus-stats-core nexus-stats-smoothing nexus-stats-detection nexus-stats-control nexus-stats-regression nexus-stats-trading nexus-stats-monitoring nexus-stats-normalization; do
           cargo check -p $c --no-default-features
           cargo check -p $c --no-default-features --features alloc
           cargo check -p $c --no-default-features --features std
         done
-        for c in nexus-stats-core nexus-stats-detection nexus-stats-control nexus-stats-regression nexus-stats-trading; do
+        for c in nexus-stats-core nexus-stats-detection nexus-stats-control nexus-stats-regression nexus-stats-trading nexus-stats-monitoring nexus-stats-normalization; do
           cargo check -p $c --no-default-features --features libm
           cargo check -p $c --no-default-features --features alloc,libm
         done
@@ -79,7 +79,7 @@ jobs:
         cargo check -p nexus-stats --no-default-features --features std,full
         # Each sub-crate alone through the umbrella, and the trading crate
         # with and without the regression crate behind `KyleLambda`.
-        for f in smoothing detection regression control trading; do
+        for f in smoothing detection regression control trading monitoring normalization; do
           cargo check -p nexus-stats --no-default-features --features std,$f
         done
         cargo check -p nexus-stats-trading --no-default-features --features std,regression

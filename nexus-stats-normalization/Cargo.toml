@@ -1,0 +1,24 @@
+[package]
+name = "nexus-stats-normalization"
+version = "0.1.0"
+description = "Normalizers that put a stream on a common scale, for nexus-stats"
+readme = "README.md"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+keywords.workspace = true
+categories.workspace = true
+
+[features]
+default = ["std"]
+std = ["nexus-stats-core/std", "nexus-stats-monitoring/std", "alloc"]
+alloc = ["nexus-stats-core/alloc", "nexus-stats-monitoring/alloc"]
+libm = ["nexus-stats-core/libm", "nexus-stats-monitoring/libm"]
+
+[dependencies]
+nexus-stats-core = { version = "3.0.1", path = "../nexus-stats-core", default-features = false }
+nexus-stats-monitoring = { version = "0.1.0", path = "../nexus-stats-monitoring", default-features = false }
+
+[lints]
+workspace = true

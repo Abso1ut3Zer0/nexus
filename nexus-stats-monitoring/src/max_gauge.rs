@@ -1,4 +1,4 @@
-use crate::Sample;
+use nexus_stats_core::Sample;
 
 /// Max gauge — tracks the maximum since last take.
 ///
@@ -94,7 +94,7 @@ impl MaxGauge<f64> {
     /// Returns `DataError::NotANumber` if the sample is NaN, or
     /// `DataError::Infinite` if the sample is infinite.
     #[inline]
-    pub fn update(&mut self, sample: f64) -> Result<(), crate::DataError> {
+    pub fn update(&mut self, sample: f64) -> Result<(), nexus_stats_core::DataError> {
         check_finite!(sample);
         self.fold(sample);
         Ok(())
@@ -182,15 +182,15 @@ mod tests {
         let mut g = MaxGauge::<f64>::new();
         assert!(matches!(
             g.update(f64::NAN),
-            Err(crate::DataError::NotANumber)
+            Err(nexus_stats_core::DataError::NotANumber)
         ));
         assert!(matches!(
             g.update(f64::INFINITY),
-            Err(crate::DataError::Infinite)
+            Err(nexus_stats_core::DataError::Infinite)
         ));
         assert!(matches!(
             g.update(f64::NEG_INFINITY),
-            Err(crate::DataError::Infinite)
+            Err(nexus_stats_core::DataError::Infinite)
         ));
         assert!(g.peek().is_none(), "rejected samples are not recorded");
     }

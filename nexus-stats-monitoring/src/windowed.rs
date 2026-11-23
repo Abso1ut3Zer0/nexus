@@ -16,7 +16,7 @@
 //
 // State: 3 × (timestamp, value) + u64 window + u64 count + u64 last tick.
 
-use crate::Sample;
+use nexus_stats_core::Sample;
 
 /// Internal sample stored per sub-window.
 #[derive(Debug, Clone, Copy)]
@@ -68,9 +68,11 @@ impl<T: Sample> WindowedMax<T> {
     ///
     /// Returns `ConfigError::Invalid` if `window` is zero.
     #[inline]
-    pub fn new(window: u64) -> Result<Self, crate::ConfigError> {
+    pub fn new(window: u64) -> Result<Self, nexus_stats_core::ConfigError> {
         if window == 0 {
-            return Err(crate::ConfigError::Invalid("window must be positive"));
+            return Err(nexus_stats_core::ConfigError::Invalid(
+                "window must be positive",
+            ));
         }
         let init = Stamped {
             timestamp: 0,
@@ -148,7 +150,11 @@ impl WindowedMax<f64> {
     /// Returns `DataError::NotANumber` if the value is NaN, or
     /// `DataError::Infinite` if the value is infinite.
     #[inline]
-    pub fn update(&mut self, timestamp: u64, value: f64) -> Result<f64, crate::DataError> {
+    pub fn update(
+        &mut self,
+        timestamp: u64,
+        value: f64,
+    ) -> Result<f64, nexus_stats_core::DataError> {
         check_finite!(value);
         Ok(self.fold(timestamp, value))
     }
@@ -206,9 +212,11 @@ impl<T: Sample> WindowedMin<T> {
     ///
     /// Returns `ConfigError::Invalid` if `window` is zero.
     #[inline]
-    pub fn new(window: u64) -> Result<Self, crate::ConfigError> {
+    pub fn new(window: u64) -> Result<Self, nexus_stats_core::ConfigError> {
         if window == 0 {
-            return Err(crate::ConfigError::Invalid("window must be positive"));
+            return Err(nexus_stats_core::ConfigError::Invalid(
+                "window must be positive",
+            ));
         }
         let init = Stamped {
             timestamp: 0,
@@ -286,7 +294,11 @@ impl WindowedMin<f64> {
     /// Returns `DataError::NotANumber` if the value is NaN, or
     /// `DataError::Infinite` if the value is infinite.
     #[inline]
-    pub fn update(&mut self, timestamp: u64, value: f64) -> Result<f64, crate::DataError> {
+    pub fn update(
+        &mut self,
+        timestamp: u64,
+        value: f64,
+    ) -> Result<f64, nexus_stats_core::DataError> {
         check_finite!(value);
         Ok(self.fold(timestamp, value))
     }
@@ -414,21 +426,21 @@ mod raw_tests {
         let mut wm = WindowedMax::<f64>::new(100).unwrap();
         assert!(matches!(
             wm.update(0, f64::NAN),
-            Err(crate::DataError::NotANumber)
+            Err(nexus_stats_core::DataError::NotANumber)
         ));
         assert!(matches!(
             wm.update(0, f64::INFINITY),
-            Err(crate::DataError::Infinite)
+            Err(nexus_stats_core::DataError::Infinite)
         ));
 
         let mut wn = WindowedMin::<f64>::new(100).unwrap();
         assert!(matches!(
             wn.update(0, f64::NAN),
-            Err(crate::DataError::NotANumber)
+            Err(nexus_stats_core::DataError::NotANumber)
         ));
         assert!(matches!(
             wn.update(0, f64::NEG_INFINITY),
-            Err(crate::DataError::Infinite)
+            Err(nexus_stats_core::DataError::Infinite)
         ));
     }
 

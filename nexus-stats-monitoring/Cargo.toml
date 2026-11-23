@@ -1,0 +1,26 @@
+[package]
+name = "nexus-stats-monitoring"
+version = "0.1.0"
+description = "Monitors for a running system: extremes, rates, liveness and queue health, for nexus-stats"
+readme = "README.md"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+keywords.workspace = true
+categories.workspace = true
+
+[features]
+default = ["std"]
+std = ["nexus-stats-core/std", "alloc"]
+alloc = ["nexus-stats-core/alloc"]
+libm = ["nexus-stats-core/libm"]
+
+[dependencies]
+nexus-stats-core = { version = "3.0.1", path = "../nexus-stats-core", default-features = false }
+
+[dev-dependencies]
+proptest = "1.4"
+
+[lints]
+workspace = true

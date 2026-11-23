@@ -1,5 +1,5 @@
-use crate::Condition;
-use crate::math::MulAdd;
+use nexus_stats_core::Condition;
+use nexus_stats_core::math::MulAdd;
 
 /// Smoothed error rate tracker.
 ///
@@ -76,7 +76,7 @@ impl ErrorRate {
         &mut self,
         success: bool,
         weight: f64,
-    ) -> Result<Option<Condition>, crate::DataError> {
+    ) -> Result<Option<Condition>, nexus_stats_core::DataError> {
         check_finite!(weight);
         self.count += 1;
 
@@ -140,9 +140,12 @@ impl ErrorRate {
     ///
     /// Threshold must be >= 0.
     #[inline]
-    pub fn reconfigure_threshold(&mut self, threshold: f64) -> Result<(), crate::ConfigError> {
+    pub fn reconfigure_threshold(
+        &mut self,
+        threshold: f64,
+    ) -> Result<(), nexus_stats_core::ConfigError> {
         if threshold < 0.0 {
-            return Err(crate::ConfigError::Invalid(
+            return Err(nexus_stats_core::ConfigError::Invalid(
                 "threshold must be non-negative",
             ));
         }
@@ -165,7 +168,7 @@ impl ErrorRateBuilder {
     #[must_use]
     #[cfg(any(feature = "std", feature = "libm"))]
     pub fn halflife(mut self, halflife: f64) -> Self {
-        self.alpha = Some(crate::math::alpha_from_halflife(halflife));
+        self.alpha = Some(nexus_stats_core::math::alpha_from_halflife(halflife));
         self
     }
 
@@ -201,16 +204,20 @@ impl ErrorRateBuilder {
     /// - Alpha must be in (0, 1) exclusive.
     /// - Threshold must be non-negative.
     #[inline]
-    pub fn build(self) -> Result<ErrorRate, crate::ConfigError> {
-        let alpha = self.alpha.ok_or(crate::ConfigError::Missing("alpha"))?;
+    pub fn build(self) -> Result<ErrorRate, nexus_stats_core::ConfigError> {
+        let alpha = self
+            .alpha
+            .ok_or(nexus_stats_core::ConfigError::Missing("alpha"))?;
         let threshold = self
             .threshold
-            .ok_or(crate::ConfigError::Missing("threshold"))?;
-        if !crate::math::in_unit_interval(alpha) {
-            return Err(crate::ConfigError::Invalid("alpha must be in (0, 1)"));
+            .ok_or(nexus_stats_core::ConfigError::Missing("threshold"))?;
+        if !nexus_stats_core::math::in_unit_interval(alpha) {
+            return Err(nexus_stats_core::ConfigError::Invalid(
+                "alpha must be in (0, 1)",
+            ));
         }
         if threshold < 0.0 {
-            return Err(crate::ConfigError::Invalid(
+            return Err(nexus_stats_core::ConfigError::Invalid(
                 "threshold must be non-negative",
             ));
         }
@@ -372,7 +379,7 @@ mod tests {
         let result = ErrorRate::builder().alpha(0.3).build();
         assert!(matches!(
             result,
-            Err(crate::ConfigError::Missing("threshold"))
+            Err(nexus_stats_core::ConfigError::Missing("threshold"))
         ));
     }
 
@@ -385,7 +392,10 @@ mod tests {
     #[test]
     fn rejects_negative_threshold() {
         let result = ErrorRate::builder().alpha(0.3).threshold(-0.1).build();
-        assert!(matches!(result, Err(crate::ConfigError::Invalid(_))));
+        assert!(matches!(
+            result,
+            Err(nexus_stats_core::ConfigError::Invalid(_))
+        ));
     }
 
     #[test]
@@ -409,15 +419,15 @@ mod tests {
 
         assert_eq!(
             er.update_weighted(false, f64::NAN).unwrap_err(),
-            crate::DataError::NotANumber
+            nexus_stats_core::DataError::NotANumber
         );
         assert_eq!(
             er.update_weighted(false, f64::INFINITY).unwrap_err(),
-            crate::DataError::Infinite
+            nexus_stats_core::DataError::Infinite
         );
         assert_eq!(
             er.update_weighted(false, f64::NEG_INFINITY).unwrap_err(),
-            crate::DataError::Infinite
+            nexus_stats_core::DataError::Infinite
         );
         assert_eq!(er.count(), 0);
     }

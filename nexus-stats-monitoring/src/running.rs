@@ -1,4 +1,4 @@
-use crate::Sample;
+use nexus_stats_core::Sample;
 
 /// All-time minimum tracker.
 ///
@@ -80,7 +80,7 @@ impl RunningMin<f64> {
     /// Returns `DataError::NotANumber` if the sample is NaN, or
     /// `DataError::Infinite` if the sample is infinite.
     #[inline]
-    pub fn update(&mut self, sample: f64) -> Result<f64, crate::DataError> {
+    pub fn update(&mut self, sample: f64) -> Result<f64, nexus_stats_core::DataError> {
         check_finite!(sample);
         Ok(self.fold(sample))
     }
@@ -181,7 +181,7 @@ impl RunningMax<f64> {
     /// Returns `DataError::NotANumber` if the sample is NaN, or
     /// `DataError::Infinite` if the sample is infinite.
     #[inline]
-    pub fn update(&mut self, sample: f64) -> Result<f64, crate::DataError> {
+    pub fn update(&mut self, sample: f64) -> Result<f64, nexus_stats_core::DataError> {
         check_finite!(sample);
         Ok(self.fold(sample))
     }
@@ -287,24 +287,24 @@ mod tests {
         let mut min64 = RunningMin::<f64>::new();
         assert!(matches!(
             min64.update(f64::NAN),
-            Err(crate::DataError::NotANumber)
+            Err(nexus_stats_core::DataError::NotANumber)
         ));
         assert!(matches!(
             min64.update(f64::INFINITY),
-            Err(crate::DataError::Infinite)
+            Err(nexus_stats_core::DataError::Infinite)
         ));
         assert!(matches!(
             min64.update(f64::NEG_INFINITY),
-            Err(crate::DataError::Infinite)
+            Err(nexus_stats_core::DataError::Infinite)
         ));
         let mut max64 = RunningMax::<f64>::new();
         assert!(matches!(
             max64.update(f64::NAN),
-            Err(crate::DataError::NotANumber)
+            Err(nexus_stats_core::DataError::NotANumber)
         ));
         assert!(matches!(
             max64.update(f64::INFINITY),
-            Err(crate::DataError::Infinite)
+            Err(nexus_stats_core::DataError::Infinite)
         ));
         assert_eq!(max64.count(), 0);
     }

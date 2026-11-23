@@ -1,5 +1,5 @@
-use crate::Condition;
-use crate::Sample;
+use nexus_stats_core::Condition;
+use nexus_stats_core::Sample;
 
 /// CoDel standing-queue detector (RFC 8289, Nichols & Jacobson).
 ///
@@ -127,7 +127,7 @@ impl CoDel<f64> {
         &mut self,
         timestamp: u64,
         sojourn: f64,
-    ) -> Result<Option<Condition>, crate::DataError> {
+    ) -> Result<Option<Condition>, nexus_stats_core::DataError> {
         check_finite!(sojourn);
         Ok(self.fold(timestamp, sojourn > self.target))
     }
@@ -175,16 +175,20 @@ impl<T: Sample> CoDelBuilder<T> {
     /// `ConfigError::Missing` if `target` or `interval` was not set;
     /// `ConfigError::Invalid` if `target` is not finite or `interval` is zero.
     #[inline]
-    pub fn build(self) -> Result<CoDel<T>, crate::ConfigError> {
-        let target = self.target.ok_or(crate::ConfigError::Missing("target"))?;
+    pub fn build(self) -> Result<CoDel<T>, nexus_stats_core::ConfigError> {
+        let target = self
+            .target
+            .ok_or(nexus_stats_core::ConfigError::Missing("target"))?;
         if !target.is_finite() {
-            return Err(crate::ConfigError::Invalid("CoDel target must be finite"));
+            return Err(nexus_stats_core::ConfigError::Invalid(
+                "CoDel target must be finite",
+            ));
         }
         let interval = self
             .interval
-            .ok_or(crate::ConfigError::Missing("interval"))?;
+            .ok_or(nexus_stats_core::ConfigError::Missing("interval"))?;
         if interval == 0 {
-            return Err(crate::ConfigError::Invalid(
+            return Err(nexus_stats_core::ConfigError::Invalid(
                 "CoDel interval must be positive",
             ));
         }
@@ -239,7 +243,7 @@ fn standing_queue(
 #[cfg(test)]
 mod raw_tests {
     use super::*;
-    use crate::Condition;
+    use nexus_stats_core::Condition;
 
     fn codel(target: i64, interval: u64) -> CoDel<i64> {
         CoDel::<i64>::builder()
@@ -377,11 +381,11 @@ mod raw_tests {
             .unwrap();
         assert!(matches!(
             cd.update(0, f64::NAN),
-            Err(crate::DataError::NotANumber)
+            Err(nexus_stats_core::DataError::NotANumber)
         ));
         assert!(matches!(
             cd.update(0, f64::INFINITY),
-            Err(crate::DataError::Infinite)
+            Err(nexus_stats_core::DataError::Infinite)
         ));
         assert!(
             CoDel::<f64>::builder()
@@ -396,7 +400,7 @@ mod raw_tests {
 #[cfg(test)]
 mod late_sample_tests {
     use super::*;
-    use crate::Condition;
+    use nexus_stats_core::Condition;
 
     fn codel(target: i64, interval: u64) -> CoDel<i64> {
         CoDel::<i64>::builder()

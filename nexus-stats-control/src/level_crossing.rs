@@ -1,4 +1,4 @@
-use crate::{Direction, Sample};
+use nexus_stats_core::{Direction, Sample};
 
 /// Level crossing detector — signals when a value crosses a threshold.
 ///
@@ -43,9 +43,11 @@ impl<T: Sample> LevelCrossing<T> {
     /// `ConfigError::Invalid` if the threshold is NaN or infinite (a NaN
     /// threshold would never be crossed).
     #[inline]
-    pub fn new(threshold: T) -> Result<Self, crate::ConfigError> {
+    pub fn new(threshold: T) -> Result<Self, nexus_stats_core::ConfigError> {
         if !threshold.is_finite() {
-            return Err(crate::ConfigError::Invalid("threshold must be finite"));
+            return Err(nexus_stats_core::ConfigError::Invalid(
+                "threshold must be finite",
+            ));
         }
         Ok(Self {
             threshold,
@@ -117,7 +119,10 @@ impl LevelCrossing<f64> {
     /// Returns `DataError::NotANumber` if the sample is NaN, or
     /// `DataError::Infinite` if the sample is infinite.
     #[inline]
-    pub fn update(&mut self, sample: f64) -> Result<Option<Direction>, crate::DataError> {
+    pub fn update(
+        &mut self,
+        sample: f64,
+    ) -> Result<Option<Direction>, nexus_stats_core::DataError> {
         check_finite!(sample);
         Ok(self.fold(sample))
     }
@@ -243,8 +248,14 @@ mod tests {
         assert!(LevelCrossing::<f64>::new(f64::NAN).is_err());
         assert!(LevelCrossing::<f64>::new(f64::INFINITY).is_err());
         let mut lc = LevelCrossing::<f64>::new(50.0).unwrap();
-        assert_eq!(lc.update(f64::NAN), Err(crate::DataError::NotANumber));
-        assert_eq!(lc.update(f64::INFINITY), Err(crate::DataError::Infinite));
+        assert_eq!(
+            lc.update(f64::NAN),
+            Err(nexus_stats_core::DataError::NotANumber)
+        );
+        assert_eq!(
+            lc.update(f64::INFINITY),
+            Err(nexus_stats_core::DataError::Infinite)
+        );
         assert_eq!(lc.count(), 0);
     }
 }

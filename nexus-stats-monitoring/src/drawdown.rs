@@ -1,4 +1,4 @@
-use crate::Sample;
+use nexus_stats_core::Sample;
 
 /// Drawdown monitor — tracks peak value and current/maximum drawdown.
 ///
@@ -120,7 +120,7 @@ impl Drawdown<f64> {
     /// Returns `DataError::NotANumber` if the sample is NaN, or
     /// `DataError::Infinite` if the sample is infinite.
     #[inline]
-    pub fn update(&mut self, sample: f64) -> Result<f64, crate::DataError> {
+    pub fn update(&mut self, sample: f64) -> Result<f64, nexus_stats_core::DataError> {
         check_finite!(sample);
         Ok(self.fold(sample))
     }
@@ -236,15 +236,15 @@ mod tests {
         let mut dd = Drawdown::<f64>::new();
         assert!(matches!(
             dd.update(f64::NAN),
-            Err(crate::DataError::NotANumber)
+            Err(nexus_stats_core::DataError::NotANumber)
         ));
         assert!(matches!(
             dd.update(f64::INFINITY),
-            Err(crate::DataError::Infinite)
+            Err(nexus_stats_core::DataError::Infinite)
         ));
         assert!(matches!(
             dd.update(f64::NEG_INFINITY),
-            Err(crate::DataError::Infinite)
+            Err(nexus_stats_core::DataError::Infinite)
         ));
         assert_eq!(dd.count(), 0, "rejected samples are not counted");
     }

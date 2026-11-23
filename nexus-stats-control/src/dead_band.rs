@@ -1,4 +1,4 @@
-use crate::Sample;
+use nexus_stats_core::Sample;
 
 /// Dead band filter — suppresses small changes, reports significant ones.
 ///
@@ -27,9 +27,9 @@ impl<T: Sample> DeadBand<T> {
     ///
     /// Returns `ConfigError::Invalid` if `threshold` is negative or not finite.
     #[inline]
-    pub fn new(threshold: T) -> Result<Self, crate::ConfigError> {
+    pub fn new(threshold: T) -> Result<Self, nexus_stats_core::ConfigError> {
         if !threshold.is_finite() || threshold < T::ZERO {
-            return Err(crate::ConfigError::Invalid(
+            return Err(nexus_stats_core::ConfigError::Invalid(
                 "dead band threshold must be finite and non-negative",
             ));
         }
@@ -93,7 +93,7 @@ impl DeadBand<f64> {
     /// Returns `DataError::NotANumber` if the sample is NaN, or
     /// `DataError::Infinite` if the sample is infinite.
     #[inline]
-    pub fn update(&mut self, sample: f64) -> Result<Option<f64>, crate::DataError> {
+    pub fn update(&mut self, sample: f64) -> Result<Option<f64>, nexus_stats_core::DataError> {
         check_finite!(sample);
         Ok(self.fold(sample))
     }
@@ -154,11 +154,17 @@ mod tests {
     #[test]
     fn rejects_nan_and_inf() {
         let mut db = DeadBand::<f64>::new(5.0).unwrap();
-        assert_eq!(db.update(f64::NAN), Err(crate::DataError::NotANumber));
-        assert_eq!(db.update(f64::INFINITY), Err(crate::DataError::Infinite));
+        assert_eq!(
+            db.update(f64::NAN),
+            Err(nexus_stats_core::DataError::NotANumber)
+        );
+        assert_eq!(
+            db.update(f64::INFINITY),
+            Err(nexus_stats_core::DataError::Infinite)
+        );
         assert_eq!(
             db.update(f64::NEG_INFINITY),
-            Err(crate::DataError::Infinite)
+            Err(nexus_stats_core::DataError::Infinite)
         );
     }
 }

@@ -148,9 +148,11 @@ Every concept now lives in one crate, and the trading measures have their own. T
 | `Kalman1d` | `smoothing` | `estimation` |
 | `FirstDiff`, `SecondDiff` | `control` | `statistics` |
 
+Three modules keep their names but now come from their own crates, each behind a feature of the same name: `monitoring` (`nexus-stats-monitoring`), `normalization` (`nexus-stats-normalization`), and all of `control` (`nexus-stats-control`, which gains `DeadBand`, `Hysteresis`, `Debounce` and `LevelCrossing`). Through the umbrella with default features nothing changes. Code that named `nexus_stats_core::monitoring`, `nexus_stats_core::normalization` or `nexus_stats_core::control` uses the new crate, or the umbrella path.
+
 `trading` is the new `nexus-stats-trading` crate, behind the `trading` feature. Depending on a sub-crate directly, the paths are `nexus_stats_trading::VarianceRatio`, `nexus_stats_detection::signal::Hurst`, `nexus_stats_regression::regression::HitRate` and `nexus_stats_regression::estimation::Kalman1d`.
 
-**Every feature is on by default.** `nexus-stats` used to enable only `std`; it now enables `full` as well. To compile less, set `default-features = false` and name what you need: `std`, plus any of `smoothing`, `detection`, `regression`, `control`, `trading`.
+**Every feature is on by default.** `nexus-stats` used to enable only `std`; it now enables `full` as well. To compile less, set `default-features = false` and name what you need: `std`, plus any of `smoothing`, `detection`, `regression`, `control`, `trading`, `monitoring`, `normalization`.
 
 ## 2. Pairs become one generic type
 

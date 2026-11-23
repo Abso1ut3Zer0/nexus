@@ -1,8 +1,8 @@
 use alloc::boxed::Box;
 use core::marker::PhantomData;
 
-use crate::Float;
-use crate::math::MulAdd;
+use nexus_stats_core::Float;
+use nexus_stats_core::math::MulAdd;
 
 /// Quantile normalizer: a value's approximate rank in `[0, 1]`.
 ///
@@ -48,7 +48,7 @@ use crate::math::MulAdd;
 /// # Examples
 ///
 /// ```
-/// use nexus_stats_core::normalization::QuantileNorm;
+/// use nexus_stats_normalization::QuantileNorm;
 ///
 /// let mut qn = QuantileNorm::<f64>::builder().resolution(9).build().unwrap();
 /// for i in 0..1000 {
@@ -104,7 +104,7 @@ impl<T: Float> QuantileNorm<T> {
     /// Returns `DataError::NotANumber` if the sample is NaN, or
     /// `DataError::Infinite` if the sample is infinite.
     #[inline]
-    pub fn update(&mut self, sample: T) -> Result<Option<T>, crate::DataError> {
+    pub fn update(&mut self, sample: T) -> Result<Option<T>, nexus_stats_core::DataError> {
         check_finite!(sample);
         let x = sample.to_f64();
         // Compared in `u64`: a `usize` cast would wrap on a 32-bit target
@@ -125,7 +125,7 @@ impl<T: Float> QuantileNorm<T> {
     /// Returns `DataError::NotANumber` if the value is NaN, or
     /// `DataError::Infinite` if the value is infinite.
     #[inline]
-    pub fn normalize(&self, value: T) -> Result<Option<T>, crate::DataError> {
+    pub fn normalize(&self, value: T) -> Result<Option<T>, nexus_stats_core::DataError> {
         check_finite!(value);
         Ok(self.rank(value.to_f64()))
     }
@@ -297,20 +297,24 @@ impl<T: Float> QuantileNormBuilder<T> {
     /// - `Invalid` if the resolution is 0, or `min_samples` is below
     ///   `resolution + 2`.
     #[inline]
-    pub fn build(self) -> Result<QuantileNorm<T>, crate::ConfigError> {
+    pub fn build(self) -> Result<QuantileNorm<T>, nexus_stats_core::ConfigError> {
         let resolution = self
             .resolution
-            .ok_or(crate::ConfigError::Missing("resolution"))?;
+            .ok_or(nexus_stats_core::ConfigError::Missing("resolution"))?;
         if resolution == 0 {
-            return Err(crate::ConfigError::Invalid("resolution must be >= 1"));
+            return Err(nexus_stats_core::ConfigError::Invalid(
+                "resolution must be >= 1",
+            ));
         }
         let markers = resolution
             .checked_add(2)
-            .ok_or(crate::ConfigError::Invalid("resolution is too large"))?;
+            .ok_or(nexus_stats_core::ConfigError::Invalid(
+                "resolution is too large",
+            ))?;
         let floor = markers as u64;
         let min_samples = self.min_samples.unwrap_or(floor);
         if min_samples < floor {
-            return Err(crate::ConfigError::Invalid(
+            return Err(nexus_stats_core::ConfigError::Invalid(
                 "min_samples must be at least resolution + 2",
             ));
         }
@@ -433,7 +437,12 @@ mod tests {
             // Linear interpolation is exact for a uniform density.
             ("uniform", |u| u, 0.005, 0.001),
             // Long right tail: the last cell runs out to the maximum.
-            ("exponential", |u| -crate::math::ln(1.0 - u), 0.05, 0.004),
+            (
+                "exponential",
+                |u| -nexus_stats_core::math::ln(1.0 - u),
+                0.05,
+                0.004,
+            ),
             // A gap with no samples in the middle of one cell.
             (
                 "bimodal",
@@ -638,19 +647,28 @@ mod tests {
             .resolution(4)
             .build()
             .unwrap();
-        assert_eq!(qn.update(f64::NAN), Err(crate::DataError::NotANumber));
-        assert_eq!(qn.update(f64::INFINITY), Err(crate::DataError::Infinite));
-        assert_eq!(qn.normalize(f64::NAN), Err(crate::DataError::NotANumber));
+        assert_eq!(
+            qn.update(f64::NAN),
+            Err(nexus_stats_core::DataError::NotANumber)
+        );
+        assert_eq!(
+            qn.update(f64::INFINITY),
+            Err(nexus_stats_core::DataError::Infinite)
+        );
+        assert_eq!(
+            qn.normalize(f64::NAN),
+            Err(nexus_stats_core::DataError::NotANumber)
+        );
         assert_eq!(
             qn.normalize(f64::NEG_INFINITY),
-            Err(crate::DataError::Infinite)
+            Err(nexus_stats_core::DataError::Infinite)
         );
         assert_eq!(qn.count(), 0);
     }
 
     #[test]
     fn builder_validation() {
-        use crate::ConfigError::{Invalid, Missing};
+        use nexus_stats_core::ConfigError::{Invalid, Missing};
         let b = QuantileNorm::<f64>::builder;
         assert_eq!(b().build().unwrap_err(), Missing("resolution"));
         assert_eq!(

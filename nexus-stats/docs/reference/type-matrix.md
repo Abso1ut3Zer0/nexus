@@ -77,37 +77,37 @@ See [Integer vs Float](../guides/integer-vs-float.md) for the caller rules and
 
 | Type | Numeric | Feature | Crate (module) |
 |------|---------|---------|----------------|
-| `MinMaxNorm<T>` | `T: Float` | — | core (`normalization`) |
-| `ZScoreNorm<T>` | `T: Float` | `std\|libm` | core (`normalization`) |
-| `QuantileNorm<T>` | `T: Float` | `alloc` | core (`normalization`) |
+| `MinMaxNorm<T>` | `T: Float` | — | normalization |
+| `ZScoreNorm<T>` | `T: Float` | `std\|libm` | normalization |
+| `QuantileNorm<T>` | `T: Float` | `alloc` | normalization |
 
 ## Monitoring
 
 | Type | Numeric | Feature | Crate (module) |
 |------|---------|---------|----------------|
-| `Drawdown<T>` | `T: Sample` | — | core (`monitoring`) |
-| `RunningMax<T>`, `RunningMin<T>` | `T: Sample` | — | core (`monitoring`) |
-| `WindowedMax<T>`, `WindowedMin<T>` | `T: Sample`, `u64` ticks | — | core (`monitoring`) |
-| `MaxGauge<T>` | `T: Sample` | — | core (`monitoring`) |
-| `PeakHold<T>` | `T: Sample` | — | core (`monitoring`) |
-| `CoDel<T>` | `T: Sample` sojourn, `u64` ticks | — | core (`monitoring`) |
-| `Jitter<T>` | `T: Sample` | — | core (`monitoring`) |
-| `Liveness` | `u64` ticks | — | core (`monitoring`) |
-| `EventRate` | `u64` ticks | — | core (`monitoring`) |
-| `PollSaturation` (→ `PollSummary`) | `u64` ticks, counts | — | core (`monitoring`) |
-| `SojournSaturation` (→ `SojournSummary`) | `i64` sojourn, `u64` summary | — | core (`monitoring`) |
-| `ErrorRate` | `bool` outcomes, `f64` weights | — | core (`monitoring`) |
-| `HawkesIntensity` | `f64` | `std\|libm` | core (`monitoring`) |
+| `Drawdown<T>` | `T: Sample` | — | monitoring |
+| `RunningMax<T>`, `RunningMin<T>` | `T: Sample` | — | monitoring |
+| `WindowedMax<T>`, `WindowedMin<T>` | `T: Sample`, `u64` ticks | — | monitoring |
+| `MaxGauge<T>` | `T: Sample` | — | monitoring |
+| `PeakHold<T>` | `T: Sample` | — | monitoring |
+| `CoDel<T>` | `T: Sample` sojourn, `u64` ticks | — | monitoring |
+| `Jitter<T>` | `T: Sample` | — | monitoring |
+| `Liveness` | `u64` ticks | — | monitoring |
+| `EventRate` | `u64` ticks | — | monitoring |
+| `PollSaturation` (→ `PollSummary`) | `u64` ticks, counts | — | monitoring |
+| `SojournSaturation` (→ `SojournSummary`) | `i64` sojourn, `u64` summary | — | monitoring |
+| `ErrorRate` | `bool` outcomes, `f64` weights | — | monitoring |
+| `HawkesIntensity` | `f64` | `std\|libm` | monitoring |
 
 ## Control
 
 | Type | Numeric | Feature | Crate (module) |
 |------|---------|---------|----------------|
-| `DeadBand<T>` | `T: Sample` | — | core (`control`) |
-| `Hysteresis<T>` | `T: Sample` | — | core (`control`) |
-| `LevelCrossing<T>` | `T: Sample` | — | core (`control`) |
+| `DeadBand<T>` | `T: Sample` | — | control (`control`) |
+| `Hysteresis<T>` | `T: Sample` | — | control (`control`) |
+| `LevelCrossing<T>` | `T: Sample` | — | control (`control`) |
 | `FirstDiff<T>`, `SecondDiff<T>` | `T: Sample` | — | core (`statistics`) |
-| `Debounce` | `u64` count | — | core (`control`) |
+| `Debounce` | `u64` count | — | control (`control`) |
 | `PeakDetector<T>` (→ `Peak<T>`) | `T: Sample` | — | control (`control`) |
 | `BoolWindow` | `bool` | `alloc` | control (`control`) |
 
