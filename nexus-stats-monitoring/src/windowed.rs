@@ -25,6 +25,14 @@ struct Stamped<T: Copy> {
     value: T,
 }
 
+impl<T: Sample> Stamped<T> {
+    /// Placeholder for an empty window; never read before the first value.
+    const EMPTY: Self = Self {
+        timestamp: 0,
+        value: T::ZERO,
+    };
+}
+
 /// Streaming windowed maximum over a sliding time window (Nichols' algorithm).
 ///
 /// Tracks the maximum value within a `u64` timestamp window using only
@@ -54,11 +62,7 @@ struct Stamped<T: Copy> {
 /// samples fit in half its range.
 #[derive(Debug, Clone)]
 pub struct WindowedMax<T: Sample> {
-    window: u64,
-    samples: [Stamped<T>; 3],
-    count: u64,
-    /// Timestamp of the newest accepted sample.
-    last: u64,
+    window: Window<T>,
 }
 
 impl<T: Sample> WindowedMax<T> {
@@ -69,20 +73,8 @@ impl<T: Sample> WindowedMax<T> {
     /// Returns `ConfigError::Invalid` if `window` is zero.
     #[inline]
     pub fn new(window: u64) -> Result<Self, nexus_stats_core::ConfigError> {
-        if window == 0 {
-            return Err(nexus_stats_core::ConfigError::Invalid(
-                "window must be positive",
-            ));
-        }
-        let init = Stamped {
-            timestamp: 0,
-            value: T::MIN,
-        };
         Ok(Self {
-            window,
-            samples: [init; 3],
-            count: 0,
-            last: 0,
+            window: Window::new(window)?,
         })
     }
 
@@ -90,43 +82,34 @@ impl<T: Sample> WindowedMax<T> {
     #[inline]
     #[must_use]
     pub fn max(&self) -> Option<T> {
-        if self.count == 0 {
-            None
-        } else {
-            Some(self.samples[0].value)
-        }
+        self.window.best()
     }
 
     /// The window length in ticks.
     #[inline]
     #[must_use]
     pub fn window(&self) -> u64 {
-        self.window
+        self.window.span
     }
 
     /// Number of samples processed.
     #[inline]
     #[must_use]
     pub fn count(&self) -> u64 {
-        self.count
+        self.window.count
     }
 
     /// Whether at least one sample has been seen.
     #[inline]
     #[must_use]
     pub fn is_primed(&self) -> bool {
-        self.count > 0
+        self.window.count > 0
     }
 
     /// Resets to empty state. The window is kept.
     #[inline]
     pub fn reset(&mut self) {
-        let init = Stamped {
-            timestamp: 0,
-            value: T::MIN,
-        };
-        self.samples = [init; 3];
-        self.count = 0;
+        self.window.reset();
     }
 
     /// Feeds a value at `timestamp` and returns the maximum over the
@@ -137,23 +120,7 @@ impl<T: Sample> WindowedMax<T> {
     /// as they were. Infinity is a value like any other.
     #[inline]
     pub fn update(&mut self, timestamp: u64, value: T) -> Option<T> {
-        if value.is_nan() || (self.count > 0 && is_late(timestamp, self.last)) {
-            return self.max();
-        }
-        self.last = timestamp;
-        self.count += 1;
-        // The first value is the maximum, whatever it is.
-        if self.count == 1 {
-            self.samples = [Stamped { timestamp, value }; 3];
-            return Some(value);
-        }
-        Some(running(
-            &mut self.samples,
-            self.window,
-            timestamp,
-            value,
-            |a, b| a >= b,
-        ))
+        self.window.update(timestamp, value, |a, b| a >= b)
     }
 }
 
@@ -187,11 +154,7 @@ impl<T: Sample> WindowedMax<T> {
 /// samples fit in half its range.
 #[derive(Debug, Clone)]
 pub struct WindowedMin<T: Sample> {
-    window: u64,
-    samples: [Stamped<T>; 3],
-    count: u64,
-    /// Timestamp of the newest accepted sample.
-    last: u64,
+    window: Window<T>,
 }
 
 impl<T: Sample> WindowedMin<T> {
@@ -202,20 +165,8 @@ impl<T: Sample> WindowedMin<T> {
     /// Returns `ConfigError::Invalid` if `window` is zero.
     #[inline]
     pub fn new(window: u64) -> Result<Self, nexus_stats_core::ConfigError> {
-        if window == 0 {
-            return Err(nexus_stats_core::ConfigError::Invalid(
-                "window must be positive",
-            ));
-        }
-        let init = Stamped {
-            timestamp: 0,
-            value: T::MAX,
-        };
         Ok(Self {
-            window,
-            samples: [init; 3],
-            count: 0,
-            last: 0,
+            window: Window::new(window)?,
         })
     }
 
@@ -223,43 +174,34 @@ impl<T: Sample> WindowedMin<T> {
     #[inline]
     #[must_use]
     pub fn min(&self) -> Option<T> {
-        if self.count == 0 {
-            None
-        } else {
-            Some(self.samples[0].value)
-        }
+        self.window.best()
     }
 
     /// The window length in ticks.
     #[inline]
     #[must_use]
     pub fn window(&self) -> u64 {
-        self.window
+        self.window.span
     }
 
     /// Number of samples processed.
     #[inline]
     #[must_use]
     pub fn count(&self) -> u64 {
-        self.count
+        self.window.count
     }
 
     /// Whether at least one sample has been seen.
     #[inline]
     #[must_use]
     pub fn is_primed(&self) -> bool {
-        self.count > 0
+        self.window.count > 0
     }
 
     /// Resets to empty state. The window is kept.
     #[inline]
     pub fn reset(&mut self) {
-        let init = Stamped {
-            timestamp: 0,
-            value: T::MAX,
-        };
-        self.samples = [init; 3];
-        self.count = 0;
+        self.window.reset();
     }
 
     /// Feeds a value at `timestamp` and returns the minimum over the
@@ -270,22 +212,78 @@ impl<T: Sample> WindowedMin<T> {
     /// as they were. Infinity is a value like any other.
     #[inline]
     pub fn update(&mut self, timestamp: u64, value: T) -> Option<T> {
-        if value.is_nan() || (self.count > 0 && is_late(timestamp, self.last)) {
-            return self.min();
+        self.window.update(timestamp, value, |a, b| a <= b)
+    }
+}
+
+/// The three choices and the clock, shared by the maximum and the minimum.
+#[derive(Debug, Clone)]
+struct Window<T: Sample> {
+    span: u64,
+    samples: [Stamped<T>; 3],
+    count: u64,
+    /// Timestamp of the newest value taken.
+    last: u64,
+}
+
+impl<T: Sample> Window<T> {
+    #[inline]
+    fn new(span: u64) -> Result<Self, nexus_stats_core::ConfigError> {
+        if span == 0 {
+            return Err(nexus_stats_core::ConfigError::Invalid(
+                "window must be positive",
+            ));
+        }
+        Ok(Self {
+            span,
+            samples: [Stamped::EMPTY; 3],
+            count: 0,
+            last: 0,
+        })
+    }
+
+    #[inline]
+    fn reset(&mut self) {
+        self.samples = [Stamped::EMPTY; 3];
+        self.count = 0;
+    }
+
+    /// The best choice, or `None` before the first value.
+    #[inline]
+    fn best(&self) -> Option<T> {
+        if self.count == 0 {
+            return None;
+        }
+        Some(self.samples[0].value)
+    }
+
+    /// Whether a value is skipped: a NaN, or one timestamped before the
+    /// last value taken.
+    #[inline]
+    fn skips(&self, timestamp: u64, value: T) -> bool {
+        value.is_nan() || (self.count > 0 && is_late(timestamp, self.last))
+    }
+
+    /// Takes a value and returns the best choice. `better(a, b)` says
+    /// whether `a` beats or ties `b`.
+    #[inline]
+    fn update(&mut self, timestamp: u64, value: T, better: impl Fn(T, T) -> bool) -> Option<T> {
+        if self.skips(timestamp, value) {
+            return self.best();
         }
         self.last = timestamp;
         self.count += 1;
-        // The first value is the minimum, whatever it is.
+        // The first value is the best, whatever it is.
         if self.count == 1 {
             self.samples = [Stamped { timestamp, value }; 3];
             return Some(value);
         }
         Some(running(
             &mut self.samples,
-            self.window,
+            self.span,
             timestamp,
             value,
-            |a, b| a <= b,
+            better,
         ))
     }
 }
