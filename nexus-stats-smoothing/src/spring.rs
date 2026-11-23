@@ -250,8 +250,11 @@ fn decay(x: f64) -> f64 {
 /// Whether a step from `start` to `value` crossed `target`: began on one
 /// side and ended on the other. A step that begins on the target does not.
 #[inline]
+#[allow(clippy::needless_bitwise_bool)]
 fn passed(start: f64, value: f64, target: f64) -> bool {
-    (start < target && value > target) || (start > target && value < target)
+    // PERF: `&` and `|`, not `&&` and `||`: which side the target is on is
+    // a coin flip when it moves around the value, so no branch on it.
+    ((start < target) & (value > target)) | ((start > target) & (value < target))
 }
 
 #[cfg(test)]
