@@ -37,6 +37,7 @@
 //! | `Kalman3d` | 3D Kalman filter | — |
 //! | `BetaBinomial` | Beta-Binomial conjugate estimator | `std` or `libm` |
 //! | `GammaPoisson` | Gamma-Poisson conjugate estimator | `std` or `libm` |
+//! | `HawkesIntensity` | Intensity of a self-exciting point process | `std` or `libm` |
 //!
 //! # Re-export
 //!
@@ -55,3 +56,6 @@ pub mod estimation;
 pub mod learning;
 /// Regression and classification.
 pub mod regression;
+
+/// The clock a `HawkesIntensity` runs on: `i128` nanoseconds or an `Instant`.
+pub use nexus_stats_core::Timestamp;

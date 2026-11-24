@@ -1,542 +1,462 @@
-use nexus_stats_core::sample::{EmaKernel, ShiftEma};
+use core::marker::PhantomData;
+use core::time::Duration;
 
-/// Liveness detector (`u64` ticks) — fixed-point EMA of inter-arrival ticks.
+use nexus_stats_core::Timestamp;
+use nexus_stats_core::parts::LastTime;
+use nexus_stats_core::storage::Ring;
+
+/// Liveness of a source, from how long it has been silent against how
+/// often it usually speaks.
 ///
-/// Uses kernel-style bit-shift arithmetic for the interval smoothing.
-/// Timestamps are integer ticks and should be non-decreasing. A timestamp at
-/// or behind the previous one carries no interval information: it re-anchors
-/// the last-seen tick, leaves the smoothed interval untouched, and is alive.
+/// Feed it the time of each event. It keeps the mean gap between the last
+/// `window` events, and [`check`](Self::check) reports the silence so far
+/// as a multiple of that gap. It gives a number and no verdict. Where to
+/// draw the line is the caller's decision, and [`Suspicion`] says how to
+/// read it.
 ///
-/// Each gap is judged against the smoothed interval as it stood before the
-/// event, then folded in. With both deadlines configured, a gap is dead if
-/// it exceeds either one. Until a positive gap has been seen, only the
-/// absolute deadline can judge.
+/// It follows the failure detector Apache Cassandra uses for its gossip:
+/// the same ratio over a bounded window of intervals, with the option not
+/// to record an interval longer than a limit, so that one long outage does
+/// not make the next one look normal. One difference: Cassandra seeds the
+/// window with an assumed first interval, and this type has no reading
+/// until it has seen a real gap.
 ///
 /// # Weighting clock
 ///
-/// Per event, using its timestamp. Each event must carry its own tick.
+/// The caller's timestamps, one per event. Every gap in the window weighs
+/// the same.
+///
+/// # Examples
+///
+/// ```
+/// use nexus_stats_monitoring::Liveness;
+///
+/// let mut liveness = Liveness::builder().window(100).build().unwrap();
+/// // A heartbeat every second, as nanoseconds. An `Instant` works too.
+/// for second in 0..10_i128 {
+///     liveness.update(second * 1_000_000_000);
+/// }
+/// // Three seconds after the last one: three typical gaps of silence.
+/// let suspicion = liveness.check(12_000_000_000).unwrap();
+/// assert_eq!(suspicion.ratio(), 3.0);
+/// ```
 #[derive(Debug, Clone)]
-pub struct Liveness {
-    /// Smoothed inter-arrival gap (the kernel's shift EMA).
-    ema: ShiftEma,
-    last_timestamp: u64,
-    /// Converted from the builder's `u64` once, so `is_alive_with` does no
-    /// per-event conversion.
-    deadline_multiple: Option<i64>,
-    deadline_absolute: Option<u64>,
+pub struct Liveness<T: Timestamp> {
+    /// The last `window` gaps, in nanoseconds.
+    gaps: Ring<u64>,
+    /// Their sum, which is exact.
+    total: u128,
+    /// The longest gap that is recorded.
+    longest_recorded: u64,
+    last: LastTime<T>,
     count: u64,
-    min_samples: u64,
+}
+
+/// How suspicious a silence is: a [`Liveness`] reading.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Suspicion {
+    silence: Duration,
+    mean_gap: Duration,
 }
 
 /// Builder for [`Liveness`].
 #[derive(Debug, Clone)]
-pub struct LivenessBuilder {
-    span: Option<u64>,
-    deadline_multiple: Option<u64>,
-    deadline_absolute: Option<u64>,
-    min_samples: u64,
+pub struct LivenessBuilder<T: Timestamp> {
+    window: usize,
+    longest_recorded: Option<Duration>,
+    clock: PhantomData<T>,
 }
 
-impl Liveness {
+/// Cassandra's window: the last 1,000 intervals.
+const DEFAULT_WINDOW: usize = 1_000;
+
+impl Suspicion {
+    /// How long the source has been silent.
+    #[must_use]
+    pub fn silence(&self) -> Duration {
+        self.silence
+    }
+
+    /// The mean gap between its recent events.
+    #[must_use]
+    pub fn mean_gap(&self) -> Duration {
+        self.mean_gap
+    }
+
+    /// The silence as a multiple of the mean gap: `1.0` is on schedule,
+    /// `3.0` is three typical gaps overdue. NaN if every recorded gap was
+    /// zero and there is no silence.
+    #[must_use]
+    pub fn ratio(&self) -> f64 {
+        self.silence.as_secs_f64() / self.mean_gap.as_secs_f64()
+    }
+
+    /// The chance that a live source would be silent this long:
+    /// `exp(-ratio)`.
+    ///
+    /// This assumes events arrive at random around a steady rate. A source
+    /// that ticks at a fixed interval is far less likely to be late than
+    /// this says, so for one the figure is conservative.
+    #[must_use]
+    #[cfg(any(feature = "std", feature = "libm"))]
+    pub fn probability_alive(&self) -> f64 {
+        nexus_stats_core::math::exp(-self.ratio())
+    }
+
+    /// The same chance on Cassandra's scale: `-log10` of it, so `1.0` is
+    /// one chance in ten and `8.0`, Cassandra's default threshold, one in
+    /// a hundred million.
+    #[must_use]
+    pub fn phi(&self) -> f64 {
+        self.ratio() * core::f64::consts::LOG10_E
+    }
+}
+
+impl<T: Timestamp> Liveness<T> {
     /// Creates a builder.
-    #[inline]
     #[must_use]
-    pub fn builder() -> LivenessBuilder {
+    pub fn builder() -> LivenessBuilder<T> {
         LivenessBuilder {
-            span: None,
-            deadline_multiple: None,
-            deadline_absolute: None,
-            min_samples: 2,
+            window: DEFAULT_WINDOW,
+            longest_recorded: None,
+            clock: PhantomData,
         }
     }
 
-    /// Updates with an event at the given tick. Returns `true` if alive.
+    /// Records an event at `time`.
+    ///
+    /// An event timestamped before the last one taken is ignored. See
+    /// [`checked_update`](Self::checked_update).
     #[inline]
-    #[must_use]
-    pub fn update(&mut self, timestamp: u64) -> bool {
+    pub fn update(&mut self, time: T) {
+        if self.last.would_go_back(time) {
+            return;
+        }
+        // The first event opens no gap.
+        if let Some(gap) = self.last.elapsed_to(time) {
+            self.record(nanos(gap));
+        }
+        self.last.set(time);
         self.count += 1;
-
-        if self.count == 1 {
-            self.last_timestamp = timestamp;
-            return true;
-        }
-
-        let dt = timestamp.wrapping_sub(self.last_timestamp) as i64;
-        self.last_timestamp = timestamp;
-
-        // Non-positive gap (a step backwards, or one that does not fit in
-        // i64) carries no interval information: re-anchor to it, leave the
-        // estimate alone, report alive. Folding it would pull the estimate
-        // toward or below zero and make the next real gap read dead.
-        if dt <= 0 {
-            return true;
-        }
-
-        // Judge this gap against the interval as it stood before this event,
-        // then fold the gap in. Folding first makes the test
-        // `dt <= m * (old + (dt - old) / 2^k)`, which is always true once
-        // `m >= 2^k`, so the detector could never report dead.
-        let alive = if self.ema.is_initialized() {
-            let smoothed = self.ema.value();
-            self.ema.fold(dt);
-            self.is_alive_with(dt, Some(smoothed))
-        } else {
-            self.ema.fold(dt);
-            self.is_alive_with(dt, None)
-        };
-
-        if self.count < self.min_samples {
-            return true;
-        }
-        alive
     }
 
-    /// Checks liveness at the given tick without recording.
+    /// Checked update. Records an event at `time`, or returns an error and
+    /// leaves the state unchanged if `time` is before the last event.
+    ///
+    /// # Errors
+    ///
+    /// [`DataError::NonMonotonicTime`](nexus_stats_core::DataError::NonMonotonicTime)
+    /// if `time` is before the last event taken.
     #[inline]
+    pub fn checked_update(&mut self, time: T) -> Result<(), nexus_stats_core::DataError> {
+        self.last.check(time)?;
+        self.update(time);
+        Ok(())
+    }
+
+    /// The silence at `now` against the mean gap, or `None` until a gap
+    /// has been recorded. A `now` before the last event reads as no
+    /// silence.
     #[must_use]
-    pub fn check(&self, now: u64) -> bool {
-        if self.count < self.min_samples {
-            return true;
-        }
-
-        let dt = now.wrapping_sub(self.last_timestamp) as i64;
-        // No positive gap seen yet: only the absolute deadline can judge.
-        let smoothed = self.ema.is_initialized().then(|| self.ema.value());
-        self.is_alive_with(dt, smoothed)
+    pub fn check(&self, now: T) -> Option<Suspicion> {
+        let mean_gap = self.mean_gap()?;
+        Some(Suspicion {
+            silence: self.last.elapsed_to(now)?,
+            mean_gap,
+        })
     }
 
-    /// Alive only if the gap is within every configured deadline. A gap of
-    /// zero or less (an event that just arrived, or a clock that stepped
-    /// backwards) is always alive.
-    #[inline]
-    fn is_alive_with(&self, dt: i64, smoothed: Option<i64>) -> bool {
-        if dt <= 0 {
-            return true;
-        }
-        let within_multiple = match (self.deadline_multiple, smoothed) {
-            (Some(multiple), Some(smoothed)) => dt <= smoothed.saturating_mul(multiple),
-            _ => true,
-        };
-        let within_absolute = self
-            .deadline_absolute
-            .is_none_or(|absolute| (dt as u64) <= absolute);
-        within_multiple && within_absolute
-    }
-
-    /// Current smoothed inter-arrival interval, or `None` if < 2 events.
-    #[inline]
+    /// The mean of the recorded gaps, or `None` until there is one.
     #[must_use]
-    pub fn interval(&self) -> Option<i64> {
-        if self.count >= 2 && self.ema.is_initialized() {
-            Some(self.ema.value())
-        } else {
-            None
+    pub fn mean_gap(&self) -> Option<Duration> {
+        let recorded = self.gaps.len() as u128;
+        if recorded == 0 {
+            return None;
         }
+        // At most `u64::MAX`: a mean of `u64` gaps.
+        Some(Duration::from_nanos((self.total / recorded) as u64))
     }
 
-    /// Effective span after rounding.
-    #[inline]
-    #[must_use]
-    pub fn effective_span(&self) -> u64 {
-        self.ema.span
-    }
-
-    /// Number of events recorded.
-    #[inline]
+    /// Events recorded since construction or `reset`.
     #[must_use]
     pub fn count(&self) -> u64 {
         self.count
     }
 
-    /// Whether the detector has reached `min_samples`.
-    #[inline]
+    /// Whether a reading is available: a gap has been recorded.
     #[must_use]
     pub fn is_primed(&self) -> bool {
-        self.count >= self.min_samples
+        !self.gaps.is_empty()
     }
 
-    /// Resets to uninitialized state.
-    #[inline]
+    /// Forgets every event. The configuration is kept.
     pub fn reset(&mut self) {
-        self.ema.reset();
-        self.last_timestamp = 0;
+        self.gaps.clear(0);
+        self.total = 0;
+        self.last.reset();
         self.count = 0;
+    }
+
+    /// Adds a gap to the window, unless it is longer than the limit.
+    #[inline]
+    fn record(&mut self, gap: u64) {
+        if gap > self.longest_recorded {
+            return;
+        }
+        let evicted = self.gaps.push(gap).unwrap_or(0);
+        self.total = self.total + u128::from(gap) - u128::from(evicted);
     }
 }
 
-impl LivenessBuilder {
-    /// Smoothing span. Rounded up to next `2^k - 1`.
-    #[inline]
+impl<T: Timestamp> LivenessBuilder<T> {
+    /// How many of the latest gaps the mean is taken over. Default 1,000,
+    /// as in Cassandra.
     #[must_use]
-    pub fn span(mut self, n: u64) -> Self {
-        self.span = Some(n);
+    pub fn window(mut self, gaps: usize) -> Self {
+        self.window = gaps;
         self
     }
 
-    /// Dead when a gap exceeds `n * smoothed_interval`, the interval as it
-    /// stood before that gap. Combines with `deadline_absolute`: either trips.
-    #[inline]
+    /// The longest gap to record. A longer one still counts as silence in
+    /// [`Liveness::check`], but does not enter the mean. Default: no limit.
     #[must_use]
-    pub fn deadline_multiple(mut self, n: u64) -> Self {
-        self.deadline_multiple = Some(n);
+    pub fn longest_recorded_gap(mut self, limit: Duration) -> Self {
+        self.longest_recorded = Some(limit);
         self
     }
 
-    /// Dead when a gap exceeds a fixed deadline (in ticks). Combines with
-    /// `deadline_multiple`: either trips.
-    #[inline]
-    #[must_use]
-    pub fn deadline_absolute(mut self, t: u64) -> Self {
-        self.deadline_absolute = Some(t);
-        self
-    }
-
-    /// Minimum events before liveness checking activates. Default: 2.
-    #[inline]
-    #[must_use]
-    pub fn min_samples(mut self, min: u64) -> Self {
-        self.min_samples = min;
-        self
-    }
-
-    /// Builds the liveness detector.
+    /// Builds the detector.
     ///
     /// # Errors
     ///
-    /// - Span must have been set and >= 1.
-    /// - At least one deadline must be set.
-    #[inline]
-    pub fn build(self) -> Result<Liveness, nexus_stats_core::ConfigError> {
-        let requested = self
-            .span
-            .ok_or(nexus_stats_core::ConfigError::Missing("span"))?;
-        if requested < 1 {
+    /// `Invalid` if `window` is 0, or the longest recorded gap is zero.
+    pub fn build(self) -> Result<Liveness<T>, nexus_stats_core::ConfigError> {
+        if self.longest_recorded.is_some_and(|limit| limit.is_zero()) {
             return Err(nexus_stats_core::ConfigError::Invalid(
-                "Liveness span must be >= 1",
+                "longest recorded gap must be above zero",
             ));
         }
-        if requested > (1u64 << 62) {
-            return Err(nexus_stats_core::ConfigError::Invalid(
-                "Liveness span must be <= 2^62",
-            ));
-        }
-        if self.deadline_multiple.is_none() && self.deadline_absolute.is_none() {
-            return Err(nexus_stats_core::ConfigError::Invalid(
-                "Liveness requires a deadline",
-            ));
-        }
-
         Ok(Liveness {
-            ema: EmaKernel::new(requested)?,
-            last_timestamp: 0,
-            deadline_multiple: self
-                .deadline_multiple
-                .map(|m| i64::try_from(m).unwrap_or(i64::MAX)),
-            deadline_absolute: self.deadline_absolute,
+            gaps: Ring::new(self.window, 0)?,
+            total: 0,
+            longest_recorded: self.longest_recorded.map_or(u64::MAX, nanos),
+            last: LastTime::new(),
             count: 0,
-            min_samples: self.min_samples,
         })
     }
 }
 
+/// A span in whole nanoseconds, or `u64::MAX` (584 years) if longer.
+#[inline]
+fn nanos(span: Duration) -> u64 {
+    u64::try_from(span.as_nanos()).unwrap_or(u64::MAX)
+}
+
 #[cfg(test)]
 mod tests {
+    extern crate std;
     use super::*;
+    use nexus_stats_core::DataError::NonMonotonicTime;
+    use std::time::Instant;
+
+    const SECOND: i128 = 1_000_000_000;
+
+    fn liveness(window: usize) -> Liveness<i128> {
+        Liveness::builder().window(window).build().unwrap()
+    }
 
     #[test]
-    fn alive_while_events_arrive_u64() {
-        let mut lv = Liveness::builder()
-            .span(7)
-            .deadline_multiple(3)
-            .build()
-            .unwrap();
+    fn there_is_no_reading_until_a_gap_is_known() {
+        let mut l = liveness(10);
+        assert_eq!(
+            (l.check(0), l.mean_gap(), l.is_primed()),
+            (None, None, false)
+        );
+        l.update(5 * SECOND);
+        assert_eq!((l.check(9 * SECOND), l.count()), (None, 1));
+        l.update(6 * SECOND);
+        assert!(l.is_primed());
+        assert_eq!(l.mean_gap(), Some(Duration::from_secs(1)));
+    }
 
-        // Regular events every 10 units
-        for i in 0..20 {
-            assert!(lv.update(i * 10), "should be alive at event {i}");
+    #[test]
+    fn the_ratio_is_the_silence_in_mean_gaps() {
+        let mut l = liveness(100);
+        for second in 0..10 {
+            l.update(second * SECOND);
+        }
+        let on_time = l.check(10 * SECOND).unwrap();
+        assert_eq!(
+            (on_time.silence(), on_time.mean_gap()),
+            (Duration::from_secs(1), Duration::from_secs(1))
+        );
+        assert_eq!(on_time.ratio(), 1.0);
+        assert_eq!(l.check(12 * SECOND).unwrap().ratio(), 3.0);
+        // At the last event itself there is no silence.
+        assert_eq!(l.check(9 * SECOND).unwrap().ratio(), 0.0);
+        // Checking does not change anything.
+        assert_eq!(l.check(12 * SECOND).unwrap().ratio(), 3.0);
+    }
+
+    #[test]
+    fn the_probability_and_phi_follow_from_the_ratio() {
+        let mut l = liveness(100);
+        l.update(0);
+        l.update(SECOND);
+        let s = l.check(4 * SECOND).unwrap();
+        assert_eq!(s.ratio(), 3.0);
+        assert!((s.probability_alive() - (-3.0_f64).exp()).abs() < 1e-15);
+        // phi is -log10 of that probability.
+        assert!((s.phi() + s.probability_alive().log10()).abs() < 1e-12);
+        // Cassandra convicts at phi 8: about 18.4 mean gaps.
+        let convicted = l.check(SECOND + 18_420_680_744).unwrap();
+        assert!((convicted.phi() - 8.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn the_mean_is_over_the_last_window_of_gaps_and_is_exact() {
+        let mut l = liveness(3);
+        let mut t = 0;
+        for gap in [10, 20, 30, 400, 500, 600] {
+            t += gap;
+            l.update(t);
+        }
+        // The first sample opens no gap, so five were recorded; three kept.
+        assert_eq!(l.mean_gap(), Some(Duration::from_nanos(500)));
+        // Against a mean taken directly, over a long random run.
+        let mut state = 0x9E37_79B9_7F4A_7C15u64;
+        let (mut l, mut gaps, mut t) = (liveness(64), std::vec::Vec::new(), 0i128);
+        l.update(t);
+        for _ in 0..5_000 {
+            state ^= state << 13;
+            state ^= state >> 7;
+            state ^= state << 17;
+            let gap = state % 1_000_000_007;
+            t += i128::from(gap);
+            l.update(t);
+            gaps.push(u128::from(gap));
+            let kept = &gaps[gaps.len().saturating_sub(64)..];
+            let mean = kept.iter().sum::<u128>() / kept.len() as u128;
+            assert_eq!(l.mean_gap(), Some(Duration::from_nanos(mean as u64)));
         }
     }
 
+    /// One long outage is silence while it lasts, but with a limit it does
+    /// not raise the mean, so the next outage is judged as sharply.
     #[test]
-    fn dead_after_silence_u64() {
-        let mut lv = Liveness::builder()
-            .span(7)
-            .deadline_multiple(3)
-            .build()
-            .unwrap();
-
-        // Regular events every 10 units
-        for i in 0..10 {
-            let _ = lv.update(i as u64 * 10);
+    fn a_gap_over_the_limit_is_not_recorded() {
+        let build = |limit: Option<Duration>| {
+            let mut builder = Liveness::<i128>::builder().window(4);
+            if let Some(limit) = limit {
+                builder = builder.longest_recorded_gap(limit);
+            }
+            builder.build().unwrap()
+        };
+        let (mut limited, mut unlimited) = (build(Some(Duration::from_secs(5))), build(None));
+        for l in [&mut limited, &mut unlimited] {
+            for second in 0..4 {
+                l.update(second * SECOND);
+            }
+            // During the outage, both see the same silence.
+            assert_eq!(l.check(60 * SECOND).unwrap().ratio(), 57.0);
+            l.update(63 * SECOND);
         }
-
-        // Check after long silence — should be dead
-        // Smoothed interval ~= 10, deadline = 3 * 10 = 30, silence = 100
-        assert!(!lv.check(190), "should be dead after long silence");
+        assert_eq!(limited.mean_gap(), Some(Duration::from_secs(1)));
+        assert_eq!(unlimited.mean_gap(), Some(Duration::from_secs(63) / 4));
+        // The event itself was taken either way: silence restarts from it.
+        assert_eq!(
+            limited.check(64 * SECOND).unwrap().silence(),
+            Duration::from_secs(1)
+        );
+        assert_eq!(limited.count(), 5);
+        // A gap exactly at the limit is recorded.
+        let mut at_limit = build(Some(Duration::from_secs(5)));
+        at_limit.update(0);
+        at_limit.update(5 * SECOND);
+        assert_eq!(at_limit.mean_gap(), Some(Duration::from_secs(5)));
+        at_limit.update(10 * SECOND + 1);
+        assert_eq!(at_limit.mean_gap(), Some(Duration::from_secs(5)));
     }
 
     #[test]
-    fn recovery_after_resume_u64() {
-        let mut lv = Liveness::builder()
-            .span(7)
-            .deadline_multiple(3)
-            .build()
-            .unwrap();
-
-        for i in 0..10 {
-            let _ = lv.update(i as u64 * 10);
+    fn an_instant_and_nanoseconds_agree() {
+        let start = Instant::now();
+        let mut on_instant = Liveness::builder().window(8).build().unwrap();
+        let mut on_nanos = liveness(8);
+        for millis in [0u64, 100, 250, 251, 900] {
+            on_instant.update(start + Duration::from_millis(millis));
+            on_nanos.update(i128::from(millis) * 1_000_000);
         }
-
-        // Dead check
-        assert!(!lv.check(200));
-
-        // Resume events — should recover
-        assert!(!lv.update(200)); // records, interval updates
-        assert!(lv.update(210));
+        let a = on_instant
+            .check(start + Duration::from_millis(1_500))
+            .unwrap();
+        let b = on_nanos.check(1_500_000_000).unwrap();
+        assert_eq!(a, b);
     }
 
     #[test]
-    fn absolute_deadline_u64() {
-        let mut lv = Liveness::builder()
-            .span(7)
-            .deadline_absolute(50)
-            .build()
-            .unwrap();
-
-        let _ = lv.update(0);
-        let _ = lv.update(10);
-
-        // Within deadline
-        assert!(lv.check(55));
-        // Exceeds deadline
-        assert!(!lv.check(65));
+    fn an_event_before_the_last_one_is_ignored() {
+        let mut l = liveness(10);
+        l.update(10 * SECOND);
+        l.update(11 * SECOND);
+        let before = (l.mean_gap(), l.count());
+        l.update(5 * SECOND);
+        assert_eq!((l.mean_gap(), l.count()), before);
+        // The last event did not move back.
+        assert_eq!(
+            l.check(12 * SECOND).unwrap().silence(),
+            Duration::from_secs(1)
+        );
+        // A check before the last event reads as no silence.
+        assert_eq!(l.check(0).unwrap().ratio(), 0.0);
     }
 
     #[test]
-    fn not_primed_always_alive_u64() {
-        let mut lv = Liveness::builder()
-            .span(7)
-            .deadline_multiple(3)
-            .min_samples(5)
-            .build()
-            .unwrap();
+    fn checked_update_reports_time_going_back_and_changes_nothing() {
+        let mut l = liveness(10);
+        assert_eq!(l.checked_update(-3 * SECOND), Ok(()));
+        assert_eq!(l.checked_update(2 * SECOND), Ok(()));
+        let before = (l.mean_gap(), l.count());
+        assert_eq!(l.checked_update(2 * SECOND - 1), Err(NonMonotonicTime));
+        assert_eq!((l.mean_gap(), l.count()), before);
+        // The same time is not going back: a gap of zero.
+        assert_eq!(l.checked_update(2 * SECOND), Ok(()));
+        assert_eq!(l.mean_gap(), Some(Duration::from_millis(2_500)));
+    }
 
-        // Even with huge gaps, returns true before primed
-        assert!(lv.update(0));
-        assert!(lv.update(1000));
-        assert!(!lv.is_primed());
+    /// Events all at one time have a mean gap of zero. Any silence is then
+    /// infinitely many gaps, and no silence is undefined.
+    #[test]
+    fn a_mean_gap_of_zero_gives_what_the_division_gives() {
+        let mut l = liveness(4);
+        l.update(SECOND);
+        l.update(SECOND);
+        assert_eq!(l.check(2 * SECOND).unwrap().ratio(), f64::INFINITY);
+        assert!(l.check(SECOND).unwrap().ratio().is_nan());
     }
 
     #[test]
-    fn reset_clears_state_u64() {
-        let mut lv = Liveness::builder()
-            .span(7)
-            .deadline_multiple(3)
-            .build()
-            .unwrap();
+    fn reset_forgets_the_gaps_and_the_clock() {
+        let mut l = liveness(4);
+        l.update(10 * SECOND);
+        l.update(20 * SECOND);
+        l.reset();
+        assert_eq!((l.mean_gap(), l.count(), l.is_primed()), (None, 0, false));
+        assert_eq!(l.checked_update(SECOND), Ok(()));
+        assert_eq!(l.checked_update(3 * SECOND), Ok(()));
+        assert_eq!(l.mean_gap(), Some(Duration::from_secs(2)));
+    }
 
-        for i in 0..10 {
-            let _ = lv.update(i as u64 * 10);
+    #[test]
+    fn the_builder_checks_its_configuration() {
+        assert!(Liveness::<i128>::builder().window(0).build().is_err());
+        let zero = Liveness::<i128>::builder().longest_recorded_gap(Duration::ZERO);
+        assert!(zero.build().is_err());
+        // The default is Cassandra's window.
+        let mut l = Liveness::<i128>::builder().build().unwrap();
+        for i in 0..2_500 {
+            l.update(i * (SECOND + i));
         }
-
-        lv.reset();
-        assert_eq!(lv.count(), 0);
-        assert!(lv.interval().is_none());
-    }
-
-    #[test]
-    fn errors_without_span_u64() {
-        let result = Liveness::builder().deadline_multiple(3).build();
-        assert!(matches!(
-            result,
-            Err(nexus_stats_core::ConfigError::Missing("span"))
-        ));
-    }
-
-    #[test]
-    fn errors_without_deadline_u64() {
-        let result = Liveness::builder().span(7).build();
-        assert!(matches!(
-            result,
-            Err(nexus_stats_core::ConfigError::Invalid(_))
-        ));
-    }
-
-    // Regression for #760: `update()` folded the gap into the EMA before
-    // testing it, so with shift k any `deadline_multiple >= 2^k` could never
-    // report dead, and even below that it disagreed with `check()` by one
-    // interval. For each (span, multiple) pair, the first dead gap (in
-    // intervals) must be the same from both methods, and equal to the first
-    // k with k * interval > multiple * interval, i.e. multiple + 1.
-    fn first_dead_gap_u64(span: u64, multiple: u64) -> (Option<u64>, Option<u64>) {
-        let mut lv = Liveness::builder()
-            .span(span)
-            .deadline_multiple(multiple)
-            .build()
-            .unwrap();
-        let mut t = 0u64;
-        for _ in 0..200 {
-            t += 1_000;
-            assert!(lv.update(t));
-        }
-        let via_check = (1..=1_000u64).find(|&k| !lv.check(t + k * 1_000));
-        let via_update = (1..=1_000u64).find(|&k| {
-            let mut probe = lv.clone();
-            !probe.update(t + k * 1_000)
-        });
-        (via_check, via_update)
-    }
-
-    #[test]
-    fn update_and_check_agree_on_first_dead_gap_u64() {
-        for (span, multiple) in [(7u64, 8u64), (15, 16), (3, 4), (1, 2), (7, 3), (31, 5)] {
-            let (c, u) = first_dead_gap_u64(span, multiple);
-            assert_eq!(
-                c,
-                Some(multiple + 1),
-                "check(): span {span}, multiple {multiple}"
-            );
-            assert_eq!(
-                u,
-                Some(multiple + 1),
-                "update(): span {span}, multiple {multiple}"
-            );
-        }
-    }
-
-    // The ticket's headline case: span 7 (shift 3), multiple 8, a gap of
-    // 100,000 intervals. The old `update()` returned alive forever.
-    #[test]
-    fn huge_gap_is_dead_from_update_u64() {
-        let mut lv = Liveness::builder()
-            .span(7)
-            .deadline_multiple(8)
-            .build()
-            .unwrap();
-        let mut t = 0u64;
-        for _ in 0..200 {
-            t += 1_000;
-            let _ = lv.update(t);
-        }
-        let gap = t + 100_000 * 1_000;
-        assert!(!lv.check(gap));
-        assert!(!lv.update(gap));
-    }
-
-    #[test]
-    fn both_deadlines_either_trips_u64() {
-        // Absolute 50 is the binding one: multiple 100 of a 10-tick interval
-        // would allow 1,000 ticks.
-        let mut lv = Liveness::builder()
-            .span(3)
-            .deadline_multiple(100)
-            .deadline_absolute(50)
-            .build()
-            .unwrap();
-        let mut t = 0u64;
-        for _ in 0..50 {
-            t += 10;
-            assert!(lv.update(t));
-        }
-        assert!(lv.check(t + 50));
-        assert!(!lv.check(t + 51));
-        assert!(!lv.update(t + 500));
-
-        // Multiple 3 is the binding one: absolute 1,000,000 never trips here.
-        let mut lv = Liveness::builder()
-            .span(3)
-            .deadline_multiple(3)
-            .deadline_absolute(1_000_000)
-            .build()
-            .unwrap();
-        let mut t = 0u64;
-        for _ in 0..50 {
-            t += 10;
-            assert!(lv.update(t));
-        }
-        assert!(lv.check(t + 30));
-        assert!(!lv.check(t + 31));
-    }
-
-    #[test]
-    fn first_gap_is_judged_by_absolute_deadline_only_u64() {
-        // Second event: no prior interval exists, so the multiple cannot judge
-        // it, but a configured absolute deadline still does.
-        let mut lv = Liveness::builder()
-            .span(7)
-            .deadline_multiple(3)
-            .deadline_absolute(50)
-            .build()
-            .unwrap();
-        assert!(lv.update(0));
-        assert!(!lv.update(60)); // 60 > 50
-        let mut lv = Liveness::builder()
-            .span(7)
-            .deadline_multiple(3)
-            .build()
-            .unwrap();
-        assert!(lv.update(0));
-        assert!(lv.update(60)); // no absolute deadline: nothing to judge the first gap
-    }
-
-    // Copilot's finding on #769: a backwards step used to be folded into the
-    // EMA, so a large one drove the estimate negative and the next real gap
-    // read dead. The step must leave the estimate untouched.
-    #[test]
-    fn backwards_step_does_not_poison_estimate_u64() {
-        let mut lv = Liveness::builder()
-            .span(7)
-            .deadline_multiple(3)
-            .build()
-            .unwrap();
-        let mut t = 1_000_000u64; // headroom for the step back
-        for _ in 0..50 {
-            t += 1_000;
-            assert!(lv.update(t));
-        }
-        t -= 100_000; // clock steps back 100 intervals
-        assert!(lv.update(t));
-        for _ in 0..10 {
-            t += 1_000; // normal gaps in the new clock domain
-            assert!(lv.update(t));
-        }
-        // Estimate is still exactly 1,000: dead at the fourth missed interval.
-        assert!(lv.check(t + 3_000));
-        assert!(!lv.check(t + 3_001));
-    }
-
-    // Only backwards gaps so far: no estimate exists, so the multiple cannot
-    // judge, but the absolute deadline still does, from both methods.
-    #[test]
-    fn unseeded_estimate_is_judged_by_absolute_only_u64() {
-        let mut lv = Liveness::builder()
-            .span(7)
-            .deadline_multiple(3)
-            .deadline_absolute(50)
-            .build()
-            .unwrap();
-        assert!(lv.update(100));
-        assert!(lv.update(50)); // backwards: re-anchors to 50, no estimate
-        assert!(lv.check(100)); // 50 ticks of silence, at the absolute
-        assert!(!lv.check(101)); // past it
-        assert!(lv.update(60)); // first positive gap (10): seeds the estimate
-        assert!(lv.update(70));
-        assert!(lv.check(100)); // 30 <= 3 * 10
-        assert!(!lv.check(101));
-    }
-
-    #[test]
-    fn backwards_clock_is_alive_u64() {
-        let mut lv = Liveness::builder()
-            .span(7)
-            .deadline_multiple(3)
-            .deadline_absolute(50)
-            .build()
-            .unwrap();
-        for i in 1..=10u64 {
-            let _ = lv.update(i * 10);
-        }
-        assert!(lv.check(95)); // behind the last event: nothing has been missed
-        assert!(lv.update(90));
+        assert_eq!(l.gaps.len(), 1_000);
     }
 }

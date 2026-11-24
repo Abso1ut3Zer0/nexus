@@ -17,6 +17,7 @@ without latency jitter.
 - **`update` does the arithmetic and nothing else.** No validation, no `Result`. Floats follow IEEE 754, as `+` does. After an input the type cannot use, it promises nothing unless its docs say otherwise.
 - **`checked_update` protects the state.** A type has one when some input does damage that outlasts the sample, or when `update` drops a sample you should be told about (a NaN it ignores, a timestamp that goes back). It refuses exactly those inputs, its docs list them, and a refusal leaves the type unchanged. A type without one has no such input.
 - **A reader reports what the arithmetic gives,** NaN included where the true answer is undefined. It never substitutes a number. The library protects the state. It does not promise a reading is never NaN.
+- **Physical clock time is `i128` nanoseconds or `Instant`.** A clocked type lives on one of the two and they cannot be mixed. Time must not go back. An `update` that takes a time ignores one before the latest it took, and its guarded form returns `NonMonotonicTime`. A call that closes an interval, such as `EventRate::take`, refuses a time that is not later.
 - **A reading is an `Option`.** `None` until there is enough data, never a placeholder value.
 - **A published algorithm is implemented as published.** A type that comes from a paper or a standard follows it. Where floating point needs more care than the source gives (cancellation, overflow, a divisor near zero), the type adds the guard practitioners use, and its docs say which.
 - **Maxima and minima ignore NaN and accept infinity,** as `f64::max` does.
@@ -27,12 +28,12 @@ without latency jitter.
 
 - `statistics`: `BucketAccumulator`, `CovarianceMatrix`, `FirstDiff`, `Percentile`, `SecondDiff`
 - `smoothing`: `Hampel`, `Kama`, `WindowedMedian`
-- `monitoring`: `CoDel`, `EventRate`, `HawkesIntensity`, `Liveness`, `PollSaturation`, `SojournSaturation`
+- `monitoring`: `CoDel`, `PollSaturation`, `SojournSaturation`
 - `normalization`: `MinMaxNorm`, `QuantileNorm`
 - `trading`: `Cvar`, `KyleLambda`
 - `control`, `frequency`: every type
 - `detection`, `signal`: every type except `HalfLife` and `Hurst`
-- `regression`, `learning`, `estimation`: every type except `HitRate`
+- `regression`, `learning`, `estimation`: every type except `HitRate` and `HawkesIntensity`
 
 ## Quick Start
 
@@ -99,6 +100,7 @@ docs, and each module's docs say which type to use for what.
 | `AsymEma` | Different alpha for rising vs falling | 12 |
 | `Kama` | Kaufman adaptive MA (adapts to trend/noise) | 15 |
 | `Kalman1d` | 1D Kalman filter with velocity tracking | 26 |
+| `HawkesIntensity` *(std\|libm)* | Intensity of a self-exciting point process (clustered events) | 27 |
 | `Holt` | Double exponential (level + trend) | 11 |
 | `Spring` | Critically damped spring (smooth target chasing) | 13 |
 | `Slew` | Slew rate limiter: caps the change per sample | 8 |
@@ -161,15 +163,14 @@ docs, and each module's docs say which type to use for what.
 | `PeakToTrough<f64>` | Fall from the running high and the largest fall (drawdown) | 7 |
 | `WindowedMax<f64>` / `WindowedMin<f64>` | Sliding window extrema (Nichols'/BBR) | 9 |
 | `PeakHold<f64>` | Amplitude tracker: instant attack, hold, decay | 8 |
-| `Liveness` | Source alive/dead detection | 7 |
-| `EventRate` | Smoothed events per unit time | 7 |
+| `Liveness` *(alloc)* | Silence in typical gaps, with a probability (Cassandra's detector) | 12 |
+| `EventRate` *(std\|libm)* | Events and rate per window; 1, 5 and 15 minute load | <1 |
 | `CoDel<i64>` | Queue backpressure detection (CoDel-inspired) | 5 |
 | `PollSaturation` | Consumer-side saturation from poll outcomes: `on_work` / `on_idle` | 6 / 1 |
 | `SojournSaturation` | Consumer saturation from stamped queue sojourn, exact per message | 7 |
 | `ErrorRate` | Error count, ratio per interval, smoothed ratio | 7 |
 | `TrendAlert` | Trend direction (Stable/Rising/Falling) | 10 |
 | `Jitter<f64>` | Interarrival jitter (RFC 3550) | 6 |
-| `HawkesIntensity` *(std\|libm)* | Self-exciting point process intensity | 15 |
 
 ### Frequency & Scoring
 
@@ -219,10 +220,12 @@ form, the two the RFC gives.
 The normalizers (`ZScoreNorm`, `MinMaxNorm`, `QuantileNorm`) and
 `RobustZScore` are generic over `Float` (`f64`, `f32`): they take and return
 `T` but accumulate in `f64`, so the `f32` form is a boundary type for `f32`
-feature vectors. Time-aware types (`Liveness`, `EventRate`, `PollSaturation`,
-`SojournSaturation`, `DecayAccum`, the windowed extrema's timestamps) take
-`u64` ticks in any unit; `clock::MonotonicClock` is the `std` bridge from
-`Instant`. The full table is [`docs/reference/type-matrix.md`](docs/reference/type-matrix.md);
+feature vectors. Physical clock time is `i128` nanoseconds or an `Instant`,
+through the sealed `Timestamp` trait: `Liveness`, `EventRate` and
+`HawkesIntensity` take either. `PollSaturation`, `DecayAccum`, `MinMaxNorm`,
+`BucketAccumulator`, `CoDel` and the windowed extrema have not moved yet and
+take `u64` ticks;
+`clock::MonotonicClock` is the `std` bridge from `Instant` for those. The full table is [`docs/reference/type-matrix.md`](docs/reference/type-matrix.md);
 upgrading from 6.x: [`docs/guides/migrating-to-7.md`](docs/guides/migrating-to-7.md).
 
 ## Common API Patterns
@@ -315,7 +318,7 @@ See [`docs/use-cases/trading.md`](docs/use-cases/trading.md) for full guide with
 | Jump-robust volatility | `BipowerVariation` | trading |
 | Implicit spread estimation | `RollSpread` | trading |
 | Noise-corrected realized vol | `TwoScaleRv` | trading |
-| Bursty event intensity | `HawkesIntensity` | monitoring |
+| Bursty event intensity | `HawkesIntensity` | estimation |
 | Conditional smoothing | `Ema`, updated only when the condition holds | smoothing |
 | Venue selection | `ThompsonBeta` / `Ucb1` | regression |
 | Parameter A/B testing | `Ucb1` / `EpsilonGreedy` | regression |

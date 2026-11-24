@@ -10,6 +10,19 @@ contained.
 
 ## [Unreleased]
 
+### Added (moved in)
+
+- **`HawkesIntensity`**, from `nexus-stats-monitoring`. It estimates the
+  state of a point-process model, as the other types in `estimation` do.
+
+### Changed (breaking)
+
+- **`HawkesIntensity` takes time as `i128` nanoseconds or `Instant`,**
+  through the `Timestamp` trait, and its rates are per second (`mu` in
+  events per second, `beta` per second). An event before the last one is
+  ignored; `checked_update` returns `NonMonotonicTime`. `min_samples` is
+  removed, since no reading used it.
+
 ### Changed (dependencies)
 
 - `HitRate` now takes `Ema` from `nexus-stats-smoothing`, a new dependency of this crate.

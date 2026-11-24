@@ -85,10 +85,10 @@
 //! | `detection` | `estimation` | + SprtBernoulli, SprtGaussian |
 //! | `regression` | `regression` | LinearRegression, PolynomialRegression, EwLinearRegression, EwPolynomialRegression, ExponentialRegression, LogarithmicRegression, PowerRegression (+ `Ew*`), LogisticRegression, HitRate, LaggedPredictor, SignalDecayCurve |
 //! | `regression` + `alloc` | `learning` | LmsFilter, NlmsFilter, RlsFilter, HuberRegression, OnlineKMeans, OnlineGd, AdaGrad, Adam, Ucb1, ThompsonBeta, ThompsonGamma, EpsilonGreedy, Exp3 |
-//! | `regression` | `estimation` | + Kalman1d, Kalman2d, Kalman3d, BetaBinomial, GammaPoisson |
+//! | `regression` | `estimation` | + Kalman1d, Kalman2d, Kalman3d, BetaBinomial, GammaPoisson, HawkesIntensity *(std\|libm)* |
 //! | `control` | `control` | DeadBand, Hysteresis, Debounce, LevelCrossing, PeakDetector, BoolWindow *(alloc)* |
 //! | `control` | `frequency` | FlexProportionGlobal, FlexProportionLocal, TopK *(alloc)*, DecayAccum *(std\|libm)* |
-//! | `monitoring` | `monitoring` | PeakToTrough, WindowedMax, WindowedMin, PeakHold, CoDel, PollSaturation, SojournSaturation, Liveness, EventRate, Jitter, ErrorRate, HawkesIntensity *(std\|libm)* |
+//! | `monitoring` | `monitoring` | PeakToTrough, WindowedMax, WindowedMin, PeakHold, CoDel, PollSaturation, SojournSaturation, Liveness *(alloc)*, EventRate *(std\|libm)*, Jitter, ErrorRate |
 //! | `normalization` | `normalization` | MinMaxNorm, ZScoreNorm *(std\|libm)*, QuantileNorm *(alloc)* |
 //! | `trading` | `trading` | Amihud, Lpm, Cvar, BipowerVariation *(std\|libm)*, RollSpread *(std\|libm)*, TwoScaleRv *(alloc, std\|libm)*, VarianceRatio *(alloc, std\|libm)*, KyleLambda *(with `regression`)* |
 //! | `full` | all | Everything above |
@@ -115,8 +115,9 @@ pub use nexus_stats_core::{Accuracy, Condition, ConfigError, DataError, Directio
 /// Sealed numeric bounds of the generic types: [`Sample`] (`f64`, `i64`) and
 /// [`Float`] (`f64`, `f32`). Name them in your own signatures
 /// (`fn f<T: Sample>(w: &mut monitoring::WindowedMax<T>)`); they cannot be
-/// implemented outside `nexus-stats-core`.
-pub use nexus_stats_core::{Float, Sample};
+/// implemented outside `nexus-stats-core`. [`Timestamp`] is the bound of
+/// the clocked types: `i128` nanoseconds or an `Instant`.
+pub use nexus_stats_core::{Float, Sample, Timestamp};
 
 /// Clock trait and implementations for time-aware stats types.
 pub use nexus_stats_core::clock;

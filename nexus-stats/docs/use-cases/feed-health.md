@@ -21,39 +21,32 @@ use nexus_stats::monitoring::{Liveness, EventRate, Jitter};
 use nexus_stats::control::DeadBand;
 
 struct FeedMonitor {
-    liveness: Liveness,      // is it alive?
+    liveness: Liveness<i128>, // how long has it been silent?
     latency: Cusum,          // has latency shifted?
-    rate: EventRate,         // is message rate normal?
+    rate: EventRate<i128>,   // how busy is it?
     jitter: Jitter<i64>,          // is timing unstable?
     staleness: DeadBand<i64>,     // is the value actually changing?
 }
 
 impl FeedMonitor {
-    fn new(baseline_latency: f64, expected_interval_ns: i64) -> Self {
+    fn new(start_ns: i128, baseline_latency: f64, expected_interval_ns: i64) -> Self {
         FeedMonitor {
-            liveness: Liveness::builder()
-                .span(15)
-                .deadline_multiple(5)
-                .build()
-                .unwrap(),
+            liveness: Liveness::builder().build().unwrap(), // mean of the last 1,000 gaps
             latency: Cusum::builder(baseline_latency)
                 .slack(baseline_latency * 0.05)
                 .threshold(baseline_latency * 0.5)
                 .min_samples(20)
                 .build()
                 .unwrap(),
-            rate: EventRate::builder()
-                .span(15)
-                .build()
-                .unwrap(),
+            rate: EventRate::new(start_ns),
             jitter: Jitter::<i64>::new(),
             staleness: DeadBand::<i64>::new(1).unwrap(), // flag if value changes by < 1
         }
     }
 
-    fn on_message(&mut self, now_ns: i64, value: i64, latency_us: f64) {
+    fn on_message(&mut self, now_ns: i128, value: i64, latency_us: f64) {
         self.liveness.update(now_ns);
-        self.rate.tick(now_ns);
+        self.rate.update();
         self.jitter.update(gap_ns); // time since the previous message
 
         if let Some(shift) = self.latency.update(latency_us) {
@@ -81,22 +74,21 @@ use nexus_stats::detection::Cusum;
 use nexus_stats::monitoring::{Liveness, EventRate};
 
 // Per-exchange feed monitor
-let mut liveness = Liveness::builder()
-    .span(15)
-    .deadline_absolute(5_000_000_000)  // 5s absolute timeout
-    .build().unwrap();
-
-let mut msg_rate = EventRate::builder().span(20).build().unwrap();
+let mut liveness = Liveness::builder().build().unwrap();
+let mut msg_rate = EventRate::new(start_ns);   // i128 nanoseconds, or an Instant
 let mut latency_cusum = Cusum::builder(baseline_ws_latency)
     .slack(2.0).threshold(20.0).min_samples(50).build().unwrap();
 
 // On each WebSocket message:
 liveness.update(now_ns);
-msg_rate.update(now_ns);
+msg_rate.update();
 latency_cusum.update(msg_latency_ms).unwrap();
 
 // On timer tick (100ms from nexus-rt timer driver):
-if !liveness.check(now_ns) {
+let rate = msg_rate.take(now_ns)?.rate();     // events per second since the last tick
+// Silent for 5 s, or for 20 typical gaps: your policy, not the type's.
+let quiet = liveness.check(now_ns);
+if quiet.is_some_and(|s| s.silence().as_secs() >= 5 || s.ratio() > 20.0) {
     initiate_reconnect();
 }
 ```
@@ -105,9 +97,9 @@ if !liveness.check(now_ns) {
 
 | Primitive | What it detects |
 |-----------|----------------|
-| Liveness | Source stopped sending |
+| Liveness | How long the source has been silent, in typical gaps |
 | CUSUM | Latency shifted |
-| EventRate | Message rate changed |
+| EventRate | Events per second per window, and the 1, 5 and 15 minute load |
 | Jitter | Timing became unstable |
 | DeadBand | Value stopped changing (stale) |
 | Debounce | Confirm repeated failures |

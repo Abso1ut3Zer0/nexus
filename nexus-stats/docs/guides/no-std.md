@@ -27,7 +27,9 @@ Most algorithms are pure arithmetic — no `sqrt` or `exp` needed:
 | Debounce, Hysteresis, PeakDetector | No |
 | FirstDiff, SecondDiff, LevelCrossing | No |
 | BoolWindow | No |
-| Jitter<i64>, Liveness, EventRate, PollSaturation | No |
+| Jitter<i64>, PollSaturation | No |
+| Liveness (`alloc`) | No, except `probability_alive()` (`exp`) |
+| EventRate, HawkesIntensity | Yes (an exponential) |
 | Welford (`std_dev()` query) | Yes (`sqrt`) |
 | ShiryaevRoberts | Yes (`exp`) |
 | `halflife()` on any builder | Yes (`exp`) |
@@ -43,11 +45,9 @@ The cheap primitives are generic over `f64` and `i64`:
 `SecondDiff<i64>`,
 `WindowedMax<i64>`, `WindowedMin<i64>`, `PeakHold<i64>`,
 `CoDel<i64>`, `Jitter<i64>`, `WindowedMedian<i64>`, `PeakDetector<i64>`. The
-tick-based monitors (`Liveness`, `EventRate`, `PollSaturation`,
-`SojournSaturation`) are integer throughout. Where these need smoothing they
-use the Linux kernel's fixed-point pattern (a bit-shift EMA), so none of it
-touches floating point: ideal for Cortex-M and other platforms without an
-FPU. The smoothers that take arbitrary data (`Ema`, `AsymEma`, `Welford`,
+saturation monitors (`PollSaturation`, `SojournSaturation`) are integer
+throughout, so none of it touches floating point. `Liveness` keeps its
+state in integers and uses floating point only to report the ratio. The smoothers that take arbitrary data (`Ema`, `AsymEma`, `Welford`,
 `Cusum`, ...) are `f64`; see [Integer vs Float](integer-vs-float.md).
 
 ## Memory Budgets

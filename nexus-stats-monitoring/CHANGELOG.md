@@ -10,6 +10,42 @@ contained.
 
 ## [Unreleased]
 
+### Changed (breaking, time)
+
+- **`Liveness` and `EventRate` take time as `i128` nanoseconds or
+  `Instant`,** through the `Timestamp` trait, in place of `u64` ticks.
+  `Liveness::update` ignores a time that goes back, and `checked_update`
+  reports it as `NonMonotonicTime`. `EventRate::take` refuses a time that
+  is not later.
+- **`Liveness` reports a suspicion level, not a verdict.** It follows
+  Apache Cassandra's failure detector: `check(now)` returns a `Suspicion`
+  with the silence as a multiple of the mean gap (`ratio()`), the chance a
+  live source would be this quiet (`probability_alive()`), and Cassandra's
+  `phi()`. The mean is over the last `window` gaps (default 1,000), kept as
+  an exact integer sum, and `longest_recorded_gap` keeps a long outage out
+  of it. `span`, `deadline_multiple`, `deadline_absolute`, `min_samples`,
+  `interval()`, `effective_span()` and the `bool` results are removed. It
+  now needs `alloc`, and `probability_alive()` also needs `std` or `libm`.
+- **`EventRate` counts events and reports per window.** `update()` and
+  `update_n(n)` read no clock. `take(now)` closes the window and returns a
+  `RateSummary`: the events, the exact rate, the mean rate since the start,
+  and the load averaged over 1, 5 and 15 minutes as in Dropwizard's `Meter`
+  and the UNIX load average. `EventRate::new(start)` takes the start time,
+  `take` refuses a time that is not later, and `reset_at(now)` replaces
+  `reset()`. `rate()`, `interval()`, `effective_span()` and the builder are
+  removed. It now needs `std` or `libm`.
+
+### Removed (moved)
+
+- `HawkesIntensity` is now in `nexus-stats-regression` (`estimation`),
+  beside `GammaPoisson` and the Kalman filters.
+
+### Fixed
+
+- **`EventRate` reported one over an exponentially weighted average of
+  the gap between events,** which weighs each event, not each unit of
+  time. It now counts events over a window.
+
 ### Changed (breaking)
 
 - **`Drawdown` is replaced by `PeakToTrough<T>`:** the fall from a running

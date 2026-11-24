@@ -274,10 +274,20 @@ The standard library is the model: `update` is `+`, `checked_update` is
   and a window's clock included. (pandas' rolling functions also treat
   infinity as missing. We follow `f64::max` and NumPy, where it is a
   value.)
-- **Time must not go back.** A clocked type's `update` ignores a timestamp
-  before the last one taken; its `checked_update` returns
-  `DataError::NonMonotonicTime`. Compare timestamps plainly, not as a
-  wrapping counter.
+- **Physical clock time is `i128` nanoseconds or `Instant`.** A clocked
+  type is generic over the sealed `Timestamp` trait, which both
+  implement, so one instance lives on one clock and the two cannot be
+  mixed. `i128` is the deterministic form. Recorded times replay to the
+  same results, and a wire `i64` widens into it. A span of time in
+  configuration (a window, a deadline) is a `core::time::Duration`, and
+  rates are per second. No "ticks in any unit", no wrapping counters.
+- **A type with no clock is in event time.** Each `update` is one step.
+  It marks an interval with a snap (`take()`), not with a timestamp.
+- **Time must not go back.** An `update` that takes a time ignores one
+  before the latest it took, and its `checked_update` returns
+  `DataError::NonMonotonicTime`. A call that closes an interval
+  (`EventRate::take`) has no unguarded form. It refuses a time that is not
+  later.
 - **Integers follow std too.** `update` uses the plain operator;
   `checked_update` refuses an overflow, as `checked_sub` does. Saturate
   only where clamping is the type's purpose, and say so in the docs.

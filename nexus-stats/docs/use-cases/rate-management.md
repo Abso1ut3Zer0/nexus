@@ -12,19 +12,19 @@ use nexus_stats::monitoring::EventRate;
 use nexus_stats::smoothing::Ema;
 
 // Track our own order rate
-let mut order_rate = EventRate::builder().span(15).build().unwrap();
+let mut order_rate = EventRate::new(start_ns);
 
 // Smoothed fraction of the exchange limit we are using
 let mut limit_util = Ema::builder().span(10).build().unwrap();
 
 // On each order sent:
-order_rate.update(now_ns);
+order_rate.update();
 
-if let Some(rate) = order_rate.rate() {
-    limit_util.update(rate / exchange_rate_limit).unwrap();
-    if matches!(limit_util.value(), Some(u) if u > 0.80) {  // warn at 80% of the limit
-        throttle_order_flow();
-    }
+// On a timer, once a second:
+let window = order_rate.take(now_ns)?;
+limit_util.update(window.rate() / exchange_rate_limit);
+if matches!(limit_util.value(), Some(u) if u > 0.80) {  // warn at 80% of the limit
+    throttle_order_flow();
 }
 ```
 
@@ -35,20 +35,20 @@ use nexus_stats::Direction;
 use nexus_stats::monitoring::EventRate;
 use nexus_stats::detection::Cusum;
 
-let mut rate = EventRate::builder().span(31).build().unwrap();
+let mut rate = EventRate::new(start_ns);
 let mut cusum = Cusum::builder(expected_rate)
     .slack(expected_rate * 0.1)
     .threshold(expected_rate * 2.0)
     .build().unwrap();
 
-rate.update(now_ns);
-if let Some(r) = rate.rate() {
-    if let Some(shift) = cusum.update(r).unwrap() {
-        match shift {
-            Direction::Rising => log::warn!("rate spike detected"),
-            Direction::Falling => log::warn!("rate drop detected"),
-            Direction::Neutral => {}
-        }
+rate.update();        // per event
+// On a timer:
+let r = rate.take(now_ns)?.rate();
+if let Some(shift) = cusum.update(r).unwrap() {
+    match shift {
+        Direction::Rising => log::warn!("rate spike detected"),
+        Direction::Falling => log::warn!("rate drop detected"),
+        Direction::Neutral => {}
     }
 }
 ```
@@ -57,6 +57,6 @@ if let Some(r) = rate.rate() {
 
 | Primitive | Role |
 |-----------|------|
-| EventRate | Smoothed rate measurement |
+| EventRate | Events per second per window, and the load averages |
 | CUSUM | Rate shift detection |
 | LevelCrossing | Count rate limit breaches |

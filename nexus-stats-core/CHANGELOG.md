@@ -10,6 +10,21 @@ contained.
 
 ## [Unreleased]
 
+### Added (time)
+
+- **`Timestamp`:** a sealed trait for physical clock time, implemented for
+  `i128` nanoseconds and, with `std`, `Instant`. One method,
+  `since(earlier) -> Duration`, zero if not after. The clocked types are
+  generic over it, so an instance lives on one clock.
+- `parts::LastTime` (doc-hidden): the latest time a clocked type has taken
+  and the rule that time must not go back.
+
+### Removed (internal)
+
+- The integer-average machinery on `Sample`: `Sample::Ema`, `EmaConfig`,
+  `ema_config_from_span`, `EMA_CONFIG_NAME`, and the doc-hidden `EmaKernel`,
+  `AlphaEma` and `ShiftEma`. Nothing uses it now.
+
 ### Added
 
 - `DataError::NonMonotonicTime`: a timestamp before the last one taken.

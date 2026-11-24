@@ -68,21 +68,6 @@ pub trait Sample:
     /// The value as `f64` (exact for `f64`, rounded for large `i64`).
     fn to_f64(self) -> f64;
 
-    /// Exponential smoother for this type: alpha-weighted for floats, the
-    /// kernel-style fixed-point shift EMA for integers.
-    #[doc(hidden)]
-    type Ema: EmaKernel<Self>;
-    /// What configures the smoother: an alpha in (0, 1) for floats, a span
-    /// (rounded to `2^k - 1`) for integers.
-    #[doc(hidden)]
-    type EmaConfig: Copy + Debug;
-    /// Smoother configuration from a span, the one knob both types share.
-    #[doc(hidden)]
-    fn ema_config_from_span(span: u64) -> Self::EmaConfig;
-    /// Name of the smoother knob in error messages: `alpha` or `span`.
-    #[doc(hidden)]
-    const EMA_CONFIG_NAME: &'static str;
-
     /// `PeakHold<T>` decay parameter: a multiplicative rate for floats,
     /// nothing for integers (an integer peak drops to the current sample).
     #[doc(hidden)]
@@ -90,141 +75,6 @@ pub trait Sample:
     /// Applies one step of decay to `peak` after the hold expired.
     #[doc(hidden)]
     fn decay(peak: Self, decay: Self::Decay, sample: Self) -> Self;
-}
-
-/// The exponential smoother behind `EventRate` and `Liveness`. Hidden: an
-/// implementation detail of the sealed sample types.
-#[doc(hidden)]
-pub trait EmaKernel<T>: Copy + Debug {
-    /// Builds a smoother. `Err` if the configuration is invalid.
-    fn new(config: T::EmaConfig) -> Result<Self, crate::ConfigError>
-    where
-        T: Sample;
-    /// Folds a sample in: the first sample seeds the smoother.
-    fn fold(&mut self, x: T);
-    /// Seeds the smoother with a value, as if it had converged there.
-    fn seed(&mut self, x: T);
-    /// Current smoothed value (zero before the first sample).
-    fn value(&self) -> T;
-    /// Forgets everything; configuration is kept.
-    fn reset(&mut self);
-}
-
-/// Alpha-weighted EMA for floats.
-#[doc(hidden)]
-#[derive(Debug, Clone, Copy)]
-pub struct AlphaEma {
-    alpha: f64,
-    one_minus_alpha: f64,
-    value: f64,
-    initialized: bool,
-}
-
-impl EmaKernel<f64> for AlphaEma {
-    #[inline]
-    fn new(alpha: f64) -> Result<Self, crate::ConfigError> {
-        if !crate::math::in_unit_interval(alpha) {
-            return Err(crate::ConfigError::Invalid("alpha must be in (0, 1)"));
-        }
-        Ok(Self {
-            alpha,
-            one_minus_alpha: 1.0 - alpha,
-            value: 0.0,
-            initialized: false,
-        })
-    }
-    #[inline]
-    fn fold(&mut self, x: f64) {
-        if self.initialized {
-            self.value = crate::math::MulAdd::fma(self.alpha, x, self.one_minus_alpha * self.value);
-        } else {
-            self.value = x;
-            self.initialized = true;
-        }
-    }
-    #[inline]
-    fn seed(&mut self, x: f64) {
-        self.value = x;
-        self.initialized = true;
-    }
-    #[inline]
-    fn value(&self) -> f64 {
-        self.value
-    }
-    #[inline]
-    fn reset(&mut self) {
-        self.value = 0.0;
-        self.initialized = false;
-    }
-}
-
-/// Fixed-point shift EMA for integers (`acc += (x << k - acc) >> k`), as in
-/// the kernel's RTT estimators. The span is rounded to `2^k - 1`.
-#[doc(hidden)]
-#[derive(Debug, Clone, Copy)]
-pub struct ShiftEma {
-    acc: i128,
-    shift: u32,
-    /// The span actually used, `2^k - 1`.
-    pub span: u64,
-    initialized: bool,
-}
-
-impl ShiftEma {
-    /// Whether a sample has been folded since construction or `reset`.
-    #[inline]
-    #[must_use]
-    pub fn is_initialized(&self) -> bool {
-        self.initialized
-    }
-
-    /// Forgets every sample; the span is kept.
-    #[inline]
-    pub fn reset(&mut self) {
-        self.acc = 0;
-        self.initialized = false;
-    }
-}
-
-impl EmaKernel<i64> for ShiftEma {
-    #[inline]
-    fn new(span: u64) -> Result<Self, crate::ConfigError> {
-        if span < 1 {
-            return Err(crate::ConfigError::Invalid("span must be >= 1"));
-        }
-        let effective = next_power_of_two_minus_one(span);
-        Ok(Self {
-            acc: 0,
-            shift: log2_of_span_plus_one(effective),
-            span: effective,
-            initialized: false,
-        })
-    }
-    #[inline]
-    fn fold(&mut self, x: i64) {
-        let shifted = i128::from(x) << self.shift;
-        if self.initialized {
-            self.acc += (shifted - self.acc) >> self.shift;
-        } else {
-            self.acc = shifted;
-            self.initialized = true;
-        }
-    }
-    #[inline]
-    fn seed(&mut self, x: i64) {
-        self.acc = i128::from(x) << self.shift;
-        self.initialized = true;
-    }
-    #[inline]
-    #[allow(clippy::cast_possible_truncation)]
-    fn value(&self) -> i64 {
-        (self.acc >> self.shift) as i64
-    }
-    #[inline]
-    fn reset(&mut self) {
-        self.acc = 0;
-        self.initialized = false;
-    }
 }
 
 impl Sample for f64 {
@@ -277,13 +127,6 @@ impl Sample for f64 {
         self
     }
 
-    type Ema = AlphaEma;
-    type EmaConfig = f64;
-    const EMA_CONFIG_NAME: &'static str = "alpha";
-    #[inline]
-    fn ema_config_from_span(span: u64) -> f64 {
-        crate::math::alpha_from_span(span)
-    }
     type Decay = f64;
     #[inline]
     fn decay(peak: f64, rate: f64, _sample: f64) -> f64 {
@@ -344,13 +187,6 @@ impl Sample for i64 {
         self as f64
     }
 
-    type Ema = ShiftEma;
-    type EmaConfig = u64;
-    const EMA_CONFIG_NAME: &'static str = "span";
-    #[inline]
-    fn ema_config_from_span(span: u64) -> u64 {
-        span
-    }
     type Decay = ();
     #[inline]
     fn decay(_peak: i64, (): (), sample: i64) -> i64 {
@@ -413,25 +249,4 @@ impl Float for f32 {
     fn from_f64(x: f64) -> Self {
         x as f32
     }
-}
-/// Rounds `n` up to the next value of the form `2^k - 1`.
-///
-/// Examples: 1->1, 2->3, 3->3, 4->7, 5->7, 10->15, 20->31.
-#[inline]
-const fn next_power_of_two_minus_one(n: u64) -> u64 {
-    if n == 0 {
-        return 0;
-    }
-    // next_power_of_two(n + 1) - 1
-    // But we need to handle the case where n+1 is already a power of 2
-    let v = n + 1;
-    let p = v.next_power_of_two();
-    p - 1
-}
-
-/// Returns log2 of (n + 1), where n must be of the form 2^k - 1.
-#[inline]
-const fn log2_of_span_plus_one(span: u64) -> u32 {
-    // span = 2^k - 1, so span + 1 = 2^k
-    (span + 1).trailing_zeros()
 }

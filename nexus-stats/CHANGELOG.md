@@ -10,6 +10,18 @@ contained.
 
 ## [Unreleased]
 
+### Changed (breaking, time)
+
+- **Physical clock time is `i128` nanoseconds or `Instant`,** through the
+  new sealed `Timestamp` trait. `Liveness`, `EventRate` and
+  `HawkesIntensity` are the first types on it; the others that take time
+  still take `u64` ticks and move as they are converted.
+- **`monitoring::Liveness`** follows Cassandra's failure detector and
+  reports a suspicion level, not a verdict.
+- **`monitoring::EventRate`** counts events and reports a window's rate and
+  the 1, 5 and 15 minute load on `take`.
+- **`HawkesIntensity` moves from `monitoring` to `estimation`.**
+
 ### Changed (breaking)
 
 - **`monitoring::Drawdown` is replaced by `PeakToTrough<T>`,** open to any

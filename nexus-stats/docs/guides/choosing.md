@@ -67,8 +67,8 @@ type with timestamps, or `PollSaturation`, which is weighted per message.
 
 **What are you monitoring?**
 
-- Is a data source alive? → **Liveness**
-  - EMA of inter-arrival times + deadline. Call `check(now)` periodically.
+- How long has a source been silent, against its usual gap? → **Liveness**
+  - The silence in typical gaps, as Cassandra's detector measures it. Call `check(now)` periodically and compare to your limit.
 - Is a queue building up? → **CoDel**
   - CoDel-inspired. Detects standing queues before buffers fill.
 - Is my consumer thread saturated? → **PollSaturation**
@@ -81,8 +81,8 @@ type with timestamps, or `PollSaturation`, which is weighted per message.
 - What's the worst since I last checked? → an `Option<T>` you fold with `max` and read with `take()`
 - Has N consecutive failures occurred? → **Debounce**
   - "3 timeouts in a row = dead." Simpler than CUSUM for discrete events.
-- How many events per second? → **EventRate**
-  - Smoothed rate from timestamps.
+- How many events per second, now and over 1, 5 and 15 minutes? → **EventRate**
+  - Count events, then `take(now)` on a timer for the window's rate and the load averages.
 
 ## "I want to track statistics"
 
