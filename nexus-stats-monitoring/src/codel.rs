@@ -1,622 +1,375 @@
-use nexus_stats_core::Condition;
-use nexus_stats_core::Sample;
+use core::time::Duration;
+
+use nexus_stats_core::parts::LastTime;
+use nexus_stats_core::{Condition, ConfigError, DataError, Timestamp};
 
 /// CoDel standing-queue detector (RFC 8289, Nichols & Jacobson).
 ///
 /// Feed it each item's sojourn time (how long it waited in the queue) with
-/// the dequeue timestamp. It reports `Degraded` only once sojourn has stayed
-/// above `target` for a whole `interval`: the first
-/// sample above target starts the clock, a sample below target stops it,
-/// and a sample above target a full interval or more after the start is a
-/// standing queue. As in the RFC, only `sojourn < target` is below: a sojourn
-/// equal to the target counts as above. A single slow item, or a burst
-/// shorter than the interval, is `Normal`.
+/// the time it was dequeued. It reports `Degraded` only once the sojourn
+/// has stayed at or above `target` for a whole `interval`. The first such
+/// sample starts the clock, a sample below target stops it, and a sample
+/// at or above target a full interval or more after the start is a
+/// standing queue. As in the RFC, only `sojourn < target` is below. A
+/// single slow item, or a burst shorter than the interval, is `Normal`.
 ///
 /// The RFC also resets the timer when the queue holds at most one packet
 /// (`bytes() <= maxpacket_`). This type sees only sojourn times, so it does
-/// not model that.
+/// not model that. It detects; what to do about a standing queue (the
+/// RFC's drop schedule) is the caller's.
 ///
-/// State is two timestamps. `no_std` compatible. `CoDel<f64>` rejects NaN and
-/// infinity and returns `Result`; `CoDel<i64>` cannot fail.
+/// The clock `T` is `i128` nanoseconds or an `Instant`. `no_std`
+/// compatible.
 ///
 /// # Weighting clock
 ///
-/// Caller's timestamps. Any call rate; the interval is measured in ticks,
-/// not samples. Ticks must be non-decreasing. A sample timestamped before
-/// the previous accepted one is ignored: it neither starts nor clears the
-/// timer, it is not counted, and `update` returns the current condition. A
-/// counter that wraps is fine as long as the interval and any real gap
-/// between samples fit in half its range (elapsed time is computed with
-/// wrapping subtraction).
+/// The caller's times. Any call rate; the interval is measured in time,
+/// not in samples.
+///
+/// Time must not go back. `update` ignores a sample dequeued before the
+/// last one taken: it neither starts nor clears the timer and is not
+/// counted. `checked_update` reports it as an error.
 #[derive(Debug, Clone)]
-pub struct CoDel<T: Sample> {
-    target: T,
-    interval: u64,
-    first_above: Option<u64>,
-    elevated: bool,
+pub struct CoDel<T: Timestamp> {
+    target: Duration,
+    interval: Duration,
+    /// When the sojourn first reached the target, while it stays there.
+    first_above: Option<T>,
+    standing: bool,
     count: u64,
-    min_samples: u64,
-    /// Timestamp of the newest accepted sample.
-    last: u64,
+    last: LastTime<T>,
 }
 
-/// Builder for [`CoDel`].
-#[derive(Debug, Clone)]
-pub struct CoDelBuilder<T: Sample> {
-    target: Option<T>,
-    interval: Option<u64>,
-    min_samples: u64,
-}
-
-impl<T: Sample> CoDel<T> {
-    /// Creates a builder.
+impl<T: Timestamp> CoDel<T> {
+    /// Creates a detector. `target` is the sojourn at which the queue
+    /// counts as delayed, and `interval` is how long it must stay there
+    /// before the queue is standing. The RFC suggests 5 ms and 100 ms. A
+    /// `target` of zero counts every sojourn as delayed.
+    ///
+    /// # Errors
+    ///
+    /// `ConfigError::Invalid` if `interval` is zero.
     #[inline]
-    #[must_use]
-    pub fn builder() -> CoDelBuilder<T> {
-        CoDelBuilder {
-            target: None,
-            interval: None,
-            min_samples: 1,
+    pub fn new(target: Duration, interval: Duration) -> Result<Self, ConfigError> {
+        if interval.is_zero() {
+            return Err(ConfigError::Invalid("CoDel interval must be positive"));
         }
+        Ok(Self {
+            target,
+            interval,
+            first_above: None,
+            standing: false,
+            count: 0,
+            last: LastTime::new(),
+        })
     }
 
-    /// Whether the queue is currently standing (sojourn above target for a
+    /// Feeds one item's sojourn at the time it was dequeued and returns
+    /// the condition of the queue.
+    ///
+    /// A sample dequeued before the last one taken is ignored.
+    #[inline]
+    pub fn update(&mut self, now: T, sojourn: Duration) -> Condition {
+        if self.last.would_go_back(now) {
+            return self.condition();
+        }
+        self.last.set(now);
+        self.count += 1;
+        self.standing = self.is_standing_after(now, sojourn >= self.target);
+        self.condition()
+    }
+
+    /// Checked update. Feeds the sample, or returns an error and leaves
+    /// the detector unchanged if `now` is before the last time taken.
+    ///
+    /// # Errors
+    ///
+    /// [`DataError::NonMonotonicTime`] if `now` is before the last time
+    /// taken.
+    #[inline]
+    pub fn checked_update(&mut self, now: T, sojourn: Duration) -> Result<Condition, DataError> {
+        self.last.check(now)?;
+        Ok(self.update(now, sojourn))
+    }
+
+    /// The condition as of the last sample: `Degraded` while the queue is
+    /// standing.
+    #[inline]
+    #[must_use]
+    pub fn condition(&self) -> Condition {
+        if self.standing {
+            return Condition::Degraded;
+        }
+        Condition::Normal
+    }
+
+    /// Whether the queue is standing (sojourn at or above target for a
     /// full interval).
     #[inline]
     #[must_use]
     pub fn is_elevated(&self) -> bool {
-        self.elevated
+        self.standing
     }
 
-    /// Number of samples processed.
+    /// The sojourn at which the queue counts as delayed.
+    #[inline]
+    #[must_use]
+    pub fn target(&self) -> Duration {
+        self.target
+    }
+
+    /// How long the sojourn must stay at or above target.
+    #[inline]
+    #[must_use]
+    pub fn interval(&self) -> Duration {
+        self.interval
+    }
+
+    /// Number of samples taken.
     #[inline]
     #[must_use]
     pub fn count(&self) -> u64 {
         self.count
     }
 
-    /// Whether `min_samples` have been seen.
-    #[inline]
-    #[must_use]
-    pub fn is_primed(&self) -> bool {
-        self.count >= self.min_samples
-    }
-
     /// Resets the detector. Configuration is kept.
     #[inline]
     pub fn reset(&mut self) {
         self.first_above = None;
-        self.elevated = false;
+        self.standing = false;
         self.count = 0;
+        self.last.reset();
     }
 
-    #[inline]
-    fn fold(&mut self, timestamp: u64, above_target: bool) -> Option<Condition> {
-        if self.count > 0 && is_late(timestamp, self.last) {
-            return self.condition();
-        }
-        self.count += 1;
-        self.last = timestamp;
-        self.elevated = standing_queue(
-            &mut self.first_above,
-            self.interval,
-            timestamp,
-            above_target,
-        );
-        self.condition()
-    }
-
-    #[inline]
-    fn condition(&self) -> Option<Condition> {
-        if self.count < self.min_samples {
-            return None;
-        }
-        Some(if self.elevated {
-            Condition::Degraded
-        } else {
-            Condition::Normal
-        })
-    }
-}
-
-impl CoDel<f64> {
-    /// Feeds one item's sojourn at its dequeue `timestamp`. Returns the
-    /// condition once primed.
+    /// The `first_above_time` rule from RFC 8289 section 5.6.
     ///
-    /// # Errors
-    ///
-    /// Returns `DataError::NotANumber` if the sojourn is NaN, or
-    /// `DataError::Infinite` if the sojourn is infinite.
+    /// A sojourn below target clears the timer. One at or above target
+    /// starts it at `now` if it is not running. Once such a sojourn arrives
+    /// a full interval or more after the start, the queue is standing.
     #[inline]
-    #[allow(clippy::neg_cmp_op_on_partial_ord)]
-    pub fn update(
-        &mut self,
-        timestamp: u64,
-        sojourn: f64,
-    ) -> Result<Option<Condition>, nexus_stats_core::DataError> {
-        check_finite!(sojourn);
-        // RFC 8289's test, written negated as the RFC does so that a NaN
-        // would count as above.
-        Ok(self.fold(timestamp, !(sojourn < self.target)))
-    }
-}
-
-impl CoDel<i64> {
-    /// Feeds one item's sojourn at its dequeue `timestamp`. Returns the
-    /// condition once primed.
-    #[inline]
-    pub fn update(&mut self, timestamp: u64, sojourn: i64) -> Option<Condition> {
-        // RFC 8289's `!(sojourn < target)`; clippy rejects the negated form
-        // on integers.
-        self.fold(timestamp, sojourn >= self.target)
-    }
-}
-
-impl<T: Sample> CoDelBuilder<T> {
-    /// Sojourn above which the queue counts as delayed (the RFC's *target*).
-    #[inline]
-    #[must_use]
-    pub fn target(mut self, target: T) -> Self {
-        self.target = Some(target);
-        self
-    }
-
-    /// How long sojourn must stay above target before the queue is
-    /// standing, in ticks (the RFC's *interval*).
-    #[inline]
-    #[must_use]
-    pub fn interval(mut self, interval: u64) -> Self {
-        self.interval = Some(interval);
-        self
-    }
-
-    /// Samples required before `update` reports a condition. Default 1.
-    #[inline]
-    #[must_use]
-    pub fn min_samples(mut self, min: u64) -> Self {
-        self.min_samples = min;
-        self
-    }
-
-    /// Builds the detector.
-    ///
-    /// # Errors
-    ///
-    /// `ConfigError::Missing` if `target` or `interval` was not set;
-    /// `ConfigError::Invalid` if `target` is not finite or `interval` is zero.
-    #[inline]
-    pub fn build(self) -> Result<CoDel<T>, nexus_stats_core::ConfigError> {
-        let target = self
-            .target
-            .ok_or(nexus_stats_core::ConfigError::Missing("target"))?;
-        if !target.is_finite() {
-            return Err(nexus_stats_core::ConfigError::Invalid(
-                "CoDel target must be finite",
-            ));
-        }
-        let interval = self
-            .interval
-            .ok_or(nexus_stats_core::ConfigError::Missing("interval"))?;
-        if interval == 0 {
-            return Err(nexus_stats_core::ConfigError::Invalid(
-                "CoDel interval must be positive",
-            ));
-        }
-        Ok(CoDel {
-            target,
-            interval,
-            first_above: None,
-            elevated: false,
-            count: 0,
-            min_samples: self.min_samples,
-            last: 0,
-        })
-    }
-}
-
-// =========================================================================
-// RFC 8289 standing-queue rule, shared by every instantiation
-// =========================================================================
-
-/// Whether `timestamp` is before `last` on a wrapping tick counter: the
-/// signed difference, so a forward step across the wrap is not late.
-#[inline]
-fn is_late(timestamp: u64, last: u64) -> bool {
-    (timestamp.wrapping_sub(last) as i64) < 0
-}
-
-/// The `first_above_time` rule from RFC 8289 section 5.6.
-///
-/// A sojourn below target clears the timer. A sojourn above target
-/// starts it at `now` if it is not running. Once a sojourn above target
-/// arrives a full `interval` or more after it started, the queue is
-/// standing. Returns whether the queue is standing after this sample.
-///
-/// Elapsed time is `now.wrapping_sub(first_above)`, as in the windowed
-/// types and the kernel code they port, so a monotonic tick counter that
-/// wraps is handled; the only requirement is that `interval` and any real
-/// gap between samples fit in half the counter's range.
-#[inline]
-fn standing_queue(
-    first_above: &mut Option<u64>,
-    interval: u64,
-    now: u64,
-    above_target: bool,
-) -> bool {
-    let started = first_above.unwrap_or(now);
-    *first_above = if above_target { Some(started) } else { None };
-    // `interval` is positive, so a timer that starts on this sample is not
-    // yet standing.
-    above_target && now.wrapping_sub(started) >= interval
-}
-
-#[cfg(test)]
-mod raw_tests {
-    use super::*;
-    use nexus_stats_core::Condition;
-
-    fn codel(target: i64, interval: u64) -> CoDel<i64> {
-        CoDel::<i64>::builder()
-            .target(target)
-            .interval(interval)
-            .build()
-            .unwrap()
-    }
-
-    #[test]
-    fn raw_codel_normal() {
-        let mut cd = codel(100, 1000);
-        assert_eq!(cd.update(0, 50), Some(Condition::Normal));
-    }
-
-    // Regression for #759: the previous composition fired on one sample.
-    #[test]
-    fn single_sample_above_target_is_normal() {
-        let mut cd = codel(50, 1_000_000);
-        assert_eq!(cd.update(0, 200), Some(Condition::Normal));
-        assert!(!cd.is_elevated());
-    }
-
-    #[test]
-    fn above_target_shorter_than_interval_is_normal() {
-        let mut cd = codel(50, 1000);
-        assert_eq!(cd.update(0, 200), Some(Condition::Normal));
-        assert_eq!(cd.update(500, 200), Some(Condition::Normal));
-        assert_eq!(cd.update(999, 200), Some(Condition::Normal));
-    }
-
-    #[test]
-    fn above_target_for_full_interval_is_degraded_and_stays() {
-        let mut cd = codel(50, 1000);
-        assert_eq!(cd.update(0, 200), Some(Condition::Normal)); // starts the clock at 0
-        assert_eq!(cd.update(1000, 200), Some(Condition::Degraded));
-        assert!(cd.is_elevated());
-        assert_eq!(cd.update(1500, 51), Some(Condition::Degraded)); // still above target
-    }
-
-    #[test]
-    fn sample_below_target_clears_and_rearms() {
-        let mut cd = codel(50, 1000);
-        let _ = cd.update(0, 200);
-        assert_eq!(cd.update(1000, 200), Some(Condition::Degraded));
-        assert_eq!(cd.update(1100, 50), Some(Condition::Degraded)); // at target is above
-        assert_eq!(cd.update(1150, 49), Some(Condition::Normal)); // below target clears
-        assert!(!cd.is_elevated());
-        assert_eq!(cd.update(1200, 200), Some(Condition::Normal)); // restarts at 1200
-        assert_eq!(cd.update(2199, 200), Some(Condition::Normal));
-        assert_eq!(cd.update(2200, 200), Some(Condition::Degraded));
-    }
-
-    // The second reproduction from #759: a long healthy history and several
-    // quiet intervals must not make one slow sample look like a standing queue.
-    #[test]
-    fn long_quiet_history_then_one_slow_sample_is_normal() {
-        let mut cd = codel(50, 100);
-        let mut t = 0u64;
-        for _ in 0..1000 {
-            t += 1;
-            assert_eq!(cd.update(t, 5), Some(Condition::Normal));
-        }
-        t += 5 * 100; // five quiet intervals
-        assert_eq!(cd.update(t, 200), Some(Condition::Normal));
-    }
-
-    #[test]
-    fn raw_codel_degraded() {
-        let mut cd = codel(50, 1000);
-        for t in 0..=10 {
-            let _ = cd.update(t * 100, 200);
-        }
-        assert!(cd.is_elevated());
-    }
-
-    #[test]
-    fn min_samples_primes() {
-        let mut cd = CoDel::<i64>::builder()
-            .target(50)
-            .interval(1000)
-            .min_samples(3)
-            .build()
-            .unwrap();
-        assert_eq!(cd.update(0, 200), None);
-        assert_eq!(cd.update(100, 200), None);
-        assert!(!cd.is_primed());
-        assert_eq!(cd.update(200, 200), Some(Condition::Normal));
-        assert!(cd.is_primed());
-    }
-
-    #[test]
-    fn reset_disarms() {
-        let mut cd = codel(50, 1000);
-        let _ = cd.update(0, 200);
-        let _ = cd.update(1000, 200);
-        assert!(cd.is_elevated());
-        cd.reset();
-        assert!(!cd.is_elevated());
-        assert_eq!(cd.count(), 0);
-        assert_eq!(cd.update(2000, 200), Some(Condition::Normal)); // starts fresh
-    }
-
-    // A monotonic tick counter that wraps through u64::MAX must still measure
-    // the interval correctly (wrapping subtraction, as in the windowed types).
-    #[test]
-    fn interval_survives_counter_wraparound() {
-        let mut cd = codel(50, 20);
-        let start = u64::MAX - 10;
-        assert_eq!(cd.update(start, 200), Some(Condition::Normal)); // starts at MAX-10
-        assert_eq!(cd.update(5, 200), Some(Condition::Normal)); // elapsed 16 < 20, past the wrap
-        assert_eq!(cd.update(9, 200), Some(Condition::Degraded)); // elapsed 20
-        assert_eq!(cd.update(15, 10), Some(Condition::Normal)); // clears
-    }
-
-    #[test]
-    fn raw_codel_f64() {
-        let mut cd = CoDel::<f64>::builder()
-            .target(0.5)
-            .interval(1000)
-            .build()
-            .unwrap();
-        assert_eq!(cd.update(0, 0.1).unwrap(), Some(Condition::Normal));
-        assert_eq!(cd.update(100, 0.9).unwrap(), Some(Condition::Normal)); // starts at 100
-        assert_eq!(cd.update(1099, 0.9).unwrap(), Some(Condition::Normal));
-        assert_eq!(cd.update(1100, 0.9).unwrap(), Some(Condition::Degraded));
-        assert_eq!(cd.update(1200, 0.5).unwrap(), Some(Condition::Degraded)); // at target is above
-        assert_eq!(
-            cd.update(1300, 0.5_f64.next_down()).unwrap(),
-            Some(Condition::Normal)
-        ); // below target clears
-    }
-
-    #[test]
-    fn rejects_nan_and_inf() {
-        let mut cd = CoDel::<f64>::builder()
-            .target(0.5)
-            .interval(1000)
-            .build()
-            .unwrap();
-        assert!(matches!(
-            cd.update(0, f64::NAN),
-            Err(nexus_stats_core::DataError::NotANumber)
-        ));
-        assert!(matches!(
-            cd.update(0, f64::INFINITY),
-            Err(nexus_stats_core::DataError::Infinite)
-        ));
-        assert!(
-            CoDel::<f64>::builder()
-                .target(f64::NAN)
-                .interval(1000)
-                .build()
-                .is_err()
-        );
+    fn is_standing_after(&mut self, now: T, above_target: bool) -> bool {
+        // PERF: no branch on `above_target`. Under mixed load it is a coin
+        // flip, and a mispredict costs more than the rest of the update.
+        let started = self.first_above.unwrap_or(now);
+        self.first_above = above_target.then_some(started);
+        // `interval` is positive, so a timer that starts on this sample is
+        // not yet standing.
+        above_target & (now.since(started) >= self.interval)
     }
 }
 
 #[cfg(test)]
-mod rfc_boundary_tests {
-    //! RFC 8289's boundaries: only `sojourn < target` is below, and elapsed
-    //! time equal to the interval already counts (`now >= first_above_time_`).
+mod tests {
     use super::*;
+    use nexus_stats_core::Condition::{Degraded, Normal};
+    use nexus_stats_core::DataError::NonMonotonicTime;
 
-    fn codel_i64() -> CoDel<i64> {
-        CoDel::<i64>::builder()
-            .target(50)
-            .interval(1000)
-            .build()
-            .unwrap()
+    fn ns(n: u64) -> Duration {
+        Duration::from_nanos(n)
     }
 
-    fn codel_f64() -> CoDel<f64> {
-        CoDel::<f64>::builder()
-            .target(0.5)
-            .interval(1000)
-            .build()
-            .unwrap()
+    /// Target 100 ns, interval 1,000 ns, on nanosecond time.
+    fn codel() -> CoDel<i128> {
+        CoDel::new(ns(100), ns(1_000)).unwrap()
     }
 
     #[test]
-    fn held_at_target_for_full_interval_is_degraded_i64() {
-        let mut cd = codel_i64();
-        let seen = [0, 500, 1000].map(|t| cd.update(t, 50));
-        assert_eq!(
-            seen,
-            [
-                Some(Condition::Normal),
-                Some(Condition::Normal),
-                Some(Condition::Degraded)
-            ]
-        );
-        assert!(cd.is_elevated());
-    }
-
-    #[test]
-    fn held_at_target_for_full_interval_is_degraded_f64() {
-        let mut cd = codel_f64();
-        for t in [0, 500] {
-            assert_ne!(cd.update(t, 0.5).unwrap(), Some(Condition::Degraded));
+    fn a_quiet_queue_is_normal() {
+        let mut cd = codel();
+        for t in 0..100 {
+            assert_eq!(cd.update(t * 100, ns(50)), Normal);
         }
-        assert!(matches!(
-            cd.update(1000, 0.5),
-            Ok(Some(Condition::Degraded))
-        ));
-        assert!(cd.is_elevated());
+        assert_eq!((cd.count(), cd.is_elevated()), (100, false));
     }
 
     #[test]
-    fn one_unit_below_target_never_starts_the_timer_i64() {
-        let mut cd = codel_i64();
-        assert!(
-            [0, 500, 1000, 2000, 10_000]
-                .into_iter()
-                .all(|t| cd.update(t, 49) == Some(Condition::Normal))
-        );
-        assert!(!cd.is_elevated());
+    fn one_slow_item_is_normal() {
+        let mut cd = codel();
+        assert_eq!(cd.update(0, ns(5_000)), Normal);
     }
 
     #[test]
-    fn one_ulp_below_target_never_starts_the_timer_f64() {
-        let below = 0.5_f64.next_down();
-        let mut cd = codel_f64();
-        assert!(
-            [0, 500, 1000, 2000, 10_000]
-                .into_iter()
-                .all(|t| cd.update(t, below) == Ok(Some(Condition::Normal)))
-        );
-        assert!(!cd.is_elevated());
+    fn a_burst_shorter_than_the_interval_is_normal() {
+        let mut cd = codel();
+        for t in [0, 300, 600, 999] {
+            assert_eq!(cd.update(t, ns(500)), Normal);
+        }
+        // A sample below target stops the clock: the next slow one, more
+        // than an interval after the first, starts it again.
+        cd.update(1_100, ns(10));
+        assert_eq!(cd.update(1_200, ns(500)), Normal);
+        assert_eq!(cd.update(2_199, ns(500)), Normal);
+        assert_eq!(cd.update(2_200, ns(500)), Degraded);
     }
 
     #[test]
-    fn at_target_then_below_clears_the_timer_i64() {
-        let mut cd = codel_i64();
-        let _ = cd.update(0, 50);
-        assert_eq!(cd.update(600, 49), Some(Condition::Normal));
-        let _ = cd.update(700, 50);
-        // Measured from 700, not 0: the sample at 600 cleared the timer.
-        assert_eq!(cd.update(1699, 50), Some(Condition::Normal));
-        assert_eq!(cd.update(1700, 50), Some(Condition::Degraded));
+    fn above_target_for_a_full_interval_is_degraded_and_stays() {
+        let mut cd = codel();
+        assert_eq!(cd.update(0, ns(500)), Normal);
+        assert_eq!(cd.update(999, ns(500)), Normal);
+        // Elapsed equal to the interval counts.
+        assert_eq!(cd.update(1_000, ns(500)), Degraded);
+        assert_eq!(cd.update(5_000, ns(500)), Degraded);
+        assert_eq!(cd.condition(), Degraded);
     }
 
     #[test]
-    fn at_target_then_below_clears_the_timer_f64() {
-        let mut cd = codel_f64();
-        let _ = cd.update(0, 0.5);
-        assert_eq!(
-            cd.update(600, 0.5_f64.next_down()),
-            Ok(Some(Condition::Normal))
-        );
-        let _ = cd.update(700, 0.5);
-        assert!(!cd.is_elevated());
-        assert_eq!(cd.update(1699, 0.5), Ok(Some(Condition::Normal)));
-        assert_eq!(cd.update(1700, 0.5), Ok(Some(Condition::Degraded)));
+    fn a_sample_below_target_clears_and_rearms() {
+        let mut cd = codel();
+        cd.update(0, ns(500));
+        assert_eq!(cd.update(1_500, ns(500)), Degraded);
+        assert_eq!(cd.update(1_600, ns(99)), Normal);
+        // The timer starts again from the next slow sample.
+        assert_eq!(cd.update(1_700, ns(500)), Normal);
+        assert_eq!(cd.update(2_699, ns(500)), Normal);
+        assert_eq!(cd.update(2_700, ns(500)), Degraded);
     }
 
     #[test]
-    fn elapsed_equal_to_interval_counts_i64() {
-        let mut cd = codel_i64();
-        let _ = cd.update(0, 50);
-        assert_eq!(cd.update(999, 50), Some(Condition::Normal));
-        assert_eq!(cd.update(1000, 50), Some(Condition::Degraded));
+    fn a_long_quiet_history_then_one_slow_sample_is_normal() {
+        let mut cd = codel();
+        for t in 0..1_000 {
+            cd.update(t * 10, ns(1));
+        }
+        assert_eq!(cd.update(1_000_000, ns(900)), Normal);
+    }
+
+    /// RFC 8289: only `sojourn < target` is below.
+    #[test]
+    fn a_sojourn_equal_to_the_target_counts_as_above() {
+        let mut cd = codel();
+        assert_eq!(cd.update(0, ns(100)), Normal);
+        assert_eq!(cd.update(1_000, ns(100)), Degraded);
+
+        let mut cd = codel();
+        cd.update(0, ns(99));
+        assert_eq!(cd.update(1_000, ns(99)), Normal);
+        assert_eq!(cd.update(9_000, ns(99)), Normal);
     }
 
     #[test]
-    fn elapsed_equal_to_interval_counts_f64() {
-        let mut cd = codel_f64();
-        let _ = cd.update(0, 0.5);
-        assert!(matches!(cd.update(999, 0.5), Ok(Some(Condition::Normal))));
-        assert!(matches!(
-            cd.update(1000, 0.5),
-            Ok(Some(Condition::Degraded))
-        ));
-    }
-}
-
-#[cfg(test)]
-mod late_sample_tests {
-    use super::*;
-    use nexus_stats_core::Condition;
-
-    fn codel(target: i64, interval: u64) -> CoDel<i64> {
-        CoDel::<i64>::builder()
-            .target(target)
-            .interval(interval)
-            .build()
-            .unwrap()
+    fn at_target_then_below_clears_the_timer() {
+        let mut cd = codel();
+        cd.update(0, ns(100));
+        cd.update(500, ns(99));
+        assert_eq!(cd.update(1_000, ns(100)), Normal);
+        assert_eq!(cd.update(1_999, ns(100)), Normal);
+        assert_eq!(cd.update(2_000, ns(100)), Degraded);
     }
 
-    // A sample earlier than the timer's start used to read as a huge elapsed
-    // time (wrapping subtraction) and report a standing queue at once.
+    /// A target of zero means any wait at all: every sojourn is above.
     #[test]
-    fn late_sample_above_target_is_ignored() {
-        let mut cd = codel(50, 1000);
-        assert_eq!(cd.update(1000, 200), Some(Condition::Normal)); // starts at 1000
-        assert_eq!(cd.update(900, 200), Some(Condition::Normal)); // late: ignored
-        assert_eq!(cd.count(), 1);
-        assert_eq!(cd.update(1999, 200), Some(Condition::Normal)); // still timed from 1000
-        assert_eq!(cd.update(2000, 200), Some(Condition::Degraded));
+    fn a_zero_target_treats_every_sojourn_as_above() {
+        let mut cd = CoDel::<i128>::new(Duration::ZERO, ns(10)).unwrap();
+        assert_eq!(cd.update(0, Duration::ZERO), Normal);
+        assert_eq!(cd.update(10, Duration::ZERO), Degraded);
     }
 
     #[test]
-    fn late_sample_below_target_does_not_clear() {
-        let mut cd = codel(50, 1000);
-        let _ = cd.update(0, 200);
-        assert_eq!(cd.update(1000, 200), Some(Condition::Degraded));
-        assert_eq!(cd.update(999, 10), Some(Condition::Degraded)); // late: ignored
-        assert!(cd.is_elevated());
+    fn a_zero_interval_is_refused() {
+        assert!(CoDel::<i128>::new(ns(100), Duration::ZERO).is_err());
+    }
+
+    #[test]
+    fn a_late_sample_is_ignored() {
+        let mut cd = codel();
+        cd.update(0, ns(500));
+        cd.update(900, ns(500));
+        // A late sample below target does not clear the timer.
+        assert_eq!(cd.update(800, ns(1)), Normal);
         assert_eq!(cd.count(), 2);
-        assert_eq!(cd.update(1000, 200), Some(Condition::Degraded)); // equal tick is accepted
-        assert_eq!(cd.count(), 3);
-    }
-
-    #[test]
-    fn late_sample_does_not_prime() {
-        let mut cd = CoDel::<i64>::builder()
-            .target(50)
-            .interval(1000)
-            .min_samples(2)
-            .build()
-            .unwrap();
-        assert_eq!(cd.update(100, 200), None);
-        assert_eq!(cd.update(99, 200), None); // late: not counted
-        assert!(!cd.is_primed());
-        assert_eq!(cd.update(100, 200), Some(Condition::Normal));
-        assert!(cd.is_primed());
-    }
-
-    #[test]
-    fn late_f64_sample_is_ignored() {
-        let mut cd = CoDel::<f64>::builder()
-            .target(0.5)
-            .interval(1000)
-            .build()
-            .unwrap();
-        assert_eq!(cd.update(1000, 0.9).unwrap(), Some(Condition::Normal));
-        assert_eq!(cd.update(900, 0.9).unwrap(), Some(Condition::Normal));
-        assert_eq!(cd.count(), 1);
-    }
-
-    // Lateness is the signed difference on the wrapping counter: a forward
-    // step across the wrap is accepted, a step back across it is late.
-    #[test]
-    fn lateness_follows_the_wrapping_counter() {
-        let mut cd = codel(50, 20);
-        let _ = cd.update(u64::MAX - 10, 200); // starts at MAX-10
-        assert_eq!(cd.update(5, 200), Some(Condition::Normal)); // forward across the wrap
-        assert_eq!(cd.update(u64::MAX - 1, 10), Some(Condition::Normal)); // late: ignored
+        assert_eq!(cd.update(1_000, ns(500)), Degraded);
+        // A late sample above target changes nothing either.
+        let mut cd = codel();
+        cd.update(5_000, ns(1));
+        assert_eq!(cd.update(0, ns(500)), Normal);
+        assert_eq!(cd.update(6_000, ns(500)), Normal);
         assert_eq!(cd.count(), 2);
-        assert_eq!(cd.update(9, 200), Some(Condition::Degraded)); // timer was not cleared
     }
 
-    // The first sample has nothing to be late against, even at a tick past
-    // half the counter's range; reset forgets the last tick.
     #[test]
-    fn first_sample_and_reset_have_no_floor() {
-        let mut cd = codel(50, 1000);
-        assert_eq!(cd.update(u64::MAX, 200), Some(Condition::Normal));
+    fn checked_update_reports_a_late_sample_and_changes_nothing() {
+        let mut cd = codel();
+        assert_eq!(cd.checked_update(1_000, ns(500)), Ok(Normal));
+        assert_eq!(cd.checked_update(999, ns(1)), Err(NonMonotonicTime));
+        assert_eq!(cd.checked_update(i128::MIN, ns(1)), Err(NonMonotonicTime));
         assert_eq!(cd.count(), 1);
+        // The same time is not late.
+        assert_eq!(cd.checked_update(1_000, ns(500)), Ok(Normal));
+        assert_eq!(cd.checked_update(2_000, ns(500)), Ok(Degraded));
+    }
+
+    #[test]
+    fn checked_update_agrees_with_update() {
+        let (mut plain, mut checked) = (codel(), codel());
+        let mut state = 0x9E37_79B9_7F4A_7C15u64;
+        let mut t = 0i128;
+        for _ in 0..5_000 {
+            state ^= state << 13;
+            state ^= state >> 7;
+            state ^= state << 17;
+            let sojourn = ns((state >> 20) % 180);
+            // One step in eight goes back.
+            if state.is_multiple_of(8) {
+                let before = (checked.count(), checked.condition());
+                assert_eq!(
+                    checked.checked_update(t - 3, sojourn),
+                    Err(NonMonotonicTime)
+                );
+                assert_eq!((checked.count(), checked.condition()), before);
+                continue;
+            }
+            t += i128::from(state % 400);
+            assert_eq!(
+                checked.checked_update(t, sojourn),
+                Ok(plain.update(t, sojourn))
+            );
+        }
+        assert_eq!(plain.count(), checked.count());
+        assert!(plain.count() > 4_000);
+    }
+
+    #[test]
+    fn reset_disarms_and_forgets_the_last_time() {
+        let mut cd = codel();
+        cd.update(5_000, ns(500));
+        cd.update(7_000, ns(500));
+        assert!(cd.is_elevated());
         cd.reset();
-        assert_eq!(cd.update(u64::MAX, 200), Some(Condition::Normal));
-        cd.reset();
-        assert_eq!(cd.update(5, 200), Some(Condition::Normal)); // earlier than before reset
-        assert_eq!(cd.count(), 1);
+        assert_eq!((cd.count(), cd.condition()), (0, Normal));
+        // An earlier time is accepted after a reset.
+        assert_eq!(cd.checked_update(0, ns(500)), Ok(Normal));
+        assert_eq!(cd.update(999, ns(500)), Normal);
+        assert_eq!(cd.update(1_000, ns(500)), Degraded);
+    }
+
+    /// The whole range of the clock is usable.
+    #[test]
+    fn times_at_the_ends_of_the_range_are_only_a_long_gap() {
+        let mut cd = codel();
+        assert_eq!(cd.update(i128::MIN, ns(500)), Normal);
+        assert_eq!(cd.update(i128::MAX, ns(500)), Degraded);
+    }
+
+    #[cfg(feature = "std")]
+    #[test]
+    fn an_instant_and_nanoseconds_agree() {
+        use std::time::Instant;
+        let start = Instant::now();
+        let mut on_instant = CoDel::<Instant>::new(ns(100), ns(1_000)).unwrap();
+        let mut on_nanos = codel();
+        for (at, sojourn) in [
+            (0u64, 500u64),
+            (400, 500),
+            (1_000, 100),
+            (1_200, 99),
+            (1_300, 100),
+            (2_300, 250),
+        ] {
+            let a = on_instant.update(start + ns(at), ns(sojourn));
+            let b = on_nanos.update(i128::from(at), ns(sojourn));
+            assert_eq!(a, b, "at {at}");
+        }
+        assert_eq!(on_nanos.condition(), Degraded);
     }
 }

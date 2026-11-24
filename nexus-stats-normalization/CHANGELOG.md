@@ -10,6 +10,12 @@ contained.
 
 ## [Unreleased]
 
+### Changed (breaking, time)
+
+- **`MinMaxNorm<V, T>` takes time as `i128` nanoseconds or `Instant`,**
+  through the `Timestamp` trait, with a second type parameter for the
+  clock. `window` takes a `Duration`.
+
 ### Changed (dependencies)
 
 - `ZScoreNorm` now takes `EwmVar` from `nexus-stats-smoothing`, a new dependency of this crate.

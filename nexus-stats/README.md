@@ -28,7 +28,7 @@ without latency jitter.
 
 - `statistics`: `BucketAccumulator`, `CovarianceMatrix`, `FirstDiff`, `Percentile`, `SecondDiff`
 - `smoothing`: `Hampel`, `Kama`, `WindowedMedian`
-- `monitoring`: `CoDel`, `PollSaturation`, `SojournSaturation`
+- `monitoring`: `PollSaturation`, `SojournSaturation`
 - `normalization`: `MinMaxNorm`, `QuantileNorm`
 - `trading`: `Cvar`, `KyleLambda`
 - `control`, `frequency`: every type
@@ -161,11 +161,11 @@ docs, and each module's docs say which type to use for what.
 | Type | What It Tracks | p50 |
 |------|---------------|-----|
 | `PeakToTrough<f64>` | Fall from the running high and the largest fall (drawdown) | 7 |
-| `WindowedMax<f64>` / `WindowedMin<f64>` | Sliding window extrema (Nichols'/BBR) | 9 |
+| `WindowedMax<f64, _>` / `WindowedMin<f64, _>` | Sliding window extrema (Nichols'/BBR) | 22 |
 | `PeakHold<f64>` | Amplitude tracker: instant attack, hold, decay | 8 |
 | `Liveness` *(alloc)* | Silence in typical gaps, with a probability (Cassandra's detector) | 12 |
 | `EventRate` *(std\|libm)* | Events and rate per window; 1, 5 and 15 minute load | <1 |
-| `CoDel<i64>` | Queue backpressure detection (CoDel-inspired) | 5 |
+| `CoDel` | Standing-queue detection (RFC 8289) | 17 |
 | `PollSaturation` | Consumer-side saturation from poll outcomes: `on_work` / `on_idle` | 6 / 1 |
 | `SojournSaturation` | Consumer saturation from stamped queue sojourn, exact per message | 7 |
 | `ErrorRate` | Error count, ratio per interval, smoothed ratio | 7 |
@@ -202,7 +202,7 @@ sealed `Sample` trait, instantiated for `f64` and `i64`:
 
 | Generic over `Sample` (`f64`, `i64`) | Module |
 |--------------------------------------|--------|
-| `WindowedMax`, `WindowedMin`, `PeakHold`, `CoDel` | `monitoring` |
+| `WindowedMax`, `WindowedMin`, `PeakHold` | `monitoring` |
 | `DeadBand`, `Hysteresis`, `LevelCrossing`, `PeakDetector` *(control feature)* | `control` |
 | `FirstDiff`, `SecondDiff` | `statistics` |
 | `WindowedMedian` *(smoothing feature)* | `smoothing` |
@@ -210,8 +210,9 @@ sealed `Sample` trait, instantiated for `f64` and `i64`:
 On the migrated types (`WindowedMax`, `WindowedMin`, `PeakHold`) there is
 one `update` for both. On the others, `update` still returns `Result` on
 the `f64` instantiation and the plain value on `i64`.
-Constructors are shared, so name the type once: `WindowedMax::<i64>::new(n)`,
-`CoDel::<i64>::builder()`, `let wm: WindowedMax<f64> = WindowedMax::new(n)?`.
+Constructors are shared, so name the type once: `PeakHold::<i64>::builder()`,
+or `WindowedMax::<i64, i128>::new(window)` where the second parameter is the
+clock.
 
 `PeakToTrough<T>` is open to any type that can be compared and subtracted,
 a caller's own decimal type included. `Jitter` has an `f64` and an `i64`
@@ -222,9 +223,9 @@ The normalizers (`ZScoreNorm`, `MinMaxNorm`, `QuantileNorm`) and
 `T` but accumulate in `f64`, so the `f32` form is a boundary type for `f32`
 feature vectors. Physical clock time is `i128` nanoseconds or an `Instant`,
 through the sealed `Timestamp` trait: `Liveness`, `EventRate` and
-`HawkesIntensity` take either. `PollSaturation`, `DecayAccum`, `MinMaxNorm`,
-`BucketAccumulator`, `CoDel` and the windowed extrema have not moved yet and
-take `u64` ticks;
+`HawkesIntensity`, `CoDel`, `MinMaxNorm` and the windowed extrema take
+either, and a span is a `Duration`. `PollSaturation`, `DecayAccum` and
+`BucketAccumulator` have not moved yet and take `u64` ticks;
 `clock::MonotonicClock` is the `std` bridge from `Instant` for those. The full table is [`docs/reference/type-matrix.md`](docs/reference/type-matrix.md);
 upgrading from 6.x: [`docs/guides/migrating-to-7.md`](docs/guides/migrating-to-7.md).
 

@@ -14,7 +14,7 @@ Monitors for a running system, for [nexus-stats](https://crates.io/crates/nexus-
 - **A published algorithm is implemented as published.** A type that comes from a paper or a standard follows it. Where floating point needs more care than the source gives (cancellation, overflow, a divisor near zero), the type adds the guard practitioners use, and its docs say which.
 - **Maxima and minima ignore NaN and accept infinity,** as `f64::max` does.
 
-**Not yet migrated:** `CoDel`, `PollSaturation`, `SojournSaturation`. They have not been moved to these guarantees. Separately, `WindowedMax`, `WindowedMin`, `CoDel` and `PollSaturation` still take time as `u64` ticks and have yet to move to the time rule above.
+**Not yet migrated:** `PollSaturation`, `SojournSaturation`. They have not been moved to these guarantees, and `PollSaturation` still takes time as `u64` ticks.
 
 ## Which type do I use?
 
@@ -33,7 +33,7 @@ Monitors for a running system, for [nexus-stats](https://crates.io/crates/nexus-
 
 **Queues**
 
-- **CoDel**: a queue that is not draining, from how long each item waited
+- **CoDel**: a queue that is not draining, from how long each item waited (RFC 8289's rule)
 - **PollSaturation**: how saturated a consumer is, from what its polls return
 - **SojournSaturation**: the same, from stamped waiting times
 
@@ -42,12 +42,14 @@ Each type's docs give its definition, what one `update` is worth (its weighting 
 ## Example
 
 ```rust
+use core::time::Duration;
 use nexus_stats_monitoring::WindowedMax;
 
-// The slowest request over the last 1,000 ticks, in microseconds.
-let mut slowest = WindowedMax::<i64>::new(1_000).unwrap();
-for (tick, micros) in [(0, 120), (300, 431), (600, 118), (900, 125)] {
-    slowest.update(tick, micros);
+// The slowest request over the last second, in microseconds. Time is
+// i128 nanoseconds here; an `Instant` works the same way.
+let mut slowest = WindowedMax::<i64, i128>::new(Duration::from_secs(1)).unwrap();
+for (millis, micros) in [(0, 120), (300, 431), (600, 118), (900, 125)] {
+    slowest.update(millis * 1_000_000, micros);
 }
 assert_eq!(slowest.max(), Some(431));
 ```

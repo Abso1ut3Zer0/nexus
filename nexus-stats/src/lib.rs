@@ -114,7 +114,7 @@ pub use nexus_stats_core::{Accuracy, Condition, ConfigError, DataError, Directio
 
 /// Sealed numeric bounds of the generic types: [`Sample`] (`f64`, `i64`) and
 /// [`Float`] (`f64`, `f32`). Name them in your own signatures
-/// (`fn f<T: Sample>(w: &mut monitoring::WindowedMax<T>)`); they cannot be
+/// (`fn f<T: Sample>(p: &mut monitoring::PeakHold<T>)`); they cannot be
 /// implemented outside `nexus-stats-core`. [`Timestamp`] is the bound of
 /// the clocked types: `i128` nanoseconds or an `Instant`.
 pub use nexus_stats_core::{Float, Sample, Timestamp};

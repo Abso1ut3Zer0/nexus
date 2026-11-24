@@ -12,6 +12,24 @@ contained.
 
 ### Changed (breaking, time)
 
+- **`WindowedMax`, `WindowedMin` and `CoDel` take time as `i128`
+  nanoseconds or `Instant`,** through the `Timestamp` trait, in place of
+  `u64` ticks. A window, an interval and a sojourn are each a `Duration`.
+  A tick counter that wraps is no longer supported.
+- **`WindowedMax<V, T>` and `WindowedMin<V, T>`** have a second type
+  parameter, the clock. `new` takes the window as a `Duration`, and a
+  window of `Duration::MAX` means forever. The algorithm and its results
+  are unchanged.
+- **`CoDel<T>` is generic over the clock only.** The sojourn is a
+  `Duration`, so the `f64` and `i64` forms, the NaN check and the `Result`
+  on `update` are gone. As in RFC 8289 there is no warm-up: `min_samples`
+  and `is_primed()` are removed and `update` returns the `Condition`. The
+  builder is replaced by `CoDel::new(target, interval)`. `checked_update`
+  reports a time that goes back as `NonMonotonicTime`. `condition()`,
+  `target()` and `interval()` are added.
+
+### Changed (breaking, time)
+
 - **`Liveness` and `EventRate` take time as `i128` nanoseconds or
   `Instant`,** through the `Timestamp` trait, in place of `u64` ticks.
   `Liveness::update` ignores a time that goes back, and `checked_update`

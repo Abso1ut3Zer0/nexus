@@ -42,7 +42,7 @@ use nexus_stats::smoothing::Ema;
 // Per resource (CPU, memory, disk, network):
 struct ResourceMonitor {
     utilization: Ema,            // U: how busy (smoothed busy fraction)
-    codel: CoDel<i64>,           // S: how queued (if applicable)
+    codel: CoDel<i128>,           // S: how queued (if applicable)
     error_rate: ErrorRate,       // E: how broken
 }
 
@@ -50,8 +50,7 @@ impl ResourceMonitor {
     fn new() -> Self {
         ResourceMonitor {
             utilization: Ema::builder().span(20).build().unwrap(),
-            codel: CoDel::<i64>::builder()
-                .target(10_000).interval(1_000_000_000).build().unwrap(),
+            codel: CoDel::new(Duration::from_micros(10), Duration::from_secs(1)).unwrap(),
             error_rate: ErrorRate::builder().span(100).build().unwrap(),
         }
     }

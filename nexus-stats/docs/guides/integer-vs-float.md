@@ -15,15 +15,15 @@ type over the sealed `Sample` trait, instantiated for `f64` and `i64`:
 
 | Module | `T: Sample` types |
 |--------|-------------------|
-| `monitoring` | `WindowedMax<T>`, `WindowedMin<T>`, `PeakHold<T>`, `CoDel<T>` |
+| `monitoring` | `WindowedMax<V, T>`, `WindowedMin<V, T>` (the value `V`; `T` is the clock), `PeakHold<T>` |
 | `control` | `DeadBand<T>`, `Hysteresis<T>`, `LevelCrossing<T>`, `FirstDiff<T>`, `SecondDiff<T>`, `PeakDetector<T>` |
 | `smoothing` | `WindowedMedian<T>` |
 
 Time is a third kind. Physical clock time is `i128` nanoseconds or an
 `Instant`, through the sealed `Timestamp` trait: `Liveness`, `EventRate` and
-`HawkesIntensity` take either, one clock per value. `PollSaturation`,
-`DecayAccum`, `MinMaxNorm`, `BucketAccumulator` and the `timestamp`
-argument of the windowed extrema and `CoDel` have not moved yet and still
+`HawkesIntensity`, `CoDel`, `MinMaxNorm` and the windowed extrema take
+either, one clock per value, and a span is a `Duration`. `PollSaturation`,
+`DecayAccum` and `BucketAccumulator` have not moved yet and still
 take `u64` ticks
 (`clock::MonotonicClock` is the `std` bridge from `Instant`, see
 [no_std](no-std.md) for the rest).
@@ -35,9 +35,9 @@ for `f32` feature vectors, not a cheaper accumulator.
 
 ## What the `i64` form changes
 
-- **No `Result`.** `CoDel<f64>::update` returns a `Result`
-  because NaN and infinity are rejected. `CoDel<i64>::update` returns
-  `i64`: there is nothing to reject.
+- **No `Result`.** On a type not yet migrated, the `f64` form's `update`
+  returns a `Result` because NaN and infinity are rejected. The `i64`
+  form returns the plain value. There is nothing to reject.
 - **Exact arithmetic.** Comparisons, differences and clamps are exact;
   `DeadBand<i64>` uses `abs_diff`. `Jitter<i64>` keeps its estimate scaled
   by 16, as RFC 3550 does. `PeakHold<i64>` holds, then drops to
@@ -52,26 +52,25 @@ The body is written once and the constructors are shared, so the compiler has
 to know `T` before the first call whose signature differs by type:
 
 ```rust
-use nexus_stats::monitoring::{CoDel, WindowedMax};
+use core::time::Duration;
+use nexus_stats::monitoring::WindowedMax;
 
-let mut wm = WindowedMax::<i64>::new(1_000);     // turbofish on the constructor, or
-let mut wm2: WindowedMax<f64> = WindowedMax::new(1_000).unwrap(); // a type annotation
-let mut qd = CoDel::<i64>::builder()
-    .target(50_000).interval(100_000_000).build().unwrap();
+let window = Duration::from_secs(1);
+let mut wm = WindowedMax::<i64, i128>::new(window);   // turbofish on the constructor, or
+let mut wm2: WindowedMax<f64, i128> = WindowedMax::new(window).unwrap(); // a type annotation
 
 dd.update(42);                                    // i64: plain value
 dd2.update(42.0).unwrap();                        // f64: Result
 ```
 
-1. **Name `T` at construction**: `WindowedMax::<i64>::new(n)`,
-   `CoDel::<i64>::builder()`, or an annotated `let`. `WindowedMax::new(n)` alone
-   is ambiguous.
+1. **Name the types at construction**: `WindowedMax::<i64, i128>::new(window)`
+   or an annotated `let`. `WindowedMax::new(window)` alone is ambiguous.
 2. **`T` must be known before the first `update`.** Two `update`s exist, one
    per instantiation; inference cannot pick one from the sample while the
    binding is still untyped. Rule 1 covers this in practice.
 
 A function over both forms names the bound:
-`fn drain<T: Sample>(wm: &mut WindowedMax<T>)`. `Sample` and `Float` are
+`fn drain<V: Sample, T: Timestamp>(wm: &mut WindowedMax<V, T>)`. `Sample` and `Float` are
 exported from `nexus_stats` and `nexus_stats_core` and are sealed (`f64` /
 `i64` and `f64` / `f32` only): you name them, you never implement them.
 
@@ -79,8 +78,9 @@ exported from `nexus_stats` and `nexus_stats_core` and are sealed (`f64` /
 
 | Data | Use |
 |------|-----|
-| Latency, sojourn, ticks (already integers) | the `i64` forms of the extrema, diffs, bands, `CoDel`, `Jitter`, `PeakHold`, `PeakToTrough`; `u64` ticks for the monitors |
+| Latency, sojourn, ticks (already integers) | the `i64` forms of the extrema, diffs, bands, `Jitter`, `PeakHold`, `PeakToTrough`; `u64` ticks for the monitors |
 | Prices, rates, ratios, utilization | `f64` |
 | Counts you only compare or difference | `i64` |
 | Counts you want variance or smoothing on | `f64` (`Welford`, `Ema`): cast at the call site |
 | Timestamps | `i128` nanoseconds or `Instant`; `u64` ticks on the types not yet moved |
+| Spans of time (a window, an interval, a sojourn) | `Duration` |

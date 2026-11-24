@@ -12,6 +12,8 @@
 
 use std::hint::black_box;
 
+use std::time::Duration;
+
 use nexus_stats::monitoring::{PollSaturation, SojournSaturation};
 use nexus_stats::normalization::{MinMaxNorm, QuantileNorm, ZScoreNorm};
 
@@ -210,12 +212,12 @@ fn bench_peak_to_trough_f64(samples: &mut [u64]) {
 }
 
 fn bench_windowed_max_f64(samples: &mut [u64]) {
-    let mut wm = WindowedMax::<f64>::new(1000).unwrap();
+    let mut wm = WindowedMax::<f64, i128>::new(Duration::from_nanos(1000)).unwrap();
     let mut rng = 12345u64;
-    for t in 0..WARMUP as u64 {
+    for t in 0..WARMUP as i128 {
         let _ = wm.update(t, 90.0 + (next_val(&mut rng) % 20) as f64);
     }
-    let mut t = WARMUP as u64;
+    let mut t = WARMUP as i128;
     for s in samples.iter_mut() {
         let start = rdtsc_start();
         for _ in 0..BATCH {
@@ -229,12 +231,12 @@ fn bench_windowed_max_f64(samples: &mut [u64]) {
 }
 
 fn bench_windowed_min_f64(samples: &mut [u64]) {
-    let mut wm = WindowedMin::<f64>::new(1000).unwrap();
+    let mut wm = WindowedMin::<f64, i128>::new(Duration::from_nanos(1000)).unwrap();
     let mut rng = 12345u64;
-    for t in 0..WARMUP as u64 {
+    for t in 0..WARMUP as i128 {
         let _ = wm.update(t, 90.0 + (next_val(&mut rng) % 20) as f64);
     }
-    let mut t = WARMUP as u64;
+    let mut t = WARMUP as i128;
     for s in samples.iter_mut() {
         let start = rdtsc_start();
         for _ in 0..BATCH {
@@ -503,21 +505,17 @@ fn bench_event_rate(samples: &mut [u64]) {
     }
 }
 
-fn bench_codel_i64(samples: &mut [u64]) {
-    let mut qd = CoDel::<i64>::builder()
-        .target(100)
-        .interval(1000)
-        .build()
-        .unwrap();
+fn bench_codel(samples: &mut [u64]) {
+    let mut qd = CoDel::<i128>::new(Duration::from_nanos(100), Duration::from_nanos(1000)).unwrap();
     let mut rng = 12345u64;
-    for t in 0..WARMUP as u64 {
-        let _ = qd.update(t, 50 + (next_val(&mut rng) % 100) as i64);
+    for t in 0..WARMUP as i128 {
+        let _ = qd.update(t, Duration::from_nanos(50 + next_val(&mut rng) % 100));
     }
-    let mut t = WARMUP as u64;
+    let mut t = WARMUP as i128;
     for s in samples.iter_mut() {
         let start = rdtsc_start();
         for _ in 0..BATCH {
-            let _ = qd.update(t, 50 + (next_val(&mut rng) % 100) as i64);
+            let _ = qd.update(t, Duration::from_nanos(50 + next_val(&mut rng) % 100));
             t += 1;
         }
         let end = rdtsc_end();
@@ -2194,8 +2192,11 @@ fn main() {
     });
     print_row("ZScoreNorm::update", &mut buf);
     let mut mm = (
-        MinMaxNorm::<f64>::builder().window(1_000).build().unwrap(),
-        0u64,
+        MinMaxNorm::<f64, i128>::builder()
+            .window(Duration::from_nanos(1_000))
+            .build()
+            .unwrap(),
+        0i128,
     );
     bench_feed(&mut buf, &mut mm, |(m, tick), v| {
         *tick += 1;
@@ -2246,9 +2247,9 @@ fn main() {
     bench_peak_to_trough_f64(&mut buf);
     print_row("PeakToTrough::<f64>::update", &mut buf);
     bench_windowed_max_f64(&mut buf);
-    print_row("WindowedMax::<f64>::update", &mut buf);
+    print_row("WindowedMax::update", &mut buf);
     bench_windowed_min_f64(&mut buf);
-    print_row("WindowedMin::<f64>::update", &mut buf);
+    print_row("WindowedMin::update", &mut buf);
     bench_poll_saturation_on_work(&mut buf);
     print_row("PollSaturation::on_work", &mut buf);
     bench_poll_saturation_on_work_mixed(&mut buf);
@@ -2261,8 +2262,8 @@ fn main() {
     print_row("Liveness::update", &mut buf);
     bench_event_rate(&mut buf);
     print_row("EventRate::update", &mut buf);
-    bench_codel_i64(&mut buf);
-    print_row("CoDel::<i64>::update", &mut buf);
+    bench_codel(&mut buf);
+    print_row("CoDel::update", &mut buf);
     bench_jitter_f64(&mut buf);
     print_row("Jitter::<f64>::update", &mut buf);
     bench_error_rate(&mut buf);

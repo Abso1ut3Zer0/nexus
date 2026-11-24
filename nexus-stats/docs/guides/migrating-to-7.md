@@ -161,24 +161,24 @@ The same goes for `smoothing` and `detection`: `Ema`, `AsymEma` and `Slew` are n
 
 Where the `F64` and `I64` (or `F64` and `F32`) forms were the same algorithm,
 there is now one type, generic over a sealed trait: `Sample` for `f64` /
-`i64`, `Float` for `f64` / `f32`. Builders follow: `CoDelF64Builder` /
-`CoDelI64Builder` → `CoDelBuilder<f64>` / `CoDelBuilder<i64>`.
+`i64`, `Float` for `f64` / `f32`. Builders follow: `PeakHoldF64Builder` /
+`PeakHoldI64Builder` → `PeakHoldBuilder<f64>` / `PeakHoldBuilder<i64>`.
 
 | 6.x | 7.0 | Bound | Crate |
 |-----|-----|-------|-------|
-| `CoDelF64` / `CoDelI64` | `CoDel<f64>` / `CoDel<i64>` | `Sample` | nexus-stats-core |
+| `CoDelF64` / `CoDelI64` | `CoDel<T>`, generic over the clock; the sojourn is a `Duration` (see the time section) | `Timestamp` | nexus-stats-monitoring |
 | `DeadBandF64` / `DeadBandI64` | `DeadBand<f64>` / `DeadBand<i64>` | `Sample` | nexus-stats-core |
 | `DrawdownF64` / `DrawdownI64` | `PeakToTrough<f64>` / `PeakToTrough<i64>` (renamed, see below) | any comparable, subtractable type | nexus-stats-monitoring |
 | `FirstDiffF64` / `FirstDiffI64` | `FirstDiff<f64>` / `FirstDiff<i64>` | `Sample` | nexus-stats-core |
 | `HysteresisF64` / `HysteresisI64` | `Hysteresis<f64>` / `Hysteresis<i64>` | `Sample` | nexus-stats-core |
 | `JitterF64` / `JitterI64` | `Jitter<f64>` / `Jitter<i64>` (now RFC 3550, see below) | `f64`, `i64` | nexus-stats-monitoring |
 | `LevelCrossingF64` / `LevelCrossingI64` | `LevelCrossing<f64>` / `LevelCrossing<i64>` | `Sample` | nexus-stats-core |
-| `MinMaxNormF64` / `MinMaxNormF32` | `MinMaxNorm<f64>` / `MinMaxNorm<f32>` | `Float` | nexus-stats-core |
+| `MinMaxNormF64` / `MinMaxNormF32` | `MinMaxNorm<f64, T>` / `MinMaxNorm<f32, T>`, `T` the clock | `Float` | nexus-stats-normalization |
 | `PeakHoldF64` / `PeakHoldI64` | `PeakHold<f64>` / `PeakHold<i64>` | `Sample` | nexus-stats-core |
 | `QuantileNormF64` / `QuantileNormF32` | `QuantileNorm<f64>` / `QuantileNorm<f32>` | `Float` | nexus-stats-core |
 | `SecondDiffF64` / `SecondDiffI64` | `SecondDiff<f64>` / `SecondDiff<i64>` | `Sample` | nexus-stats-core |
-| `WindowedMaxF64` / `WindowedMaxI64` | `WindowedMax<f64>` / `WindowedMax<i64>` | `Sample` | nexus-stats-core |
-| `WindowedMinF64` / `WindowedMinI64` | `WindowedMin<f64>` / `WindowedMin<i64>` | `Sample` | nexus-stats-core |
+| `WindowedMaxF64` / `WindowedMaxI64` | `WindowedMax<f64, T>` / `WindowedMax<i64, T>`, `T` the clock | `Sample` | nexus-stats-monitoring |
+| `WindowedMinF64` / `WindowedMinI64` | `WindowedMin<f64, T>` / `WindowedMin<i64, T>`, `T` the clock | `Sample` | nexus-stats-monitoring |
 | `ZScoreNormF64` / `ZScoreNormF32` | `ZScoreNorm<f64>` / `ZScoreNorm<f32>` | `Float` | nexus-stats-core |
 | `WindowedMedianF64` / `WindowedMedianI64` | `WindowedMedian<f64>` / `WindowedMedian<i64>` | `Sample` | nexus-stats-smoothing |
 | `RobustZScoreF64` / `RobustZScoreF32` | `RobustZScore<f64>` / `RobustZScore<f32>` | `Float` | nexus-stats-detection |
@@ -194,9 +194,9 @@ the disassembly).
 Two rules fall out of the shared constructors:
 
 1. **Name `T` at construction.** Constructors and builders live on the
-   generic type, so `WindowedMax::new(n)` alone is ambiguous. Write
-   `WindowedMax::<i64>::new(n)`, `CoDel::<i64>::builder()`, or annotate the
-   binding: `let wm: WindowedMax<f64> = WindowedMax::new(n)?;`.
+   generic type, so `WindowedMax::new(window)` alone is ambiguous. Write
+   `WindowedMax::<i64, i128>::new(window)`, or annotate the binding:
+   `let wm: WindowedMax<f64, i128> = WindowedMax::new(window)?;`.
 2. **`T` must be known before the first `update`.** There are two `update`s,
    one per instantiation; inference cannot pick one from the sample alone
    while the binding is still untyped. In practice rule 1 covers this.
@@ -209,14 +209,15 @@ let mut wm = WindowedMaxF64::new(1_000_000).unwrap();
 
 // 7.0
 use nexus_stats::monitoring::{WindowedMax, WindowedMin};
-let mut lo = WindowedMin::<i64>::new(1_000_000).unwrap();
-let mut wm = WindowedMax::<f64>::new(1_000_000).unwrap();
+let window = Duration::from_millis(1);   // was 1_000_000 nanosecond ticks
+let mut lo = WindowedMin::<i64, i128>::new(window).unwrap();
+let mut wm = WindowedMax::<f64, i128>::new(window).unwrap();
 lo.update(now, 42);                  // Option<i64>
 wm.update(now, 3.5);                 // Option<f64>
 ```
 
 Code that works over both forms names the bound:
-`fn drain<T: Sample>(wm: &mut WindowedMax<T>)`. Through the bound you can call
+`fn drain<V: Sample, T: Timestamp>(wm: &mut WindowedMax<V, T>)`. Through the bound you can call
 the shared surface (constructors, builders, `count`, `is_primed`, `reset`,
 the getters); `update` and the other per-instantiation methods need a
 concrete `T`, since their signatures differ. `Sample` and `Float` are
@@ -244,7 +245,8 @@ on `f32` accumulation for speed, measure: the hot path gains a convert.
 | `MosumI64` | `Mosum` on `f64` ([#379](https://github.com/Abso1ut3Zer0/nexus/issues/379)) |
 | `AutocorrelationI64` | `Autocorrelation` on `f64` (correlation is fractional) ([#379](https://github.com/Abso1ut3Zer0/nexus/issues/379)) |
 | `DecayAccumF64` | `DecayAccum` (`u64` ticks) |
-| `update_i64(timestamp, ..)` on `WindowedMax`, `WindowedMin`, `CoDel` | `update(timestamp as u64, ..)` |
+| `update_i64(timestamp, ..)` on `WindowedMax`, `WindowedMin`, `CoDel` | `update(time, ..)` with `i128` nanoseconds or an `Instant` |
+| `CoDel::builder()`, `min_samples`, `is_primed()`, and the `Option` and `Result` around its `update` | `CoDel::new(target, interval)`; `update` returns the `Condition` |
 | `HalfLifeBuilder` | `HalfLife::new()` (the builder had no knobs) |
 | `Liveness`'s `span`, `deadline_multiple`, `deadline_absolute`, `min_samples`, `interval()`, `effective_span()`, and the `bool` from `update` and `check` | `check(now)` returns a `Suspicion`; compare `ratio()` and `silence()` to your own limits |
 | `EventRate::builder()`, `rate()`, `interval()`, `effective_span()`, `reset()` | `EventRate::new(start)`, `take(now)?.rate()`, `reset_at(now)` |
@@ -259,7 +261,7 @@ on `f32` accumulation for speed, measure: the hot path gains a convert.
 | `RunningMinF64`, `RunningMinI64` | a variable and `min = min.min(x)` |
 | `MaxGaugeF64`, `MaxGaugeI64` | an `Option<T>`: `gauge = Some(gauge.map_or(x, \|m\| m.max(x)))` to update, `gauge.take()` to read and clear |
 | `ConditionalEmaF64` | `Ema`, with `update` called only when the condition holds (the type was that `if` plus two counters) |
-| `CoDel::min_sojourn()` | the detector no longer keeps a windowed minimum (it implements RFC 8289 directly); keep a `WindowedMin<i64>` beside it if you report one |
+| `CoDel::min_sojourn()` | the detector no longer keeps a windowed minimum (it implements RFC 8289 directly); keep a `WindowedMin` beside it if you report one |
 
 ## 4. Behavior changes
 
@@ -792,7 +794,7 @@ interval.ratio();                       // the share that failed (SRE)
 errors.total_errors();                  // since the start
 ```
 
-### Time: `Liveness`, `EventRate` and `HawkesIntensity`
+### Time: the clocked types
 
 Physical clock time is `i128` nanoseconds or an `Instant`. A clocked type is
 generic over the sealed `Timestamp` trait, so an instance lives on one clock.
@@ -841,6 +843,35 @@ window.load();                          // 1, 5 and 15 minute averages
 `take` returns an error for a `now` that is not after the previous `take`.
 The old `rate()` was one over the average gap, which is not the same
 quantity, so values change. It needs `std` or `libm`.
+
+**`WindowedMax`, `WindowedMin` and `MinMaxNorm`** take a second type
+parameter, the clock, and the window as a `Duration`:
+
+```rust
+// before
+let mut wm = WindowedMax::<f64>::new(1_000_000_000).unwrap();   // ticks
+wm.update(now_ticks, value);
+// after
+let mut wm = WindowedMax::<f64, i128>::new(Duration::from_secs(1)).unwrap();
+wm.update(now_ns, value);
+```
+
+A window of `Duration::MAX` means forever. A tick counter that wraps is no
+longer supported; time on `i128` or `Instant` does not wrap.
+
+**`CoDel`** takes the sojourn as a `Duration` and has no `f64` or `i64` form:
+
+```rust
+// before
+let mut qd = CoDel::<i64>::builder().target(10_000).interval(100_000_000).build()?;
+if let Some(Condition::Degraded) = qd.update(now, sojourn_ns) { slow_down(); }
+// after
+let mut qd = CoDel::<i128>::new(Duration::from_micros(10), Duration::from_millis(100))?;
+if qd.update(now_ns, sojourn) == Condition::Degraded { slow_down(); }
+```
+
+There is no warm-up, as in RFC 8289, so `min_samples` and `is_primed()` are
+gone and `update` returns the `Condition` directly.
 
 **`HawkesIntensity`** moved to `estimation`
 (`nexus_stats::estimation::HawkesIntensity`). Its rates are now per second.

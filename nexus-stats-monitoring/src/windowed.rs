@@ -13,32 +13,20 @@
 // error is in one direction: the reported maximum is never above the true
 // windowed maximum, the minimum never below, because the reported value is
 // always a real sample from inside the window.
-//
-// State: 3 × (timestamp, value) + u64 window + u64 count + u64 last tick.
 
-use nexus_stats_core::Sample;
+use core::time::Duration;
 
-/// Internal sample stored per sub-window.
-#[derive(Debug, Clone, Copy)]
-struct Stamped<T: Copy> {
-    timestamp: u64,
-    value: T,
-}
-
-impl<T: Sample> Stamped<T> {
-    /// Placeholder for an empty window; never read before the first value.
-    const EMPTY: Self = Self {
-        timestamp: 0,
-        value: T::ZERO,
-    };
-}
+use nexus_stats_core::parts::LastTime;
+use nexus_stats_core::{Sample, Timestamp};
 
 /// Streaming windowed maximum over a sliding time window (Nichols' algorithm).
 ///
-/// Tracks the maximum value within a `u64` timestamp window using only
-/// 3 stored samples. O(1) amortized per update, `no_std` compatible.
-/// A NaN is ignored, as [`f64::max`] ignores one; infinity is a value
-/// like any other.
+/// Tracks the maximum value within a window of time using only 3 stored
+/// samples. O(1) per update, `no_std` compatible. A NaN is ignored, as
+/// [`f64::max`] ignores one; infinity is a value like any other.
+///
+/// The clock `T` is `i128` nanoseconds or an `Instant`, and the window is a
+/// [`Duration`].
 ///
 /// # Use Cases
 /// - Max throughput tracking
@@ -47,370 +35,393 @@ impl<T: Sample> Stamped<T> {
 ///
 /// # Weighting clock
 ///
-/// Caller's timestamps. Any call rate; the window is measured in ticks, not
-/// samples. The accessor reflects the input as of the last `update`: a quiet
-/// input keeps returning its last extremum until a later `update` ages it
-/// out. A periodic reader that needs the window to expire without new data
-/// should feed the current tick with a neutral value or treat the result as
-/// stale by its own clock. A NaN is not such a value: it is skipped and
-/// does not move the clock.
+/// The caller's times. Any call rate; the window is measured in time, not
+/// in samples. The reading is as of the last `update`. A quiet input keeps returning
+/// its last extremum until a later `update` ages it out. A reader that
+/// needs the window to expire without new data should treat the result as
+/// stale by its own clock.
 ///
-/// Ticks must not go back. `update` ignores a sample timestamped before the
-/// last one taken: the state and the count stay as they were, so a late
-/// extreme value is dropped too. One tick far ahead of the real clock
-/// therefore makes every later sample late until [`reset`](Self::reset);
-/// `checked_update` reports a late sample as an error, which is how a
-/// caller finds out.
+/// Time must not go back. `update` ignores a sample timed before the last
+/// one taken, so a late extreme value is dropped too. One time far ahead
+/// of the real clock therefore makes every later sample late until
+/// [`reset`](Self::reset). `checked_update` reports a late sample as an
+/// error, which is how a caller finds out.
 #[derive(Debug, Clone)]
-pub struct WindowedMax<T: Sample> {
-    window: Window<T>,
+pub struct WindowedMax<V: Sample, T: Timestamp> {
+    window: Window<V, T>,
 }
 
-impl<T: Sample> WindowedMax<T> {
-    /// Creates a tracker over a window of `window` ticks.
+impl<V: Sample, T: Timestamp> WindowedMax<V, T> {
+    /// Creates a windowed maximum tracker over `window` of time.
+    ///
+    /// A window of [`Duration::MAX`] means forever: nothing ages out.
     ///
     /// # Errors
     ///
-    /// Returns `ConfigError::Invalid` if `window` is zero.
+    /// `ConfigError::Invalid` if `window` is zero.
     #[inline]
-    pub fn new(window: u64) -> Result<Self, nexus_stats_core::ConfigError> {
+    pub fn new(window: Duration) -> Result<Self, nexus_stats_core::ConfigError> {
         Ok(Self {
             window: Window::new(window)?,
         })
     }
 
-    /// Current windowed maximum, or `None` before the first sample.
+    /// Current maximum in the window, or `None` if empty.
     #[inline]
     #[must_use]
-    pub fn max(&self) -> Option<T> {
+    pub fn max(&self) -> Option<V> {
         self.window.best()
     }
 
-    /// The window length in ticks.
+    /// The window length.
     #[inline]
     #[must_use]
-    pub fn window(&self) -> u64 {
-        self.window.span
+    pub fn window(&self) -> Duration {
+        self.window.span.whole
     }
 
-    /// Number of samples processed.
+    /// Number of samples taken.
     #[inline]
     #[must_use]
     pub fn count(&self) -> u64 {
         self.window.count
     }
 
-    /// Whether at least one sample has been seen.
+    /// Whether at least one sample has been taken.
     #[inline]
     #[must_use]
     pub fn is_primed(&self) -> bool {
         self.window.count > 0
     }
 
-    /// Resets to empty state. The window is kept.
+    /// Resets to empty. The window length is kept.
     #[inline]
     pub fn reset(&mut self) {
         self.window.reset();
     }
 
-    /// Feeds a value at `timestamp` and returns the maximum over the
-    /// window, or `None` if no value has been taken yet.
+    /// Feeds a value at `time` and returns the maximum over the window, or
+    /// `None` if no value has been taken yet.
     ///
-    /// A NaN is ignored, as [`f64::max`] ignores one, and so is a value
-    /// timestamped before the last one taken: the window and the count stay
-    /// as they were. Infinity is a value like any other.
+    /// A NaN is ignored, as [`f64::max`] ignores one, and so is a value timed
+    /// before the last one taken. Infinity is a value like any other.
     #[inline]
-    pub fn update(&mut self, timestamp: u64, value: T) -> Option<T> {
-        self.window.update(timestamp, value, |a, b| a >= b)
+    pub fn update(&mut self, time: T, value: V) -> Option<V> {
+        self.window.update(time, value, |a, b| a >= b)
     }
 
     /// Checked update. Feeds `value`, or returns an error and leaves the
-    /// tracker unchanged if `value` is NaN or `timestamp` is before the
-    /// last one taken.
+    /// tracker unchanged if `value` is NaN or `time` is before the last
+    /// one taken.
     ///
     /// # Errors
     ///
     /// - [`DataError::NotANumber`](nexus_stats_core::DataError::NotANumber)
     ///   if `value` is NaN.
     /// - [`DataError::NonMonotonicTime`](nexus_stats_core::DataError::NonMonotonicTime)
-    ///   if `timestamp` is before the last one taken.
+    ///   if `time` is before the last one taken.
     #[inline]
     pub fn checked_update(
         &mut self,
-        timestamp: u64,
-        value: T,
-    ) -> Result<Option<T>, nexus_stats_core::DataError> {
-        self.window.check(timestamp, value)?;
-        Ok(self.update(timestamp, value))
+        time: T,
+        value: V,
+    ) -> Result<Option<V>, nexus_stats_core::DataError> {
+        self.window.check(time, value)?;
+        Ok(self.update(time, value))
     }
 }
 
 /// Streaming windowed minimum over a sliding time window (Nichols' algorithm).
 ///
-/// Tracks the minimum value within a `u64` timestamp window using only
-/// 3 stored samples. O(1) amortized per update, `no_std` compatible.
-/// A NaN is ignored, as [`f64::min`] ignores one; infinity is a value
-/// like any other.
+/// Tracks the minimum value within a window of time using only 3 stored
+/// samples. O(1) per update, `no_std` compatible. A NaN is ignored, as
+/// [`f64::min`] ignores one; infinity is a value like any other.
+///
+/// The clock `T` is `i128` nanoseconds or an `Instant`, and the window is a
+/// [`Duration`].
 ///
 /// # Use Cases
 /// - Min RTT tracking (BBR)
 /// - Minimum price in a window
 /// - Best-case latency estimation
-/// - Deterministic replay with raw tick counters
 ///
 /// # Weighting clock
 ///
-/// Caller's timestamps. Any call rate; the window is measured in ticks, not
-/// samples. The accessor reflects the input as of the last `update`: a quiet
-/// input keeps returning its last extremum until a later `update` ages it
-/// out. A periodic reader that needs the window to expire without new data
-/// should feed the current tick with a neutral value or treat the result as
-/// stale by its own clock. A NaN is not such a value: it is skipped and
-/// does not move the clock.
+/// The caller's times. Any call rate; the window is measured in time, not
+/// in samples. The reading is as of the last `update`. A quiet input keeps returning
+/// its last extremum until a later `update` ages it out. A reader that
+/// needs the window to expire without new data should treat the result as
+/// stale by its own clock.
 ///
-/// Ticks must not go back. `update` ignores a sample timestamped before the
-/// last one taken: the state and the count stay as they were, so a late
-/// extreme value is dropped too. One tick far ahead of the real clock
-/// therefore makes every later sample late until [`reset`](Self::reset);
-/// `checked_update` reports a late sample as an error, which is how a
-/// caller finds out.
+/// Time must not go back. `update` ignores a sample timed before the last
+/// one taken, so a late extreme value is dropped too. One time far ahead
+/// of the real clock therefore makes every later sample late until
+/// [`reset`](Self::reset). `checked_update` reports a late sample as an
+/// error, which is how a caller finds out.
 #[derive(Debug, Clone)]
-pub struct WindowedMin<T: Sample> {
-    window: Window<T>,
+pub struct WindowedMin<V: Sample, T: Timestamp> {
+    window: Window<V, T>,
 }
 
-impl<T: Sample> WindowedMin<T> {
-    /// Creates a tracker over a window of `window` ticks.
+impl<V: Sample, T: Timestamp> WindowedMin<V, T> {
+    /// Creates a windowed minimum tracker over `window` of time.
+    ///
+    /// A window of [`Duration::MAX`] means forever: nothing ages out.
     ///
     /// # Errors
     ///
-    /// Returns `ConfigError::Invalid` if `window` is zero.
+    /// `ConfigError::Invalid` if `window` is zero.
     #[inline]
-    pub fn new(window: u64) -> Result<Self, nexus_stats_core::ConfigError> {
+    pub fn new(window: Duration) -> Result<Self, nexus_stats_core::ConfigError> {
         Ok(Self {
             window: Window::new(window)?,
         })
     }
 
-    /// Current windowed minimum, or `None` before the first sample.
+    /// Current minimum in the window, or `None` if empty.
     #[inline]
     #[must_use]
-    pub fn min(&self) -> Option<T> {
+    pub fn min(&self) -> Option<V> {
         self.window.best()
     }
 
-    /// The window length in ticks.
+    /// The window length.
     #[inline]
     #[must_use]
-    pub fn window(&self) -> u64 {
-        self.window.span
+    pub fn window(&self) -> Duration {
+        self.window.span.whole
     }
 
-    /// Number of samples processed.
+    /// Number of samples taken.
     #[inline]
     #[must_use]
     pub fn count(&self) -> u64 {
         self.window.count
     }
 
-    /// Whether at least one sample has been seen.
+    /// Whether at least one sample has been taken.
     #[inline]
     #[must_use]
     pub fn is_primed(&self) -> bool {
         self.window.count > 0
     }
 
-    /// Resets to empty state. The window is kept.
+    /// Resets to empty. The window length is kept.
     #[inline]
     pub fn reset(&mut self) {
         self.window.reset();
     }
 
-    /// Feeds a value at `timestamp` and returns the minimum over the
-    /// window, or `None` if no value has been taken yet.
+    /// Feeds a value at `time` and returns the minimum over the window, or
+    /// `None` if no value has been taken yet.
     ///
-    /// A NaN is ignored, as [`f64::min`] ignores one, and so is a value
-    /// timestamped before the last one taken: the window and the count stay
-    /// as they were. Infinity is a value like any other.
+    /// A NaN is ignored, as [`f64::min`] ignores one, and so is a value timed
+    /// before the last one taken. Infinity is a value like any other.
     #[inline]
-    pub fn update(&mut self, timestamp: u64, value: T) -> Option<T> {
-        self.window.update(timestamp, value, |a, b| a <= b)
+    pub fn update(&mut self, time: T, value: V) -> Option<V> {
+        self.window.update(time, value, |a, b| a <= b)
     }
 
     /// Checked update. Feeds `value`, or returns an error and leaves the
-    /// tracker unchanged if `value` is NaN or `timestamp` is before the
-    /// last one taken.
+    /// tracker unchanged if `value` is NaN or `time` is before the last
+    /// one taken.
     ///
     /// # Errors
     ///
     /// - [`DataError::NotANumber`](nexus_stats_core::DataError::NotANumber)
     ///   if `value` is NaN.
     /// - [`DataError::NonMonotonicTime`](nexus_stats_core::DataError::NonMonotonicTime)
-    ///   if `timestamp` is before the last one taken.
+    ///   if `time` is before the last one taken.
     #[inline]
     pub fn checked_update(
         &mut self,
-        timestamp: u64,
-        value: T,
-    ) -> Result<Option<T>, nexus_stats_core::DataError> {
-        self.window.check(timestamp, value)?;
-        Ok(self.update(timestamp, value))
+        time: T,
+        value: V,
+    ) -> Result<Option<V>, nexus_stats_core::DataError> {
+        self.window.check(time, value)?;
+        Ok(self.update(time, value))
     }
 }
 
-/// The three choices and the clock, shared by the maximum and the minimum.
+/// The state the maximum and the minimum share.
 #[derive(Debug, Clone)]
-struct Window<T: Sample> {
-    span: u64,
-    samples: [Stamped<T>; 3],
+struct Window<V: Sample, T: Timestamp> {
+    span: Span,
+    /// `None` until the first value.
+    choices: Option<Choices<V, T>>,
     count: u64,
-    /// Timestamp of the newest value taken.
-    last: u64,
+    last: LastTime<T>,
 }
 
-impl<T: Sample> Window<T> {
+impl<V: Sample, T: Timestamp> Window<V, T> {
     #[inline]
-    fn new(span: u64) -> Result<Self, nexus_stats_core::ConfigError> {
-        if span == 0 {
+    fn new(span: Duration) -> Result<Self, nexus_stats_core::ConfigError> {
+        if span.is_zero() {
             return Err(nexus_stats_core::ConfigError::Invalid(
                 "window must be positive",
             ));
         }
         Ok(Self {
-            span,
-            samples: [Stamped::EMPTY; 3],
+            span: Span::new(span),
+            choices: None,
             count: 0,
-            last: 0,
+            last: LastTime::new(),
         })
     }
 
     #[inline]
     fn reset(&mut self) {
-        self.samples = [Stamped::EMPTY; 3];
+        self.choices = None;
         self.count = 0;
+        self.last.reset();
     }
 
     /// The best choice, or `None` before the first value.
     #[inline]
-    fn best(&self) -> Option<T> {
-        if self.count == 0 {
-            return None;
-        }
-        Some(self.samples[0].value)
-    }
-
-    /// Whether a value is skipped: a NaN, or one timestamped before the
-    /// last value taken.
-    #[inline]
-    fn skips(&self, timestamp: u64, value: T) -> bool {
-        value.is_nan() || self.is_late(timestamp)
-    }
-
-    /// Whether `timestamp` is before the last one taken.
-    #[inline]
-    fn is_late(&self, timestamp: u64) -> bool {
-        self.count > 0 && timestamp < self.last
+    fn best(&self) -> Option<V> {
+        Some(self.choices.as_ref()?.best())
     }
 
     /// Why a value would be skipped, if it would be.
     #[inline]
-    fn check(&self, timestamp: u64, value: T) -> Result<(), nexus_stats_core::DataError> {
+    fn check(&self, time: T, value: V) -> Result<(), nexus_stats_core::DataError> {
         if value.is_nan() {
             return Err(nexus_stats_core::DataError::NotANumber);
         }
-        if self.is_late(timestamp) {
-            return Err(nexus_stats_core::DataError::NonMonotonicTime);
-        }
-        Ok(())
+        self.last.check(time)
     }
 
     /// Takes a value and returns the best choice. `better(a, b)` says
-    /// whether `a` beats or ties `b`.
+    /// whether `a` beats or ties `b`. A NaN and a late value are skipped.
     #[inline]
-    fn update(&mut self, timestamp: u64, value: T, better: impl Fn(T, T) -> bool) -> Option<T> {
-        if self.skips(timestamp, value) {
+    fn update(&mut self, time: T, value: V, better: impl Fn(V, V) -> bool) -> Option<V> {
+        if value.is_nan() || self.last.would_go_back(time) {
             return self.best();
         }
-        self.last = timestamp;
+        self.last.set(time);
         self.count += 1;
-        // The first value is the best, whatever it is.
-        if self.count == 1 {
-            self.samples = [Stamped { timestamp, value }; 3];
+        let sample = Stamped { time, value };
+        let Some(choices) = &mut self.choices else {
+            // The first value is the best, whatever it is.
+            self.choices = Some(Choices::all(sample));
             return Some(value);
-        }
-        Some(running(
-            &mut self.samples,
-            self.span,
-            timestamp,
-            value,
-            better,
-        ))
+        };
+        Some(choices.take(sample, self.span, better))
     }
 }
 
-/// `minmax_running_max` / `minmax_running_min` from `lib/win_minmax.c`.
-///
-/// `better(a, b)` is `a >= b` for a maximum and `a <= b` for a minimum.
-/// Returns the current extremum, `s[0].value`. Timestamps must be
-/// non-decreasing (the callers drop late samples), so no age is negative.
-#[inline]
-fn running<T: Copy>(
-    s: &mut [Stamped<T>; 3],
-    win: u64,
-    timestamp: u64,
-    value: T,
-    better: impl Fn(T, T) -> bool,
-) -> T {
-    let val = Stamped { timestamp, value };
-
-    // Found a new extremum, or nothing left in the window: forget earlier
-    // samples (`minmax_reset`).
-    if better(value, s[0].value) || timestamp - s[2].timestamp > win {
-        *s = [val; 3];
-        return value;
-    }
-
-    if better(value, s[1].value) {
-        s[2] = val;
-        s[1] = val;
-    } else if better(value, s[2].value) {
-        s[2] = val;
-    }
-
-    subwin_update(s, win, val)
+/// The window length, with the two fractions the algorithm ages by.
+#[derive(Debug, Clone, Copy)]
+struct Span {
+    whole: Duration,
+    // PERF: dividing a `Duration` on every update costs more than the rest.
+    half: Duration,
+    quarter: Duration,
 }
 
-/// `minmax_subwin_update` from `lib/win_minmax.c`: as time advances, update
-/// the 1st, 2nd and 3rd choices.
-#[inline]
-fn subwin_update<T: Copy>(s: &mut [Stamped<T>; 3], win: u64, val: Stamped<T>) -> T {
-    let dt = val.timestamp - s[0].timestamp;
-
-    if dt > win {
-        // Passed the entire window without a new extremum: the 2nd choice
-        // becomes the best, the 3rd becomes 2nd, the new sample becomes 3rd.
-        // The 2nd choice may also be outside the window (only the 3rd was
-        // checked on entry), so this may have to run twice.
-        s[0] = s[1];
-        s[1] = s[2];
-        s[2] = val;
-        if val.timestamp - s[0].timestamp > win {
-            s[0] = s[1];
-            s[1] = s[2];
-            s[2] = val;
+impl Span {
+    #[inline]
+    fn new(whole: Duration) -> Self {
+        Self {
+            whole,
+            half: whole / 2,
+            quarter: whole / 4,
         }
-    } else if s[1].timestamp == s[0].timestamp && dt > win / 4 {
-        // A quarter of the window passed without a distinct 2nd choice:
-        // take one from the 2nd quarter.
-        s[2] = val;
-        s[1] = val;
-    } else if s[2].timestamp == s[1].timestamp && dt > win / 2 {
-        // Half the window passed without a distinct 3rd choice: take one
-        // from the last half.
-        s[2] = val;
+    }
+}
+
+/// A value and the time it was taken.
+#[derive(Debug, Clone, Copy)]
+struct Stamped<V, T> {
+    time: T,
+    value: V,
+}
+
+impl<V: Copy, T: Timestamp> Stamped<V, T> {
+    /// How long before `now` this was taken.
+    #[inline]
+    fn age_at(&self, now: T) -> Duration {
+        now.since(self.time)
+    }
+}
+
+/// The best, 2nd best and 3rd best samples in the window, each at least
+/// as recent as the one before it. The functions are named for the ones
+/// they port from `lib/win_minmax.c`.
+#[derive(Debug, Clone, Copy)]
+struct Choices<V, T>([Stamped<V, T>; 3]);
+
+impl<V: Copy, T: Timestamp> Choices<V, T> {
+    /// Every choice is `sample` (`minmax_reset`).
+    #[inline]
+    fn all(sample: Stamped<V, T>) -> Self {
+        Self([sample; 3])
     }
 
-    s[0].value
+    #[inline]
+    fn best(&self) -> V {
+        self.0[0].value
+    }
+
+    /// `minmax_running_max` / `minmax_running_min`. Takes a sample and
+    /// returns the best choice. `better(a, b)` is `a >= b` for a maximum
+    /// and `a <= b` for a minimum. Times must not go back (the caller drops
+    /// late samples), so no age is negative.
+    #[inline]
+    fn take(&mut self, sample: Stamped<V, T>, span: Span, better: impl Fn(V, V) -> bool) -> V {
+        let [first, second, third] = &mut self.0;
+        // A new extremum, or nothing left in the window: forget the rest.
+        if better(sample.value, first.value) || third.age_at(sample.time) > span.whole {
+            *self = Self::all(sample);
+            return sample.value;
+        }
+        if better(sample.value, second.value) {
+            *third = sample;
+            *second = sample;
+        } else if better(sample.value, third.value) {
+            *third = sample;
+        }
+        self.age(sample, span);
+        self.best()
+    }
+
+    /// `minmax_subwin_update`: as time advances, replaces the choices that
+    /// have aged.
+    #[inline]
+    fn age(&mut self, sample: Stamped<V, T>, span: Span) {
+        let [first, second, third] = self.0;
+        let age = first.age_at(sample.time);
+
+        if age > span.whole {
+            // The best aged out. The 2nd may have too (only the 3rd was
+            // checked on entry), so this may have to run twice.
+            self.promote(sample);
+            if self.0[0].age_at(sample.time) > span.whole {
+                self.promote(sample);
+            }
+        } else if second.time == first.time && age > span.quarter {
+            // A quarter of the window passed without a distinct 2nd
+            // choice: take one from the 2nd quarter.
+            self.0[1] = sample;
+            self.0[2] = sample;
+        } else if third.time == second.time && age > span.half {
+            // Half the window passed without a distinct 3rd choice: take
+            // one from the last half.
+            self.0[2] = sample;
+        }
+    }
+
+    /// The 2nd becomes the best, the 3rd the 2nd, and `sample` the 3rd.
+    #[inline]
+    fn promote(&mut self, sample: Stamped<V, T>) {
+        self.0 = [self.0[1], self.0[2], sample];
+    }
+}
+
+/// A window of `n` nanoseconds.
+#[cfg(test)]
+fn ns(n: u64) -> Duration {
+    Duration::from_nanos(n)
 }
 
 #[cfg(test)]
@@ -419,14 +430,14 @@ mod raw_tests {
 
     #[test]
     fn raw_max_basic() {
-        let mut wm = WindowedMax::<f64>::new(100).unwrap();
+        let mut wm = WindowedMax::<f64, i128>::new(ns(100)).unwrap();
         assert_eq!(wm.update(0, 10.0).unwrap(), 10.0);
         assert_eq!(wm.update(50, 20.0).unwrap(), 20.0);
     }
 
     #[test]
     fn raw_max_expires() {
-        let mut wm = WindowedMax::<f64>::new(10).unwrap();
+        let mut wm = WindowedMax::<f64, i128>::new(ns(10)).unwrap();
         let _ = wm.update(0, 100.0).unwrap();
         assert_eq!(
             wm.update(5, 50.0).unwrap(),
@@ -439,27 +450,28 @@ mod raw_tests {
 
     #[test]
     fn raw_min_basic() {
-        let mut wm = WindowedMin::<i64>::new(100).unwrap();
+        let mut wm = WindowedMin::<i64, i128>::new(ns(100)).unwrap();
         assert_eq!(wm.update(0, 100), Some(100));
         assert_eq!(wm.update(1, 50), Some(50));
     }
 
     #[test]
     fn raw_rejects_zero_window() {
-        assert!(WindowedMax::<f64>::new(0).is_err());
+        assert!(WindowedMax::<f64, i128>::new(ns(0)).is_err());
     }
 
     #[test]
     fn any_window_and_any_forward_jump_are_taken() {
-        let mut wm = WindowedMax::<i64>::new(u64::MAX).unwrap();
-        assert_eq!(wm.update(0, 5), Some(5));
-        assert_eq!(wm.update(u64::MAX, 3), Some(5));
+        // A window of `Duration::MAX` means forever: nothing ages out.
+        let mut wm = WindowedMax::<i64, i128>::new(Duration::MAX).unwrap();
+        assert_eq!(wm.update(i128::MIN, 5), Some(5));
+        assert_eq!(wm.update(i128::MAX, 3), Some(5));
 
-        // A jump of more than half the counter range is only a long gap.
-        let mut wn = WindowedMin::<i64>::new(100).unwrap();
+        // A jump of any size is only a long gap.
+        let mut wn = WindowedMin::<i64, i128>::new(ns(100)).unwrap();
         assert_eq!(wn.update(0, 5), Some(5));
         assert_eq!(wn.update(1 << 63, 9), Some(9));
-        assert_eq!(wn.update(u64::MAX, 7), Some(7));
+        assert_eq!(wn.update(i128::MAX, 7), Some(7));
         assert_eq!(wn.count(), 3);
     }
 
@@ -467,7 +479,7 @@ mod raw_tests {
     fn checked_update_reports_what_update_skips() {
         use nexus_stats_core::DataError::{NonMonotonicTime, NotANumber};
 
-        let mut wm = WindowedMax::<f64>::new(100).unwrap();
+        let mut wm = WindowedMax::<f64, i128>::new(ns(100)).unwrap();
         // Nothing is late before the first value, whatever its timestamp.
         assert_eq!(wm.checked_update(1000, f64::NAN), Err(NotANumber));
         assert_eq!(wm.checked_update(1000, 4.0), Ok(Some(4.0)));
@@ -480,7 +492,7 @@ mod raw_tests {
             Ok(Some(f64::INFINITY))
         );
 
-        let mut wn = WindowedMin::<i64>::new(100).unwrap();
+        let mut wn = WindowedMin::<i64, i128>::new(ns(100)).unwrap();
         assert_eq!(wn.checked_update(50, 4), Ok(Some(4)));
         assert_eq!(wn.checked_update(49, -9), Err(NonMonotonicTime));
         assert_eq!((wn.min(), wn.count()), (Some(4), 1));
@@ -492,9 +504,9 @@ mod raw_tests {
     fn a_tick_far_ahead_is_found_through_checked_update() {
         use nexus_stats_core::DataError::NonMonotonicTime;
 
-        let mut wm = WindowedMax::<i64>::new(100).unwrap();
+        let mut wm = WindowedMax::<i64, i128>::new(ns(100)).unwrap();
         wm.update(10, 1);
-        wm.update(u64::MAX - 1, 2);
+        wm.update(i128::MAX - 1, 2);
         assert_eq!(wm.update(11, 50), Some(2));
         assert_eq!(wm.checked_update(12, 50), Err(NonMonotonicTime));
         wm.reset();
@@ -505,19 +517,19 @@ mod raw_tests {
     fn checked_update_gives_the_same_result_as_update() {
         let mut state = 0x9E37_79B9_7F4A_7C15u64;
         let (mut checked_max, mut plain_max) = (
-            WindowedMax::<f64>::new(20).unwrap(),
-            WindowedMax::<f64>::new(20).unwrap(),
+            WindowedMax::<f64, i128>::new(ns(20)).unwrap(),
+            WindowedMax::<f64, i128>::new(ns(20)).unwrap(),
         );
         let (mut checked_min, mut plain_min) = (
-            WindowedMin::<i64>::new(20).unwrap(),
-            WindowedMin::<i64>::new(20).unwrap(),
+            WindowedMin::<i64, i128>::new(ns(20)).unwrap(),
+            WindowedMin::<i64, i128>::new(ns(20)).unwrap(),
         );
-        let mut t = 0u64;
+        let mut t = 0i128;
         for _ in 0..20_000 {
             state ^= state << 13;
             state ^= state >> 7;
             state ^= state << 17;
-            t += state % 7;
+            t += i128::from(state % 7);
             let v = (state >> 8) % 1000;
             assert_eq!(
                 checked_max.checked_update(t, v as f64),
@@ -532,16 +544,16 @@ mod raw_tests {
 
     #[test]
     fn nothing_is_reported_before_the_first_value() {
-        let wm = WindowedMax::<f64>::new(100).unwrap();
+        let wm = WindowedMax::<f64, i128>::new(ns(100)).unwrap();
         assert_eq!(wm.max(), None);
-        let wn = WindowedMin::<i64>::new(100).unwrap();
+        let wn = WindowedMin::<i64, i128>::new(ns(100)).unwrap();
         assert_eq!(wn.min(), None);
     }
 
     #[test]
     fn a_nan_is_ignored_and_changes_nothing() {
-        let mut wm = WindowedMax::<f64>::new(100).unwrap();
-        let mut wn = WindowedMin::<f64>::new(100).unwrap();
+        let mut wm = WindowedMax::<f64, i128>::new(ns(100)).unwrap();
+        let mut wn = WindowedMin::<f64, i128>::new(ns(100)).unwrap();
         // Before any value there is nothing to report.
         assert_eq!(wm.update(0, f64::NAN), None);
         assert_eq!(wn.update(0, f64::NAN), None);
@@ -560,7 +572,7 @@ mod raw_tests {
 
     #[test]
     fn infinity_is_a_value_like_any_other() {
-        let mut wm = WindowedMax::<f64>::new(10).unwrap();
+        let mut wm = WindowedMax::<f64, i128>::new(ns(10)).unwrap();
         assert_eq!(wm.update(0, 1.0), Some(1.0));
         assert_eq!(wm.update(1, f64::INFINITY), Some(f64::INFINITY));
         assert_eq!(wm.update(5, 2.0), Some(f64::INFINITY));
@@ -568,10 +580,10 @@ mod raw_tests {
         assert_eq!(wm.update(12, 3.0), Some(3.0));
 
         // An infinity is the extreme even as the very first value.
-        let mut low = WindowedMax::<f64>::new(10).unwrap();
+        let mut low = WindowedMax::<f64, i128>::new(ns(10)).unwrap();
         assert_eq!(low.update(0, f64::NEG_INFINITY), Some(f64::NEG_INFINITY));
         assert_eq!(low.max(), Some(f64::NEG_INFINITY));
-        let mut high = WindowedMin::<f64>::new(10).unwrap();
+        let mut high = WindowedMin::<f64, i128>::new(ns(10)).unwrap();
         assert_eq!(high.update(0, f64::INFINITY), Some(f64::INFINITY));
         assert_eq!(high.min(), Some(f64::INFINITY));
     }
@@ -589,12 +601,12 @@ mod raw_tests {
             state
         };
         for win in [1u64, 7, 50, 400] {
-            let mut wm = WindowedMax::<f64>::new(win).unwrap();
-            let mut wn = WindowedMin::<f64>::new(win).unwrap();
-            let mut kept: Vec<(u64, f64)> = Vec::new();
-            let mut t = 0u64;
+            let mut wm = WindowedMax::<f64, i128>::new(ns(win)).unwrap();
+            let mut wn = WindowedMin::<f64, i128>::new(ns(win)).unwrap();
+            let mut kept: Vec<(i128, f64)> = Vec::new();
+            let mut t = 0i128;
             for _ in 0..20_000 {
-                t += next() % 5;
+                t += i128::from(next() % 5);
                 let draw = next() % 100;
                 let v = match draw {
                     0..=7 => f64::NAN,
@@ -609,7 +621,7 @@ mod raw_tests {
                     continue;
                 }
                 kept.push((t, v));
-                kept.retain(|&(ts, _)| t - ts <= win);
+                kept.retain(|&(ts, _)| t - ts <= i128::from(win));
                 let inside = || kept.iter().map(|&(_, v)| v);
                 let exact_max = inside().fold(f64::NEG_INFINITY, f64::max);
                 let exact_min = inside().fold(f64::INFINITY, f64::min);
@@ -631,14 +643,14 @@ mod raw_tests {
     // true maximum is 90. The previous port returned 10.
     #[test]
     fn kernel_port_counterexample_max() {
-        let mut wm = WindowedMax::<i64>::new(100).unwrap();
-        for (t, v) in [(0u64, 100i64), (40, 90), (80, 10), (101, 5)] {
+        let mut wm = WindowedMax::<i64, i128>::new(ns(100)).unwrap();
+        for (t, v) in [(0i128, 100i64), (40, 90), (80, 10), (101, 5)] {
             let _ = wm.update(t, v);
         }
         assert_eq!(wm.max(), Some(90));
 
-        let mut wf = WindowedMax::<f64>::new(100).unwrap();
-        for (t, v) in [(0u64, 100.0f64), (40, 90.0), (80, 10.0), (101, 5.0)] {
+        let mut wf = WindowedMax::<f64, i128>::new(ns(100)).unwrap();
+        for (t, v) in [(0i128, 100.0f64), (40, 90.0), (80, 10.0), (101, 5.0)] {
             let _ = wf.update(t, v).unwrap();
         }
         assert_eq!(wf.max(), Some(90.0));
@@ -648,14 +660,14 @@ mod raw_tests {
     // previous port returned 100.
     #[test]
     fn kernel_port_counterexample_min() {
-        let mut wm = WindowedMin::<i64>::new(100).unwrap();
-        for (t, v) in [(0u64, 10i64), (40, 20), (80, 100), (101, 105)] {
+        let mut wm = WindowedMin::<i64, i128>::new(ns(100)).unwrap();
+        for (t, v) in [(0i128, 10i64), (40, 20), (80, 100), (101, 105)] {
             let _ = wm.update(t, v);
         }
         assert_eq!(wm.min(), Some(20));
 
-        let mut wf = WindowedMin::<f64>::new(100).unwrap();
-        for (t, v) in [(0u64, 10.0f64), (40, 20.0), (80, 100.0), (101, 105.0)] {
+        let mut wf = WindowedMin::<f64, i128>::new(ns(100)).unwrap();
+        for (t, v) in [(0i128, 10.0f64), (40, 20.0), (80, 100.0), (101, 105.0)] {
             let _ = wf.update(t, v).unwrap();
         }
         assert_eq!(wf.min(), Some(20.0));
@@ -665,14 +677,14 @@ mod raw_tests {
     /// matching the kernel's `t - s.t > win` expiry test.
     struct ExactWindow {
         win: u64,
-        samples: std::collections::VecDeque<(u64, i64)>,
+        samples: std::collections::VecDeque<(i128, i64)>,
     }
 
     impl ExactWindow {
-        fn push(&mut self, t: u64, v: i64) {
+        fn push(&mut self, t: i128, v: i64) {
             self.samples.push_back((t, v));
             while let Some(&(ts, _)) = self.samples.front() {
-                if t - ts > self.win {
+                if t - ts > i128::from(self.win) {
                     self.samples.pop_front();
                 } else {
                     break;
@@ -707,15 +719,15 @@ mod raw_tests {
     /// returns the fraction of updates where the port disagreed with the truth.
     fn mismatch_rate(win: u64, n: usize, mut value: impl FnMut(&mut Rng) -> i64) -> (f64, f64) {
         let mut rng = Rng(0x9E37_79B9_7F4A_7C15);
-        let mut pmax = WindowedMax::<i64>::new(win).unwrap();
-        let mut pmin = WindowedMin::<i64>::new(win).unwrap();
+        let mut pmax = WindowedMax::<i64, i128>::new(ns(win)).unwrap();
+        let mut pmin = WindowedMin::<i64, i128>::new(ns(win)).unwrap();
         let mut exact = ExactWindow {
             win,
             samples: std::collections::VecDeque::new(),
         };
-        let (mut t, mut bad_max, mut bad_min) = (0u64, 0usize, 0usize);
+        let (mut t, mut bad_max, mut bad_min) = (0i128, 0usize, 0usize);
         for _ in 0..n {
-            t += 1 + rng.below(4); // 1..=4 ticks apart
+            t += i128::from(1 + rng.below(4)); // 1..=4 ticks apart
             let v = value(&mut rng);
             exact.push(t, v);
             let got_max = pmax.update(t, v).unwrap();
@@ -769,6 +781,47 @@ mod raw_tests {
     }
 }
 
+#[cfg(all(test, feature = "std"))]
+mod instant_tests {
+    use super::*;
+    use std::time::Instant;
+
+    #[test]
+    fn an_instant_and_nanoseconds_agree() {
+        let start = Instant::now();
+        let window = Duration::from_millis(40);
+        let mut on_instant = (
+            WindowedMax::<i64, Instant>::new(window).unwrap(),
+            WindowedMin::<i64, Instant>::new(window).unwrap(),
+        );
+        let mut on_nanos = (
+            WindowedMax::<i64, i128>::new(window).unwrap(),
+            WindowedMin::<i64, i128>::new(window).unwrap(),
+        );
+        let mut state = 0x9E37_79B9_7F4A_7C15u64;
+        let mut micros = 0u64;
+        for _ in 0..20_000 {
+            state ^= state << 13;
+            state ^= state >> 7;
+            state ^= state << 17;
+            micros += state % 9_000;
+            let value = (state >> 20) as i64 % 1_000;
+            let (at, nanos) = (
+                start + Duration::from_micros(micros),
+                i128::from(micros) * 1_000,
+            );
+            assert_eq!(
+                on_instant.0.update(at, value),
+                on_nanos.0.update(nanos, value)
+            );
+            assert_eq!(
+                on_instant.1.update(at, value),
+                on_nanos.1.update(nanos, value)
+            );
+        }
+    }
+}
+
 #[cfg(test)]
 mod proptests {
     use super::*;
@@ -785,15 +838,15 @@ mod proptests {
             win in 1u64..200,
             steps in proptest::collection::vec((0u64..50, -1_000i64..1_000), 1..300),
         ) {
-            let mut pmax = WindowedMax::<i64>::new(win).unwrap();
-            let mut pmin = WindowedMin::<i64>::new(win).unwrap();
-            let mut hist: Vec<(u64, i64)> = Vec::new();
-            let mut t = 0u64;
+            let mut pmax = WindowedMax::<i64, i128>::new(ns(win)).unwrap();
+            let mut pmin = WindowedMin::<i64, i128>::new(ns(win)).unwrap();
+            let mut hist: Vec<(i128, i64)> = Vec::new();
+            let mut t = 0i128;
             for (gap, v) in steps {
-                t += gap;
+                t += i128::from(gap);
                 hist.push((t, v));
-                let exact_max = hist.iter().filter(|&&(ts, _)| t - ts <= win).map(|&(_, v)| v).max().unwrap();
-                let exact_min = hist.iter().filter(|&&(ts, _)| t - ts <= win).map(|&(_, v)| v).min().unwrap();
+                let exact_max = hist.iter().filter(|&&(ts, _)| t - ts <= i128::from(win)).map(|&(_, v)| v).max().unwrap();
+                let exact_min = hist.iter().filter(|&&(ts, _)| t - ts <= i128::from(win)).map(|&(_, v)| v).min().unwrap();
                 prop_assert!(pmax.update(t, v).unwrap() <= exact_max);
                 prop_assert!(pmin.update(t, v).unwrap() >= exact_min);
             }
@@ -810,14 +863,14 @@ mod late_sample_tests {
     // the tracker to itself: max 1 here, with 50 still in the window.
     #[test]
     fn late_sample_does_not_reset_the_window() {
-        let mut wm = WindowedMax::<i64>::new(100).unwrap();
+        let mut wm = WindowedMax::<i64, i128>::new(ns(100)).unwrap();
         let _ = wm.update(1000, 50);
         let _ = wm.update(1030, 40);
         assert_eq!(wm.update(1020, 1), Some(50));
         assert_eq!(wm.max(), Some(50));
         assert_eq!(wm.count(), 2);
 
-        let mut wn = WindowedMin::<i64>::new(100).unwrap();
+        let mut wn = WindowedMin::<i64, i128>::new(ns(100)).unwrap();
         let _ = wn.update(1000, 5);
         let _ = wn.update(1030, 6);
         assert_eq!(wn.update(1020, 99), Some(5));
@@ -828,12 +881,12 @@ mod late_sample_tests {
     // The documented cost of ignoring: a late extreme value is dropped.
     #[test]
     fn late_extreme_value_is_dropped() {
-        let mut wm = WindowedMax::<f64>::new(100).unwrap();
+        let mut wm = WindowedMax::<f64, i128>::new(ns(100)).unwrap();
         let _ = wm.update(1000, 10.0).unwrap();
         let _ = wm.update(1030, 20.0).unwrap();
         assert_eq!(wm.update(1020, 99.0).unwrap(), 20.0);
 
-        let mut wn = WindowedMin::<f64>::new(100).unwrap();
+        let mut wn = WindowedMin::<f64, i128>::new(ns(100)).unwrap();
         let _ = wn.update(1000, 10.0).unwrap();
         let _ = wn.update(1030, 5.0).unwrap();
         assert_eq!(wn.update(1020, -99.0).unwrap(), 5.0);
@@ -842,7 +895,7 @@ mod late_sample_tests {
 
     #[test]
     fn equal_timestamp_is_accepted() {
-        let mut wm = WindowedMax::<i64>::new(100).unwrap();
+        let mut wm = WindowedMax::<i64, i128>::new(ns(100)).unwrap();
         let _ = wm.update(1000, 10);
         assert_eq!(wm.update(1000, 30), Some(30));
         assert_eq!(wm.count(), 2);
@@ -851,14 +904,14 @@ mod late_sample_tests {
     #[test]
     fn reset_forgets_the_last_timestamp() {
         // 5 is before 1000: late without the reset, taken after it.
-        let mut wm = WindowedMax::<i64>::new(100).unwrap();
+        let mut wm = WindowedMax::<i64, i128>::new(ns(100)).unwrap();
         assert_eq!(wm.update(1000, 7), Some(7));
         assert_eq!(wm.update(5, 9), Some(7));
         wm.reset();
         assert_eq!(wm.update(5, 3), Some(3));
         assert_eq!(wm.count(), 1);
 
-        let mut wn = WindowedMin::<i64>::new(100).unwrap();
+        let mut wn = WindowedMin::<i64, i128>::new(ns(100)).unwrap();
         assert_eq!(wn.update(1000, 7), Some(7));
         assert_eq!(wn.update(5, 1), Some(7));
         wn.reset();
@@ -868,12 +921,12 @@ mod late_sample_tests {
 
     #[test]
     fn the_integer_limits_are_values_like_any_other() {
-        let mut wm = WindowedMax::<i64>::new(10).unwrap();
+        let mut wm = WindowedMax::<i64, i128>::new(ns(10)).unwrap();
         assert_eq!(wm.update(0, i64::MIN), Some(i64::MIN));
         assert_eq!(wm.update(1, i64::MAX), Some(i64::MAX));
         assert_eq!(wm.update(12, i64::MIN), Some(i64::MIN));
 
-        let mut wn = WindowedMin::<i64>::new(10).unwrap();
+        let mut wn = WindowedMin::<i64, i128>::new(ns(10)).unwrap();
         assert_eq!(wn.update(0, i64::MAX), Some(i64::MAX));
         assert_eq!(wn.update(1, i64::MIN), Some(i64::MIN));
         assert_eq!(wn.update(12, i64::MAX), Some(i64::MAX));
@@ -881,7 +934,7 @@ mod late_sample_tests {
 
     #[test]
     fn equal_timestamps_are_taken_by_the_minimum_too() {
-        let mut wn = WindowedMin::<i64>::new(100).unwrap();
+        let mut wn = WindowedMin::<i64, i128>::new(ns(100)).unwrap();
         assert_eq!(wn.update(10, 5), Some(5));
         assert_eq!(wn.update(10, 3), Some(3));
         assert_eq!(wn.count(), 2);
@@ -898,14 +951,14 @@ mod late_sample_tests {
             win in 1u64..200,
             steps in proptest::collection::vec((-60i64..50, -1_000i64..1_000), 1..300),
         ) {
-            let mut pmax = WindowedMax::<i64>::new(win).unwrap();
-            let mut pmin = WindowedMin::<i64>::new(win).unwrap();
-            let mut ref_max = WindowedMax::<i64>::new(win).unwrap();
-            let mut ref_min = WindowedMin::<i64>::new(win).unwrap();
-            let mut kept: Vec<(u64, i64)> = Vec::new();
-            let mut t = 1_000_000u64; // far from the wrap: plain `>=` is the reference
+            let mut pmax = WindowedMax::<i64, i128>::new(ns(win)).unwrap();
+            let mut pmin = WindowedMin::<i64, i128>::new(ns(win)).unwrap();
+            let mut ref_max = WindowedMax::<i64, i128>::new(ns(win)).unwrap();
+            let mut ref_min = WindowedMin::<i64, i128>::new(ns(win)).unwrap();
+            let mut kept: Vec<(i128, i64)> = Vec::new();
+            let mut t = 1_000_000i128;
             for (step, v) in steps {
-                t = t.wrapping_add_signed(step);
+                t += i128::from(step);
                 let got_max = pmax.update(t, v).unwrap();
                 let got_min = pmin.update(t, v).unwrap();
                 let last = kept.last().map(|&(ts, _)| ts);
@@ -915,8 +968,8 @@ mod late_sample_tests {
                     let _ = ref_min.update(t, v);
                 }
                 let now = kept.last().unwrap().0;
-                let exact_max = kept.iter().filter(|&&(ts, _)| now - ts <= win).map(|&(_, v)| v).max().unwrap();
-                let exact_min = kept.iter().filter(|&&(ts, _)| now - ts <= win).map(|&(_, v)| v).min().unwrap();
+                let exact_max = kept.iter().filter(|&&(ts, _)| now - ts <= i128::from(win)).map(|&(_, v)| v).max().unwrap();
+                let exact_min = kept.iter().filter(|&&(ts, _)| now - ts <= i128::from(win)).map(|&(_, v)| v).min().unwrap();
                 prop_assert_eq!(got_max, ref_max.max().unwrap());
                 prop_assert_eq!(got_min, ref_min.min().unwrap());
                 prop_assert!(got_max <= exact_max);

@@ -20,17 +20,16 @@ use nexus_stats::Condition;
 use nexus_stats::monitoring::CoDel;
 
 // Detect standing queues via sojourn time
-let mut qd = CoDel::<i64>::builder()
-    .target(10_000)          // waits under 10μs are acceptable
-    .interval(100_000_000)     // 100ms observation window
-    .min_samples(20)
-    .build().unwrap();
+let mut qd = CoDel::<i128>::new(
+    Duration::from_micros(10),     // waits under 10μs are acceptable
+    Duration::from_millis(100),    // for this long before it counts
+).unwrap();
 
 // At dequeue time, measure how long the item waited:
-let sojourn_ns = now_ns - item.enqueue_timestamp;
+let sojourn = Duration::from_nanos((now_ns - item.enqueue_timestamp).max(0) as u64);
 
-match qd.update(now_ns as u64, sojourn_ns) {
-    Some(Condition::Degraded) => {
+match qd.update(now_ns, sojourn) {
+    Condition::Degraded => {
         // Standing queue detected — even the fastest items are waiting too long
         slow_down_producers();
     }
@@ -53,8 +52,8 @@ use nexus_stats::monitoring::CoDel;
 use nexus_stats::smoothing::Ema;
 use nexus_stats::detection::TrendAlert;
 
-let mut queue_health = CoDel::<i64>::builder()
-    .target(10_000).interval(100_000_000).build().unwrap();
+let mut queue_health =
+    CoDel::<i128>::new(Duration::from_micros(10), Duration::from_millis(100)).unwrap();
 
 let mut cpu_util = Ema::builder().span(20).build().unwrap();  // smoothed CPU busy fraction
 
@@ -67,7 +66,7 @@ cpu_util.update(cpu_utilization).unwrap();
 let cpu_hot = matches!(cpu_util.value(), Some(u) if u > 0.85);
 let trend = latency_trend.update(processing_time).unwrap();
 
-let should_throttle = matches!(queue_pressure, Some(Condition::Degraded)) // queue backing up
+let should_throttle = queue_pressure == Condition::Degraded // queue backing up
     || cpu_hot                                                             // CPU maxed
     || matches!(trend, Some(Direction::Rising));                           // getting worse
 

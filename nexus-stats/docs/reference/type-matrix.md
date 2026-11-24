@@ -11,7 +11,7 @@ providers, `alloc + std|libm` means both.
 Numeric forms:
 
 - **`f64`**: a plain name, one instantiation.
-- **`T: Sample`**: one generic type for `f64` and `i64` (`WindowedMax<f64>`, `WindowedMax<i64>`). `update` returns `Result` on `f64` (NaN and infinity rejected) and the plain value on `i64`. Name `T` at construction: `Drawdown::<i64>::new()`, `CoDel::<i64>::builder()`.
+- **`T: Sample`**: one generic type for `f64` and `i64` (`PeakHold<f64>`, `PeakHold<i64>`). On a type not yet migrated, `update` returns `Result` on `f64` (NaN and infinity rejected) and the plain value on `i64`. Name `T` at construction: `PeakHold::<i64>::builder()`.
 - **`T: Float`**: one generic type for `f64` and `f32`; takes and returns `T`, accumulates in `f64`.
 - **`T: Timestamp`**: physical clock time as `i128` nanoseconds or an `Instant`; one clock per value.
 - **`u64` ticks**: the types not yet moved to `Timestamp`; the same clock for every stamp into one value; `clock::MonotonicClock` is the `std` bridge from `Instant`.
@@ -78,7 +78,7 @@ See [Integer vs Float](../guides/integer-vs-float.md) for the caller rules and
 
 | Type | Numeric | Feature | Crate (module) |
 |------|---------|---------|----------------|
-| `MinMaxNorm<T>` | `T: Float` | — | normalization |
+| `MinMaxNorm<V, T>` | `V: Float`, `T: Timestamp` | — | normalization |
 | `ZScoreNorm<T>` | `T: Float` | `std\|libm` | normalization |
 | `QuantileNorm<T>` | `T: Float` | `alloc` | normalization |
 
@@ -87,9 +87,9 @@ See [Integer vs Float](../guides/integer-vs-float.md) for the caller rules and
 | Type | Numeric | Feature | Crate (module) |
 |------|---------|---------|----------------|
 | `PeakToTrough<T>` | any `Copy + PartialOrd + Sub` | — | monitoring |
-| `WindowedMax<T>`, `WindowedMin<T>` | `T: Sample`, `u64` ticks | — | monitoring |
+| `WindowedMax<V, T>`, `WindowedMin<V, T>` | `V: Sample`, `T: Timestamp` | — | monitoring |
 | `PeakHold<T>` | `T: Sample` | — | monitoring |
-| `CoDel<T>` | `T: Sample` sojourn, `u64` ticks | — | monitoring |
+| `CoDel<T>` | `T: Timestamp`; sojourn as `Duration` | — | monitoring |
 | `Jitter<T>` | `f64`, `i64` | — | monitoring |
 | `Liveness<T>` | `T: Timestamp` (`i128` ns, `Instant`) | `alloc` | monitoring |
 | `EventRate<T>` | `T: Timestamp` (`i128` ns, `Instant`) | `std\|libm` | monitoring |

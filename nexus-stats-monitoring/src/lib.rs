@@ -47,9 +47,6 @@
 
 #[cfg(feature = "alloc")]
 extern crate alloc;
-#[macro_use]
-extern crate nexus_stats_core;
-
 mod codel;
 mod error_rate;
 #[cfg(any(feature = "std", feature = "libm"))]
