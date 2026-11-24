@@ -21,11 +21,11 @@ let mut srtt = AsymEma::builder()
 let mut rttvar = EwmVar::builder().span(7).build().unwrap();
 
 // Min RTT baseline (BBR-style)
-let mut min_rtt = WindowedMin::<f64>::new(10_000_000_000).unwrap(); // 10s window
+let mut min_rtt = WindowedMin::<f64, i128>::new(Duration::from_secs(10)).unwrap();
 
 // On each RTT measurement:
 if let Some(smoothed) = srtt.update(rtt_ms).unwrap() {
-    min_rtt.update(now_ns, rtt_ms).unwrap();
+    min_rtt.update(now_ns, rtt_ms);
     // Timeout = smoothed_rtt + 4 × deviation (RFC 6298)
     if let Some(reading) = rttvar.update(rtt_ms) {
         let rto = smoothed + 4.0 * reading.std_dev();
@@ -56,7 +56,7 @@ use nexus_stats::monitoring::WindowedMax;
 use nexus_stats::statistics::HarmonicMean;
 
 // Windowed max of delivery rate (BBR-style)
-let mut bw_max = WindowedMax::<f64>::new(rtt_window_ns).unwrap();
+let mut bw_max = WindowedMax::<f64, i128>::new(rtt_window).unwrap();   // a Duration
 
 // Harmonic mean for average throughput
 let mut avg_bw = HarmonicMean::new();

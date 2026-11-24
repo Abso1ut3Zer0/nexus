@@ -21,7 +21,10 @@ use nexus_stats_core::{Condition, ConfigError, DataError, Timestamp};
 /// The clock `T` is `i128` nanoseconds or an `Instant`. `no_std`
 /// compatible.
 ///
-/// # Time
+/// # Weighting clock
+///
+/// The caller's times. Any call rate; the interval is measured in time,
+/// not in samples.
 ///
 /// Time must not go back. `update` ignores a sample dequeued before the
 /// last one taken: it neither starts nor clears the timer and is not
@@ -40,7 +43,8 @@ pub struct CoDel<T: Timestamp> {
 impl<T: Timestamp> CoDel<T> {
     /// Creates a detector. `target` is the sojourn at which the queue
     /// counts as delayed, and `interval` is how long it must stay there
-    /// before the queue is standing. The RFC suggests 5 ms and 100 ms.
+    /// before the queue is standing. The RFC suggests 5 ms and 100 ms. A
+    /// `target` of zero counts every sojourn as delayed.
     ///
     /// # Errors
     ///
@@ -144,14 +148,13 @@ impl<T: Timestamp> CoDel<T> {
     /// a full interval or more after the start, the queue is standing.
     #[inline]
     fn is_standing_after(&mut self, now: T, above_target: bool) -> bool {
-        if !above_target {
-            self.first_above = None;
-            return false;
-        }
-        let started = *self.first_above.get_or_insert(now);
+        // PERF: no branch on `above_target`. Under mixed load it is a coin
+        // flip, and a mispredict costs more than the rest of the update.
+        let started = self.first_above.unwrap_or(now);
+        self.first_above = above_target.then_some(started);
         // `interval` is positive, so a timer that starts on this sample is
         // not yet standing.
-        now.since(started) >= self.interval
+        above_target & (now.since(started) >= self.interval)
     }
 }
 
@@ -191,7 +194,12 @@ mod tests {
         for t in [0, 300, 600, 999] {
             assert_eq!(cd.update(t, ns(500)), Normal);
         }
-        assert_eq!(cd.update(1_100, ns(10)), Normal);
+        // A sample below target stops the clock: the next slow one, more
+        // than an interval after the first, starts it again.
+        cd.update(1_100, ns(10));
+        assert_eq!(cd.update(1_200, ns(500)), Normal);
+        assert_eq!(cd.update(2_199, ns(500)), Normal);
+        assert_eq!(cd.update(2_200, ns(500)), Degraded);
     }
 
     #[test]
@@ -300,14 +308,25 @@ mod tests {
             state ^= state << 13;
             state ^= state >> 7;
             state ^= state << 17;
-            t += i128::from(state % 400);
             let sojourn = ns((state >> 20) % 180);
+            // One step in eight goes back.
+            if state.is_multiple_of(8) {
+                let before = (checked.count(), checked.condition());
+                assert_eq!(
+                    checked.checked_update(t - 3, sojourn),
+                    Err(NonMonotonicTime)
+                );
+                assert_eq!((checked.count(), checked.condition()), before);
+                continue;
+            }
+            t += i128::from(state % 400);
             assert_eq!(
                 checked.checked_update(t, sojourn),
                 Ok(plain.update(t, sojourn))
             );
         }
-        assert_eq!(plain.count(), 5_000);
+        assert_eq!(plain.count(), checked.count());
+        assert!(plain.count() > 4_000);
     }
 
     #[test]

@@ -70,7 +70,7 @@ type with timestamps, or `PollSaturation`, which is weighted per message.
 - How long has a source been silent, against its usual gap? → **Liveness**
   - The silence in typical gaps, as Cassandra's detector measures it. Call `check(now)` periodically and compare to your limit.
 - Is a queue building up? → **CoDel**
-  - CoDel-inspired. Detects standing queues before buffers fill.
+  - RFC 8289's rule: the wait has stayed at or above a target for a whole interval.
 - Is my consumer thread saturated? → **PollSaturation**
   - From poll outcomes alone, no timestamps: how many messages waited behind this thread, for how long at most.
 - Messages carry an enqueue stamp? → **SojournSaturation**

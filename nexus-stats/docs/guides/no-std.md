@@ -44,7 +44,7 @@ The cheap primitives are generic over `f64` and `i64`:
 `DeadBand<i64>`, `Hysteresis<i64>`, `LevelCrossing<i64>`, `FirstDiff<i64>`,
 `SecondDiff<i64>`,
 `WindowedMax<i64>`, `WindowedMin<i64>`, `PeakHold<i64>`,
-`CoDel<i64>`, `Jitter<i64>`, `WindowedMedian<i64>`, `PeakDetector<i64>`. The
+`Jitter<i64>`, `WindowedMedian<i64>`, `PeakDetector<i64>`. The
 saturation monitors (`PollSaturation`, `SojournSaturation`) are integer
 throughout, so none of it touches floating point. `Liveness` keeps its
 state in integers and uses floating point only to report the ratio. The smoothers that take arbitrary data (`Ema`, `AsymEma`, `Welford`,
@@ -58,7 +58,7 @@ All primitives are stack-allocated with known sizes. No heap allocation.
 |-----------|--------|
 | EMA, CUSUM | 24-56 bytes |
 | Welford | 24 bytes |
-| WindowedMin/Max | 72 bytes |
+| WindowedMin/Max | 176 bytes on `i128` time, 112 on `Instant` |
 | MOSUM<32> | 256 bytes (ring buffer) |
 | WindowedMedian<16> | 256 bytes (2 arrays) |
 | Everything else | 8-32 bytes |

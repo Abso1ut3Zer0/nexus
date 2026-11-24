@@ -238,7 +238,7 @@ stays near its floor and that the queue keeps draining to within budget.
 `is_backlogged` is CoDel's standing-queue rule with your period as the
 interval. Keep `PollSaturation` beside it when you want
 `max_messages_per_poll` and `is_fully_utilized`, which stamps cannot give
-you; keep `CoDel<i64>` when a control decision (shed, drop, back off) should
+you; keep `CoDel` when a control decision (shed, drop, back off) should
 follow from the delay.
 
 The stamp comes from the transport: for our queues and shared memory the

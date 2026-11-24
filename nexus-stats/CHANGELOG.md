@@ -12,6 +12,15 @@ contained.
 
 ### Changed (breaking, time)
 
+- **`monitoring::WindowedMax`, `WindowedMin` and `CoDel`, and
+  `normalization::MinMaxNorm`, take time as `i128` nanoseconds or
+  `Instant`** and spans as `Duration`. The windowed types and `MinMaxNorm`
+  gain a type parameter for the clock. `CoDel` takes the sojourn as a
+  `Duration`, has no `f64` or `i64` form and no warm-up, and is built with
+  `CoDel::new(target, interval)`.
+
+### Changed (breaking, time)
+
 - **Physical clock time is `i128` nanoseconds or `Instant`,** through the
   new sealed `Timestamp` trait. `Liveness`, `EventRate` and
   `HawkesIntensity` are the first types on it; the others that take time

@@ -93,14 +93,14 @@ if live.check(now_ns).is_some_and(|s| s.ratio() > 5.0) {
 ```rust
 use nexus_stats::{Condition, monitoring::CoDel};
 
-let mut qd = CoDel::<i64>::builder()
-    .target(10_000)       // waits under 10μs are fine
-    .interval(100_000_000)  // 100ms observation
-    .build().unwrap();
+let mut qd = CoDel::new(
+    Duration::from_micros(10),    // waits under 10μs are fine
+    Duration::from_millis(100),   // for this long before it counts
+).unwrap();
 
-// At dequeue:
-let wait = now - enqueue_time;
-if let Some(Condition::Degraded) = qd.update(now as u64, wait) {
+// At dequeue, with times as i128 nanoseconds or Instants:
+let wait = now.since(enqueue_time);          // a Duration
+if qd.update(now, wait) == Condition::Degraded {
     slow_down();
 }
 ```

@@ -33,7 +33,7 @@ costs a branch mispredict, about 20 cycles.
 | DistributionShift (window 50) | 15 | 16 | one moments update; a merge per window |
 | **Normalization** | | | |
 | ZScoreNorm<f64> | 6 | 7 | score, then EW mean and variance |
-| MinMaxNorm<f64> | 15 | 19 | two 3-sample window trackers |
+| MinMaxNorm | 42 | 45 | two 3-sample window trackers, `i128` time |
 | QuantileNorm<f64> (resolution 9) | 186 | 234 | P² histogram, 11 markers |
 | QuantileNorm<f64> (resolution 19) | 292 | 344 | 21 markers |
 | QuantileNorm<f64> (resolution 99) | 886 | 1089 | 101 markers |
@@ -54,11 +54,11 @@ costs a branch mispredict, about 20 cycles.
 | HarmonicMean | 6 | 7 | one reciprocal |
 | **Monitoring** | | | |
 | PeakToTrough<f64> | 7 | 7 | compare + max |
-| WindowedMax/Min<f64> | 9 | 11 | 3-sample promotion |
+| WindowedMax/Min | 22 | 25 | 3-sample promotion, `i128` time |
 | PeakHold<f64> | 8 | 10 | compare + decay |
 | Liveness | 12 | 13 | integer window sum; `check` is 11 |
 | EventRate | <1 | <1 | a counter; the averages move at `take` |
-| CoDel<i64> | 5 | 6 | first_above deadline (RFC 8289) |
+| CoDel | 17 | 21 | first_above deadline (RFC 8289), `i128` time |
 | PollSaturation::on_work | 6 | 6 | branchless (cmov selects, no jumps); 5 under mixed load too |
 | PollSaturation::on_idle | 1 | 1 | one byte store, no clock |
 | SojournSaturation::update | 7 | 7 | branchless: clamp, count, min, max, saturating total |

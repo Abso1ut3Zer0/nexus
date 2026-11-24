@@ -2247,9 +2247,9 @@ fn main() {
     bench_peak_to_trough_f64(&mut buf);
     print_row("PeakToTrough::<f64>::update", &mut buf);
     bench_windowed_max_f64(&mut buf);
-    print_row("WindowedMax::<f64>::update", &mut buf);
+    print_row("WindowedMax::update", &mut buf);
     bench_windowed_min_f64(&mut buf);
-    print_row("WindowedMin::<f64>::update", &mut buf);
+    print_row("WindowedMin::update", &mut buf);
     bench_poll_saturation_on_work(&mut buf);
     print_row("PollSaturation::on_work", &mut buf);
     bench_poll_saturation_on_work_mixed(&mut buf);

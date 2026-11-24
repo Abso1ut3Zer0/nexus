@@ -17,9 +17,9 @@ use nexus_stats_monitoring::{WindowedMax, WindowedMin};
 /// from inside the window, but not always the most extreme ones, so the
 /// range used here can be narrower than the true window's, never wider.
 ///
-/// `T` is the sample type at the boundary, `f64` or `f32`; the trackers
-/// run in `f64` either way, so `MinMaxNorm<f32>` is for producing `f32`
-/// features, not for saving precision. The clock `C` is `i128` nanoseconds
+/// `V` is the sample type at the boundary, `f64` or `f32`; the trackers
+/// run in `f64` either way, so `MinMaxNorm<f32, T>` is for producing `f32`
+/// features, not for saving precision. The clock `T` is `i128` nanoseconds
 /// or an `Instant`.
 ///
 /// # Examples
@@ -39,24 +39,24 @@ use nexus_stats_monitoring::{WindowedMax, WindowedMin};
 /// assert_eq!(v, Some(0.5));
 /// ```
 #[derive(Debug, Clone)]
-pub struct MinMaxNorm<T: Float, C: Timestamp> {
-    min_tracker: WindowedMin<f64, C>,
-    max_tracker: WindowedMax<f64, C>,
-    _sample: PhantomData<T>,
+pub struct MinMaxNorm<V: Float, T: Timestamp> {
+    min_tracker: WindowedMin<f64, T>,
+    max_tracker: WindowedMax<f64, T>,
+    _sample: PhantomData<V>,
 }
 
 /// Builder for [`MinMaxNorm`].
 #[derive(Debug, Clone)]
-pub struct MinMaxNormBuilder<T: Float, C: Timestamp> {
+pub struct MinMaxNormBuilder<V: Float, T: Timestamp> {
     window: Option<Duration>,
-    _sample: PhantomData<(T, C)>,
+    _sample: PhantomData<(V, T)>,
 }
 
-impl<T: Float, C: Timestamp> MinMaxNorm<T, C> {
+impl<V: Float, T: Timestamp> MinMaxNorm<V, T> {
     /// Creates a builder.
     #[inline]
     #[must_use]
-    pub fn builder() -> MinMaxNormBuilder<T, C> {
+    pub fn builder() -> MinMaxNormBuilder<V, T> {
         MinMaxNormBuilder {
             window: None,
             _sample: PhantomData,
@@ -75,7 +75,7 @@ impl<T: Float, C: Timestamp> MinMaxNorm<T, C> {
     /// Returns `DataError::NotANumber` if the sample is NaN, or
     /// `DataError::Infinite` if the sample is infinite.
     #[inline]
-    pub fn update(&mut self, time: C, sample: T) -> Result<Option<T>, nexus_stats_core::DataError> {
+    pub fn update(&mut self, time: T, sample: V) -> Result<Option<V>, nexus_stats_core::DataError> {
         check_finite!(sample);
         let x = sample.to_f64();
         self.min_tracker.update(time, x);
@@ -84,7 +84,7 @@ impl<T: Float, C: Timestamp> MinMaxNorm<T, C> {
         // within it; a late sample may not.
         Ok(self
             .compute_normalized(x)
-            .map(|v| T::from_f64(v.to_f64().clamp(0.0, 1.0))))
+            .map(|v| V::from_f64(v.to_f64().clamp(0.0, 1.0))))
     }
 
     /// Normalizes an arbitrary value against current windowed min/max
@@ -101,13 +101,13 @@ impl<T: Float, C: Timestamp> MinMaxNorm<T, C> {
     /// Returns `DataError::NotANumber` if the value is NaN, or
     /// `DataError::Infinite` if the value is infinite.
     #[inline]
-    pub fn normalize(&self, value: T) -> Result<Option<T>, nexus_stats_core::DataError> {
+    pub fn normalize(&self, value: V) -> Result<Option<V>, nexus_stats_core::DataError> {
         check_finite!(value);
         Ok(self.compute_normalized(value.to_f64()))
     }
 
     #[inline]
-    fn compute_normalized(&self, value: f64) -> Option<T> {
+    fn compute_normalized(&self, value: f64) -> Option<V> {
         let min = self.min_tracker.min()?;
         let max = self.max_tracker.max()?;
         let range = max - min;
@@ -116,30 +116,30 @@ impl<T: Float, C: Timestamp> MinMaxNorm<T, C> {
         } else {
             0.5
         };
-        Some(T::from_f64(out))
+        Some(V::from_f64(out))
     }
 
     /// Current windowed minimum, or `None` if empty.
     #[inline]
     #[must_use]
-    pub fn min(&self) -> Option<T> {
-        self.min_tracker.min().map(T::from_f64)
+    pub fn min(&self) -> Option<V> {
+        self.min_tracker.min().map(V::from_f64)
     }
 
     /// Current windowed maximum, or `None` if empty.
     #[inline]
     #[must_use]
-    pub fn max(&self) -> Option<T> {
-        self.max_tracker.max().map(T::from_f64)
+    pub fn max(&self) -> Option<V> {
+        self.max_tracker.max().map(V::from_f64)
     }
 
     /// Current range (max - min), or `None` if empty.
     #[inline]
     #[must_use]
-    pub fn range(&self) -> Option<T> {
+    pub fn range(&self) -> Option<V> {
         let min = self.min_tracker.min()?;
         let max = self.max_tracker.max()?;
-        Some(T::from_f64(max - min))
+        Some(V::from_f64(max - min))
     }
 
     /// Number of samples accepted into the window since construction or
@@ -165,7 +165,7 @@ impl<T: Float, C: Timestamp> MinMaxNorm<T, C> {
     }
 }
 
-impl<T: Float, C: Timestamp> MinMaxNormBuilder<T, C> {
+impl<V: Float, T: Timestamp> MinMaxNormBuilder<V, T> {
     /// Window length (required, must be positive).
     #[inline]
     #[must_use]
@@ -180,7 +180,7 @@ impl<T: Float, C: Timestamp> MinMaxNormBuilder<T, C> {
     ///
     /// Returns `ConfigError` if window is missing or zero.
     #[inline]
-    pub fn build(self) -> Result<MinMaxNorm<T, C>, nexus_stats_core::ConfigError> {
+    pub fn build(self) -> Result<MinMaxNorm<V, T>, nexus_stats_core::ConfigError> {
         let window = self
             .window
             .ok_or(nexus_stats_core::ConfigError::Missing("window"))?;

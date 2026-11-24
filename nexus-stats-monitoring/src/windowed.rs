@@ -25,7 +25,7 @@ use nexus_stats_core::{Sample, Timestamp};
 /// samples. O(1) per update, `no_std` compatible. A NaN is ignored, as
 /// [`f64::max`] ignores one; infinity is a value like any other.
 ///
-/// The clock `C` is `i128` nanoseconds or an `Instant`, and the window is a
+/// The clock `T` is `i128` nanoseconds or an `Instant`, and the window is a
 /// [`Duration`].
 ///
 /// # Use Cases
@@ -33,9 +33,10 @@ use nexus_stats_core::{Sample, Timestamp};
 /// - BBR-style bandwidth estimation
 /// - Peak detection within a time window
 ///
-/// # Time
+/// # Weighting clock
 ///
-/// The reading is as of the last `update`. A quiet input keeps returning
+/// The caller's times. Any call rate; the window is measured in time, not
+/// in samples. The reading is as of the last `update`. A quiet input keeps returning
 /// its last extremum until a later `update` ages it out. A reader that
 /// needs the window to expire without new data should treat the result as
 /// stale by its own clock.
@@ -46,12 +47,14 @@ use nexus_stats_core::{Sample, Timestamp};
 /// [`reset`](Self::reset). `checked_update` reports a late sample as an
 /// error, which is how a caller finds out.
 #[derive(Debug, Clone)]
-pub struct WindowedMax<T: Sample, C: Timestamp> {
-    window: Window<T, C>,
+pub struct WindowedMax<V: Sample, T: Timestamp> {
+    window: Window<V, T>,
 }
 
-impl<T: Sample, C: Timestamp> WindowedMax<T, C> {
+impl<V: Sample, T: Timestamp> WindowedMax<V, T> {
     /// Creates a windowed maximum tracker over `window` of time.
+    ///
+    /// A window of [`Duration::MAX`] means forever: nothing ages out.
     ///
     /// # Errors
     ///
@@ -66,7 +69,7 @@ impl<T: Sample, C: Timestamp> WindowedMax<T, C> {
     /// Current maximum in the window, or `None` if empty.
     #[inline]
     #[must_use]
-    pub fn max(&self) -> Option<T> {
+    pub fn max(&self) -> Option<V> {
         self.window.best()
     }
 
@@ -74,7 +77,7 @@ impl<T: Sample, C: Timestamp> WindowedMax<T, C> {
     #[inline]
     #[must_use]
     pub fn window(&self) -> Duration {
-        self.window.span
+        self.window.span.whole
     }
 
     /// Number of samples taken.
@@ -103,7 +106,7 @@ impl<T: Sample, C: Timestamp> WindowedMax<T, C> {
     /// A NaN is ignored, as [`f64::max`] ignores one, and so is a value timed
     /// before the last one taken. Infinity is a value like any other.
     #[inline]
-    pub fn update(&mut self, time: C, value: T) -> Option<T> {
+    pub fn update(&mut self, time: T, value: V) -> Option<V> {
         self.window.update(time, value, |a, b| a >= b)
     }
 
@@ -120,9 +123,9 @@ impl<T: Sample, C: Timestamp> WindowedMax<T, C> {
     #[inline]
     pub fn checked_update(
         &mut self,
-        time: C,
-        value: T,
-    ) -> Result<Option<T>, nexus_stats_core::DataError> {
+        time: T,
+        value: V,
+    ) -> Result<Option<V>, nexus_stats_core::DataError> {
         self.window.check(time, value)?;
         Ok(self.update(time, value))
     }
@@ -134,7 +137,7 @@ impl<T: Sample, C: Timestamp> WindowedMax<T, C> {
 /// samples. O(1) per update, `no_std` compatible. A NaN is ignored, as
 /// [`f64::min`] ignores one; infinity is a value like any other.
 ///
-/// The clock `C` is `i128` nanoseconds or an `Instant`, and the window is a
+/// The clock `T` is `i128` nanoseconds or an `Instant`, and the window is a
 /// [`Duration`].
 ///
 /// # Use Cases
@@ -142,9 +145,10 @@ impl<T: Sample, C: Timestamp> WindowedMax<T, C> {
 /// - Minimum price in a window
 /// - Best-case latency estimation
 ///
-/// # Time
+/// # Weighting clock
 ///
-/// The reading is as of the last `update`. A quiet input keeps returning
+/// The caller's times. Any call rate; the window is measured in time, not
+/// in samples. The reading is as of the last `update`. A quiet input keeps returning
 /// its last extremum until a later `update` ages it out. A reader that
 /// needs the window to expire without new data should treat the result as
 /// stale by its own clock.
@@ -155,12 +159,14 @@ impl<T: Sample, C: Timestamp> WindowedMax<T, C> {
 /// [`reset`](Self::reset). `checked_update` reports a late sample as an
 /// error, which is how a caller finds out.
 #[derive(Debug, Clone)]
-pub struct WindowedMin<T: Sample, C: Timestamp> {
-    window: Window<T, C>,
+pub struct WindowedMin<V: Sample, T: Timestamp> {
+    window: Window<V, T>,
 }
 
-impl<T: Sample, C: Timestamp> WindowedMin<T, C> {
+impl<V: Sample, T: Timestamp> WindowedMin<V, T> {
     /// Creates a windowed minimum tracker over `window` of time.
+    ///
+    /// A window of [`Duration::MAX`] means forever: nothing ages out.
     ///
     /// # Errors
     ///
@@ -175,7 +181,7 @@ impl<T: Sample, C: Timestamp> WindowedMin<T, C> {
     /// Current minimum in the window, or `None` if empty.
     #[inline]
     #[must_use]
-    pub fn min(&self) -> Option<T> {
+    pub fn min(&self) -> Option<V> {
         self.window.best()
     }
 
@@ -183,7 +189,7 @@ impl<T: Sample, C: Timestamp> WindowedMin<T, C> {
     #[inline]
     #[must_use]
     pub fn window(&self) -> Duration {
-        self.window.span
+        self.window.span.whole
     }
 
     /// Number of samples taken.
@@ -212,7 +218,7 @@ impl<T: Sample, C: Timestamp> WindowedMin<T, C> {
     /// A NaN is ignored, as [`f64::min`] ignores one, and so is a value timed
     /// before the last one taken. Infinity is a value like any other.
     #[inline]
-    pub fn update(&mut self, time: C, value: T) -> Option<T> {
+    pub fn update(&mut self, time: T, value: V) -> Option<V> {
         self.window.update(time, value, |a, b| a <= b)
     }
 
@@ -229,9 +235,9 @@ impl<T: Sample, C: Timestamp> WindowedMin<T, C> {
     #[inline]
     pub fn checked_update(
         &mut self,
-        time: C,
-        value: T,
-    ) -> Result<Option<T>, nexus_stats_core::DataError> {
+        time: T,
+        value: V,
+    ) -> Result<Option<V>, nexus_stats_core::DataError> {
         self.window.check(time, value)?;
         Ok(self.update(time, value))
     }
@@ -239,15 +245,15 @@ impl<T: Sample, C: Timestamp> WindowedMin<T, C> {
 
 /// The state the maximum and the minimum share.
 #[derive(Debug, Clone)]
-struct Window<T: Sample, C: Timestamp> {
-    span: Duration,
+struct Window<V: Sample, T: Timestamp> {
+    span: Span,
     /// `None` until the first value.
-    choices: Option<Choices<T, C>>,
+    choices: Option<Choices<V, T>>,
     count: u64,
-    last: LastTime<C>,
+    last: LastTime<T>,
 }
 
-impl<T: Sample, C: Timestamp> Window<T, C> {
+impl<V: Sample, T: Timestamp> Window<V, T> {
     #[inline]
     fn new(span: Duration) -> Result<Self, nexus_stats_core::ConfigError> {
         if span.is_zero() {
@@ -256,7 +262,7 @@ impl<T: Sample, C: Timestamp> Window<T, C> {
             ));
         }
         Ok(Self {
-            span,
+            span: Span::new(span),
             choices: None,
             count: 0,
             last: LastTime::new(),
@@ -272,13 +278,13 @@ impl<T: Sample, C: Timestamp> Window<T, C> {
 
     /// The best choice, or `None` before the first value.
     #[inline]
-    fn best(&self) -> Option<T> {
+    fn best(&self) -> Option<V> {
         Some(self.choices.as_ref()?.best())
     }
 
     /// Why a value would be skipped, if it would be.
     #[inline]
-    fn check(&self, time: C, value: T) -> Result<(), nexus_stats_core::DataError> {
+    fn check(&self, time: T, value: V) -> Result<(), nexus_stats_core::DataError> {
         if value.is_nan() {
             return Err(nexus_stats_core::DataError::NotANumber);
         }
@@ -288,7 +294,7 @@ impl<T: Sample, C: Timestamp> Window<T, C> {
     /// Takes a value and returns the best choice. `better(a, b)` says
     /// whether `a` beats or ties `b`. A NaN and a late value are skipped.
     #[inline]
-    fn update(&mut self, time: C, value: T, better: impl Fn(T, T) -> bool) -> Option<T> {
+    fn update(&mut self, time: T, value: V, better: impl Fn(V, V) -> bool) -> Option<V> {
         if value.is_nan() || self.last.would_go_back(time) {
             return self.best();
         }
@@ -304,17 +310,37 @@ impl<T: Sample, C: Timestamp> Window<T, C> {
     }
 }
 
-/// A value and the time it was taken.
+/// The window length, with the two fractions the algorithm ages by.
 #[derive(Debug, Clone, Copy)]
-struct Stamped<T, C> {
-    time: C,
-    value: T,
+struct Span {
+    whole: Duration,
+    // PERF: dividing a `Duration` on every update costs more than the rest.
+    half: Duration,
+    quarter: Duration,
 }
 
-impl<T: Copy, C: Timestamp> Stamped<T, C> {
+impl Span {
+    #[inline]
+    fn new(whole: Duration) -> Self {
+        Self {
+            whole,
+            half: whole / 2,
+            quarter: whole / 4,
+        }
+    }
+}
+
+/// A value and the time it was taken.
+#[derive(Debug, Clone, Copy)]
+struct Stamped<V, T> {
+    time: T,
+    value: V,
+}
+
+impl<V: Copy, T: Timestamp> Stamped<V, T> {
     /// How long before `now` this was taken.
     #[inline]
-    fn age_at(&self, now: C) -> Duration {
+    fn age_at(&self, now: T) -> Duration {
         now.since(self.time)
     }
 }
@@ -323,17 +349,17 @@ impl<T: Copy, C: Timestamp> Stamped<T, C> {
 /// as recent as the one before it. The functions are named for the ones
 /// they port from `lib/win_minmax.c`.
 #[derive(Debug, Clone, Copy)]
-struct Choices<T, C>([Stamped<T, C>; 3]);
+struct Choices<V, T>([Stamped<V, T>; 3]);
 
-impl<T: Copy, C: Timestamp> Choices<T, C> {
+impl<V: Copy, T: Timestamp> Choices<V, T> {
     /// Every choice is `sample` (`minmax_reset`).
     #[inline]
-    fn all(sample: Stamped<T, C>) -> Self {
+    fn all(sample: Stamped<V, T>) -> Self {
         Self([sample; 3])
     }
 
     #[inline]
-    fn best(&self) -> T {
+    fn best(&self) -> V {
         self.0[0].value
     }
 
@@ -342,10 +368,10 @@ impl<T: Copy, C: Timestamp> Choices<T, C> {
     /// and `a <= b` for a minimum. Times must not go back (the caller drops
     /// late samples), so no age is negative.
     #[inline]
-    fn take(&mut self, sample: Stamped<T, C>, span: Duration, better: impl Fn(T, T) -> bool) -> T {
+    fn take(&mut self, sample: Stamped<V, T>, span: Span, better: impl Fn(V, V) -> bool) -> V {
         let [first, second, third] = &mut self.0;
         // A new extremum, or nothing left in the window: forget the rest.
-        if better(sample.value, first.value) || third.age_at(sample.time) > span {
+        if better(sample.value, first.value) || third.age_at(sample.time) > span.whole {
             *self = Self::all(sample);
             return sample.value;
         }
@@ -362,23 +388,23 @@ impl<T: Copy, C: Timestamp> Choices<T, C> {
     /// `minmax_subwin_update`: as time advances, replaces the choices that
     /// have aged.
     #[inline]
-    fn age(&mut self, sample: Stamped<T, C>, span: Duration) {
+    fn age(&mut self, sample: Stamped<V, T>, span: Span) {
         let [first, second, third] = self.0;
         let age = first.age_at(sample.time);
 
-        if age > span {
+        if age > span.whole {
             // The best aged out. The 2nd may have too (only the 3rd was
             // checked on entry), so this may have to run twice.
             self.promote(sample);
-            if self.0[0].age_at(sample.time) > span {
+            if self.0[0].age_at(sample.time) > span.whole {
                 self.promote(sample);
             }
-        } else if second.time == first.time && age > span / 4 {
+        } else if second.time == first.time && age > span.quarter {
             // A quarter of the window passed without a distinct 2nd
             // choice: take one from the 2nd quarter.
             self.0[1] = sample;
             self.0[2] = sample;
-        } else if third.time == second.time && age > span / 2 {
+        } else if third.time == second.time && age > span.half {
             // Half the window passed without a distinct 3rd choice: take
             // one from the last half.
             self.0[2] = sample;
@@ -387,7 +413,7 @@ impl<T: Copy, C: Timestamp> Choices<T, C> {
 
     /// The 2nd becomes the best, the 3rd the 2nd, and `sample` the 3rd.
     #[inline]
-    fn promote(&mut self, sample: Stamped<T, C>) {
+    fn promote(&mut self, sample: Stamped<V, T>) {
         self.0 = [self.0[1], self.0[2], sample];
     }
 }
@@ -436,6 +462,7 @@ mod raw_tests {
 
     #[test]
     fn any_window_and_any_forward_jump_are_taken() {
+        // A window of `Duration::MAX` means forever: nothing ages out.
         let mut wm = WindowedMax::<i64, i128>::new(Duration::MAX).unwrap();
         assert_eq!(wm.update(i128::MIN, 5), Some(5));
         assert_eq!(wm.update(i128::MAX, 3), Some(5));
@@ -751,6 +778,47 @@ mod raw_tests {
             level += r.below(21) as i64 - 10;
             level
         });
+    }
+}
+
+#[cfg(all(test, feature = "std"))]
+mod instant_tests {
+    use super::*;
+    use std::time::Instant;
+
+    #[test]
+    fn an_instant_and_nanoseconds_agree() {
+        let start = Instant::now();
+        let window = Duration::from_millis(40);
+        let mut on_instant = (
+            WindowedMax::<i64, Instant>::new(window).unwrap(),
+            WindowedMin::<i64, Instant>::new(window).unwrap(),
+        );
+        let mut on_nanos = (
+            WindowedMax::<i64, i128>::new(window).unwrap(),
+            WindowedMin::<i64, i128>::new(window).unwrap(),
+        );
+        let mut state = 0x9E37_79B9_7F4A_7C15u64;
+        let mut micros = 0u64;
+        for _ in 0..20_000 {
+            state ^= state << 13;
+            state ^= state >> 7;
+            state ^= state << 17;
+            micros += state % 9_000;
+            let value = (state >> 20) as i64 % 1_000;
+            let (at, nanos) = (
+                start + Duration::from_micros(micros),
+                i128::from(micros) * 1_000,
+            );
+            assert_eq!(
+                on_instant.0.update(at, value),
+                on_nanos.0.update(nanos, value)
+            );
+            assert_eq!(
+                on_instant.1.update(at, value),
+                on_nanos.1.update(nanos, value)
+            );
+        }
     }
 }
 
