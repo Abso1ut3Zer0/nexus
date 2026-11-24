@@ -25,6 +25,7 @@ pub mod parts;
 
 /// Clock trait and implementations.
 pub mod clock;
+pub use clock::Timestamp;
 
 /// Fixed-capacity storage shared by the windowed types (`alloc`).
 #[cfg(feature = "alloc")]
@@ -36,7 +37,6 @@ pub use enums::{Accuracy, Condition, ConfigError, DataError, Direction};
 /// implemented only here.
 pub mod sample;
 #[doc(hidden)]
-pub use sample::{AlphaEma, EmaKernel, ShiftEma};
 pub use sample::{Float, Sample};
 
 pub mod statistics;

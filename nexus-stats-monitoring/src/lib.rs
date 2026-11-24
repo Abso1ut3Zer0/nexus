@@ -17,11 +17,12 @@
 //!
 //! ## Rates and timing
 //!
-//! - [`EventRate`]: events per unit of time, smoothed.
+//! - [`EventRate`]: events in a window, their exact rate, and the load averaged
+//!   over one, five and fifteen minutes.
 //! - [`ErrorRate`]: the share of events that failed.
 //! - [`Jitter`]: how much consecutive samples or arrivals vary.
-//! - [`Liveness`]: whether anything has happened recently.
-//! - [`HawkesIntensity`]: the rate of events that come in clusters.
+//! - [`Liveness`]: how long a source has been silent, in typical gaps (requires
+//!   `alloc`).
 //!
 //! ## Queues
 //!
@@ -51,10 +52,10 @@ extern crate nexus_stats_core;
 
 mod codel;
 mod error_rate;
-mod event_rate;
 #[cfg(any(feature = "std", feature = "libm"))]
-mod hawkes;
+mod event_rate;
 mod jitter;
+#[cfg(feature = "alloc")]
 mod liveness;
 mod peak_hold;
 mod peak_to_trough;
@@ -63,10 +64,10 @@ mod sojourn_saturation;
 mod windowed;
 pub use codel::*;
 pub use error_rate::*;
-pub use event_rate::*;
 #[cfg(any(feature = "std", feature = "libm"))]
-pub use hawkes::*;
+pub use event_rate::*;
 pub use jitter::*;
+#[cfg(feature = "alloc")]
 pub use liveness::*;
 pub use peak_hold::*;
 pub use peak_to_trough::*;
@@ -75,7 +76,7 @@ pub use sojourn_saturation::*;
 pub use windowed::*;
 
 // What appears in this crate's signatures, so it can be used on its own.
-pub use nexus_stats_core::{Condition, ConfigError, DataError, Sample};
+pub use nexus_stats_core::{Condition, ConfigError, DataError, Sample, Timestamp};
 
 /// The README's examples, compiled and run as doc tests.
 #[cfg(all(doctest, feature = "std"))]

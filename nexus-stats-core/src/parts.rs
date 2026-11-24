@@ -1,6 +1,9 @@
 //! The parts the statistics are built from: small pieces of state that
 //! several types share. Operations on numbers are in [`math`](crate::math).
 
+use core::time::Duration;
+
+use crate::Timestamp;
 use crate::math::{MulAdd, alpha_from_span, in_unit_interval};
 #[cfg(any(feature = "std", feature = "libm"))]
 use crate::math::{alpha_from_halflife, positive_finite, sqrt};
@@ -177,6 +180,82 @@ impl RoundingBound {
     #[inline]
     pub fn reset(&mut self) {
         *self = Self::new();
+    }
+}
+
+/// The latest time a clocked type has taken, and the rule that time must
+/// not go back.
+#[doc(hidden)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct LastTime<T: Timestamp> {
+    last: Option<T>,
+}
+
+impl<T: Timestamp> LastTime<T> {
+    /// No time taken yet.
+    #[must_use]
+    pub const fn new() -> Self {
+        Self { last: None }
+    }
+
+    /// Starting from `time`, as if it had been taken.
+    #[must_use]
+    pub const fn starting_at(time: T) -> Self {
+        Self { last: Some(time) }
+    }
+
+    /// The latest time taken, or `None` before the first.
+    #[inline]
+    #[must_use]
+    pub fn get(self) -> Option<T> {
+        self.last
+    }
+
+    /// Whether taking `time` would go back: it is before the latest time
+    /// taken.
+    #[inline]
+    #[must_use]
+    pub fn would_go_back(self, time: T) -> bool {
+        self.last.is_some_and(|last| time < last)
+    }
+
+    /// `Ok` if `time` may be taken.
+    ///
+    /// # Errors
+    ///
+    /// [`DataError::NonMonotonicTime`](crate::DataError::NonMonotonicTime)
+    /// if `time` is before the latest time taken.
+    #[inline]
+    pub fn check(self, time: T) -> Result<(), crate::DataError> {
+        if self.would_go_back(time) {
+            return Err(crate::DataError::NonMonotonicTime);
+        }
+        Ok(())
+    }
+
+    /// The time from the latest one taken to `time`: zero if `time` is not
+    /// after it, `None` before the first.
+    #[inline]
+    #[must_use]
+    pub fn elapsed_to(self, time: T) -> Option<Duration> {
+        Some(time.since(self.last?))
+    }
+
+    /// Takes `time` as the latest.
+    #[inline]
+    pub fn set(&mut self, time: T) {
+        self.last = Some(time);
+    }
+
+    /// Back to no time taken.
+    pub fn reset(&mut self) {
+        self.last = None;
+    }
+}
+
+impl<T: Timestamp> Default for LastTime<T> {
+    fn default() -> Self {
+        Self::new()
     }
 }
 

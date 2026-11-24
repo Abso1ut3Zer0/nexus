@@ -22,8 +22,8 @@ use nexus_stats::{
         RobustZScore, ShiryaevRoberts, TrendAlert,
     },
     estimation::{
-        BetaBinomial, Decision, GammaPoisson, Kalman1d, Kalman2d, Kalman3d, SprtBernoulli,
-        SprtGaussian,
+        BetaBinomial, Decision, GammaPoisson, HawkesIntensity, Kalman1d, Kalman2d, Kalman3d,
+        SprtBernoulli, SprtGaussian,
     },
     frequency::{FlexProportionGlobal, FlexProportionLocal, TopK},
     learning::{
@@ -31,8 +31,8 @@ use nexus_stats::{
         RlsFilter, ThompsonBeta, ThompsonGamma, Ucb1,
     },
     monitoring::{
-        CoDel, ErrorRate, EventRate, HawkesIntensity, Jitter, Liveness, PeakHold, PeakToTrough,
-        WindowedMax, WindowedMin,
+        CoDel, ErrorRate, EventRate, Jitter, Liveness, PeakHold, PeakToTrough, WindowedMax,
+        WindowedMin,
     },
     regression::{
         EwLinearRegression, EwPolynomialRegression, ExponentialRegression, HitRate,
@@ -268,22 +268,19 @@ fn bench_ewm_var(samples: &mut [u64]) {
 // Phase 3: Liveness, MOSUM
 // ============================================================================
 
-fn bench_liveness_u64(samples: &mut [u64]) {
-    let mut lv = Liveness::builder()
-        .span(7)
-        .deadline_multiple(3)
-        .build()
-        .unwrap();
+fn bench_liveness(samples: &mut [u64]) {
+    let mut lv = Liveness::builder().build().unwrap();
     let mut rng = 12345u64;
-    for i in 0..WARMUP {
-        let _ = lv.update(i as u64 * 10 + next_val(&mut rng) % 5);
+    let mut t = 0i128; // nanoseconds
+    for _ in 0..WARMUP {
+        t += i128::from(10 + next_val(&mut rng) % 5);
+        lv.update(t);
     }
-    let mut t = WARMUP as u64 * 10;
     for s in samples.iter_mut() {
         let start = rdtsc_start();
         for _ in 0..BATCH {
-            t += 10 + next_val(&mut rng) % 5;
-            let _ = black_box(lv.update(t));
+            t += i128::from(10 + next_val(&mut rng) % 5);
+            lv.update(black_box(t));
         }
         let end = rdtsc_end();
         *s = (end - start) / BATCH;
@@ -488,22 +485,20 @@ fn bench_topk(samples: &mut [u64]) {
 // New types: EventRate, CoDel
 // ============================================================================
 
-fn bench_event_rate_u64(samples: &mut [u64]) {
-    let mut er = EventRate::builder().span(15).build().unwrap();
-    let mut rng = 12345u64;
-    let mut t = 0u64;
+fn bench_event_rate(samples: &mut [u64]) {
+    let mut er = EventRate::starting_at(0_i128);
+    let mut t = 0i128; // nanoseconds
     for _ in 0..WARMUP {
-        t += 10 + next_val(&mut rng) % 5;
-        er.update(t);
+        er.update();
     }
     for s in samples.iter_mut() {
         let start = rdtsc_start();
         for _ in 0..BATCH {
-            t += 10 + next_val(&mut rng) % 5;
-            er.update(t);
+            er.update();
         }
         let end = rdtsc_end();
-        black_box(er.rate());
+        t += 1_000_000;
+        black_box(er.take(t));
         *s = (end - start) / BATCH;
     }
 }
@@ -1367,7 +1362,7 @@ fn bench_debounce(samples: &mut [u64]) {
     }
 }
 
-fn bench_hawkes_intensity_u64(samples: &mut [u64]) {
+fn bench_hawkes_intensity(samples: &mut [u64]) {
     let mut h = HawkesIntensity::builder()
         .mu(0.1)
         .alpha(0.5)
@@ -1375,15 +1370,15 @@ fn bench_hawkes_intensity_u64(samples: &mut [u64]) {
         .build()
         .unwrap();
     let mut rng = 12345u64;
-    let mut t = 0u64;
+    let mut t = 0i128; // nanoseconds
     for _ in 0..WARMUP {
-        t += 10 + next_val(&mut rng) % 5;
+        t += i128::from(10 + next_val(&mut rng) % 5) * 1_000_000;
         h.update(t);
     }
     for s in samples.iter_mut() {
         let start = rdtsc_start();
         for _ in 0..BATCH {
-            t += 10 + next_val(&mut rng) % 5;
+            t += i128::from(10 + next_val(&mut rng) % 5) * 1_000_000;
             h.update(black_box(t));
         }
         let end = rdtsc_end();
@@ -1628,16 +1623,12 @@ fn bench_moments_merge(samples: &mut [u64]) {
 }
 
 fn bench_liveness_check(samples: &mut [u64]) {
-    let mut lv = Liveness::builder()
-        .span(7)
-        .deadline_multiple(3)
-        .build()
-        .unwrap();
+    let mut lv = Liveness::builder().build().unwrap();
     let mut rng = 12345u64;
-    let mut t = 0u64;
+    let mut t = 0i128; // nanoseconds
     for _ in 0..WARMUP {
-        t += 10 + next_val(&mut rng) % 5;
-        let _ = lv.update(t);
+        t += i128::from(10 + next_val(&mut rng) % 5);
+        lv.update(t);
     }
     for s in samples.iter_mut() {
         let start = rdtsc_start();
@@ -2266,9 +2257,9 @@ fn main() {
     print_row("PollSaturation::on_idle", &mut buf);
     bench_sojourn_saturation_update(&mut buf);
     print_row("SojournSaturation::update", &mut buf);
-    bench_liveness_u64(&mut buf);
+    bench_liveness(&mut buf);
     print_row("Liveness::update", &mut buf);
-    bench_event_rate_u64(&mut buf);
+    bench_event_rate(&mut buf);
     print_row("EventRate::update", &mut buf);
     bench_codel_i64(&mut buf);
     print_row("CoDel::<i64>::update", &mut buf);
@@ -2278,7 +2269,7 @@ fn main() {
     print_row("ErrorRate::update", &mut buf);
     bench_trend_alert_f64(&mut buf);
     print_row("TrendAlert::update", &mut buf);
-    bench_hawkes_intensity_u64(&mut buf);
+    bench_hawkes_intensity(&mut buf);
     print_row("HawkesIntensity::update", &mut buf);
 
     section("Anomaly Detection");
