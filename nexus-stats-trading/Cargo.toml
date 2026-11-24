@@ -12,16 +12,15 @@ categories.workspace = true
 
 [features]
 default = ["std", "regression"]
-std = ["nexus-stats-core/std", "nexus-stats-smoothing/std", "nexus-stats-monitoring/std", "nexus-stats-regression?/std", "alloc"]
-alloc = ["nexus-stats-core/alloc", "nexus-stats-smoothing/alloc", "nexus-stats-monitoring/alloc", "nexus-stats-regression?/alloc"]
-libm = ["nexus-stats-core/libm", "nexus-stats-smoothing/libm", "nexus-stats-monitoring/libm", "nexus-stats-regression?/libm"]
+std = ["nexus-stats-core/std", "nexus-stats-smoothing/std", "nexus-stats-regression?/std", "alloc"]
+alloc = ["nexus-stats-core/alloc", "nexus-stats-smoothing/alloc", "nexus-stats-regression?/alloc"]
+libm = ["nexus-stats-core/libm", "nexus-stats-smoothing/libm", "nexus-stats-regression?/libm"]
 # `KyleLambda`, which is built on the regression crate.
 regression = ["dep:nexus-stats-regression"]
 
 [dependencies]
 nexus-stats-core = { version = "3.0.1", path = "../nexus-stats-core", default-features = false }
 nexus-stats-smoothing = { version = "2.0.0", path = "../nexus-stats-smoothing", default-features = false }
-nexus-stats-monitoring = { version = "0.1.0", path = "../nexus-stats-monitoring", default-features = false }
 nexus-stats-regression = { version = "2.0.0", path = "../nexus-stats-regression", default-features = false, optional = true }
 
 [lints]

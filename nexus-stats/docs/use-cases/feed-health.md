@@ -46,10 +46,7 @@ impl FeedMonitor {
                 .span(15)
                 .build()
                 .unwrap(),
-            jitter: Jitter::<i64>::builder()
-                .span(20)
-                .build()
-                .unwrap(),
+            jitter: Jitter::<i64>::new(),
             staleness: DeadBand::<i64>::new(1).unwrap(), // flag if value changes by < 1
         }
     }
@@ -57,7 +54,7 @@ impl FeedMonitor {
     fn on_message(&mut self, now_ns: i64, value: i64, latency_us: f64) {
         self.liveness.update(now_ns);
         self.rate.tick(now_ns);
-        self.jitter.update(now_ns);
+        self.jitter.update(gap_ns); // time since the previous message
 
         if let Some(shift) = self.latency.update(latency_us) {
             if matches!(shift, Direction::Rising) {

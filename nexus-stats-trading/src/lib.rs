@@ -36,8 +36,6 @@
 //! ## How much risk is in the tail?
 //!
 //! - [`Lpm`]: lower partial moments, such as semivariance.
-//! - [`Drawdown`]: how far equity is below its peak, as an amount and as a
-//!   fraction of the peak.
 //! - [`Cvar`]: conditional value at risk, the expected loss beyond a
 //!   quantile.
 //!
@@ -56,7 +54,6 @@ mod amihud;
 #[cfg(any(feature = "std", feature = "libm"))]
 mod bipower;
 mod cvar;
-mod drawdown;
 #[cfg(feature = "regression")]
 mod kyle_lambda;
 mod lpm;
@@ -71,7 +68,6 @@ pub use amihud::*;
 #[cfg(any(feature = "std", feature = "libm"))]
 pub use bipower::*;
 pub use cvar::*;
-pub use drawdown::*;
 #[cfg(feature = "regression")]
 pub use kyle_lambda::*;
 pub use lpm::*;

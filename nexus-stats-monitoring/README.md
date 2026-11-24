@@ -13,7 +13,7 @@ Monitors for a running system, for [nexus-stats](https://crates.io/crates/nexus-
 - **A published algorithm is implemented as published.** A type that comes from a paper or a standard follows it. Where floating point needs more care than the source gives (cancellation, overflow, a divisor near zero), the type adds the guard practitioners use, and its docs say which.
 - **Maxima and minima ignore NaN and accept infinity,** as `f64::max` does.
 
-**Not yet migrated:** `CoDel`, `Drawdown`, `ErrorRate`, `EventRate`, `HawkesIntensity`, `Jitter`, `Liveness`, `PollSaturation`, `SojournSaturation`. They have not been moved to these guarantees. Most still validate in `update` and return a `Result`.
+**Not yet migrated:** `CoDel`, `EventRate`, `HawkesIntensity`, `Liveness`, `PollSaturation`, `SojournSaturation`. They have not been moved to these guarantees. Most still validate in `update` and return a `Result`.
 
 ## Which type do I use?
 
@@ -21,13 +21,13 @@ Monitors for a running system, for [nexus-stats](https://crates.io/crates/nexus-
 
 - **WindowedMax / WindowedMin**: the extreme over a sliding window of time
 - **PeakHold**: the magnitude of a signal, followed up at once, held, then left to decay
-- **Drawdown**: the fall from the highest value seen
+- **PeakToTrough**: the fall from the highest value seen, and the largest such fall; on P&L, the drawdown
 
 **Rates and timing**
 
 - **EventRate**: events per unit of time, smoothed
-- **ErrorRate**: the share of events that failed
-- **Jitter**: how much consecutive samples or arrivals vary
+- **ErrorRate**: errors as a count (USE), a ratio per interval (SRE) and a smoothed ratio
+- **Jitter**: interarrival jitter, as RFC 3550 estimates it
 - **Liveness**: whether anything has happened recently
 - **HawkesIntensity**: the rate of events that come in clusters (requires `std` or `libm`)
 

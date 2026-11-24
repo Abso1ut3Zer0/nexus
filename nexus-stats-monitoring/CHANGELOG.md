@@ -10,6 +10,31 @@ contained.
 
 ## [Unreleased]
 
+### Changed (breaking)
+
+- **`Drawdown` is replaced by `PeakToTrough<T>`:** the fall from a running
+  high, for any type that is `Copy + PartialOrd + Sub`, so a caller's own
+  decimal type works. `update` returns the reading, `Fall { high, current,
+  largest }`, with no `Result`. `reading()` is `None` before the first
+  sample, where `drawdown()` and `max_drawdown()` returned zero.
+  `checked_update` exists for `f64` (refuses NaN, infinity and a magnitude
+  above `f64::MAX / 2`) and `i64` (refuses a fall that overflows).
+- **`Jitter` is the RFC 3550 interarrival jitter estimator,** in the two
+  forms of the RFC's appendix A.8: `Jitter<f64>` and the scaled-integer
+  `Jitter<i64>` with its rounding. The gain is fixed at 1/16 and the
+  estimate starts at zero. The builder, the configurable smoothing,
+  seeding, `jitter_ratio()`, `last_deviation()` and `effective_span()` are
+  removed: none is in the RFC. `update` returns `Option<T>` with no
+  `Result`; `checked_update` refuses what would make the estimate
+  overflow. Values differ from earlier releases.
+- **`ErrorRate` reports three readings and no verdict.** The count of
+  errors, in total and per interval (Brendan Gregg's USE method); the
+  ratio of events that failed per interval (the SRE book's Errors signal);
+  and a smoothed ratio. `take()` returns an interval as an `ErrorSummary`.
+  The threshold, the `Condition` returned by `update`,
+  `reconfigure_threshold`, `update_weighted` and `error_rate()` are
+  removed.
+
 ### Removed
 
 - **`RunningMax`, `RunningMin`, `MaxGauge`.** Each is one line of std:

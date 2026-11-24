@@ -102,15 +102,15 @@ match cusum.update(latency_us) {
 ```rust
 use nexus_stats::monitoring::Jitter;
 
-let mut jitter = Jitter::<f64>::builder().span(30).build().unwrap();
+let mut jitter = Jitter::<f64>::new();   // the RFC 3550 estimator
+let mut typical = Ema::builder().span(30).build().unwrap();
 
 // On each measurement:
-if let Some(j) = jitter.update(latency_us).unwrap() {
-    if let Some(ratio) = jitter.jitter_ratio() {
-        if ratio > 0.3 {
-            // Jitter is 30% of mean — unstable
-            alert_warn("high latency jitter");
-        }
+let mean = typical.update(latency_us);
+if let (Some(j), Some(mean)) = (jitter.update(latency_us), mean) {
+    if j > 0.3 * mean {
+        // Jitter is 30% of the typical latency: unstable
+        alert_warn("high latency jitter");
     }
 }
 ```

@@ -18,8 +18,14 @@ use nexus_stats_core::parts::{EwWeight, Warmup, Weight};
 ///   number for the recent tendency that needs no interval.
 ///
 /// An interval is whatever passes between two calls to
-/// [`take`](Self::take). Gregg's caution applies to the ratios: an average
-/// over a long interval hides a short burst.
+/// [`take`](Self::take). A ratio over a long interval can hide a short
+/// burst of errors.
+///
+/// # Weighting clock
+///
+/// Per event. The counts and the interval ratio weigh every event the
+/// same. The smoothed ratio weighs recent events more, by count, not by
+/// time.
 ///
 /// It reports numbers and no verdict. What counts as too many errors is
 /// the caller's decision.
@@ -48,8 +54,8 @@ pub struct ErrorRate {
     warmup: Warmup,
     /// Since construction or `reset`.
     total: ErrorSummary,
-    /// The totals at the last `take`.
-    taken: ErrorSummary,
+    /// A copy of `total` made at the last `take`.
+    at_last_take: ErrorSummary,
 }
 
 /// Errors and events over a span of an [`ErrorRate`].
@@ -132,8 +138,8 @@ impl ErrorRate {
     /// The errors and events since the last `take`, and starts a new
     /// interval.
     pub fn take(&mut self) -> ErrorSummary {
-        let interval = self.total.since(self.taken);
-        self.taken = self.total;
+        let interval = self.total.since(self.at_last_take);
+        self.at_last_take = self.total;
         interval
     }
 
@@ -170,7 +176,7 @@ impl ErrorRate {
         self.smoothed = 0.0;
         self.warmup.reset();
         self.total = ErrorSummary::NONE;
-        self.taken = ErrorSummary::NONE;
+        self.at_last_take = ErrorSummary::NONE;
     }
 }
 
@@ -225,7 +231,7 @@ impl ErrorRateBuilder {
             smoothed: 0.0,
             warmup: Warmup::new(self.min_samples, false),
             total: ErrorSummary::NONE,
-            taken: ErrorSummary::NONE,
+            at_last_take: ErrorSummary::NONE,
         })
     }
 }
@@ -363,6 +369,7 @@ mod tests {
                 .build()
                 .is_err()
         );
+        #[cfg(any(feature = "std", feature = "libm"))]
         assert!(ErrorRate::builder().halflife(10.0).build().is_ok());
     }
 }

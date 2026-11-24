@@ -14,7 +14,7 @@ layer.
 **CUSUM** — Cumulative Sum. Sequential test that accumulates deviations from
 a target. Detects persistent mean shifts.
 
-**Drawdown** — Drop from peak value. `drawdown = peak - current`.
+**Drawdown**: the drop from the peak value, `peak - current`. `PeakToTrough` reports it.
 Max drawdown is the worst drawdown ever observed.
 
 **Efficiency Ratio** — In KAMA: `|net movement| / total path length`.

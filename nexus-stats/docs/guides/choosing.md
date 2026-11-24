@@ -76,7 +76,7 @@ type with timestamps, or `PollSaturation`, which is weighted per message.
 - Messages carry an enqueue stamp? → **SojournSaturation**
   - Exact per-message wait summarized per period: over-budget count, floor, worst, mean, standing queue.
 - Is a resource running hot? → smooth the busy fraction with **EMA** and compare it to your threshold. For a consumer thread's own saturation, PollSaturation / SojournSaturation above.
-- Is the error rate too high? → **ErrorRate**
+- How many errors, and what share of events? → **ErrorRate**
   - EMA of success/failure outcomes. Supports weighted severity.
 - What's the worst since I last checked? → an `Option<T>` you fold with `max` and read with `take()`
 - Has N consecutive failures occurred? → **Debounce**
@@ -96,8 +96,8 @@ type with timestamps, or `PollSaturation`, which is weighted per message.
   - Online Pearson correlation. Supports merge.
 - Average of rates/throughputs → **HarmonicMean**
   - Arithmetic mean of rates is wrong. Harmonic mean is correct.
-- Signal variability / jitter → **Jitter**
-  - EMA of consecutive absolute differences. `jitter_ratio()` for context.
+- Interarrival jitter → **Jitter**
+  - The RFC 3550 estimator. Feed each packet's transit time.
 
 ## "I want to fit a trend or model"
 
@@ -139,7 +139,7 @@ type with timestamps, or `PollSaturation`, which is weighted per message.
     For a per-reporting-interval maximum, fold with `max` and reset on read: exact and simpler.
 - Magnitude of a signal with hold + decay → **PeakHold**
   - "Worst recent spike, fading over time." Smooth envelope.
-- Peak-to-trough decline → **Drawdown**
+- Peak-to-trough decline, drawdown → **PeakToTrough**
   - Tracks max drawdown from peak. Risk circuit breaker.
 
 ## "I want to count / classify"
@@ -208,7 +208,7 @@ Common combinations:
 | "Filter bad ticks, track stats on good ones" | MultiGate → Welford (only on Accept) |
 | "Monitor queue health with early warning" | PollSaturation (consumer side, no stamps) + CoDel (stamped sojourn) |
 | "Smooth a signal, detect when it goes anomalous" | EMA for smoothing, AdaptiveThreshold for detection |
-| "Track failure rate, trip a circuit breaker" | ErrorRate or BoolWindow → Debounce |
+| "Track failure rate, trip a circuit breaker" | ErrorRate (compare its ratio to your limit) or BoolWindow → Debounce |
 | "Load-balance across shards" | FlexibleProportions per shard |
 | "Display smoothed latency with worst-case envelope" | EMA (display) + PeakHold (envelope) |
 | "Is latency distribution getting fat-tailed?" | Moments (kurtosis) |

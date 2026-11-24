@@ -189,10 +189,10 @@ fn bench_welford_f64(samples: &mut [u64]) {
 }
 
 // ============================================================================
-// Phase 2: Drawdown, Windowed Min/Max, EWMA Variance
+// Phase 2: PeakToTrough, Windowed Min/Max, EWMA Variance
 // ============================================================================
 
-fn bench_drawdown_f64(samples: &mut [u64]) {
+fn bench_peak_to_trough_f64(samples: &mut [u64]) {
     let mut dd = PeakToTrough::<f64>::new();
     let mut rng = 12345u64;
     for _ in 0..WARMUP {
@@ -2252,7 +2252,7 @@ fn main() {
 
     section("Monitoring");
     print_header();
-    bench_drawdown_f64(&mut buf);
+    bench_peak_to_trough_f64(&mut buf);
     print_row("PeakToTrough::<f64>::update", &mut buf);
     bench_windowed_max_f64(&mut buf);
     print_row("WindowedMax::<f64>::update", &mut buf);

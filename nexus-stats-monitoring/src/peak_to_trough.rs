@@ -5,10 +5,16 @@ use core::ops::Sub;
 ///
 /// Works for any number type that can be compared and subtracted, so a
 /// caller's own decimal or fixed-point type fits as well as `f64` and
-/// `i64`. The first sample is the first high.
+/// `i64`. The first sample is the first high. Values of either sign are
+/// fine. The fall is an amount, and nothing is divided.
 ///
-/// For the same measure in equity terms, with the fall as a fraction of
-/// the high, see `Drawdown` in `nexus-stats-trading`.
+/// On P&L or equity, the current fall is the drawdown and the largest
+/// fall is the maximum drawdown, both as amounts.
+///
+/// # Weighting clock
+///
+/// None. The reading depends on the order of the samples only, not on how
+/// often they arrive.
 ///
 /// # Examples
 ///
@@ -38,6 +44,10 @@ pub struct Fall<T> {
     /// The largest fall so far.
     pub largest: T,
 }
+
+/// The largest magnitude `PeakToTrough<f64>::checked_update` takes: the
+/// fall between any two such samples is finite.
+const LARGEST_SAMPLE: f64 = f64::MAX / 2.0;
 
 impl<T> PeakToTrough<T> {
     /// Creates an empty tracker.
@@ -74,8 +84,14 @@ impl<T: Copy + PartialOrd + Sub<Output = T>> PeakToTrough<T> {
     ///
     /// Does the arithmetic and nothing else. The subtraction is the
     /// type's own: for `i64` it overflows as `-` does, and for `f64` a NaN
-    /// or an infinity follows IEEE 754. `PeakToTrough<f64>` and
-    /// `PeakToTrough<i64>` have a `checked_update`.
+    /// or an infinity follows IEEE 754:
+    ///
+    /// - An infinite high never comes down.
+    /// - A NaN first sample makes every reading NaN until `reset`.
+    /// - An infinite first sample leaves the largest fall NaN.
+    /// - A later NaN gives a NaN current fall for that sample only.
+    ///
+    /// `PeakToTrough<f64>` and `PeakToTrough<i64>` have a `checked_update`.
     #[inline]
     pub fn update(&mut self, sample: T) -> Fall<T> {
         self.count += 1;
@@ -96,10 +112,12 @@ impl<T: Copy + PartialOrd + Sub<Output = T>> PeakToTrough<T> {
 
 impl PeakToTrough<f64> {
     /// Checked update. Feeds `sample`, or returns an error and leaves the
-    /// tracker unchanged if `sample` is NaN or infinite.
+    /// tracker unchanged if `sample` is NaN, infinite, or larger in
+    /// magnitude than half of `f64::MAX`.
     ///
-    /// An infinite high never comes down, so every later fall would be
-    /// infinite until [`reset`](Self::reset).
+    /// An infinite high never comes down, and two finite samples further
+    /// apart than `f64::MAX` have an infinite fall between them. Either
+    /// would last until [`reset`](Self::reset).
     ///
     /// # Errors
     ///
@@ -107,12 +125,14 @@ impl PeakToTrough<f64> {
     ///   if `sample` is NaN.
     /// - [`DataError::Infinite`](nexus_stats_core::DataError::Infinite) if
     ///   `sample` is infinite.
+    /// - [`DataError::OutOfRange`](nexus_stats_core::DataError::OutOfRange)
+    ///   if `sample` is larger in magnitude than `f64::MAX / 2`.
     #[inline]
     pub fn checked_update(
         &mut self,
         sample: f64,
     ) -> Result<Fall<f64>, nexus_stats_core::DataError> {
-        nexus_stats_core::math::check_input(sample, f64::MAX)?;
+        nexus_stats_core::math::check_input(sample, LARGEST_SAMPLE)?;
         Ok(self.update(sample))
     }
 }
@@ -309,13 +329,38 @@ mod tests {
     #[test]
     fn checked_update_gives_the_same_result_as_update() {
         let (mut checked, mut plain) = (PeakToTrough::<f64>::new(), PeakToTrough::new());
-        for x in [5.0, -2.0, 1e300, -1e300, f64::MAX, f64::MIN, 0.0] {
+        for x in [
+            5.0,
+            -2.0,
+            1e300,
+            -1e300,
+            f64::MAX / 2.0,
+            f64::MIN / 2.0,
+            0.0,
+        ] {
             assert_eq!(checked.checked_update(x), Ok(plain.update(x)));
         }
         let (mut checked, mut plain) = (PeakToTrough::<i64>::new(), PeakToTrough::new());
         for x in [5, -2, 900, i64::MAX / 2, -i64::MAX / 2, 0] {
             assert_eq!(checked.checked_update(x), Ok(plain.update(x)));
         }
+    }
+
+    /// Two finite samples can be an infinite distance apart. The guarded
+    /// form keeps every sample within half the range, so no fall is.
+    #[test]
+    fn checked_update_refuses_a_sample_too_large_to_measure_from() {
+        let mut plain = PeakToTrough::new();
+        plain.update(f64::MAX);
+        assert_eq!(plain.update(f64::MIN).largest, f64::INFINITY);
+
+        let mut t = PeakToTrough::<f64>::new();
+        assert_eq!(t.checked_update(f64::MAX), Err(OutOfRange));
+        assert_eq!(t.checked_update(f64::MIN), Err(OutOfRange));
+        assert_eq!((t.reading(), t.count()), (None, 0));
+        t.checked_update(f64::MAX / 2.0).unwrap();
+        let fall = t.checked_update(f64::MIN / 2.0).unwrap();
+        assert_eq!(fall.largest, f64::MAX);
     }
 
     /// What the unchecked form does with what the checked form refuses.
@@ -326,5 +371,20 @@ mod tests {
         t.update(f64::INFINITY);
         assert_eq!(t.update(5.0).current, f64::INFINITY);
         assert_eq!(t.reading().unwrap().high, f64::INFINITY);
+        // As the first sample it also leaves the largest fall undefined.
+        let mut t = PeakToTrough::new();
+        t.update(f64::INFINITY);
+        assert!(t.update(5.0).largest.is_nan());
+        // A NaN first sample is never beaten: every reading stays NaN.
+        let mut t = PeakToTrough::new();
+        t.update(f64::NAN);
+        let stuck = t.update(5.0);
+        assert!(stuck.high.is_nan() && stuck.current.is_nan() && stuck.largest.is_nan());
+        // A later NaN shows for one sample and is not kept.
+        let mut t = PeakToTrough::new();
+        t.update(5.0);
+        assert!(t.update(f64::NAN).current.is_nan());
+        let after = t.update(3.0);
+        assert_eq!((after.high, after.current, after.largest), (5.0, 2.0, 2.0));
     }
 }

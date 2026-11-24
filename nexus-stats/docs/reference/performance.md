@@ -53,7 +53,7 @@ costs a branch mispredict, about 20 cycles.
 | Covariance | 11 | 11 | three accumulators |
 | HarmonicMean | 6 | 7 | one reciprocal |
 | **Monitoring** | | | |
-| Drawdown<f64> | 5 | 6 | compare + max |
+| PeakToTrough<f64> | 7 | 7 | compare + max |
 | WindowedMax/Min<f64> | 9 | 11 | 3-sample promotion |
 | PeakHold<f64> | 8 | 10 | compare + decay |
 | Liveness | 7 | 16 | EMA + deadline |
@@ -62,9 +62,9 @@ costs a branch mispredict, about 20 cycles.
 | PollSaturation::on_work | 6 | 6 | branchless (cmov selects, no jumps); 5 under mixed load too |
 | PollSaturation::on_idle | 1 | 1 | one byte store, no clock |
 | SojournSaturation::update | 7 | 7 | branchless: clamp, count, min, max, saturating total |
-| ErrorRate | 7 | 10 | EMA of outcomes |
+| ErrorRate | 7 | 7 | two counters + EMA of outcomes |
 | TrendAlert | 10 | 11 | Holt + threshold |
-| Jitter<f64> | 7 | 7 | EMA of deltas |
+| Jitter<f64> | 6 | 6 | RFC 3550 step |
 | **Frequency** | | | |
 | TopK (16 slots) | 36 | 48 | sorted array, scanned (indexed above 32 counters) |
 | **Utilities** | | | |
@@ -80,7 +80,7 @@ costs a branch mispredict, about 20 cycles.
 
 | Category | Typical size |
 |----------|-------------|
-| Simple (EMA, CUSUM, Drawdown, etc.) | 16-56 bytes |
+| Simple (EMA, CUSUM, PeakToTrough, etc.) | 16-56 bytes |
 | Welford, Covariance | 24-48 bytes |
 | Windowed types (3-sample Nichols') | 72 bytes |
 | PollSaturation (`repr(C)`: flag byte + nine `u64`) | 80 bytes (64-bit) |

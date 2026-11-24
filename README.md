@@ -142,7 +142,7 @@ re-exports everything; the subcrates allow fine-grained dependency control.
 | [**nexus-stats-regression**](./nexus-stats-regression) | Online regression, learning, and estimation. Linear/polynomial/power/log/exponential regression (OLS + EW), Huber-robust regression, RLS/LMS/NLMS adaptive filters, logistic regression, hit rate, online K-means, Kalman 1d/2d/3d, online gradient descent, AdaGrad, Adam. |
 | [**nexus-stats-control**](./nexus-stats-control) | Control and frequency primitives. Dead band, hysteresis, debounce, level crossing, peak detector, bool window, TopK, proportion tracking, decay accumulator. |
 | [**nexus-stats-trading**](./nexus-stats-trading) | Trading and market-microstructure statistics. Variance ratio, two-scale realized variance, bipower variation, Amihud illiquidity, Roll spread, Kyle's lambda, lower partial moments, CVaR. |
-| [**nexus-stats-monitoring**](./nexus-stats-monitoring) | Monitors for a running system. Drawdown, running and windowed min/max, peak hold, event and error rates, jitter, liveness, CoDel, consumer saturation. |
+| [**nexus-stats-monitoring**](./nexus-stats-monitoring) | Monitors for a running system. Peak-to-trough fall, windowed min/max, peak hold, event and error rates, jitter, liveness, CoDel, consumer saturation. |
 | [**nexus-stats-normalization**](./nexus-stats-normalization) | Normalizers. Z-score, min-max, quantile rank. |
 
 ### Inference

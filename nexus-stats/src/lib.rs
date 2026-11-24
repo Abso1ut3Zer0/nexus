@@ -88,7 +88,7 @@
 //! | `regression` | `estimation` | + Kalman1d, Kalman2d, Kalman3d, BetaBinomial, GammaPoisson |
 //! | `control` | `control` | DeadBand, Hysteresis, Debounce, LevelCrossing, PeakDetector, BoolWindow *(alloc)* |
 //! | `control` | `frequency` | FlexProportionGlobal, FlexProportionLocal, TopK *(alloc)*, DecayAccum *(std\|libm)* |
-//! | `monitoring` | `monitoring` | Drawdown, WindowedMax, WindowedMin, PeakHold, CoDel, PollSaturation, SojournSaturation, Liveness, EventRate, Jitter, ErrorRate, HawkesIntensity *(std\|libm)* |
+//! | `monitoring` | `monitoring` | PeakToTrough, WindowedMax, WindowedMin, PeakHold, CoDel, PollSaturation, SojournSaturation, Liveness, EventRate, Jitter, ErrorRate, HawkesIntensity *(std\|libm)* |
 //! | `normalization` | `normalization` | MinMaxNorm, ZScoreNorm *(std\|libm)*, QuantileNorm *(alloc)* |
 //! | `trading` | `trading` | Amihud, Lpm, Cvar, BipowerVariation *(std\|libm)*, RollSpread *(std\|libm)*, TwoScaleRv *(alloc, std\|libm)*, VarianceRatio *(alloc, std\|libm)*, KyleLambda *(with `regression`)* |
 //! | `full` | all | Everything above |
@@ -114,7 +114,7 @@ pub use nexus_stats_core::{Accuracy, Condition, ConfigError, DataError, Directio
 
 /// Sealed numeric bounds of the generic types: [`Sample`] (`f64`, `i64`) and
 /// [`Float`] (`f64`, `f32`). Name them in your own signatures
-/// (`fn f<T: Sample>(d: &mut monitoring::Drawdown<T>)`); they cannot be
+/// (`fn f<T: Sample>(w: &mut monitoring::WindowedMax<T>)`); they cannot be
 /// implemented outside `nexus-stats-core`.
 pub use nexus_stats_core::{Float, Sample};
 

@@ -198,7 +198,7 @@ fn bench_jitter(c: &mut Criterion) {
     });
 }
 
-fn bench_drawdown(c: &mut Criterion) {
+fn bench_peak_to_trough(c: &mut Criterion) {
     let mut rng = Lcg::new(42);
     let mut d = PeakToTrough::<f64>::new();
     for _ in 0..1000 {
@@ -1142,7 +1142,7 @@ criterion_group!(
     bench_percentile_p50,
     bench_percentile_p99,
     bench_jitter,
-    bench_drawdown,
+    bench_peak_to_trough,
     bench_slew,
     bench_spring,
     bench_dead_band,

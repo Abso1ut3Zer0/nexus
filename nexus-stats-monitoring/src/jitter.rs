@@ -12,9 +12,16 @@
 /// The estimate starts at zero, and the gain is the RFC's 1/16. The first
 /// packet only sets the previous transit time.
 ///
-/// `Jitter<f64>` is the floating-point form of the RFC's appendix A.8.
-/// `Jitter<i64>` is its integer form, which keeps the estimate scaled by
-/// 16 and rounds: the same code as a receiver reporting to RTCP.
+/// `Jitter<f64>` is the floating-point form of the RFC's appendix A.8. It
+/// returns the estimate as it is, where the RFC truncates it to an integer
+/// when it reports. `Jitter<i64>` is the RFC's integer form, which keeps
+/// the estimate scaled by 16 and rounds: the same code as a receiver
+/// reporting to RTCP.
+///
+/// # Weighting clock
+///
+/// Per packet. Every transit time after the first moves the estimate by
+/// the same sixteenth.
 ///
 /// See [RFC 3550](https://www.rfc-editor.org/rfc/rfc3550), section 6.4.1
 /// and appendix A.8.
@@ -41,9 +48,8 @@ pub struct Jitter<T> {
 /// The RFC's gain, as a shift: `2^-4 = 1/16`.
 const GAIN_SHIFT: u32 = 4;
 
-/// The largest transit difference `Jitter<i64>::checked_update` takes. The
-/// scaled estimate settles at 16 times the difference, so this keeps every
-/// step in range.
+/// The largest difference `Jitter<i64>::checked_update` takes. The scaled
+/// estimate rests just below 16 times it, which keeps every step in range.
 const LARGEST_DIFFERENCE: u64 = (i64::MAX >> (GAIN_SHIFT + 1)) as u64;
 
 impl<T> Jitter<T> {
@@ -90,7 +96,9 @@ impl Jitter<f64> {
     }
 
     /// Checked update. Feeds `transit`, or returns an error and leaves the
-    /// estimator unchanged if `transit` is NaN or infinite.
+    /// estimator unchanged if `transit` is NaN, infinite, or larger in
+    /// magnitude than half of `f64::MAX`. Two finite transit times further
+    /// apart than `f64::MAX` would make the estimate infinite, then NaN.
     ///
     /// # Errors
     ///
@@ -98,12 +106,14 @@ impl Jitter<f64> {
     ///   if `transit` is NaN.
     /// - [`DataError::Infinite`](nexus_stats_core::DataError::Infinite) if
     ///   `transit` is infinite.
+    /// - [`DataError::OutOfRange`](nexus_stats_core::DataError::OutOfRange)
+    ///   if `transit` is larger in magnitude than `f64::MAX / 2`.
     #[inline]
     pub fn checked_update(
         &mut self,
         transit: f64,
     ) -> Result<Option<f64>, nexus_stats_core::DataError> {
-        nexus_stats_core::math::check_input(transit, f64::MAX)?;
+        nexus_stats_core::math::check_input(transit, f64::MAX / 2.0)?;
         Ok(self.update(transit))
     }
 
@@ -136,8 +146,9 @@ impl Jitter<i64> {
     /// Feeds a transit time and returns the jitter, or `None` for the
     /// first one.
     ///
-    /// Plain integer arithmetic: a difference too large to hold overflows
-    /// as `-` does. See [`checked_update`](Self::checked_update).
+    /// Plain integer arithmetic: a difference too large to hold overflows,
+    /// in the subtraction or in its absolute value. See
+    /// [`checked_update`](Self::checked_update).
     #[inline]
     pub fn update(&mut self, transit: i64) -> Option<i64> {
         self.count += 1;
@@ -370,6 +381,30 @@ mod tests {
         assert_eq!(jitter.checked_update(30.0), Ok(Some(1.25 - 1.25 / 16.0)));
     }
 
+    /// Two finite transit times can be an infinite distance apart, which
+    /// would make the estimate infinite and then NaN.
+    #[test]
+    fn checked_update_refuses_a_transit_too_large_to_difference() {
+        let mut plain = Jitter::<f64>::new();
+        plain.update(f64::MAX);
+        assert_eq!(plain.update(-f64::MAX), Some(f64::INFINITY));
+        assert!(plain.update(0.0).unwrap().is_nan());
+
+        let mut jitter = Jitter::<f64>::new();
+        assert_eq!(jitter.checked_update(f64::MAX), Err(OutOfRange));
+        assert_eq!(jitter.checked_update(-f64::MAX), Err(OutOfRange));
+        assert_eq!(jitter.count(), 0);
+        jitter.checked_update(f64::MAX / 2.0).unwrap();
+        // The largest difference there can be: the whole range.
+        let estimate = jitter.checked_update(-f64::MAX / 2.0);
+        assert_eq!(estimate, Ok(Some(f64::MAX / 16.0)));
+        // A refusal once primed changes nothing.
+        let before = (jitter.jitter(), jitter.count());
+        assert_eq!(jitter.checked_update(f64::MAX), Err(OutOfRange));
+        assert_eq!((jitter.jitter(), jitter.count()), before);
+        assert!(jitter.checked_update(0.0).unwrap().unwrap().is_finite());
+    }
+
     #[test]
     fn checked_update_refuses_a_difference_too_large_to_hold() {
         let largest = i64::MAX >> 5;
@@ -386,7 +421,8 @@ mod tests {
             let transit = if i % 2 == 0 { largest } else { 0 };
             jitter.checked_update(transit).unwrap();
         }
-        assert!(jitter.jitter().unwrap() <= largest);
+        // It rests one below the difference, as the RFC's rounding does.
+        assert_eq!(jitter.jitter(), Some(largest - 1));
     }
 
     #[test]

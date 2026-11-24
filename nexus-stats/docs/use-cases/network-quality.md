@@ -38,7 +38,7 @@ if let Some(smoothed) = srtt.update(rtt_ms).unwrap() {
 ```rust
 use nexus_stats::monitoring::Jitter;
 
-let mut jitter = Jitter::<f64>::builder().span(16).build().unwrap(); // RFC 3550: alpha=1/16
+let mut jitter = Jitter::<f64>::new(); // RFC 3550, gain 1/16
 
 // On each packet:
 let transit = arrival_time - send_time;
