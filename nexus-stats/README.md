@@ -100,7 +100,7 @@ docs, and each module's docs say which type to use for what.
 | `AsymEma` | Different alpha for rising vs falling | 12 |
 | `Kama` | Kaufman adaptive MA (adapts to trend/noise) | 15 |
 | `Kalman1d` | 1D Kalman filter with velocity tracking | 26 |
-| `HawkesIntensity` *(std\|libm)* | Intensity of a self-exciting point process (clustered events) | 15 |
+| `HawkesIntensity` *(std\|libm)* | Intensity of a self-exciting point process (clustered events) | 27 |
 | `Holt` | Double exponential (level + trend) | 11 |
 | `Spring` | Critically damped spring (smooth target chasing) | 13 |
 | `Slew` | Slew rate limiter: caps the change per sample | 8 |
@@ -163,8 +163,8 @@ docs, and each module's docs say which type to use for what.
 | `PeakToTrough<f64>` | Fall from the running high and the largest fall (drawdown) | 7 |
 | `WindowedMax<f64>` / `WindowedMin<f64>` | Sliding window extrema (Nichols'/BBR) | 9 |
 | `PeakHold<f64>` | Amplitude tracker: instant attack, hold, decay | 8 |
-| `Liveness` *(alloc)* | Silence in typical gaps, with a probability (Cassandra's detector) | 7 |
-| `EventRate` *(std\|libm)* | Events and rate per window; 1, 5 and 15 minute load | 1 |
+| `Liveness` *(alloc)* | Silence in typical gaps, with a probability (Cassandra's detector) | 12 |
+| `EventRate` *(std\|libm)* | Events and rate per window; 1, 5 and 15 minute load | <1 |
 | `CoDel<i64>` | Queue backpressure detection (CoDel-inspired) | 5 |
 | `PollSaturation` | Consumer-side saturation from poll outcomes: `on_work` / `on_idle` | 6 / 1 |
 | `SojournSaturation` | Consumer saturation from stamped queue sojourn, exact per message | 7 |
