@@ -117,8 +117,9 @@ pub use nexus_stats_core::{Accuracy, Condition, ConfigError, DataError, Directio
 /// (`fn f<T: Sample>(p: &mut monitoring::PeakHold<T>)`); they cannot be
 /// implemented outside `nexus-stats-core`. [`Tick`] is a point on any
 /// clock that only moves forward, and [`Timestamp`] is a tick of physical
-/// time: `i128` nanoseconds or an `Instant`.
-pub use nexus_stats_core::{Float, Sample, Span, Tick, Timestamp};
+/// time: `i128` or `i64` nanoseconds, an `Instant`, or one of the named
+/// units ([`Nanos`], [`Micros`], [`Millis`], [`Seconds`]).
+pub use nexus_stats_core::{Float, Micros, Millis, Nanos, Sample, Seconds, Span, Tick, Timestamp};
 
 /// Clock trait and implementations for time-aware stats types.
 pub use nexus_stats_core::clock;

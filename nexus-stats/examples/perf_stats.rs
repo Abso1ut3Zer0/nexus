@@ -230,6 +230,46 @@ fn bench_windowed_max_f64(samples: &mut [u64]) {
     }
 }
 
+/// The windowed maximum on a given clock, one tick per update.
+fn bench_windowed_max_on<T: nexus_stats::Timestamp>(samples: &mut [u64], tick: impl Fn(i64) -> T) {
+    let mut wm = WindowedMax::<f64, T>::new(Duration::from_nanos(1000)).unwrap();
+    let mut rng = 12345u64;
+    for t in 0..WARMUP as i64 {
+        let _ = wm.update(tick(t), 90.0 + (next_val(&mut rng) % 20) as f64);
+    }
+    let mut t = WARMUP as i64;
+    for s in samples.iter_mut() {
+        let start = rdtsc_start();
+        for _ in 0..BATCH {
+            let _ = wm.update(tick(t), 90.0 + (next_val(&mut rng) % 20) as f64);
+            t += 1;
+        }
+        let end = rdtsc_end();
+        black_box(wm.max());
+        *s = (end - start) / BATCH;
+    }
+}
+
+/// CoDel on a given clock, one tick per update.
+fn bench_codel_on<T: nexus_stats::Timestamp>(samples: &mut [u64], tick: impl Fn(i64) -> T) {
+    let mut qd = CoDel::<T>::new(Duration::from_nanos(100), Duration::from_nanos(1000)).unwrap();
+    let mut rng = 12345u64;
+    for t in 0..WARMUP as i64 {
+        let _ = qd.update(tick(t), Duration::from_nanos(50 + next_val(&mut rng) % 100));
+    }
+    let mut t = WARMUP as i64;
+    for s in samples.iter_mut() {
+        let start = rdtsc_start();
+        for _ in 0..BATCH {
+            let _ = qd.update(tick(t), Duration::from_nanos(50 + next_val(&mut rng) % 100));
+            t += 1;
+        }
+        let end = rdtsc_end();
+        black_box(qd.is_elevated());
+        *s = (end - start) / BATCH;
+    }
+}
+
 fn bench_windowed_min_f64(samples: &mut [u64]) {
     let mut wm = WindowedMin::<f64, i128>::new(Duration::from_nanos(1000)).unwrap();
     let mut rng = 12345u64;
@@ -2248,6 +2288,14 @@ fn main() {
     print_row("PeakToTrough::<f64>::update", &mut buf);
     bench_windowed_max_f64(&mut buf);
     print_row("WindowedMax::update", &mut buf);
+    bench_windowed_max_on(&mut buf, |t| t);
+    print_row("WindowedMax::update(i64)", &mut buf);
+    bench_windowed_max_on(&mut buf, nexus_stats::Micros);
+    print_row("WindowedMax::update(Micros)", &mut buf);
+    bench_codel_on(&mut buf, |t| t);
+    print_row("CoDel::update(i64)", &mut buf);
+    bench_codel_on(&mut buf, nexus_stats::Micros);
+    print_row("CoDel::update(Micros)", &mut buf);
     bench_windowed_min_f64(&mut buf);
     print_row("WindowedMin::update", &mut buf);
     bench_poll_saturation_on_work(&mut buf);

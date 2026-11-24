@@ -25,7 +25,7 @@ pub mod parts;
 
 /// Clock trait and implementations.
 pub mod clock;
-pub use clock::{Span, Tick, Timestamp};
+pub use clock::{Micros, Millis, Nanos, Seconds, Span, Tick, Timestamp};
 
 /// Fixed-capacity storage shared by the windowed types (`alloc`).
 #[cfg(feature = "alloc")]

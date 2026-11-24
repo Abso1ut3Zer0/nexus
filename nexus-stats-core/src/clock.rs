@@ -3,13 +3,6 @@
 
 use core::time::Duration;
 
-mod sealed {
-    pub trait Sealed {}
-    impl Sealed for i128 {}
-    #[cfg(feature = "std")]
-    impl Sealed for std::time::Instant {}
-}
-
 /// A point on a clock, as the clocked types take it.
 ///
 /// A clock is anything that only moves forward: wall time, a count of
@@ -22,12 +15,19 @@ mod sealed {
 ///
 /// | Tick | [`Span`] | Meaning |
 /// |---|---|---|
-/// | `i128` | [`Duration`] | nanoseconds of physical time ([`Timestamp`]) |
-/// | [`Instant`](std::time::Instant) | [`Duration`] | physical time ([`Timestamp`]) |
+/// | `i128`, `i64` | [`Duration`] | nanoseconds of physical time |
+/// | [`Nanos`], [`Micros`], [`Millis`], [`Seconds`] | [`Duration`] | physical time in the named unit |
+/// | [`Instant`](std::time::Instant) | [`Duration`] | physical time |
 /// | `u64`, `u32` | itself | a counter in the caller's unit |
 /// | `f64` | `f64` | a running quantity in the caller's unit, such as volume |
 ///
-/// Implement it for your own clock type, a decimal volume for example.
+/// A raw signed integer is always nanoseconds, and an unsigned one is
+/// always a plain count. For time in another unit use the named type, so
+/// the unit is stated where the time enters. Only the difference of two
+/// ticks is used, so the epoch does not matter.
+///
+/// Implement it for your own clock type: a decimal volume, or a time
+/// type from another crate.
 /// `since` must return zero when `self` is not after `earlier`.
 pub trait Tick: Copy + PartialOrd + core::fmt::Debug + 'static {
     /// What this clock counts in.
@@ -49,14 +49,16 @@ pub trait Span: Copy + PartialOrd + core::fmt::Debug + 'static {
 
 /// A [`Tick`] of physical clock time. Its span is a [`Duration`].
 ///
-/// Implemented for `i128` nanoseconds and, with `std`, for
-/// [`Instant`](std::time::Instant). `i128` is the deterministic form. The
-/// same recorded times replay to the same results, and a wire `i64`
-/// widens into it. The types whose settings are real time (a window of
-/// five seconds, a load over one minute) are bound by this trait.
+/// The integer forms are deterministic. The same recorded times replay
+/// to the same results. The types whose settings are real time (a window
+/// of five seconds, a load over one minute) are bound by this trait.
 ///
-/// Sealed: it cannot be implemented outside this crate.
-pub trait Timestamp: Tick<Span = Duration> + sealed::Sealed {}
+/// Every tick whose span is a [`Duration`] is a timestamp. To bring your
+/// own time type, a newtype over another crate's instant for example,
+/// implement [`Tick`] for it with `Span = Duration`.
+pub trait Timestamp: Tick<Span = Duration> {}
+
+impl<T: Tick<Span = Duration>> Timestamp for T {}
 
 impl Span for Duration {
     #[inline]
@@ -86,8 +88,6 @@ impl Span for f64 {
     }
 }
 
-impl Timestamp for i128 {}
-
 impl Tick for i128 {
     type Span = Duration;
 
@@ -105,8 +105,77 @@ impl Tick for i128 {
     }
 }
 
-#[cfg(feature = "std")]
-impl Timestamp for std::time::Instant {}
+impl Tick for i64 {
+    type Span = Duration;
+
+    #[inline]
+    fn since(self, earlier: Self) -> Duration {
+        Duration::from_nanos(gap(self, earlier))
+    }
+}
+
+/// Nanoseconds, as an `i128`. The same as a raw `i128`, with the unit in
+/// the name.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct Nanos(pub i128);
+
+/// Microseconds. As Unix time it reaches the year 294,247.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct Micros(pub i64);
+
+/// Milliseconds.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct Millis(pub i64);
+
+/// Seconds.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct Seconds(pub i64);
+
+impl Tick for Nanos {
+    type Span = Duration;
+
+    #[inline]
+    fn since(self, earlier: Self) -> Duration {
+        self.0.since(earlier.0)
+    }
+}
+
+impl Tick for Micros {
+    type Span = Duration;
+
+    #[inline]
+    fn since(self, earlier: Self) -> Duration {
+        Duration::from_micros(gap(self.0, earlier.0))
+    }
+}
+
+impl Tick for Millis {
+    type Span = Duration;
+
+    #[inline]
+    fn since(self, earlier: Self) -> Duration {
+        Duration::from_millis(gap(self.0, earlier.0))
+    }
+}
+
+impl Tick for Seconds {
+    type Span = Duration;
+
+    #[inline]
+    fn since(self, earlier: Self) -> Duration {
+        Duration::from_secs(gap(self.0, earlier.0))
+    }
+}
+
+/// How far `later` is past `earlier`, or zero if it is not after it. The
+/// distance between any two `i64`s fits a `u64`.
+#[inline]
+fn gap(later: i64, earlier: i64) -> u64 {
+    if later <= earlier {
+        return 0;
+    }
+    later.wrapping_sub(earlier) as u64
+}
 
 #[cfg(feature = "std")]
 impl Tick for std::time::Instant {
@@ -430,5 +499,106 @@ mod tests {
 
         assert_eq!(Lots(1_250).since(Lots(1_000)).as_f64(), 2.5);
         assert_eq!(Lots(1_000).since(Lots(1_250)), Lots(0));
+    }
+
+    /// A time type of the caller's own is a timestamp once its span is a
+    /// `Duration`.
+    #[test]
+    fn a_caller_can_bring_a_timestamp() {
+        use core::time::Duration;
+
+        #[derive(Debug, Clone, Copy, PartialEq, PartialOrd)]
+        struct Micros(i64);
+
+        impl Tick for Micros {
+            type Span = Duration;
+            fn since(self, earlier: Self) -> Duration {
+                Duration::from_micros(self.0.saturating_sub(earlier.0).max(0) as u64)
+            }
+        }
+
+        fn span_of<T: Timestamp>(later: T, earlier: T) -> Duration {
+            later.since(earlier)
+        }
+
+        assert_eq!(
+            span_of(Micros(2_500), Micros(500)),
+            Duration::from_millis(2)
+        );
+        assert_eq!(span_of(Micros(500), Micros(2_500)), Duration::ZERO);
+    }
+
+    #[test]
+    fn a_raw_i64_is_nanoseconds() {
+        use core::time::Duration;
+
+        assert_eq!(1_500_i64.since(500), Duration::from_nanos(1_000));
+        assert_eq!(500_i64.since(1_500), Duration::ZERO);
+        assert_eq!(7_i64.since(7), Duration::ZERO);
+        assert_eq!((-5_i64).since(-2_000_000_005), Duration::from_secs(2));
+        // The whole range: the distance fits a `u64` of nanoseconds.
+        assert_eq!(i64::MAX.since(i64::MIN), Duration::from_nanos(u64::MAX));
+        assert_eq!(i64::MIN.since(i64::MAX), Duration::ZERO);
+        // The same span as on an `i128`.
+        assert_eq!(i64::MAX.since(-3), i128::from(i64::MAX).since(-3));
+    }
+
+    #[test]
+    fn the_named_types_measure_in_their_unit() {
+        use core::time::Duration;
+
+        assert_eq!(Nanos(2_500).since(Nanos(500)), Duration::from_nanos(2_000));
+        assert_eq!(Micros(2_500).since(Micros(500)), Duration::from_millis(2));
+        assert_eq!(Millis(2_500).since(Millis(500)), Duration::from_secs(2));
+        assert_eq!(
+            Seconds(2_500).since(Seconds(500)),
+            Duration::from_secs(2_000)
+        );
+        // Not after: zero.
+        assert_eq!(Nanos(1).since(Nanos(2)), Duration::ZERO);
+        assert_eq!(Micros(1).since(Micros(2)), Duration::ZERO);
+        assert_eq!(Millis(1).since(Millis(2)), Duration::ZERO);
+        assert_eq!(Seconds(1).since(Seconds(2)), Duration::ZERO);
+        // The whole range of each fits a `Duration`.
+        assert_eq!(
+            Micros(i64::MAX).since(Micros(i64::MIN)),
+            Duration::from_micros(u64::MAX)
+        );
+        assert_eq!(
+            Millis(i64::MAX).since(Millis(i64::MIN)),
+            Duration::from_millis(u64::MAX)
+        );
+        assert_eq!(
+            Seconds(i64::MAX).since(Seconds(i64::MIN)),
+            Duration::from_secs(u64::MAX)
+        );
+        assert_eq!(Nanos(i128::MAX).since(Nanos(i128::MIN)), Duration::MAX);
+        // They order as their numbers do.
+        assert!(Millis(-1) < Millis(0) && Seconds(3) > Seconds(2));
+    }
+
+    /// One moment written in each unit is the same distance from another.
+    #[test]
+    fn every_unit_agrees_on_the_same_span() {
+        use core::time::Duration;
+
+        let want = Duration::from_secs(90);
+        assert_eq!(Seconds(1_700_000_090).since(Seconds(1_700_000_000)), want);
+        assert_eq!(
+            Millis(1_700_000_090_000).since(Millis(1_700_000_000_000)),
+            want
+        );
+        assert_eq!(
+            Micros(1_700_000_090_000_000).since(Micros(1_700_000_000_000_000)),
+            want
+        );
+        assert_eq!(
+            1_700_000_090_000_000_000_i64.since(1_700_000_000_000_000_000),
+            want
+        );
+        assert_eq!(
+            Nanos(1_700_000_090_000_000_000).since(Nanos(1_700_000_000_000_000_000)),
+            want
+        );
     }
 }
