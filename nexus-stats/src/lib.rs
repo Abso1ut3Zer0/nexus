@@ -39,9 +39,12 @@
 //!
 //! - **`update` does the arithmetic and nothing else.** No validation, no
 //!   `Result`. Floats follow IEEE 754, as `+` does.
-//! - **`checked_update` exists only where it has a job:** when some input
-//!   can leave the type unable to give a right reading until `reset()`. It
-//!   refuses exactly those inputs and leaves the type unchanged.
+//! - **`checked_update` protects the state.** A type has one when some
+//!   input does damage that outlasts the sample, or when `update` drops a
+//!   sample the caller should be told about. It refuses exactly those
+//!   inputs and leaves the type unchanged.
+//! - **A reader reports what the arithmetic gives,** NaN included where
+//!   the true answer is undefined. It never substitutes a number.
 //! - **A reading is an `Option`:** `None` until there is enough data.
 //! - **Maxima and minima ignore NaN and accept infinity,** as `f64::max`
 //!   does.

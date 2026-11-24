@@ -22,7 +22,7 @@ use nexus_stats::{
         AdaGrad, Adam, EpsilonGreedy, Exp3, LmsFilter, NlmsFilter, OnlineGd, OnlineKMeans,
         RlsFilter, ThompsonBeta, ThompsonGamma, Ucb1,
     },
-    monitoring::{Drawdown, ErrorRate, Jitter},
+    monitoring::{ErrorRate, Jitter, PeakToTrough},
     normalization::{MinMaxNorm, ZScoreNorm},
     regression::{EwLinearRegression, LinearRegression, LogisticRegression, PolynomialRegression},
     signal::{Autocorrelation, CrossCorrelation, Entropy, TransferEntropy},
@@ -189,23 +189,23 @@ fn bench_percentile_p99(c: &mut Criterion) {
 
 fn bench_jitter(c: &mut Criterion) {
     let mut rng = Lcg::new(42);
-    let mut j = Jitter::<f64>::builder().alpha(0.1).build().unwrap();
+    let mut j = Jitter::<f64>::new();
     for _ in 0..1000 {
         let _ = j.update(rng.next_f64());
     }
     c.bench_function("Jitter::<f64>::update", |b| {
-        b.iter(|| j.update(black_box(rng.next_f64())).unwrap())
+        b.iter(|| j.update(black_box(rng.next_f64())))
     });
 }
 
 fn bench_drawdown(c: &mut Criterion) {
     let mut rng = Lcg::new(42);
-    let mut d = Drawdown::<f64>::new();
+    let mut d = PeakToTrough::<f64>::new();
     for _ in 0..1000 {
         let _ = d.update(rng.next_f64());
     }
-    c.bench_function("Drawdown::<f64>::update", |b| {
-        b.iter(|| d.update(black_box(rng.next_f64())).unwrap())
+    c.bench_function("PeakToTrough::<f64>::update", |b| {
+        b.iter(|| d.update(black_box(rng.next_f64())))
     });
 }
 
@@ -368,11 +368,7 @@ fn bench_robust_z(c: &mut Criterion) {
 
 fn bench_error_rate(c: &mut Criterion) {
     let mut rng = Lcg::new(42);
-    let mut er = ErrorRate::builder()
-        .alpha(0.1)
-        .threshold(0.5)
-        .build()
-        .unwrap();
+    let mut er = ErrorRate::builder().alpha(0.1).build().unwrap();
     for _ in 0..1000 {
         er.update(rng.next_f64() > 50.0);
     }

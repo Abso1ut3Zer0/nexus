@@ -31,7 +31,7 @@ use nexus_stats::{
         RlsFilter, ThompsonBeta, ThompsonGamma, Ucb1,
     },
     monitoring::{
-        CoDel, Drawdown, ErrorRate, EventRate, HawkesIntensity, Jitter, Liveness, PeakHold,
+        CoDel, ErrorRate, EventRate, HawkesIntensity, Jitter, Liveness, PeakHold, PeakToTrough,
         WindowedMax, WindowedMin,
     },
     regression::{
@@ -193,7 +193,7 @@ fn bench_welford_f64(samples: &mut [u64]) {
 // ============================================================================
 
 fn bench_drawdown_f64(samples: &mut [u64]) {
-    let mut dd = Drawdown::<f64>::new();
+    let mut dd = PeakToTrough::<f64>::new();
     let mut rng = 12345u64;
     for _ in 0..WARMUP {
         let _ = dd.update(90.0 + (next_val(&mut rng) % 20) as f64);
@@ -204,7 +204,7 @@ fn bench_drawdown_f64(samples: &mut [u64]) {
             let _ = dd.update(90.0 + (next_val(&mut rng) % 20) as f64);
         }
         let end = rdtsc_end();
-        black_box(dd.max_drawdown());
+        black_box(dd.reading());
         *s = (end - start) / BATCH;
     }
 }
@@ -878,7 +878,7 @@ fn bench_harmonic_mean_f64(samples: &mut [u64]) {
 }
 
 fn bench_jitter_f64(samples: &mut [u64]) {
-    let mut j = Jitter::<f64>::builder().span(20).build().unwrap();
+    let mut j = Jitter::<f64>::new();
     let mut rng = 12345u64;
     for _ in 0..WARMUP {
         let _ = j.update(90.0 + (next_val(&mut rng) % 20) as f64);
@@ -1335,22 +1335,18 @@ fn bench_predictive_info_bound_f64(samples: &mut [u64]) {
 }
 
 fn bench_error_rate(samples: &mut [u64]) {
-    let mut er = ErrorRate::builder()
-        .span(100)
-        .threshold(0.5)
-        .build()
-        .unwrap();
+    let mut er = ErrorRate::builder().span(100).build().unwrap();
     let mut rng = 12345u64;
     for _ in 0..WARMUP {
-        let _ = er.update(!next_val(&mut rng).is_multiple_of(10));
+        er.update(!next_val(&mut rng).is_multiple_of(10));
     }
     for s in samples.iter_mut() {
         let start = rdtsc_start();
         for _ in 0..BATCH {
-            let _ = er.update(black_box(!next_val(&mut rng).is_multiple_of(10)));
+            er.update(black_box(!next_val(&mut rng).is_multiple_of(10)));
         }
         let end = rdtsc_end();
-        black_box(er.error_rate());
+        black_box(er.smoothed_ratio());
         *s = (end - start) / BATCH;
     }
 }
@@ -2257,7 +2253,7 @@ fn main() {
     section("Monitoring");
     print_header();
     bench_drawdown_f64(&mut buf);
-    print_row("Drawdown::<f64>::update", &mut buf);
+    print_row("PeakToTrough::<f64>::update", &mut buf);
     bench_windowed_max_f64(&mut buf);
     print_row("WindowedMax::<f64>::update", &mut buf);
     bench_windowed_min_f64(&mut buf);
