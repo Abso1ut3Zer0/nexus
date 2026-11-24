@@ -10,14 +10,16 @@ use nexus_stats_core::storage::Ring;
 ///
 /// Feed it the time of each event. It keeps the mean gap between the last
 /// `window` events, and [`check`](Self::check) reports the silence so far
-/// as a multiple of that gap. It gives a number and no verdict: where to
+/// as a multiple of that gap. It gives a number and no verdict. Where to
 /// draw the line is the caller's decision, and [`Suspicion`] says how to
 /// read it.
 ///
-/// This is the failure detector Apache Cassandra uses for its gossip: the
-/// same ratio over a bounded window of intervals, with the option not to
-/// record an interval longer than a limit, so that one long outage does
-/// not make the next one look normal.
+/// It follows the failure detector Apache Cassandra uses for its gossip:
+/// the same ratio over a bounded window of intervals, with the option not
+/// to record an interval longer than a limit, so that one long outage does
+/// not make the next one look normal. One difference: Cassandra seeds the
+/// window with an assumed first interval, and this type has no reading
+/// until it has seen a real gap.
 ///
 /// # Weighting clock
 ///
@@ -367,6 +369,13 @@ mod tests {
             Duration::from_secs(1)
         );
         assert_eq!(limited.count(), 5);
+        // A gap exactly at the limit is recorded.
+        let mut at_limit = build(Some(Duration::from_secs(5)));
+        at_limit.update(0);
+        at_limit.update(5 * SECOND);
+        assert_eq!(at_limit.mean_gap(), Some(Duration::from_secs(5)));
+        at_limit.update(10 * SECOND + 1);
+        assert_eq!(at_limit.mean_gap(), Some(Duration::from_secs(5)));
     }
 
     #[test]

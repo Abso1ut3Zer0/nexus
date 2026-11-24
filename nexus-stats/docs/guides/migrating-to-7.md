@@ -239,13 +239,16 @@ on `f32` accumulation for speed, measure: the hot path gains a convert.
 | 6.x | Use instead |
 |-----|-------------|
 | `SaturationF64` | `Ema` on the utilization fraction and compare against your threshold (it was exactly that, with an unvalidated threshold), or `PollSaturation` / `SojournSaturation` for a consumer thread's own saturation ([#761](https://github.com/Abso1ut3Zer0/nexus/issues/761)) |
-| `LivenessF64`, `LivenessI64` | `Liveness` (`u64` ticks; cast `i64` stamps at the call site) |
-| `EventRateI64` | `EventRate` (`u64` ticks) |
+| `LivenessF64`, `LivenessI64` | `Liveness<i128>` or `Liveness<Instant>` (see below) |
+| `EventRateI64` | `EventRate<i128>` or `EventRate<Instant>` (see below) |
 | `MosumI64` | `Mosum` on `f64` ([#379](https://github.com/Abso1ut3Zer0/nexus/issues/379)) |
 | `AutocorrelationI64` | `Autocorrelation` on `f64` (correlation is fractional) ([#379](https://github.com/Abso1ut3Zer0/nexus/issues/379)) |
 | `DecayAccumF64` | `DecayAccum` (`u64` ticks) |
 | `update_i64(timestamp, ..)` on `WindowedMax`, `WindowedMin`, `CoDel` | `update(timestamp as u64, ..)` |
 | `HalfLifeBuilder` | `HalfLife::new()` (the builder had no knobs) |
+| `Liveness`'s `span`, `deadline_multiple`, `deadline_absolute`, `min_samples`, `interval()`, `effective_span()`, and the `bool` from `update` and `check` | `check(now)` returns a `Suspicion`; compare `ratio()` and `silence()` to your own limits |
+| `EventRate::builder()`, `rate()`, `interval()`, `reset()` | `EventRate::new(start)`, `take(now)?.rate()`, `reset_at(now)` |
+| `HawkesIntensityBuilder::min_samples` | nothing; no reading used it |
 | `Jitter::builder()`, its `span` / `alpha` / `halflife` / `seed`, `jitter_ratio()`, `last_deviation()`, `effective_span()` | `Jitter::<f64>::new()` or `Jitter::<i64>::new()`. The type is the RFC 3550 estimator with its fixed gain of 1/16. For a ratio, divide by an `Ema` of the same samples |
 | `ErrorRateBuilder::threshold`, `ErrorRate::reconfigure_threshold`, the `Condition` returned by `update` | compare `smoothed_ratio()` or `take().ratio()` to your own limit |
 | `ErrorRate::update_weighted` | no replacement; feed an `Ema` the weighted value yourself |
@@ -790,6 +793,60 @@ interval.errors();                      // the count of errors (USE method)
 interval.ratio();                       // the share that failed (SRE)
 errors.total_errors();                  // since the start
 ```
+
+### Time: `Liveness`, `EventRate` and `HawkesIntensity`
+
+Physical clock time is `i128` nanoseconds or an `Instant`. A clocked type is
+generic over the sealed `Timestamp` trait, so an instance lives on one clock.
+A `u64` tick count widens with `i128::from(ticks)` if the ticks were
+nanoseconds.
+
+```rust
+// before: u64 ticks in any unit
+liveness.update(now_ns);
+// after: i128 nanoseconds, or an Instant
+liveness.update(i128::from(now_ns));
+liveness.update(Instant::now());        // a Liveness<Instant>
+```
+
+**`Liveness`** follows Cassandra's failure detector and returns a number:
+
+```rust
+// before
+let mut live = Liveness::builder().span(15).deadline_multiple(5).build()?;
+if !live.check(now) { reconnect(); }
+// after
+let mut live = Liveness::builder().build()?;      // mean of the last 1,000 gaps
+if live.check(now).is_some_and(|s| s.ratio() > 5.0) { reconnect(); }
+```
+
+`Suspicion` also gives `probability_alive()`, `phi()` (Cassandra's scale),
+`silence()` and `mean_gap()`. The mean is over a window of gaps, not an
+exponential average, so its values differ. It needs `alloc`.
+
+**`EventRate`** counts events and reports on `take`:
+
+```rust
+// before
+let mut rate = EventRate::builder().span(15).build()?;
+rate.update(now);
+let r = rate.rate();                    // 1 / the average gap
+// after
+let mut rate = EventRate::new(start);
+rate.update();                          // reads no clock
+let window = rate.take(now)?;           // on your timer
+window.rate();                          // events per second, exact
+window.load();                          // 1, 5 and 15 minute averages
+```
+
+`take` returns an error for a `now` that is not after the previous `take`.
+The old `rate()` was one over the average gap, which is not the same
+quantity, so values change. It needs `std` or `libm`.
+
+**`HawkesIntensity`** moved to `estimation`
+(`nexus_stats::estimation::HawkesIntensity`). Its rates are now per second.
+If your times were nanosecond ticks, multiply the old `mu` and `beta` by
+`1e9`.
 
 ## 5. Checklist
 

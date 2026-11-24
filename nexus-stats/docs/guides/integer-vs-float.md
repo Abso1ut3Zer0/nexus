@@ -19,11 +19,13 @@ type over the sealed `Sample` trait, instantiated for `f64` and `i64`:
 | `control` | `DeadBand<T>`, `Hysteresis<T>`, `LevelCrossing<T>`, `FirstDiff<T>`, `SecondDiff<T>`, `PeakDetector<T>` |
 | `smoothing` | `WindowedMedian<T>` |
 
-Timestamps are a third kind. `Liveness`, `EventRate`, `PollSaturation`,
-`SojournSaturation`, `DecayAccum` and the `timestamp` argument of the
-windowed extrema and `CoDel` take `u64` ticks in any unit; use one clock for
-every stamp into one value (`clock::MonotonicClock` is the `std` bridge from
-`Instant`, see [no_std](no-std.md) for the rest).
+Time is a third kind. Physical clock time is `i128` nanoseconds or an
+`Instant`, through the sealed `Timestamp` trait: `Liveness`, `EventRate` and
+`HawkesIntensity` take either, one clock per value. `PollSaturation`,
+`DecayAccum`, `MinMaxNorm` and the `timestamp` argument of the windowed
+extrema and `CoDel` have not moved yet and still take `u64` ticks
+(`clock::MonotonicClock` is the `std` bridge from `Instant`, see
+[no_std](no-std.md) for the rest).
 
 The normalizers (`ZScoreNorm<T>`, `MinMaxNorm<T>`, `QuantileNorm<T>`) and
 `RobustZScore<T>` are generic over `Float` (`f64`, `f32`) instead: they take
@@ -36,7 +38,7 @@ for `f32` feature vectors, not a cheaper accumulator.
   because NaN and infinity are rejected. `CoDel<i64>::update` returns
   `i64`: there is nothing to reject.
 - **Exact arithmetic.** Comparisons, differences and clamps are exact;
-  `DeadBand<i64>` uses `abs_diff`. `Liveness` and `EventRate` smooth with the kernel-style
+  `DeadBand<i64>` uses `abs_diff`. The types still on `u64` ticks keep the kernel-style
   bit-shift EMA (weights are powers of two, so `span` rounds to `2^k - 1`;
   `effective_span()` tells you which). `PeakHold<i64>` holds, then drops to
   the current sample; the fractional `decay_rate` exists on `f64` only.
@@ -81,4 +83,4 @@ exported from `nexus_stats` and `nexus_stats_core` and are sealed (`f64` /
 | Prices, rates, ratios, utilization | `f64` |
 | Counts you only compare or difference | `i64` |
 | Counts you want variance or smoothing on | `f64` (`Welford`, `Ema`): cast at the call site |
-| Timestamps | `u64` ticks, one clock per value |
+| Timestamps | `i128` nanoseconds or `Instant`; `u64` ticks on the types not yet moved |

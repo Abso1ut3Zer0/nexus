@@ -486,7 +486,7 @@ fn bench_topk(samples: &mut [u64]) {
 // ============================================================================
 
 fn bench_event_rate(samples: &mut [u64]) {
-    let mut er = EventRate::starting_at(0_i128);
+    let mut er = EventRate::new(0_i128);
     let mut t = 0i128; // nanoseconds
     for _ in 0..WARMUP {
         er.update();
@@ -498,7 +498,7 @@ fn bench_event_rate(samples: &mut [u64]) {
         }
         let end = rdtsc_end();
         t += 1_000_000;
-        black_box(er.take(t));
+        let _ = black_box(er.take(t));
         *s = (end - start) / BATCH;
     }
 }

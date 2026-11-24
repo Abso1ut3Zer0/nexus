@@ -27,7 +27,9 @@ Most algorithms are pure arithmetic — no `sqrt` or `exp` needed:
 | Debounce, Hysteresis, PeakDetector | No |
 | FirstDiff, SecondDiff, LevelCrossing | No |
 | BoolWindow | No |
-| Jitter<i64>, Liveness, EventRate, PollSaturation | No |
+| Jitter<i64>, PollSaturation | No |
+| Liveness (`alloc`) | No |
+| EventRate, HawkesIntensity | Yes (an exponential) |
 | Welford (`std_dev()` query) | Yes (`sqrt`) |
 | ShiryaevRoberts | Yes (`exp`) |
 | `halflife()` on any builder | Yes (`exp`) |
@@ -43,8 +45,8 @@ The cheap primitives are generic over `f64` and `i64`:
 `SecondDiff<i64>`,
 `WindowedMax<i64>`, `WindowedMin<i64>`, `PeakHold<i64>`,
 `CoDel<i64>`, `Jitter<i64>`, `WindowedMedian<i64>`, `PeakDetector<i64>`. The
-tick-based monitors (`Liveness`, `EventRate`, `PollSaturation`,
-`SojournSaturation`) are integer throughout. Where these need smoothing they
+saturation monitors (`PollSaturation`, `SojournSaturation`) and `Liveness`
+are integer throughout. Where these need smoothing they
 use the Linux kernel's fixed-point pattern (a bit-shift EMA), so none of it
 touches floating point: ideal for Cortex-M and other platforms without an
 FPU. The smoothers that take arbitrary data (`Ema`, `AsymEma`, `Welford`,

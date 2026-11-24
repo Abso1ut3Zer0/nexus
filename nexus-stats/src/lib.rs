@@ -88,7 +88,7 @@
 //! | `regression` | `estimation` | + Kalman1d, Kalman2d, Kalman3d, BetaBinomial, GammaPoisson, HawkesIntensity *(std\|libm)* |
 //! | `control` | `control` | DeadBand, Hysteresis, Debounce, LevelCrossing, PeakDetector, BoolWindow *(alloc)* |
 //! | `control` | `frequency` | FlexProportionGlobal, FlexProportionLocal, TopK *(alloc)*, DecayAccum *(std\|libm)* |
-//! | `monitoring` | `monitoring` | PeakToTrough, WindowedMax, WindowedMin, PeakHold, CoDel, PollSaturation, SojournSaturation, Liveness, EventRate, Jitter, ErrorRate |
+//! | `monitoring` | `monitoring` | PeakToTrough, WindowedMax, WindowedMin, PeakHold, CoDel, PollSaturation, SojournSaturation, Liveness *(alloc)*, EventRate *(std\|libm)*, Jitter, ErrorRate |
 //! | `normalization` | `normalization` | MinMaxNorm, ZScoreNorm *(std\|libm)*, QuantileNorm *(alloc)* |
 //! | `trading` | `trading` | Amihud, Lpm, Cvar, BipowerVariation *(std\|libm)*, RollSpread *(std\|libm)*, TwoScaleRv *(alloc, std\|libm)*, VarianceRatio *(alloc, std\|libm)*, KyleLambda *(with `regression`)* |
 //! | `full` | all | Everything above |

@@ -10,7 +10,7 @@ mod sealed {
 /// A point in physical clock time, as the clocked types take it.
 ///
 /// Implemented for `i128` nanoseconds and, with `std`, for
-/// [`Instant`](std::time::Instant). `i128` is the deterministic form: the
+/// [`Instant`](std::time::Instant). `i128` is the deterministic form. The
 /// same recorded times replay to the same results, and a wire `i64`
 /// widens into it. A type is generic over this trait, so one instance
 /// lives on one clock and the two cannot be mixed.
@@ -58,8 +58,9 @@ fn long_duration(nanos: i128) -> Duration {
 
 /// A source of monotonic u64 timestamps.
 ///
-/// All nexus-stats time-aware types accept `u64` timestamps.
-/// The `Clock` trait bridges real-time sources to that interface.
+/// The time-aware types not yet moved to [`Timestamp`] accept `u64`
+/// timestamps. The `Clock` trait bridges real-time sources to that
+/// interface.
 ///
 /// # Contract
 ///

@@ -56,8 +56,8 @@ costs a branch mispredict, about 20 cycles.
 | PeakToTrough<f64> | 7 | 7 | compare + max |
 | WindowedMax/Min<f64> | 9 | 11 | 3-sample promotion |
 | PeakHold<f64> | 8 | 10 | compare + decay |
-| Liveness | 7 | 16 | EMA + deadline |
-| EventRate | 7 | 7 | bit-shift EMA + inversion |
+| Liveness | 7 | 16 | integer window sum |
+| EventRate | 1 | 1 | a counter; the averages move at `take` |
 | CoDel<i64> | 5 | 6 | first_above deadline (RFC 8289) |
 | PollSaturation::on_work | 6 | 6 | branchless (cmov selects, no jumps); 5 under mixed load too |
 | PollSaturation::on_idle | 1 | 1 | one byte store, no clock |

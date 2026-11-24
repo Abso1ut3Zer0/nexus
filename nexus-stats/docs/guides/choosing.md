@@ -67,7 +67,7 @@ type with timestamps, or `PollSaturation`, which is weighted per message.
 
 **What are you monitoring?**
 
-- Is a data source alive? → **Liveness**
+- How long has a source been silent, against its usual gap? → **Liveness**
   - EMA of inter-arrival times + deadline. Call `check(now)` periodically.
 - Is a queue building up? → **CoDel**
   - CoDel-inspired. Detects standing queues before buffers fill.
@@ -81,7 +81,7 @@ type with timestamps, or `PollSaturation`, which is weighted per message.
 - What's the worst since I last checked? → an `Option<T>` you fold with `max` and read with `take()`
 - Has N consecutive failures occurred? → **Debounce**
   - "3 timeouts in a row = dead." Simpler than CUSUM for discrete events.
-- How many events per second? → **EventRate**
+- How many events per second, now and over 1, 5 and 15 minutes? → **EventRate**
   - Smoothed rate from timestamps.
 
 ## "I want to track statistics"

@@ -377,18 +377,21 @@ mod tests {
         }
     }
 
+    /// Events at a fixed spacing: the raises form a geometric series.
     #[test]
-    fn a_burst_builds_up_and_stays_below_the_stable_limit() {
+    fn a_steady_burst_builds_up_to_the_geometric_sum() {
         let (mu, alpha, beta) = (1.0, 0.9, 1.0);
         let mut h = hawkes(mu, alpha, beta);
         let mut previous = mu;
-        // One event a millisecond: each adds to what the others left.
+        // One event a millisecond, so each raise decays by exp(-0.001).
         for i in 0..1_000 {
             h.update(i128::from(i) * 1_000_000);
             assert!(h.intensity() > previous);
             previous = h.intensity();
         }
-        assert!(h.intensity() < mu + alpha * 1_000.0);
+        let kept = (-beta * 0.001_f64).exp();
+        let want = mu + alpha * (1.0 - kept.powi(1_000)) / (1.0 - kept);
+        assert!((h.intensity() - want).abs() < 1e-9 * want);
     }
 
     #[test]

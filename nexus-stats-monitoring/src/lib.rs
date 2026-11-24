@@ -17,11 +17,11 @@
 //!
 //! ## Rates and timing
 //!
-//! - [`EventRate`]: events in a window, their exact rate, and the load averaged
-//!   over one, five and fifteen minutes.
+//! - `EventRate`: events in a window, their exact rate, and the load averaged
+//!   over one, five and fifteen minutes (requires `std` or `libm`).
 //! - [`ErrorRate`]: the share of events that failed.
 //! - [`Jitter`]: how much consecutive samples or arrivals vary.
-//! - [`Liveness`]: how long a source has been silent, in typical gaps (requires
+//! - `Liveness`: how long a source has been silent, in typical gaps (requires
 //!   `alloc`).
 //!
 //! ## Queues

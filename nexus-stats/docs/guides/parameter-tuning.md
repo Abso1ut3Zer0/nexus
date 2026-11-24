@@ -61,20 +61,22 @@ this from Welford). Set Q to control how reactive you want the filter.
 | 3.5 | ~0.05% | Conservative |
 | 5.0 | ~0.00006% | Almost never — for outlier rejection |
 
-## Liveness Deadline
+## Liveness Threshold
 
-**`deadline_multiple(n)`:** How many smoothed intervals of silence
-before declaring dead.
-- n = 2-3 → very aggressive (false alarms on jitter)
-- n = 5 → balanced default
-- n = 10 → conservative (tolerates long pauses)
+`Liveness::check` returns the silence as a multiple of the typical gap, and
+the threshold is yours to set:
 
-**`deadline_absolute(t)`:** Fixed timeout regardless of rate.
-Use when the expected rate varies too much for a multiple to work.
+- 2 to 3: very aggressive (false alarms on jitter)
+- 5: a balanced start
+- 10 and up: conservative (tolerates long pauses)
+- about 18: Cassandra's default (`phi` of 8)
 
-Both may be set; a gap is dead when it exceeds either. A multiple plus a
-generous absolute is the usual pairing: adaptive in steady state, with a
-hard ceiling if the source slows to a crawl.
+`probability_alive()` turns the ratio into the chance a live source would be
+this quiet, assuming events arrive at random. A source on a fixed heartbeat is
+far less likely to be late than that, so the same ratio means more there.
+
+Pair the ratio with a fixed limit on `silence()` when the expected rate varies
+too much for a multiple alone.
 
 ## General Advice
 

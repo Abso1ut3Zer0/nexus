@@ -9,10 +9,11 @@ Online regression, learning, and estimation for [nexus-stats](https://crates.io/
 - **`update` does the arithmetic and nothing else.** No validation, no `Result`. Floats follow IEEE 754, as `+` does. After an input the type cannot use, it promises nothing unless its docs say otherwise.
 - **`checked_update` protects the state.** A type has one when some input does damage that outlasts the sample, or when `update` drops a sample you should be told about (a NaN it ignores, a timestamp that goes back). It refuses exactly those inputs, its docs list them, and a refusal leaves the type unchanged. A type without one has no such input.
 - **A reader reports what the arithmetic gives,** NaN included where the true answer is undefined. It never substitutes a number. The library protects the state. It does not promise a reading is never NaN.
+- **Physical clock time is `i128` nanoseconds or `Instant`.** A clocked type lives on one of the two and they cannot be mixed. Time must not go back: `update` ignores a time before the latest one taken, and the guarded form returns `NonMonotonicTime`.
 - **A reading is an `Option`.** `None` until there is enough data, never a placeholder value.
 - **A published algorithm is implemented as published.** A type that comes from a paper or a standard follows it. Where floating point needs more care than the source gives (cancellation, overflow, a divisor near zero), the type adds the guard practitioners use, and its docs say which.
 
-**Not yet migrated:** every type in this crate except `HitRate`. They have not been moved to these guarantees. Most still validate in `update` and return a `Result`.
+**Not yet migrated:** every type in this crate except `HitRate` and `HawkesIntensity`. They have not been moved to these guarantees. Most still validate in `update` and return a `Result`.
 
 ## Regression Types
 
@@ -42,6 +43,7 @@ Online regression, learning, and estimation for [nexus-stats](https://crates.io/
 - **Kalman1d / Kalman2d / Kalman3d** — 1D/2D/3D Kalman filters
 - **BetaBinomial** — Beta-Binomial conjugate estimator
 - **GammaPoisson** — Gamma-Poisson conjugate estimator
+- **HawkesIntensity**: the intensity of a self-exciting point process, for events that cluster (requires `std` or `libm`)
 
 ## Usage
 

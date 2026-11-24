@@ -77,16 +77,13 @@ for sample in data {
 ```rust
 use nexus_stats::monitoring::Liveness;
 
-let mut live = Liveness::builder()
-    .span(15)
-    .deadline_multiple(5)
-    .build().unwrap();
+let mut live = Liveness::builder().build().unwrap();
 
-// On each message:
+// On each message, with its time as i128 nanoseconds or an Instant:
 live.update(now_ns);
 
-// On timer tick:
-if !live.check(now_ns) {
+// On timer tick: silent for more than five typical gaps?
+if live.check(now_ns).is_some_and(|s| s.ratio() > 5.0) {
     reconnect();
 }
 ```

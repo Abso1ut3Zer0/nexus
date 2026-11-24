@@ -36,7 +36,6 @@ pub use enums::{Accuracy, Condition, ConfigError, DataError, Direction};
 /// The numeric types the generic monitors accept. Sealed: named as bounds,
 /// implemented only here.
 pub mod sample;
-#[doc(hidden)]
 pub use sample::{Float, Sample};
 
 pub mod statistics;

@@ -211,8 +211,8 @@ impl<T: Timestamp> LastTime<T> {
         self.last
     }
 
-    /// Whether taking `time` would go back: it is before the latest time
-    /// taken.
+    /// Whether `time` is before the latest time taken, so that taking it
+    /// would go back.
     #[inline]
     #[must_use]
     pub fn would_go_back(self, time: T) -> bool {
