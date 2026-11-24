@@ -22,8 +22,9 @@ type over the sealed `Sample` trait, instantiated for `f64` and `i64`:
 Time is a third kind. Physical clock time is `i128` nanoseconds or an
 `Instant`, through the sealed `Timestamp` trait: `Liveness`, `EventRate` and
 `HawkesIntensity` take either, one clock per value. `PollSaturation`,
-`DecayAccum`, `MinMaxNorm` and the `timestamp` argument of the windowed
-extrema and `CoDel` have not moved yet and still take `u64` ticks
+`DecayAccum`, `MinMaxNorm`, `BucketAccumulator` and the `timestamp`
+argument of the windowed extrema and `CoDel` have not moved yet and still
+take `u64` ticks
 (`clock::MonotonicClock` is the `std` bridge from `Instant`, see
 [no_std](no-std.md) for the rest).
 
@@ -38,9 +39,8 @@ for `f32` feature vectors, not a cheaper accumulator.
   because NaN and infinity are rejected. `CoDel<i64>::update` returns
   `i64`: there is nothing to reject.
 - **Exact arithmetic.** Comparisons, differences and clamps are exact;
-  `DeadBand<i64>` uses `abs_diff`. The types still on `u64` ticks keep the kernel-style
-  bit-shift EMA (weights are powers of two, so `span` rounds to `2^k - 1`;
-  `effective_span()` tells you which). `PeakHold<i64>` holds, then drops to
+  `DeadBand<i64>` uses `abs_diff`. `Jitter<i64>` keeps its estimate scaled
+  by 16, as RFC 3550 does. `PeakHold<i64>` holds, then drops to
   the current sample; the fractional `decay_rate` exists on `f64` only.
 - **No FPU.** Nothing in an `i64` instantiation touches floating point.
 - **Same codegen.** The generic body monomorphizes to what the old

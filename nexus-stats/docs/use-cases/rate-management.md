@@ -22,11 +22,9 @@ order_rate.update();
 
 // On a timer, once a second:
 let window = order_rate.take(now_ns)?;
-{
-    limit_util.update(window.rate() / exchange_rate_limit);
-    if matches!(limit_util.value(), Some(u) if u > 0.80) {  // warn at 80% of the limit
-        throttle_order_flow();
-    }
+limit_util.update(window.rate() / exchange_rate_limit);
+if matches!(limit_util.value(), Some(u) if u > 0.80) {  // warn at 80% of the limit
+    throttle_order_flow();
 }
 ```
 
@@ -46,13 +44,11 @@ let mut cusum = Cusum::builder(expected_rate)
 rate.update();        // per event
 // On a timer:
 let r = rate.take(now_ns)?.rate();
-{
-    if let Some(shift) = cusum.update(r).unwrap() {
-        match shift {
-            Direction::Rising => log::warn!("rate spike detected"),
-            Direction::Falling => log::warn!("rate drop detected"),
-            Direction::Neutral => {}
-        }
+if let Some(shift) = cusum.update(r).unwrap() {
+    match shift {
+        Direction::Rising => log::warn!("rate spike detected"),
+        Direction::Falling => log::warn!("rate drop detected"),
+        Direction::Neutral => {}
     }
 }
 ```

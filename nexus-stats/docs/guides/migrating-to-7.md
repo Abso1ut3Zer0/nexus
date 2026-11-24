@@ -39,14 +39,14 @@ information. Builders follow their type: `EmaF64Builder` → `EmaBuilder`,
 | `DistributionShiftF64` | `DistributionShift` |
 | `EmaF64` | `Ema` |
 | `ErrorRateF64` | `ErrorRate` |
-| `EventRateU64` | `EventRate` |
+| `EventRateU64` | `EventRate<T>` (see the time section) |
 | `EwmaVarF64` | `EwmVar` (renamed, see below) |
 | `HalfLifeF64` | `HalfLife` |
 | `HarmonicMeanF64` | `HarmonicMean` |
-| `HawkesIntensityF64` | `HawkesIntensity` |
+| `HawkesIntensityF64` | `HawkesIntensity<T>`, now in `estimation` (see the time section) |
 | `HitRateF64` | `HitRate` |
 | `HurstF64` | `Hurst` |
-| `LivenessU64` | `Liveness` |
+| `LivenessU64` | `Liveness<T>` (see the time section) |
 | `LpmF64` | `Lpm` |
 | `MomentsF64` | `Moments` |
 | `OnlineCovarianceF64` | `CovarianceMatrix` |
@@ -247,7 +247,7 @@ on `f32` accumulation for speed, measure: the hot path gains a convert.
 | `update_i64(timestamp, ..)` on `WindowedMax`, `WindowedMin`, `CoDel` | `update(timestamp as u64, ..)` |
 | `HalfLifeBuilder` | `HalfLife::new()` (the builder had no knobs) |
 | `Liveness`'s `span`, `deadline_multiple`, `deadline_absolute`, `min_samples`, `interval()`, `effective_span()`, and the `bool` from `update` and `check` | `check(now)` returns a `Suspicion`; compare `ratio()` and `silence()` to your own limits |
-| `EventRate::builder()`, `rate()`, `interval()`, `reset()` | `EventRate::new(start)`, `take(now)?.rate()`, `reset_at(now)` |
+| `EventRate::builder()`, `rate()`, `interval()`, `effective_span()`, `reset()` | `EventRate::new(start)`, `take(now)?.rate()`, `reset_at(now)` |
 | `HawkesIntensityBuilder::min_samples` | nothing; no reading used it |
 | `Jitter::builder()`, its `span` / `alpha` / `halflife` / `seed`, `jitter_ratio()`, `last_deviation()`, `effective_span()` | `Jitter::<f64>::new()` or `Jitter::<i64>::new()`. The type is the RFC 3550 estimator with its fixed gain of 1/16. For a ratio, divide by an `Ema` of the same samples |
 | `ErrorRateBuilder::threshold`, `ErrorRate::reconfigure_threshold`, the `Condition` returned by `update` | compare `smoothed_ratio()` or `take().ratio()` to your own limit |
@@ -291,9 +291,8 @@ CHANGELOG entry in `nexus-stats-core`:
   `Degraded` on a single sample above target ([#759](https://github.com/Abso1ut3Zer0/nexus/issues/759)).
   A sojourn equal to the target counts as above, as in the RFC
   ([#791](https://github.com/Abso1ut3Zer0/nexus/issues/791)).
-- `Liveness::update` could never report dead once `deadline_multiple >= 2^k`
-  and ignored the absolute deadline when both were configured
-  ([#760](https://github.com/Abso1ut3Zer0/nexus/issues/760)).
+- `Liveness` no longer has deadlines; see the time section below
+  ([#760](https://github.com/Abso1ut3Zer0/nexus/issues/760) is moot).
 - `PeakHold<f64>` seeds from the first sample (a negative-only stream reported
   `0.0`)
   ([#763](https://github.com/Abso1ut3Zer0/nexus/issues/763)).
@@ -353,7 +352,6 @@ CHANGELOG entry in `nexus-stats-core`:
 - Kalman2d/3d: a non-positive innovation covariance restores P and skips the
   measurement instead of applying a `1/EPSILON` gain; P is re-symmetrized
   after every update. `RlsFilter` does the same for its denominator.
-- `EventRate` re-anchors on a backwards timestamp like `Liveness` does.
 - `AdaptiveThreshold::seed(mean, std_dev)` now seeds the spread estimate
   (the `std_dev` was stored and ignored).
 - `Hurst` primes at its configured window, not at a fixed 20 samples.
@@ -820,9 +818,10 @@ let mut live = Liveness::builder().build()?;      // mean of the last 1,000 gaps
 if live.check(now).is_some_and(|s| s.ratio() > 5.0) { reconnect(); }
 ```
 
-`Suspicion` also gives `probability_alive()`, `phi()` (Cassandra's scale),
-`silence()` and `mean_gap()`. The mean is over a window of gaps, not an
-exponential average, so its values differ. It needs `alloc`.
+`Suspicion` also gives `probability_alive()` (which needs `std` or `libm`),
+`phi()` (Cassandra's scale), `silence()` and `mean_gap()`. The mean is over
+a window of gaps, not an exponential average, so its values differ. The
+type needs `alloc`.
 
 **`EventRate`** counts events and reports on `take`:
 
@@ -845,8 +844,8 @@ quantity, so values change. It needs `std` or `libm`.
 
 **`HawkesIntensity`** moved to `estimation`
 (`nexus_stats::estimation::HawkesIntensity`). Its rates are now per second.
-If your times were nanosecond ticks, multiply the old `mu` and `beta` by
-`1e9`.
+If your times were nanosecond ticks, multiply the old `mu`, `alpha` and
+`beta` by `1e9`. All three were per tick, and `alpha / beta` is unchanged.
 
 ## 5. Checklist
 

@@ -56,3 +56,6 @@ pub mod estimation;
 pub mod learning;
 /// Regression and classification.
 pub mod regression;
+
+/// The clock a `HawkesIntensity` runs on: `i128` nanoseconds or an `Instant`.
+pub use nexus_stats_core::Timestamp;

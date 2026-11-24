@@ -6,9 +6,9 @@ use nexus_stats_core::Timestamp;
 /// over one, five and fifteen minutes.
 ///
 /// Count events with [`update`](Self::update), which reads no clock. On
-/// your own cadence, [`take`](Self::take) closes the window: it reports the
-/// events and the exact rate since the previous `take`, and folds that
-/// rate into three exponentially weighted averages.
+/// your own cadence, [`take`](Self::take) closes the window. It reports
+/// the events and the exact rate since the previous `take`, and folds
+/// that rate into three exponentially weighted averages.
 ///
 /// The averages are the UNIX load average applied to an event rate, as in
 /// Dropwizard's `Meter`: each window's rate enters with weight
@@ -18,8 +18,8 @@ use nexus_stats_core::Timestamp;
 /// averages are right at any cadence, even or not.
 ///
 /// As in Dropwizard, the first window sets every average to its rate.
-/// Make the first `take` after a period long enough to hold many events:
-/// a very short first window starts the averages too high.
+/// Make the first `take` after a period long enough to hold many events.
+/// A very short first window starts the averages too high.
 ///
 /// For a session this is the demand on it. Read it beside the saturation
 /// monitors and an error count.
@@ -160,7 +160,8 @@ impl<T: Timestamp> EventRate<T> {
         self.pending += 1;
     }
 
-    /// Counts `events` events at once, as after a batch poll.
+    /// Counts `events` events at once, as after a batch poll. The count is
+    /// a `u64` and adds as `+` does.
     #[inline]
     pub fn update_n(&mut self, events: u64) {
         self.pending += events;
@@ -267,7 +268,7 @@ mod tests {
     impl Ewma {
         fn new(horizon: f64, interval: f64) -> Self {
             Self {
-                alpha: 1.0 - (-interval / horizon).exp(),
+                alpha: 1.0 - nexus_stats_core::math::exp(-interval / horizon),
                 interval,
                 rate: 0.0,
                 initialized: false,

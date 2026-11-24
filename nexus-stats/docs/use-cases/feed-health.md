@@ -29,7 +29,7 @@ struct FeedMonitor {
 }
 
 impl FeedMonitor {
-    fn new(baseline_latency: f64, expected_interval_ns: i64) -> Self {
+    fn new(start_ns: i128, baseline_latency: f64, expected_interval_ns: i64) -> Self {
         FeedMonitor {
             liveness: Liveness::builder().build().unwrap(), // mean of the last 1,000 gaps
             latency: Cusum::builder(baseline_latency)
@@ -44,7 +44,7 @@ impl FeedMonitor {
         }
     }
 
-    fn on_message(&mut self, now_ns: i64, value: i64, latency_us: f64) {
+    fn on_message(&mut self, now_ns: i128, value: i64, latency_us: f64) {
         self.liveness.update(now_ns);
         self.rate.update();
         self.jitter.update(gap_ns); // time since the previous message
@@ -85,7 +85,7 @@ msg_rate.update();
 latency_cusum.update(msg_latency_ms).unwrap();
 
 // On timer tick (100ms from nexus-rt timer driver):
-let window = msg_rate.take(now_ns)?;          // events and rate since the last tick
+let rate = msg_rate.take(now_ns)?.rate();     // events per second since the last tick
 // Silent for 5 s, or for 20 typical gaps: your policy, not the type's.
 let quiet = liveness.check(now_ns);
 if quiet.is_some_and(|s| s.silence().as_secs() >= 5 || s.ratio() > 20.0) {

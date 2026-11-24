@@ -13,9 +13,10 @@ contained.
 ### Changed (breaking, time)
 
 - **`Liveness` and `EventRate` take time as `i128` nanoseconds or
-  `Instant`,** through the `Timestamp` trait, in place of `u64` ticks. A
-  time that goes back is ignored by `update` and reported as
-  `NonMonotonicTime` by the guarded form.
+  `Instant`,** through the `Timestamp` trait, in place of `u64` ticks.
+  `Liveness::update` ignores a time that goes back, and `checked_update`
+  reports it as `NonMonotonicTime`. `EventRate::take` refuses a time that
+  is not later.
 - **`Liveness` reports a suspicion level, not a verdict.** It follows
   Apache Cassandra's failure detector: `check(now)` returns a `Suspicion`
   with the silence as a multiple of the mean gap (`ratio()`), the chance a
@@ -24,15 +25,15 @@ contained.
   an exact integer sum, and `longest_recorded_gap` keeps a long outage out
   of it. `span`, `deadline_multiple`, `deadline_absolute`, `min_samples`,
   `interval()`, `effective_span()` and the `bool` results are removed. It
-  now needs `alloc`.
+  now needs `alloc`, and `probability_alive()` also needs `std` or `libm`.
 - **`EventRate` counts events and reports per window.** `update()` and
   `update_n(n)` read no clock. `take(now)` closes the window and returns a
   `RateSummary`: the events, the exact rate, the mean rate since the start,
   and the load averaged over 1, 5 and 15 minutes as in Dropwizard's `Meter`
   and the UNIX load average. `EventRate::new(start)` takes the start time,
   `take` refuses a time that is not later, and `reset_at(now)` replaces
-  `reset()`. `rate()`, `interval()` and the builder are removed. It now
-  needs `std` or `libm`.
+  `reset()`. `rate()`, `interval()`, `effective_span()` and the builder are
+  removed. It now needs `std` or `libm`.
 
 ### Removed (moved)
 
@@ -41,8 +42,9 @@ contained.
 
 ### Fixed
 
-- **`EventRate` reported one over the average gap between events,** which
-  is not events per unit of time when the gaps vary. It now counts.
+- **`EventRate` reported one over an exponentially weighted average of
+  the gap between events,** which weighs each event, not each unit of
+  time. It now counts events over a window.
 
 ### Changed (breaking)
 

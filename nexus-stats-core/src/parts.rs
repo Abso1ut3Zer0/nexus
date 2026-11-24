@@ -198,12 +198,6 @@ impl<T: Timestamp> LastTime<T> {
         Self { last: None }
     }
 
-    /// Starting from `time`, as if it had been taken.
-    #[must_use]
-    pub const fn starting_at(time: T) -> Self {
-        Self { last: Some(time) }
-    }
-
     /// The latest time taken, or `None` before the first.
     #[inline]
     #[must_use]

@@ -12,7 +12,7 @@ contained.
 
 ### Added (moved in)
 
-- **`HawkesIntensity`**, from `nexus-stats-monitoring`: it estimates the
+- **`HawkesIntensity`**, from `nexus-stats-monitoring`. It estimates the
   state of a point-process model, as the other types in `estimation` do.
 
 ### Changed (breaking)
@@ -21,7 +21,7 @@ contained.
   through the `Timestamp` trait, and its rates are per second (`mu` in
   events per second, `beta` per second). An event before the last one is
   ignored; `checked_update` returns `NonMonotonicTime`. `min_samples` is
-  removed: no reading used it.
+  removed, since no reading used it.
 
 ### Changed (dependencies)
 
