@@ -23,8 +23,8 @@ use nexus_stats_core::{Span, Tick};
 ///
 /// The caller's clock, any [`Tick`]. The intensity decays by the span
 /// between events, so any event rate is correct. The rates are per unit
-/// of that clock. On physical time (`i128` nanoseconds or an `Instant`)
-/// the unit is the second, so `mu` is events per second and `beta` is per
+/// of that clock. On physical time (any
+/// [`Timestamp`](nexus_stats_core::Timestamp)) the unit is the second, so `mu` is events per second and `beta` is per
 /// second. On another clock, traded volume as an `f64` say, they are per
 /// unit of volume.
 ///

@@ -25,8 +25,9 @@ use nexus_stats_core::{Sample, Timestamp};
 /// samples. O(1) per update, `no_std` compatible. A NaN is ignored, as
 /// [`f64::max`] ignores one; infinity is a value like any other.
 ///
-/// The clock `T` is `i128` nanoseconds or an `Instant`, and the window is a
-/// [`Duration`].
+/// The clock `T` is any [`Timestamp`]: `i128` or `i64` nanoseconds, an
+/// `Instant`, or a named unit such as [`Micros`](nexus_stats_core::Micros). The
+/// window is a [`Duration`].
 ///
 /// # Use Cases
 /// - Max throughput tracking
@@ -137,8 +138,9 @@ impl<V: Sample, T: Timestamp> WindowedMax<V, T> {
 /// samples. O(1) per update, `no_std` compatible. A NaN is ignored, as
 /// [`f64::min`] ignores one; infinity is a value like any other.
 ///
-/// The clock `T` is `i128` nanoseconds or an `Instant`, and the window is a
-/// [`Duration`].
+/// The clock `T` is any [`Timestamp`]: `i128` or `i64` nanoseconds, an
+/// `Instant`, or a named unit such as [`Micros`](nexus_stats_core::Micros). The
+/// window is a [`Duration`].
 ///
 /// # Use Cases
 /// - Min RTT tracking (BBR)
@@ -246,7 +248,7 @@ impl<V: Sample, T: Timestamp> WindowedMin<V, T> {
 /// The state the maximum and the minimum share.
 #[derive(Debug, Clone)]
 struct Window<V: Sample, T: Timestamp> {
-    span: Span,
+    span: WindowLength,
     /// `None` until the first value.
     choices: Option<Choices<V, T>>,
     count: u64,
@@ -262,7 +264,7 @@ impl<V: Sample, T: Timestamp> Window<V, T> {
             ));
         }
         Ok(Self {
-            span: Span::new(span),
+            span: WindowLength::new(span),
             choices: None,
             count: 0,
             last: LastTime::new(),
@@ -312,14 +314,14 @@ impl<V: Sample, T: Timestamp> Window<V, T> {
 
 /// The window length, with the two fractions the algorithm ages by.
 #[derive(Debug, Clone, Copy)]
-struct Span {
+struct WindowLength {
     whole: Duration,
     // PERF: dividing a `Duration` on every update costs more than the rest.
     half: Duration,
     quarter: Duration,
 }
 
-impl Span {
+impl WindowLength {
     #[inline]
     fn new(whole: Duration) -> Self {
         Self {
@@ -368,7 +370,12 @@ impl<V: Copy, T: Timestamp> Choices<V, T> {
     /// and `a <= b` for a minimum. Times must not go back (the caller drops
     /// late samples), so no age is negative.
     #[inline]
-    fn take(&mut self, sample: Stamped<V, T>, span: Span, better: impl Fn(V, V) -> bool) -> V {
+    fn take(
+        &mut self,
+        sample: Stamped<V, T>,
+        span: WindowLength,
+        better: impl Fn(V, V) -> bool,
+    ) -> V {
         let [first, second, third] = &mut self.0;
         // A new extremum, or nothing left in the window: forget the rest.
         if better(sample.value, first.value) || third.age_at(sample.time) > span.whole {
@@ -388,7 +395,7 @@ impl<V: Copy, T: Timestamp> Choices<V, T> {
     /// `minmax_subwin_update`: as time advances, replaces the choices that
     /// have aged.
     #[inline]
-    fn age(&mut self, sample: Stamped<V, T>, span: Span) {
+    fn age(&mut self, sample: Stamped<V, T>, span: WindowLength) {
         let [first, second, third] = self.0;
         let age = first.age_at(sample.time);
 
@@ -819,6 +826,45 @@ mod instant_tests {
                 on_nanos.1.update(nanos, value)
             );
         }
+    }
+}
+
+#[cfg(test)]
+mod clock_tests {
+    use super::*;
+    use nexus_stats_core::{Micros, Millis, Nanos, Seconds};
+
+    /// The maximum and minimum after each step, on a clock whose one step
+    /// is `unit`.
+    fn run<T: Timestamp>(unit: Duration, tick: impl Fn(i64) -> T) -> Vec<(i64, i64)> {
+        let mut max = WindowedMax::<i64, T>::new(unit * 50).unwrap();
+        let mut min = WindowedMin::<i64, T>::new(unit * 50).unwrap();
+        let mut state = 0x9E37_79B9_7F4A_7C15u64;
+        let mut at = 0i64;
+        let mut seen = Vec::new();
+        for _ in 0..2_000 {
+            state ^= state << 13;
+            state ^= state >> 7;
+            state ^= state << 17;
+            at += (state % 12) as i64;
+            let value = (state >> 20) as i64 % 1_000;
+            seen.push((
+                max.update(tick(at), value).unwrap(),
+                min.update(tick(at), value).unwrap(),
+            ));
+        }
+        seen
+    }
+
+    /// Every clock that names the same moments gives the same extremes.
+    #[test]
+    fn every_clock_agrees() {
+        let want = run(ns(1), i128::from);
+        assert_eq!(run(ns(1), |t| t), want);
+        assert_eq!(run(ns(1), |t| Nanos(i128::from(t))), want);
+        assert_eq!(run(Duration::from_micros(1), Micros), want);
+        assert_eq!(run(Duration::from_millis(1), Millis), want);
+        assert_eq!(run(Duration::from_secs(1), Seconds), want);
     }
 }
 

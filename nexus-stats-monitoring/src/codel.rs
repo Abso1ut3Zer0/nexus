@@ -18,8 +18,9 @@ use nexus_stats_core::{Condition, ConfigError, DataError, Timestamp};
 /// not model that. It detects; what to do about a standing queue (the
 /// RFC's drop schedule) is the caller's.
 ///
-/// The clock `T` is `i128` nanoseconds or an `Instant`. `no_std`
-/// compatible.
+/// The clock `T` is any [`Timestamp`]: `i128` or `i64` nanoseconds, an
+/// `Instant`, or a named unit such as [`Micros`](nexus_stats_core::Micros).
+/// `no_std` compatible.
 ///
 /// # Weighting clock
 ///
@@ -371,5 +372,32 @@ mod tests {
             assert_eq!(a, b, "at {at}");
         }
         assert_eq!(on_nanos.condition(), Degraded);
+    }
+
+    /// Every clock that names the same moments gives the same verdicts.
+    #[test]
+    fn every_clock_agrees() {
+        use nexus_stats_core::{Micros, Millis, Nanos, Seconds};
+
+        fn run<T: Timestamp>(unit: Duration, tick: impl Fn(i64) -> T) -> [Condition; 6] {
+            let mut cd = CoDel::<T>::new(unit * 100, unit * 1_000).unwrap();
+            [
+                (0, 500),
+                (400, 500),
+                (1_000, 100),
+                (1_200, 99),
+                (1_300, 100),
+                (2_300, 250),
+            ]
+            .map(|(at, sojourn)| cd.update(tick(at), unit * sojourn))
+        }
+
+        let want = [Normal, Normal, Degraded, Normal, Normal, Degraded];
+        assert_eq!(run(ns(1), i128::from), want);
+        assert_eq!(run(ns(1), |t| t), want);
+        assert_eq!(run(ns(1), |t| Nanos(i128::from(t))), want);
+        assert_eq!(run(Duration::from_micros(1), Micros), want);
+        assert_eq!(run(Duration::from_millis(1), Millis), want);
+        assert_eq!(run(Duration::from_secs(1), Seconds), want);
     }
 }

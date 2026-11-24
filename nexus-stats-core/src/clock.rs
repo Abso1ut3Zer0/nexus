@@ -8,8 +8,9 @@ use core::time::Duration;
 /// A clock is anything that only moves forward: wall time, a count of
 /// events or trades, traded volume. A tick can say how far it is from an
 /// earlier one, in whatever that clock counts in. The caller brings the
-/// clock and keeps it monotonic; a type that takes ticks ignores one that
-/// is not at or after the last it took, and its guarded form reports it.
+/// clock and keeps it monotonic. An `update` that takes a tick ignores
+/// one that is not at or after the last it took, and its guarded form
+/// reports it.
 ///
 /// A type is generic over its tick, so one instance lives on one clock.
 ///
@@ -26,9 +27,12 @@ use core::time::Duration;
 /// the unit is stated where the time enters. Only the difference of two
 /// ticks is used, so the epoch does not matter.
 ///
-/// Implement it for your own clock type: a decimal volume, or a time
-/// type from another crate.
-/// `since` must return zero when `self` is not after `earlier`.
+/// Implement it for your own clock type: a decimal volume, or a newtype
+/// over another crate's time type. Subtracting two large values of an
+/// `f64` clock loses precision, so keep such a clock small or reset it.
+/// `since` must return zero when `self` is not after `earlier`. That
+/// covers a tick with no place in the order, such as a NaN on an `f64`
+/// clock: the span to or from it is zero.
 pub trait Tick: Copy + PartialOrd + core::fmt::Debug + 'static {
     /// What this clock counts in.
     type Span: Span;
@@ -205,10 +209,14 @@ impl Tick for u32 {
     }
 }
 
+/// A NaN is not a point on the clock. It is not after any tick and no
+/// tick is after it, so the span to or from a NaN is zero, and a type
+/// that takes ticks never takes one.
 impl Tick for f64 {
     type Span = Self;
 
-    /// Zero if either tick is NaN.
+    /// Zero if `self` is not after `earlier`, a NaN on either side
+    /// included.
     #[inline]
     fn since(self, earlier: Self) -> Self {
         (self - earlier).max(0.0)
@@ -231,9 +239,8 @@ fn long_duration(nanos: i128) -> Duration {
 )]
 /// A source of monotonic u64 timestamps.
 ///
-/// The time-aware types not yet moved to [`Timestamp`] accept `u64`
-/// timestamps. The `Clock` trait bridges real-time sources to that
-/// interface.
+/// Deprecated. The clocked types take a [`Tick`] or a [`Timestamp`]
+/// directly, and the caller brings the clock.
 ///
 /// # Contract
 ///

@@ -97,7 +97,7 @@
 //!
 //! | Feature | Default | Enables |
 //! |---------|---------|---------|
-//! | `std` | yes | `MonotonicClock`, `sqrt`/`exp` intrinsics; implies `alloc` |
+//! | `std` | yes | `Instant` as a clock, `sqrt`/`exp` intrinsics; implies `alloc` |
 //! | `alloc` | no (implied by `std`) | Mosum, Kama, Hampel, WindowedMedian, BoolWindow, TopK, the correlations and entropies, adaptive filters, optimizers, bandits |
 //! | `libm` | no | Pure Rust `sqrt`/`exp` fallback for `no_std` (enables ShiryaevRoberts, AdaptiveThreshold, HalfLife, ...) |
 //! | `smoothing` | yes | The smoothers, and `EwmVar` |
@@ -115,13 +115,17 @@ pub use nexus_stats_core::{Accuracy, Condition, ConfigError, DataError, Directio
 /// Sealed numeric bounds of the generic types: [`Sample`] (`f64`, `i64`) and
 /// [`Float`] (`f64`, `f32`). Name them in your own signatures
 /// (`fn f<T: Sample>(p: &mut monitoring::PeakHold<T>)`); they cannot be
-/// implemented outside `nexus-stats-core`. [`Tick`] is a point on any
-/// clock that only moves forward, and [`Timestamp`] is a tick of physical
-/// time: `i128` or `i64` nanoseconds, an `Instant`, or one of the named
-/// units ([`Nanos`], [`Micros`], [`Millis`], [`Seconds`]).
-pub use nexus_stats_core::{Float, Micros, Millis, Nanos, Sample, Seconds, Span, Tick, Timestamp};
+/// implemented outside `nexus-stats-core`.
+pub use nexus_stats_core::{Float, Sample};
 
-/// Clock trait and implementations for time-aware stats types.
+/// The clock of the clocked types. [`Tick`] is a point on any clock that
+/// only moves forward, with a [`Span`] between two of them. [`Timestamp`]
+/// is a tick of physical time: `i128` or `i64` nanoseconds, an `Instant`,
+/// one of the named units here, or a type of your own. These traits are
+/// open.
+pub use nexus_stats_core::{Micros, Millis, Nanos, Seconds, Span, Tick, Timestamp};
+
+/// The clock traits and time types, and the deprecated `Clock` sources.
 pub use nexus_stats_core::clock;
 
 // Re-export the math module (doc-hidden, for subcrate use)
