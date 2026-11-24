@@ -1,10 +1,10 @@
 //! The numeric types the generic monitors accept.
 //!
 //! A monitor whose algorithm is the same over several numeric types is one
-//! generic type, `WindowedMax<T>`, `PeakHold<T>`, `ZScoreNorm<T>`, bounded by
+//! generic type, `WindowedMax<T, C>`, `PeakHold<T>`, `ZScoreNorm<T>`, bounded by
 //! one of the sealed traits here. The traits are implemented for exactly the
 //! supported primitive types and cannot be implemented outside this crate;
-//! you name them only as bounds (`fn f<T: Sample>(w: &mut WindowedMax<T>)`),
+//! you name them only as bounds (`fn f<T: Sample>(p: &mut PeakHold<T>)`),
 //! never implement them. Where a method exists for one type only (a float
 //! `checked_update`, say), it is implemented for that instantiation and
 //! documented on it.
@@ -24,7 +24,7 @@ mod private {
 ///
 /// Sealed: implemented for `f64` and `i64` here and nowhere else. It appears
 /// as the bound on generic monitors such as
-/// `WindowedMax<T>`, and that bound is the only
+/// `WindowedMax<T, C>`, and that bound is the only
 /// place a caller writes it.
 pub trait Sample:
     Copy + PartialOrd + Debug + Add<Output = Self> + Sub<Output = Self> + private::Sealed + 'static

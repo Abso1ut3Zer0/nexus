@@ -42,12 +42,14 @@ Each type's docs give its definition, what one `update` is worth (its weighting 
 ## Example
 
 ```rust
+use core::time::Duration;
 use nexus_stats_monitoring::WindowedMax;
 
-// The slowest request over the last 1,000 ticks, in microseconds.
-let mut slowest = WindowedMax::<i64>::new(1_000).unwrap();
-for (tick, micros) in [(0, 120), (300, 431), (600, 118), (900, 125)] {
-    slowest.update(tick, micros);
+// The slowest request over the last second, in microseconds. Time is
+// i128 nanoseconds here; an `Instant` works the same way.
+let mut slowest = WindowedMax::<i64, i128>::new(Duration::from_secs(1)).unwrap();
+for (millis, micros) in [(0, 120), (300, 431), (600, 118), (900, 125)] {
+    slowest.update(millis * 1_000_000, micros);
 }
 assert_eq!(slowest.max(), Some(431));
 ```

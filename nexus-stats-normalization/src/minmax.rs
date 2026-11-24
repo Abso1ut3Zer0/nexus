@@ -1,65 +1,72 @@
 use core::marker::PhantomData;
+use core::time::Duration;
 
-use nexus_stats_core::Float;
+use nexus_stats_core::{Float, Timestamp};
 use nexus_stats_monitoring::{WindowedMax, WindowedMin};
 
 /// Windowed min-max normalizer.
 ///
 /// Scales values to [0, 1] using the windowed minimum and maximum over a
-/// sliding timestamp window: `(sample - min) / (max - min)`. When the range
+/// sliding window of time: `(sample - min) / (max - min)`. When the range
 /// is zero (all values equal), returns 0.5.
 ///
 /// The window is tracked by a [`WindowedMin`] and a [`WindowedMax`], three
 /// stored samples each, so memory is fixed whatever the window length; see
-/// those types for how the window ages and for the timestamp rules. Those
+/// those types for how the window ages and for the rules on time. Those
 /// trackers are approximate: the reported extremes are always real samples
 /// from inside the window, but not always the most extreme ones, so the
 /// range used here can be narrower than the true window's, never wider.
 ///
 /// `T` is the sample type at the boundary, `f64` or `f32`; the trackers
 /// run in `f64` either way, so `MinMaxNorm<f32>` is for producing `f32`
-/// features, not for saving precision.
+/// features, not for saving precision. The clock `C` is `i128` nanoseconds
+/// or an `Instant`.
 ///
 /// # Examples
 ///
 /// ```
 /// use nexus_stats_normalization::MinMaxNorm;
 ///
-/// let mut mm = MinMaxNorm::<f32>::builder().window(100).build().unwrap();
+/// use core::time::Duration;
+///
+/// let mut mm = MinMaxNorm::<f32, i128>::builder()
+///     .window(Duration::from_nanos(100))
+///     .build()
+///     .unwrap();
 /// let _ = mm.update(0, 10.0);
 /// let _ = mm.update(1, 20.0);
 /// let v = mm.update(2, 15.0).unwrap();
 /// assert_eq!(v, Some(0.5));
 /// ```
 #[derive(Debug, Clone)]
-pub struct MinMaxNorm<T: Float> {
-    min_tracker: WindowedMin<f64>,
-    max_tracker: WindowedMax<f64>,
+pub struct MinMaxNorm<T: Float, C: Timestamp> {
+    min_tracker: WindowedMin<f64, C>,
+    max_tracker: WindowedMax<f64, C>,
     _sample: PhantomData<T>,
 }
 
 /// Builder for [`MinMaxNorm`].
 #[derive(Debug, Clone)]
-pub struct MinMaxNormBuilder<T: Float> {
-    window: Option<u64>,
-    _sample: PhantomData<T>,
+pub struct MinMaxNormBuilder<T: Float, C: Timestamp> {
+    window: Option<Duration>,
+    _sample: PhantomData<(T, C)>,
 }
 
-impl<T: Float> MinMaxNorm<T> {
+impl<T: Float, C: Timestamp> MinMaxNorm<T, C> {
     /// Creates a builder.
     #[inline]
     #[must_use]
-    pub fn builder() -> MinMaxNormBuilder<T> {
+    pub fn builder() -> MinMaxNormBuilder<T, C> {
         MinMaxNormBuilder {
             window: None,
             _sample: PhantomData,
         }
     }
 
-    /// Feeds a sample at the given timestamp. Returns normalized value
+    /// Feeds a sample at the given time. Returns normalized value
     /// in [0, 1] once at least one sample has been observed.
     ///
-    /// A sample timestamped before the previous one does not enter the
+    /// A sample timed before the previous one does not enter the
     /// window (see [`WindowedMax`]); it is normalized against the current
     /// window and clamped to [0, 1].
     ///
@@ -68,15 +75,11 @@ impl<T: Float> MinMaxNorm<T> {
     /// Returns `DataError::NotANumber` if the sample is NaN, or
     /// `DataError::Infinite` if the sample is infinite.
     #[inline]
-    pub fn update(
-        &mut self,
-        timestamp: u64,
-        sample: T,
-    ) -> Result<Option<T>, nexus_stats_core::DataError> {
+    pub fn update(&mut self, time: C, sample: T) -> Result<Option<T>, nexus_stats_core::DataError> {
         check_finite!(sample);
         let x = sample.to_f64();
-        self.min_tracker.update(timestamp, x);
-        self.max_tracker.update(timestamp, x);
+        self.min_tracker.update(time, x);
+        self.max_tracker.update(time, x);
         // A no-op for a sample that entered the window, which always lies
         // within it; a late sample may not.
         Ok(self
@@ -162,11 +165,11 @@ impl<T: Float> MinMaxNorm<T> {
     }
 }
 
-impl<T: Float> MinMaxNormBuilder<T> {
-    /// Timestamp window size (required, must be positive).
+impl<T: Float, C: Timestamp> MinMaxNormBuilder<T, C> {
+    /// Window length (required, must be positive).
     #[inline]
     #[must_use]
-    pub fn window(mut self, window: u64) -> Self {
+    pub fn window(mut self, window: Duration) -> Self {
         self.window = Some(window);
         self
     }
@@ -177,7 +180,7 @@ impl<T: Float> MinMaxNormBuilder<T> {
     ///
     /// Returns `ConfigError` if window is missing or zero.
     #[inline]
-    pub fn build(self) -> Result<MinMaxNorm<T>, nexus_stats_core::ConfigError> {
+    pub fn build(self) -> Result<MinMaxNorm<T, C>, nexus_stats_core::ConfigError> {
         let window = self
             .window
             .ok_or(nexus_stats_core::ConfigError::Missing("window"))?;
@@ -195,7 +198,10 @@ mod tests {
 
     #[test]
     fn scales_to_unit() {
-        let mut mm = MinMaxNorm::<f64>::builder().window(1000).build().unwrap();
+        let mut mm = MinMaxNorm::<f64, i128>::builder()
+            .window(Duration::from_nanos(1000))
+            .build()
+            .unwrap();
         let _ = mm.update(0, 10.0).unwrap();
         let _ = mm.update(1, 20.0).unwrap();
         let v = mm.update(2, 30.0).unwrap().unwrap();
@@ -205,7 +211,10 @@ mod tests {
 
     #[test]
     fn windowed_eviction() {
-        let mut mm = MinMaxNorm::<f64>::builder().window(30).build().unwrap();
+        let mut mm = MinMaxNorm::<f64, i128>::builder()
+            .window(Duration::from_nanos(30))
+            .build()
+            .unwrap();
         // Wide range initially
         let _ = mm.update(0, 0.0).unwrap();
         let _ = mm.update(1, 100.0).unwrap();
@@ -227,8 +236,11 @@ mod tests {
 
     #[test]
     fn constant_returns_half() {
-        let mut mm = MinMaxNorm::<f64>::builder().window(100).build().unwrap();
-        for i in 0..20u64 {
+        let mut mm = MinMaxNorm::<f64, i128>::builder()
+            .window(Duration::from_nanos(100))
+            .build()
+            .unwrap();
+        for i in 0..20i128 {
             let v = mm.update(i, 42.0).unwrap().unwrap();
             assert!(
                 (v - 0.5).abs() < 1e-10,
@@ -239,7 +251,10 @@ mod tests {
 
     #[test]
     fn normalize_without_update() {
-        let mut mm = MinMaxNorm::<f64>::builder().window(100).build().unwrap();
+        let mut mm = MinMaxNorm::<f64, i128>::builder()
+            .window(Duration::from_nanos(100))
+            .build()
+            .unwrap();
         let _ = mm.update(0, 0.0).unwrap();
         let _ = mm.update(1, 100.0).unwrap();
         assert_eq!(mm.normalize(75.0).unwrap(), Some(0.75));
@@ -251,14 +266,20 @@ mod tests {
 
     #[test]
     fn normalize_before_any_sample_is_none() {
-        let mm = MinMaxNorm::<f64>::builder().window(100).build().unwrap();
+        let mm = MinMaxNorm::<f64, i128>::builder()
+            .window(Duration::from_nanos(100))
+            .build()
+            .unwrap();
         assert_eq!(mm.normalize(1.0).unwrap(), None);
         assert!(!mm.is_primed());
     }
 
     #[test]
     fn single_sample() {
-        let mut mm = MinMaxNorm::<f64>::builder().window(100).build().unwrap();
+        let mut mm = MinMaxNorm::<f64, i128>::builder()
+            .window(Duration::from_nanos(100))
+            .build()
+            .unwrap();
         let v = mm.update(0, 42.0).unwrap().unwrap();
         assert!(
             (v - 0.5).abs() < 1e-10,
@@ -268,7 +289,10 @@ mod tests {
 
     #[test]
     fn rejects_nan_inf() {
-        let mut mm = MinMaxNorm::<f64>::builder().window(100).build().unwrap();
+        let mut mm = MinMaxNorm::<f64, i128>::builder()
+            .window(Duration::from_nanos(100))
+            .build()
+            .unwrap();
         assert!(mm.update(0, f64::NAN).is_err());
         assert!(mm.update(0, f64::INFINITY).is_err());
         assert!(mm.update(0, f64::NEG_INFINITY).is_err());
@@ -287,7 +311,10 @@ mod tests {
     // to itself (0.5 here) and the next in-order sample read 0.0.
     #[test]
     fn late_sample_is_clamped_and_leaves_the_window() {
-        let mut mm = MinMaxNorm::<f64>::builder().window(100).build().unwrap();
+        let mut mm = MinMaxNorm::<f64, i128>::builder()
+            .window(Duration::from_nanos(100))
+            .build()
+            .unwrap();
         let _ = mm.update(1000, 10.0).unwrap();
         let _ = mm.update(1030, 20.0).unwrap();
         assert_eq!(mm.update(1020, 30.0).unwrap(), Some(1.0));
@@ -299,7 +326,10 @@ mod tests {
         );
         assert_eq!(mm.update(1031, 15.0).unwrap(), Some(0.5));
 
-        let mut m32 = MinMaxNorm::<f32>::builder().window(100).build().unwrap();
+        let mut m32 = MinMaxNorm::<f32, i128>::builder()
+            .window(Duration::from_nanos(100))
+            .build()
+            .unwrap();
         let _ = m32.update(1000, 10.0).unwrap();
         let _ = m32.update(1030, 20.0).unwrap();
         assert_eq!(m32.update(1020, 30.0).unwrap(), Some(1.0));

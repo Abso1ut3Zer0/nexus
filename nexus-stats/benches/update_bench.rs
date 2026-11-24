@@ -1073,11 +1073,14 @@ fn bench_zscore_norm(c: &mut Criterion) {
 
 fn bench_minmax_norm(c: &mut Criterion) {
     let mut rng = Lcg::new(42);
-    let mut mm = MinMaxNorm::<f64>::builder().window(100).build().unwrap();
-    for i in 0..1000u64 {
+    let mut mm = MinMaxNorm::<f64, i128>::builder()
+        .window(std::time::Duration::from_nanos(100))
+        .build()
+        .unwrap();
+    for i in 0..1000i128 {
         let _ = mm.update(i, rng.next_f64());
     }
-    let mut ts = 1000u64;
+    let mut ts = 1000i128;
     c.bench_function("MinMaxNorm::<f64>::update", |b| {
         b.iter(|| {
             ts += 1;
