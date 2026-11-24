@@ -1,9 +1,7 @@
 //! The parts the statistics are built from: small pieces of state that
 //! several types share. Operations on numbers are in [`math`](crate::math).
 
-use core::time::Duration;
-
-use crate::Timestamp;
+use crate::Tick;
 use crate::math::{MulAdd, alpha_from_span, in_unit_interval};
 #[cfg(any(feature = "std", feature = "libm"))]
 use crate::math::{alpha_from_halflife, positive_finite, sqrt};
@@ -183,15 +181,15 @@ impl RoundingBound {
     }
 }
 
-/// The latest time a clocked type has taken, and the rule that time must
-/// not go back.
+/// The latest tick a clocked type has taken, and the rule that a clock
+/// must not go back.
 #[doc(hidden)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct LastTime<T: Timestamp> {
+pub struct LastTime<T: Tick> {
     last: Option<T>,
 }
 
-impl<T: Timestamp> LastTime<T> {
+impl<T: Tick> LastTime<T> {
     /// No time taken yet.
     #[must_use]
     pub const fn new() -> Self {
@@ -205,12 +203,15 @@ impl<T: Timestamp> LastTime<T> {
         self.last
     }
 
-    /// Whether `time` is before the latest time taken, so that taking it
-    /// would go back.
+    /// Whether taking `time` would go back: it is not at or after the
+    /// latest tick taken. A tick that compares with nothing, a NaN on an
+    /// `f64` clock, counts as going back.
     #[inline]
     #[must_use]
+    #[allow(clippy::neg_cmp_op_on_partial_ord)]
     pub fn would_go_back(self, time: T) -> bool {
-        self.last.is_some_and(|last| time < last)
+        // Negated so that an unordered tick fails it, the first included.
+        !(time >= self.last.unwrap_or(time))
     }
 
     /// `Ok` if `time` may be taken.
@@ -218,7 +219,7 @@ impl<T: Timestamp> LastTime<T> {
     /// # Errors
     ///
     /// [`DataError::NonMonotonicTime`](crate::DataError::NonMonotonicTime)
-    /// if `time` is before the latest time taken.
+    /// if `time` is not at or after the latest tick taken.
     #[inline]
     pub fn check(self, time: T) -> Result<(), crate::DataError> {
         if self.would_go_back(time) {
@@ -227,11 +228,11 @@ impl<T: Timestamp> LastTime<T> {
         Ok(())
     }
 
-    /// The time from the latest one taken to `time`: zero if `time` is not
-    /// after it, `None` before the first.
+    /// The span from the latest tick taken to `time`: zero if `time` is
+    /// not after it, `None` before the first.
     #[inline]
     #[must_use]
-    pub fn elapsed_to(self, time: T) -> Option<Duration> {
+    pub fn elapsed_to(self, time: T) -> Option<T::Span> {
         Some(time.since(self.last?))
     }
 
@@ -247,7 +248,7 @@ impl<T: Timestamp> LastTime<T> {
     }
 }
 
-impl<T: Timestamp> Default for LastTime<T> {
+impl<T: Tick> Default for LastTime<T> {
     fn default() -> Self {
         Self::new()
     }
@@ -563,5 +564,38 @@ mod tests {
                 "halflife is too small or too large for a usable weight"
             ))
         );
+    }
+
+    #[test]
+    fn a_tick_before_the_last_would_go_back() {
+        let mut last = LastTime::new();
+        assert!(!last.would_go_back(5_u64));
+        last.set(5);
+        // The same tick again is not going back.
+        assert!(!last.would_go_back(5));
+        assert!(!last.would_go_back(6));
+        assert!(last.would_go_back(4));
+        assert_eq!(last.check(4), Err(crate::DataError::NonMonotonicTime));
+        assert_eq!((last.elapsed_to(9), last.elapsed_to(2)), (Some(4), Some(0)));
+        last.reset();
+        assert!(!last.would_go_back(0));
+        assert_eq!(last.elapsed_to(9), None);
+    }
+
+    /// A NaN is not at or after anything, so it never becomes the latest
+    /// tick, the first one included.
+    #[test]
+    fn a_nan_tick_counts_as_going_back() {
+        let mut last = LastTime::new();
+        assert!(last.would_go_back(f64::NAN));
+        assert_eq!(
+            last.check(f64::NAN),
+            Err(crate::DataError::NonMonotonicTime)
+        );
+        last.set(1.5);
+        assert!(last.would_go_back(f64::NAN));
+        assert!(!last.would_go_back(1.5));
+        assert!(!last.would_go_back(f64::INFINITY));
+        assert!(last.would_go_back(f64::NEG_INFINITY));
     }
 }
