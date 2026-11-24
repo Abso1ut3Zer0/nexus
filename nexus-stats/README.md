@@ -15,7 +15,8 @@ without latency jitter.
 - **Fixed memory.** A type allocates only when it is built. `update` never allocates.
 - **Configuration is checked once, when the type is built,** and reported as a `ConfigError`.
 - **`update` does the arithmetic and nothing else.** No validation, no `Result`. Floats follow IEEE 754, as `+` does. After an input the type cannot use, it promises nothing unless its docs say otherwise.
-- **`checked_update` exists only where it has a job.** A type has one when some input can leave it unable to give a right reading until `reset()`. It refuses exactly those inputs, its docs list them, and a refusal leaves the type unchanged. A type without one has no such input.
+- **`checked_update` protects the state.** A type has one when some input does damage that outlasts the sample, or when `update` drops a sample you should be told about (a NaN it ignores, a timestamp that goes back). It refuses exactly those inputs, its docs list them, and a refusal leaves the type unchanged. A type without one has no such input.
+- **A reader reports what the arithmetic gives,** NaN included where the true answer is undefined. It never substitutes a number. The library protects the state. It does not promise a reading is never NaN.
 - **A reading is an `Option`.** `None` until there is enough data, never a placeholder value.
 - **A published algorithm is implemented as published.** A type that comes from a paper or a standard follows it. Where floating point needs more care than the source gives (cancellation, overflow, a divisor near zero), the type adds the guard practitioners use, and its docs say which.
 - **Maxima and minima ignore NaN and accept infinity,** as `f64::max` does.
@@ -26,7 +27,7 @@ without latency jitter.
 
 - `statistics`: `BucketAccumulator`, `CovarianceMatrix`, `FirstDiff`, `Percentile`, `SecondDiff`
 - `smoothing`: `Hampel`, `Kama`, `WindowedMedian`
-- `monitoring`: `CoDel`, `Drawdown`, `ErrorRate`, `EventRate`, `HawkesIntensity`, `Jitter`, `Liveness`, `PollSaturation`, `SojournSaturation`
+- `monitoring`: `CoDel`, `EventRate`, `HawkesIntensity`, `Liveness`, `PollSaturation`, `SojournSaturation`
 - `normalization`: `MinMaxNorm`, `QuantileNorm`
 - `trading`: `Cvar`, `KyleLambda`
 - `control`, `frequency`: every type
@@ -157,7 +158,7 @@ docs, and each module's docs say which type to use for what.
 
 | Type | What It Tracks | p50 |
 |------|---------------|-----|
-| `Drawdown<f64>` | Peak-to-trough decline, max drawdown | 5 |
+| `PeakToTrough<f64>` | Fall from the running high and the largest fall (drawdown) | 7 |
 | `WindowedMax<f64>` / `WindowedMin<f64>` | Sliding window extrema (Nichols'/BBR) | 9 |
 | `PeakHold<f64>` | Amplitude tracker: instant attack, hold, decay | 8 |
 | `Liveness` | Source alive/dead detection | 7 |
@@ -165,9 +166,9 @@ docs, and each module's docs say which type to use for what.
 | `CoDel<i64>` | Queue backpressure detection (CoDel-inspired) | 5 |
 | `PollSaturation` | Consumer-side saturation from poll outcomes: `on_work` / `on_idle` | 6 / 1 |
 | `SojournSaturation` | Consumer saturation from stamped queue sojourn, exact per message | 7 |
-| `ErrorRate` | Failure rate with weighted severity | 7 |
+| `ErrorRate` | Error count, ratio per interval, smoothed ratio | 7 |
 | `TrendAlert` | Trend direction (Stable/Rising/Falling) | 10 |
-| `Jitter<f64>` | Signal variability measurement | 7 |
+| `Jitter<f64>` | Interarrival jitter (RFC 3550) | 6 |
 | `HawkesIntensity` *(std\|libm)* | Self-exciting point process intensity | 15 |
 
 ### Frequency & Scoring
@@ -200,7 +201,7 @@ sealed `Sample` trait, instantiated for `f64` and `i64`:
 
 | Generic over `Sample` (`f64`, `i64`) | Module |
 |--------------------------------------|--------|
-| `Drawdown`, `WindowedMax`, `WindowedMin`, `PeakHold`, `CoDel`, `Jitter` | `monitoring` |
+| `WindowedMax`, `WindowedMin`, `PeakHold`, `CoDel` | `monitoring` |
 | `DeadBand`, `Hysteresis`, `LevelCrossing`, `PeakDetector` *(control feature)* | `control` |
 | `FirstDiff`, `SecondDiff` | `statistics` |
 | `WindowedMedian` *(smoothing feature)* | `smoothing` |
@@ -208,8 +209,12 @@ sealed `Sample` trait, instantiated for `f64` and `i64`:
 On the migrated types (`WindowedMax`, `WindowedMin`, `PeakHold`) there is
 one `update` for both. On the others, `update` still returns `Result` on
 the `f64` instantiation and the plain value on `i64`.
-Constructors are shared, so name the type once: `Drawdown::<i64>::new()`,
-`CoDel::<i64>::builder()`, `let dd: Drawdown<f64> = Drawdown::new()`.
+Constructors are shared, so name the type once: `WindowedMax::<i64>::new(n)`,
+`CoDel::<i64>::builder()`, `let wm: WindowedMax<f64> = WindowedMax::new(n)?`.
+
+`PeakToTrough<T>` is open to any type that can be compared and subtracted,
+a caller's own decimal type included. `Jitter` has an `f64` and an `i64`
+form, the two the RFC gives.
 
 The normalizers (`ZScoreNorm`, `MinMaxNorm`, `QuantileNorm`) and
 `RobustZScore` are generic over `Float` (`f64`, `f32`): they take and return
@@ -284,7 +289,7 @@ nexus-stats is split into workspace crates for independent compilation and featu
 - **nexus-stats-detection** — CUSUM, DistributionShift, MOSUM, Shiryaev-Roberts, MultiGate, RobustZScore, AdaptiveThreshold, and signal analysis (Autocorrelation, Hurst, HalfLife)
 - **nexus-stats-regression** — Linear, polynomial, exponential, logarithmic, power regression; learning; Kalman and Bayesian estimation
 - **nexus-stats-control** — DeadBand, Hysteresis, Debounce, LevelCrossing, PeakDetector, BoolWindow, and the frequency types
-- **nexus-stats-monitoring** — Drawdown, running and windowed extremes, EventRate, ErrorRate, Jitter, Liveness, CoDel, the saturation monitors
+- **nexus-stats-monitoring** — PeakToTrough, windowed extremes, EventRate, ErrorRate, Jitter, Liveness, CoDel, the saturation monitors
 - **nexus-stats-normalization** — ZScoreNorm, MinMaxNorm, QuantileNorm
 - **nexus-stats-trading** — VarianceRatio, TwoScaleRv, BipowerVariation, Amihud, RollSpread, KyleLambda, Lpm, Cvar
 

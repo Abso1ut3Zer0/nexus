@@ -12,6 +12,22 @@ contained.
 
 ### Changed (breaking)
 
+- **`monitoring::Drawdown` is replaced by `PeakToTrough<T>`,** open to any
+  comparable, subtractable number type.
+- **`monitoring::Jitter` is the RFC 3550 estimator,** with a fixed gain and
+  no builder; its values change.
+- **`monitoring::ErrorRate` reports an error count, a ratio per interval
+  and a smoothed ratio,** and no longer returns a verdict.
+- The migration guide has the before and after for each.
+
+### Documentation
+
+- The Guarantees now say the library protects a type's state, not that a
+  reading is never NaN, and that a reader reports what the arithmetic
+  gives.
+
+### Changed (breaking)
+
 - **`Slew`, `Holt` and `Spring` move to the 7.0 contract:** `update`
   validates nothing and returns no `Result`; each has a `checked_update`.
   `Slew` is `f64` only and gains separate rising and falling limits;

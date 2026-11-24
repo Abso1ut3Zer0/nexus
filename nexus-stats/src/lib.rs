@@ -39,9 +39,12 @@
 //!
 //! - **`update` does the arithmetic and nothing else.** No validation, no
 //!   `Result`. Floats follow IEEE 754, as `+` does.
-//! - **`checked_update` exists only where it has a job:** when some input
-//!   can leave the type unable to give a right reading until `reset()`. It
-//!   refuses exactly those inputs and leaves the type unchanged.
+//! - **`checked_update` protects the state.** A type has one when some
+//!   input does damage that outlasts the sample, or when `update` drops a
+//!   sample the caller should be told about. It refuses exactly those
+//!   inputs and leaves the type unchanged.
+//! - **A reader reports what the arithmetic gives,** NaN included where
+//!   the true answer is undefined. It never substitutes a number.
 //! - **A reading is an `Option`:** `None` until there is enough data.
 //! - **Maxima and minima ignore NaN and accept infinity,** as `f64::max`
 //!   does.
@@ -85,7 +88,7 @@
 //! | `regression` | `estimation` | + Kalman1d, Kalman2d, Kalman3d, BetaBinomial, GammaPoisson |
 //! | `control` | `control` | DeadBand, Hysteresis, Debounce, LevelCrossing, PeakDetector, BoolWindow *(alloc)* |
 //! | `control` | `frequency` | FlexProportionGlobal, FlexProportionLocal, TopK *(alloc)*, DecayAccum *(std\|libm)* |
-//! | `monitoring` | `monitoring` | Drawdown, WindowedMax, WindowedMin, PeakHold, CoDel, PollSaturation, SojournSaturation, Liveness, EventRate, Jitter, ErrorRate, HawkesIntensity *(std\|libm)* |
+//! | `monitoring` | `monitoring` | PeakToTrough, WindowedMax, WindowedMin, PeakHold, CoDel, PollSaturation, SojournSaturation, Liveness, EventRate, Jitter, ErrorRate, HawkesIntensity *(std\|libm)* |
 //! | `normalization` | `normalization` | MinMaxNorm, ZScoreNorm *(std\|libm)*, QuantileNorm *(alloc)* |
 //! | `trading` | `trading` | Amihud, Lpm, Cvar, BipowerVariation *(std\|libm)*, RollSpread *(std\|libm)*, TwoScaleRv *(alloc, std\|libm)*, VarianceRatio *(alloc, std\|libm)*, KyleLambda *(with `regression`)* |
 //! | `full` | all | Everything above |
@@ -111,7 +114,7 @@ pub use nexus_stats_core::{Accuracy, Condition, ConfigError, DataError, Directio
 
 /// Sealed numeric bounds of the generic types: [`Sample`] (`f64`, `i64`) and
 /// [`Float`] (`f64`, `f32`). Name them in your own signatures
-/// (`fn f<T: Sample>(d: &mut monitoring::Drawdown<T>)`); they cannot be
+/// (`fn f<T: Sample>(w: &mut monitoring::WindowedMax<T>)`); they cannot be
 /// implemented outside `nexus-stats-core`.
 pub use nexus_stats_core::{Float, Sample};
 

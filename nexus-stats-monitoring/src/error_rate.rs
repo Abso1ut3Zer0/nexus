@@ -1,234 +1,237 @@
-use nexus_stats_core::Condition;
-use nexus_stats_core::math::MulAdd;
+use nexus_stats_core::parts::{EwWeight, Warmup, Weight};
 
-/// Smoothed error rate tracker.
+/// Errors, counted three ways from one stream of outcomes.
 ///
-/// Internally uses an EMA where success = 0.0 and failure = 1.0 (or
-/// weighted). The smoothed value approximates the recent error rate.
+/// Feed it each event's outcome. It gives:
 ///
-/// # Use Cases
-/// - API error rate monitoring
-/// - Exchange rejection rate tracking
-/// - Weighted severity tracking (critical failures count more)
+/// - **The count of errors**, in total and per interval. This is the
+///   Errors of Brendan Gregg's
+///   [USE method](https://www.brendangregg.com/usemethod.html): "the count
+///   of error events". A count above zero is worth a look, more so while
+///   it is still rising.
+/// - **The ratio of events that failed, per interval.** This is the Errors
+///   signal of Google's
+///   [SRE book](https://sre.google/sre-book/monitoring-distributed-systems/):
+///   "the rate of requests that fail".
+/// - **A smoothed ratio**, an exponentially weighted average of the same
+///   thing over every event since the start. This one is ours: a single
+///   number for the recent tendency that needs no interval.
 ///
-/// # Weighted outcomes
-///
-/// `update_weighted(false, 2.0)` feeds 2.0 to the EMA (a failure that
-/// counts double). With weights > 1.0, the smoothed "rate" can exceed
-/// 1.0 — it becomes a severity-weighted signal rather than a pure rate.
+/// An interval is whatever passes between two calls to
+/// [`take`](Self::take). A ratio over a long interval can hide a short
+/// burst of errors.
 ///
 /// # Weighting clock
 ///
-/// Per `update` call: every sample counts the same. Correct when samples
-/// are evenly spaced, or one per event where per-event weighting is wanted.
-/// Never feed it from a loop whose iteration time depends on the quantity
-/// being measured.
+/// Per event. The counts and the interval ratio weigh every event the
+/// same. The smoothed ratio weighs recent events more, by count, not by
+/// time.
+///
+/// It reports numbers and no verdict. What counts as too many errors is
+/// the caller's decision.
+///
+/// # Examples
+///
+/// ```
+/// use nexus_stats_monitoring::ErrorRate;
+///
+/// let mut errors = ErrorRate::builder().alpha(0.5).build().unwrap();
+/// for ok in [true, true, false, true] {
+///     errors.update(ok);
+/// }
+/// let interval = errors.take();
+/// assert_eq!((interval.errors(), interval.events()), (1, 4));
+/// assert_eq!(interval.ratio(), Some(0.25));
+///
+/// errors.update(false);
+/// assert_eq!(errors.take().errors(), 1); // this interval only
+/// assert_eq!(errors.total_errors(), 2); // since the start
+/// ```
 #[derive(Debug, Clone)]
 pub struct ErrorRate {
-    alpha: f64,
-    one_minus_alpha: f64,
-    value: f64,
-    threshold: f64,
-    count: u64,
-    min_samples: u64,
+    weight: Weight,
+    smoothed: f64,
+    warmup: Warmup,
+    /// Since construction or `reset`.
+    total: ErrorSummary,
+    /// A copy of `total` made at the last `take`.
+    at_last_take: ErrorSummary,
+}
+
+/// Errors and events over a span of an [`ErrorRate`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ErrorSummary {
+    errors: u64,
+    events: u64,
 }
 
 /// Builder for [`ErrorRate`].
 #[derive(Debug, Clone)]
 pub struct ErrorRateBuilder {
-    alpha: Option<f64>,
-    threshold: Option<f64>,
+    weight: Option<EwWeight>,
     min_samples: u64,
+}
+
+impl ErrorSummary {
+    const NONE: Self = Self {
+        errors: 0,
+        events: 0,
+    };
+
+    /// What was added to an `earlier` summary of the same stream.
+    fn since(self, earlier: Self) -> Self {
+        Self {
+            errors: self.errors - earlier.errors,
+            events: self.events - earlier.events,
+        }
+    }
+
+    /// The count of events that failed.
+    #[must_use]
+    pub fn errors(&self) -> u64 {
+        self.errors
+    }
+
+    /// The count of events, failed or not.
+    #[must_use]
+    pub fn events(&self) -> u64 {
+        self.events
+    }
+
+    /// The ratio of events that failed, or `None` if there were no events.
+    #[must_use]
+    pub fn ratio(&self) -> Option<f64> {
+        if self.events == 0 {
+            return None;
+        }
+        Some(self.errors as f64 / self.events as f64)
+    }
 }
 
 impl ErrorRate {
     /// Creates a builder.
-    #[inline]
     #[must_use]
     pub fn builder() -> ErrorRateBuilder {
         ErrorRateBuilder {
-            alpha: None,
-            threshold: None,
+            weight: None,
             min_samples: 1,
         }
     }
 
-    /// Updates with an outcome with default weight 1.0.
+    /// Records one event: `true` if it succeeded, `false` if it failed.
     #[inline]
+    pub fn update(&mut self, success: bool) {
+        let failed = !success;
+        self.total.events += 1;
+        self.total.errors += u64::from(failed);
+        // PERF: the indicator as a number, not a select between constants.
+        let indicator = f64::from(u8::from(failed));
+        let first = self.warmup.awaits_first_sample();
+        self.warmup.tick();
+        self.smoothed = if first {
+            indicator
+        } else {
+            self.weight.blend(indicator, self.smoothed)
+        };
+    }
+
+    /// The errors and events since the last `take`, and starts a new
+    /// interval.
+    pub fn take(&mut self) -> ErrorSummary {
+        let interval = self.total.since(self.at_last_take);
+        self.at_last_take = self.total;
+        interval
+    }
+
+    /// The count of errors since construction or `reset`.
     #[must_use]
-    pub fn update(&mut self, success: bool) -> Option<Condition> {
-        // Weight 1.0 is always finite — bypass validation.
-        self.update_weighted(success, 1.0).unwrap()
+    pub fn total_errors(&self) -> u64 {
+        self.total.errors
     }
 
-    /// Updates with an outcome with a severity weight.
-    ///
-    /// Success feeds `0.0`, failure feeds `weight`. The EMA smooths
-    /// this signal. With `weight=1.0`, the smoothed value is the
-    /// recent error rate in [0, 1]. With `weight > 1.0`, it can exceed 1.0.
-    ///
-    /// # Errors
-    ///
-    /// Returns `DataError::NotANumber` if the weight is NaN, or
-    /// `DataError::Infinite` if the weight is infinite.
-    #[inline]
-    pub fn update_weighted(
-        &mut self,
-        success: bool,
-        weight: f64,
-    ) -> Result<Option<Condition>, nexus_stats_core::DataError> {
-        check_finite!(weight);
-        self.count += 1;
-
-        let sample = if success { 0.0 } else { weight };
-
-        if self.count == 1 {
-            self.value = sample;
-        } else {
-            self.value = self.alpha.fma(sample, self.one_minus_alpha * self.value);
-        }
-
-        if self.count < self.min_samples {
-            return Ok(None);
-        }
-
-        Ok(if self.value > self.threshold {
-            Some(Condition::Degraded)
-        } else {
-            Some(Condition::Normal)
-        })
-    }
-
-    /// Current smoothed error rate, or `None` if not primed.
-    ///
-    /// With unweighted `update()`, this is in [0.0, 1.0].
-    /// With weighted outcomes, it may exceed 1.0.
-    #[inline]
-    #[must_use]
-    pub fn error_rate(&self) -> Option<f64> {
-        if self.count >= self.min_samples {
-            Some(self.value)
-        } else {
-            None
-        }
-    }
-
-    /// Number of outcomes recorded.
-    #[inline]
+    /// The count of events since construction or `reset`.
     #[must_use]
     pub fn count(&self) -> u64 {
-        self.count
+        self.total.events
     }
 
-    /// Whether enough data has been collected.
-    #[inline]
+    /// The exponentially weighted ratio of events that failed, or `None`
+    /// until `min_samples` events have been fed.
+    #[must_use]
+    pub fn smoothed_ratio(&self) -> Option<f64> {
+        if !self.warmup.is_primed() {
+            return None;
+        }
+        Some(self.smoothed)
+    }
+
+    /// Whether the smoothed ratio is available.
     #[must_use]
     pub fn is_primed(&self) -> bool {
-        self.count >= self.min_samples
+        self.warmup.is_primed()
     }
 
-    /// Resets to empty state. Parameters unchanged.
-    #[inline]
+    /// Forgets every count and the smoothed ratio. The weight is kept.
     pub fn reset(&mut self) {
-        self.value = 0.0;
-        self.count = 0;
-    }
-
-    /// Updates the error rate threshold without resetting state.
-    ///
-    /// # Errors
-    ///
-    /// Threshold must be >= 0.
-    #[inline]
-    pub fn reconfigure_threshold(
-        &mut self,
-        threshold: f64,
-    ) -> Result<(), nexus_stats_core::ConfigError> {
-        if threshold < 0.0 {
-            return Err(nexus_stats_core::ConfigError::Invalid(
-                "threshold must be non-negative",
-            ));
-        }
-        self.threshold = threshold;
-        Ok(())
+        self.smoothed = 0.0;
+        self.warmup.reset();
+        self.total = ErrorSummary::NONE;
+        self.at_last_take = ErrorSummary::NONE;
     }
 }
 
 impl ErrorRateBuilder {
-    /// Smoothing factor.
-    #[inline]
+    /// Weight of the smoothed ratio, in `(0, 1)`. Larger follows recent
+    /// events more closely.
     #[must_use]
     pub fn alpha(mut self, alpha: f64) -> Self {
-        self.alpha = Some(alpha);
+        self.weight = Some(EwWeight::Alpha(alpha));
         self
     }
 
-    /// Halflife for smoothing.
-    #[inline]
+    /// Weight of the smoothed ratio as a half-life, in events.
     #[must_use]
     #[cfg(any(feature = "std", feature = "libm"))]
     pub fn halflife(mut self, halflife: f64) -> Self {
-        self.alpha = Some(nexus_stats_core::math::alpha_from_halflife(halflife));
+        self.weight = Some(EwWeight::Halflife(halflife));
         self
     }
 
-    /// Span for smoothing.
-    #[inline]
+    /// Weight of the smoothed ratio as a span (`alpha = 2 / (n + 1)`). Must
+    /// be at least 2.
     #[must_use]
     pub fn span(mut self, n: u64) -> Self {
-        self.alpha = Some(2.0 / (n as f64 + 1.0));
+        self.weight = Some(EwWeight::Span(n));
         self
     }
 
-    /// Error rate threshold. Degraded when smoothed rate exceeds this.
-    #[inline]
-    #[must_use]
-    pub fn threshold(mut self, threshold: f64) -> Self {
-        self.threshold = Some(threshold);
-        self
-    }
-
-    /// Minimum outcomes before detection activates. Default: 1.
-    #[inline]
+    /// Events before the smoothed ratio is given. Default 1. The counts
+    /// and the interval ratio need none.
     #[must_use]
     pub fn min_samples(mut self, min: u64) -> Self {
         self.min_samples = min;
         self
     }
 
-    /// Builds the error rate tracker.
+    /// Builds the tracker.
     ///
     /// # Errors
     ///
-    /// - Alpha and threshold must have been set.
-    /// - Alpha must be in (0, 1) exclusive.
-    /// - Threshold must be non-negative.
-    #[inline]
+    /// - `Missing` if no weight was set.
+    /// - `Invalid` if the weight is out of range, or `min_samples` is 0.
     pub fn build(self) -> Result<ErrorRate, nexus_stats_core::ConfigError> {
-        let alpha = self
-            .alpha
-            .ok_or(nexus_stats_core::ConfigError::Missing("alpha"))?;
-        let threshold = self
-            .threshold
-            .ok_or(nexus_stats_core::ConfigError::Missing("threshold"))?;
-        if !nexus_stats_core::math::in_unit_interval(alpha) {
-            return Err(nexus_stats_core::ConfigError::Invalid(
-                "alpha must be in (0, 1)",
-            ));
-        }
-        if threshold < 0.0 {
-            return Err(nexus_stats_core::ConfigError::Invalid(
-                "threshold must be non-negative",
-            ));
-        }
+        use nexus_stats_core::ConfigError::{Invalid, Missing};
 
+        let alpha = self.weight.ok_or(Missing("alpha"))?.resolve()?;
+        if self.min_samples == 0 {
+            return Err(Invalid("min_samples must be >= 1"));
+        }
         Ok(ErrorRate {
-            alpha,
-            one_minus_alpha: 1.0 - alpha,
-            value: 0.0,
-            threshold,
-            count: 0,
-            min_samples: self.min_samples,
+            weight: Weight::new(alpha),
+            smoothed: 0.0,
+            warmup: Warmup::new(self.min_samples, false),
+            total: ErrorSummary::NONE,
+            at_last_take: ErrorSummary::NONE,
         })
     }
 }
@@ -236,199 +239,137 @@ impl ErrorRateBuilder {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use nexus_stats_core::ConfigError;
 
-    #[test]
-    fn all_success_is_healthy() {
-        let mut er = ErrorRate::builder()
-            .alpha(0.3)
-            .threshold(0.05)
-            .build()
-            .unwrap();
+    fn errors(alpha: f64) -> ErrorRate {
+        ErrorRate::builder().alpha(alpha).build().unwrap()
+    }
 
-        for _ in 0..100 {
-            assert_eq!(er.update(true), Some(Condition::Normal));
+    fn feed(rate: &mut ErrorRate, outcomes: &[bool]) {
+        for &ok in outcomes {
+            rate.update(ok);
         }
     }
 
     #[test]
-    fn all_failure_is_degraded() {
-        let mut er = ErrorRate::builder()
-            .alpha(0.3)
-            .threshold(0.05)
-            .build()
-            .unwrap();
-
-        for _ in 0..50 {
-            let _ = er.update(false);
-        }
-        assert_eq!(er.update(false), Some(Condition::Degraded));
+    fn an_interval_counts_only_what_came_since_the_last_take() {
+        let mut rate = errors(0.5);
+        feed(&mut rate, &[true, false, false, true]);
+        let first = rate.take();
+        assert_eq!(
+            (first.errors(), first.events(), first.ratio()),
+            (2, 4, Some(0.5))
+        );
+        feed(&mut rate, &[true, true, false]);
+        let second = rate.take();
+        assert_eq!((second.errors(), second.events()), (1, 3));
+        assert_eq!(second.ratio(), Some(1.0 / 3.0));
+        // The totals run on.
+        assert_eq!((rate.total_errors(), rate.count()), (3, 7));
     }
 
     #[test]
-    fn threshold_crossing() {
-        let mut er = ErrorRate::builder()
-            .alpha(0.3)
-            .threshold(0.5)
-            .build()
-            .unwrap();
-
-        // All success — should be healthy
-        for _ in 0..20 {
-            let _ = er.update(true);
-        }
-        assert_eq!(er.update(true), Some(Condition::Normal));
-
-        // All failure — should become degraded
-        for _ in 0..50 {
-            let _ = er.update(false);
-        }
-        assert_eq!(er.update(false), Some(Condition::Degraded));
+    fn an_empty_interval_has_no_ratio() {
+        let mut rate = errors(0.5);
+        let empty = rate.take();
+        assert_eq!(
+            (empty.errors(), empty.events(), empty.ratio()),
+            (0, 0, None)
+        );
+        rate.update(true);
+        rate.take();
+        assert_eq!(rate.take().ratio(), None);
     }
 
     #[test]
-    fn weighted_failure_triggers_faster() {
-        let mut light = ErrorRate::builder()
+    fn the_ratio_of_an_interval_is_exact() {
+        let mut rate = errors(0.1);
+        for i in 0..1_000u32 {
+            rate.update(i % 8 != 0);
+        }
+        let interval = rate.take();
+        assert_eq!((interval.errors(), interval.events()), (125, 1_000));
+        assert_eq!(interval.ratio(), Some(0.125));
+    }
+
+    /// The first event is the smoothed ratio; each later one is blended in.
+    #[test]
+    fn the_smoothed_ratio_is_an_average_of_the_failure_indicator() {
+        let mut rate = errors(0.5);
+        assert_eq!(rate.smoothed_ratio(), None);
+        rate.update(false);
+        assert_eq!(rate.smoothed_ratio(), Some(1.0));
+        rate.update(true);
+        assert_eq!(rate.smoothed_ratio(), Some(0.5));
+        rate.update(true);
+        assert_eq!(rate.smoothed_ratio(), Some(0.25));
+        rate.update(false);
+        assert_eq!(rate.smoothed_ratio(), Some(0.625));
+        // `take` does not touch it.
+        rate.take();
+        assert_eq!(rate.smoothed_ratio(), Some(0.625));
+    }
+
+    #[test]
+    fn the_smoothed_ratio_settles_at_the_failure_share() {
+        let mut rate = ErrorRate::builder().span(199).build().unwrap();
+        for i in 0..20_000u32 {
+            rate.update(i % 4 != 0);
+        }
+        assert!((rate.smoothed_ratio().unwrap() - 0.25).abs() < 0.02);
+        let mut clean = errors(0.3);
+        feed(&mut clean, &[true; 50]);
+        assert_eq!(clean.smoothed_ratio(), Some(0.0));
+        assert_eq!(clean.total_errors(), 0);
+    }
+
+    #[test]
+    fn min_samples_delays_only_the_smoothed_ratio() {
+        let mut rate = ErrorRate::builder()
             .alpha(0.5)
-            .threshold(0.5)
+            .min_samples(3)
             .build()
             .unwrap();
-        let mut heavy = ErrorRate::builder()
-            .alpha(0.5)
-            .threshold(0.5)
-            .build()
-            .unwrap();
-
-        // Both start healthy
-        for _ in 0..10 {
-            let _ = light.update(true);
-            let _ = heavy.update(true);
-        }
-
-        // One weighted failure
-        let _ = light.update_weighted(false, 1.0).unwrap();
-        let _ = heavy.update_weighted(false, 5.0).unwrap();
-
-        let light_rate = light.error_rate().unwrap();
-        let heavy_rate = heavy.error_rate().unwrap();
-
-        assert!(
-            heavy_rate > light_rate,
-            "heavy ({heavy_rate}) should exceed light ({light_rate})"
-        );
+        feed(&mut rate, &[false, true]);
+        assert_eq!((rate.smoothed_ratio(), rate.is_primed()), (None, false));
+        assert_eq!(rate.total_errors(), 1);
+        rate.update(true);
+        assert_eq!(rate.smoothed_ratio(), Some(0.25));
+        assert_eq!(rate.take().ratio(), Some(1.0 / 3.0));
     }
 
     #[test]
-    fn priming() {
-        let mut er = ErrorRate::builder()
-            .alpha(0.3)
-            .threshold(0.05)
-            .min_samples(5)
-            .build()
-            .unwrap();
-
-        for _ in 0..4 {
-            assert!(er.update(false).is_none());
-        }
-        assert!(er.update(false).is_some());
+    fn reset_forgets_the_counts_and_the_smoothed_ratio() {
+        let mut rate = errors(0.5);
+        feed(&mut rate, &[false, false, true]);
+        rate.take();
+        rate.update(false);
+        rate.reset();
+        assert_eq!((rate.total_errors(), rate.count()), (0, 0));
+        assert_eq!(rate.smoothed_ratio(), None);
+        assert_eq!(rate.take().events(), 0);
+        rate.update(true);
+        assert_eq!(rate.smoothed_ratio(), Some(0.0));
     }
 
     #[test]
-    fn reset() {
-        let mut er = ErrorRate::builder()
-            .alpha(0.3)
-            .threshold(0.05)
-            .build()
-            .unwrap();
-
-        for _ in 0..10 {
-            let _ = er.update(false);
-        }
-        er.reset();
-        assert_eq!(er.count(), 0);
-        assert!(er.error_rate().is_none());
-    }
-
-    #[test]
-    fn reconfigure_threshold_changes_behavior() {
-        let mut er = ErrorRate::builder()
-            .alpha(0.1)
-            .threshold(0.5)
-            .build()
-            .unwrap();
-
-        // Drive to low error rate with all successes
-        for _ in 0..50 {
-            let _ = er.update(true);
-        }
-        let rate = er.error_rate().unwrap();
-        assert!(
-            rate < 0.5,
-            "rate should be low after all successes, got {rate}"
-        );
-        assert_eq!(er.update(true), Some(Condition::Normal));
-
-        // Lower threshold below the current rate
-        er.reconfigure_threshold(0.0).unwrap();
-        // Rate > 0.0 threshold now means degraded (any non-zero rate)
-        // Feed a failure to push rate above 0
-        assert_eq!(er.update(false), Some(Condition::Degraded));
-    }
-
-    #[test]
-    fn errors_without_threshold() {
-        let result = ErrorRate::builder().alpha(0.3).build();
+    fn the_builder_checks_its_configuration() {
         assert!(matches!(
-            result,
-            Err(nexus_stats_core::ConfigError::Missing("threshold"))
+            ErrorRate::builder().build(),
+            Err(ConfigError::Missing("alpha"))
         ));
-    }
-
-    #[test]
-    fn allows_zero_threshold() {
-        let er = ErrorRate::builder().alpha(0.3).threshold(0.0).build();
-        assert!(er.is_ok());
-    }
-
-    #[test]
-    fn rejects_negative_threshold() {
-        let result = ErrorRate::builder().alpha(0.3).threshold(-0.1).build();
-        assert!(matches!(
-            result,
-            Err(nexus_stats_core::ConfigError::Invalid(_))
-        ));
-    }
-
-    #[test]
-    fn reconfigure_rejects_negative_threshold() {
-        let mut er = ErrorRate::builder()
-            .alpha(0.3)
-            .threshold(0.5)
-            .build()
-            .unwrap();
-        assert!(er.reconfigure_threshold(-0.1).is_err());
-        assert!(er.reconfigure_threshold(0.0).is_ok());
-    }
-
-    #[test]
-    fn rejects_nan_and_inf() {
-        let mut er = ErrorRate::builder()
-            .alpha(0.3)
-            .threshold(0.5)
-            .build()
-            .unwrap();
-
-        assert_eq!(
-            er.update_weighted(false, f64::NAN).unwrap_err(),
-            nexus_stats_core::DataError::NotANumber
+        for bad in [0.0, 1.0, -0.5, f64::NAN] {
+            assert!(ErrorRate::builder().alpha(bad).build().is_err(), "{bad}");
+        }
+        assert!(ErrorRate::builder().span(1).build().is_err());
+        assert!(
+            ErrorRate::builder()
+                .alpha(0.5)
+                .min_samples(0)
+                .build()
+                .is_err()
         );
-        assert_eq!(
-            er.update_weighted(false, f64::INFINITY).unwrap_err(),
-            nexus_stats_core::DataError::Infinite
-        );
-        assert_eq!(
-            er.update_weighted(false, f64::NEG_INFINITY).unwrap_err(),
-            nexus_stats_core::DataError::Infinite
-        );
-        assert_eq!(er.count(), 0);
+        #[cfg(any(feature = "std", feature = "libm"))]
+        assert!(ErrorRate::builder().halflife(10.0).build().is_ok());
     }
 }

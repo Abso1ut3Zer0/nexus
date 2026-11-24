@@ -11,7 +11,7 @@ providers, `alloc + std|libm` means both.
 Numeric forms:
 
 - **`f64`**: a plain name, one instantiation.
-- **`T: Sample`**: one generic type for `f64` and `i64` (`Drawdown<f64>`, `Drawdown<i64>`). `update` returns `Result` on `f64` (NaN and infinity rejected) and the plain value on `i64`. Name `T` at construction: `Drawdown::<i64>::new()`, `CoDel::<i64>::builder()`.
+- **`T: Sample`**: one generic type for `f64` and `i64` (`WindowedMax<f64>`, `WindowedMax<i64>`). `update` returns `Result` on `f64` (NaN and infinity rejected) and the plain value on `i64`. Name `T` at construction: `Drawdown::<i64>::new()`, `CoDel::<i64>::builder()`.
 - **`T: Float`**: one generic type for `f64` and `f32`; takes and returns `T`, accumulates in `f64`.
 - **`u64` ticks**: timestamps in any unit, the same clock for every stamp into one value; `clock::MonotonicClock` is the `std` bridge from `Instant`.
 
@@ -85,16 +85,16 @@ See [Integer vs Float](../guides/integer-vs-float.md) for the caller rules and
 
 | Type | Numeric | Feature | Crate (module) |
 |------|---------|---------|----------------|
-| `Drawdown<T>` | `T: Sample` | — | monitoring |
+| `PeakToTrough<T>` | any `Copy + PartialOrd + Sub` | — | monitoring |
 | `WindowedMax<T>`, `WindowedMin<T>` | `T: Sample`, `u64` ticks | — | monitoring |
 | `PeakHold<T>` | `T: Sample` | — | monitoring |
 | `CoDel<T>` | `T: Sample` sojourn, `u64` ticks | — | monitoring |
-| `Jitter<T>` | `T: Sample` | — | monitoring |
+| `Jitter<T>` | `f64`, `i64` | — | monitoring |
 | `Liveness` | `u64` ticks | — | monitoring |
 | `EventRate` | `u64` ticks | — | monitoring |
 | `PollSaturation` (→ `PollSummary`) | `u64` ticks, counts | — | monitoring |
 | `SojournSaturation` (→ `SojournSummary`) | `i64` sojourn, `u64` summary | — | monitoring |
-| `ErrorRate` | `bool` outcomes, `f64` weights | — | monitoring |
+| `ErrorRate` | `bool` outcomes | — | monitoring |
 | `HawkesIntensity` | `f64` | `std\|libm` | monitoring |
 
 ## Control

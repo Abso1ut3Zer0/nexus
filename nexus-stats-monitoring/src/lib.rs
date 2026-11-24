@@ -13,7 +13,7 @@
 //!   of time.
 //! - [`PeakHold`]: the magnitude of a signal, followed up at once, held,
 //!   then left to decay.
-//! - [`Drawdown`]: the fall from the highest value seen.
+//! - [`PeakToTrough`]: the fall from the highest value seen.
 //!
 //! ## Rates and timing
 //!
@@ -50,7 +50,6 @@ extern crate alloc;
 extern crate nexus_stats_core;
 
 mod codel;
-mod drawdown;
 mod error_rate;
 mod event_rate;
 #[cfg(any(feature = "std", feature = "libm"))]
@@ -58,11 +57,11 @@ mod hawkes;
 mod jitter;
 mod liveness;
 mod peak_hold;
+mod peak_to_trough;
 mod poll_saturation;
 mod sojourn_saturation;
 mod windowed;
 pub use codel::*;
-pub use drawdown::*;
 pub use error_rate::*;
 pub use event_rate::*;
 #[cfg(any(feature = "std", feature = "libm"))]
@@ -70,6 +69,7 @@ pub use hawkes::*;
 pub use jitter::*;
 pub use liveness::*;
 pub use peak_hold::*;
+pub use peak_to_trough::*;
 pub use poll_saturation::*;
 pub use sojourn_saturation::*;
 pub use windowed::*;

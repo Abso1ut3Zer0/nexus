@@ -250,16 +250,30 @@ The standard library is the model: `update` is `+`, `checked_update` is
 - **`update` does the arithmetic and nothing else.** No validation, no
   `Result`. It does what the operation does in std and in the libraries
   people know.
-- **`checked_update` exists only where it has a job.** Add one when some
-  input can leave the type unable to give a right reading until `reset()`.
-  It refuses exactly those inputs, lists them in its docs, and leaves the
-  type unchanged. Do not add one to keep a uniform shape: a type with no
-  such input has no `checked_update`.
+- **`checked_update` protects the state.** The library guards a type's
+  state on the caller's behalf. It does not promise that a reading is
+  never NaN. Add a `checked_update` when some input does damage that
+  outlasts the sample (it is folded into a running value, or it becomes a
+  peak that never decays), or when `update` drops a sample the caller
+  should be told about (a NaN it ignores, a timestamp that goes back). It
+  refuses exactly those inputs, lists them in its docs, and leaves the
+  type unchanged. Do not add one to keep a uniform shape.
+- **Infinity is a value in `update`.** Whether `checked_update` refuses it
+  follows from the rule above. A type that only compares its samples (a
+  windowed maximum, a median) is not harmed, and the infinity leaves with
+  the window. A type that folds it into a sum, an average or a decaying
+  peak is damaged until `reset()`, so its `checked_update` refuses it.
+- **A reader reports what the arithmetic gives.** Where the true answer is
+  undefined, that is NaN: the spread of a window whose median is infinite,
+  for one. A reader never substitutes a number, and it does not use `None`
+  for this.
 - **A reading is an `Option`:** `None` until there is enough data, never a
   placeholder value.
-- **Maxima and minima ignore NaN and accept infinity.** This is what
-  `f64::max`, pandas' rolling max and NumPy's `fmax` do. Skip a NaN before
-  any state changes, the count and a window's clock included.
+- **Maxima and minima ignore NaN,** as `f64::max`, NumPy's `fmax` and
+  pandas' rolling max do. Skip a NaN before any state changes, the count
+  and a window's clock included. (pandas' rolling functions also treat
+  infinity as missing. We follow `f64::max` and NumPy, where it is a
+  value.)
 - **Time must not go back.** A clocked type's `update` ignores a timestamp
   before the last one taken; its `checked_update` returns
   `DataError::NonMonotonicTime`. Compare timestamps plainly, not as a

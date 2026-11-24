@@ -1,421 +1,441 @@
-use nexus_stats_core::Sample;
-use nexus_stats_core::sample::EmaKernel;
-
-/// Jitter tracker — smoothed absolute deviation between consecutive samples.
+/// Interarrival jitter, as RFC 3550 estimates it.
 ///
-/// Internally tracks an EMA of absolute consecutive deltas and an EMA of
-/// values for computing the jitter ratio. `Jitter<f64>` smooths with an
-/// alpha (`alpha`, `halflife` or `span`), can be seeded, rejects NaN and
-/// infinity and returns `Result`; `Jitter<i64>` smooths with the
-/// fixed-point shift EMA (`span`, rounded to `2^k - 1`) and cannot fail.
+/// Feed each packet's transit time: its arrival time minus the timestamp
+/// it carries, in any unit. With `D` the difference between this transit
+/// time and the previous one, the estimate moves a sixteenth of the way
+/// toward `|D|`:
 ///
-/// # Use Cases
-/// - Network jitter (variation in inter-packet delay)
-/// - Latency jitter (variation in response times)
-/// - Clock stability monitoring
+/// ```text
+/// J = J + (|D| - J) / 16
+/// ```
+///
+/// The estimate starts at zero, and the gain is the RFC's 1/16. The first
+/// packet only sets the previous transit time.
+///
+/// `Jitter<f64>` is the floating-point form of the RFC's appendix A.8. It
+/// returns the estimate as it is, where the RFC truncates it to an integer
+/// when it reports. `Jitter<i64>` is the RFC's integer form, which keeps
+/// the estimate scaled by 16 and rounds: the same code as a receiver
+/// reporting to RTCP.
 ///
 /// # Weighting clock
 ///
-/// Per `update` call: every sample counts the same. Correct when samples
-/// are evenly spaced, or one per event where per-event weighting is wanted.
-/// Never feed it from a loop whose iteration time depends on the quantity
-/// being measured.
+/// Per packet. Every transit time after the first moves the estimate by
+/// the same sixteenth.
+///
+/// See [RFC 3550](https://www.rfc-editor.org/rfc/rfc3550), section 6.4.1
+/// and appendix A.8.
+///
+/// # Examples
+///
+/// ```
+/// use nexus_stats_monitoring::Jitter;
+///
+/// let mut jitter = Jitter::<f64>::new();
+/// assert_eq!(jitter.update(100.0), None); // no difference yet
+/// assert_eq!(jitter.update(116.0), Some(1.0)); // 0 + (16 - 0) / 16
+/// assert_eq!(jitter.update(116.0), Some(0.9375)); // 1 + (0 - 1) / 16
+/// ```
 #[derive(Debug, Clone)]
-pub struct Jitter<T: Sample> {
-    deviation: T::Ema,
-    mean: T::Ema,
-    last_sample: T,
-    last_deviation: T,
+pub struct Jitter<T> {
+    /// The estimate. For `i64` it is kept scaled by 16.
+    estimate: T,
+    /// The previous packet's transit time.
+    transit: T,
     count: u64,
-    min_samples: u64,
 }
 
-/// Builder for [`Jitter`].
-#[derive(Debug, Clone)]
-pub struct JitterBuilder<T: Sample> {
-    ema: Option<T::EmaConfig>,
-    min_samples: u64,
-    seed_value: Option<T>,
-    seed_jitter: Option<T>,
-}
+/// The RFC's gain, as a shift: `2^-4 = 1/16`.
+const GAIN_SHIFT: u32 = 4;
 
-impl<T: Sample> Jitter<T> {
-    /// Creates a builder.
-    #[inline]
-    #[must_use]
-    pub fn builder() -> JitterBuilder<T> {
-        JitterBuilder {
-            ema: None,
-            min_samples: 2,
-            seed_value: None,
-            seed_jitter: None,
-        }
-    }
+/// The largest difference `Jitter<i64>::checked_update` takes. The scaled
+/// estimate rests just below 16 times it, which keeps every step in range.
+const LARGEST_DIFFERENCE: u64 = (i64::MAX >> (GAIN_SHIFT + 1)) as u64;
 
-    /// Smoothed jitter, or `None` until primed.
-    #[inline]
-    #[must_use]
-    pub fn jitter(&self) -> Option<T> {
-        if self.is_primed() {
-            Some(self.deviation.value())
-        } else {
-            None
-        }
-    }
-
-    /// Most recent absolute deviation, or `None` before the second sample.
-    #[inline]
-    #[must_use]
-    pub fn last_deviation(&self) -> Option<T> {
-        if self.count >= 2 {
-            Some(self.last_deviation)
-        } else {
-            None
-        }
-    }
-
-    /// Number of samples processed.
-    #[inline]
+impl<T> Jitter<T> {
+    /// Samples fed since construction or `reset`.
     #[must_use]
     pub fn count(&self) -> u64 {
         self.count
     }
 
-    /// Whether `min_samples` have been seen.
-    #[inline]
+    /// Whether there is an estimate: two transit times have been fed.
     #[must_use]
     pub fn is_primed(&self) -> bool {
-        self.count >= self.min_samples
-    }
-
-    /// Resets accumulated state. Configuration is kept.
-    #[inline]
-    pub fn reset(&mut self) {
-        self.deviation.reset();
-        self.mean.reset();
-        self.last_sample = T::ZERO;
-        self.last_deviation = T::ZERO;
-        self.count = 0;
-    }
-
-    /// Shared body: fold a sample, return the jitter once primed.
-    #[inline]
-    fn fold(&mut self, sample: T, abs_delta: impl FnOnce(T, T) -> T) -> Option<T> {
-        self.count += 1;
-        if self.count == 1 {
-            self.last_sample = sample;
-            self.mean.seed(sample);
-            return None;
-        }
-        let dev = abs_delta(sample, self.last_sample);
-        self.last_deviation = dev;
-        self.last_sample = sample;
-        self.deviation.fold(dev);
-        self.mean.fold(sample);
-        if self.is_primed() {
-            Some(self.deviation.value())
-        } else {
-            None
-        }
+        self.count >= 2
     }
 }
 
 impl Jitter<f64> {
-    /// Feeds a sample. Returns the smoothed jitter once primed.
+    /// Creates an estimator at zero.
+    #[must_use]
+    pub const fn new() -> Self {
+        Self {
+            estimate: 0.0,
+            transit: 0.0,
+            count: 0,
+        }
+    }
+
+    /// Feeds a transit time and returns the jitter, or `None` for the
+    /// first one.
+    ///
+    /// Does not validate; arithmetic follows IEEE 754. See
+    /// [`checked_update`](Self::checked_update).
+    #[inline]
+    pub fn update(&mut self, transit: f64) -> Option<f64> {
+        self.count += 1;
+        if self.count == 1 {
+            self.transit = transit;
+            return None;
+        }
+        let difference = (transit - self.transit).abs();
+        self.transit = transit;
+        self.estimate = float_step(self.estimate, difference);
+        Some(self.estimate)
+    }
+
+    /// Checked update. Feeds `transit`, or returns an error and leaves the
+    /// estimator unchanged if `transit` is NaN, infinite, or larger in
+    /// magnitude than half of `f64::MAX`. Two finite transit times further
+    /// apart than `f64::MAX` would make the estimate infinite, then NaN.
     ///
     /// # Errors
     ///
-    /// Returns `DataError::NotANumber` if the sample is NaN, or
-    /// `DataError::Infinite` if the sample is infinite.
+    /// - [`DataError::NotANumber`](nexus_stats_core::DataError::NotANumber)
+    ///   if `transit` is NaN.
+    /// - [`DataError::Infinite`](nexus_stats_core::DataError::Infinite) if
+    ///   `transit` is infinite.
+    /// - [`DataError::OutOfRange`](nexus_stats_core::DataError::OutOfRange)
+    ///   if `transit` is larger in magnitude than `f64::MAX / 2`.
     #[inline]
-    pub fn update(&mut self, sample: f64) -> Result<Option<f64>, nexus_stats_core::DataError> {
-        check_finite!(sample);
-        Ok(self.fold(sample, |a, b| (a - b).abs()))
+    pub fn checked_update(
+        &mut self,
+        transit: f64,
+    ) -> Result<Option<f64>, nexus_stats_core::DataError> {
+        nexus_stats_core::math::check_input(transit, f64::MAX / 2.0)?;
+        Ok(self.update(transit))
     }
 
-    /// Jitter relative to the smoothed level, `jitter / mean`, or `None`
-    /// until primed or while the mean is zero.
-    #[inline]
+    /// The jitter, or `None` until two transit times have been fed.
     #[must_use]
-    pub fn jitter_ratio(&self) -> Option<f64> {
-        let mean = self.mean.value();
-        if self.is_primed() && mean.abs() > f64::EPSILON {
-            Some(self.deviation.value() / mean)
-        } else {
-            None
+    pub fn jitter(&self) -> Option<f64> {
+        if !self.is_primed() {
+            return None;
         }
+        Some(self.estimate)
+    }
+
+    /// Back to zero, with no previous transit time.
+    pub fn reset(&mut self) {
+        *self = Self::new();
     }
 }
 
 impl Jitter<i64> {
-    /// Feeds a sample. Returns the smoothed jitter once primed.
-    #[inline]
-    pub fn update(&mut self, sample: i64) -> Option<i64> {
-        self.fold(sample, |a, b| (a - b).abs())
-    }
-
-    /// Jitter relative to the smoothed level, `jitter / mean`, or `None`
-    /// until primed or while the mean is zero.
-    #[inline]
+    /// Creates an estimator at zero.
     #[must_use]
-    #[allow(clippy::cast_precision_loss)]
-    pub fn jitter_ratio(&self) -> Option<f64> {
-        let mean = self.mean.value();
-        if self.is_primed() && mean != 0 {
-            Some(self.deviation.value() as f64 / mean as f64)
-        } else {
-            None
+    pub const fn new() -> Self {
+        Self {
+            estimate: 0,
+            transit: 0,
+            count: 0,
         }
     }
 
-    /// The span actually used, rounded to `2^k - 1`.
+    /// Feeds a transit time and returns the jitter, or `None` for the
+    /// first one.
+    ///
+    /// Plain integer arithmetic: a difference too large to hold overflows,
+    /// in the subtraction or in its absolute value. See
+    /// [`checked_update`](Self::checked_update).
     #[inline]
-    #[must_use]
-    pub fn effective_span(&self) -> u64 {
-        self.deviation.span
-    }
-}
-
-impl<T: Sample> JitterBuilder<T> {
-    /// Smoothing span in samples. For `f64` this sets `alpha = 2 / (n + 1)`;
-    /// for `i64` it is rounded to `2^k - 1`.
-    #[inline]
-    #[must_use]
-    pub fn span(mut self, n: u64) -> Self {
-        self.ema = Some(T::ema_config_from_span(n));
-        self
-    }
-
-    /// Minimum samples before `jitter()` is reported. Default 2.
-    #[inline]
-    #[must_use]
-    pub fn min_samples(mut self, min: u64) -> Self {
-        self.min_samples = min;
-        self
+    pub fn update(&mut self, transit: i64) -> Option<i64> {
+        self.count += 1;
+        if self.count == 1 {
+            self.transit = transit;
+            return None;
+        }
+        let difference = (transit - self.transit).abs();
+        self.transit = transit;
+        self.estimate = scaled_step(self.estimate, difference);
+        Some(reported(self.estimate))
     }
 
-    /// Pre-loads the level and the jitter from calibration data; the
-    /// detector starts primed.
-    #[inline]
-    #[must_use]
-    pub fn seed(mut self, value: T, jitter: T) -> Self {
-        self.seed_value = Some(value);
-        self.seed_jitter = Some(jitter);
-        self
-    }
-
-    /// Builds the tracker.
+    /// Checked update. Feeds `transit`, or returns an error and leaves the
+    /// estimator unchanged if its difference from the previous transit
+    /// time is too large for the estimate to hold.
     ///
     /// # Errors
     ///
-    /// `ConfigError::Missing("alpha")` (`f64`) or `Missing("span")` (`i64`) if
-    /// no smoothing was configured;
-    /// `ConfigError::Invalid` if it is out of range (alpha outside (0, 1),
-    /// span below 1).
+    /// [`DataError::OutOfRange`](nexus_stats_core::DataError::OutOfRange)
+    /// if the difference is above `i64::MAX / 32`.
     #[inline]
-    pub fn build(self) -> Result<Jitter<T>, nexus_stats_core::ConfigError> {
-        let config = self
-            .ema
-            .ok_or(nexus_stats_core::ConfigError::Missing(T::EMA_CONFIG_NAME))?;
-        // One sample has no deviation, so an unseeded Jitter cannot report
-        // before its second; a seed supplies the deviation and may prime at one.
-        let seeded = self.seed_value.is_some() && self.seed_jitter.is_some();
-        let floor = if seeded { 1 } else { 2 };
-        if self.min_samples < floor {
-            return Err(nexus_stats_core::ConfigError::Invalid(
-                "Jitter min_samples must be >= 2 unseeded, >= 1 seeded",
-            ));
+    pub fn checked_update(
+        &mut self,
+        transit: i64,
+    ) -> Result<Option<i64>, nexus_stats_core::DataError> {
+        if self.count > 0 && transit.abs_diff(self.transit) > LARGEST_DIFFERENCE {
+            return Err(nexus_stats_core::DataError::OutOfRange);
         }
-        if let (Some(v), Some(j)) = (self.seed_value, self.seed_jitter)
-            && (!v.is_finite() || !j.is_finite())
-        {
-            return Err(nexus_stats_core::ConfigError::Invalid(
-                "Jitter seed must be finite",
-            ));
+        Ok(self.update(transit))
+    }
+
+    /// The jitter, or `None` until two transit times have been fed.
+    #[must_use]
+    pub fn jitter(&self) -> Option<i64> {
+        if !self.is_primed() {
+            return None;
         }
-        let mut deviation = T::Ema::new(config)?;
-        let mut mean = T::Ema::new(config)?;
-        let (last_sample, count) = match (self.seed_value, self.seed_jitter) {
-            (Some(v), Some(j)) => {
-                mean.seed(v);
-                deviation.seed(j);
-                (v, self.min_samples)
-            }
-            _ => (T::ZERO, 0),
-        };
-        Ok(Jitter {
-            deviation,
-            mean,
-            last_sample,
-            last_deviation: T::ZERO,
-            count,
-            min_samples: self.min_samples,
-        })
+        Some(reported(self.estimate))
+    }
+
+    /// Back to zero, with no previous transit time.
+    pub fn reset(&mut self) {
+        *self = Self::new();
     }
 }
 
-impl JitterBuilder<f64> {
-    /// Direct smoothing factor in (0, 1).
-    #[inline]
-    #[must_use]
-    pub fn alpha(mut self, alpha: f64) -> Self {
-        self.ema = Some(alpha);
-        self
-    }
+/// RFC 3550 A.8, floating-point form:
+/// `jitter += (1./16.) * ((double)d - jitter)`.
+// PERF: unfused, as the RFC writes it, so results match its code exactly.
+#[inline]
+#[allow(clippy::suboptimal_flops)]
+fn float_step(estimate: f64, difference: f64) -> f64 {
+    estimate + (1.0 / 16.0) * (difference - estimate)
+}
 
-    /// Samples for a sample's weight to decay by half.
-    #[inline]
-    #[must_use]
-    #[cfg(any(feature = "std", feature = "libm"))]
-    pub fn halflife(mut self, halflife: f64) -> Self {
-        self.ema = Some(nexus_stats_core::math::alpha_from_halflife(halflife));
-        self
+/// RFC 3550 A.8, integer form, on the estimate scaled by 16:
+/// `jitter += d - ((jitter + 8) >> 4)`.
+#[inline]
+fn scaled_step(scaled: i64, difference: i64) -> i64 {
+    scaled + difference - ((scaled + (1 << (GAIN_SHIFT - 1))) >> GAIN_SHIFT)
+}
+
+/// The jitter a scaled estimate stands for: `jitter >> 4`.
+#[inline]
+fn reported(scaled: i64) -> i64 {
+    scaled >> GAIN_SHIFT
+}
+
+impl Default for Jitter<f64> {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl Default for Jitter<i64> {
+    fn default() -> Self {
+        Self::new()
     }
 }
 
 #[cfg(test)]
+#[allow(clippy::suboptimal_flops)]
 mod tests {
     use super::*;
+    use nexus_stats_core::DataError::{Infinite, NotANumber, OutOfRange};
 
-    // #763: with `min_samples(1)` the seeded jitter used to be discarded
-    // (the old code inferred "first real sample" from `count`). The kernel
-    // now carries an explicit seeded state: 0.3 * 10 + 0.7 * 5 = 6.5.
-    #[test]
-    fn seeded_jitter_survives_min_samples_one() {
-        let mut j = Jitter::<f64>::builder()
-            .alpha(0.3)
-            .min_samples(1)
-            .seed(100.0, 5.0)
-            .build()
-            .unwrap();
-        let out = j.update(110.0).unwrap().unwrap();
-        assert!((out - 6.5).abs() < 1e-12, "{out}");
-    }
-
-    #[test]
-    #[allow(clippy::float_cmp)]
-    fn constant_input_zero_jitter() {
-        let mut j = Jitter::<f64>::builder().alpha(0.3).build().unwrap();
-        for _ in 0..100 {
-            let _ = j.update(100.0).unwrap();
+    /// RFC 3550 appendix A.8, floating-point form, written as its C code.
+    fn rfc_float(transits: &[f64]) -> Vec<f64> {
+        let (mut jitter, mut previous) = (0.0f64, transits[0]);
+        let mut out = Vec::new();
+        for &transit in &transits[1..] {
+            let mut d = transit - previous;
+            previous = transit;
+            if d < 0.0 {
+                d = -d;
+            }
+            jitter += (1. / 16.) * (d - jitter);
+            out.push(jitter);
         }
-        let jitter = j.jitter().unwrap();
-        assert!(
-            jitter.abs() < 1e-10,
-            "constant input should have ~zero jitter, got {jitter}"
-        );
+        out
     }
 
-    #[test]
-    fn alternating_input_high_jitter() {
-        let mut j = Jitter::<f64>::builder().alpha(0.5).build().unwrap();
-        for i in 0..50 {
-            let _ = j.update(if i % 2 == 0 { 100.0 } else { 200.0 }).unwrap();
+    /// RFC 3550 appendix A.8, integer form: the reported value at each step.
+    fn rfc_integer(transits: &[i64]) -> Vec<i64> {
+        let (mut jitter, mut previous) = (0i64, transits[0]);
+        let mut out = Vec::new();
+        for &transit in &transits[1..] {
+            let mut d = transit - previous;
+            previous = transit;
+            if d < 0 {
+                d = -d;
+            }
+            jitter += d - ((jitter + 8) >> 4);
+            out.push(jitter >> 4);
         }
-        let jitter = j.jitter().unwrap();
-        assert!(
-            jitter > 50.0,
-            "alternating input should have high jitter, got {jitter}"
-        );
+        out
+    }
+
+    fn transits(count: usize) -> Vec<i64> {
+        let mut state = 0x9E37_79B9_7F4A_7C15u64;
+        (0..count)
+            .map(|i| {
+                state ^= state << 13;
+                state ^= state >> 7;
+                state ^= state << 17;
+                // A base delay with noise and the odd spike.
+                let spike = if state.is_multiple_of(97) { 5_000 } else { 0 };
+                40_000 + (state % 2_001) as i64 + spike + (i as i64 % 7)
+            })
+            .collect()
     }
 
     #[test]
-    fn jitter_ratio_correctness() {
-        let mut j = Jitter::<f64>::builder().alpha(0.3).build().unwrap();
-        for i in 0..100 {
-            let _ = j.update(100.0 + (i % 10) as f64).unwrap();
+    fn the_float_form_matches_the_rfc_code_bit_for_bit() {
+        let transits: Vec<f64> = transits(20_000).iter().map(|&t| t as f64 * 0.125).collect();
+        let want = rfc_float(&transits);
+        let mut jitter = Jitter::<f64>::new();
+        assert_eq!(jitter.update(transits[0]), None);
+        for (i, &transit) in transits[1..].iter().enumerate() {
+            let got = jitter.update(transit).unwrap();
+            assert_eq!(got.to_bits(), want[i].to_bits(), "packet {i}");
+            assert_eq!(jitter.jitter(), Some(got));
         }
-        let ratio = j.jitter_ratio().unwrap();
-        assert!(
-            ratio > 0.0 && ratio < 1.0,
-            "ratio should be reasonable, got {ratio}"
-        );
     }
 
     #[test]
-    fn priming() {
-        let mut j = Jitter::<f64>::builder()
-            .alpha(0.3)
-            .min_samples(5)
-            .build()
-            .unwrap();
-        for _ in 0..4 {
-            assert!(j.update(100.0).unwrap().is_none());
+    fn the_integer_form_matches_the_rfc_code() {
+        let transits = transits(20_000);
+        let want = rfc_integer(&transits);
+        let mut jitter = Jitter::<i64>::new();
+        assert_eq!(jitter.update(transits[0]), None);
+        for (i, &transit) in transits[1..].iter().enumerate() {
+            assert_eq!(jitter.update(transit), Some(want[i]), "packet {i}");
+            assert_eq!(jitter.jitter(), Some(want[i]));
         }
-        assert!(j.update(100.0).unwrap().is_some());
     }
 
     #[test]
-    fn reset() {
-        let mut j = Jitter::<f64>::builder().alpha(0.3).build().unwrap();
-        for _ in 0..10 {
-            let _ = j.update(100.0).unwrap();
+    fn the_estimate_starts_at_zero_and_moves_a_sixteenth() {
+        let mut jitter = Jitter::<f64>::new();
+        assert_eq!((jitter.jitter(), jitter.is_primed()), (None, false));
+        assert_eq!(jitter.update(100.0), None);
+        assert_eq!(jitter.update(116.0), Some(1.0));
+        assert_eq!(jitter.update(116.0), Some(0.9375));
+        assert_eq!(jitter.update(100.0), Some(0.9375 + (16.0 - 0.9375) / 16.0));
+
+        let mut jitter = Jitter::<i64>::new();
+        assert_eq!(jitter.update(100), None);
+        // Scaled: 0 + 160 - ((0 + 8) >> 4) = 160, reported 160 >> 4.
+        assert_eq!(jitter.update(260), Some(10));
+        // 160 + 0 - ((160 + 8) >> 4) = 150, reported 9.
+        assert_eq!(jitter.update(260), Some(9));
+    }
+
+    #[test]
+    fn steady_transit_times_have_no_jitter() {
+        let (mut float, mut integer) = (Jitter::<f64>::new(), Jitter::<i64>::new());
+        for _ in 0..500 {
+            float.update(250.0);
+            integer.update(250);
         }
-        j.reset();
-        assert_eq!(j.count(), 0);
-        assert!(j.jitter().is_none());
+        assert_eq!((float.jitter(), integer.jitter()), (Some(0.0), Some(0)));
+    }
+
+    /// A constant difference is the level the estimate settles at.
+    #[test]
+    fn it_settles_at_a_constant_difference() {
+        let (mut float, mut integer) = (Jitter::<f64>::new(), Jitter::<i64>::new());
+        for i in 0..2_000 {
+            let transit = if i % 2 == 0 { 1_000 } else { 1_640 };
+            float.update(f64::from(transit));
+            integer.update(i64::from(transit));
+        }
+        assert!((float.jitter().unwrap() - 640.0).abs() < 1e-9);
+        // The integer form's rounding stops one short: the scaled estimate
+        // rests where `(J + 8) >> 4` first equals the difference.
+        assert_eq!(integer.jitter(), Some(639));
     }
 
     #[test]
-    fn i64_basic() {
-        let mut j = Jitter::<i64>::builder().span(7).build().unwrap();
-        let _ = j.update(100);
-        let _ = j.update(110);
-        let _ = j.update(105);
-        assert!(j.jitter().is_some());
+    fn reset_starts_over() {
+        let mut jitter = Jitter::<i64>::new();
+        jitter.update(10);
+        jitter.update(500);
+        jitter.reset();
+        assert_eq!((jitter.jitter(), jitter.count()), (None, 0));
+        // The first transit after a reset is not a difference from zero.
+        assert_eq!(jitter.update(9_000), None);
+        assert_eq!(jitter.update(9_000), Some(0));
+        let mut jitter = Jitter::<f64>::default();
+        jitter.update(10.0);
+        jitter.reset();
+        assert_eq!(jitter.update(9_000.0), None);
     }
 
     #[test]
-    fn seeded_is_primed() {
-        let j = Jitter::<f64>::builder()
-            .alpha(0.3)
-            .seed(100.0, 5.0)
-            .build()
-            .unwrap();
+    fn checked_update_refuses_nan_and_infinity_and_changes_nothing() {
+        let mut jitter = Jitter::<f64>::new();
+        assert_eq!(jitter.checked_update(f64::NAN), Err(NotANumber));
+        assert_eq!(jitter.count(), 0);
+        jitter.checked_update(10.0).unwrap();
+        jitter.checked_update(30.0).unwrap();
+        let before = (jitter.jitter(), jitter.count());
+        assert_eq!(jitter.checked_update(f64::INFINITY), Err(Infinite));
+        assert_eq!(jitter.checked_update(f64::NEG_INFINITY), Err(Infinite));
+        assert_eq!(jitter.checked_update(f64::NAN), Err(NotANumber));
+        assert_eq!((jitter.jitter(), jitter.count()), before);
+        // Unchanged inside too: the next step is measured from 30.
+        assert_eq!(jitter.checked_update(30.0), Ok(Some(1.25 - 1.25 / 16.0)));
+    }
 
-        assert!(j.is_primed());
-        assert!((j.jitter().unwrap() - 5.0).abs() < 1e-10);
+    /// Two finite transit times can be an infinite distance apart, which
+    /// would make the estimate infinite and then NaN.
+    #[test]
+    fn checked_update_refuses_a_transit_too_large_to_difference() {
+        let mut plain = Jitter::<f64>::new();
+        plain.update(f64::MAX);
+        assert_eq!(plain.update(-f64::MAX), Some(f64::INFINITY));
+        assert!(plain.update(0.0).unwrap().is_nan());
+
+        let mut jitter = Jitter::<f64>::new();
+        assert_eq!(jitter.checked_update(f64::MAX), Err(OutOfRange));
+        assert_eq!(jitter.checked_update(-f64::MAX), Err(OutOfRange));
+        assert_eq!(jitter.count(), 0);
+        jitter.checked_update(f64::MAX / 2.0).unwrap();
+        // The largest difference there can be: the whole range.
+        let estimate = jitter.checked_update(-f64::MAX / 2.0);
+        assert_eq!(estimate, Ok(Some(f64::MAX / 16.0)));
+        // A refusal once primed changes nothing.
+        let before = (jitter.jitter(), jitter.count());
+        assert_eq!(jitter.checked_update(f64::MAX), Err(OutOfRange));
+        assert_eq!((jitter.jitter(), jitter.count()), before);
+        assert!(jitter.checked_update(0.0).unwrap().unwrap().is_finite());
     }
 
     #[test]
-    fn seeded_next_update_uses_seed_value() {
-        let mut j = Jitter::<f64>::builder()
-            .alpha(0.3)
-            .seed(100.0, 5.0)
-            .build()
-            .unwrap();
-
-        // Next update should compute deviation from seeded last_sample=100
-        let result = j.update(110.0).unwrap();
-        assert!(result.is_some());
-        // Deviation is |110-100|=10, smoothed jitter = 0.3*10 + 0.7*5 = 6.5
-        let jitter = result.unwrap();
-        assert!((jitter - 6.5).abs() < 1e-10);
+    fn checked_update_refuses_a_difference_too_large_to_hold() {
+        let largest = i64::MAX >> 5;
+        let mut jitter = Jitter::<i64>::new();
+        // The first transit time is not a difference: any value is taken.
+        assert_eq!(jitter.checked_update(i64::MIN), Ok(None));
+        jitter.reset();
+        jitter.checked_update(0).unwrap();
+        assert_eq!(jitter.checked_update(largest + 1), Err(OutOfRange));
+        assert_eq!(jitter.checked_update(i64::MIN), Err(OutOfRange));
+        assert_eq!((jitter.jitter(), jitter.count()), (None, 1));
+        // At the limit, forever: the scaled estimate stays in range.
+        for i in 0..10_000 {
+            let transit = if i % 2 == 0 { largest } else { 0 };
+            jitter.checked_update(transit).unwrap();
+        }
+        // It rests one below the difference, as the RFC's rounding does.
+        assert_eq!(jitter.jitter(), Some(largest - 1));
     }
 
     #[test]
-    fn errors_without_alpha() {
-        let result = Jitter::<f64>::builder().build();
-        assert!(matches!(
-            result,
-            Err(nexus_stats_core::ConfigError::Missing("alpha"))
-        ));
-    }
-
-    #[test]
-    fn rejects_nan_and_inf() {
-        let mut j = Jitter::<f64>::builder().alpha(0.3).build().unwrap();
-        assert!(matches!(
-            j.update(f64::NAN),
-            Err(nexus_stats_core::DataError::NotANumber)
-        ));
-        assert!(matches!(
-            j.update(f64::INFINITY),
-            Err(nexus_stats_core::DataError::Infinite)
-        ));
-        assert!(matches!(
-            j.update(f64::NEG_INFINITY),
-            Err(nexus_stats_core::DataError::Infinite)
-        ));
+    fn checked_update_gives_the_same_result_as_update() {
+        let transits = transits(2_000);
+        let (mut checked, mut plain) = (Jitter::<i64>::new(), Jitter::<i64>::new());
+        let (mut checked_f, mut plain_f) = (Jitter::<f64>::new(), Jitter::<f64>::new());
+        for &t in &transits {
+            assert_eq!(checked.checked_update(t), Ok(plain.update(t)));
+            assert_eq!(
+                checked_f.checked_update(t as f64),
+                Ok(plain_f.update(t as f64))
+            );
+        }
     }
 }

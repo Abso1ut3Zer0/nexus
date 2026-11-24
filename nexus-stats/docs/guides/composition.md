@@ -90,7 +90,8 @@ enum Status { Healthy, Warning, Critical }   // your own summary type
 
 let alive = liveness.check(now);
 let queue_ok = !matches!(qd.update(now, sojourn), Some(Condition::Degraded));
-let errors_ok = !matches!(error_rate.update(ok), Some(Condition::Degraded));
+error_rate.update(ok);
+let errors_ok = error_rate.smoothed_ratio().is_none_or(|r| r <= 0.01); // your limit
 
 let health_score = [alive, queue_ok, errors_ok]
     .iter().filter(|&&b| b).count();

@@ -4,7 +4,7 @@
 suffix (`F64`, `I64`, `U64`, `F32`) is gone from every type and builder name.
 Where an algorithm existed for one numeric type, the name is the algorithm
 (`EmaF64` → `Ema`). Where it existed for two, the two types are one generic
-type (`DrawdownF64` / `DrawdownI64` → `Drawdown<f64>` / `Drawdown<i64>`). A
+type (`DeadBandF64` / `DeadBandI64` → `DeadBand<f64>` / `DeadBand<i64>`). A
 few callerless types are removed. The crates move together:
 
 | Crate | 6.x | 7.0 |
@@ -168,10 +168,10 @@ there is now one type, generic over a sealed trait: `Sample` for `f64` /
 |-----|-----|-------|-------|
 | `CoDelF64` / `CoDelI64` | `CoDel<f64>` / `CoDel<i64>` | `Sample` | nexus-stats-core |
 | `DeadBandF64` / `DeadBandI64` | `DeadBand<f64>` / `DeadBand<i64>` | `Sample` | nexus-stats-core |
-| `DrawdownF64` / `DrawdownI64` | `Drawdown<f64>` / `Drawdown<i64>` | `Sample` | nexus-stats-core |
+| `DrawdownF64` / `DrawdownI64` | `PeakToTrough<f64>` / `PeakToTrough<i64>` (renamed, see below) | any comparable, subtractable type | nexus-stats-monitoring |
 | `FirstDiffF64` / `FirstDiffI64` | `FirstDiff<f64>` / `FirstDiff<i64>` | `Sample` | nexus-stats-core |
 | `HysteresisF64` / `HysteresisI64` | `Hysteresis<f64>` / `Hysteresis<i64>` | `Sample` | nexus-stats-core |
-| `JitterF64` / `JitterI64` | `Jitter<f64>` / `Jitter<i64>` | `Sample` | nexus-stats-core |
+| `JitterF64` / `JitterI64` | `Jitter<f64>` / `Jitter<i64>` (now RFC 3550, see below) | `f64`, `i64` | nexus-stats-monitoring |
 | `LevelCrossingF64` / `LevelCrossingI64` | `LevelCrossing<f64>` / `LevelCrossing<i64>` | `Sample` | nexus-stats-core |
 | `MinMaxNormF64` / `MinMaxNormF32` | `MinMaxNorm<f64>` / `MinMaxNorm<f32>` | `Float` | nexus-stats-core |
 | `PeakHoldF64` / `PeakHoldI64` | `PeakHold<f64>` / `PeakHold<i64>` | `Sample` | nexus-stats-core |
@@ -185,38 +185,38 @@ there is now one type, generic over a sealed trait: `Sample` for `f64` /
 | `PeakDetectorF64` / `PeakDetectorI64` | `PeakDetector<f64>` / `PeakDetector<i64>` | `Sample` | nexus-stats-control |
 
 The body is written once; methods whose signature differs by type are
-implemented per instantiation, so `Drawdown<f64>::update` still returns
-`Result<f64, DataError>` (NaN and infinity rejected) and
-`Drawdown<i64>::update` still returns `i64`. The arithmetic is unchanged and
+implemented per instantiation, so on a type not yet converted
+`DeadBand<f64>::update` still returns a `Result` (NaN and infinity
+rejected) and `DeadBand<i64>::update` the plain value. The arithmetic is unchanged and
 the codegen is cycle-identical to 6.x (verified against the perf harness and
 the disassembly).
 
 Two rules fall out of the shared constructors:
 
 1. **Name `T` at construction.** Constructors and builders live on the
-   generic type, so `Drawdown::new()` alone is ambiguous. Write
-   `Drawdown::<i64>::new()`, `CoDel::<i64>::builder()`, or annotate the
-   binding: `let dd: Drawdown<f64> = Drawdown::new();`.
+   generic type, so `WindowedMax::new(n)` alone is ambiguous. Write
+   `WindowedMax::<i64>::new(n)`, `CoDel::<i64>::builder()`, or annotate the
+   binding: `let wm: WindowedMax<f64> = WindowedMax::new(n)?;`.
 2. **`T` must be known before the first `update`.** There are two `update`s,
    one per instantiation; inference cannot pick one from the sample alone
    while the binding is still untyped. In practice rule 1 covers this.
 
 ```rust
 // 6.x
-use nexus_stats::monitoring::{DrawdownI64, WindowedMaxF64};
-let mut dd = DrawdownI64::new();
+use nexus_stats::monitoring::{WindowedMaxF64, WindowedMinI64};
+let mut lo = WindowedMinI64::new(1_000_000).unwrap();
 let mut wm = WindowedMaxF64::new(1_000_000).unwrap();
 
 // 7.0
-use nexus_stats::monitoring::{Drawdown, WindowedMax};
-let mut dd = Drawdown::<i64>::new();
+use nexus_stats::monitoring::{WindowedMax, WindowedMin};
+let mut lo = WindowedMin::<i64>::new(1_000_000).unwrap();
 let mut wm = WindowedMax::<f64>::new(1_000_000).unwrap();
-dd.update(42);                       // i64: plain value
-wm.update(now, 3.5).unwrap();        // f64: Result
+lo.update(now, 42);                  // Option<i64>
+wm.update(now, 3.5);                 // Option<f64>
 ```
 
 Code that works over both forms names the bound:
-`fn drain<T: Sample>(dd: &mut Drawdown<T>)`. Through the bound you can call
+`fn drain<T: Sample>(wm: &mut WindowedMax<T>)`. Through the bound you can call
 the shared surface (constructors, builders, `count`, `is_primed`, `reset`,
 the getters); `update` and the other per-instantiation methods need a
 concrete `T`, since their signatures differ. `Sample` and `Float` are
@@ -224,9 +224,7 @@ exported from `nexus_stats` and `nexus_stats_core`; they are sealed (`f64` /
 `i64` and `f64` / `f32` only), so you name them, you never implement them.
 
 What the merge adds: `WindowedMedian<i64>` gains `quantile`, `mad`, `iqr` and
-`modified_z_score` (they were `f64` only); `Jitter<i64>` gains
-`jitter_ratio()`. `Jitter` has one builder for both: `span` on both,
-`alpha` / `halflife` on `f64` only, `effective_span()` on `i64` only.
+`modified_z_score` (they were `f64` only).
 
 ### `Float` generics have `f64` internals
 
@@ -248,6 +246,10 @@ on `f32` accumulation for speed, measure: the hot path gains a convert.
 | `DecayAccumF64` | `DecayAccum` (`u64` ticks) |
 | `update_i64(timestamp, ..)` on `WindowedMax`, `WindowedMin`, `CoDel` | `update(timestamp as u64, ..)` |
 | `HalfLifeBuilder` | `HalfLife::new()` (the builder had no knobs) |
+| `Jitter::builder()`, its `span` / `alpha` / `halflife` / `seed`, `jitter_ratio()`, `last_deviation()`, `effective_span()` | `Jitter::<f64>::new()` or `Jitter::<i64>::new()`. The type is the RFC 3550 estimator with its fixed gain of 1/16. For a ratio, divide by an `Ema` of the same samples |
+| `ErrorRateBuilder::threshold`, `ErrorRate::reconfigure_threshold`, the `Condition` returned by `update` | compare `smoothed_ratio()` or `take().ratio()` to your own limit |
+| `ErrorRate::update_weighted` | no replacement; feed an `Ema` the weighted value yourself |
+| `ErrorRate::error_rate()` | `smoothed_ratio()` |
 | `SlewF64` | `Slew` |
 | `SlewI64` | `Slew` on `as f64` (exact up to 2^53); the integer form is gone |
 | `RunningMaxF64`, `RunningMaxI64` | a variable and `max = max.max(x)` |
@@ -290,7 +292,7 @@ CHANGELOG entry in `nexus-stats-core`:
   and ignored the absolute deadline when both were configured
   ([#760](https://github.com/Abso1ut3Zer0/nexus/issues/760)).
 - `PeakHold<f64>` seeds from the first sample (a negative-only stream reported
-  `0.0`); `Jitter<f64>` honors a seed under `min_samples(1)`
+  `0.0`)
   ([#763](https://github.com/Abso1ut3Zer0/nexus/issues/763)).
 - `FlexProportion` shares no longer decay toward zero: the global count now
   halves at every period like the locals do, as in the kernel. A key with
@@ -303,7 +305,7 @@ CHANGELOG entry in `nexus-stats-core`:
   Mosum, ShiryaevRoberts, LMS/NLMS, RLS, Kalman2d/3d, logistic regression).
 - `min_samples(0)` is rejected (`is_primed()` was true before any sample and
   getters reported `Some(0.0)`): Ema, EwmVar, BipowerVariation, Lpm,
-  RollSpread, Holt, HuberEma, Kalman1d; `Jitter` needs 2 unseeded.
+  RollSpread, Holt, HuberEma, Kalman1d; `Jitter` needs 2.
 - The `Ema`, `AsymEma`, `ZScoreNorm` and `RollSpread` builders refuse an
   `alpha` or `span` whose weight is below about `1.1e-16`: `1 - alpha`
   rounds to 1 there, so nothing would ever be forgotten. `halflife` already
@@ -732,6 +734,62 @@ spring.reset_with_seed(v)?;
 
 `checked_update` refuses a NaN or infinite `target`, a NaN, infinite or
 negative `dt`, and a step that overflows.
+
+### `PeakToTrough`, `Jitter` and `ErrorRate`
+
+**`Drawdown` is now `PeakToTrough`.** It is the fall from a running high,
+for any number type that can be compared and subtracted, your own decimal
+type included. On P&L or equity the current fall is the drawdown and the
+largest fall is the maximum drawdown.
+
+```rust
+// before
+let dd = drawdown.update(pnl)?;         // Drawdown<f64>: Result<f64, DataError>
+let worst = drawdown.max_drawdown();
+// after
+let fall = falls.update(pnl);           // Fall { high, current, largest }
+let (dd, worst) = (fall.current, fall.largest);
+let fall = falls.checked_update(pnl)?;  // refuses NaN, infinity, |x| > f64::MAX / 2
+```
+
+`reading()` is `None` before the first sample, where `drawdown()` and
+`max_drawdown()` returned zero. `PeakToTrough<i64>::checked_update` refuses
+a fall that would overflow.
+
+**`Jitter` is the RFC 3550 interarrival jitter estimator,** in the two
+forms of the RFC's appendix A.8. Feed each packet's transit time.
+
+```rust
+// before
+let mut jitter = Jitter::<f64>::builder().span(16).build()?;
+let j = jitter.update(transit)?;
+// after
+let mut jitter = Jitter::<f64>::new();
+let j = jitter.update(transit);         // Option<f64>, None for the first
+```
+
+- The gain is fixed at 1/16 and the estimate starts at zero, so values
+  differ from 6.x, which seeded it with the first difference.
+- `Jitter<i64>` keeps the estimate scaled and rounds as the RFC does.
+- `checked_update` refuses NaN, infinity and a magnitude above
+  `f64::MAX / 2` (`f64`), or a difference above `i64::MAX / 32` (`i64`).
+
+**`ErrorRate` reports numbers, not a verdict.**
+
+```rust
+// before
+let mut errors = ErrorRate::builder().span(100).threshold(0.05).build()?;
+if let Some(Condition::Degraded) = errors.update(ok) { /* ... */ }
+// after
+let mut errors = ErrorRate::builder().span(100).build()?;
+errors.update(ok);
+if errors.smoothed_ratio().is_some_and(|r| r > 0.05) { /* ... */ }
+
+let interval = errors.take();           // since the last take
+interval.errors();                      // the count of errors (USE method)
+interval.ratio();                       // the share that failed (SRE)
+errors.total_errors();                  // since the start
+```
 
 ## 5. Checklist
 
