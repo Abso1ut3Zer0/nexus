@@ -48,6 +48,11 @@ contained.
 
 ### Fixed
 
+- **`CoDel` counts a sojourn equal to the target as above it**
+  ([#791](https://github.com/Abso1ut3Zer0/nexus/issues/791)). RFC 8289
+  resets the timer only on `sojourn_time < TARGET`. A sojourn at the
+  target used to clear it, so a queue held at the target never read as
+  standing; it is now `Degraded` after one interval.
 - `WindowedMax` and `WindowedMin` report an infinite first value. The
   starting values were `T::MIN` and `T::MAX`, which an infinity of the
   same sign could not beat.

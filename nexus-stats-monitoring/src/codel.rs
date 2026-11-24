@@ -6,10 +6,15 @@ use nexus_stats_core::Sample;
 /// Feed it each item's sojourn time (how long it waited in the queue) with
 /// the dequeue timestamp. It reports `Degraded` only once sojourn has stayed
 /// above `target` for a whole `interval`: the first
-/// sample above target starts the clock, a sample at or below target stops
-/// it, and a sample above target a full interval or more after the start is a
-/// standing queue. A single slow item, or a burst shorter than the interval,
-/// is `Normal`.
+/// sample above target starts the clock, a sample below target stops it,
+/// and a sample above target a full interval or more after the start is a
+/// standing queue. As in the RFC, only `sojourn < target` is below: a sojourn
+/// equal to the target counts as above. A single slow item, or a burst
+/// shorter than the interval, is `Normal`.
+///
+/// The RFC also resets the timer when the queue holds at most one packet
+/// (`bytes() <= maxpacket_`). This type sees only sojourn times, so it does
+/// not model that.
 ///
 /// State is two timestamps. `no_std` compatible. `CoDel<f64>` rejects NaN and
 /// infinity and returns `Result`; `CoDel<i64>` cannot fail.
@@ -123,13 +128,16 @@ impl CoDel<f64> {
     /// Returns `DataError::NotANumber` if the sojourn is NaN, or
     /// `DataError::Infinite` if the sojourn is infinite.
     #[inline]
+    #[allow(clippy::neg_cmp_op_on_partial_ord)]
     pub fn update(
         &mut self,
         timestamp: u64,
         sojourn: f64,
     ) -> Result<Option<Condition>, nexus_stats_core::DataError> {
         check_finite!(sojourn);
-        Ok(self.fold(timestamp, sojourn > self.target))
+        // RFC 8289's test, written negated as the RFC does so that a NaN
+        // would count as above.
+        Ok(self.fold(timestamp, !(sojourn < self.target)))
     }
 }
 
@@ -138,7 +146,9 @@ impl CoDel<i64> {
     /// condition once primed.
     #[inline]
     pub fn update(&mut self, timestamp: u64, sojourn: i64) -> Option<Condition> {
-        self.fold(timestamp, sojourn > self.target)
+        // RFC 8289's `!(sojourn < target)`; clippy rejects the negated form
+        // on integers.
+        self.fold(timestamp, sojourn >= self.target)
     }
 }
 
@@ -217,7 +227,7 @@ fn is_late(timestamp: u64, last: u64) -> bool {
 
 /// The `first_above_time` rule from RFC 8289 section 5.6.
 ///
-/// A sojourn at or below target clears the timer. A sojourn above target
+/// A sojourn below target clears the timer. A sojourn above target
 /// starts it at `now` if it is not running. Once a sojourn above target
 /// arrives a full `interval` or more after it started, the queue is
 /// standing. Returns whether the queue is standing after this sample.
@@ -285,11 +295,12 @@ mod raw_tests {
     }
 
     #[test]
-    fn sample_at_or_below_target_clears_and_rearms() {
+    fn sample_below_target_clears_and_rearms() {
         let mut cd = codel(50, 1000);
         let _ = cd.update(0, 200);
         assert_eq!(cd.update(1000, 200), Some(Condition::Degraded));
-        assert_eq!(cd.update(1100, 50), Some(Condition::Normal)); // at target clears
+        assert_eq!(cd.update(1100, 50), Some(Condition::Degraded)); // at target is above
+        assert_eq!(cd.update(1150, 49), Some(Condition::Normal)); // below target clears
         assert!(!cd.is_elevated());
         assert_eq!(cd.update(1200, 200), Some(Condition::Normal)); // restarts at 1200
         assert_eq!(cd.update(2199, 200), Some(Condition::Normal));
@@ -369,7 +380,11 @@ mod raw_tests {
         assert_eq!(cd.update(100, 0.9).unwrap(), Some(Condition::Normal)); // starts at 100
         assert_eq!(cd.update(1099, 0.9).unwrap(), Some(Condition::Normal));
         assert_eq!(cd.update(1100, 0.9).unwrap(), Some(Condition::Degraded));
-        assert_eq!(cd.update(1200, 0.5).unwrap(), Some(Condition::Normal)); // at target clears
+        assert_eq!(cd.update(1200, 0.5).unwrap(), Some(Condition::Degraded)); // at target is above
+        assert_eq!(
+            cd.update(1300, 0.5_f64.next_down()).unwrap(),
+            Some(Condition::Normal)
+        ); // below target clears
     }
 
     #[test]
@@ -394,6 +409,124 @@ mod raw_tests {
                 .build()
                 .is_err()
         );
+    }
+}
+
+#[cfg(test)]
+mod rfc_boundary_tests {
+    //! RFC 8289's boundaries: only `sojourn < target` is below, and elapsed
+    //! time equal to the interval already counts (`now >= first_above_time_`).
+    use super::*;
+
+    fn codel_i64() -> CoDel<i64> {
+        CoDel::<i64>::builder()
+            .target(50)
+            .interval(1000)
+            .build()
+            .unwrap()
+    }
+
+    fn codel_f64() -> CoDel<f64> {
+        CoDel::<f64>::builder()
+            .target(0.5)
+            .interval(1000)
+            .build()
+            .unwrap()
+    }
+
+    #[test]
+    fn held_at_target_for_full_interval_is_degraded_i64() {
+        let mut cd = codel_i64();
+        let seen = [0, 500, 1000].map(|t| cd.update(t, 50));
+        assert_eq!(
+            seen,
+            [
+                Some(Condition::Normal),
+                Some(Condition::Normal),
+                Some(Condition::Degraded)
+            ]
+        );
+        assert!(cd.is_elevated());
+    }
+
+    #[test]
+    fn held_at_target_for_full_interval_is_degraded_f64() {
+        let mut cd = codel_f64();
+        for t in [0, 500] {
+            assert_ne!(cd.update(t, 0.5).unwrap(), Some(Condition::Degraded));
+        }
+        assert!(matches!(
+            cd.update(1000, 0.5),
+            Ok(Some(Condition::Degraded))
+        ));
+        assert!(cd.is_elevated());
+    }
+
+    #[test]
+    fn one_unit_below_target_never_starts_the_timer_i64() {
+        let mut cd = codel_i64();
+        assert!(
+            [0, 500, 1000, 2000, 10_000]
+                .into_iter()
+                .all(|t| cd.update(t, 49) == Some(Condition::Normal))
+        );
+        assert!(!cd.is_elevated());
+    }
+
+    #[test]
+    fn one_ulp_below_target_never_starts_the_timer_f64() {
+        let below = 0.5_f64.next_down();
+        let mut cd = codel_f64();
+        assert!(
+            [0, 500, 1000, 2000, 10_000]
+                .into_iter()
+                .all(|t| cd.update(t, below) == Ok(Some(Condition::Normal)))
+        );
+        assert!(!cd.is_elevated());
+    }
+
+    #[test]
+    fn at_target_then_below_clears_the_timer_i64() {
+        let mut cd = codel_i64();
+        let _ = cd.update(0, 50);
+        assert_eq!(cd.update(600, 49), Some(Condition::Normal));
+        let _ = cd.update(700, 50);
+        // Measured from 700, not 0: the sample at 600 cleared the timer.
+        assert_eq!(cd.update(1699, 50), Some(Condition::Normal));
+        assert_eq!(cd.update(1700, 50), Some(Condition::Degraded));
+    }
+
+    #[test]
+    fn at_target_then_below_clears_the_timer_f64() {
+        let mut cd = codel_f64();
+        let _ = cd.update(0, 0.5);
+        assert_eq!(
+            cd.update(600, 0.5_f64.next_down()),
+            Ok(Some(Condition::Normal))
+        );
+        let _ = cd.update(700, 0.5);
+        assert!(!cd.is_elevated());
+        assert_eq!(cd.update(1699, 0.5), Ok(Some(Condition::Normal)));
+        assert_eq!(cd.update(1700, 0.5), Ok(Some(Condition::Degraded)));
+    }
+
+    #[test]
+    fn elapsed_equal_to_interval_counts_i64() {
+        let mut cd = codel_i64();
+        let _ = cd.update(0, 50);
+        assert_eq!(cd.update(999, 50), Some(Condition::Normal));
+        assert_eq!(cd.update(1000, 50), Some(Condition::Degraded));
+    }
+
+    #[test]
+    fn elapsed_equal_to_interval_counts_f64() {
+        let mut cd = codel_f64();
+        let _ = cd.update(0, 0.5);
+        assert!(matches!(cd.update(999, 0.5), Ok(Some(Condition::Normal))));
+        assert!(matches!(
+            cd.update(1000, 0.5),
+            Ok(Some(Condition::Degraded))
+        ));
     }
 }
 
