@@ -71,7 +71,9 @@ pub struct LoadAverage {
     pub fifteen_minutes: f64,
 }
 
-/// One window of an [`EventRate`]: what [`EventRate::take`] returns.
+/// One window of an [`EventRate`]: what [`EventRate::take`] returns for
+/// the window it closes, and what [`EventRate::summary`] returns for the
+/// window so far.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct RateSummary {
     events: u64,
@@ -190,7 +192,7 @@ impl<T: Timestamp> EventRate<T> {
     /// The window so far, as of `now`: what [`take`](Self::take) would
     /// return. Changes nothing, so the window stays open and the load
     /// averages do not move. Its `load_average()` is what they would
-    /// become if the window closed now.
+    /// become if the window closed at `now`.
     ///
     /// # Errors
     ///

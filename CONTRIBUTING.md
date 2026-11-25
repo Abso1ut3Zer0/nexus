@@ -301,10 +301,12 @@ The standard library is the model: `update` is `+`, `checked_update` is
   It marks an interval with a snap (`take()`), not with a tick.
 - **`take()` snaps, and a peek is named for what it returns.** `take()`
   closes the interval, returns its `...Summary` and starts a new one.
-  `summary()` returns the same for the interval so far and changes
-  nothing, so every type with a `take()` has one. Other peeks follow the
-  same rule (`condition()`, `reading()`, `load_average()`). A summary has
-  private fields and accessor methods.
+  `summary()` returns the same for the interval so far. It changes
+  nothing. Every type with a `take()` has one. Other peeks follow the
+  same naming (`condition()`, `reading()`, `load_average()`). A
+  `...Summary` type has private fields and accessor methods. A plain
+  reading with a few named numbers (`LoadAverage`, `Fall`, `Trend`) may
+  keep public fields.
 - **A clock must not go back.** An `update` that takes a tick ignores one
   that is not at or after the latest it took, and its `checked_update`
   returns `DataError::NonMonotonicTime`. A tick with no place in the

@@ -866,9 +866,9 @@ window.load_average();                  // 1, 5 and 15 minute averages
 ```
 
 `take` returns an error for a `now` that is not after the previous `take`.
-`summary(now)` returns the same window without closing it.
+`summary(now)` returns the window `take(now)` would, without closing it.
 The old `rate()` was one over the average gap, which is not the same
-quantity, so values change. It needs `std` or `libm`.
+quantity, so values change. `EventRate` needs `std` or `libm`.
 
 **`WindowedMax`, `WindowedMin` and `MinMaxNorm`** take a second type
 parameter, the clock, and the window as a `Duration`:
