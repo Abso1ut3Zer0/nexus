@@ -17,7 +17,7 @@ without latency jitter.
 - **`update` does the arithmetic and nothing else.** No validation, no `Result`. Floats follow IEEE 754, as `+` does. After an input the type cannot use, it promises nothing unless its docs say otherwise.
 - **`checked_update` protects the state.** A type has one when some input does damage that outlasts the sample, or when `update` drops a sample you should be told about (a NaN it ignores, a timestamp that goes back). It refuses exactly those inputs, its docs list them, and a refusal leaves the type unchanged. A type without one has no such input.
 - **A reader reports what the arithmetic gives,** NaN included where the true answer is undefined. It never substitutes a number. The library protects the state. It does not promise a reading is never NaN.
-- **Physical clock time is `i128` nanoseconds or `Instant`.** A clocked type lives on one of the two and they cannot be mixed. Time must not go back. An `update` that takes a time ignores one before the latest it took, and its guarded form returns `NonMonotonicTime`. A call that closes an interval, such as `EventRate::take`, refuses a time that is not later.
+- **The caller brings the clock.** Physical time is a `Timestamp`: `i128` or `i64` nanoseconds, an `Instant`, a named unit (`Micros`, `Millis`, `Seconds`, `Nanos`), or a type of your own. A model can also run on any `Tick`, such as a count of trades or traded volume. One instance lives on one clock. Time must not go back. An `update` that takes a time ignores one before the latest it took, and its guarded form returns `NonMonotonicTime`. A call that closes an interval, such as `EventRate::take`, refuses a time that is not later.
 - **A reading is an `Option`.** `None` until there is enough data, never a placeholder value.
 - **A published algorithm is implemented as published.** A type that comes from a paper or a standard follows it. Where floating point needs more care than the source gives (cancellation, overflow, a divisor near zero), the type adds the guard practitioners use, and its docs say which.
 - **Maxima and minima ignore NaN and accept infinity,** as `f64::max` does.
@@ -221,12 +221,23 @@ form, the two the RFC gives.
 The normalizers (`ZScoreNorm`, `MinMaxNorm`, `QuantileNorm`) and
 `RobustZScore` are generic over `Float` (`f64`, `f32`): they take and return
 `T` but accumulate in `f64`, so the `f32` form is a boundary type for `f32`
-feature vectors. Physical clock time is `i128` nanoseconds or an `Instant`,
-through the sealed `Timestamp` trait: `Liveness`, `EventRate` and
-`HawkesIntensity`, `CoDel`, `MinMaxNorm` and the windowed extrema take
-either, and a span is a `Duration`. `PollSaturation`, `DecayAccum` and
-`BucketAccumulator` have not moved yet and take `u64` ticks;
-`clock::MonotonicClock` is the `std` bridge from `Instant` for those. The full table is [`docs/reference/type-matrix.md`](docs/reference/type-matrix.md);
+feature vectors.
+
+The clocked types take the caller's clock. `Liveness`, `EventRate`, `CoDel`,
+`MinMaxNorm` and the windowed extrema take any `Timestamp`, with spans as
+`Duration`. `HawkesIntensity` takes any `Tick`.
+
+| Clock | Means |
+|---|---|
+| `i128`, `i64` | nanoseconds |
+| `Nanos`, `Micros`, `Millis`, `Seconds` | physical time in the named unit |
+| `Instant` *(std)* | physical time |
+| `u64`, `u32` | a plain count (a `Tick`, not a `Timestamp`) |
+| `f64` | a running quantity such as volume (a `Tick`, not a `Timestamp`) |
+
+`Tick` and `Timestamp` are open, so your own time or volume type works too.
+`PollSaturation`, `DecayAccum` and `BucketAccumulator` have not moved yet
+and take `u64` ticks. The full table is [`docs/reference/type-matrix.md`](docs/reference/type-matrix.md);
 upgrading from 6.x: [`docs/guides/migrating-to-7.md`](docs/guides/migrating-to-7.md).
 
 ## Common API Patterns
@@ -276,7 +287,7 @@ taskset -c 0 ./target/release/examples/perf_stats
 
 | Feature | Default | What |
 |---------|---------|------|
-| `std` | yes | `MonotonicClock`, hardware intrinsics for `sqrt`/`exp`; implies `alloc` |
+| `std` | yes | `Instant` as a clock, hardware intrinsics for `sqrt`/`exp`; implies `alloc` |
 | `libm` | no | Pure Rust math fallback for `no_std` |
 | `alloc` | no (implied by `std`) | Runtime-sized tables (Mosum, WindowedMedian, Kama, BoolWindow, TopK), adaptive filters, optimizers |
 
@@ -288,7 +299,7 @@ and construction (`halflife()`).
 
 nexus-stats is split into workspace crates for independent compilation and feature gating. Every concept lives in one crate, and all of them are on by default:
 
-- **nexus-stats-core** — shared traits, error types, clock (`Clock`, `MonotonicClock`, `EpochClock`), and the descriptive statistics (Welford, Moments, Covariance, Percentile)
+- **nexus-stats-core** — shared traits, error types, the clock traits and time types (`Tick`, `Timestamp`, `Micros`, ...), and the descriptive statistics (Welford, Moments, Covariance, Percentile)
 - **nexus-stats-smoothing** — EMA, AsymEma, Slew, EwmVar, KAMA, Holt, Spring, HuberEma, Hampel, WindowedMedian
 - **nexus-stats-detection** — CUSUM, DistributionShift, MOSUM, Shiryaev-Roberts, MultiGate, RobustZScore, AdaptiveThreshold, and signal analysis (Autocorrelation, Hurst, HalfLife)
 - **nexus-stats-regression** — Linear, polynomial, exponential, logarithmic, power regression; learning; Kalman and Bayesian estimation

@@ -10,6 +10,25 @@ contained.
 
 ## [Unreleased]
 
+### Added (clocks)
+
+- **`Tick`, `Span` and an open `Timestamp`.** The caller brings the clock.
+  Physical time is `i128` or `i64` nanoseconds, an `Instant`, a named unit
+  (`Nanos`, `Micros`, `Millis`, `Seconds`), or a type of your own. A model
+  can run on any tick: a count (`u64`, `u32`) or a quantity such as volume
+  (`f64`). `HawkesIntensity` does.
+
+### Changed (breaking)
+
+- An unsuffixed integer literal no longer infers as a timestamp. Write
+  `0_i64`.
+- `since` is a method of `Tick`, not of `Timestamp`. Import `Tick` to call
+  it on a concrete type.
+
+### Deprecated
+
+- `clock::Clock`, `EpochClock`, `MonotonicClock` and `clock::elapsed`.
+
 ### Changed (breaking, time)
 
 - **`monitoring::WindowedMax`, `WindowedMin` and `CoDel`, and
@@ -22,7 +41,7 @@ contained.
 ### Changed (breaking, time)
 
 - **Physical clock time is `i128` nanoseconds or `Instant`,** through the
-  new sealed `Timestamp` trait. `Liveness`, `EventRate` and
+  new `Timestamp` trait (widened and opened in the clocks entry above). `Liveness`, `EventRate` and
   `HawkesIntensity` are the first types on it; the others that take time
   still take `u64` ticks and move as they are converted.
 - **`monitoring::Liveness`** follows Cassandra's failure detector and

@@ -23,9 +23,9 @@ mod feature_vector;
 #[doc(hidden)]
 pub mod parts;
 
-/// Clock trait and implementations.
+/// Clocks: [`Tick`], [`Span`], [`Timestamp`] and the named time types.
 pub mod clock;
-pub use clock::Timestamp;
+pub use clock::{Micros, Millis, Nanos, Seconds, Span, Tick, Timestamp};
 
 /// Fixed-capacity storage shared by the windowed types (`alloc`).
 #[cfg(feature = "alloc")]

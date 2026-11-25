@@ -19,8 +19,9 @@ use nexus_stats_monitoring::{WindowedMax, WindowedMin};
 ///
 /// `V` is the sample type at the boundary, `f64` or `f32`; the trackers
 /// run in `f64` either way, so `MinMaxNorm<f32, T>` is for producing `f32`
-/// features, not for saving precision. The clock `T` is `i128` nanoseconds
-/// or an `Instant`.
+/// features, not for saving precision. The clock `T` is any [`Timestamp`]:
+/// `i128` or `i64` nanoseconds, an `Instant`, or a named unit such as
+/// [`Micros`](nexus_stats_core::Micros).
 ///
 /// # Examples
 ///

@@ -1,9 +1,8 @@
 use core::marker::PhantomData;
-use core::time::Duration;
 
-use nexus_stats_core::Timestamp;
 use nexus_stats_core::math::MulAdd;
 use nexus_stats_core::parts::LastTime;
+use nexus_stats_core::{Span, Tick};
 
 /// Intensity of a self-exciting (Hawkes) point process with an
 /// exponential kernel.
@@ -16,15 +15,18 @@ use nexus_stats_core::parts::LastTime;
 /// lambda(t) = mu + alpha * sum over earlier events of exp(-beta * (t - t_i))
 /// ```
 ///
-/// The sum is kept in one number, so an event costs one exponential. Time
-/// is in seconds: `mu` is events per second and `beta` is per second. The
+/// The sum is kept in one number, so an event costs one exponential. The
 /// process is stable when `alpha < beta`, which `build` requires. See
 /// [Hawkes process](https://en.wikipedia.org/wiki/Hawkes_process).
 ///
 /// # Weighting clock
 ///
-/// The caller's timestamps. The intensity decays by the time elapsed
-/// between events, so any event rate is correct.
+/// The caller's clock, any [`Tick`]. The intensity decays by the span
+/// between events, so any event rate is correct. The rates are per unit
+/// of that clock. On physical time (any
+/// [`Timestamp`](nexus_stats_core::Timestamp)) the unit is the second, so `mu` is events per second and `beta` is per
+/// second. On another clock, traded volume as an `f64` say, they are per
+/// unit of volume.
 ///
 /// # Examples
 ///
@@ -46,7 +48,7 @@ use nexus_stats_core::parts::LastTime;
 /// assert!((later - (1.0 + 0.5 * (-1.0_f64).exp())).abs() < 1e-12);
 /// ```
 #[derive(Debug, Clone)]
-pub struct HawkesIntensity<T: Timestamp> {
+pub struct HawkesIntensity<T: Tick> {
     mu: f64,
     alpha: f64,
     beta: f64,
@@ -58,14 +60,14 @@ pub struct HawkesIntensity<T: Timestamp> {
 
 /// Builder for [`HawkesIntensity`].
 #[derive(Debug, Clone)]
-pub struct HawkesIntensityBuilder<T: Timestamp> {
+pub struct HawkesIntensityBuilder<T: Tick> {
     mu: Option<f64>,
     alpha: Option<f64>,
     beta: Option<f64>,
     clock: PhantomData<T>,
 }
 
-impl<T: Timestamp> HawkesIntensity<T> {
+impl<T: Tick> HawkesIntensity<T> {
     /// Creates a builder.
     #[must_use]
     pub fn builder() -> HawkesIntensityBuilder<T> {
@@ -79,7 +81,8 @@ impl<T: Timestamp> HawkesIntensity<T> {
 
     /// Records an event at `time`.
     ///
-    /// An event timestamped before the last one taken is ignored. See
+    /// An event at a tick that is not at or after the last one taken is
+    /// ignored. See
     /// [`checked_update`](Self::checked_update).
     #[inline]
     pub fn update(&mut self, time: T) {
@@ -95,12 +98,13 @@ impl<T: Timestamp> HawkesIntensity<T> {
     }
 
     /// Checked update. Records an event at `time`, or returns an error and
-    /// leaves the state unchanged if `time` is before the last event.
+    /// leaves the state unchanged if `time` is not at or after the last
+    /// event.
     ///
     /// # Errors
     ///
     /// [`DataError::NonMonotonicTime`](nexus_stats_core::DataError::NonMonotonicTime)
-    /// if `time` is before the last event taken.
+    /// if `time` is not at or after the last event taken.
     #[inline]
     pub fn checked_update(&mut self, time: T) -> Result<(), nexus_stats_core::DataError> {
         self.last.check(time)?;
@@ -108,14 +112,14 @@ impl<T: Timestamp> HawkesIntensity<T> {
         Ok(())
     }
 
-    /// The intensity just after the last event, in events per second. The
-    /// baseline `mu` before any event.
+    /// The intensity just after the last event, in events per unit of the
+    /// clock. The baseline `mu` before any event.
     #[must_use]
     pub fn intensity(&self) -> f64 {
         self.mu + self.excitation
     }
 
-    /// The intensity at `time`, in events per second, with no new event.
+    /// The intensity at `time`, with no new event.
     /// A `time` before the last event reads as the last event's time.
     #[must_use]
     pub fn intensity_at(&self, time: T) -> f64 {
@@ -167,13 +171,13 @@ impl<T: Timestamp> HawkesIntensity<T> {
 
     /// What is left of a raise after `elapsed`: `exp(-beta * elapsed)`.
     #[inline]
-    fn decay_over(&self, elapsed: Duration) -> f64 {
-        nexus_stats_core::math::exp(-(self.beta * elapsed.as_secs_f64()))
+    fn decay_over(&self, elapsed: T::Span) -> f64 {
+        nexus_stats_core::math::exp(-(self.beta * elapsed.as_f64()))
     }
 }
 
-impl<T: Timestamp> HawkesIntensityBuilder<T> {
-    /// Baseline intensity, in events per second. Positive.
+impl<T: Tick> HawkesIntensityBuilder<T> {
+    /// Baseline intensity, in events per unit of the clock. Positive.
     #[must_use]
     pub fn mu(mut self, mu: f64) -> Self {
         self.mu = Some(mu);
@@ -188,7 +192,7 @@ impl<T: Timestamp> HawkesIntensityBuilder<T> {
         self
     }
 
-    /// Decay rate of a raise, per second. Positive.
+    /// Decay rate of a raise, per unit of the clock. Positive.
     #[must_use]
     pub fn beta(mut self, beta: f64) -> Self {
         self.beta = Some(beta);
@@ -238,12 +242,12 @@ mod tests {
     extern crate std;
     use super::*;
     use nexus_stats_core::DataError::NonMonotonicTime;
-    use std::time::Instant;
+    use std::time::{Duration, Instant};
     use std::vec::Vec;
 
     const SECOND: i128 = 1_000_000_000;
 
-    fn hawkes<T: Timestamp>(mu: f64, alpha: f64, beta: f64) -> HawkesIntensity<T> {
+    fn hawkes<T: Tick>(mu: f64, alpha: f64, beta: f64) -> HawkesIntensity<T> {
         HawkesIntensity::builder()
             .mu(mu)
             .alpha(alpha)
@@ -436,5 +440,58 @@ mod tests {
                 .build()
                 .is_err()
         );
+    }
+
+    /// The clock is the caller's. On traded volume the rates are per unit
+    /// of volume, and the numbers match a clock in seconds fed the same
+    /// values.
+    #[test]
+    fn a_volume_clock_gives_the_same_intensity_as_seconds() {
+        let mut on_volume = hawkes::<f64>(1.0, 0.5, 2.0);
+        let mut on_seconds = hawkes::<i128>(1.0, 0.5, 2.0);
+        for millis in [0_i128, 250, 300, 1_750, 1_750, 4_000] {
+            on_volume.update(millis as f64 / 1_000.0);
+            on_seconds.update(millis * SECOND / 1_000);
+            let (a, b) = (on_volume.intensity(), on_seconds.intensity());
+            assert!((a - b).abs() < 1e-12 * b, "{a} vs {b}");
+        }
+        let (a, b) = (
+            on_volume.intensity_at(4.5),
+            on_seconds.intensity_at(4_500 * SECOND / 1_000),
+        );
+        assert!((a - b).abs() < 1e-12 * b);
+    }
+
+    /// On a counter, one unit is one count: `beta` is per count.
+    #[test]
+    fn a_counter_clock_decays_per_count() {
+        let mut on_u64 = hawkes::<u64>(1.0, 0.5, 2.0);
+        let mut on_u32 = hawkes::<u32>(1.0, 0.5, 2.0);
+        on_u64.update(10);
+        on_u32.update(10);
+        let want = 1.0 + 0.5 * (-2.0_f64 * 3.0).exp();
+        assert!((on_u64.intensity_at(13) - want).abs() < 1e-15);
+        assert!((on_u32.intensity_at(13) - want).abs() < 1e-15);
+        // A count that goes back is ignored.
+        on_u64.update(9);
+        assert_eq!((on_u64.count(), on_u64.intensity()), (1, 1.5));
+        assert_eq!(on_u64.checked_update(9), Err(NonMonotonicTime));
+    }
+
+    /// A NaN tick would poison every later span. `update` ignores it and
+    /// the guarded form reports it, the first event included.
+    #[test]
+    fn a_nan_tick_is_ignored_and_reported() {
+        let mut hawkes = hawkes::<f64>(1.0, 0.5, 2.0);
+        hawkes.update(f64::NAN);
+        assert_eq!((hawkes.count(), hawkes.intensity()), (0, 1.0));
+        assert_eq!(hawkes.checked_update(f64::NAN), Err(NonMonotonicTime));
+        hawkes.update(1.0);
+        hawkes.update(f64::NAN);
+        assert_eq!((hawkes.count(), hawkes.intensity()), (1, 1.5));
+        assert_eq!(hawkes.intensity_at(f64::NAN), 1.5);
+        hawkes.update(2.0);
+        assert!(hawkes.intensity().is_finite());
+        assert_eq!(hawkes.count(), 2);
     }
 }

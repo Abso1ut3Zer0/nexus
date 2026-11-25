@@ -10,6 +10,13 @@ contained.
 
 ## [Unreleased]
 
+### Changed (breaking)
+
+- **The clocked types take any `Timestamp`,** which now includes `i64`
+  nanoseconds, the named types `Nanos`, `Micros`, `Millis` and `Seconds`,
+  and a caller's own time type. An unsuffixed integer literal no longer
+  infers as a timestamp; write `0_i64`.
+
 ### Changed (breaking, time)
 
 - **`WindowedMax`, `WindowedMin` and `CoDel` take time as `i128`

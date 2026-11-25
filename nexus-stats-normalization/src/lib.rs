@@ -29,8 +29,11 @@ mod quantile;
 #[cfg(feature = "alloc")]
 pub use quantile::*;
 
-// What appears in this crate's signatures, so it can be used on its own.
-pub use nexus_stats_core::{ConfigError, DataError, Float};
+// What appears in this crate's signatures, and the clocks its types take,
+// so it can be used on its own.
+pub use nexus_stats_core::{
+    ConfigError, DataError, Float, Micros, Millis, Nanos, Seconds, Span, Tick, Timestamp,
+};
 
 /// The README's examples, compiled and run as doc tests.
 #[cfg(all(doctest, feature = "std"))]

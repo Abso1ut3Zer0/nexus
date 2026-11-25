@@ -10,6 +10,13 @@ contained.
 
 ## [Unreleased]
 
+### Changed (breaking)
+
+- **`MinMaxNorm` takes any `Timestamp`,** which now includes `i64`
+  nanoseconds, the named time types and a caller's own time type. An
+  unsuffixed integer literal no longer infers as a timestamp; write
+  `0_i64`.
+
 ### Changed (breaking, time)
 
 - **`MinMaxNorm<V, T>` takes time as `i128` nanoseconds or `Instant`,**

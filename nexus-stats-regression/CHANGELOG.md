@@ -10,6 +10,14 @@ contained.
 
 ## [Unreleased]
 
+### Changed (breaking)
+
+- **`HawkesIntensity` runs on any `Tick`,** not only physical time. Its
+  rates are per unit of the clock: per second on a `Timestamp`, per unit
+  of volume on an `f64` volume clock, per count on a `u64`. A tick that is
+  not at or after the last event is ignored, a NaN included, and
+  `checked_update` reports it.
+
 ### Added (moved in)
 
 - **`HawkesIntensity`**, from `nexus-stats-monitoring`. It estimates the
@@ -17,9 +25,9 @@ contained.
 
 ### Changed (breaking)
 
-- **`HawkesIntensity` takes time as `i128` nanoseconds or `Instant`,**
-  through the `Timestamp` trait, and its rates are per second (`mu` in
-  events per second, `beta` per second). An event before the last one is
+- **`HawkesIntensity` takes the caller's clock,** and on physical time its
+  rates are per second (`mu` in events per second, `beta` per second).
+  See the entry above for other clocks. An event before the last one is
   ignored; `checked_update` returns `NonMonotonicTime`. `min_samples` is
   removed, since no reading used it.
 

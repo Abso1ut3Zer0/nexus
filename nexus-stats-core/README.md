@@ -4,7 +4,7 @@ Core types shared across the nexus-stats ecosystem.
 
 The foundation of the nexus-stats crates, and the descriptive statistics they build on:
 
-- the shared pieces: error enums, the `Accuracy` report, the `Sample` and `Float` traits, math utilities, ring storage, and the clock trait (`Clock`, `MonotonicClock`, `EpochClock`);
+- the shared pieces: error enums, the `Accuracy` report, the `Sample` and `Float` traits, math utilities, ring storage, and the clock traits (`Tick`, `Span`, `Timestamp`) with the named time types (`Nanos`, `Micros`, `Millis`, `Seconds`);
 - the descriptive statistics: Welford, Moments, Covariance, CovarianceMatrix, HarmonicMean, Percentile, BucketAccumulator, FirstDiff, SecondDiff.
 
 Every other concept (smoothing, detection, monitoring, control, normalization, regression, trading) has its own crate.
