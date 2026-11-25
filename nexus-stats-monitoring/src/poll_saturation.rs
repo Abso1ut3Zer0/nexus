@@ -24,7 +24,7 @@ use nexus_stats_core::{DataError, Timestamp};
 ///
 /// A healthy thread reads `max_messages_per_poll() <= 1` and
 /// `max_backlog_messages() == 0`: no message ever queued behind another.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct PollSummary {
     period: Period,
     is_fully_utilized: bool,

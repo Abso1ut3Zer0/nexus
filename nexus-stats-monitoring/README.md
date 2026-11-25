@@ -14,7 +14,7 @@ Monitors for a running system, for [nexus-stats](https://crates.io/crates/nexus-
 - **A published algorithm is implemented as published.** A type that comes from a paper or a standard follows it. Where floating point needs more care than the source gives (cancellation, overflow, a divisor near zero), the type adds the guard practitioners use, and its docs say which.
 - **Maxima and minima ignore NaN and accept infinity,** as `f64::max` does.
 
-**Not yet migrated:** `PollSaturation`, `SojournSaturation`. They have not been moved to these guarantees, and `PollSaturation` still takes time as `u64` ticks.
+Every type in this crate follows these.
 
 ## Which type do I use?
 
@@ -34,7 +34,7 @@ Monitors for a running system, for [nexus-stats](https://crates.io/crates/nexus-
 **Queues**
 
 - **CoDel**: a queue that is not draining, from how long each item waited (RFC 8289's rule)
-- **PollSaturation**: how saturated a consumer is, from what its polls return
+- **PollSaturation**: how saturated a consumer is, from what its polls return; healthy is one message per poll and no backlog
 - **SojournSaturation**: the same, from stamped waiting times
 
 Each type's docs give its definition, what one `update` is worth (its weighting clock), and how to read it.

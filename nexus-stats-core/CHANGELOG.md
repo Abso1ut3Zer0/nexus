@@ -10,6 +10,11 @@ contained.
 
 ## [Unreleased]
 
+### Added (internal)
+
+- `clock::duration_from_nanos` (doc-hidden): a `u128` count of nanoseconds
+  as a `Duration`, clamped at the longest one.
+
 ### Added (clocks)
 
 - **`Tick`:** a point on any clock that only moves forward, with

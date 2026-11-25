@@ -10,6 +10,14 @@ contained.
 
 ## [Unreleased]
 
+### Changed (breaking)
+
+- **`monitoring::PollSaturation` and `SojournSaturation` take time as a
+  `Timestamp` and spans as `Duration`.** Their summaries have private
+  fields read through methods, and `summary()` peeks at the period so far.
+  `max_backlog_messages()` now reads 0 on a healthy thread.
+- **`monitoring::EventRate::load()` is renamed `load_average()`.**
+
 ### Added (clocks)
 
 - **`Tick`, `Span` and an open `Timestamp`.** The caller brings the clock.
