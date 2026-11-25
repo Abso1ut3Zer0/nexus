@@ -75,7 +75,7 @@ use nexus_stats::monitoring::{Liveness, EventRate};
 
 // Per-exchange feed monitor
 let mut liveness = Liveness::builder().build().unwrap();
-let mut msg_rate = EventRate::new(start_ns);   // i128 nanoseconds, or an Instant
+let mut msg_rate = EventRate::new(start_ns);   // any `Timestamp`
 let mut latency_cusum = Cusum::builder(baseline_ws_latency)
     .slack(2.0).threshold(20.0).min_samples(50).build().unwrap();
 

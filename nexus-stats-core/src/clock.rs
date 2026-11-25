@@ -22,8 +22,8 @@ use core::time::Duration;
 /// | `u64`, `u32` | itself | a counter in the caller's unit |
 /// | `f64` | `f64` | a running quantity in the caller's unit, such as volume |
 ///
-/// A raw signed integer is always nanoseconds, and an unsigned one is
-/// always a plain count. For time in another unit use the named type, so
+/// A raw signed integer (`i128`, `i64`) is always nanoseconds, and a raw
+/// unsigned one (`u64`, `u32`) is always a plain count. For time in another unit use the named type, so
 /// the unit is stated where the time enters. Only the difference of two
 /// ticks is used, so the epoch does not matter.
 ///
@@ -32,7 +32,7 @@ use core::time::Duration;
 /// `f64` clock loses precision, so keep such a clock small or reset it.
 /// `since` must return zero when `self` is not after `earlier`. That
 /// covers a tick with no place in the order, such as a NaN on an `f64`
-/// clock: the span to or from it is zero.
+/// clock. The span to or from it is zero.
 pub trait Tick: Copy + PartialOrd + core::fmt::Debug + 'static {
     /// What this clock counts in.
     type Span: Span;

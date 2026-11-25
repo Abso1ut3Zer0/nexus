@@ -13,8 +13,9 @@ Numeric forms:
 - **`f64`**: a plain name, one instantiation.
 - **`T: Sample`**: one generic type for `f64` and `i64` (`PeakHold<f64>`, `PeakHold<i64>`). On a type not yet migrated, `update` returns `Result` on `f64` (NaN and infinity rejected) and the plain value on `i64`. Name `T` at construction: `PeakHold::<i64>::builder()`.
 - **`T: Float`**: one generic type for `f64` and `f32`; takes and returns `T`, accumulates in `f64`.
-- **`T: Timestamp`**: physical clock time as `i128` nanoseconds or an `Instant`; one clock per value.
-- **`u64` ticks**: the types not yet moved to `Timestamp`; the same clock for every stamp into one value; `clock::MonotonicClock` is the `std` bridge from `Instant`.
+- **`T: Timestamp`**: physical time: `i128` or `i64` nanoseconds, `Nanos` / `Micros` / `Millis` / `Seconds`, an `Instant`, or your own type; one clock per value.
+- **`T: Tick`**: any clock that only moves forward: a timestamp, a count (`u64`, `u32`), or a quantity such as volume (`f64`).
+- **`u64` ticks**: the types not yet moved to `Timestamp`; the same clock for every stamp into one value.
 
 See [Integer vs Float](../guides/integer-vs-float.md) for the caller rules and
 [Migrating to 7.0](../guides/migrating-to-7.md) for the 6.x names.
@@ -91,12 +92,12 @@ See [Integer vs Float](../guides/integer-vs-float.md) for the caller rules and
 | `PeakHold<T>` | `T: Sample` | — | monitoring |
 | `CoDel<T>` | `T: Timestamp`; sojourn as `Duration` | — | monitoring |
 | `Jitter<T>` | `f64`, `i64` | — | monitoring |
-| `Liveness<T>` | `T: Timestamp` (`i128` ns, `Instant`) | `alloc` | monitoring |
-| `EventRate<T>` | `T: Timestamp` (`i128` ns, `Instant`) | `std\|libm` | monitoring |
+| `Liveness<T>` | `T: Timestamp` | `alloc` | monitoring |
+| `EventRate<T>` | `T: Timestamp` | `std\|libm` | monitoring |
 | `PollSaturation` (→ `PollSummary`) | `u64` ticks, counts | — | monitoring |
 | `SojournSaturation` (→ `SojournSummary`) | `i64` sojourn, `u64` summary | — | monitoring |
 | `ErrorRate` | `bool` outcomes | — | monitoring |
-| `HawkesIntensity<T>` | `T: Timestamp` (`i128` ns, `Instant`) | `std\|libm` | regression (`estimation`) |
+| `HawkesIntensity<T>` | `T: Tick` | `std\|libm` | regression (`estimation`) |
 
 ## Control
 
@@ -165,8 +166,9 @@ See [Integer vs Float](../guides/integer-vs-float.md) for the caller rules and
 
 | Type | What | Feature | Crate (module) |
 |------|------|---------|----------------|
-| `MonotonicClock` | `u64` nanoseconds since construction, from `Instant` | `std` | core (`clock`) |
-| `EpochClock` | `u64` nanoseconds since the Unix epoch, from `SystemTime` | `std` | core (`clock`) |
+| `Tick`, `Span`, `Timestamp` | the clock traits; open | — | core (`clock`) |
+| `Nanos`, `Micros`, `Millis`, `Seconds` | physical time in a named unit | — | core (`clock`) |
+| `Clock`, `MonotonicClock`, `EpochClock` | deprecated `u64` clock sources | `std` for `MonotonicClock` | core (`clock`) |
 
 ## Feature-gated summary
 

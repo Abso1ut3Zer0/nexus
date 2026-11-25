@@ -274,18 +274,36 @@ The standard library is the model: `update` is `+`, `checked_update` is
   and a window's clock included. (pandas' rolling functions also treat
   infinity as missing. We follow `f64::max` and NumPy, where it is a
   value.)
-- **Physical clock time is `i128` nanoseconds or `Instant`.** A clocked
-  type is generic over the sealed `Timestamp` trait, which both
-  implement, so one instance lives on one clock and the two cannot be
-  mixed. `i128` is the deterministic form. Recorded times replay to the
-  same results, and a wire `i64` widens into it. A span of time in
-  configuration (a window, a deadline) is a `core::time::Duration`, and
-  rates are per second. No "ticks in any unit", no wrapping counters.
+- **A clock is a `Tick`, and the caller brings it.** A tick is a point on
+  anything that only moves forward: wall time, a count of trades, traded
+  volume. `Tick::since` gives the `Span` between two of them, zero when
+  not after. A type is generic over its tick, so one instance lives on one
+  clock and two clocks cannot be mixed. We ship no clock source (the old
+  `Clock` types are deprecated). Both
+  traits are open, so a caller can implement them for a decimal volume or
+  a newtype over another crate's time.
+- **Physical time is a `Timestamp`,** a tick whose span is a
+  `core::time::Duration`. A raw signed integer (`i128`, `i64`) is
+  nanoseconds. Other units are the named types `Micros`, `Millis` and
+  `Seconds` (and `Nanos`), so the unit is stated where the time enters.
+  `Instant` is one too. A raw unsigned integer (`u64`, `u32`) is a plain
+  count and an `f64` is a running quantity; neither is a timestamp. The
+  integer forms are deterministic, so recorded times replay to the same
+  results.
+- **Bind by what the settings mean.** A type whose settings are real time
+  (a window of five seconds, a load over one minute) takes
+  `T: Timestamp`, with its spans as `Duration` and its rates per second.
+  A model that only needs "how far apart" as a number takes `T: Tick`,
+  reads the span with `Span::as_f64`, and states its rates per unit of
+  the clock. The clock parameter is always `T`; a value parameter beside
+  it is `V`.
 - **A type with no clock is in event time.** Each `update` is one step.
-  It marks an interval with a snap (`take()`), not with a timestamp.
-- **Time must not go back.** An `update` that takes a time ignores one
-  before the latest it took, and its `checked_update` returns
-  `DataError::NonMonotonicTime`. A call that closes an interval
+  It marks an interval with a snap (`take()`), not with a tick.
+- **A clock must not go back.** An `update` that takes a tick ignores one
+  that is not at or after the latest it took, and its `checked_update`
+  returns `DataError::NonMonotonicTime`. A tick with no place in the
+  order (a NaN on an `f64` clock) is treated the same way. The span to or
+  from it is zero. A call that closes an interval
   (`EventRate::take`) has no unguarded form. It refuses a time that is not
   later.
 - **Integers follow std too.** `update` uses the plain operator;

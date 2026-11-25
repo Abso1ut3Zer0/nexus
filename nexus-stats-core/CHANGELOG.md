@@ -10,12 +10,40 @@ contained.
 
 ## [Unreleased]
 
+### Added (clocks)
+
+- **`Tick`:** a point on any clock that only moves forward, with
+  `since(earlier)` giving the `Span` between two, zero when not after.
+  **`Span`** reports itself as an `f64` (`as_f64`; a `Duration` in
+  seconds). Both are open traits.
+- **`Timestamp` is now any `Tick` whose span is a `Duration`,** and is no
+  longer sealed. A caller's own time type qualifies by implementing
+  `Tick`.
+- **Clocks out of the box:** `i128` and `i64` (nanoseconds), `Instant`,
+  the named types `Nanos(i128)`, `Micros(i64)`, `Millis(i64)` and
+  `Seconds(i64)`, the counters `u64` and `u32`, and `f64` for a running
+  quantity such as volume. The counters and `f64` are ticks, not
+  timestamps.
+- A NaN on an `f64` clock is not a point on it. The span to or from it is
+  zero, and a type that takes ticks never takes one.
+
+### Changed (breaking)
+
+- `since` moved from `Timestamp` to `Tick`. Import `Tick` to call it.
+- An unsuffixed integer literal no longer infers as a timestamp, since
+  `i128` and `i64` both are. Write `0_i64`.
+
+### Deprecated
+
+- `clock::Clock`, `EpochClock`, `MonotonicClock` and `clock::elapsed`. The
+  clocked types take a tick directly, and the caller brings the clock.
+
 ### Added (time)
 
-- **`Timestamp`:** a sealed trait for physical clock time, implemented for
-  `i128` nanoseconds and, with `std`, `Instant`. One method,
-  `since(earlier) -> Duration`, zero if not after. The clocked types are
-  generic over it, so an instance lives on one clock.
+- **`Timestamp`:** a trait for physical clock time, implemented for
+  `i128` nanoseconds and, with `std`, `Instant`. The clocked types are
+  generic over it, so an instance lives on one clock. (Opened and widened
+  in the entry above.)
 - `parts::LastTime` (doc-hidden): the latest time a clocked type has taken
   and the rule that time must not go back.
 

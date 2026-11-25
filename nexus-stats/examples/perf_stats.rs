@@ -211,25 +211,6 @@ fn bench_peak_to_trough_f64(samples: &mut [u64]) {
     }
 }
 
-fn bench_windowed_max_f64(samples: &mut [u64]) {
-    let mut wm = WindowedMax::<f64, i128>::new(Duration::from_nanos(1000)).unwrap();
-    let mut rng = 12345u64;
-    for t in 0..WARMUP as i128 {
-        let _ = wm.update(t, 90.0 + (next_val(&mut rng) % 20) as f64);
-    }
-    let mut t = WARMUP as i128;
-    for s in samples.iter_mut() {
-        let start = rdtsc_start();
-        for _ in 0..BATCH {
-            let _ = wm.update(t, 90.0 + (next_val(&mut rng) % 20) as f64);
-            t += 1;
-        }
-        let end = rdtsc_end();
-        black_box(wm.max());
-        *s = (end - start) / BATCH;
-    }
-}
-
 /// The windowed maximum on a given clock. One update per `step` of that
 /// clock, and a window of 1,000 steps, so every clock runs the same path.
 fn bench_windowed_max_on<T: nexus_stats::Timestamp>(
@@ -551,25 +532,6 @@ fn bench_event_rate(samples: &mut [u64]) {
         let end = rdtsc_end();
         t += 1_000_000;
         let _ = black_box(er.take(t));
-        *s = (end - start) / BATCH;
-    }
-}
-
-fn bench_codel(samples: &mut [u64]) {
-    let mut qd = CoDel::<i128>::new(Duration::from_nanos(100), Duration::from_nanos(1000)).unwrap();
-    let mut rng = 12345u64;
-    for t in 0..WARMUP as i128 {
-        let _ = qd.update(t, Duration::from_nanos(50 + next_val(&mut rng) % 100));
-    }
-    let mut t = WARMUP as i128;
-    for s in samples.iter_mut() {
-        let start = rdtsc_start();
-        for _ in 0..BATCH {
-            let _ = qd.update(t, Duration::from_nanos(50 + next_val(&mut rng) % 100));
-            t += 1;
-        }
-        let end = rdtsc_end();
-        black_box(qd.is_elevated());
         *s = (end - start) / BATCH;
     }
 }
@@ -2296,8 +2258,6 @@ fn main() {
     print_header();
     bench_peak_to_trough_f64(&mut buf);
     print_row("PeakToTrough::<f64>::update", &mut buf);
-    bench_windowed_max_f64(&mut buf);
-    print_row("WindowedMax::update", &mut buf);
     let (nano, micro) = (Duration::from_nanos(1), Duration::from_micros(1));
     bench_windowed_max_on(&mut buf, nano, i128::from);
     print_row("WindowedMax::update(i128)", &mut buf);
@@ -2325,8 +2285,6 @@ fn main() {
     print_row("Liveness::update", &mut buf);
     bench_event_rate(&mut buf);
     print_row("EventRate::update", &mut buf);
-    bench_codel(&mut buf);
-    print_row("CoDel::update", &mut buf);
     bench_jitter_f64(&mut buf);
     print_row("Jitter::<f64>::update", &mut buf);
     bench_error_rate(&mut buf);

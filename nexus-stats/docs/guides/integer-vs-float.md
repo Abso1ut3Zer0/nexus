@@ -19,16 +19,17 @@ type over the sealed `Sample` trait, instantiated for `f64` and `i64`:
 | `control` | `DeadBand<T>`, `Hysteresis<T>`, `LevelCrossing<T>`, `FirstDiff<T>`, `SecondDiff<T>`, `PeakDetector<T>` |
 | `smoothing` | `WindowedMedian<T>` |
 
-Time is a third kind. Physical clock time is `i128` nanoseconds or an
-`Instant`, through the sealed `Timestamp` trait: `Liveness`, `EventRate` and
-`HawkesIntensity`, `CoDel`, `MinMaxNorm` and the windowed extrema take
-either, one clock per value, and a span is a `Duration`. `PollSaturation`,
-`DecayAccum` and `BucketAccumulator` have not moved yet and still
-take `u64` ticks
-(`clock::MonotonicClock` is the `std` bridge from `Instant`, see
-[no_std](no-std.md) for the rest).
+Time is a third kind, and the caller brings the clock. Physical time is a
+`Timestamp`: a raw `i128` or `i64` is nanoseconds, `Micros`, `Millis` and
+`Seconds` name other units, and an `Instant` works with `std`. `Liveness`,
+`EventRate`, `CoDel`, `MinMaxNorm` and the windowed extrema take any of
+them, one clock per value, and a span is a `Duration`. A raw `u64` or `u32`
+is a plain count and an `f64` a running quantity; those are `Tick`s but not
+timestamps, for a model such as `HawkesIntensity`. `PollSaturation`,
+`DecayAccum` and `BucketAccumulator` have not moved yet and still take
+`u64` ticks.
 
-The normalizers (`ZScoreNorm<T>`, `MinMaxNorm<T>`, `QuantileNorm<T>`) and
+The normalizers (`ZScoreNorm<T>`, `MinMaxNorm<V, T>`, `QuantileNorm<T>`) and
 `RobustZScore<T>` are generic over `Float` (`f64`, `f32`) instead: they take
 and return `T` but accumulate in `f64`, so the `f32` form is a boundary type
 for `f32` feature vectors, not a cheaper accumulator.
@@ -82,5 +83,5 @@ exported from `nexus_stats` and `nexus_stats_core` and are sealed (`f64` /
 | Prices, rates, ratios, utilization | `f64` |
 | Counts you only compare or difference | `i64` |
 | Counts you want variance or smoothing on | `f64` (`Welford`, `Ema`): cast at the call site |
-| Timestamps | `i128` nanoseconds or `Instant`; `u64` ticks on the types not yet moved |
+| Timestamps | `i128` or `i64` nanoseconds, `Micros` / `Millis` / `Seconds`, or `Instant`; `u64` ticks on the types not yet moved |
 | Spans of time (a window, an interval, a sojourn) | `Duration` |

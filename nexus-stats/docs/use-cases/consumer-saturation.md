@@ -32,16 +32,17 @@ poll shows you caught up. Healthy reads: `behind == 0`, polls returning
 ## Recipe: Spin Loop, One Message Per Poll
 
 ```rust
-use nexus_stats::clock::{Clock, MonotonicClock};
+use std::time::Instant;
 use nexus_stats::monitoring::PollSaturation;
 
-let clock = MonotonicClock::new();                 // nanosecond ticks since construction
+let epoch = Instant::now();
+let stamp = || epoch.elapsed().as_nanos() as u64;  // nanosecond ticks since startup
 let mut sat = PollSaturation::new(50_000);    // budget: 50 µs
 
 loop {
     match rx.try_recv() {
         Ok(msg) => {
-            let behind = sat.on_work(clock.stamp(), 1);   // 0: did not wait
+            let behind = sat.on_work(stamp(), 1);   // 0: did not wait
             handle(msg, behind);
         }
         Err(TryRecvError::Empty) => sat.on_idle(),       // one store, no clock
@@ -53,9 +54,9 @@ loop {
 }
 ```
 
-The type never reads a clock. Ticks are whatever your stamps use;
-`MonotonicClock` is the std bridge (nanoseconds since construction). The later
-recipes assume `clock` and `sat` from here.
+The type never reads a clock. Ticks are whatever your stamps use, nanoseconds
+here, and the budget is in the same unit. The later
+recipes assume `stamp` and `sat` from here.
 
 ## Recipe: Batch Poll with a Limit
 
@@ -64,10 +65,10 @@ full poll is not a proof; a short one is. Account per message in the
 handler so each message's `behind` is measured from its own start:
 
 ```rust
-let t0 = clock.stamp();                     // always a sound proof stamp
+let t0 = stamp();                     // always a sound proof stamp
 let mut last = t0;
 let n = input.poll(|msg| {
-    last = clock.stamp();
+    last = stamp();
     let behind = sat.on_work(last, 1);
     handle(msg, behind);
 }, LIMIT);
@@ -101,7 +102,7 @@ one was empty: an input skipped in a pass is not known empty in it.
 ```rust
 let mut all_empty = true;
 for input in &mut inputs {
-    let n = input.poll(|msg| { handle(msg, sat.on_work(clock.stamp(), 1)); }, LIMIT);
+    let n = input.poll(|msg| { handle(msg, sat.on_work(stamp(), 1)); }, LIMIT);
     if n > 0 { all_empty = false; }
 }
 if all_empty { sat.on_idle(); }
@@ -124,15 +125,15 @@ let msg = match rx.try_recv() {
     Err(TryRecvError::Empty) => { sat.on_idle(); rx.recv().await? }
     Err(TryRecvError::Disconnected) => return Ok(()),
 };
-let behind = sat.on_work(clock.stamp(), 1);
+let behind = sat.on_work(stamp(), 1);
 ```
 
 Timing the call (nothing extra; an ambiguity zone the size of the epsilon):
 
 ```rust
-let t0 = clock.stamp();
+let t0 = stamp();
 let n = sock.recv(&mut buf)?;
-let t1 = clock.stamp();
+let t1 = stamp();
 if t1 - t0 > WAKE_EPSILON { sat.on_idle(); }   // it blocked: input was empty
 let behind = sat.on_work(t1, n as u64);
 ```

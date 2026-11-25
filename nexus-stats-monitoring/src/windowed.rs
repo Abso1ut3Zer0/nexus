@@ -78,7 +78,7 @@ impl<V: Sample, T: Timestamp> WindowedMax<V, T> {
     #[inline]
     #[must_use]
     pub fn window(&self) -> Duration {
-        self.window.span.whole
+        self.window.length.whole
     }
 
     /// Number of samples taken.
@@ -191,7 +191,7 @@ impl<V: Sample, T: Timestamp> WindowedMin<V, T> {
     #[inline]
     #[must_use]
     pub fn window(&self) -> Duration {
-        self.window.span.whole
+        self.window.length.whole
     }
 
     /// Number of samples taken.
@@ -248,7 +248,7 @@ impl<V: Sample, T: Timestamp> WindowedMin<V, T> {
 /// The state the maximum and the minimum share.
 #[derive(Debug, Clone)]
 struct Window<V: Sample, T: Timestamp> {
-    span: WindowLength,
+    length: WindowLength,
     /// `None` until the first value.
     choices: Option<Choices<V, T>>,
     count: u64,
@@ -257,14 +257,14 @@ struct Window<V: Sample, T: Timestamp> {
 
 impl<V: Sample, T: Timestamp> Window<V, T> {
     #[inline]
-    fn new(span: Duration) -> Result<Self, nexus_stats_core::ConfigError> {
-        if span.is_zero() {
+    fn new(length: Duration) -> Result<Self, nexus_stats_core::ConfigError> {
+        if length.is_zero() {
             return Err(nexus_stats_core::ConfigError::Invalid(
                 "window must be positive",
             ));
         }
         Ok(Self {
-            span: WindowLength::new(span),
+            length: WindowLength::new(length),
             choices: None,
             count: 0,
             last: LastTime::new(),
@@ -308,7 +308,7 @@ impl<V: Sample, T: Timestamp> Window<V, T> {
             self.choices = Some(Choices::all(sample));
             return Some(value);
         };
-        Some(choices.take(sample, self.span, better))
+        Some(choices.take(sample, self.length, better))
     }
 }
 
@@ -373,12 +373,12 @@ impl<V: Copy, T: Timestamp> Choices<V, T> {
     fn take(
         &mut self,
         sample: Stamped<V, T>,
-        span: WindowLength,
+        length: WindowLength,
         better: impl Fn(V, V) -> bool,
     ) -> V {
         let [first, second, third] = &mut self.0;
         // A new extremum, or nothing left in the window: forget the rest.
-        if better(sample.value, first.value) || third.age_at(sample.time) > span.whole {
+        if better(sample.value, first.value) || third.age_at(sample.time) > length.whole {
             *self = Self::all(sample);
             return sample.value;
         }
@@ -388,30 +388,30 @@ impl<V: Copy, T: Timestamp> Choices<V, T> {
         } else if better(sample.value, third.value) {
             *third = sample;
         }
-        self.age(sample, span);
+        self.age(sample, length);
         self.best()
     }
 
     /// `minmax_subwin_update`: as time advances, replaces the choices that
     /// have aged.
     #[inline]
-    fn age(&mut self, sample: Stamped<V, T>, span: WindowLength) {
+    fn age(&mut self, sample: Stamped<V, T>, length: WindowLength) {
         let [first, second, third] = self.0;
         let age = first.age_at(sample.time);
 
-        if age > span.whole {
+        if age > length.whole {
             // The best aged out. The 2nd may have too (only the 3rd was
             // checked on entry), so this may have to run twice.
             self.promote(sample);
-            if self.0[0].age_at(sample.time) > span.whole {
+            if self.0[0].age_at(sample.time) > length.whole {
                 self.promote(sample);
             }
-        } else if second.time == first.time && age > span.quarter {
+        } else if second.time == first.time && age > length.quarter {
             // A quarter of the window passed without a distinct 2nd
             // choice: take one from the 2nd quarter.
             self.0[1] = sample;
             self.0[2] = sample;
-        } else if third.time == second.time && age > span.half {
+        } else if third.time == second.time && age > length.half {
             // Half the window passed without a distinct 3rd choice: take
             // one from the last half.
             self.0[2] = sample;

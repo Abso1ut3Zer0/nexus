@@ -50,7 +50,7 @@ information. Builders follow their type: `EmaF64Builder` → `EmaBuilder`,
 | `LpmF64` | `Lpm` |
 | `MomentsF64` | `Moments` |
 | `OnlineCovarianceF64` | `CovarianceMatrix` |
-| `WallClock` | `MonotonicClock` |
+| `WallClock` | `MonotonicClock`, now deprecated; pass an `Instant` or an integer time (see the time section) |
 | `CoDelBuilder::window(n)` | `interval(n)` |
 | `BucketPolicy::WallTimeNanos(n)` | `BucketPolicy::Ticks(n)` |
 | `BucketAccumulator::update_at_raw(v, t)` | `update_at(v, t)` |
@@ -245,7 +245,7 @@ on `f32` accumulation for speed, measure: the hot path gains a convert.
 | `MosumI64` | `Mosum` on `f64` ([#379](https://github.com/Abso1ut3Zer0/nexus/issues/379)) |
 | `AutocorrelationI64` | `Autocorrelation` on `f64` (correlation is fractional) ([#379](https://github.com/Abso1ut3Zer0/nexus/issues/379)) |
 | `DecayAccumF64` | `DecayAccum` (`u64` ticks) |
-| `update_i64(timestamp, ..)` on `WindowedMax`, `WindowedMin`, `CoDel` | `update(time, ..)` with `i128` nanoseconds or an `Instant` |
+| `update_i64(timestamp, ..)` on `WindowedMax`, `WindowedMin`, `CoDel` | `update(time, ..)` with any `Timestamp` |
 | `CoDel::builder()`, `min_samples`, `is_primed()`, and the `Option` and `Result` around its `update` | `CoDel::new(target, interval)`; `update` returns the `Condition` |
 | `HalfLifeBuilder` | `HalfLife::new()` (the builder had no knobs) |
 | `Liveness`'s `span`, `deadline_multiple`, `deadline_absolute`, `min_samples`, `interval()`, `effective_span()`, and the `bool` from `update` and `check` | `check(now)` returns a `Suspicion`; compare `ratio()` and `silence()` to your own limits |
@@ -796,18 +796,43 @@ errors.total_errors();                  // since the start
 
 ### Time: the clocked types
 
-Physical clock time is `i128` nanoseconds or an `Instant`. A clocked type is
-generic over the sealed `Timestamp` trait, so an instance lives on one clock.
-A `u64` tick count widens with `i128::from(ticks)` if the ticks were
-nanoseconds.
+The caller brings the clock, and a clocked type is generic over it, so an
+instance lives on one clock. Physical time is a `Timestamp`:
+
+| Clock | Means |
+|---|---|
+| `i128`, `i64` | nanoseconds |
+| `Nanos`, `Micros`, `Millis`, `Seconds` | the named unit |
+| `Instant` | the std monotonic clock |
+| your own type | implement `Tick` with `Span = Duration` |
 
 ```rust
 // before: u64 ticks in any unit
-liveness.update(now_ns);
-// after: i128 nanoseconds, or an Instant
-liveness.update(i128::from(now_ns));
+liveness.update(now);
+// after: say what the number is
+liveness.update(now_ns as i64);         // nanoseconds
+liveness.update(Micros(now_us));        // or name the unit
 liveness.update(Instant::now());        // a Liveness<Instant>
 ```
+
+A raw `u64` is no longer a time. It is a plain count, a `Tick` for a model
+such as `HawkesIntensity`, and a type bound by `Timestamp` will not accept
+it. (`PollSaturation`, `DecayAccum` and `BucketAccumulator` have not moved
+yet and still take `u64` ticks in the old sense.)
+
+Two things to expect at compile time:
+
+- **An integer literal may need a suffix.** Where nothing else names the
+  clock, `liveness.update(0)` is ambiguous now that both `i128` and `i64`
+  are timestamps. Write `0_i64`, or name the type (`Liveness<i64>`).
+- **`since` is a method of `Tick`.** Import `Tick` to call it on a
+  concrete type. Generic code bound by `Timestamp` already has it.
+
+`Clock`, `MonotonicClock`, `EpochClock` and `clock::elapsed` are deprecated.
+The converted types take a tick directly, so with `Instant` you pass
+`Instant::now()`. The three types still on `u64` ticks need a number from
+your own clock until they convert, for example
+`epoch.elapsed().as_nanos() as u64`.
 
 **`Liveness`** follows Cassandra's failure detector and returns a number:
 
@@ -857,7 +882,7 @@ wm.update(now_ns, value);
 ```
 
 A window of `Duration::MAX` means forever. A tick counter that wraps is no
-longer supported; time on `i128` or `Instant` does not wrap.
+longer supported; a `Timestamp` does not wrap.
 
 **`CoDel`** takes the sojourn as a `Duration` and has no `f64` or `i64` form:
 
@@ -874,9 +899,17 @@ There is no warm-up, as in RFC 8289, so `min_samples` and `is_primed()` are
 gone and `update` returns the `Condition` directly.
 
 **`HawkesIntensity`** moved to `estimation`
-(`nexus_stats::estimation::HawkesIntensity`). Its rates are now per second.
-If your times were nanosecond ticks, multiply the old `mu`, `alpha` and
-`beta` by `1e9`. All three were per tick, and `alpha / beta` is unchanged.
+(`nexus_stats::estimation::HawkesIntensity`) and runs on any `Tick`. Its
+rates are per unit of the clock, which is the second on a `Timestamp`.
+Two ways to move old code:
+
+- **Keep a `u64` clock and change nothing.** A `HawkesIntensity<u64>`
+  counts in your ticks as before, so `mu`, `alpha` and `beta` stay per
+  tick.
+- **Move to a `Timestamp`** (`i64`, `Nanos`, `Micros`, an `Instant`). The
+  rates become per second. If the old ticks were nanoseconds, multiply
+  the old `mu`, `alpha` and `beta` by `1e9`. All three were per tick, and
+  `alpha / beta` is unchanged.
 
 ## 5. Checklist
 

@@ -79,7 +79,7 @@ use nexus_stats::monitoring::Liveness;
 
 let mut live = Liveness::builder().build().unwrap();
 
-// On each message, with its time as i128 nanoseconds or an Instant:
+// On each message, with its time as any `Timestamp` (i64 nanoseconds, `Micros`, an Instant, ...):
 live.update(now_ns);
 
 // On timer tick: silent for more than five typical gaps?
@@ -98,8 +98,8 @@ let mut qd = CoDel::new(
     Duration::from_millis(100),   // for this long before it counts
 ).unwrap();
 
-// At dequeue, with times as i128 nanoseconds or Instants:
-let wait = now.since(enqueue_time);          // a Duration
+// At dequeue, with times as any `Timestamp`:
+let wait = now.since(enqueue_time);          // a Duration; `since` is from `nexus_stats::Tick`
 if qd.update(now, wait) == Condition::Degraded {
     slow_down();
 }
