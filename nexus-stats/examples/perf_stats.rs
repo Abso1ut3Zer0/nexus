@@ -1752,15 +1752,15 @@ fn bench_beta_binomial_queries(samples: &mut [u64], interval: bool) {
 }
 
 fn bench_gamma_poisson_update(samples: &mut [u64]) {
-    let mut g = GammaPoisson::new();
+    let mut g = GammaPoisson::<f64>::builder().build().unwrap();
     let mut rng = 12345u64;
     for _ in 0..WARMUP {
-        g.update(next_val(&mut rng) % 10, 1.0).unwrap();
+        g.update(next_val(&mut rng) % 10, 1.0);
     }
     for s in samples.iter_mut() {
         let start = rdtsc_start();
         for _ in 0..BATCH {
-            g.update(black_box(next_val(&mut rng) % 10), 1.0).unwrap();
+            g.update(black_box(next_val(&mut rng) % 10), 1.0);
         }
         let end = rdtsc_end();
         black_box(g.rate());
