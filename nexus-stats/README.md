@@ -28,7 +28,6 @@ without latency jitter.
 
 - `statistics`: `BucketAccumulator`, `CovarianceMatrix`, `FirstDiff`, `Percentile`, `SecondDiff`
 - `smoothing`: `Hampel`, `Kama`, `WindowedMedian`
-- `monitoring`: `PollSaturation`, `SojournSaturation`
 - `normalization`: `MinMaxNorm`, `QuantileNorm`
 - `trading`: `Cvar`, `KyleLambda`
 - `control`, `frequency`: every type
@@ -166,8 +165,8 @@ docs, and each module's docs say which type to use for what.
 | `Liveness` *(alloc)* | Silence in typical gaps, with a probability (Cassandra's detector) | 12 |
 | `EventRate` *(std\|libm)* | Events and rate per window; 1, 5 and 15 minute load | <1 |
 | `CoDel` | Standing-queue detection (RFC 8289) | 17 |
-| `PollSaturation` | Consumer-side saturation from poll outcomes: `on_work` / `on_idle` | 6 / 1 |
-| `SojournSaturation` | Consumer saturation from stamped queue sojourn, exact per message | 7 |
+| `PollSaturation` | Consumer-side saturation from poll outcomes: `on_work` / `on_idle` | 10 / 1 |
+| `SojournSaturation` | Consumer saturation from stamped queue sojourn, exact per message | 10 |
 | `ErrorRate` | Error count, ratio per interval, smoothed ratio | 7 |
 | `TrendAlert` | Trend direction (Stable/Rising/Falling) | 10 |
 | `Jitter<f64>` | Interarrival jitter (RFC 3550) | 6 |
@@ -236,8 +235,8 @@ The clocked types take the caller's clock. `Liveness`, `EventRate`, `CoDel`,
 | `f64` | a running quantity such as volume (a `Tick`, not a `Timestamp`) |
 
 `Tick` and `Timestamp` are open, so your own time or volume type works too.
-`PollSaturation`, `DecayAccum` and `BucketAccumulator` have not moved yet
-and take `u64` ticks. The full table is [`docs/reference/type-matrix.md`](docs/reference/type-matrix.md);
+`DecayAccum` and `BucketAccumulator` have not moved yet and take `u64`
+ticks. The full table is [`docs/reference/type-matrix.md`](docs/reference/type-matrix.md);
 upgrading from 6.x: [`docs/guides/migrating-to-7.md`](docs/guides/migrating-to-7.md).
 
 ## Common API Patterns

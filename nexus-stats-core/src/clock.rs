@@ -227,7 +227,16 @@ impl Tick for f64 {
 /// `Duration` if it does not fit one.
 #[cold]
 fn long_duration(nanos: i128) -> Duration {
-    const NANOS_PER_SECOND: i128 = 1_000_000_000;
+    duration_from_nanos(nanos.unsigned_abs())
+}
+
+/// A count of nanoseconds as a `Duration`, or the longest `Duration` if it
+/// does not fit one. `Duration::from_nanos` takes only a `u64`.
+#[doc(hidden)]
+#[inline]
+#[must_use]
+pub fn duration_from_nanos(nanos: u128) -> Duration {
+    const NANOS_PER_SECOND: u128 = 1_000_000_000;
     let Ok(seconds) = u64::try_from(nanos / NANOS_PER_SECOND) else {
         return Duration::MAX;
     };

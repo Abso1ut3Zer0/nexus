@@ -41,7 +41,7 @@ use nexus_stats_core::Timestamp;
 /// assert_eq!(window.events(), 12_500);
 /// assert_eq!(window.rate(), 50_000.0); // events per second
 /// // The first window sets each average to its rate.
-/// assert_eq!(window.load().one_minute, 50_000.0);
+/// assert_eq!(window.load_average().one_minute, 50_000.0);
 /// ```
 #[derive(Debug, Clone)]
 pub struct EventRate<T: Timestamp> {
@@ -51,14 +51,18 @@ pub struct EventRate<T: Timestamp> {
     total: u64,
     start: T,
     last_take: T,
-    load: Option<Load>,
+    load: Option<LoadAverage>,
 }
 
 /// Event rates, in events per second, exponentially weighted over one,
 /// five and fifteen minutes. The short one above the long one means the
 /// rate is rising.
+///
+/// The name is from the UNIX load average, whose horizons and weighting
+/// these are. It is the load of events on this meter, not the system's
+/// load.
 #[derive(Debug, Clone, Copy, PartialEq)]
-pub struct Load {
+pub struct LoadAverage {
     /// Weighted over one minute.
     pub one_minute: f64,
     /// Weighted over five minutes.
@@ -74,10 +78,10 @@ pub struct RateSummary {
     elapsed: Duration,
     total_events: u64,
     since_start: Duration,
-    load: Load,
+    load: LoadAverage,
 }
 
-impl Load {
+impl LoadAverage {
     const HORIZONS: [f64; 3] = [60.0, 300.0, 900.0];
 
     /// Every average at the first window's rate, as Dropwizard starts.
@@ -136,7 +140,7 @@ impl RateSummary {
 
     /// The load averages after this window.
     #[must_use]
-    pub fn load(&self) -> Load {
+    pub fn load_average(&self) -> LoadAverage {
         self.load
     }
 }
@@ -197,7 +201,7 @@ impl<T: Timestamp> EventRate<T> {
     /// The load averages as of the last window, or `None` before the
     /// first `take`. They change only at a `take`.
     #[must_use]
-    pub fn load(&self) -> Option<Load> {
+    pub fn load_average(&self) -> Option<LoadAverage> {
         self.load
     }
 
@@ -219,11 +223,13 @@ impl<T: Timestamp> EventRate<T> {
     }
 
     /// The averages after a window of `events` over `elapsed`.
-    fn next_load(&self, events: u64, elapsed: Duration) -> Load {
+    fn next_load(&self, events: u64, elapsed: Duration) -> LoadAverage {
         let seconds = elapsed.as_secs_f64();
         let rate = events as f64 / seconds;
-        self.load
-            .map_or_else(|| Load::starting_at(rate), |load| load.after(rate, seconds))
+        self.load.map_or_else(
+            || LoadAverage::starting_at(rate),
+            |load| load.after(rate, seconds),
+        )
     }
 }
 
@@ -322,7 +328,7 @@ mod tests {
                 state % 50
             };
             rate.update_n(count);
-            let load = rate.take(tick * 5 * SECOND).unwrap().load();
+            let load = rate.take(tick * 5 * SECOND).unwrap().load_average();
             for ewma in &mut reference {
                 ewma.tick(count);
             }
@@ -349,7 +355,7 @@ mod tests {
         }
         uneven.update_n(20 * 60);
         uneven.take(61 * SECOND).unwrap();
-        let (a, b) = (even.load().unwrap(), uneven.load().unwrap());
+        let (a, b) = (even.load_average().unwrap(), uneven.load_average().unwrap());
         for (a, b) in [
             (a.one_minute, b.one_minute),
             (a.five_minutes, b.five_minutes),
@@ -381,7 +387,7 @@ mod tests {
         assert_eq!(burst.rate(), 1_000_000.0);
         split.update_n(9);
         split.take(61 * SECOND).unwrap();
-        let (a, b) = (plain.load().unwrap(), split.load().unwrap());
+        let (a, b) = (plain.load_average().unwrap(), split.load_average().unwrap());
         assert!((a.one_minute - b.one_minute).abs() < 1e-4 * a.one_minute);
         assert!((a.fifteen_minutes - b.fifteen_minutes).abs() < 1e-4 * a.fifteen_minutes);
         // Far from what the burst's own rate would suggest.
@@ -394,7 +400,7 @@ mod tests {
     fn the_first_window_sets_every_average_to_its_rate() {
         let mut rate = EventRate::new(0_i128);
         rate.update_n(300);
-        let load = rate.take(60 * SECOND).unwrap().load();
+        let load = rate.take(60 * SECOND).unwrap().load_average();
         assert_eq!(
             (load.one_minute, load.five_minutes, load.fifteen_minutes),
             (5.0, 5.0, 5.0)
@@ -402,7 +408,7 @@ mod tests {
         let mut hasty = EventRate::new(0_i128);
         hasty.update();
         assert_eq!(
-            hasty.take(1_000).unwrap().load().fifteen_minutes,
+            hasty.take(1_000).unwrap().load_average().fifteen_minutes,
             1_000_000.0
         );
     }
@@ -416,7 +422,7 @@ mod tests {
             rate.update_n(1_000);
             rate.take(second * SECOND).unwrap();
         }
-        let load = rate.load().unwrap();
+        let load = rate.load_average().unwrap();
         assert!(load.one_minute > load.five_minutes && load.five_minutes > load.fifteen_minutes);
         assert!(load.one_minute < 1_000.0 && load.fifteen_minutes > 10.0);
     }
@@ -425,7 +431,7 @@ mod tests {
     fn the_first_window_runs_from_the_start_time() {
         let mut rate = EventRate::new(10 * SECOND);
         assert_eq!(
-            (rate.load(), rate.is_primed(), rate.count()),
+            (rate.load_average(), rate.is_primed(), rate.count()),
             (None, false, 0)
         );
         rate.update_n(7);
@@ -454,7 +460,7 @@ mod tests {
         let mut rate = EventRate::new(0_i128);
         let window = rate.take(SECOND).unwrap();
         assert_eq!((window.events(), window.rate()), (0, 0.0));
-        assert_eq!(window.load().one_minute, 0.0);
+        assert_eq!(window.load_average().one_minute, 0.0);
     }
 
     /// Time must move forward: the same instant and an earlier one are
@@ -466,13 +472,13 @@ mod tests {
         // Not after the start.
         assert_eq!(rate.take(5 * SECOND), Err(NonMonotonicTime));
         assert_eq!(rate.take(4 * SECOND), Err(NonMonotonicTime));
-        assert_eq!((rate.load(), rate.count()), (None, 3));
+        assert_eq!((rate.load_average(), rate.count()), (None, 3));
         rate.take(6 * SECOND).unwrap();
         rate.update_n(2);
-        let before = (rate.load(), rate.count());
+        let before = (rate.load_average(), rate.count());
         assert_eq!(rate.take(6 * SECOND), Err(NonMonotonicTime));
         assert_eq!(rate.take(i128::MIN), Err(NonMonotonicTime));
-        assert_eq!((rate.load(), rate.count()), before);
+        assert_eq!((rate.load_average(), rate.count()), before);
         // The events were kept for the window that does close.
         let window = rate.take(7 * SECOND).unwrap();
         assert_eq!((window.events(), window.rate()), (2, 2.0));
@@ -498,7 +504,7 @@ mod tests {
         rate.take(SECOND).unwrap();
         rate.update();
         rate.reset_at(100 * SECOND);
-        assert_eq!((rate.count(), rate.load()), (0, None));
+        assert_eq!((rate.count(), rate.load_average()), (0, None));
         rate.update_n(4);
         let window = rate.take(102 * SECOND).unwrap();
         assert_eq!(

@@ -817,8 +817,8 @@ liveness.update(Instant::now());        // a Liveness<Instant>
 
 A raw `u64` is no longer a time. It is a plain count, a `Tick` for a model
 such as `HawkesIntensity`, and a type bound by `Timestamp` will not accept
-it. (`PollSaturation`, `DecayAccum` and `BucketAccumulator` have not moved
-yet and still take `u64` ticks in the old sense.)
+it. (`DecayAccum` and `BucketAccumulator` have not moved yet and still
+take `u64` ticks in the old sense.)
 
 Two things to expect at compile time:
 
@@ -830,7 +830,7 @@ Two things to expect at compile time:
 
 `Clock`, `MonotonicClock`, `EpochClock` and `clock::elapsed` are deprecated.
 The converted types take a tick directly, so with `Instant` you pass
-`Instant::now()`. The three types still on `u64` ticks need a number from
+`Instant::now()`. The two types still on `u64` ticks need a number from
 your own clock until they convert, for example
 `epoch.elapsed().as_nanos() as u64`.
 
@@ -862,7 +862,7 @@ let mut rate = EventRate::new(start);
 rate.update();                          // reads no clock
 let window = rate.take(now)?;           // on your timer
 window.rate();                          // events per second, exact
-window.load();                          // 1, 5 and 15 minute averages
+window.load_average();                  // 1, 5 and 15 minute averages
 ```
 
 `take` returns an error for a `now` that is not after the previous `take`.
@@ -897,6 +897,42 @@ if qd.update(now_ns, sojourn) == Condition::Degraded { slow_down(); }
 
 There is no warm-up, as in RFC 8289, so `min_samples` and `is_primed()` are
 gone and `update` returns the `Condition` directly.
+
+**`PollSaturation` and `SojournSaturation`** take time and spans the same
+way, and their summaries are read through methods:
+
+```rust
+// before
+let mut sat = PollSaturation::new(50_000);            // budget in ticks
+let behind: u64 = sat.on_work(now_ticks, 1);
+let w = sat.take();
+w.max_behind_ticks; w.messages_seen;
+sojourn.update(wait as i64);
+// after
+let mut sat = PollSaturation::<Instant>::new(Duration::from_micros(50));
+let behind: Duration = sat.on_work(Instant::now(), 1);
+let w = sat.take();
+w.max_behind(); w.messages_seen();
+sojourn.update(dequeued.since(enqueued));             // a Duration
+```
+
+- **`summary()` peeks.** It returns the period so far and changes nothing,
+  so you can alert between `take`s. The fields of `PollSummary` and
+  `SojournSummary` are private; hand-written merges of two summaries go
+  away in favor of peeking.
+- **`max_backlog_messages()` counts only messages that queued behind
+  another.** It used to include the first message after an empty poll, so
+  a healthy thread read 1. It now reads 0.
+- **`PollSaturation::on_work` wants this thread's own monotonic clock,**
+  not a message's timestamp. `checked_on_work` reports a time before the
+  floor.
+- `SojournSummary::min_sojourn()` and `max_sojourn()` are `None` for an
+  empty period (they were `u64::MAX` and 0).
+- `count()` and `is_primed()` are removed from both. Read
+  `summary().messages_seen()`.
+
+`EventRate::load()` is renamed `load_average()`, and `Load` is
+`LoadAverage`.
 
 **`HawkesIntensity`** moved to `estimation`
 (`nexus_stats::estimation::HawkesIntensity`) and runs on any `Tick`. Its

@@ -94,8 +94,8 @@ See [Integer vs Float](../guides/integer-vs-float.md) for the caller rules and
 | `Jitter<T>` | `f64`, `i64` | — | monitoring |
 | `Liveness<T>` | `T: Timestamp` | `alloc` | monitoring |
 | `EventRate<T>` | `T: Timestamp` | `std\|libm` | monitoring |
-| `PollSaturation` (→ `PollSummary`) | `u64` ticks, counts | — | monitoring |
-| `SojournSaturation` (→ `SojournSummary`) | `i64` sojourn, `u64` summary | — | monitoring |
+| `PollSaturation<T>` (→ `PollSummary`) | `T: Timestamp`, counts | — | monitoring |
+| `SojournSaturation` (→ `SojournSummary`) | sojourn as `Duration` | — | monitoring |
 | `ErrorRate` | `bool` outcomes | — | monitoring |
 | `HawkesIntensity<T>` | `T: Tick` | `std\|libm` | regression (`estimation`) |
 

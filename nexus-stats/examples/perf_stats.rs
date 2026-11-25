@@ -321,19 +321,19 @@ fn bench_liveness(samples: &mut [u64]) {
 }
 
 /// Steady working polls (the floor is not pending): the full `on_work` path
-/// with a compare against `bound`, the maxima and the counters.
+/// with a compare against the budget, the maxima and the counters.
 fn bench_poll_saturation_on_work(samples: &mut [u64]) {
-    let mut sat = PollSaturation::new(50);
+    let mut sat = PollSaturation::<i64>::new(Duration::from_nanos(50));
     let mut rng = 12345u64;
-    let mut t = 0u64;
+    let mut t = 0i64;
     for _ in 0..WARMUP {
-        t += 10 + next_val(&mut rng) % 5;
+        t += 10 + (next_val(&mut rng) % 5) as i64;
         let _ = sat.on_work(t, 1);
     }
     for s in samples.iter_mut() {
         let start = rdtsc_start();
         for _ in 0..BATCH {
-            t += 10 + next_val(&mut rng) % 5;
+            t += 10 + (next_val(&mut rng) % 5) as i64;
             let _ = black_box(sat.on_work(t, 1));
         }
         let end = rdtsc_end();
@@ -345,9 +345,9 @@ fn bench_poll_saturation_on_work(samples: &mut [u64]) {
 /// Mixed load: an empty poll before a message at random, so whether the
 /// floor is pending is unpredictable. The regime that punishes a branch.
 fn bench_poll_saturation_on_work_mixed(samples: &mut [u64]) {
-    let mut sat = PollSaturation::new(50);
+    let mut sat = PollSaturation::<i64>::new(Duration::from_nanos(50));
     let mut rng = 12345u64;
-    let mut t = 0u64;
+    let mut t = 0i64;
     for _ in 0..WARMUP {
         if next_val(&mut rng) & 1 == 0 {
             sat.on_idle();
@@ -373,17 +373,21 @@ fn bench_poll_saturation_on_work_mixed(samples: &mut [u64]) {
 /// Sojourns around a floor of ~10 with an unpredictable minority over the
 /// budget of 50, so the over-budget compare cannot be predicted.
 fn bench_sojourn_saturation_update(samples: &mut [u64]) {
-    let mut sat = SojournSaturation::new(50);
+    let mut sat = SojournSaturation::new(Duration::from_nanos(50));
     let mut rng = 12345u64;
     for _ in 0..WARMUP {
         let x = next_val(&mut rng);
-        sat.update(if x.is_multiple_of(4) { 100 } else { 10 } + (x % 5) as i64);
+        sat.update(Duration::from_nanos(
+            if x.is_multiple_of(4) { 100 } else { 10 } + x % 5,
+        ));
     }
     for s in samples.iter_mut() {
         let start = rdtsc_start();
         for _ in 0..BATCH {
             let x = next_val(&mut rng);
-            sat.update(if x.is_multiple_of(4) { 100 } else { 10 } + (x % 5) as i64);
+            sat.update(Duration::from_nanos(
+                if x.is_multiple_of(4) { 100 } else { 10 } + x % 5,
+            ));
         }
         let end = rdtsc_end();
         *s = (end - start) / BATCH;
@@ -393,7 +397,7 @@ fn bench_sojourn_saturation_update(samples: &mut [u64]) {
 
 /// The idle spin: one flag store, no clock.
 fn bench_poll_saturation_on_idle(samples: &mut [u64]) {
-    let mut sat = PollSaturation::new(50);
+    let mut sat = PollSaturation::<i64>::new(Duration::from_nanos(50));
     for s in samples.iter_mut() {
         let start = rdtsc_start();
         for _ in 0..BATCH {

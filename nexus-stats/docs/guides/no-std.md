@@ -45,8 +45,8 @@ The cheap primitives are generic over `f64` and `i64`:
 `SecondDiff<i64>`,
 `WindowedMax<i64>`, `WindowedMin<i64>`, `PeakHold<i64>`,
 `Jitter<i64>`, `WindowedMedian<i64>`, `PeakDetector<i64>`. The
-saturation monitors (`PollSaturation`, `SojournSaturation`) are integer
-throughout, so none of it touches floating point. `Liveness` keeps its
+saturation monitors (`PollSaturation`, `SojournSaturation`) count in
+integers and `Duration`s, so none of it touches floating point. `Liveness` keeps its
 state in integers and uses floating point only to report the ratio. The smoothers that take arbitrary data (`Ema`, `AsymEma`, `Welford`,
 `Cusum`, ...) are `f64`; see [Integer vs Float](integer-vs-float.md).
 

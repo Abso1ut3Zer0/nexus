@@ -12,6 +12,35 @@ contained.
 
 ### Changed (breaking)
 
+- **`PollSaturation<T>` takes any `Timestamp`,** in place of `u64` ticks.
+  The budget and `behind` are `Duration`s. Pass this thread's own
+  monotonic clock, not a message's timestamp.
+- **`SojournSaturation` takes the sojourn and the budget as `Duration`s.**
+  Compute the sojourn with `dequeued.since(enqueued)`, which is zero on
+  clock skew.
+- **`summary()` on both** returns the period so far and changes nothing.
+  `take()` returns the same and starts a new period.
+- **`PollSummary` and `SojournSummary` have private fields,** read through
+  methods (`messages_seen()`, `max_behind()`, `min_sojourn()`, ...). The
+  `_ticks` suffixes are gone. `min_sojourn()` and `max_sojourn()` are
+  `None` for an empty period, and `mean_sojourn()` returns a `Duration`.
+  `PollSummary` no longer has a `Default`.
+- **`max_backlog_messages()` counts only messages that queued behind
+  another.** It no longer includes the first message after an empty poll,
+  so a healthy thread reads 0, not 1.
+- `count()` and `is_primed()` are removed from both types. The memory
+  layout of `PollSaturation` is no longer fixed.
+- **`EventRate::load()` is renamed `load_average()`,** and `Load` is
+  `LoadAverage`.
+
+### Added
+
+- `PollSaturation::checked_on_work`: returns `NonMonotonicTime` and counts
+  nothing when the time is before the floor. `on_work` reads zero behind
+  and still counts.
+
+### Changed (breaking)
+
 - **The clocked types take any `Timestamp`,** which now includes `i64`
   nanoseconds, the named types `Nanos`, `Micros`, `Millis` and `Seconds`,
   and a caller's own time type. An unsuffixed integer literal no longer

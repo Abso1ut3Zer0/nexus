@@ -59,9 +59,9 @@ costs a branch mispredict, about 20 cycles.
 | Liveness | 12 | 13 | integer window sum; `check` is 11 |
 | EventRate | <1 | <1 | a counter; the averages move at `take` |
 | CoDel | 17 | 21 | first_above deadline (RFC 8289), `i128` time |
-| PollSaturation::on_work | 6 | 6 | branchless (cmov selects, no jumps); 5 under mixed load too |
+| PollSaturation::on_work | 10 | 10 | branchless (cmov selects, no jumps); 9 under mixed load |
 | PollSaturation::on_idle | 1 | 1 | one byte store, no clock |
-| SojournSaturation::update | 7 | 7 | branchless: clamp, count, min, max, saturating total |
+| SojournSaturation::update | 10 | 10 | branchless: count, min, max, saturating total |
 | ErrorRate | 7 | 7 | two counters + EMA of outcomes |
 | TrendAlert | 10 | 11 | Holt + threshold |
 | Jitter<f64> | 6 | 6 | RFC 3550 step |
@@ -83,8 +83,8 @@ costs a branch mispredict, about 20 cycles.
 | Simple (EMA, CUSUM, PeakToTrough, etc.) | 16-56 bytes |
 | Welford, Covariance | 24-48 bytes |
 | Windowed types (3-sample Nichols') | 72 bytes |
-| PollSaturation (`repr(C)`: flag byte + nine `u64`) | 80 bytes (64-bit) |
-| SojournSaturation (budget + five `u64` + flag) | 56 bytes (64-bit) |
+| PollSaturation | 104 bytes on `i64` or `Instant`, 128 on `i128` |
+| SojournSaturation | 88 bytes |
 | Ring buffer types (`storage::Ring`: Mosum, Kama, Hurst, window N) | N × 8 bytes, plus 32 bytes of `Ring` metadata (slice pointer and length, head, full flag) |
 | WindowedMedian (window N) | 2 × N × 8 bytes |
 | Bocpd (max run N) | 11 × (N + 1) × 8 bytes (posterior, two sufficient statistics, two scratch rows, six precomputed tables) |
