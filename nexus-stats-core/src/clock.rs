@@ -223,7 +223,8 @@ impl Tick for f64 {
     }
 }
 
-/// A span of more than `u64::MAX` nanoseconds (584 years).
+/// A span of more than `u64::MAX` nanoseconds (584 years), or the longest
+/// `Duration` if it does not fit one.
 #[cold]
 fn long_duration(nanos: i128) -> Duration {
     duration_from_nanos(nanos.unsigned_abs())

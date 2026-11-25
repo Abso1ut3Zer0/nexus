@@ -321,7 +321,7 @@ fn bench_liveness(samples: &mut [u64]) {
 }
 
 /// Steady working polls (the floor is not pending): the full `on_work` path
-/// with a compare against `bound`, the maxima and the counters.
+/// with a compare against the budget, the maxima and the counters.
 fn bench_poll_saturation_on_work(samples: &mut [u64]) {
     let mut sat = PollSaturation::<i64>::new(Duration::from_nanos(50));
     let mut rng = 12345u64;

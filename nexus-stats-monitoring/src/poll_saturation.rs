@@ -12,7 +12,7 @@
 use core::hint::select_unpredictable;
 use core::time::Duration;
 
-use nexus_stats_core::Timestamp;
+use nexus_stats_core::{DataError, Timestamp};
 
 /// Summary of the polls in a period: what [`PollSaturation::take`] returns
 /// for the period it closes, and what [`PollSaturation::summary`] returns
@@ -49,8 +49,8 @@ impl PollSummary {
     }
 
     /// Of those, the messages taken with `behind > budget`.
-    /// `messages_over_budget / messages_seen` is the fraction that waited
-    /// past the budget, weighted by message.
+    /// `messages_over_budget() / messages_seen()` is the fraction that
+    /// waited past the budget, weighted by message.
     #[inline]
     #[must_use]
     pub fn messages_over_budget(&self) -> u64 {
@@ -58,9 +58,13 @@ impl PollSummary {
     }
 
     /// Most messages that waited without the thread once catching up
-    /// (between two proofs of emptiness). Zero is healthy: nothing queued.
-    /// Under a poll limit this is the depth measure, an upper bound on how
-    /// many messages stood behind the one being processed.
+    /// (between two proofs of emptiness). Zero is healthy: no message
+    /// taken in the period queued behind another. Under a poll limit this
+    /// is the depth measure, an upper bound on how many messages stood
+    /// behind the one being processed.
+    ///
+    /// A run that began in an earlier period carries on, so this can
+    /// exceed `messages_waited()` for the period.
     #[inline]
     #[must_use]
     pub fn max_backlog_messages(&self) -> u64 {
@@ -164,16 +168,17 @@ impl PollSummary {
 ///
 /// | Utilization | Saturation | Meaning |
 /// |---|---|---|
-/// | low | `messages_over_budget == 0`, `max_messages_per_poll <= 1` | healthy |
-/// | low | `messages_over_budget > 0` | bursts, hidden by averaging: absorb them (batch, defer non-critical work) |
-/// | `is_fully_utilized` | `messages_over_budget > 0` | capacity: split the consumer, move work off the thread |
-/// | not pegged | `is_backlogged` | service-time spikes keep a queue standing: find the slow path |
+/// | low | `messages_over_budget() == 0`, `max_messages_per_poll() <= 1`, `max_backlog_messages() == 0` | healthy |
+/// | low | `messages_over_budget() > 0` | bursts, hidden by averaging: absorb them (batch, defer non-critical work) |
+/// | `is_fully_utilized()` | `messages_over_budget() > 0` | capacity: split the consumer, move work off the thread |
+/// | not pegged | `is_backlogged()` | service-time spikes keep a queue standing: find the slow path |
 /// | any | `behind == 0` on a message that was late | the delay was upstream, before it reached this input |
 ///
 /// The period is whatever you snap on: a timer, a message count, an event.
-/// Maxima survive any period length; the `messages_over_budget / messages_seen` fraction is diluted
-/// by a long one. Snap at the alert cadence (a second or less) and merge
-/// for publishing. Smoothing, if wanted, goes on the outputs once per
+/// Maxima survive any period length; the fraction over budget is diluted
+/// by a long one. To alert at a faster cadence than you publish, peek with
+/// [`summary`](Self::summary) and snap with [`take`](Self::take) on the
+/// publishing timer. Smoothing, if wanted, goes on the outputs once per
 /// summary, not inside.
 ///
 /// # Call-site rules
@@ -181,10 +186,15 @@ impl PollSummary {
 /// 1. One monitor per consumer thread. With several inputs: `on_work` for
 ///    each poll that returned work, `on_idle` only after a pass in which
 ///    every input was polled and every one was empty.
-/// 2. Stamp `on_work` when processing of what it reports begins. Inline
-///    handlers call it per message with that message's own stamp, which is
-///    the tighter form. One call per batch under-reports the later messages
-///    of the batch by the batch's processing time.
+/// 2. Stamp `on_work` with this thread's own clock, read when processing
+///    of what it reports begins. Never a message's timestamp: that is an
+///    event time, and `behind` would then mix in upstream delay and the
+///    sender's clock. Messages that carry a stamp go to
+///    [`SojournSaturation`](super::SojournSaturation). Use a monotonic
+///    clock, so that the time never goes back. Inline handlers call it per
+///    message, each with the time its own processing begins, which is the
+///    tighter form. One call per batch under-reports the later messages of
+///    the batch by the batch's processing time.
 /// 3. Report messages before the proof: `on_drained` describes the input
 ///    after the messages already reported.
 /// 4. `on_drained` only on a real proof, with a stamp no later than the
@@ -217,8 +227,9 @@ impl PollSummary {
 /// - Every message that arrived while the thread was working is in
 ///   `messages_waited`; every message older than `budget` plus slack at its
 ///   `on_work` is in `messages_over_budget`.
-/// - Splitting any call sequence into periods and merging the summaries
-///   gives the same `PollSummary` as one `take` at the end.
+/// - Reading a call sequence in several periods loses nothing against one
+///   `take` at the end: the counts add up, each maximum is the largest of
+///   the periods', and a flag holds overall only if it held in every one.
 /// - `on_idle` reads no clock and performs one store.
 ///
 /// What it cannot do: `behind` is a bound, not the wait (with one message
@@ -226,8 +237,12 @@ impl PollSummary {
 /// utilization; batch polls with `on_drained` tighten it, a same-clock
 /// stamp makes it exact). It cannot see delay before a message became
 /// visible to this poll. A false proof under-reports until the next true
-/// one. Time must not go back: after a backwards step every bound reads zero
-/// and every proof is ignored until the clock passes the floor again.
+/// one. Time must not go back. A `now` before the floor reads zero, and
+/// zero is never over budget, so a clock that stays behind the floor
+/// under-reports lateness until it passes the floor again, and every proof
+/// is ignored meanwhile. `on_work` still counts those messages.
+/// [`checked_on_work`](Self::checked_on_work) refuses them, which is how a
+/// caller finds out. After a large step back, [`reset`](Self::reset).
 ///
 /// # Weighting clock
 ///
@@ -277,8 +292,12 @@ impl<T: Timestamp> PollSaturation<T> {
     /// `n` messages start processing at `now`. Returns `behind`.
     ///
     /// `behind` is an upper bound on how long any of them waited for this
-    /// thread. Zero means the previous poll was empty: nothing waited. A
-    /// `now` before the floor (a clock that went back) reads zero.
+    /// thread. Zero means the previous poll was empty: nothing waited.
+    ///
+    /// `now` is this thread's own clock, read when the work begins, not a
+    /// message's timestamp. A `now` before the floor (a clock that went
+    /// back) reads zero and the messages are still counted. See
+    /// [`checked_on_work`](Self::checked_on_work).
     ///
     /// `n == 0` records work that is not a message (a timer, a publish). It
     /// consumes the first-after-idle exemption and can start a run, but
@@ -302,6 +321,22 @@ impl<T: Timestamp> PollSaturation<T> {
         let behind = now.since(floor);
         self.period.record(n, waited, backlog, behind, self.budget);
         behind
+    }
+
+    /// Checked form of [`on_work`](Self::on_work). Records the work, or
+    /// returns an error and changes nothing if `now` is before the floor,
+    /// so those messages are not counted.
+    ///
+    /// # Errors
+    ///
+    /// [`DataError::NonMonotonicTime`] if `now` is before the latest time
+    /// the input was proven empty.
+    #[inline]
+    pub fn checked_on_work(&mut self, now: T, n: u64) -> Result<Duration, DataError> {
+        if self.is_before_floor(now) {
+            return Err(DataError::NonMonotonicTime);
+        }
+        Ok(self.on_work(now, n))
     }
 
     /// The input was empty at `at`: a short batch poll.
@@ -355,6 +390,18 @@ impl<T: Timestamp> PollSaturation<T> {
     #[inline]
     pub fn reset(&mut self) {
         *self = Self::new(self.budget);
+    }
+
+    /// Whether `now` is before a floor that is set. A pending floor takes
+    /// the next stamp, whatever it is.
+    #[inline]
+    #[allow(clippy::neg_cmp_op_on_partial_ord)]
+    fn is_before_floor(&self, now: T) -> bool {
+        if self.proofs.floor_is_pending() {
+            return false;
+        }
+        // Negated so that a time with no place in the order fails it.
+        self.floor.is_some_and(|floor| !(now >= floor))
     }
 }
 
@@ -482,7 +529,7 @@ mod tests {
         };
     }
 
-    // The worked trace from the ticket, field by field.
+    // The worked trace from the design, field by field.
     #[test]
     fn worked_trace() {
         let mut sat = PollSaturation::<i128>::new(ns(BUDGET));
@@ -596,7 +643,111 @@ mod tests {
                 on_nanos.on_drained(i128::from(at));
             }
         }
-        assert_eq!(on_instant.take(), on_nanos.take());
+        let (a, b) = (on_instant.take(), on_nanos.take());
+        assert_eq!(a, b);
+        // The step back read zero and still counted its message.
+        assert_eq!(b, summary!(12, 10, 4, 5, 81, 4, false, false));
+    }
+
+    /// A clock that goes back: `on_work` reads zero and still counts the
+    /// messages, and `checked_on_work` refuses them and changes nothing.
+    #[test]
+    fn checked_on_work_refuses_a_time_before_the_floor() {
+        use nexus_stats_core::DataError::NonMonotonicTime;
+
+        let mut sat = PollSaturation::<i128>::new(ns(BUDGET));
+        sat.on_idle();
+        // A pending floor takes any stamp.
+        assert_eq!(sat.checked_on_work(100, 1), Ok(ns(0)));
+        assert_eq!(sat.checked_on_work(160, 2), Ok(ns(60)));
+        let before = sat.summary();
+
+        assert_eq!(sat.checked_on_work(99, 3), Err(NonMonotonicTime));
+        assert_eq!(sat.checked_on_work(i128::MIN, 3), Err(NonMonotonicTime));
+        assert_eq!(sat.summary(), before, "nothing counted");
+        // At the floor is not before it.
+        assert_eq!(sat.checked_on_work(100, 0), Ok(ns(0)));
+
+        // The plain form counts them, and they are never over budget.
+        assert_eq!(work(&mut sat, 99, 3), 0);
+        let after = sat.summary();
+        assert_eq!(after.messages_seen(), before.messages_seen() + 3);
+        assert_eq!(after.messages_over_budget(), before.messages_over_budget());
+        // The floor did not move: the next time measures from it again.
+        assert_eq!(sat.checked_on_work(190, 1), Ok(ns(90)));
+
+        // After an empty poll an earlier time is a fresh start.
+        sat.on_idle();
+        assert_eq!(sat.checked_on_work(5, 1), Ok(ns(0)));
+    }
+
+    #[test]
+    fn checked_on_work_agrees_with_on_work_when_time_moves_forward() {
+        let (mut plain, mut checked) = (
+            PollSaturation::<i128>::new(ns(BUDGET)),
+            PollSaturation::<i128>::new(ns(BUDGET)),
+        );
+        let mut state = 0x9E37_79B9_7F4A_7C15u64;
+        let mut now = 0i128;
+        for _ in 0..5_000 {
+            state ^= state << 13;
+            state ^= state >> 7;
+            state ^= state << 17;
+            if state.is_multiple_of(3) {
+                plain.on_idle();
+                checked.on_idle();
+            }
+            now += i128::from(state % 40);
+            let n = (state >> 12) % 4;
+            assert_eq!(checked.checked_on_work(now, n), Ok(plain.on_work(now, n)));
+            if state.is_multiple_of(7) {
+                plain.on_drained(now);
+                checked.on_drained(now);
+            }
+            if state.is_multiple_of(50) {
+                assert_eq!(checked.take(), plain.take());
+            }
+        }
+        assert_eq!(checked.take(), plain.take());
+    }
+
+    /// At the budget is within budget. One nanosecond over is over.
+    #[test]
+    fn over_budget_is_strictly_above() {
+        let mut sat = PollSaturation::<i128>::new(ns(BUDGET));
+        sat.on_idle();
+        work(&mut sat, 100, 1);
+        assert_eq!(work(&mut sat, 150, 1), BUDGET);
+        assert_eq!(sat.summary().messages_over_budget(), 0);
+        assert_eq!(work(&mut sat, 151, 1), BUDGET + 1);
+        assert_eq!(sat.summary().messages_over_budget(), 1);
+    }
+
+    /// A peek never changes what the next `take` returns, with the floor
+    /// pending or not.
+    #[test]
+    fn a_peek_does_not_change_the_next_take() {
+        for pending in [true, false] {
+            let (mut peeked, mut plain) = (
+                PollSaturation::<i128>::new(ns(BUDGET)),
+                PollSaturation::<i128>::new(ns(BUDGET)),
+            );
+            for sat in [&mut peeked, &mut plain] {
+                sat.on_idle();
+                work(sat, 100, 2);
+                work(sat, 190, 1);
+                if pending {
+                    sat.on_idle();
+                }
+            }
+            let _ = peeked.summary();
+            assert_eq!(peeked.take(), plain.take(), "pending {pending}");
+            // And the period after it.
+            let _ = peeked.summary();
+            work(&mut peeked, 300, 1);
+            work(&mut plain, 300, 1);
+            assert_eq!(peeked.take(), plain.take(), "pending {pending}");
+        }
     }
 
     #[test]
@@ -854,7 +1005,7 @@ mod proptests {
         summary: PollSummary,
     }
 
-    /// A single FIFO server over one input. `arrivals` are absolute ticks,
+    /// A single FIFO server over one input. `arrivals` are absolute times,
     /// non-decreasing; `service[i]` is message `i`'s processing time.
     fn simulate(arrivals: &[u64], service: &[u64], shape: Shape, proofs: bool) -> Run {
         let total = arrivals.len();
@@ -864,7 +1015,7 @@ mod proptests {
         let mut queue: VecDeque<usize> = VecDeque::new();
         let mut next = 0usize; // first arrival not yet visible
         let mut t = 0u64; // consumer clock
-        let mut last_empty = Some(0u64); // tick of the last empty check while the floor is pending
+        let mut last_empty = Some(0u64); // time of the last empty check while the floor is pending
 
         let deliver = |t: u64, next: &mut usize, queue: &mut VecDeque<usize>| {
             while *next < total && arrivals[*next] <= t {
@@ -1083,7 +1234,7 @@ mod proptests {
         let (mut ia, mut ib) = (0usize, 0usize);
         let mut t = 0u64;
         let mut pass = 0usize;
-        let mut last_idle = Some(0u64); // the floor is pending since this tick
+        let mut last_idle = Some(0u64); // the floor is pending since this time
         let mut floor_at = 0u64; // stamp of the first work after the last idle
         let (mut checked_a, mut checked_b) = (0u64, 0u64); // last empty check per input
 

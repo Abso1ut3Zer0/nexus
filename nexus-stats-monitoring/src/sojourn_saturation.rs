@@ -40,8 +40,9 @@ impl SojournSummary {
     }
 
     /// Shortest sojourn: the floor, transit plus processing. `None` when
-    /// no message was seen. **Zero means the two clocks disagree**, because
-    /// a real sojourn is never zero.
+    /// no message was seen. A real sojourn is never zero, so **zero means
+    /// the two clocks disagree**, or that the clock is coarser than the
+    /// wait (a millisecond clock under a sub-millisecond sojourn).
     #[inline]
     #[must_use]
     pub fn min_sojourn(&self) -> Option<Duration> {
@@ -59,7 +60,8 @@ impl SojournSummary {
             .then_some(self.period.max_sojourn)
     }
 
-    /// Sum of all sojourns. It stops at [`Duration::MAX`]. Divided by the
+    /// Sum of all sojourns. It stops at [`Duration::MAX`], and the mean is
+    /// then too low. Divided by the
     /// period length it is the mean number of messages waiting (Little's
     /// law), the count form of saturation.
     #[inline]
@@ -82,8 +84,7 @@ impl SojournSummary {
 
     /// No message within budget for the whole period: the queue stood the
     /// entire time. CoDel's standing queue with the period as the interval.
-    /// Vacuously true for an empty period, as for
-    /// [`PollSummary`](super::PollSummary).
+    /// Vacuously true for an empty period, so read `messages_seen()` first.
     #[inline]
     #[must_use]
     pub fn is_backlogged(&self) -> bool {
@@ -113,7 +114,7 @@ impl SojournSummary {
 /// | Reading | Healthy |
 /// |---|---|
 /// | `messages_over_budget / messages_seen` | near zero |
-/// | `min_sojourn()` | small and stable; **zero means the clocks disagree** |
+/// | `min_sojourn()` | small and stable; **zero means the clocks disagree** or are too coarse |
 /// | `max_sojourn()` | under budget |
 /// | `mean_sojourn()` | close to the minimum |
 /// | `is_backlogged()` | false |
@@ -133,7 +134,8 @@ impl SojournSummary {
 /// Compute the sojourn with [`Tick::since`](nexus_stats_core::Tick::since):
 /// `dequeued.since(enqueued)`. It is zero when the dequeue time is not
 /// after the enqueue time, which is clock skew, and that then shows up as
-/// a zero minimum.
+/// a zero minimum. So does a clock coarser than the wait, so stamp in
+/// units finer than the sojourns you expect.
 ///
 /// # Knobs
 ///
@@ -372,6 +374,61 @@ mod tests {
         assert_eq!(sat.take(), later);
         assert_eq!(sat.summary().messages_seen(), 0);
         assert_eq!(sat.summary().min_sojourn(), None);
+    }
+
+    #[test]
+    fn a_zero_budget_puts_every_real_wait_over() {
+        let mut sat = SojournSaturation::new(Duration::ZERO);
+        sat.update(ns(1));
+        sat.update(Duration::ZERO);
+        sat.update(ns(7));
+        let s = sat.take();
+        assert_eq!((s.messages_seen(), s.messages_over_budget()), (3, 2));
+        assert!(!s.is_backlogged(), "the zero wait was within budget");
+    }
+
+    #[test]
+    fn reset_equals_fresh() {
+        let mut sat = fed(&[60, 70, 5]);
+        sat.reset();
+        assert_eq!(sat.summary(), SojournSaturation::new(BUDGET).summary());
+        // And it behaves as a fresh one from there.
+        sat.update(ns(60));
+        assert_eq!(sat.take(), fed(&[60]).take());
+    }
+
+    /// Against a plain model over the same sojourns, for many periods.
+    #[test]
+    fn every_reading_matches_a_plain_model() {
+        let mut state = 0x9E37_79B9_7F4A_7C15u64;
+        let mut sat = SojournSaturation::new(BUDGET);
+        for period in 0..300u64 {
+            let mut seen: Vec<u64> = Vec::new();
+            for _ in 0..(period % 9) {
+                state ^= state << 13;
+                state ^= state >> 7;
+                state ^= state << 17;
+                let sojourn = state % 130;
+                seen.push(sojourn);
+                sat.update(ns(sojourn));
+            }
+            let s = sat.take();
+            let over = seen.iter().filter(|&&x| x > 50).count() as u64;
+            assert_eq!(
+                (s.messages_seen(), s.messages_over_budget()),
+                (seen.len() as u64, over)
+            );
+            assert_eq!(s.min_sojourn(), seen.iter().min().map(|&x| ns(x)));
+            assert_eq!(s.max_sojourn(), seen.iter().max().map(|&x| ns(x)));
+            assert_eq!(s.total_sojourn(), ns(seen.iter().sum()));
+            assert_eq!(s.is_backlogged(), over == seen.len() as u64);
+            if let Some(mean) = s.mean_sojourn() {
+                assert_eq!(mean, ns(seen.iter().sum::<u64>() / seen.len() as u64));
+                assert!(s.min_sojourn().unwrap() <= mean && mean <= s.max_sojourn().unwrap());
+            } else {
+                assert!(seen.is_empty());
+            }
+        }
     }
 
     #[test]

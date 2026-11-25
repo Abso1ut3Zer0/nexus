@@ -57,6 +57,10 @@ pub struct EventRate<T: Timestamp> {
 /// Event rates, in events per second, exponentially weighted over one,
 /// five and fifteen minutes. The short one above the long one means the
 /// rate is rising.
+///
+/// The name is from the UNIX load average, whose horizons and weighting
+/// these are. It is the load of events on this meter, not the system's
+/// load.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct LoadAverage {
     /// Weighted over one minute.
