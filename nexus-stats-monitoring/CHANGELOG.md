@@ -10,6 +10,14 @@ contained.
 
 ## [Unreleased]
 
+### Added
+
+- **`ErrorRate::summary()` and `EventRate::summary(now)`:** the interval
+  so far, as `take` would return it, with nothing changed. Every type with
+  a `take()` now has a `summary()`. On `EventRate` the summary's
+  `load_average()` is what the averages would become if the window closed
+  at `now`; the meter's own averages move only at a `take`.
+
 ### Changed (breaking)
 
 - **`PollSaturation<T>` takes any `Timestamp`,** in place of `u64` ticks.

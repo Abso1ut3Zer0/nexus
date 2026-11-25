@@ -138,9 +138,16 @@ impl ErrorRate {
     /// The errors and events since the last `take`, and starts a new
     /// interval.
     pub fn take(&mut self) -> ErrorSummary {
-        let interval = self.total.since(self.at_last_take);
+        let interval = self.summary();
         self.at_last_take = self.total;
         interval
+    }
+
+    /// The errors and events since the last `take`. Changes nothing, so
+    /// the interval stays open.
+    #[must_use]
+    pub fn summary(&self) -> ErrorSummary {
+        self.total.since(self.at_last_take)
     }
 
     /// The count of errors since construction or `reset`.
@@ -371,5 +378,47 @@ mod tests {
         );
         #[cfg(any(feature = "std", feature = "libm"))]
         assert!(ErrorRate::builder().halflife(10.0).build().is_ok());
+    }
+
+    /// `summary` reads the open interval and changes nothing. `take`
+    /// returns the same and starts a new one.
+    #[test]
+    fn summary_peeks_and_take_snaps() {
+        let mut rate = errors(0.5);
+        feed(&mut rate, &[true, false, true, false]);
+        let peek = rate.summary();
+        assert_eq!((peek.errors(), peek.events()), (2, 4));
+        assert_eq!(rate.summary(), peek);
+        // The interval is still open.
+        feed(&mut rate, &[false]);
+        let later = rate.summary();
+        assert_eq!((later.errors(), later.events()), (3, 5));
+        assert_eq!(rate.take(), later);
+        // A new interval; the lifetime counts are untouched.
+        assert_eq!((rate.summary().errors(), rate.summary().events()), (0, 0));
+        assert_eq!((rate.total_errors(), rate.count()), (3, 5));
+        feed(&mut rate, &[true]);
+        assert_eq!((rate.summary().errors(), rate.summary().events()), (0, 1));
+    }
+
+    #[test]
+    fn a_peek_does_not_change_the_takes_that_follow() {
+        let (mut peeked, mut plain) = (errors(0.2), errors(0.2));
+        let mut state = 0x9E37_79B9_7F4A_7C15u64;
+        for _ in 0..3_000 {
+            state ^= state << 13;
+            state ^= state >> 7;
+            state ^= state << 17;
+            let ok = !state.is_multiple_of(5);
+            peeked.update(ok);
+            plain.update(ok);
+            let peek = peeked.summary();
+            if state.is_multiple_of(11) {
+                assert_eq!(peeked.take(), peek);
+                assert_eq!(plain.take(), peek);
+            }
+        }
+        assert_eq!(peeked.take(), plain.take());
+        assert_eq!(peeked.smoothed_ratio(), plain.smoothed_ratio());
     }
 }
