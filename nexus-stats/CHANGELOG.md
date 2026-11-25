@@ -10,6 +10,11 @@ contained.
 
 ## [Unreleased]
 
+### Added
+
+- `monitoring::ErrorRate::summary()` and `EventRate::summary(now)`: peek at
+  the interval so far without closing it.
+
 ### Changed (breaking)
 
 - **`monitoring::PollSaturation` and `SojournSaturation` take time as a

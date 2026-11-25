@@ -179,22 +179,35 @@ impl<T: Timestamp> EventRate<T> {
     /// if `now` is not after the previous `take` (or the start). The meter
     /// is left unchanged, and the events stay counted for the next window.
     pub fn take(&mut self, now: T) -> Result<RateSummary, nexus_stats_core::DataError> {
+        let summary = self.summary(now)?;
+        self.pending = 0;
+        self.total = summary.total_events;
+        self.last_take = now;
+        self.load = Some(summary.load);
+        Ok(summary)
+    }
+
+    /// The window so far, as of `now`: what [`take`](Self::take) would
+    /// return. Changes nothing, so the window stays open and the load
+    /// averages do not move. Its `load_average()` is what they would
+    /// become if the window closed now.
+    ///
+    /// # Errors
+    ///
+    /// [`DataError::NonMonotonicTime`](nexus_stats_core::DataError::NonMonotonicTime)
+    /// if `now` is not after the previous `take` (or the start).
+    pub fn summary(&self, now: T) -> Result<RateSummary, nexus_stats_core::DataError> {
         let elapsed = now.since(self.last_take);
         if elapsed.is_zero() {
             return Err(nexus_stats_core::DataError::NonMonotonicTime);
         }
         let events = self.pending;
-        let load = self.next_load(events, elapsed);
-        self.pending = 0;
-        self.total += events;
-        self.last_take = now;
-        self.load = Some(load);
         Ok(RateSummary {
             events,
             elapsed,
-            total_events: self.total,
+            total_events: self.total + events,
             since_start: now.since(self.start),
-            load,
+            load: self.next_load(events, elapsed),
         })
     }
 
@@ -513,5 +526,66 @@ mod tests {
         );
         // The new start is the floor: an earlier time is refused.
         assert_eq!(rate.take(50 * SECOND), Err(NonMonotonicTime));
+    }
+
+    /// `summary` reads the open window and changes nothing. `take` at the
+    /// same time returns the same and closes it.
+    #[test]
+    fn summary_peeks_and_take_snaps() {
+        let mut rate = EventRate::new(0_i128);
+        rate.update_n(100);
+        rate.take(SECOND).unwrap();
+        let load_before = rate.load_average();
+
+        rate.update_n(30);
+        let peek = rate.summary(3 * SECOND).unwrap();
+        assert_eq!((peek.events(), peek.rate()), (30, 15.0));
+        assert_eq!((peek.total_events(), peek.mean_rate()), (130, 130.0 / 3.0));
+        // Nothing moved: the same peek again, the averages, the count.
+        assert_eq!(rate.summary(3 * SECOND).unwrap(), peek);
+        assert_eq!((rate.load_average(), rate.count()), (load_before, 130));
+
+        // The window is still open: a later peek covers more of it.
+        rate.update_n(10);
+        let later = rate.summary(5 * SECOND).unwrap();
+        assert_eq!((later.events(), later.rate()), (40, 10.0));
+        // The take at that time is the same summary, and it closes the window.
+        assert_eq!(rate.take(5 * SECOND).unwrap(), later);
+        assert_eq!(rate.load_average(), Some(later.load_average()));
+        assert_eq!(rate.summary(6 * SECOND).unwrap().events(), 0);
+    }
+
+    #[test]
+    fn a_peek_does_not_change_the_takes_that_follow() {
+        let (mut peeked, mut plain) = (EventRate::new(0_i128), EventRate::new(0_i128));
+        let mut state = 0x9E37_79B9_7F4A_7C15u64;
+        let mut now = 0i128;
+        for _ in 0..2_000 {
+            state ^= state << 13;
+            state ^= state >> 7;
+            state ^= state << 17;
+            let events = state % 900;
+            peeked.update_n(events);
+            plain.update_n(events);
+            now += i128::from(1 + (state >> 20) % 4_000_000_000);
+            let peek = peeked.summary(now).unwrap();
+            if state.is_multiple_of(3) {
+                assert_eq!(peeked.take(now).unwrap(), peek);
+                assert_eq!(plain.take(now).unwrap(), peek);
+            }
+        }
+        assert_eq!(peeked.take(now + SECOND), plain.take(now + SECOND));
+    }
+
+    #[test]
+    fn a_summary_at_a_time_that_is_not_later_is_refused() {
+        let mut rate = EventRate::new(5 * SECOND);
+        rate.update_n(3);
+        assert_eq!(rate.summary(5 * SECOND), Err(NonMonotonicTime));
+        assert_eq!(rate.summary(4 * SECOND), Err(NonMonotonicTime));
+        // The first window can be peeked before any take.
+        let first = rate.summary(6 * SECOND).unwrap();
+        assert_eq!((first.events(), first.rate()), (3, 3.0));
+        assert_eq!(rate.load_average(), None);
     }
 }

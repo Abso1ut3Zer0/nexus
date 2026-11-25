@@ -26,8 +26,8 @@ Every type in this crate follows these.
 
 **Rates and timing**
 
-- **EventRate**: events in a window, their exact rate, and the load over 1, 5 and 15 minutes (requires `std` or `libm`)
-- **ErrorRate**: errors as a count (USE), a ratio per interval (SRE) and a smoothed ratio
+- **EventRate**: events in a window, their exact rate, and the load average over 1, 5 and 15 minutes; peek with `summary(now)`, snap with `take(now)` (requires `std` or `libm`)
+- **ErrorRate**: errors as a count (USE), a ratio per interval (SRE) and a smoothed ratio; peek with `summary()`, snap with `take()`
 - **Jitter**: interarrival jitter, as RFC 3550 estimates it
 - **Liveness**: how long a source has been silent, in typical gaps, and the chance that a live source would be that quiet (requires `alloc`; the chance also needs `std` or `libm`)
 
