@@ -224,8 +224,8 @@ concrete `T`, since their signatures differ. `Sample` and `Float` are
 exported from `nexus_stats` and `nexus_stats_core`; they are sealed (`f64` /
 `i64` and `f64` / `f32` only), so you name them, you never implement them.
 
-What the merge adds: `WindowedMedian<i64>` gains `quantile`, `mad`, `iqr` and
-`modified_z_score` (they were `f64` only).
+What the merge adds: `WindowedMedian<i64>` gains `quantile`, `mad`,
+`quartiles` and `modified_z_score` (they were `f64` only).
 
 ### `Float` generics have `f64` internals
 
@@ -947,6 +947,29 @@ Two ways to move old code:
   rates become per second. If the old ticks were nanoseconds, multiply
   the old `mu`, `alpha` and `beta` by `1e9`. All three were per tick, and
   `alpha / beta` is unchanged.
+
+### `WindowedMedian`
+
+`update` returns the median for `f64` and `i64`, and the three quartile
+readers are one:
+
+```rust
+// before
+wm.update(x)?;                          // f64: Result<(), DataError>
+let (q1, q3, iqr) = (wm.q1(), wm.q3(), wm.iqr());
+// after
+let median = wm.update(x);              // Option<T>
+let q = wm.quartiles();                 // Option<Quartiles<T>>
+let (q1, q3, iqr) = (q.map(|q| q.q1), q.map(|q| q.q3), q.map(|q| q.iqr()));
+```
+
+- Every quantile follows Hyndman and Fan's type 7, NumPy's and R's
+  default, so `quantile`, `q1` and `q3` values change; `quantile(0.5)` is
+  now `median()` at every length. `quartiles()` needs one sample, not four.
+- A NaN is ignored by `update` and refused by `checked_update`; infinity
+  is accepted.
+- `quantile(q)` still panics on a NaN or out-of-range `q`;
+  `checked_quantile(q)` returns the error instead.
 
 ## 5. Checklist
 

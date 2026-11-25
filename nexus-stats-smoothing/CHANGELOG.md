@@ -18,6 +18,24 @@ contained.
 
 ### Changed (breaking)
 
+- **`WindowedMedian` quantiles follow one rule,** Hyndman and Fan's type 7,
+  the default in NumPy and R
+  ([#812](https://github.com/Abso1ut3Zer0/nexus/issues/812)). `quantile`
+  took the lower neighbor, `q1` and `q3` used two other rules, so
+  `quantile(0.5)` differed from `median()` at every even length and the
+  interquartile range was lopsided. `quantile(0.5)` is now `median()` at
+  every length; `i64` rounds to the nearest value, ties toward zero, as
+  `median()` does. Values differ from earlier releases.
+- **`q1()`, `q3()` and `iqr()` are replaced by `quartiles()`,** which
+  returns a `Quartiles { q1, median, q3 }` from one window, with `iqr()` on
+  it. It needs one sample, not four.
+- **`WindowedMedian::update` returns the median** (`Option<T>`) with no
+  `Result`, for `f64` and `i64` alike. A NaN is ignored: the window and the
+  count stay as they were; `checked_update` returns
+  `DataError::NotANumber` for it instead. Infinity is accepted, and
+  `mad()` is NaN while the median is infinite, as in SciPy.
+- **`WindowedMedian::checked_quantile`** returns `DataError::NotANumber` or
+  `DataError::OutOfRange` where `quantile` panics.
 - **`Slew` is `f64` only;** `Slew<i64>` is removed (cast to `f64`, exact up
   to 2^53). `update` returns the value with no `Result`; `checked_update`
   refuses NaN and infinity. `Slew::with_limits(rising, falling)` sets the

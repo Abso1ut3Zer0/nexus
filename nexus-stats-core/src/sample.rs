@@ -57,6 +57,18 @@ pub trait Sample:
     /// The value halfway between `self` and `other`, without overflow.
     fn midpoint(self, other: Self) -> Self;
 
+    /// The point a fraction `t` of the way from `self` to `hi`, for
+    /// `self <= hi` and `t` in `(0, 1)`: the interpolation step of the
+    /// Hyndman-Fan type 7 quantile. At `t = 0.5` it is exactly
+    /// [`midpoint`](Self::midpoint).
+    ///
+    /// Floats use NumPy's two-sided form, and R's `(1 - t) * self + t * hi`
+    /// where `hi - self` is not finite (an infinite neighbor, or a spread
+    /// past `f64::MAX`), so an infinity on one side is returned instead of
+    /// NaN. Integers take `t * (hi - self)` exactly, for any spread, and
+    /// round to the nearest value, ties toward zero, as `midpoint` does.
+    fn lerp(self, hi: Self, t: f64) -> Self;
+
     /// `self - other`. Integers saturate at the type's bounds, so a
     /// difference of sentinel-sized values clamps where plain `-` would
     /// overflow; floats subtract as usual.
@@ -110,6 +122,26 @@ impl Sample for f64 {
     #[inline]
     fn midpoint(self, other: Self) -> Self {
         f64::midpoint(self, other)
+    }
+
+    // Unfused, as NumPy computes it, so the results match NumPy's bit for bit.
+    #[inline]
+    #[allow(clippy::suboptimal_flops)]
+    fn lerp(self, hi: Self, t: f64) -> Self {
+        if t == 0.5 {
+            return f64::midpoint(self, hi);
+        }
+        let diff = hi - self;
+        if diff.is_finite() {
+            // NumPy's `_lerp`: from the nearer end.
+            if t < 0.5 {
+                self + diff * t
+            } else {
+                hi - diff * (1.0 - t)
+            }
+        } else {
+            (1.0 - t) * self + t * hi
+        }
     }
 
     #[inline]
@@ -169,6 +201,33 @@ impl Sample for i64 {
     #[inline]
     fn midpoint(self, other: Self) -> Self {
         i64::midpoint(self, other)
+    }
+
+    #[inline]
+    fn lerp(self, hi: Self, t: f64) -> Self {
+        // `t` is exactly `mantissa * 2^-shift`, and `hi >= self`, so
+        // `t * (hi - self)` is exact in 128 bits: its integer part is the
+        // step from `self`, its fraction decides the rounding.
+        let bits = t.to_bits();
+        let exponent = ((bits >> 52) & 0x7ff) as u32;
+        let (mantissa, shift) = if exponent == 0 {
+            (bits & ((1 << 52) - 1), 1074)
+        } else {
+            (bits & ((1 << 52) - 1) | (1 << 52), 1075 - exponent)
+        };
+        let product = u128::from(mantissa) * u128::from(hi.wrapping_sub(self) as u64);
+        let (step, rem, half) = if shift >= 128 {
+            (0, product, u128::MAX)
+        } else {
+            (
+                product >> shift,
+                product & ((1 << shift) - 1),
+                1 << (shift - 1),
+            )
+        };
+        // `step < hi - self` because `t < 1`, so neither add overflows.
+        let floor = self.wrapping_add(step as i64);
+        floor + i64::from(rem > half || (rem == half && floor < 0))
     }
 
     #[inline]
@@ -248,5 +307,64 @@ impl Float for f32 {
     #[allow(clippy::cast_possible_truncation)]
     fn from_f64(x: f64) -> Self {
         x as f32
+    }
+}
+#[cfg(test)]
+#[allow(clippy::suboptimal_flops)]
+mod lerp_tests {
+    use super::Sample;
+
+    #[test]
+    fn half_is_the_midpoint() {
+        for (lo, hi) in [(0.1, 0.3), (1.0, 1.0 + 4.0 * f64::EPSILON), (-7.5, 1e300)] {
+            assert_eq!(Sample::lerp(lo, hi, 0.5), f64::midpoint(lo, hi));
+        }
+        for (lo, hi) in [
+            (-3, 0),
+            (-2, -1),
+            (1, 2),
+            (i64::MIN, i64::MAX),
+            (0, (1 << 53) + 1),
+        ] {
+            assert_eq!(Sample::lerp(lo, hi, 0.5), i64::midpoint(lo, hi));
+        }
+    }
+
+    #[test]
+    fn float_follows_numpy_from_the_nearer_end() {
+        let (lo, hi) = (0.1_f64, 0.7_f64);
+        assert_eq!(Sample::lerp(lo, hi, 0.25), lo + (hi - lo) * 0.25);
+        assert_eq!(Sample::lerp(lo, hi, 0.75), hi - (hi - lo) * 0.25);
+    }
+
+    #[test]
+    fn float_keeps_a_one_sided_infinity() {
+        assert_eq!(Sample::lerp(1.0, f64::INFINITY, 0.25), f64::INFINITY);
+        assert_eq!(
+            Sample::lerp(f64::NEG_INFINITY, 1.0, 0.75),
+            f64::NEG_INFINITY
+        );
+        assert_eq!(
+            Sample::lerp(f64::INFINITY, f64::INFINITY, 0.25),
+            f64::INFINITY
+        );
+        assert!(Sample::lerp(f64::NEG_INFINITY, f64::INFINITY, 0.25).is_nan());
+        let spread = Sample::lerp(-f64::MAX, f64::MAX, 0.25);
+        assert!(spread.is_finite() && spread < 0.0);
+    }
+
+    #[test]
+    fn integer_rounds_to_nearest_ties_toward_zero() {
+        assert_eq!(Sample::lerp(0_i64, 10, 0.26), 3);
+        assert_eq!(Sample::lerp(0_i64, 10, 0.24), 2);
+        assert_eq!(Sample::lerp(0_i64, 2, 0.25), 0);
+        assert_eq!(Sample::lerp(-2_i64, 0, 0.25), -1);
+        assert_eq!(Sample::lerp(-4_i64, 0, 0.375), -2);
+        // `0.999` is not exact in binary. The expected value is for its
+        // binary value, worked out with exact rational arithmetic.
+        assert_eq!(
+            Sample::lerp(i64::MIN, i64::MAX, 0.999),
+            9_204_925_292_781_066_239
+        );
     }
 }

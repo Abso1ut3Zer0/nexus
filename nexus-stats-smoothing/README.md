@@ -12,7 +12,7 @@ Smoothers for [nexus-stats](https://crates.io/crates/nexus-stats): each takes a 
 - **A reading is an `Option`.** `None` until there is enough data, never a placeholder value.
 - **A published algorithm is implemented as published.** A type that comes from a paper or a standard follows it. Where floating point needs more care than the source gives (cancellation, overflow, a divisor near zero), the type adds the guard practitioners use, and its docs say which.
 
-**Not yet migrated:** `Hampel`, `Kama`, `WindowedMedian`. They have not been moved to these guarantees. Most still validate in `update` and return a `Result`.
+**Not yet migrated:** `Hampel`, `Kama`. They have not been moved to these guarantees. Most still validate in `update` and return a `Result`.
 
 ## Which smoother?
 

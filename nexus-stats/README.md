@@ -27,7 +27,7 @@ without latency jitter.
 **Not yet migrated.** These types have not been moved to these guarantees. Most still validate in `update` and return a `Result`. The list shrinks with each release of the 7.0 series.
 
 - `statistics`: `BucketAccumulator`, `CovarianceMatrix`, `FirstDiff`, `Percentile`, `SecondDiff`
-- `smoothing`: `Hampel`, `Kama`, `WindowedMedian`
+- `smoothing`: `Hampel`, `Kama`
 - `normalization`: `MinMaxNorm`, `QuantileNorm`
 - `trading`: `Cvar`, `KyleLambda`
 - `control`, `frequency`: every type

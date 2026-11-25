@@ -65,6 +65,11 @@ contained.
 - `Sample::is_nan` and `Sample::magnitude` (the absolute value; `i64::MIN`
   saturates to `i64::MAX`), for the generic `update` of the windowed
   extremes and `PeakHold`.
+- `Sample::lerp`: the interpolation step of the Hyndman-Fan type 7
+  quantile, for `WindowedMedian`
+  ([#812](https://github.com/Abso1ut3Zer0/nexus/issues/812)). Floats use
+  NumPy's arithmetic; integers are exact and round to the nearest value,
+  ties toward zero, as `midpoint` does.
 
 ### Removed (moved to other crates, step 3)
 

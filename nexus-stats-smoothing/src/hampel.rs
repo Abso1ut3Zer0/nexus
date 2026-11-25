@@ -61,7 +61,7 @@ impl Hampel {
     pub fn update(&mut self, x: f64) -> Result<f64, nexus_stats_core::DataError> {
         check_finite!(x);
 
-        self.median.update(x)?;
+        self.median.update(x);
         self.count += 1;
 
         // Before primed, pass through
