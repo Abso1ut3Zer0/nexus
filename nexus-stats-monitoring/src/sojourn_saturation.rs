@@ -8,6 +8,8 @@
 
 use core::time::Duration;
 
+use nexus_stats_core::clock::duration_from_nanos;
+
 /// Summary of the sojourns in a period: what [`SojournSaturation::take`]
 /// returns for the period it closes, and what
 /// [`SojournSaturation::summary`] returns for the period so far.
@@ -17,12 +19,7 @@ use core::time::Duration;
 /// 1,000 messages), or an event. The type keeps no clock.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct SojournSummary {
-    messages_seen: u64,
-    messages_over_budget: u64,
-    /// The shortest and the longest, or `None` for an empty period.
-    extremes: Option<(Duration, Duration)>,
-    total_sojourn: Duration,
-    is_backlogged: bool,
+    period: Period,
 }
 
 impl SojournSummary {
@@ -30,7 +27,7 @@ impl SojournSummary {
     #[inline]
     #[must_use]
     pub fn messages_seen(&self) -> u64 {
-        self.messages_seen
+        self.period.messages_seen
     }
 
     /// Of those, the messages whose sojourn exceeded `budget`.
@@ -39,7 +36,7 @@ impl SojournSummary {
     #[inline]
     #[must_use]
     pub fn messages_over_budget(&self) -> u64 {
-        self.messages_over_budget
+        self.period.messages_over_budget
     }
 
     /// Shortest sojourn: the floor, transit plus processing. `None` when
@@ -48,14 +45,18 @@ impl SojournSummary {
     #[inline]
     #[must_use]
     pub fn min_sojourn(&self) -> Option<Duration> {
-        Some(self.extremes?.0)
+        self.period
+            .has_messages()
+            .then_some(self.period.min_sojourn)
     }
 
     /// Longest sojourn: the worst wait. `None` when no message was seen.
     #[inline]
     #[must_use]
     pub fn max_sojourn(&self) -> Option<Duration> {
-        Some(self.extremes?.1)
+        self.period
+            .has_messages()
+            .then_some(self.period.max_sojourn)
     }
 
     /// Sum of all sojourns. It stops at [`Duration::MAX`]. Divided by the
@@ -64,7 +65,7 @@ impl SojournSummary {
     #[inline]
     #[must_use]
     pub fn total_sojourn(&self) -> Duration {
-        self.total_sojourn
+        self.period.total_sojourn
     }
 
     /// Mean sojourn, to the nanosecond below. `None` when no message was
@@ -72,10 +73,10 @@ impl SojournSummary {
     #[inline]
     #[must_use]
     pub fn mean_sojourn(&self) -> Option<Duration> {
-        if self.messages_seen == 0 {
+        if !self.period.has_messages() {
             return None;
         }
-        let nanos = self.total_sojourn.as_nanos() / u128::from(self.messages_seen);
+        let nanos = self.total_sojourn().as_nanos() / u128::from(self.messages_seen());
         Some(duration_from_nanos(nanos))
     }
 
@@ -86,7 +87,7 @@ impl SojournSummary {
     #[inline]
     #[must_use]
     pub fn is_backlogged(&self) -> bool {
-        self.is_backlogged
+        !self.period.within_budget_seen
     }
 }
 
@@ -148,13 +149,7 @@ impl SojournSummary {
 #[derive(Debug, Clone)]
 pub struct SojournSaturation {
     budget: Duration,
-    messages_seen: u64,
-    messages_over_budget: u64,
-    /// `Duration::MAX` until the first message of the period.
-    min_sojourn: Duration,
-    max_sojourn: Duration,
-    total_sojourn: Duration,
-    within_budget_seen: bool,
+    period: Period,
 }
 
 impl SojournSaturation {
@@ -168,12 +163,7 @@ impl SojournSaturation {
     pub const fn new(budget: Duration) -> Self {
         Self {
             budget,
-            messages_seen: 0,
-            messages_over_budget: 0,
-            min_sojourn: Duration::MAX,
-            max_sojourn: Duration::ZERO,
-            total_sojourn: Duration::ZERO,
-            within_budget_seen: false,
+            period: Period::EMPTY,
         }
     }
 
@@ -181,15 +171,7 @@ impl SojournSaturation {
     /// dequeue, measured on one clock.
     #[inline]
     pub fn update(&mut self, sojourn: Duration) {
-        // PERF: straight-line. Whether a message is over budget is
-        // unpredictable exactly when it matters.
-        let over_budget = sojourn > self.budget;
-        self.messages_seen += 1;
-        self.messages_over_budget += u64::from(over_budget);
-        self.within_budget_seen |= !over_budget;
-        self.min_sojourn = self.min_sojourn.min(sojourn);
-        self.max_sojourn = self.max_sojourn.max(sojourn);
-        self.total_sojourn = self.total_sojourn.saturating_add(sojourn);
+        self.period.record(sojourn, sojourn > self.budget);
     }
 
     /// The summary of the period so far. Changes nothing, so it can be read
@@ -199,11 +181,7 @@ impl SojournSaturation {
     #[must_use]
     pub fn summary(&self) -> SojournSummary {
         SojournSummary {
-            messages_seen: self.messages_seen,
-            messages_over_budget: self.messages_over_budget,
-            extremes: (self.messages_seen > 0).then_some((self.min_sojourn, self.max_sojourn)),
-            total_sojourn: self.total_sojourn,
-            is_backlogged: !self.within_budget_seen,
+            period: self.period,
         }
     }
 
@@ -213,26 +191,56 @@ impl SojournSaturation {
     #[inline]
     pub fn take(&mut self) -> SojournSummary {
         let summary = self.summary();
-        self.reset();
+        self.period = Period::EMPTY;
         summary
     }
 
     /// As if freshly built. `budget` is kept.
     #[inline]
     pub fn reset(&mut self) {
-        *self = Self::new(self.budget);
+        self.period = Period::EMPTY;
     }
 }
 
-/// A count of nanoseconds as a `Duration`, or the longest one if it does
-/// not fit.
-#[inline]
-fn duration_from_nanos(nanos: u128) -> Duration {
-    const NANOS_PER_SECOND: u128 = 1_000_000_000;
-    let Ok(seconds) = u64::try_from(nanos / NANOS_PER_SECOND) else {
-        return Duration::MAX;
+/// What a period has counted.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct Period {
+    messages_seen: u64,
+    messages_over_budget: u64,
+    /// `Duration::MAX` until the first message.
+    min_sojourn: Duration,
+    max_sojourn: Duration,
+    total_sojourn: Duration,
+    within_budget_seen: bool,
+}
+
+impl Period {
+    const EMPTY: Self = Self {
+        messages_seen: 0,
+        messages_over_budget: 0,
+        min_sojourn: Duration::MAX,
+        max_sojourn: Duration::ZERO,
+        total_sojourn: Duration::ZERO,
+        within_budget_seen: false,
     };
-    Duration::new(seconds, (nanos % NANOS_PER_SECOND) as u32)
+
+    #[inline]
+    fn has_messages(&self) -> bool {
+        self.messages_seen > 0
+    }
+
+    /// Counts one message.
+    #[inline]
+    fn record(&mut self, sojourn: Duration, over_budget: bool) {
+        // PERF: straight-line. Whether a message is over budget is
+        // unpredictable exactly when it matters.
+        self.messages_seen += 1;
+        self.messages_over_budget += u64::from(over_budget);
+        self.within_budget_seen |= !over_budget;
+        self.min_sojourn = self.min_sojourn.min(sojourn);
+        self.max_sojourn = self.max_sojourn.max(sojourn);
+        self.total_sojourn = self.total_sojourn.saturating_add(sojourn);
+    }
 }
 
 #[cfg(test)]

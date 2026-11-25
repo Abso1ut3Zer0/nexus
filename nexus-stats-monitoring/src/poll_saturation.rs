@@ -26,12 +26,7 @@ use nexus_stats_core::Timestamp;
 /// `max_backlog_messages() == 0`: no message ever queued behind another.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct PollSummary {
-    messages_seen: u64,
-    messages_waited: u64,
-    messages_over_budget: u64,
-    max_backlog_messages: u64,
-    max_behind: Duration,
-    max_messages_per_poll: u64,
+    period: Period,
     is_fully_utilized: bool,
     is_backlogged: bool,
 }
@@ -41,7 +36,7 @@ impl PollSummary {
     #[inline]
     #[must_use]
     pub fn messages_seen(&self) -> u64 {
-        self.messages_seen
+        self.period.messages_seen
     }
 
     /// Of those, the messages that waited for this thread: every message
@@ -50,7 +45,7 @@ impl PollSummary {
     #[inline]
     #[must_use]
     pub fn messages_waited(&self) -> u64 {
-        self.messages_waited
+        self.period.messages_waited
     }
 
     /// Of those, the messages taken with `behind > budget`.
@@ -59,7 +54,7 @@ impl PollSummary {
     #[inline]
     #[must_use]
     pub fn messages_over_budget(&self) -> u64 {
-        self.messages_over_budget
+        self.period.messages_over_budget
     }
 
     /// Most messages that waited without the thread once catching up
@@ -69,7 +64,7 @@ impl PollSummary {
     #[inline]
     #[must_use]
     pub fn max_backlog_messages(&self) -> u64 {
-        self.max_backlog_messages
+        self.period.max_backlog_messages
     }
 
     /// Largest `behind` returned by an `on_work` with `n > 0`: the longest
@@ -77,7 +72,7 @@ impl PollSummary {
     #[inline]
     #[must_use]
     pub fn max_behind(&self) -> Duration {
-        self.max_behind
+        self.period.max_behind
     }
 
     /// Most messages returned by one poll. With polls that drain the input
@@ -87,7 +82,7 @@ impl PollSummary {
     #[inline]
     #[must_use]
     pub fn max_messages_per_poll(&self) -> u64 {
-        self.max_messages_per_poll
+        self.period.max_messages_per_poll
     }
 
     /// No empty poll in the period: the thread never waited for input, so
@@ -242,7 +237,7 @@ impl PollSummary {
 /// every spin is empty.
 #[derive(Debug, Clone)]
 pub struct PollSaturation<T: Timestamp> {
-    state: u8,
+    proofs: Proofs,
     /// The latest time the input was proven empty. `None` until the first
     /// work is stamped.
     floor: Option<T>,
@@ -252,28 +247,7 @@ pub struct PollSaturation<T: Timestamp> {
     period: Period,
 }
 
-/// What a period has accumulated.
-#[derive(Debug, Clone, Copy, Default)]
-struct Period {
-    messages_seen: u64,
-    messages_waited: u64,
-    messages_over_budget: u64,
-    max_backlog_messages: u64,
-    max_behind: Duration,
-    max_messages_per_poll: u64,
-}
-
 impl<T: Timestamp> PollSaturation<T> {
-    /// The floor is pending: an empty poll happened and no work has been
-    /// stamped since. The next `on_work` stamp becomes the floor.
-    const FRESH: u8 = 0b001;
-    /// An empty poll happened in this period.
-    const IDLE_SEEN: u8 = 0b010;
-    /// The input was proven empty in this period.
-    const PROOF_SEEN: u8 = 0b100;
-    /// State right after an empty poll.
-    const AFTER_IDLE: u8 = Self::FRESH | Self::IDLE_SEEN | Self::PROOF_SEEN;
-
     /// Creates a monitor.
     ///
     /// `budget` is the `behind` above which a message counts toward
@@ -283,7 +257,7 @@ impl<T: Timestamp> PollSaturation<T> {
     #[must_use]
     pub fn new(budget: Duration) -> Self {
         Self {
-            state: Self::AFTER_IDLE,
+            proofs: Proofs::AFTER_IDLE,
             floor: None,
             budget,
             backlog: 0,
@@ -297,7 +271,7 @@ impl<T: Timestamp> PollSaturation<T> {
     /// empty. The floor becomes the stamp of the next unit of work.
     #[inline]
     pub fn on_idle(&mut self) {
-        self.state = Self::AFTER_IDLE;
+        self.proofs = Proofs::AFTER_IDLE;
     }
 
     /// `n` messages start processing at `now`. Returns `behind`.
@@ -314,29 +288,19 @@ impl<T: Timestamp> PollSaturation<T> {
         // PERF: no branch in here. Whether the floor is pending is a coin
         // flip under mixed load, and a mispredict there cost more than the
         // whole function when measured.
-        let fresh = self.state & Self::FRESH != 0;
+        let after_idle = self.proofs.take_pending_floor();
 
         // A pending floor becomes this stamp and starts a new backlog.
-        let floor = select_unpredictable(fresh, now, self.floor.unwrap_or(now));
+        let floor = select_unpredictable(after_idle, now, self.floor.unwrap_or(now));
         // The first unit of work after an empty poll did not wait; every
         // other message did.
-        let waited = n.saturating_sub(u64::from(fresh));
-        let backlog = select_unpredictable(fresh, 0, self.backlog) + waited;
-        self.state &= !Self::FRESH;
+        let waited = n.saturating_sub(u64::from(after_idle));
+        let backlog = select_unpredictable(after_idle, 0, self.backlog) + waited;
         self.floor = Some(floor);
         self.backlog = backlog;
+
         let behind = now.since(floor);
-
-        let period = &mut self.period;
-        period.messages_seen += n;
-        period.messages_waited += waited;
-        period.messages_over_budget += select_unpredictable(behind > self.budget, n, 0);
-
-        // Non-message work (`n == 0`) never moves the maxima.
-        let message_behind = select_unpredictable(n > 0, behind, Duration::ZERO);
-        period.max_backlog_messages = period.max_backlog_messages.max(backlog);
-        period.max_behind = period.max_behind.max(message_behind);
-        period.max_messages_per_poll = period.max_messages_per_poll.max(n);
+        self.period.record(n, waited, backlog, behind, self.budget);
         behind
     }
 
@@ -352,13 +316,13 @@ impl<T: Timestamp> PollSaturation<T> {
     /// the bound.
     #[inline]
     pub fn on_drained(&mut self, at: T) {
-        if self.state & Self::FRESH != 0 {
+        if self.proofs.floor_is_pending() {
             return;
         }
         if self.floor.is_some_and(|floor| at >= floor) {
             self.floor = Some(at);
             self.backlog = 0;
-            self.state |= Self::PROOF_SEEN;
+            self.proofs.input_proven_empty();
         }
     }
 
@@ -369,14 +333,9 @@ impl<T: Timestamp> PollSaturation<T> {
     #[must_use]
     pub fn summary(&self) -> PollSummary {
         PollSummary {
-            messages_seen: self.period.messages_seen,
-            messages_waited: self.period.messages_waited,
-            messages_over_budget: self.period.messages_over_budget,
-            max_backlog_messages: self.period.max_backlog_messages,
-            max_behind: self.period.max_behind,
-            max_messages_per_poll: self.period.max_messages_per_poll,
-            is_fully_utilized: self.state & Self::IDLE_SEEN == 0,
-            is_backlogged: self.state & Self::PROOF_SEEN == 0,
+            period: self.period,
+            is_fully_utilized: !self.proofs.saw_idle(),
+            is_backlogged: !self.proofs.saw_proof(),
         }
     }
 
@@ -388,11 +347,7 @@ impl<T: Timestamp> PollSaturation<T> {
     pub fn take(&mut self) -> PollSummary {
         let summary = self.summary();
         self.period = Period::default();
-        self.state = if self.state & Self::FRESH != 0 {
-            Self::AFTER_IDLE
-        } else {
-            0
-        };
+        self.proofs = self.proofs.for_next_period();
         summary
     }
 
@@ -400,6 +355,88 @@ impl<T: Timestamp> PollSaturation<T> {
     #[inline]
     pub fn reset(&mut self) {
         *self = Self::new(self.budget);
+    }
+}
+
+/// What a period has counted.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+struct Period {
+    messages_seen: u64,
+    messages_waited: u64,
+    messages_over_budget: u64,
+    max_backlog_messages: u64,
+    max_behind: Duration,
+    max_messages_per_poll: u64,
+}
+
+impl Period {
+    /// Counts one unit of work: `n` messages, `waited` of them behind
+    /// another, taken `behind` the floor with `backlog` waiting so far.
+    #[inline]
+    fn record(&mut self, n: u64, waited: u64, backlog: u64, behind: Duration, budget: Duration) {
+        self.messages_seen += n;
+        self.messages_waited += waited;
+        self.messages_over_budget += select_unpredictable(behind > budget, n, 0);
+
+        // Non-message work (`n == 0`) never moves the maxima.
+        let message_behind = select_unpredictable(n > 0, behind, Duration::ZERO);
+        self.max_backlog_messages = self.max_backlog_messages.max(backlog);
+        self.max_behind = self.max_behind.max(message_behind);
+        self.max_messages_per_poll = self.max_messages_per_poll.max(n);
+    }
+}
+
+/// What the polls have proven about the input, as bit flags.
+#[derive(Debug, Clone, Copy)]
+struct Proofs(u8);
+
+impl Proofs {
+    /// An empty poll happened and no work has been stamped since. The next
+    /// `on_work` stamp becomes the floor.
+    const FLOOR_PENDING: u8 = 0b001;
+    /// An empty poll happened in this period.
+    const IDLE_SEEN: u8 = 0b010;
+    /// The input was proven empty in this period.
+    const PROOF_SEEN: u8 = 0b100;
+    /// Right after an empty poll.
+    const AFTER_IDLE: Self = Self(Self::FLOOR_PENDING | Self::IDLE_SEEN | Self::PROOF_SEEN);
+
+    #[inline]
+    fn floor_is_pending(self) -> bool {
+        self.0 & Self::FLOOR_PENDING != 0
+    }
+
+    /// Whether the floor was pending, which this work then settles.
+    #[inline]
+    fn take_pending_floor(&mut self) -> bool {
+        let pending = self.floor_is_pending();
+        self.0 &= !Self::FLOOR_PENDING;
+        pending
+    }
+
+    #[inline]
+    fn input_proven_empty(&mut self) {
+        self.0 |= Self::PROOF_SEEN;
+    }
+
+    #[inline]
+    fn saw_idle(self) -> bool {
+        self.0 & Self::IDLE_SEEN != 0
+    }
+
+    #[inline]
+    fn saw_proof(self) -> bool {
+        self.0 & Self::PROOF_SEEN != 0
+    }
+
+    /// A period that begins with the floor pending has seen idle. Any
+    /// other begins with nothing proven.
+    #[inline]
+    fn for_next_period(self) -> Self {
+        if self.floor_is_pending() {
+            return Self::AFTER_IDLE;
+        }
+        Self(0)
     }
 }
 
@@ -431,12 +468,14 @@ mod tests {
     macro_rules! summary {
         ($m:expr, $q:expr, $o:expr, $r:expr, $b:expr, $n:expr, $ni:expr, $ne:expr) => {
             PollSummary {
-                messages_seen: $m,
-                messages_waited: $q,
-                messages_over_budget: $o,
-                max_backlog_messages: $r,
-                max_behind: ns($b),
-                max_messages_per_poll: $n,
+                period: Period {
+                    messages_seen: $m,
+                    messages_waited: $q,
+                    messages_over_budget: $o,
+                    max_backlog_messages: $r,
+                    max_behind: ns($b),
+                    max_messages_per_poll: $n,
+                },
                 is_fully_utilized: $ni,
                 is_backlogged: $ne,
             }
@@ -567,16 +606,16 @@ mod tests {
             sat.on_idle();
             assert_eq!(work(&mut sat, 1_000, n), 0);
             let w = sat.take();
-            assert_eq!(w.messages_seen, n);
+            assert_eq!(w.messages_seen(), n);
             assert_eq!(
-                w.messages_waited,
+                w.messages_waited(),
                 n - 1,
                 "only the first of the batch did not wait"
             );
-            assert_eq!(w.messages_over_budget, 0);
-            assert_eq!(w.max_backlog_messages, n - 1);
-            assert_eq!(w.max_messages_per_poll, n);
-            assert_eq!(w.max_behind, ns(0));
+            assert_eq!(w.messages_over_budget(), 0);
+            assert_eq!(w.max_backlog_messages(), n - 1);
+            assert_eq!(w.max_messages_per_poll(), n);
+            assert_eq!(w.max_behind(), ns(0));
         }
     }
 
@@ -598,10 +637,10 @@ mod tests {
         assert_eq!(work(&mut sat, 10, 0), 0);
         assert_eq!(work(&mut sat, 500, 0), 490);
         let w = sat.take();
-        assert_eq!(w.max_behind, ns(0));
-        assert_eq!(w.max_messages_per_poll, 0);
-        assert_eq!(w.messages_seen, 0);
-        assert_eq!(w.messages_over_budget, 0);
+        assert_eq!(w.max_behind(), ns(0));
+        assert_eq!(w.max_messages_per_poll(), 0);
+        assert_eq!(w.messages_seen(), 0);
+        assert_eq!(w.messages_over_budget(), 0);
     }
 
     #[test]
@@ -635,9 +674,9 @@ mod tests {
         drained(&mut with, 209);
         assert_eq!(work(&mut without, 290, 4), 90);
         assert_eq!(work(&mut with, 290, 4), 81);
-        assert_eq!(with.take().max_backlog_messages, 4);
+        assert_eq!(with.take().max_backlog_messages(), 4);
         assert_eq!(
-            without.take().max_backlog_messages,
+            without.take().max_backlog_messages(),
             8,
             "no proof: one run, eight of the nine waited"
         );
@@ -654,8 +693,8 @@ mod tests {
         drained(&mut sat, 100);
         assert_eq!(work(&mut sat, 150, 1), 50);
         let w = sat.take();
-        assert!(!w.is_backlogged);
-        assert_eq!(w.max_backlog_messages, 1, "run restarted at the proof");
+        assert!(!w.is_backlogged());
+        assert_eq!(w.max_backlog_messages(), 1, "run restarted at the proof");
     }
 
     #[test]
@@ -666,8 +705,8 @@ mod tests {
         sat.on_idle();
         assert_eq!(work(&mut sat, 100, 1), 0);
         let w = sat.take();
-        assert!(!w.is_fully_utilized);
-        assert!(!w.is_backlogged);
+        assert!(!w.is_fully_utilized());
+        assert!(!w.is_backlogged());
     }
 
     // A backwards clock reads 0 and ignores proofs until it passes the
@@ -681,7 +720,7 @@ mod tests {
         drained(&mut sat, 60); // behind the floor: ignored
         assert_eq!(work(&mut sat, 70, 1), 0);
         assert_eq!(work(&mut sat, 150, 1), 50, "measured from the floor of 100");
-        assert_eq!(sat.take().max_behind, ns(50));
+        assert_eq!(sat.take().max_behind(), ns(50));
     }
 
     #[test]
@@ -702,14 +741,14 @@ mod tests {
         sat.on_idle();
         let _ = sat.take();
         let w = sat.take();
-        assert!(!w.is_fully_utilized);
-        assert!(!w.is_backlogged);
+        assert!(!w.is_fully_utilized());
+        assert!(!w.is_backlogged());
         // Once work has been stamped, a window without an empty poll is pegged.
         work(&mut sat, 30, 1);
         let _ = sat.take();
         let w = sat.take();
-        assert!(w.is_fully_utilized);
-        assert!(w.is_backlogged);
+        assert!(w.is_fully_utilized());
+        assert!(w.is_backlogged());
     }
 
     // Documents the per-message accounting trap: the proof stamp must not be
@@ -723,8 +762,8 @@ mod tests {
         let _ = sat.take();
         drained(&mut sat, 100); // stamped before the work it describes
         let w = sat.take();
-        assert!(w.is_backlogged);
-        assert!(w.is_fully_utilized);
+        assert!(w.is_backlogged());
+        assert!(w.is_fully_utilized());
     }
 
     #[test]
@@ -735,9 +774,9 @@ mod tests {
         assert_eq!(work(&mut sat, 10, 10), 10);
         assert_eq!(work(&mut sat, 20, 10), 20);
         let w = sat.take();
-        assert_eq!(w.max_messages_per_poll, 10);
-        assert_eq!(w.max_backlog_messages, 29);
-        assert_eq!(w.messages_waited, 29);
+        assert_eq!(w.max_messages_per_poll(), 10);
+        assert_eq!(w.max_backlog_messages(), 29);
+        assert_eq!(w.messages_waited(), 29);
     }
 
     #[test]
@@ -945,14 +984,16 @@ mod proptests {
     /// The merge rule the docs promise: sums add, maxima max, flags AND.
     fn merge(a: PollSummary, b: PollSummary) -> PollSummary {
         PollSummary {
-            messages_seen: a.messages_seen + b.messages_seen,
-            messages_waited: a.messages_waited + b.messages_waited,
-            messages_over_budget: a.messages_over_budget + b.messages_over_budget,
-            max_backlog_messages: a.max_backlog_messages.max(b.max_backlog_messages),
-            max_behind: a.max_behind.max(b.max_behind),
-            max_messages_per_poll: a.max_messages_per_poll.max(b.max_messages_per_poll),
-            is_fully_utilized: a.is_fully_utilized && b.is_fully_utilized,
-            is_backlogged: a.is_backlogged && b.is_backlogged,
+            period: Period {
+                messages_seen: a.messages_seen() + b.messages_seen(),
+                messages_waited: a.messages_waited() + b.messages_waited(),
+                messages_over_budget: a.messages_over_budget() + b.messages_over_budget(),
+                max_backlog_messages: a.max_backlog_messages().max(b.max_backlog_messages()),
+                max_behind: a.max_behind().max(b.max_behind()),
+                max_messages_per_poll: a.max_messages_per_poll().max(b.max_messages_per_poll()),
+            },
+            is_fully_utilized: a.is_fully_utilized() && b.is_fully_utilized(),
+            is_backlogged: a.is_backlogged() && b.is_backlogged(),
         }
     }
 
@@ -1169,12 +1210,12 @@ mod proptests {
                 if o.age > BUDGET + o.slack { truth_over += 1; }
             }
             let w = run.summary;
-            prop_assert_eq!(w.messages_seen, run.obs.len() as u64);
-            prop_assert!(w.messages_waited >= truth_queued);
-            prop_assert!(w.messages_over_budget >= truth_over);
-            prop_assert!(w.messages_waited <= w.messages_seen);
-            prop_assert!(w.messages_over_budget <= w.messages_seen);
-            prop_assert!(w.max_messages_per_poll <= w.messages_seen.max(1));
+            prop_assert_eq!(w.messages_seen(), run.obs.len() as u64);
+            prop_assert!(w.messages_waited() >= truth_queued);
+            prop_assert!(w.messages_over_budget() >= truth_over);
+            prop_assert!(w.messages_waited() <= w.messages_seen());
+            prop_assert!(w.messages_over_budget() <= w.messages_seen());
+            prop_assert!(w.max_messages_per_poll() <= w.messages_seen().max(1));
         }
 
         // P4 merge: any split, merged, equals one take.
@@ -1198,7 +1239,7 @@ mod proptests {
             for (a, b) in with.obs.iter().zip(&without.obs) {
                 prop_assert!(b.behind >= a.behind);
             }
-            prop_assert!(without.summary.max_backlog_messages >= with.summary.max_backlog_messages);
+            prop_assert!(without.summary.max_backlog_messages() >= with.summary.max_backlog_messages());
         }
 
         // P7 segmented source: idle only after two consecutive empty polls.
