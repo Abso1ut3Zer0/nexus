@@ -143,8 +143,10 @@ impl<T: Tick> GammaPoisson<T> {
     #[cfg(any(feature = "std", feature = "libm"))]
     #[must_use]
     pub fn credible_interval(&self, confidence: f64) -> CredibleInterval {
-        self.posterior()
-            .interval(confidence, nexus_stats_core::special::gamma_quantile)
+        self.posterior().interval(
+            confidence,
+            nexus_stats_core::math::probability::gamma_quantile,
+        )
     }
 
     /// The same interval by Wilson and Hilferty's closed form (1931), in
@@ -164,7 +166,7 @@ impl<T: Tick> GammaPoisson<T> {
     pub fn approx_credible_interval(&self, confidence: f64) -> CredibleInterval {
         self.posterior().interval(
             confidence,
-            nexus_stats_core::special::gamma_quantile_wilson_hilferty,
+            nexus_stats_core::math::probability::gamma_quantile_approx,
         )
     }
 

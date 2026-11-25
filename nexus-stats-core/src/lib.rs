@@ -22,9 +22,6 @@ pub mod math;
 mod feature_vector;
 #[doc(hidden)]
 pub mod parts;
-#[cfg(any(feature = "std", feature = "libm"))]
-#[doc(hidden)]
-pub mod special;
 
 /// Clocks: [`Tick`], [`Span`], [`Timestamp`] and the named time types.
 pub mod clock;

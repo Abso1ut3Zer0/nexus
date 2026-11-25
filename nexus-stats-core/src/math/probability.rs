@@ -1,5 +1,39 @@
-//! Special functions the estimators need: the normal quantile, the
-//! regularized incomplete gamma function and its inverse.
+//! Cumulative probabilities and quantiles of the probability distributions
+//! the estimators use.
+//!
+//! Two questions about a distribution come up when an estimate needs an
+//! interval or a tail probability:
+//!
+//! - **The cumulative probability** (`..._cdf`): the chance that a value
+//!   drawn from the distribution is at most `x`.
+//! - **The quantile** (`..._quantile`): the reverse. The `x` that a value
+//!   is at most with probability `p`. A 95% interval is the pair of
+//!   quantiles at 0.025 and 0.975.
+//!
+//! Neither has a formula in elementary functions for the distributions
+//! here, so each is computed to convergence. Nothing in this module is a
+//! table. The functions are named for the distribution and the question,
+//! and each matches the SciPy function its docs name, which is what its
+//! tests check against.
+//!
+//! | Function | SciPy |
+//! |---|---|
+//! | `normal_quantile` | `scipy.stats.norm.ppf(p)` |
+//! | `gamma_cdf` | `scipy.stats.gamma.cdf(x, shape)`, which is `scipy.special.gammainc(shape, x)` |
+//! | `gamma_quantile` | `scipy.stats.gamma.ppf(p, shape)` |
+//! | `gamma_quantile_approx` | the same, by a closed form that is fast and less accurate |
+//!
+//! The gamma functions take the shape only and assume a rate of one. For a
+//! `Gamma(shape, rate)`, divide a quantile by the rate, and multiply `x`
+//! by the rate before asking for its cumulative probability.
+//!
+//! These are internal: the estimators call them, and they are hidden from
+//! the public docs. A caller of this library reads an estimator's own
+//! methods, such as `GammaPoisson::credible_interval`.
+//!
+//! To add a distribution, name the functions the same way, cite the
+//! method, and test against SciPy across the range of every argument,
+//! including the tails and the largest and smallest shapes.
 
 // The formulas are written as their sources give them, letter for letter,
 // and none of this is on a per-sample path.
@@ -12,9 +46,11 @@ use crate::math::{exp, ln, ln_gamma, sqrt};
 /// The exact iteration costs more as the shape grows.
 const EXACT_SHAPE_LIMIT: f64 = 10_000.0;
 
-/// `z` with `P(Z <= z) = p` for a standard normal, for `p` in `(0, 1)`.
+/// The value a standard normal variable is at most with probability `p`,
+/// for `p` in `(0, 1)`. Negative below one half and positive above it.
 ///
-/// Acklam's rational approximation, relative error below `1.2e-9`.
+/// This is `scipy.stats.norm.ppf(p)`, by Acklam's rational approximation,
+/// with a relative error below `1.2e-9`.
 #[must_use]
 #[allow(clippy::excessive_precision, clippy::unreadable_literal)]
 pub fn normal_quantile(p: f64) -> f64 {
@@ -68,17 +104,22 @@ fn horner(coefficients: &[f64], x: f64) -> f64 {
     coefficients.iter().fold(0.0, |sum, &c| sum * x + c)
 }
 
-/// The regularized lower incomplete gamma function `P(a, x)`: the
-/// probability that a `Gamma(a, 1)` variable is at most `x`. For `a > 0`.
+/// The probability that a `Gamma(shape, 1)` variable is at most `x`. For
+/// `shape > 0`. Zero for `x` at or below zero.
 ///
-/// A series below `x = a + 1` and a continued fraction above it, each run
-/// to convergence (Numerical Recipes 6.2).
+/// In the textbooks this is the regularized lower incomplete gamma
+/// function, `P(shape, x)`. It is `scipy.special.gammainc(shape, x)`,
+/// to eleven digits.
+///
+/// A series below `x = shape + 1` and a continued fraction above it, each
+/// run to convergence (Numerical Recipes 6.2).
 #[must_use]
-pub fn regularized_gamma_p(a: f64, x: f64) -> f64 {
-    gamma_p(a, x, ln_gamma(a))
+pub fn gamma_cdf(shape: f64, x: f64) -> f64 {
+    gamma_p(shape, x, ln_gamma(shape))
 }
 
-/// [`regularized_gamma_p`] with `ln Gamma(a)` already in hand.
+/// [`gamma_cdf`] with `ln Gamma(a)` already in hand. `a` is the shape,
+/// named as in the source.
 fn gamma_p(a: f64, x: f64, ln_gamma_a: f64) -> f64 {
     if x <= 0.0 {
         return 0.0;
@@ -137,14 +178,15 @@ fn continued_fraction(a: f64, x: f64) -> f64 {
     value
 }
 
-/// The `p`-quantile of a `Gamma(shape, 1)` variable: the `x` with
-/// `P(shape, x) = p`. For `shape > 0` and `p` in `(0, 1)`. Divide by the
-/// rate for a `Gamma(shape, rate)`.
+/// The value a `Gamma(shape, 1)` variable is at most with probability
+/// `p`: the `x` with `gamma_cdf(shape, x) = p`. For `shape > 0` and `p` in
+/// `(0, 1)`. Divide by the rate for a `Gamma(shape, rate)`.
 ///
-/// This is `scipy.stats.gamma.ppf(p, shape)`. It starts from Wilson and
-/// Hilferty's estimate and refines it with Halley steps on `P`
-/// (Numerical Recipes 6.2.1). Above a shape of 10,000 it returns the
-/// estimate, which is within one part in a million there. A quantile too
+/// This is `scipy.stats.gamma.ppf(p, shape)`, to ten digits up to a shape
+/// of 10,000. It starts from [`gamma_quantile_approx`] and refines it with
+/// Halley steps on [`gamma_cdf`] (Numerical Recipes 6.2.1). Above a shape
+/// of 10,000 it returns that estimate, which is within one part in a
+/// million there and costs far less than the iteration would. A quantile too
 /// small for an `f64` (a small shape with a small `p`) is zero.
 #[must_use]
 pub fn gamma_quantile(shape: f64, p: f64) -> f64 {
@@ -153,7 +195,7 @@ pub fn gamma_quantile(shape: f64, p: f64) -> f64 {
     const MAX_STEPS: u32 = 32;
 
     if shape > EXACT_SHAPE_LIMIT {
-        return gamma_quantile_wilson_hilferty(shape, p);
+        return gamma_quantile_approx(shape, p);
     }
     let ln_gamma_shape = ln_gamma(shape);
     let mut x = starting_quantile(shape, p, ln_gamma_shape);
@@ -184,7 +226,7 @@ pub fn gamma_quantile(shape: f64, p: f64) -> f64 {
 /// not usable (a shape below one, or an estimate at or below zero). Zero
 /// if the small-`x` form is below the smallest positive `f64`.
 fn starting_quantile(shape: f64, p: f64, ln_gamma_shape: f64) -> f64 {
-    let estimate = gamma_quantile_wilson_hilferty(shape, p);
+    let estimate = gamma_quantile_approx(shape, p);
     if shape >= 1.0 && estimate > 0.0 {
         return estimate;
     }
@@ -195,15 +237,17 @@ fn starting_quantile(shape: f64, p: f64, ln_gamma_shape: f64) -> f64 {
     small
 }
 
-/// Wilson and Hilferty's estimate (1931) of the `p`-quantile of a
-/// `Gamma(shape, 1)` variable: the cube root of a gamma variable is close
-/// to normal. Closed form, with no iteration. Never below zero.
+/// A fast estimate of [`gamma_quantile`], by Wilson and Hilferty's closed
+/// form (1931).
+///
+/// It uses that the cube root of a gamma variable is close to normal. No
+/// iteration, about five nanoseconds. Never below zero.
 ///
 /// Against the exact quantile, over `p` from 0.005 to 0.995, it is within
 /// 3% from a shape of 5, within 0.6% from 11, within 0.02% from 100, and
 /// poor below 5.
 #[must_use]
-pub fn gamma_quantile_wilson_hilferty(shape: f64, p: f64) -> f64 {
+pub fn gamma_quantile_approx(shape: f64, p: f64) -> f64 {
     let cube_root = 1.0 - 1.0 / (9.0 * shape) + normal_quantile(p) / (3.0 * sqrt(shape));
     (shape * cube_root * cube_root * cube_root).max(0.0)
 }
@@ -371,15 +415,15 @@ mod tests {
     #[test]
     fn the_incomplete_gamma_function_matches_scipy() {
         for (a, x, want) in GAMMA_P {
-            let got = regularized_gamma_p(a, x);
+            let got = gamma_cdf(a, x);
             assert!(
                 relative_error(got, want) < 1e-11,
                 "P({a}, {x}): {got} vs {want}"
             );
         }
-        assert_eq!(regularized_gamma_p(3.0, 0.0), 0.0);
-        assert_eq!(regularized_gamma_p(3.0, -1.0), 0.0);
-        assert_eq!(regularized_gamma_p(3.0, 1e6), 1.0);
+        assert_eq!(gamma_cdf(3.0, 0.0), 0.0);
+        assert_eq!(gamma_cdf(3.0, -1.0), 0.0);
+        assert_eq!(gamma_cdf(3.0, 1e6), 1.0);
     }
 
     /// `P(1, x) = 1 - e^-x`, and `P(a, x)` rises with `x`.
@@ -387,15 +431,12 @@ mod tests {
     fn the_incomplete_gamma_function_has_its_known_shape() {
         for x in [0.01, 0.5, 1.9, 2.1, 7.0, 30.0] {
             let want = -f64::exp_m1(-x);
-            assert!(
-                relative_error(regularized_gamma_p(1.0, x), want) < 1e-14,
-                "x {x}"
-            );
+            assert!(relative_error(gamma_cdf(1.0, x), want) < 1e-14, "x {x}");
         }
         for a in [0.3, 4.0, 250.0] {
             let mut last = 0.0;
             for step in 1..200 {
-                let p = regularized_gamma_p(a, a * f64::from(step) / 50.0);
+                let p = gamma_cdf(a, a * f64::from(step) / 50.0);
                 assert!(p >= last && p <= 1.0, "a {a} step {step}");
                 last = p;
             }
@@ -422,7 +463,7 @@ mod tests {
                 if x == 0.0 {
                     continue; // too small for an `f64`: the next test
                 }
-                let back = regularized_gamma_p(shape, x);
+                let back = gamma_cdf(shape, x);
                 assert!(
                     (back - p).abs() < 5e-11 * p.max(1e-3),
                     "shape {shape} p {p}: {back}"
@@ -439,7 +480,7 @@ mod tests {
         assert_eq!(gamma_quantile(0.001, 0.4), 0.0);
         // The same shape still has quantiles that do fit.
         let x = gamma_quantile(0.02, 0.5);
-        assert!(x > 0.0 && (regularized_gamma_p(0.02, x) - 0.5).abs() < 1e-11);
+        assert!(x > 0.0 && (gamma_cdf(0.02, x) - 0.5).abs() < 1e-11);
     }
 
     #[test]
@@ -460,7 +501,7 @@ mod tests {
     fn a_large_shape_uses_the_estimate_within_one_part_in_a_million() {
         for (shape, p, want) in LARGE_SHAPE_QUANTILES {
             let got = gamma_quantile(shape, p);
-            assert_eq!(got, gamma_quantile_wilson_hilferty(shape, p));
+            assert_eq!(got, gamma_quantile_approx(shape, p));
             assert!(relative_error(got, want) < 1e-6, "shape {shape} p {p}");
         }
         for p in [0.005, 0.025, 0.5, 0.975, 0.995] {
@@ -479,7 +520,7 @@ mod tests {
         for (shape, limit) in [(5.0, 0.03), (11.0, 0.006), (101.0, 2e-4)] {
             for p in [0.005, 0.025, 0.5, 0.975, 0.995] {
                 let exact = gamma_quantile(shape, p);
-                let estimate = gamma_quantile_wilson_hilferty(shape, p);
+                let estimate = gamma_quantile_approx(shape, p);
                 assert!(
                     relative_error(estimate, exact) < limit,
                     "shape {shape} p {p}: {estimate} vs {exact}"
@@ -487,6 +528,6 @@ mod tests {
             }
         }
         // Never below zero, even where it is poor.
-        assert_eq!(gamma_quantile_wilson_hilferty(0.05, 0.001), 0.0);
+        assert_eq!(gamma_quantile_approx(0.05, 0.001), 0.0);
     }
 }
