@@ -60,3 +60,7 @@ pub mod regression;
 /// The clock a `HawkesIntensity` runs on: any [`Tick`]. A [`Timestamp`] is
 /// a tick of physical time.
 pub use nexus_stats_core::{Micros, Millis, Nanos, Seconds, Span, Tick, Timestamp};
+
+/// The confidence of an interval, as the estimators' `credible_interval`
+/// takes it.
+pub use nexus_stats_core::Confidence;

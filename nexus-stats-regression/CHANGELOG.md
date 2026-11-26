@@ -25,9 +25,11 @@ contained.
   With a few events it is rough (0.75% at five, 2.5% at three). Its docs
   carry the table, measured against a 40-digit reference. It is not the
   exact quantile; for that on a small sample, use SciPy offline.
-- `credible_interval` always returns an interval, the prior's before any
-  data, and panics on a confidence outside (0, 1). It returned `None` for
-  both.
+- **`credible_interval` takes a `Confidence`,** a level checked once
+  where it is made (at compile time in a `const`), so the method checks
+  nothing and cannot fail. It always returns an interval, the prior's
+  before any data. It used to take an `f64` and return `None` for a bad
+  level and for no data alike.
 - `new()`, `with_prior()` and `Default` are replaced by the builder, whose
   prior defaults to (1, 1). `total_count()` and `total_exposure()` become
   `count()` and `exposure()`. `is_primed()` is removed.

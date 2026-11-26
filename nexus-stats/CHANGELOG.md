@@ -16,7 +16,8 @@ contained.
   as a span of it, has a plain `update` and a guarded `checked_update`,
   and is built with a builder. Its `credible_interval` is a closed-form
   estimate built for large counts, far closer than the normal
-  approximation it replaces, and returns a `CredibleInterval`.
+  approximation it replaces. It takes a `Confidence` (new, exported at
+  the root) and returns a `CredibleInterval`.
 
 ### Added
 

@@ -947,7 +947,8 @@ let (lo, hi) = gp.credible_interval(0.95)?;       // Option<(f64, f64)>
 let mut gp = GammaPoisson::<i64>::builder().alpha(2.0).beta(3.0).build()?;
 gp.update(100, Duration::from_secs(10));          // a Duration on physical time
 gp.checked_update(100, exposure)?;                // refuses a bad exposure
-let interval = gp.credible_interval(0.95);        // CredibleInterval { lower, upper }
+const NINETY_FIVE: Confidence = Confidence::new(0.95);   // checked at compile time
+let interval = gp.credible_interval(NINETY_FIVE); // CredibleInterval { lower, upper }
 ```
 
 - The rate is in events per unit of the clock: per second on a
@@ -960,8 +961,12 @@ let interval = gp.credible_interval(0.95);        // CredibleInterval { lower, u
   exact Gamma quantile. For an exact interval on a small sample, use
   `scipy.stats.gamma.interval(confidence, alpha + k, scale=1 / (beta + t))`
   offline.
-- `credible_interval` always returns an interval, the prior's before any
-  data. A confidence outside (0, 1) panics. It returned `None` for both.
+- `credible_interval` takes a `Confidence`, not an `f64`. Make it with
+  `Confidence::new(level)`, which in a `const` is checked when the
+  program compiles, or `Confidence::checked_new(level)?` for a level known
+  only at run time. The method then always returns an interval, the
+  prior's before any data. It returned `None` for a bad level and for no
+  data alike.
 - `new()` and `with_prior()` are replaced by the builder, whose prior
   defaults to (1, 1). `total_count()` and `total_exposure()` are
   `count()` (an exact `u64`) and `exposure()`. `is_primed()` is removed,

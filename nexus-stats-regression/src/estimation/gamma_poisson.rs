@@ -1,5 +1,7 @@
 use core::marker::PhantomData;
 
+#[cfg(any(feature = "std", feature = "libm"))]
+use nexus_stats_core::Confidence;
 use nexus_stats_core::{DataError, Span, Tick};
 
 /// The rate of a Poisson process, learned from counts, with its
@@ -47,13 +49,19 @@ use nexus_stats_core::{DataError, Span, Tick};
 ///
 /// ```
 /// use core::time::Duration;
+/// use nexus_stats_regression::Confidence;
 /// use nexus_stats_regression::estimation::GammaPoisson;
+///
+/// // Checked when this is compiled.
+/// const NINETY_FIVE: Confidence = Confidence::new(0.95);
 ///
 /// // Events per second, on nanosecond time.
 /// let mut arrivals = GammaPoisson::<i64>::builder().build().unwrap();
 /// arrivals.update(100, Duration::from_secs(10));
 /// // The prior (1, 1) counts as one event over one second.
 /// assert_eq!(arrivals.rate(), 101.0 / 11.0);
+/// let interval = arrivals.credible_interval(NINETY_FIVE);
+/// assert!(interval.lower < arrivals.rate() && arrivals.rate() < interval.upper);
 /// ```
 #[derive(Debug, Clone)]
 pub struct GammaPoisson<T: Tick> {
@@ -148,9 +156,12 @@ impl<T: Tick> GammaPoisson<T> {
     }
 
     /// An estimate of the equal-tailed interval that holds the rate with
-    /// probability `confidence`: the posterior's quantiles at
-    /// `(1 - confidence) / 2` from each end, by Wilson and Hilferty's
-    /// closed form (1931). About ten nanoseconds.
+    /// the given confidence: the posterior's quantiles at
+    /// [`confidence.tail()`](Confidence::tail) from each end, by Wilson and
+    /// Hilferty's closed form (1931). About ten nanoseconds.
+    ///
+    /// The level was checked when the [`Confidence`] was made, so nothing
+    /// is checked here and this cannot fail.
     ///
     /// Every answer is a little off the exact one, by an amount that
     /// shrinks as the events grow and grows with the confidence asked for.
@@ -181,12 +192,9 @@ impl<T: Tick> GammaPoisson<T> {
     /// about 0.63, and below about 0.02 both ends are zero. These are
     /// measurements against a 40-digit reference, not proven bounds.
     ///
-    /// # Panics
-    ///
-    /// If `confidence` is not strictly between 0 and 1.
     #[cfg(any(feature = "std", feature = "libm"))]
     #[must_use]
-    pub fn credible_interval(&self, confidence: f64) -> CredibleInterval {
+    pub fn credible_interval(&self, confidence: Confidence) -> CredibleInterval {
         self.posterior().interval(confidence)
     }
 
@@ -292,15 +300,11 @@ impl Gamma {
     /// `confidence`. Each end takes its own tail, so `1 - tail` is never
     /// formed.
     #[cfg(any(feature = "std", feature = "libm"))]
-    fn interval(self, confidence: f64) -> CredibleInterval {
+    fn interval(self, confidence: Confidence) -> CredibleInterval {
         use nexus_stats_core::math::probability::{
             gamma_quantile_approx, gamma_quantile_upper_approx,
         };
-        assert!(
-            confidence > 0.0 && confidence < 1.0,
-            "confidence must be strictly between 0 and 1"
-        );
-        let tail = (1.0 - confidence) / 2.0;
+        let tail = confidence.tail();
         CredibleInterval {
             lower: gamma_quantile_approx(self.shape, tail) / self.rate,
             upper: gamma_quantile_upper_approx(self.shape, tail) / self.rate,
@@ -411,10 +415,13 @@ mod tests {
     fn more_data_narrows_the_estimate() {
         let mut gp = estimator::<f64>(1.0, 1.0);
         gp.update(10, 1.0);
-        let (early, early_width) = (gp.variance(), gp.credible_interval(0.95).width());
+        let (early, early_width) = (
+            gp.variance(),
+            gp.credible_interval(Confidence::new(0.95)).width(),
+        );
         gp.update(1_000, 100.0);
         assert!(gp.variance() < early);
-        let interval = gp.credible_interval(0.95);
+        let interval = gp.credible_interval(Confidence::new(0.95));
         assert!(interval.width() < early_width);
         assert!(interval.lower < gp.rate() && gp.rate() < interval.upper);
     }
@@ -525,7 +532,7 @@ mod tests {
         for (alpha, beta, count, exposure, confidence, lower, upper) in INTERVALS {
             let mut gp = estimator::<f64>(alpha, beta);
             gp.update(count, exposure);
-            let got = gp.credible_interval(confidence);
+            let got = gp.credible_interval(Confidence::new(confidence));
             let limit = documented_distance(alpha + count as f64, (1.0 - confidence) / 2.0);
             assert!(
                 relative_error(got.lower, lower) < limit
@@ -542,16 +549,16 @@ mod tests {
         // The prior alone, shape 1: the exact 95% interval is
         // (0.0253, 3.689).
         let gp = estimator::<f64>(1.0, 1.0);
-        let got = gp.credible_interval(0.95);
+        let got = gp.credible_interval(Confidence::new(0.95));
         assert!(got.lower > 0.0 && got.lower < 0.0253 && relative_error(got.upper, 3.689) < 0.01);
         // A very small shape: both ends are zero at 95%, where the exact
         // interval at a shape of 0.01 is (0, 0.0471).
         for alpha in [1e-300, 1e-9, 0.01] {
-            let got = estimator::<f64>(alpha, 1.0).credible_interval(0.95);
+            let got = estimator::<f64>(alpha, 1.0).credible_interval(Confidence::new(0.95));
             assert_eq!((got.lower, got.upper), (0.0, 0.0), "{alpha}");
         }
         // A little larger: the upper end is back, the lower still zero.
-        let got = estimator::<f64>(0.5, 1.0).credible_interval(0.95);
+        let got = estimator::<f64>(0.5, 1.0).credible_interval(Confidence::new(0.95));
         assert!(
             got.lower == 0.0 && got.upper > 1.0 && got.upper.is_finite(),
             "{got:?}"
@@ -573,7 +580,7 @@ mod tests {
                 0.999_999,
                 1.0 - f64::EPSILON / 2.0,
             ] {
-                let got = gp.credible_interval(confidence);
+                let got = gp.credible_interval(Confidence::new(confidence));
                 assert!(
                     got.lower <= got.upper && got.lower >= 0.0 && got.upper.is_finite(),
                     "{alpha}+{count} at {confidence}: {got:?}"
@@ -586,27 +593,15 @@ mod tests {
     fn the_interval_widens_with_confidence() {
         let mut gp = estimator::<f64>(1.0, 1.0);
         gp.update(12, 4.0);
-        let mut last = gp.credible_interval(0.01);
+        let mut last = gp.credible_interval(Confidence::new(0.01));
         for confidence in [0.1, 0.5, 0.9, 0.99, 0.9999] {
-            let next = gp.credible_interval(confidence);
+            let next = gp.credible_interval(Confidence::new(confidence));
             assert!(
                 next.lower < last.lower && next.upper > last.upper,
                 "{confidence}"
             );
             last = next;
         }
-    }
-
-    #[test]
-    #[should_panic(expected = "confidence must be strictly between 0 and 1")]
-    fn a_confidence_of_one_is_refused() {
-        let _ = estimator::<f64>(1.0, 1.0).credible_interval(1.0);
-    }
-
-    #[test]
-    #[should_panic(expected = "confidence must be strictly between 0 and 1")]
-    fn a_confidence_that_is_not_a_number_is_refused() {
-        let _ = estimator::<f64>(1.0, 1.0).credible_interval(f64::NAN);
     }
 
     #[test]

@@ -10,6 +10,15 @@ contained.
 
 ## [Unreleased]
 
+### Added
+
+- **`Confidence`:** the confidence of an interval, a probability strictly
+  between 0 and 1. `Confidence::new(level)` is a `const fn` that panics on
+  a bad level, which in a `const` is a compile-time error.
+  `Confidence::checked_new(level)` returns a `Result` for a level known
+  only at run time. `level()` and `tail()` read it. A method that takes
+  one does no check per call.
+
 ### Added (internal)
 
 - `math::probability` (doc-hidden): `normal_quantile` (Acklam) and the
