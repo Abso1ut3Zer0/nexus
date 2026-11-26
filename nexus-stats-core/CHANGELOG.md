@@ -12,6 +12,13 @@ contained.
 
 ### Added (internal)
 
+- `math::probability` (doc-hidden): `normal_quantile` (Acklam) and the
+  closed-form gamma quantile estimates `gamma_quantile_approx` and
+  `gamma_quantile_upper_approx` (Wilson and Hilferty), for the estimators'
+  intervals. Each is tested against a 40-digit reference.
+
+### Added (internal)
+
 - `clock::duration_from_nanos` (doc-hidden): a `u128` count of nanoseconds
   as a `Duration`, clamped at the longest one.
 

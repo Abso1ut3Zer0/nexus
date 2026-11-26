@@ -148,7 +148,7 @@ See [Integer vs Float](../guides/integer-vs-float.md) for the caller rules and
 |------|---------|---------|----------------|
 | `Kalman2d`, `Kalman3d` | `f64` | — | regression (`estimation`) |
 | `BetaBinomial` | `bool` / counts | — | regression (`estimation`) |
-| `GammaPoisson` | counts, `f64` exposure | — | regression (`estimation`) |
+| `GammaPoisson<T>` | `T: Tick`; `u64` counts, exposure as the clock's span | interval: `std\|libm` | regression (`estimation`) |
 | `SprtBernoulli` | `bool` | `std\|libm` | detection (`estimation`) |
 | `SprtGaussian` | `f64` | `std\|libm` | detection (`estimation`) |
 

@@ -100,22 +100,25 @@ fn horner(coefficients: &[f64], x: f64) -> f64 {
 /// iteration, about five nanoseconds. Never below zero.
 ///
 /// Every answer is a little off the exact quantile, by an amount that
-/// shrinks as the shape grows. This is how far, as a fraction of the
-/// value, for a tail of 0.025 (the lower end of a 95% interval) and of
-/// 0.0005 (of a 99.9% one). It is a distance, not a rate of failure.
+/// shrinks as the shape grows and grows with the confidence asked for.
+/// This is how far, as a fraction of the value, for the two ends of an
+/// interval at each confidence (the farther of the two). It is a
+/// distance, not a rate of failure.
 ///
-/// | Shape | At 95% | At 99.9% |
-/// |---|---|---|
-/// | 3 | 2.5% | 28% |
-/// | 5 | 0.75% | 8.6% |
-/// | 11 | 0.14% | 1.6% |
-/// | 31 | 0.02% | 0.23% |
-/// | 101 | 0.0023% | 0.031% |
-/// | 1,001 | 6 in 10 million | 8 in a million |
-/// | 10,001 | 2 in 100 million | 2.5 in 10 million |
-/// | 1,000,001 | 2 in 100 billion | 2.4 in 10 billion |
+/// | Shape | 90% | 95% | 99% | 99.9% |
+/// |---|---|---|---|---|
+/// | 3 | 0.9% | 2.5% | 9.4% | 28% |
+/// | 5 | 0.22% | 0.75% | 2.9% | 8.5% |
+/// | 11 | 0.027% | 0.14% | 0.56% | 1.6% |
+/// | 31 | 0.0044% | 0.018% | 0.083% | 0.23% |
+/// | 101 | 6.4e-6 | 2.3e-5 | 0.011% | 0.031% |
+/// | 1,001 | 1.7e-7 | 5.5e-7 | 3.0e-6 | 8.2e-6 |
+/// | 10,001 | 4.7e-9 | 1.6e-8 | 8.9e-8 | 2.4e-7 |
+/// | 100,001 | 1.5e-10 | 4.9e-10 | 2.8e-9 | 7.6e-9 |
+/// | 1,000,001 | 6.3e-12 | 1.7e-11 | 9.0e-11 | 2.4e-10 |
 ///
-/// It keeps improving beyond that, to about `2e-13` at a shape of `1e8`.
+/// The distance depends on the shape and the tail only, not on the rate.
+/// It falls steadily as the shape grows, with no shape at which it rises.
 /// Below a shape of 3 it is poor. It is zero where the closed form goes
 /// negative, which at a tail of 0.025 is a shape below about 0.63.
 #[must_use]
@@ -128,9 +131,8 @@ pub fn gamma_quantile_approx(shape: f64, p: f64) -> f64 {
 ///
 /// It is `gamma_quantile_approx(shape, 1 - q)` without forming `1 - q`,
 /// which has no digits left when `q` is tiny. An interval takes its upper
-/// end from here. At the shapes and tails in that table it is at least as
-/// close as the lower end. It too is poor for a small shape, and it is
-/// zero below a shape of about 0.02.
+/// end from here. The table there covers both ends. It too is poor for a
+/// small shape, and it is zero below a shape of about 0.02.
 #[must_use]
 pub fn gamma_quantile_upper_approx(shape: f64, q: f64) -> f64 {
     wilson_hilferty(shape, -normal_quantile(q))
@@ -235,33 +237,37 @@ mod tests {
         assert_eq!(normal_quantile(0.5), 0.0);
     }
 
-    /// The largest distance from exact the docs state for the lower end,
-    /// by shape, with about a tenth of room. `tail` picks the column: 95%
-    /// for a tail of 0.025 or more, 99.9% below that.
-    fn documented_error(shape: f64, tail: f64) -> f64 {
-        let (at_95, at_999) = match shape {
-            s if s >= 1_000_001.0 => (1.9e-11, 2.6e-10),
-            s if s >= 100_001.0 => (5.2e-10, 8.0e-9),
-            s if s >= 10_001.0 => (1.7e-8, 2.6e-7),
-            s if s >= 1_001.0 => (5.8e-7, 8.6e-6),
-            s if s >= 101.0 => (2.4e-5, 3.2e-4),
-            s if s >= 31.0 => (1.9e-4, 2.4e-3),
-            s if s >= 11.0 => (1.4e-3, 1.65e-2),
-            s if s >= 5.0 => (7.6e-3, 8.8e-2),
-            _ => (2.6e-2, 2.9e-1),
+    /// The distance from exact the docs state, with a tenth of room, for
+    /// the documented shape at or below `shape` and the documented
+    /// confidence whose tail is at or below `tail`.
+    fn documented_distance(shape: f64, tail: f64) -> f64 {
+        let by_confidence = match shape {
+            s if s >= 1_000_001.0 => [6.96e-12, 1.86e-11, 9.88e-11, 2.59e-10],
+            s if s >= 100_001.0 => [1.65e-10, 5.44e-10, 3.05e-9, 8.36e-9],
+            s if s >= 10_001.0 => [5.22e-9, 1.76e-8, 9.80e-8, 2.69e-7],
+            s if s >= 1_001.0 => [1.82e-7, 6.08e-7, 3.28e-6, 9.03e-6],
+            s if s >= 101.0 => [7.08e-6, 2.51e-5, 1.23e-4, 3.41e-4],
+            s if s >= 31.0 => [4.87e-5, 2.01e-4, 9.09e-4, 2.54e-3],
+            s if s >= 11.0 => [2.95e-4, 1.50e-3, 6.17e-3, 1.77e-2],
+            s if s >= 5.0 => [2.45e-3, 8.22e-3, 3.17e-2, 9.40e-2],
+            _ => [9.94e-3, 2.79e-2, 1.04e-1, 3.10e-1],
         };
-        if tail >= 0.025 { at_95 } else { at_999 }
+        // 90%, 95%, 99%, 99.9%.
+        let column = match tail {
+            t if t >= 0.05 => 0,
+            t if t >= 0.025 => 1,
+            t if t >= 0.005 => 2,
+            _ => 3,
+        };
+        by_confidence[column]
     }
 
-    /// Both ends of a 95% and of a 99.9% interval against the exact
-    /// quantiles, within the distance the docs state for each shape.
+    /// Both ends, at every shape and confidence in the table, against the
+    /// exact quantiles and within the distance the docs state.
     #[test]
     fn the_estimate_is_as_close_to_exact_as_documented() {
         for (shape, tail, lower, upper) in EXACT_QUANTILES {
-            if tail != 0.025 && tail != 0.0005 {
-                continue;
-            }
-            let limit = documented_error(shape, tail);
+            let limit = documented_distance(shape, tail);
             let got = (
                 gamma_quantile_approx(shape, tail),
                 gamma_quantile_upper_approx(shape, tail),
@@ -269,22 +275,6 @@ mod tests {
             assert!(
                 relative_error(got.0, lower) < limit && relative_error(got.1, upper) < limit,
                 "shape {shape} tail {tail}: {got:?} vs ({lower}, {upper}), limit {limit}"
-            );
-        }
-    }
-
-    /// A tail between the two columns is between them in accuracy.
-    #[test]
-    fn a_tail_in_between_is_no_worse_than_the_smaller_one() {
-        for (shape, tail, lower, upper) in EXACT_QUANTILES {
-            let limit = documented_error(shape, 0.0005);
-            let got = (
-                gamma_quantile_approx(shape, tail),
-                gamma_quantile_upper_approx(shape, tail),
-            );
-            assert!(
-                relative_error(got.0, lower) < limit && relative_error(got.1, upper) < limit,
-                "shape {shape} tail {tail}: {got:?} vs ({lower}, {upper})"
             );
         }
     }

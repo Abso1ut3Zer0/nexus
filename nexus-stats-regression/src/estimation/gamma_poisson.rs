@@ -153,25 +153,28 @@ impl<T: Tick> GammaPoisson<T> {
     /// closed form (1931). About ten nanoseconds.
     ///
     /// Every answer is a little off the exact one, by an amount that
-    /// shrinks as the posterior's shape grows (the prior's `alpha` plus
-    /// the events seen). This is how far the lower end is from the exact
-    /// lower end, as a fraction of its value. It is a distance, not a rate
-    /// of failure. The same inputs always give the same answer.
+    /// shrinks as the events grow and grows with the confidence asked for.
+    /// This is how far an end of the interval is from the exact end, as a
+    /// fraction of its value (the farther of the two ends). The shape is
+    /// the prior's `alpha` plus the events seen. It is a distance, not a
+    /// rate of failure. The same inputs always give the same answer.
     ///
-    /// | Shape | At 95% | At 99.9% |
-    /// |---|---|---|
-    /// | 3 | 2.5% | 28% |
-    /// | 5 | 0.75% | 8.6% |
-    /// | 11 | 0.14% | 1.6% |
-    /// | 31 | 0.02% | 0.23% |
-    /// | 101 | 0.0023% | 0.031% |
-    /// | 1,001 | 6 in 10 million | 8 in a million |
-    /// | 10,001 | 2 in 100 million | 2.5 in 10 million |
-    /// | 1,000,001 | 2 in 100 billion | 2.4 in 10 billion |
+    /// | Shape | 90% | 95% | 99% | 99.9% |
+    /// |---|---|---|---|---|
+    /// | 3 | 0.9% | 2.5% | 9.4% | 28% |
+    /// | 5 | 0.22% | 0.75% | 2.9% | 8.5% |
+    /// | 11 | 0.027% | 0.14% | 0.56% | 1.6% |
+    /// | 31 | 0.0044% | 0.018% | 0.083% | 0.23% |
+    /// | 101 | 6.4e-6 | 2.3e-5 | 0.011% | 0.031% |
+    /// | 1,001 | 1.7e-7 | 5.5e-7 | 3.0e-6 | 8.2e-6 |
+    /// | 10,001 | 4.7e-9 | 1.6e-8 | 8.9e-8 | 2.4e-7 |
+    /// | 100,001 | 1.5e-10 | 4.9e-10 | 2.8e-9 | 7.6e-9 |
+    /// | 1,000,001 | 6.3e-12 | 1.7e-11 | 9.0e-11 | 2.4e-10 |
     ///
-    /// At these shapes the upper end is at least as close. With the
-    /// default prior and 100 events over 10 seconds, the exact 95%
-    /// interval is (7.47874, 11.05698) and this gives (7.47857, 11.05709).
+    /// The distance depends on the shape and the confidence only, not on
+    /// the rate. It falls steadily as the shape grows. With the default
+    /// prior and 100 events over 10 seconds, the exact 95% interval is
+    /// (7.47874, 11.05698) and this gives (7.47857, 11.05709).
     ///
     /// Below a shape of 3 the interval is poor. The lower end is zero
     /// where the closed form goes negative, which at 95% is a shape below
@@ -490,35 +493,40 @@ mod tests {
         (got - want).abs() / want
     }
 
-    /// The largest distance from exact the docs state for the lower end,
-    /// by the posterior's shape, with about a tenth of room. `tail` picks
-    /// the column: 95% for a tail of 0.025 or more, 99.9% below that.
-    fn documented_error(shape: f64, tail: f64) -> f64 {
-        let (at_95, at_999) = match shape {
-            s if s >= 1_000_001.0 => (1.9e-11, 2.6e-10),
-            s if s >= 100_001.0 => (5.2e-10, 8.0e-9),
-            s if s >= 10_001.0 => (1.7e-8, 2.6e-7),
-            s if s >= 1_001.0 => (5.8e-7, 8.6e-6),
-            s if s >= 101.0 => (2.4e-5, 3.2e-4),
-            s if s >= 31.0 => (1.9e-4, 2.4e-3),
-            s if s >= 11.0 => (1.4e-3, 1.65e-2),
-            s if s >= 5.0 => (7.6e-3, 8.8e-2),
-            _ => (2.6e-2, 2.9e-1),
+    /// The distance from exact the docs state, with a tenth of room, for
+    /// the documented shape at or below `shape` and the documented
+    /// confidence whose tail is at or below `tail`.
+    fn documented_distance(shape: f64, tail: f64) -> f64 {
+        let by_confidence = match shape {
+            s if s >= 1_000_001.0 => [6.96e-12, 1.86e-11, 9.88e-11, 2.59e-10],
+            s if s >= 100_001.0 => [1.65e-10, 5.44e-10, 3.05e-9, 8.36e-9],
+            s if s >= 10_001.0 => [5.22e-9, 1.76e-8, 9.80e-8, 2.69e-7],
+            s if s >= 1_001.0 => [1.82e-7, 6.08e-7, 3.28e-6, 9.03e-6],
+            s if s >= 101.0 => [7.08e-6, 2.51e-5, 1.23e-4, 3.41e-4],
+            s if s >= 31.0 => [4.87e-5, 2.01e-4, 9.09e-4, 2.54e-3],
+            s if s >= 11.0 => [2.95e-4, 1.50e-3, 6.17e-3, 1.77e-2],
+            s if s >= 5.0 => [2.45e-3, 8.22e-3, 3.17e-2, 9.40e-2],
+            _ => [9.94e-3, 2.79e-2, 1.04e-1, 3.10e-1],
         };
-        if tail >= 0.025 { at_95 } else { at_999 }
+        // 90%, 95%, 99%, 99.9%.
+        let column = match tail {
+            t if t >= 0.05 => 0,
+            t if t >= 0.025 => 1,
+            t if t >= 0.005 => 2,
+            _ => 3,
+        };
+        by_confidence[column]
     }
 
     /// The estimate against the exact interval, within the distance the
-    /// docs state for the shape. A confidence above 95% is held to the
-    /// 99.9% column.
+    /// docs state for the shape and the confidence.
     #[test]
     fn the_interval_is_as_close_to_exact_as_documented() {
         for (alpha, beta, count, exposure, confidence, lower, upper) in INTERVALS {
             let mut gp = estimator::<f64>(alpha, beta);
             gp.update(count, exposure);
             let got = gp.credible_interval(confidence);
-            let tail = if confidence > 0.95 { 0.0005 } else { 0.025 };
-            let limit = documented_error(alpha + count as f64, tail);
+            let limit = documented_distance(alpha + count as f64, (1.0 - confidence) / 2.0);
             assert!(
                 relative_error(got.lower, lower) < limit
                     && relative_error(got.upper, upper) < limit,

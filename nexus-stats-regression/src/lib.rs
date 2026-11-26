@@ -36,7 +36,7 @@
 //! | `Kalman2d` | 2D Kalman filter | — |
 //! | `Kalman3d` | 3D Kalman filter | — |
 //! | `BetaBinomial` | Beta-Binomial conjugate estimator | `std` or `libm` |
-//! | `GammaPoisson` | Gamma-Poisson conjugate estimator | `std` or `libm` |
+//! | `GammaPoisson` | Rate of a Poisson process, with an estimated credible interval | the interval needs `std` or `libm` |
 //! | `HawkesIntensity` | Intensity of a self-exciting point process | `std` or `libm` |
 //!
 //! # Re-export
