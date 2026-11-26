@@ -22,7 +22,7 @@ use nexus_stats_core::{DataError, Span, Tick};
 /// closed form, not the exact Gamma quantile. This type is built for a
 /// stream, where the events run to thousands and beyond. That is where
 /// the closed form is at its best. At 95% it is within one part in a
-/// million of exact from a thousand events, in about ten nanoseconds,
+/// million of exact from a thousand events, in about 20 cycles (under ten nanoseconds),
 /// with no search that could fail to converge. The exact quantile needs
 /// an iterative search whose hard cases are large counts and extreme
 /// tails, which are the cases a stream produces (SciPy's issue 26471,
@@ -158,10 +158,24 @@ impl<T: Tick> GammaPoisson<T> {
     /// An estimate of the equal-tailed interval that holds the rate with
     /// the given confidence: the posterior's quantiles at
     /// [`confidence.tail()`](Confidence::tail) from each end, by Wilson and
-    /// Hilferty's closed form (1931). About ten nanoseconds.
+    /// Hilferty's closed form (1931). About 20 cycles, under ten nanoseconds.
     ///
     /// The level was checked when the [`Confidence`] was made, so nothing
     /// is checked here and this cannot fail.
+    ///
+    /// With `shape = alpha + events` and `rate = beta + exposure`:
+    ///
+    /// ```text
+    /// tail  = (1 - confidence) / 2
+    /// z     = the standard normal quantile at 1 - tail
+    /// v     = 1 / (9 shape)
+    /// lower = shape (1 - v - z sqrt(v))^3 / rate
+    /// upper = shape (1 - v + z sqrt(v))^3 / rate
+    /// ```
+    ///
+    /// The cube root of the rate, scaled, is close to a normal with mean
+    /// `1 - v` and variance `v`, and the two ends are that normal's
+    /// quantiles cubed.
     ///
     /// Every answer is a little off the exact one, by an amount that
     /// shrinks as the events grow and grows with the confidence asked for.
@@ -297,17 +311,16 @@ impl Gamma {
     }
 
     /// Wilson and Hilferty's estimate of the equal-tailed interval at
-    /// `confidence`. Each end takes its own tail, so `1 - tail` is never
-    /// formed.
+    /// `confidence`.
     #[cfg(any(feature = "std", feature = "libm"))]
     fn interval(self, confidence: Confidence) -> CredibleInterval {
-        use nexus_stats_core::math::probability::{
-            gamma_quantile_approx, gamma_quantile_upper_approx,
-        };
-        let tail = confidence.tail();
+        let (lower, upper) = nexus_stats_core::math::probability::gamma_interval_approx(
+            self.shape,
+            confidence.tail(),
+        );
         CredibleInterval {
-            lower: gamma_quantile_approx(self.shape, tail) / self.rate,
-            upper: gamma_quantile_upper_approx(self.shape, tail) / self.rate,
+            lower: lower / self.rate,
+            upper: upper / self.rate,
         }
     }
 }

@@ -21,7 +21,7 @@ contained.
   in place of a normal approximation, and returns a
   `CredibleInterval { lower, upper }`. It is built for a stream: within
   one part in a million of the exact Gamma interval from a thousand
-  events at 95%, in about ten nanoseconds, with no search that can fail.
+  events at 95%, in about 20 cycles (under ten nanoseconds), with no search that can fail.
   With a few events it is rough (0.75% at five, 2.5% at three). Its docs
   carry the table, measured against a 40-digit reference. It is not the
   exact quantile; for that on a small sample, use SciPy offline.

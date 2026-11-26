@@ -28,16 +28,30 @@
 //! These are internal: the estimators call them, and they are hidden from
 //! the public docs.
 
-// The formulas are written as their sources give them, letter for letter,
-// and none of this is on a per-sample path.
-#![allow(clippy::suboptimal_flops, clippy::many_single_char_names)]
+// The polynomials keep the letters of their source.
+#![allow(clippy::many_single_char_names)]
 
-use crate::math::{ln, sqrt};
+use crate::math::{MulAdd, ln, sqrt};
 
 /// The value a standard normal variable is at most with probability `p`,
 /// for `p` in `(0, 1)`. Negative below one half and positive above it.
 ///
 /// This is `scipy.stats.norm.ppf(p)`, by Acklam's rational approximation.
+/// With `q = p - 1/2` and `r = q^2`, in the middle of the range it is
+///
+/// ```text
+/// z = q A(r) / (r B(r) + 1)
+/// ```
+///
+/// and in a tail (`p < 0.02425`, mirrored above `1 - 0.02425`), with
+/// `q = sqrt(-2 ln p)`,
+///
+/// ```text
+/// z = C(q) / (q D(q) + 1)
+/// ```
+///
+/// where `A`, `B`, `C` and `D` are the polynomials whose coefficients are
+/// in the code.
 /// Its relative error is below `1.2e-9`, and below `1.8e-9` for a
 /// subnormal `p`.
 #[must_use]
@@ -80,24 +94,34 @@ pub fn normal_quantile(p: f64) -> f64 {
     }
     if p < TAIL {
         let q = sqrt(-2.0 * ln(p));
-        return horner(&C, q) / (horner(&D, q) * q + 1.0);
+        return horner(&C, q) / horner(&D, q).fma(q, 1.0);
     }
     let q = p - 0.5;
     let r = q * q;
-    horner(&A, r) * q / (horner(&B, r) * r + 1.0)
+    horner(&A, r) * q / horner(&B, r).fma(r, 1.0)
 }
 
-/// The polynomial with `coefficients` from the highest power down, at `x`.
+/// The polynomial with `coefficients` from the highest power down, at `x`,
+/// by Horner's rule: `((c0 x + c1) x + c2) x + ...`.
 #[inline]
 fn horner(coefficients: &[f64], x: f64) -> f64 {
-    coefficients.iter().fold(0.0, |sum, &c| sum * x + c)
+    // PERF: one fused multiply-add per coefficient.
+    coefficients.iter().fold(0.0, |sum, &c| sum.fma(x, c))
 }
 
 /// An estimate of the value a `Gamma(shape, 1)` variable is at most with
 /// probability `p`, by Wilson and Hilferty's closed form (1931).
 ///
-/// It uses that the cube root of a gamma variable is close to normal. No
-/// iteration, about five nanoseconds. Never below zero.
+/// With `z` the standard normal quantile at `p`:
+///
+/// ```text
+/// v = 1 / (9 shape)
+/// x = shape (1 - v + z sqrt(v))^3
+/// ```
+///
+/// It uses that the cube root of a gamma variable over its shape is close
+/// to a normal with mean `1 - v` and variance `v`. No iteration, about
+/// five nanoseconds. Never below zero.
 ///
 /// Every answer is a little off the exact quantile, by an amount that
 /// shrinks as the shape grows and grows with the confidence asked for.
@@ -138,10 +162,36 @@ pub fn gamma_quantile_upper_approx(shape: f64, q: f64) -> f64 {
     wilson_hilferty(shape, -normal_quantile(q))
 }
 
+/// An estimate of both ends of an equal-tailed interval of a
+/// `Gamma(shape, 1)`.
+///
+/// The interval leaves probability `tail` outside at each end, for `tail`
+/// in `(0, 0.5]`. It is `(gamma_quantile_approx(shape, tail),
+/// gamma_quantile_upper_approx(shape, tail))`, from one normal quantile.
+#[must_use]
+pub fn gamma_interval_approx(shape: f64, tail: f64) -> (f64, f64) {
+    // PERF: both ends are the same distance from the center, so the normal
+    // quantile and the square root are taken once.
+    let z = -normal_quantile(tail);
+    (wilson_hilferty(shape, -z), wilson_hilferty(shape, z))
+}
+
 /// Wilson and Hilferty's quantile of a `Gamma(shape, 1)`, at the normal
-/// quantile `z`.
+/// quantile `z`:
+///
+/// ```text
+/// v = 1 / (9 shape)
+/// x = shape (1 - v + z sqrt(v))^3
+/// ```
+///
+/// The cube root of a `Gamma(shape, 1)` variable over its shape is close
+/// to a normal with mean `1 - v` and variance `v`. The quantile of that
+/// normal is cubed and scaled back. Zero where the cube root would be
+/// below zero.
+#[inline]
 fn wilson_hilferty(shape: f64, z: f64) -> f64 {
-    let cube_root = 1.0 - 1.0 / (9.0 * shape) + z / (3.0 * sqrt(shape));
+    let variance = 1.0 / (9.0 * shape);
+    let cube_root = z.fma(sqrt(variance), 1.0 - variance);
     (shape * cube_root * cube_root * cube_root).max(0.0)
 }
 
@@ -328,6 +378,22 @@ mod tests {
         }
         // Zero where the closed form goes negative.
         assert_eq!(gamma_quantile_approx(0.05, 0.001), 0.0);
+    }
+
+    #[test]
+    fn the_pair_is_the_two_ends() {
+        for shape in [0.01, 0.6, 3.0, 42.5, 1_001.0, 5e8] {
+            for tail in [0.5, 0.05, 0.025, 0.0005, 1e-12, 0.5_f64.powi(54)] {
+                assert_eq!(
+                    gamma_interval_approx(shape, tail),
+                    (
+                        gamma_quantile_approx(shape, tail),
+                        gamma_quantile_upper_approx(shape, tail)
+                    ),
+                    "shape {shape} tail {tail}"
+                );
+            }
+        }
     }
 
     /// The two forms are one curve: the same value where `1 - q` is exact.

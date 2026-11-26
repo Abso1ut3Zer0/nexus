@@ -1768,6 +1768,26 @@ fn bench_gamma_poisson_update(samples: &mut [u64]) {
     }
 }
 
+/// The credible interval at a given confidence, on a posterior fed
+/// between calls so the shape differs each time.
+fn bench_gamma_poisson_interval(samples: &mut [u64], level: f64) {
+    let confidence = nexus_stats::Confidence::new(level);
+    let mut g = GammaPoisson::<f64>::builder().build().unwrap();
+    let mut rng = 12345u64;
+    for _ in 0..WARMUP {
+        g.update(next_val(&mut rng) % 10, 1.0);
+    }
+    for s in samples.iter_mut() {
+        g.update(next_val(&mut rng) % 10, 1.0);
+        let start = rdtsc_start();
+        for _ in 0..BATCH {
+            black_box(black_box(&g).credible_interval(black_box(confidence)));
+        }
+        let end = rdtsc_end();
+        *s = (end - start) / BATCH;
+    }
+}
+
 fn bench_polynomial_update(samples: &mut [u64], degree: usize) {
     let mut r = PolynomialRegression::builder()
         .degree(degree)
@@ -2508,6 +2528,10 @@ fn main() {
     print_row("BetaBinomial::credible_interval", &mut buf);
     bench_gamma_poisson_update(&mut buf);
     print_row("GammaPoisson::update", &mut buf);
+    bench_gamma_poisson_interval(&mut buf, 0.95);
+    print_row("GammaPoisson::credible_interval(95%)", &mut buf);
+    bench_gamma_poisson_interval(&mut buf, 0.999);
+    print_row("GammaPoisson::credible_interval(99.9%)", &mut buf);
     bench_sprt_bernoulli(&mut buf);
     print_row("SprtBernoulli::update", &mut buf);
     bench_sprt_gaussian(&mut buf);
