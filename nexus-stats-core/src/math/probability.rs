@@ -1,56 +1,45 @@
-//! Cumulative probabilities and quantiles of the probability distributions
-//! the estimators use.
+//! Quantiles of the probability distributions the estimators use.
 //!
-//! Two questions about a distribution come up when an estimate needs an
-//! interval or a tail probability:
+//! A quantile is the value a distribution stays at or below with a given
+//! probability. A 95% interval is the pair of quantiles that leave 2.5%
+//! below and 2.5% above.
 //!
-//! - **The cumulative probability** (`..._cdf`): the chance that a value
-//!   drawn from the distribution is at most `x`.
-//! - **The quantile** (`..._quantile`): the reverse. The `x` that a value
-//!   is at most with probability `p`. A 95% interval is the pair of
-//!   quantiles at 0.025 and 0.975.
+//! Everything here is a closed form. Each is a few operations, with no
+//! iteration, no search and no table. Nothing can fail to converge. These are estimates
+//! built for streaming, where the counts are large. Each function states
+//! how close it is, measured against a 40-digit reference.
 //!
-//! Neither has a formula in elementary functions for the distributions
-//! here, so each is computed to convergence. Nothing in this module is a
-//! table. The functions are named for the distribution and the question,
-//! and each matches the SciPy function its docs name, which is what its
-//! tests check against.
-//!
-//! | Function | SciPy |
-//! |---|---|
-//! | `normal_quantile` | `scipy.stats.norm.ppf(p)` |
-//! | `gamma_cdf` | `scipy.stats.gamma.cdf(x, shape)`, which is `scipy.special.gammainc(shape, x)` |
-//! | `gamma_quantile` | `scipy.stats.gamma.ppf(p, shape)` |
-//! | `gamma_quantile_approx` | the same, by a closed form that is fast and less accurate |
+//! | Function | What it estimates | SciPy's exact form |
+//! |---|---|---|
+//! | `normal_quantile` | the standard normal quantile | `scipy.stats.norm.ppf(p)` |
+//! | `gamma_quantile_approx` | the quantile of a `Gamma(shape, 1)` counted from below | `scipy.stats.gamma.ppf(p, shape)` |
+//! | `gamma_quantile_upper_approx` | the same counted from above | `scipy.stats.gamma.isf(q, shape)` |
 //!
 //! The gamma functions take the shape only and assume a rate of one. For a
-//! `Gamma(shape, rate)`, divide a quantile by the rate, and multiply `x`
-//! by the rate before asking for its cumulative probability.
+//! `Gamma(shape, rate)`, divide the quantile by the rate.
+//!
+//! There is no exact gamma quantile here, on purpose. The exact one needs
+//! an iterative search over the incomplete gamma function, whose hard cases
+//! are large shapes and extreme tails (SciPy's issue 26471, open in 2026,
+//! is one about large shapes). Large shapes are where a streaming
+//! estimator lives. The closed form is at its best there. For exact values
+//! on a small sample, compute them offline with SciPy or R.
 //!
 //! These are internal: the estimators call them, and they are hidden from
-//! the public docs. A caller of this library reads an estimator's own
-//! methods, such as `GammaPoisson::credible_interval`.
-//!
-//! To add a distribution, name the functions the same way, cite the
-//! method, and test against SciPy across the range of every argument,
-//! including the tails and the largest and smallest shapes.
+//! the public docs.
 
 // The formulas are written as their sources give them, letter for letter,
 // and none of this is on a per-sample path.
 #![allow(clippy::suboptimal_flops, clippy::many_single_char_names)]
 
-use crate::math::{exp, ln, ln_gamma, sqrt};
-
-/// Above this shape the gamma quantile uses Wilson and Hilferty's form,
-/// which is within one part in a million of the exact value from here up.
-/// The exact iteration costs more as the shape grows.
-const EXACT_SHAPE_LIMIT: f64 = 10_000.0;
+use crate::math::{ln, sqrt};
 
 /// The value a standard normal variable is at most with probability `p`,
 /// for `p` in `(0, 1)`. Negative below one half and positive above it.
 ///
-/// This is `scipy.stats.norm.ppf(p)`, by Acklam's rational approximation,
-/// with a relative error below `1.2e-9`.
+/// This is `scipy.stats.norm.ppf(p)`, by Acklam's rational approximation.
+/// Its relative error is below `1.2e-9`, and below `1.8e-9` for a
+/// subnormal `p`.
 #[must_use]
 #[allow(clippy::excessive_precision, clippy::unreadable_literal)]
 pub fn normal_quantile(p: f64) -> f64 {
@@ -104,151 +93,53 @@ fn horner(coefficients: &[f64], x: f64) -> f64 {
     coefficients.iter().fold(0.0, |sum, &c| sum * x + c)
 }
 
-/// The probability that a `Gamma(shape, 1)` variable is at most `x`. For
-/// `shape > 0`. Zero for `x` at or below zero.
-///
-/// In the textbooks this is the regularized lower incomplete gamma
-/// function, `P(shape, x)`. It is `scipy.special.gammainc(shape, x)`,
-/// to eleven digits.
-///
-/// A series below `x = shape + 1` and a continued fraction above it, each
-/// run to convergence (Numerical Recipes 6.2).
-#[must_use]
-pub fn gamma_cdf(shape: f64, x: f64) -> f64 {
-    gamma_p(shape, x, ln_gamma(shape))
-}
-
-/// [`gamma_cdf`] with `ln Gamma(a)` already in hand. `a` is the shape,
-/// named as in the source.
-fn gamma_p(a: f64, x: f64, ln_gamma_a: f64) -> f64 {
-    if x <= 0.0 {
-        return 0.0;
-    }
-    // `x^a e^-x / Gamma(a)`, the factor both forms share.
-    let scale = exp(a * ln(x) - x - ln_gamma_a);
-    if x < a + 1.0 {
-        return scale * series(a, x);
-    }
-    1.0 - scale * continued_fraction(a, x)
-}
-
-/// The most terms either form takes. Both converge in a few times
-/// `sqrt(a)` terms, far below this for any shape under the exact limit.
-const MAX_TERMS: u32 = 100_000;
-
-/// `sum of x^n / (a (a+1) ... (a+n))`, for `x < a + 1`.
-fn series(a: f64, x: f64) -> f64 {
-    let mut term = 1.0 / a;
-    let mut sum = term;
-    let mut denominator = a;
-    for _ in 0..MAX_TERMS {
-        denominator += 1.0;
-        term *= x / denominator;
-        sum += term;
-        if term < sum * f64::EPSILON {
-            break;
-        }
-    }
-    sum
-}
-
-/// Lentz's evaluation of the continued fraction for the upper function,
-/// for `x >= a + 1`.
-fn continued_fraction(a: f64, x: f64) -> f64 {
-    /// Stands in for a zero denominator.
-    const TINY: f64 = 1e-300;
-    let nonzero = |v: f64| if v.abs() < TINY { TINY } else { v };
-
-    let mut b = x + 1.0 - a;
-    let mut c = 1.0 / TINY;
-    let mut d = 1.0 / nonzero(b);
-    let mut value = d;
-    for i in 1..MAX_TERMS {
-        let i = f64::from(i);
-        let numerator = -i * (i - a);
-        b += 2.0;
-        d = 1.0 / nonzero(numerator * d + b);
-        c = nonzero(b + numerator / c);
-        let factor = d * c;
-        value *= factor;
-        if (factor - 1.0).abs() < f64::EPSILON {
-            break;
-        }
-    }
-    value
-}
-
-/// The value a `Gamma(shape, 1)` variable is at most with probability
-/// `p`: the `x` with `gamma_cdf(shape, x) = p`. For `shape > 0` and `p` in
-/// `(0, 1)`. Divide by the rate for a `Gamma(shape, rate)`.
-///
-/// This is `scipy.stats.gamma.ppf(p, shape)`, to ten digits up to a shape
-/// of 10,000. It starts from [`gamma_quantile_approx`] and refines it with
-/// Halley steps on [`gamma_cdf`] (Numerical Recipes 6.2.1). Above a shape
-/// of 10,000 it returns that estimate, which is within one part in a
-/// million there and costs far less than the iteration would. A quantile too
-/// small for an `f64` (a small shape with a small `p`) is zero.
-#[must_use]
-pub fn gamma_quantile(shape: f64, p: f64) -> f64 {
-    /// Stop when a step moves the answer by less than this fraction.
-    const TOLERANCE: f64 = 1e-13;
-    const MAX_STEPS: u32 = 32;
-
-    if shape > EXACT_SHAPE_LIMIT {
-        return gamma_quantile_approx(shape, p);
-    }
-    let ln_gamma_shape = ln_gamma(shape);
-    let mut x = starting_quantile(shape, p, ln_gamma_shape);
-    if x == 0.0 {
-        return 0.0;
-    }
-    for _ in 0..MAX_STEPS {
-        let error = gamma_p(shape, x, ln_gamma_shape) - p;
-        let density = exp((shape - 1.0) * ln(x) - x - ln_gamma_shape);
-        if density == 0.0 {
-            break;
-        }
-        // Halley's step: Newton's, corrected by the density's slope.
-        let newton = error / density;
-        let curvature = newton * ((shape - 1.0) / x - 1.0);
-        let step = newton / (1.0 - 0.5 * curvature.min(1.0));
-        // Never past zero: halve instead.
-        x = if step < x { x - step } else { 0.5 * x };
-        if step.abs() < TOLERANCE * x {
-            break;
-        }
-    }
-    x
-}
-
-/// Where the iteration starts. Wilson and Hilferty's estimate, or the
-/// small-`x` form `(p Gamma(shape + 1))^(1/shape)` where that estimate is
-/// not usable (a shape below one, or an estimate at or below zero). Zero
-/// if the small-`x` form is below the smallest positive `f64`.
-fn starting_quantile(shape: f64, p: f64, ln_gamma_shape: f64) -> f64 {
-    let estimate = gamma_quantile_approx(shape, p);
-    if shape >= 1.0 && estimate > 0.0 {
-        return estimate;
-    }
-    let small = exp((ln(p) + ln_gamma_shape + ln(shape)) / shape);
-    if small < f64::MIN_POSITIVE {
-        return 0.0;
-    }
-    small
-}
-
-/// A fast estimate of [`gamma_quantile`], by Wilson and Hilferty's closed
-/// form (1931).
+/// An estimate of the value a `Gamma(shape, 1)` variable is at most with
+/// probability `p`, by Wilson and Hilferty's closed form (1931).
 ///
 /// It uses that the cube root of a gamma variable is close to normal. No
 /// iteration, about five nanoseconds. Never below zero.
 ///
-/// Against the exact quantile, over `p` from 0.005 to 0.995, it is within
-/// 3% from a shape of 5, within 0.6% from 11, within 0.02% from 100, and
-/// poor below 5.
+/// Every answer is a little off the exact quantile, by an amount that
+/// shrinks as the shape grows. This is how far, as a fraction of the
+/// value, for a tail of 0.025 (the lower end of a 95% interval) and of
+/// 0.0005 (of a 99.9% one). It is a distance, not a rate of failure.
+///
+/// | Shape | At 95% | At 99.9% |
+/// |---|---|---|
+/// | 3 | 2.5% | 28% |
+/// | 5 | 0.75% | 8.6% |
+/// | 11 | 0.14% | 1.6% |
+/// | 31 | 0.02% | 0.23% |
+/// | 101 | 0.0023% | 0.031% |
+/// | 1,001 | 6 in 10 million | 8 in a million |
+/// | 10,001 | 2 in 100 million | 2.5 in 10 million |
+/// | 1,000,001 | 2 in 100 billion | 2.4 in 10 billion |
+///
+/// It keeps improving beyond that, to about `2e-13` at a shape of `1e8`.
+/// Below a shape of 3 it is poor. It is zero where the closed form goes
+/// negative, which at a tail of 0.025 is a shape below about 0.63.
 #[must_use]
 pub fn gamma_quantile_approx(shape: f64, p: f64) -> f64 {
-    let cube_root = 1.0 - 1.0 / (9.0 * shape) + normal_quantile(p) / (3.0 * sqrt(shape));
+    wilson_hilferty(shape, normal_quantile(p))
+}
+
+/// An estimate of the value a `Gamma(shape, 1)` variable exceeds with
+/// probability `q`: [`gamma_quantile_approx`] counted from above.
+///
+/// It is `gamma_quantile_approx(shape, 1 - q)` without forming `1 - q`,
+/// which has no digits left when `q` is tiny. An interval takes its upper
+/// end from here. At the shapes and tails in that table it is at least as
+/// close as the lower end. It too is poor for a small shape, and it is
+/// zero below a shape of about 0.02.
+#[must_use]
+pub fn gamma_quantile_upper_approx(shape: f64, q: f64) -> f64 {
+    wilson_hilferty(shape, -normal_quantile(q))
+}
+
+/// Wilson and Hilferty's quantile of a `Gamma(shape, 1)`, at the normal
+/// quantile `z`.
+fn wilson_hilferty(shape: f64, z: f64) -> f64 {
+    let cube_root = 1.0 - 1.0 / (9.0 * shape) + z / (3.0 * sqrt(shape));
     (shape * cube_root * cube_root * cube_root).max(0.0)
 }
 
@@ -257,7 +148,48 @@ pub fn gamma_quantile_approx(shape: f64, p: f64) -> f64 {
 mod tests {
     use super::*;
 
-    // Reference values from SciPy 1.18.1.
+    /// `(shape, tail, lower, upper)`: the exact quantiles of a `Gamma(shape, 1)`
+    /// with probability `tail` below `lower` and above `upper`, from mpmath
+    /// 1.4.1 at 40 digits (`gammainc(..., regularized=True)` inverted by
+    /// `findroot`). SciPy 1.18.1's `gamma.ppf` / `gamma.isf` agree to 15 digits.
+    const EXACT_QUANTILES: [(f64, f64, f64, f64); 36] = [
+        (3.0, 0.05, 0.8176914471639534, 6.29579362187199),
+        (3.0, 0.025, 0.6186721228956013, 7.224687667723961),
+        (3.0, 0.005, 0.3378633887277333, 9.273792089255545),
+        (3.0, 0.0005, 0.14970384992316443, 12.051399497491746),
+        (5.0, 0.05, 1.97014956805953, 9.153519026637573),
+        (5.0, 0.025, 1.6234863901184207, 10.241588675403698),
+        (5.0, 0.005, 1.0779282406523194, 12.594089785985586),
+        (5.0, 0.0005, 0.6324910403321942, 15.7099062537001),
+        (11.0, 0.05, 6.1690072893953225, 16.9622192357219),
+        (11.0, 0.025, 5.491160367236838, 18.39035604201778),
+        (11.0, 0.005, 4.321358200333207, 21.39782749965427),
+        (11.0, 0.0005, 3.202234075470444, 25.255559379265975),
+        (31.0, 0.05, 22.44451178212511, 40.69050759444955),
+        (31.0, 0.025, 21.062995979141853, 42.82686539480767),
+        (31.0, 0.005, 18.53420768385046, 47.20932647393723),
+        (31.0, 0.0005, 15.87399253850506, 52.64472948300404),
+        (101.0, 0.05, 85.05714501910897, 118.07927278209706),
+        (101.0, 0.025, 82.26615879303894, 121.62679379242638),
+        (101.0, 0.005, 76.99203340575258, 128.76058012010245),
+        (101.0, 0.0005, 71.16633647098456, 137.37529372057548),
+        (1001.0, 0.05, 949.533845394138, 1053.6031221333008),
+        (1001.0, 0.025, 939.9420337524415, 1063.952136016302),
+        (1001.0, 0.005, 921.3833286958388, 1084.3728680643892),
+        (1001.0, 0.0005, 900.1566743726239, 1108.3940211570052),
+        (10001.0, 0.05, 9837.076886694862, 10166.060136127071),
+        (10001.0, 0.025, 9805.942667599955, 10197.951624661473),
+        (10001.0, 0.005, 9745.282730737363, 10260.473826873618),
+        (10001.0, 0.0005, 9675.20318057752, 10333.348428605632),
+        (100001.0, 0.05, 99481.41814605017, 100521.71888230444),
+        (100001.0, 0.025, 99382.1495647746, 100621.74473974388),
+        (100001.0, 0.005, 99188.3255604309, 100817.43103329056),
+        (100001.0, 0.0005, 98963.7136238891, 101044.8380767309),
+        (1000001.0, 0.05, 998356.7142612911, 1001646.4227676168),
+        (1000001.0, 0.025, 998041.982360312, 1001961.9119454322),
+        (1000001.0, 0.005, 997427.0477333264, 1002578.7088640063),
+        (1000001.0, 0.0005, 996713.7471282742, 1003294.8045814902),
+    ];
     /// `(p, scipy.stats.norm.ppf(p))`
     const NORMAL_QUANTILES: [(f64, f64); 9] = [
         (1e-09, -5.9978070150076865),
@@ -269,115 +201,6 @@ mod tests {
         (0.8, 0.8416212335729143),
         (0.975, 1.959963984540054),
         (0.999999, 4.753424308817087),
-    ];
-    /// `(a, x, scipy.special.gammainc(a, x))`
-    const GAMMA_P: [(f64, f64, f64); 15] = [
-        (0.05, 0.001, 0.7271792290529225),
-        (0.5, 0.2, 0.47291074313446196),
-        (0.5, 3.0, 0.9856941215645704),
-        (1.0, 1.0, 0.6321205588285577),
-        (2.5, 0.4, 0.022966656243073737),
-        (2.5, 6.0, 0.9652122194937581),
-        (10.0, 3.0, 0.0011024881301154815),
-        (10.0, 10.0, 0.5420702855281478),
-        (10.0, 25.0, 0.9997785233617512),
-        (100.0, 80.0, 0.0171083130351331),
-        (100.0, 101.0, 0.5528962934345113),
-        (100.0, 140.0, 0.9998389428252874),
-        (3000.0, 2900.0, 0.032859991921121025),
-        (3000.0, 3100.0, 0.9649999863009537),
-        (9999.0, 10050.0, 0.6958470035681733),
-    ];
-    /// `(shape, p, scipy.stats.gamma.ppf(p, shape))`
-    const GAMMA_QUANTILES: [(f64, f64, f64); 70] = [
-        (0.05, 1e-06, 5.844632057286552e-121),
-        (0.05, 0.005, 5.573875481878775e-47),
-        (0.05, 0.025, 5.31566188991436e-33),
-        (0.05, 0.5, 5.573878440746256e-07),
-        (0.05, 0.975, 0.5671737617538583),
-        (0.05, 0.995, 1.5446254665734744),
-        (0.05, 0.999999, 8.696862667893743),
-        (0.5, 1e-06, 7.853981633978593e-13),
-        (0.5, 0.005, 1.9635211110257972e-05),
-        (0.5, 0.025, 0.0004910345585876278),
-        (0.5, 0.5, 0.227468211559786),
-        (0.5, 0.975, 2.511943093657444),
-        (0.5, 0.995, 3.9397192883112084),
-        (0.5, 0.999999, 11.964063488439734),
-        (1.0, 1e-06, 1.0000005000003338e-06),
-        (1.0, 0.005, 0.005012541823544282),
-        (1.0, 0.025, 0.025317807984289876),
-        (1.0, 0.5, 0.6931471805599455),
-        (1.0, 0.975, 3.6888794541139354),
-        (1.0, 0.995, 5.298317366548036),
-        (1.0, 0.999999, 13.815510557935518),
-        (2.0, 1e-06, 0.0014148806614793436),
-        (2.0, 0.005, 0.103494546748091),
-        (2.0, 0.025, 0.24220927854396496),
-        (2.0, 0.5, 1.6783469900166612),
-        (2.0, 0.975, 5.571643390938898),
-        (2.0, 0.995, 7.430129500280121),
-        (2.0, 0.999999, 16.68842079082944),
-        (5.0, 1e-06, 0.16906300162147725),
-        (5.0, 0.005, 1.0779282406523194),
-        (5.0, 0.025, 1.6234863901184207),
-        (5.0, 0.5, 4.670908882795985),
-        (5.0, 0.975, 10.241588675403694),
-        (5.0, 0.995, 12.594089785985584),
-        (5.0, 0.999999, 23.43152342335784),
-        (11.0, 1e-06, 1.595883879479403),
-        (11.0, 0.005, 4.321358200333207),
-        (11.0, 0.025, 5.49116036723684),
-        (11.0, 0.5, 10.668522403836317),
-        (11.0, 0.975, 18.39035604201778),
-        (11.0, 0.995, 21.397827499654273),
-        (11.0, 0.999999, 34.427884340321256),
-        (31.0, 1e-06, 11.289152878124826),
-        (31.0, 0.005, 18.53420768385046),
-        (31.0, 0.025, 21.062995979141853),
-        (31.0, 0.5, 30.667311387657918),
-        (31.0, 0.975, 42.82686539480766),
-        (31.0, 0.995, 47.20932647393722),
-        (31.0, 0.999999, 64.97431844523122),
-        (101.0, 1e-06, 60.200484910958565),
-        (101.0, 0.005, 76.99203340575258),
-        (101.0, 0.025, 82.26615879303894),
-        (101.0, 0.5, 100.66686294933625),
-        (101.0, 0.975, 121.62679379242638),
-        (101.0, 0.995, 128.76058012010245),
-        (101.0, 0.999999, 156.1552909398307),
-        (1001.0, 1e-06, 857.7395464777528),
-        (1001.0, 0.005, 921.3833286958389),
-        (1001.0, 0.025, 939.9420337524415),
-        (1001.0, 0.5, 1000.6666864072174),
-        (1001.0, 0.975, 1063.952136016302),
-        (1001.0, 0.995, 1084.3728680643892),
-        (1001.0, 0.999999, 1158.653019939093),
-        (9000.0, 1e-06, 8556.226986017622),
-        (9000.0, 0.005, 8757.51392791989),
-        (9000.0, 0.025, 8815.010448278765),
-        (9000.0, 0.5, 8999.666668861542),
-        (9000.0, 0.975, 9186.883842467863),
-        (9000.0, 0.995, 9246.242625228375),
-        (9000.0, 0.999999, 9458.169249890654),
-    ];
-    /// `(shape, p, scipy.stats.gamma.ppf(p, shape))` above the hand-off.
-    const LARGE_SHAPE_QUANTILES: [(f64, f64, f64); 15] = [
-        (20000.0, 0.005, 19637.601199973433),
-        (20000.0, 0.025, 19723.767600607054),
-        (20000.0, 0.5, 19999.66666765434),
-        (20000.0, 0.975, 20278.126698463333),
-        (20000.0, 0.995, 20366.15537769735),
-        (100000.0, 0.005, 99187.32963316483),
-        (100000.0, 0.025, 99381.15266374472),
-        (100000.0, 0.5, 99999.6666668642),
-        (100000.0, 0.975, 100620.74164077373),
-        (100000.0, 0.995, 100816.42696055658),
-        (1000000.0, 0.005, 997426.0490212408),
-        (1000000.0, 0.025, 998040.9833402939),
-        (1000000.0, 0.5, 999999.6666666864),
-        (1000000.0, 0.975, 1001960.9109654503),
-        (1000000.0, 0.995, 1002577.707576092),
     ];
 
     fn relative_error(got: f64, want: f64) -> f64 {
@@ -412,122 +235,119 @@ mod tests {
         assert_eq!(normal_quantile(0.5), 0.0);
     }
 
-    #[test]
-    fn the_incomplete_gamma_function_matches_scipy() {
-        for (a, x, want) in GAMMA_P {
-            let got = gamma_cdf(a, x);
-            assert!(
-                relative_error(got, want) < 1e-11,
-                "P({a}, {x}): {got} vs {want}"
-            );
-        }
-        assert_eq!(gamma_cdf(3.0, 0.0), 0.0);
-        assert_eq!(gamma_cdf(3.0, -1.0), 0.0);
-        assert_eq!(gamma_cdf(3.0, 1e6), 1.0);
+    /// The largest distance from exact the docs state for the lower end,
+    /// by shape, with about a tenth of room. `tail` picks the column: 95%
+    /// for a tail of 0.025 or more, 99.9% below that.
+    fn documented_error(shape: f64, tail: f64) -> f64 {
+        let (at_95, at_999) = match shape {
+            s if s >= 1_000_001.0 => (1.9e-11, 2.6e-10),
+            s if s >= 100_001.0 => (5.2e-10, 8.0e-9),
+            s if s >= 10_001.0 => (1.7e-8, 2.6e-7),
+            s if s >= 1_001.0 => (5.8e-7, 8.6e-6),
+            s if s >= 101.0 => (2.4e-5, 3.2e-4),
+            s if s >= 31.0 => (1.9e-4, 2.4e-3),
+            s if s >= 11.0 => (1.4e-3, 1.65e-2),
+            s if s >= 5.0 => (7.6e-3, 8.8e-2),
+            _ => (2.6e-2, 2.9e-1),
+        };
+        if tail >= 0.025 { at_95 } else { at_999 }
     }
 
-    /// `P(1, x) = 1 - e^-x`, and `P(a, x)` rises with `x`.
+    /// Both ends of a 95% and of a 99.9% interval against the exact
+    /// quantiles, within the distance the docs state for each shape.
     #[test]
-    fn the_incomplete_gamma_function_has_its_known_shape() {
-        for x in [0.01, 0.5, 1.9, 2.1, 7.0, 30.0] {
-            let want = -f64::exp_m1(-x);
-            assert!(relative_error(gamma_cdf(1.0, x), want) < 1e-14, "x {x}");
-        }
-        for a in [0.3, 4.0, 250.0] {
-            let mut last = 0.0;
-            for step in 1..200 {
-                let p = gamma_cdf(a, a * f64::from(step) / 50.0);
-                assert!(p >= last && p <= 1.0, "a {a} step {step}");
-                last = p;
+    fn the_estimate_is_as_close_to_exact_as_documented() {
+        for (shape, tail, lower, upper) in EXACT_QUANTILES {
+            if tail != 0.025 && tail != 0.0005 {
+                continue;
             }
-        }
-    }
-
-    #[test]
-    fn the_gamma_quantile_matches_scipy() {
-        for (shape, p, want) in GAMMA_QUANTILES {
-            let got = gamma_quantile(shape, p);
+            let limit = documented_error(shape, tail);
+            let got = (
+                gamma_quantile_approx(shape, tail),
+                gamma_quantile_upper_approx(shape, tail),
+            );
             assert!(
-                relative_error(got, want) < 1e-10,
-                "shape {shape} p {p}: {got} vs {want}"
+                relative_error(got.0, lower) < limit && relative_error(got.1, upper) < limit,
+                "shape {shape} tail {tail}: {got:?} vs ({lower}, {upper}), limit {limit}"
             );
         }
     }
 
-    /// The quantile undoes `P`, across shapes and tails.
+    /// A tail between the two columns is between them in accuracy.
     #[test]
-    fn the_gamma_quantile_inverts_the_incomplete_gamma_function() {
-        for shape in [0.02, 0.7, 1.0, 3.5, 48.0, 700.0, 9_999.0] {
-            for p in [1e-8, 1e-3, 0.1, 0.5, 0.9, 0.999, 1.0 - 1e-8] {
-                let x = gamma_quantile(shape, p);
-                if x == 0.0 {
-                    continue; // too small for an `f64`: the next test
+    fn a_tail_in_between_is_no_worse_than_the_smaller_one() {
+        for (shape, tail, lower, upper) in EXACT_QUANTILES {
+            let limit = documented_error(shape, 0.0005);
+            let got = (
+                gamma_quantile_approx(shape, tail),
+                gamma_quantile_upper_approx(shape, tail),
+            );
+            assert!(
+                relative_error(got.0, lower) < limit && relative_error(got.1, upper) < limit,
+                "shape {shape} tail {tail}: {got:?} vs ({lower}, {upper})"
+            );
+        }
+    }
+
+    /// For a very small shape both ends are zero. The exact upper end is
+    /// not: at a shape of 0.01 it is 0.0471 for a tail of 0.025.
+    #[test]
+    fn a_very_small_shape_gives_zero_at_both_ends() {
+        assert_eq!(gamma_quantile_approx(0.01, 0.025), 0.0);
+        assert_eq!(gamma_quantile_upper_approx(0.01, 0.025), 0.0);
+        // The lower end is zero up to a shape of about 0.63 at this tail.
+        assert_eq!(gamma_quantile_approx(0.6, 0.025), 0.0);
+        assert!(gamma_quantile_approx(0.65, 0.025) > 0.0);
+        // The upper end is back above zero well before that.
+        assert!(gamma_quantile_upper_approx(0.05, 0.025) > 0.2);
+    }
+
+    /// The error falls as the shape grows, at every tail.
+    #[test]
+    fn the_estimate_improves_with_the_shape() {
+        for tail in [0.05, 0.025, 0.005, 0.0005] {
+            let mut last = f64::INFINITY;
+            for (shape, row_tail, lower, _) in EXACT_QUANTILES {
+                if row_tail != tail {
+                    continue;
                 }
-                let back = gamma_cdf(shape, x);
+                let error = relative_error(gamma_quantile_approx(shape, tail), lower);
                 assert!(
-                    (back - p).abs() < 5e-11 * p.max(1e-3),
-                    "shape {shape} p {p}: {back}"
+                    error < last,
+                    "shape {shape} tail {tail}: {error} after {last}"
                 );
+                last = error;
             }
         }
     }
 
-    /// With a shape of 0.02 the `1e-8` quantile is about `1e-399`, which no
-    /// `f64` holds. The answer is zero, not a number from a failed search.
     #[test]
-    fn a_quantile_too_small_to_represent_is_zero() {
-        assert_eq!(gamma_quantile(0.02, 1e-8), 0.0);
-        assert_eq!(gamma_quantile(0.001, 0.4), 0.0);
-        // The same shape still has quantiles that do fit.
-        let x = gamma_quantile(0.02, 0.5);
-        assert!(x > 0.0 && (gamma_cdf(0.02, x) - 0.5).abs() < 1e-11);
-    }
-
-    #[test]
-    fn the_gamma_quantile_rises_with_p() {
-        for shape in [0.1, 1.0, 6.0, 90.0, 9_000.0, 50_000.0] {
-            let mut last = 0.0;
-            for step in 1..100 {
-                let x = gamma_quantile(shape, f64::from(step) / 100.0);
-                assert!(x > last, "shape {shape} step {step}");
+    fn the_estimate_rises_with_p_and_is_never_below_zero() {
+        for shape in [0.05, 1.0, 6.0, 90.0, 9_000.0, 5e8] {
+            let mut last = -1.0;
+            for exponent in (1..=40).rev() {
+                let x = gamma_quantile_approx(shape, 10f64.powi(-exponent));
+                assert!(x >= last && x >= 0.0, "shape {shape} p 1e-{exponent}");
+                last = x;
+            }
+            for exponent in 1..=40 {
+                let x = gamma_quantile_upper_approx(shape, 10f64.powi(-exponent));
+                assert!(x >= last && x.is_finite(), "shape {shape} q 1e-{exponent}");
                 last = x;
             }
         }
+        // Zero where the closed form goes negative.
+        assert_eq!(gamma_quantile_approx(0.05, 0.001), 0.0);
     }
 
-    /// Above the hand-off the estimate is the answer, within one part in a
-    /// million of SciPy. The two sides of the hand-off agree as closely.
+    /// The two forms are one curve: the same value where `1 - q` is exact.
     #[test]
-    fn a_large_shape_uses_the_estimate_within_one_part_in_a_million() {
-        for (shape, p, want) in LARGE_SHAPE_QUANTILES {
-            let got = gamma_quantile(shape, p);
-            assert_eq!(got, gamma_quantile_approx(shape, p));
-            assert!(relative_error(got, want) < 1e-6, "shape {shape} p {p}");
-        }
-        for p in [0.005, 0.025, 0.5, 0.975, 0.995] {
-            let below = gamma_quantile(EXACT_SHAPE_LIMIT, p);
-            let above = gamma_quantile(EXACT_SHAPE_LIMIT + 1.0, p);
-            assert!(
-                above > below && relative_error(above, below) < 1.1e-4,
-                "p {p}"
+    fn the_upper_form_is_the_lower_form_counted_from_above() {
+        for q in [0.5, 0.25, 0.125, 0.0625] {
+            assert_eq!(
+                gamma_quantile_upper_approx(40.0, q),
+                gamma_quantile_approx(40.0, 1.0 - q)
             );
         }
-    }
-
-    /// The accuracy the estimate's documentation states.
-    #[test]
-    fn the_estimate_is_as_accurate_as_documented() {
-        for (shape, limit) in [(5.0, 0.03), (11.0, 0.006), (101.0, 2e-4)] {
-            for p in [0.005, 0.025, 0.5, 0.975, 0.995] {
-                let exact = gamma_quantile(shape, p);
-                let estimate = gamma_quantile_approx(shape, p);
-                assert!(
-                    relative_error(estimate, exact) < limit,
-                    "shape {shape} p {p}: {estimate} vs {exact}"
-                );
-            }
-        }
-        // Never below zero, even where it is poor.
-        assert_eq!(gamma_quantile_approx(0.05, 0.001), 0.0);
     }
 }

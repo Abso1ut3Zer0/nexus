@@ -8,12 +8,31 @@ use nexus_stats_core::{DataError, Span, Tick};
 /// Feed it how many events were seen over how much exposure. It keeps a
 /// Gamma posterior over the rate, starting from a `Gamma(alpha, beta)`
 /// prior: after `k` events over an exposure of `t` the posterior is
-/// `Gamma(alpha + k, beta + t)`. The update is exact and costs two
-/// additions. See
+/// `Gamma(alpha + k, beta + t)`. The update is two additions. See
 /// [conjugate prior](https://en.wikipedia.org/wiki/Conjugate_prior).
 ///
 /// This type fits the rate. [`HawkesIntensity`](super::HawkesIntensity) is
 /// the model for events that cluster, and it is told its parameters.
+///
+/// # The interval is an estimate
+///
+/// [`credible_interval`](Self::credible_interval) is Wilson and Hilferty's
+/// closed form, not the exact Gamma quantile. This type is built for a
+/// stream, where the events run to thousands and beyond. That is where
+/// the closed form is at its best. At 95% it is within one part in a
+/// million of exact from a thousand events, in about ten nanoseconds,
+/// with no search that could fail to converge. The exact quantile needs
+/// an iterative search whose hard cases are large counts and extreme
+/// tails, which are the cases a stream produces (SciPy's issue 26471,
+/// open in 2026, is one about large counts).
+///
+/// With only a few events the estimate is rough (see the table on the
+/// method). For exact intervals on a small sample, compute them offline:
+/// `scipy.stats.gamma.interval(confidence, alpha + k, scale=1 / (beta + t))`
+/// with your prior's `alpha` and `beta`, and `k` and `t` from
+/// [`count`](Self::count) and [`exposure`](Self::exposure). To start this
+/// type from a rate `r` fitted offline, trusted as much as `n` events,
+/// build it with `alpha = n` and `beta = n / r`.
 ///
 /// # Weighting clock
 ///
@@ -87,7 +106,8 @@ impl<T: Tick> GammaPoisson<T> {
 
     /// Records `count` events over `exposure`.
     ///
-    /// The count is a `u64` and adds as `+` does. An exposure that is not
+    /// The count is a `u64` and adds as `+` does, so past `u64::MAX` it
+    /// panics in a debug build and wraps in a release one. An exposure that is not
     /// a number, or is below zero, corrupts the estimate from here on. See
     /// [`checked_update`](Self::checked_update).
     #[inline]
@@ -97,7 +117,9 @@ impl<T: Tick> GammaPoisson<T> {
     }
 
     /// Checked update. Records `count` events over `exposure`, or returns
-    /// an error and leaves the estimate unchanged.
+    /// an error and leaves the estimate unchanged. Only an `f64` span, or
+    /// a span type of your own, can be refused. A `Duration` or a counter
+    /// is never NaN, infinite or negative.
     ///
     /// # Errors
     ///
@@ -125,17 +147,36 @@ impl<T: Tick> GammaPoisson<T> {
         self.posterior().variance()
     }
 
-    /// The equal-tailed interval that holds the rate with probability
-    /// `confidence`: the posterior's quantiles at `(1 - confidence) / 2`
-    /// from each end.
+    /// An estimate of the equal-tailed interval that holds the rate with
+    /// probability `confidence`: the posterior's quantiles at
+    /// `(1 - confidence) / 2` from each end, by Wilson and Hilferty's
+    /// closed form (1931). About ten nanoseconds.
     ///
-    /// This is `scipy.stats.gamma.interval`, to ten digits while the
-    /// posterior's shape (the prior's `alpha` plus the events seen) is at
-    /// most 10,000 and to one part in a million above that. It runs a
-    /// short iteration and costs from a few hundred nanoseconds to a few
-    /// microseconds, more as the events grow.
-    /// [`approx_credible_interval`](Self::approx_credible_interval) is the
-    /// fast form.
+    /// Every answer is a little off the exact one, by an amount that
+    /// shrinks as the posterior's shape grows (the prior's `alpha` plus
+    /// the events seen). This is how far the lower end is from the exact
+    /// lower end, as a fraction of its value. It is a distance, not a rate
+    /// of failure. The same inputs always give the same answer.
+    ///
+    /// | Shape | At 95% | At 99.9% |
+    /// |---|---|---|
+    /// | 3 | 2.5% | 28% |
+    /// | 5 | 0.75% | 8.6% |
+    /// | 11 | 0.14% | 1.6% |
+    /// | 31 | 0.02% | 0.23% |
+    /// | 101 | 0.0023% | 0.031% |
+    /// | 1,001 | 6 in 10 million | 8 in a million |
+    /// | 10,001 | 2 in 100 million | 2.5 in 10 million |
+    /// | 1,000,001 | 2 in 100 billion | 2.4 in 10 billion |
+    ///
+    /// At these shapes the upper end is at least as close. With the
+    /// default prior and 100 events over 10 seconds, the exact 95%
+    /// interval is (7.47874, 11.05698) and this gives (7.47857, 11.05709).
+    ///
+    /// Below a shape of 3 the interval is poor. The lower end is zero
+    /// where the closed form goes negative, which at 95% is a shape below
+    /// about 0.63, and below about 0.02 both ends are zero. These are
+    /// measurements against a 40-digit reference, not proven bounds.
     ///
     /// # Panics
     ///
@@ -143,31 +184,7 @@ impl<T: Tick> GammaPoisson<T> {
     #[cfg(any(feature = "std", feature = "libm"))]
     #[must_use]
     pub fn credible_interval(&self, confidence: f64) -> CredibleInterval {
-        self.posterior().interval(
-            confidence,
-            nexus_stats_core::math::probability::gamma_quantile,
-        )
-    }
-
-    /// The same interval by Wilson and Hilferty's closed form (1931), in
-    /// about ten nanoseconds.
-    ///
-    /// Against [`credible_interval`](Self::credible_interval) at 95% it is
-    /// within 3% once the shape reaches 5, within 0.6% from 11 and within
-    /// 0.02% from 100. Below a shape of 5 the lower end is poor, and it is
-    /// zero where the closed form goes negative. Use it to compute an
-    /// interval per event, and the exact one to report.
-    ///
-    /// # Panics
-    ///
-    /// If `confidence` is not strictly between 0 and 1.
-    #[cfg(any(feature = "std", feature = "libm"))]
-    #[must_use]
-    pub fn approx_credible_interval(&self, confidence: f64) -> CredibleInterval {
-        self.posterior().interval(
-            confidence,
-            nexus_stats_core::math::probability::gamma_quantile_approx,
-        )
+        self.posterior().interval(confidence)
     }
 
     /// Events recorded since construction or `reset`, apart from the
@@ -268,18 +285,22 @@ impl Gamma {
         self.shape / (self.rate * self.rate)
     }
 
-    /// The equal-tailed interval at `confidence`, given the quantile of a
-    /// `Gamma(shape, 1)`.
+    /// Wilson and Hilferty's estimate of the equal-tailed interval at
+    /// `confidence`. Each end takes its own tail, so `1 - tail` is never
+    /// formed.
     #[cfg(any(feature = "std", feature = "libm"))]
-    fn interval(self, confidence: f64, unit_quantile: fn(f64, f64) -> f64) -> CredibleInterval {
+    fn interval(self, confidence: f64) -> CredibleInterval {
+        use nexus_stats_core::math::probability::{
+            gamma_quantile_approx, gamma_quantile_upper_approx,
+        };
         assert!(
             confidence > 0.0 && confidence < 1.0,
             "confidence must be strictly between 0 and 1"
         );
         let tail = (1.0 - confidence) / 2.0;
         CredibleInterval {
-            lower: unit_quantile(self.shape, tail) / self.rate,
-            upper: unit_quantile(self.shape, 1.0 - tail) / self.rate,
+            lower: gamma_quantile_approx(self.shape, tail) / self.rate,
+            upper: gamma_quantile_upper_approx(self.shape, tail) / self.rate,
         }
     }
 }
@@ -395,73 +416,73 @@ mod tests {
         assert!(interval.lower < gp.rate() && gp.rate() < interval.upper);
     }
 
-    // Reference values from SciPy 1.18.1:
-    // `scipy.stats.gamma.interval(confidence, alpha + k, scale=1/(beta + t))`
-    // for `(alpha, beta, k, t, confidence, lower, upper)`.
-    const INTERVALS: [(f64, f64, u64, f64, f64, f64, f64); 8] = [
+    // Exact intervals from mpmath 1.4.1 at 40 digits, the Gamma posterior's
+    // quantiles divided by its rate, for
+    // `(alpha, beta, k, t, confidence, lower, upper)`. SciPy 1.18.1's
+    // `gamma.interval(confidence, alpha + k, scale=1/(beta + t))` agrees.
+    const INTERVALS: [(f64, f64, u64, f64, f64, f64, f64); 7] = [
         (
             1.0,
             1.0,
-            0,
-            0.0,
-            0.95,
-            0.025317807984289897,
-            3.6888794541139354,
-        ),
-        (
-            1.0,
-            1.0,
-            1,
+            4,
             2.0,
             0.95,
-            0.08073642618132168,
-            1.8572144636462993,
+            0.5411621300394737,
+            3.4138628918012324,
         ),
-        (1.0, 1.0, 3, 0.5, 0.9, 0.9108789311665537, 5.16910435195515),
+        (
+            1.0,
+            1.0,
+            10,
+            0.5,
+            0.95,
+            3.6607735781578925,
+            12.260237361345185,
+        ),
         (
             1.0,
             1.0,
             100,
             10.0,
             0.95,
-            7.478741708458085,
+            7.478741708458086,
             11.056981253856945,
-        ),
-        (
-            0.5,
-            0.001,
-            7,
-            1.5,
-            0.99,
-            1.5326167793895207,
-            10.92648922244898,
         ),
         (
             2.5,
             3.0,
             40,
             12.25,
-            0.5,
-            2.4878926936015375,
-            3.0620966956212525,
+            0.9,
+            2.1229310108432786,
+            3.52530298264654,
         ),
         (
             1.0,
             1.0,
-            5000,
+            1000,
             60.0,
-            0.999,
-            78.22249447358747,
-            85.85212040513247,
+            0.99,
+            15.10464473271867,
+            17.776604394498182,
+        ),
+        (
+            0.5,
+            0.001,
+            5000,
+            1.5,
+            0.95,
+            3239.7416783669537,
+            3424.411738449448,
         ),
         (
             1.0,
             1.0,
-            20000,
+            1000000,
             3.0,
             0.95,
-            4931.190167786081,
-            5069.783406981602,
+            249510.495590078,
+            250490.47798635805,
         ),
     ];
 
@@ -469,56 +490,88 @@ mod tests {
         (got - want).abs() / want
     }
 
+    /// The largest distance from exact the docs state for the lower end,
+    /// by the posterior's shape, with about a tenth of room. `tail` picks
+    /// the column: 95% for a tail of 0.025 or more, 99.9% below that.
+    fn documented_error(shape: f64, tail: f64) -> f64 {
+        let (at_95, at_999) = match shape {
+            s if s >= 1_000_001.0 => (1.9e-11, 2.6e-10),
+            s if s >= 100_001.0 => (5.2e-10, 8.0e-9),
+            s if s >= 10_001.0 => (1.7e-8, 2.6e-7),
+            s if s >= 1_001.0 => (5.8e-7, 8.6e-6),
+            s if s >= 101.0 => (2.4e-5, 3.2e-4),
+            s if s >= 31.0 => (1.9e-4, 2.4e-3),
+            s if s >= 11.0 => (1.4e-3, 1.65e-2),
+            s if s >= 5.0 => (7.6e-3, 8.8e-2),
+            _ => (2.6e-2, 2.9e-1),
+        };
+        if tail >= 0.025 { at_95 } else { at_999 }
+    }
+
+    /// The estimate against the exact interval, within the distance the
+    /// docs state for the shape. A confidence above 95% is held to the
+    /// 99.9% column.
     #[test]
-    fn the_credible_interval_matches_scipy() {
+    fn the_interval_is_as_close_to_exact_as_documented() {
         for (alpha, beta, count, exposure, confidence, lower, upper) in INTERVALS {
             let mut gp = estimator::<f64>(alpha, beta);
             gp.update(count, exposure);
             let got = gp.credible_interval(confidence);
-            // Ten digits up to a shape of 10,000, six above.
-            let limit = if alpha + count as f64 <= 10_000.0 {
-                1e-10
-            } else {
-                1e-6
-            };
+            let tail = if confidence > 0.95 { 0.0005 } else { 0.025 };
+            let limit = documented_error(alpha + count as f64, tail);
             assert!(
                 relative_error(got.lower, lower) < limit
                     && relative_error(got.upper, upper) < limit,
-                "({alpha}, {beta}) + ({count}, {exposure}) at {confidence}: {got:?}"
+                "({alpha}, {beta}) + ({count}, {exposure}) at {confidence}: {got:?}, limit {limit}"
             );
         }
     }
 
-    /// The interval is defined from the prior alone, before any data.
+    /// With almost no data the lower end is rough, and it is zero where
+    /// the closed form goes negative. It is never below zero or NaN.
     #[test]
-    fn the_prior_alone_has_an_interval() {
+    fn a_few_events_give_a_rough_but_ordered_interval() {
+        // The prior alone, shape 1: the exact 95% interval is
+        // (0.0253, 3.689).
         let gp = estimator::<f64>(1.0, 1.0);
-        let interval = gp.credible_interval(0.95);
-        assert!(relative_error(interval.lower, 0.025317807984289897) < 1e-10);
-        assert!(relative_error(interval.upper, 3.6888794541139354) < 1e-10);
+        let got = gp.credible_interval(0.95);
+        assert!(got.lower > 0.0 && got.lower < 0.0253 && relative_error(got.upper, 3.689) < 0.01);
+        // A very small shape: both ends are zero at 95%, where the exact
+        // interval at a shape of 0.01 is (0, 0.0471).
+        for alpha in [1e-300, 1e-9, 0.01] {
+            let got = estimator::<f64>(alpha, 1.0).credible_interval(0.95);
+            assert_eq!((got.lower, got.upper), (0.0, 0.0), "{alpha}");
+        }
+        // A little larger: the upper end is back, the lower still zero.
+        let got = estimator::<f64>(0.5, 1.0).credible_interval(0.95);
+        assert!(
+            got.lower == 0.0 && got.upper > 1.0 && got.upper.is_finite(),
+            "{got:?}"
+        );
     }
 
-    /// The accuracy the fast form's documentation states, at 95%.
+    /// A confidence one rounding step from either end. Each end comes from
+    /// its own tail, so the interval stays ordered and finite.
     #[test]
-    fn the_fast_interval_is_as_accurate_as_documented() {
-        for (count, limit) in [(4, 0.03), (10, 0.006), (99, 2e-4), (5_000, 2e-6)] {
-            let mut gp = estimator::<f64>(1.0, 1.0);
-            gp.update(count, 7.0);
-            let (exact, fast) = (
-                gp.credible_interval(0.95),
-                gp.approx_credible_interval(0.95),
-            );
-            assert!(
-                relative_error(fast.lower, exact.lower) < limit
-                    && relative_error(fast.upper, exact.upper) < limit,
-                "{count} events: {fast:?} vs {exact:?}"
-            );
+    fn the_ends_stay_in_order_at_every_confidence() {
+        for (alpha, count) in [(1.0, 0), (0.5, 3), (2.0, 400), (1.0, 6_334)] {
+            let mut gp = estimator::<f64>(alpha, 1.0);
+            gp.update(count, 0.0);
+            for confidence in [
+                f64::from_bits(1),
+                1e-300,
+                1e-14,
+                0.5,
+                0.999_999,
+                1.0 - f64::EPSILON / 2.0,
+            ] {
+                let got = gp.credible_interval(confidence);
+                assert!(
+                    got.lower <= got.upper && got.lower >= 0.0 && got.upper.is_finite(),
+                    "{alpha}+{count} at {confidence}: {got:?}"
+                );
+            }
         }
-        // Poor with almost no data, and never below zero.
-        let gp = estimator::<f64>(0.05, 1.0);
-        let fast = gp.approx_credible_interval(0.999);
-        assert_eq!(fast.lower, 0.0);
-        assert!(fast.upper > 0.0);
     }
 
     #[test]
@@ -545,7 +598,7 @@ mod tests {
     #[test]
     #[should_panic(expected = "confidence must be strictly between 0 and 1")]
     fn a_confidence_that_is_not_a_number_is_refused() {
-        let _ = estimator::<f64>(1.0, 1.0).approx_credible_interval(f64::NAN);
+        let _ = estimator::<f64>(1.0, 1.0).credible_interval(f64::NAN);
     }
 
     #[test]
