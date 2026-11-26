@@ -54,6 +54,8 @@ extern crate nexus_stats_core;
 pub mod estimation;
 /// Adaptive filters, online learning, and optimization.
 pub mod learning;
+#[cfg(any(feature = "std", feature = "libm"))]
+mod probability;
 /// Regression and classification.
 pub mod regression;
 

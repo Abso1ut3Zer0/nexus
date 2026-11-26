@@ -1,5 +1,4 @@
-/// Cumulative probabilities and quantiles of the distributions the
-/// estimators use.
+/// Quantiles of the probability distributions several crates share.
 #[cfg(any(feature = "std", feature = "libm"))]
 pub mod probability;
 

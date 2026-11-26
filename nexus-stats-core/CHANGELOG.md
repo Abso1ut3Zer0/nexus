@@ -10,6 +10,14 @@ contained.
 
 ## [Unreleased]
 
+### Added (internal)
+
+- `math::probability::normal_quantile` (doc-hidden): the standard normal
+  quantile, by Acklam's rational approximation, to a relative error of
+  `1.2e-9`. For the estimators' intervals. Distribution functions that
+  several crates share go here; one with a single crate's callers stays
+  in that crate.
+
 ### Added
 
 - **`Confidence`:** the confidence of an interval, a probability strictly
@@ -18,13 +26,6 @@ contained.
   `Confidence::checked_new(level)` returns a `Result` for a level known
   only at run time. `level()` and `tail()` read it. A method that takes
   one does no check per call.
-
-### Added (internal)
-
-- `math::probability` (doc-hidden): `normal_quantile` (Acklam) and the
-  closed-form gamma quantile estimates `gamma_quantile_approx` and
-  `gamma_quantile_upper_approx` (Wilson and Hilferty), for the estimators'
-  intervals. Each is tested against a 40-digit reference.
 
 ### Added (internal)
 

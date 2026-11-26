@@ -314,10 +314,8 @@ impl Gamma {
     /// `confidence`.
     #[cfg(any(feature = "std", feature = "libm"))]
     fn interval(self, confidence: Confidence) -> CredibleInterval {
-        let (lower, upper) = nexus_stats_core::math::probability::gamma_interval_approx(
-            self.shape,
-            confidence.tail(),
-        );
+        let (lower, upper) =
+            crate::probability::gamma_interval_approx(self.shape, confidence.tail());
         CredibleInterval {
             lower: lower / self.rate,
             upper: upper / self.rate,
