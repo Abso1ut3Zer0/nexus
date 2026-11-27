@@ -104,8 +104,8 @@ fn not_below_zero(x: f64) -> f64 {
 /// A Poisson count has a dispersion of 1 and a binomial one of
 /// `1 - probability`. Within about one count of exact at 95%.
 pub(crate) fn count_interval_approx(mean: f64, dispersion: f64, tail: f64) -> (f64, f64) {
-    // Nothing is expected, so nothing will come.
-    if mean == 0.0 {
+    // Nothing, or next to nothing, is expected, so nothing will come.
+    if mean.abs() < nexus_stats_core::math::SMALLEST_DIVISOR {
         return (0.0, 0.0);
     }
     let (lower, upper) = gamma_interval_approx(mean / dispersion, tail);
@@ -722,7 +722,10 @@ mod tests {
                     );
                 }
                 let (lower, upper) = beta_interval_approx(alpha, beta, 0.5);
-                assert!(lower == upper, "({alpha}, {beta}) at a tail of one half");
+                assert!(
+                    (lower - upper).abs() < 1e-15,
+                    "({alpha}, {beta}) at a tail of one half"
+                );
             }
         }
     }

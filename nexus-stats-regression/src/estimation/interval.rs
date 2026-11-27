@@ -55,7 +55,8 @@ macro_rules! interval {
             #[inline]
             #[must_use]
             pub fn midpoint(&self) -> f64 {
-                0.5 * (self.lower + self.upper)
+                // Halved before adding, so two large ends cannot overflow.
+                self.lower / 2.0 + self.upper / 2.0
             }
 
             /// Whether `x` is in the range, `lower <= x <= upper`. A value
@@ -116,6 +117,9 @@ mod tests {
             (interval.width(), interval.half_width(), interval.midpoint()),
             (3.0, 1.5, 3.5)
         );
+        // Two ends near the largest float still have a midpoint.
+        let wide = PredictionInterval::new(1e308, 1.5e308);
+        assert_eq!(wide.midpoint(), 1.25e308);
     }
 
     /// A NaN at either end marks the interval, and nothing is inside it.

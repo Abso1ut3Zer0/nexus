@@ -85,7 +85,7 @@
 //! | `detection` | `estimation` | + SprtBernoulli, SprtGaussian |
 //! | `regression` | `regression` | LinearRegression, PolynomialRegression, EwLinearRegression, EwPolynomialRegression, ExponentialRegression, LogarithmicRegression, PowerRegression (+ `Ew*`), LogisticRegression, HitRate, LaggedPredictor, SignalDecayCurve |
 //! | `regression` + `alloc` | `learning` | LmsFilter, NlmsFilter, RlsFilter, HuberRegression, OnlineKMeans, OnlineGd, AdaGrad, Adam, Ucb1, ThompsonBeta, ThompsonGamma, EpsilonGreedy, Exp3 |
-//! | `regression` | `estimation` | + Kalman1d, Kalman2d, Kalman3d, BernoulliEstimator, PoissonEstimator, HawkesIntensity *(std\|libm)* |
+//! | `regression` | `estimation` | + Kalman1d, Kalman2d, Kalman3d, BernoulliEstimator, BernoulliModel, PoissonEstimator, PoissonModel, HawkesIntensity *(std\|libm)* |
 //! | `control` | `control` | DeadBand, Hysteresis, Debounce, LevelCrossing, PeakDetector, BoolWindow *(alloc)* |
 //! | `control` | `frequency` | FlexProportionGlobal, FlexProportionLocal, TopK *(alloc)*, DecayAccum *(std\|libm)* |
 //! | `monitoring` | `monitoring` | PeakToTrough, WindowedMax, WindowedMin, PeakHold, CoDel, PollSaturation, SojournSaturation, Liveness *(alloc)*, EventRate *(std\|libm)*, Jitter, ErrorRate |
@@ -199,8 +199,8 @@ pub mod signal {
 
 /// State estimation, Bayesian inference, and hypothesis testing.
 ///
-/// `Kalman1d`, `Kalman2d`, `Kalman3d`, `BernoulliEstimator` and `PoissonEstimator`
-/// require the `regression` feature.
+/// The Kalman filters, `BernoulliEstimator`, `BernoulliModel`,
+/// `PoissonEstimator` and `PoissonModel` require the `regression` feature.
 /// `SprtBernoulli` / `SprtGaussian` require the `detection` feature.
 #[cfg(any(feature = "regression", feature = "detection"))]
 pub mod estimation {

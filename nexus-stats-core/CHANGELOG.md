@@ -10,14 +10,6 @@ contained.
 
 ## [Unreleased]
 
-### Added (internal)
-
-- `math::probability::normal_quantile` (doc-hidden): the standard normal
-  quantile, by Acklam's rational approximation, to a relative error of
-  `1.2e-9`. For the estimators' intervals. Distribution functions that
-  several crates share go here; one with a single crate's callers stays
-  in that crate.
-
 ### Added
 
 - **`Confidence`:** the confidence of an interval, a probability strictly
@@ -26,6 +18,20 @@ contained.
   `Confidence::checked_new(level)` returns a `Result` for a level known
   only at run time. `level()` and `tail()` read it. A method that takes
   one does no check per call.
+- **`Probability`:** a number from 0 to 1, both included, made the same
+  way: `new`, `checked_new`, and `value()` to read it.
+- `From<Confidence> for f64`, `From<Probability> for f64`, and
+  `TryFrom<f64>` for both.
+
+### Added (internal)
+
+- `math::probability` (doc-hidden): `normal_quantile`, the standard
+  normal quantile by Acklam's rational approximation, to a relative
+  error of `1.2e-9`, and `normal_upper_tail`, by Abramowitz and Stegun's
+  7.1.26, to `1.5e-7`. Distribution functions that several crates share
+  go here. One with a single crate's callers stays in that crate.
+- `math::exp_m1` and `math::ln_1p` (doc-hidden), for `e^x - 1` and
+  `ln(1 + x)` near zero.
 
 ### Added (internal)
 
@@ -236,9 +242,8 @@ contained.
   `HalfLife` is a `Covariance` over consecutive pairs; `EwmVar` and
   `Percentile` are plain items (the `$ty` stamping macros are gone, as is the
   never-called `math::check_finite` function; the `check_finite!` macro is
-  exported, doc-hidden, for the sibling crates). `math::dot`, `math::axpy`
-  and `math::upper_tail_z` (Abramowitz-Stegun 26.2.23) serve the regression
-  crate's filters and conjugate priors. `Hysteresis<i64>::update` and
+  exported, doc-hidden, for the sibling crates). `math::dot` and `math::axpy`
+  serve the regression crate's filters. `Hysteresis<i64>::update` and
   `LevelCrossing<i64>::update` are `#[must_use]` like their `f64` forms.
 
 - **`LevelCrossing::update` returns the direction of the crossing**
@@ -557,8 +562,7 @@ contained.
 - `Covariance::checked_update`: refuses the pair, and leaves the
   accumulator unchanged, if either value is NaN, infinite, or larger in
   magnitude than `1e120`.
-- `math::alpha_from_halflife`, `math::dot`, `math::axpy`,
-  `math::upper_tail_z`.
+- `math::alpha_from_halflife`, `math::dot`, `math::axpy`.
 
 ### Fixed
 

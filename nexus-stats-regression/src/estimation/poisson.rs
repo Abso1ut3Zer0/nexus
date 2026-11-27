@@ -131,10 +131,13 @@ impl<T: Tick> PoissonEstimator<T> {
     }
 
     /// Checked update. Records `count` events over `exposure`, or returns
-    /// an error and leaves the estimate unchanged. After `Ok`, every
-    /// reading of the summary is a number. A `Duration` or a counter is
-    /// never NaN, infinite or negative, so on those clocks only an
-    /// exposure of zero is refused.
+    /// an error and leaves the estimate unchanged.
+    ///
+    /// It refuses an exposure that is not a usable span (NaN, infinite,
+    /// negative, zero, or outside the range a float can divide by and
+    /// square) and a count that would overflow the total. A `Duration` or
+    /// a counter is never NaN, infinite or negative, so on those clocks
+    /// only an exposure of zero is refused.
     ///
     /// # Errors
     ///
@@ -148,9 +151,14 @@ impl<T: Tick> PoissonEstimator<T> {
     /// - [`DataError::OutOfRange`] if the exposure, or `count` over it, is
     ///   above `1e80`. The test of the fit multiplies an exposure by the
     ///   square of a rate, and beyond this the product no longer fits.
+    /// - [`DataError::OutOfRange`] if `count` would take the events past
+    ///   `u64::MAX`.
     #[inline]
     pub fn checked_update(&mut self, count: u64, exposure: T::Span) -> Result<(), DataError> {
         check_observation(count, exposure.as_f64())?;
+        if self.events.checked_add(count).is_none() {
+            return Err(DataError::OutOfRange);
+        }
         self.update(count, exposure);
         Ok(())
     }
@@ -392,11 +400,17 @@ impl PoissonSummary {
     /// prior and 100 events over 10 seconds, the exact 95% interval is
     /// (7.47874, 11.05698) and this gives (7.47857, 11.05709).
     ///
-    /// Below a shape of 3 the interval is poor. The lower end is zero
-    /// where the closed form goes negative, which at 95% is a shape below
-    /// about 0.63. At a shape of one half the upper end is still within
-    /// 2% of exact. These are measurements against a 40-digit reference,
-    /// not proven bounds.
+    /// The table is the whole story for a stream: the distance is a few
+    /// percent with a handful of events and falls to parts in a million by
+    /// a thousand.
+    ///
+    /// The worst case is the start, with few or no events. Below a shape
+    /// of 3 the interval is rough. The lower end is zero where the closed
+    /// form goes negative, which at 95% is a shape below about 0.63. At a
+    /// shape of one half, which is a Jeffreys prior before any event, the
+    /// upper end is 2% from exact, and that is as far off as it gets where
+    /// an interval is given at all. These are measurements against a
+    /// 40-digit reference, not proven bounds.
     ///
     /// `None` while the shape is below one half: less than half an event
     /// of evidence, prior included, where the closed form falls apart.
@@ -515,6 +529,11 @@ impl PoissonSummary {
     /// It reads the scatter between observations, so it needs
     /// observations that each expect several events. Five is the usual
     /// rule. Fed one event at a time it says nothing.
+    ///
+    /// It also needs their exposures within about fifteen orders of
+    /// magnitude of each other. Past that, the shorter ones fall below
+    /// what a float can hold beside the longer and no longer count. The
+    /// rate is not affected.
     #[inline]
     #[must_use]
     pub fn dispersion(&self) -> Option<f64> {
@@ -643,8 +662,8 @@ const _: () = assert!(
         <= nexus_stats_core::math::POWER_LIMIT
 );
 
-/// `Ok` if recording `count` events over `exposure` leaves every reading
-/// a number.
+/// `Ok` if `exposure`, and the rate of `count` events over it, are within
+/// what the estimate and the test of the fit can hold.
 #[inline]
 fn check_observation(count: u64, exposure: f64) -> Result<(), DataError> {
     use nexus_stats_core::math::check_input;
@@ -929,14 +948,15 @@ mod tests {
                 "{alpha}"
             );
         }
-        // The Jeffreys prior has one: the lower end zero, the upper within
-        // 2% of the exact 2.512.
+        // The Jeffreys prior with no events is the worst case that still
+        // has an interval: the lower end zero, and the upper within 2% of
+        // the exact one, SciPy 1.18.1's `gamma.isf(0.025, 0.5)`.
         let got = estimator::<f64>(0.5, 1.0)
             .summary()
             .credible_interval(Confidence::new(0.95))
             .unwrap();
         assert!(
-            got.lower() == 0.0 && got.upper() > 1.0 && got.upper().is_finite(),
+            got.lower() == 0.0 && relative_error(got.upper(), 2.511943093657445) < 0.02,
             "{got:?}"
         );
     }
@@ -1026,10 +1046,11 @@ mod tests {
         assert_eq!(gp.summary().observations(), 3);
     }
 
-    /// Whatever `checked_update` takes, at the edges of what it takes,
-    /// leaves the test of the fit a number.
+    /// At the edges of what `checked_update` takes, the readings are
+    /// still numbers.
     #[test]
-    fn what_checked_update_accepts_keeps_every_reading_a_number() {
+    fn checked_update_takes_the_edges_of_its_range() {
+        let confidence = Confidence::new(0.95);
         let mut gp = estimator::<f64>(1.0, 1.0);
         for (count, exposure) in [
             (5, 1.0),
@@ -1045,14 +1066,45 @@ mod tests {
                 "({count}, {exposure})"
             );
             let summary = gp.summary();
-            assert!(summary.rate().is_finite() && summary.variance().is_finite());
-            if let Some(dispersion) = summary.dispersion() {
-                assert!(
-                    dispersion.is_finite(),
-                    "({count}, {exposure}): {dispersion}"
-                );
+            let credible = summary.credible_interval(confidence).unwrap();
+            let classical = summary.confidence_interval(confidence).unwrap();
+            for reading in [
+                summary.rate(),
+                summary.variance(),
+                summary.standard_error(),
+                summary.chi_square().unwrap_or(0.0),
+                summary.dispersion().unwrap_or(0.0),
+                summary.p_value().unwrap_or(0.0),
+                credible.lower(),
+                credible.upper(),
+                classical.lower(),
+                classical.upper(),
+            ] {
+                assert!(reading.is_finite(), "({count}, {exposure}): {reading}");
             }
         }
+    }
+
+    /// A count that would take the events past `u64::MAX` is refused, and
+    /// nothing changes.
+    #[test]
+    fn checked_update_refuses_a_count_that_would_overflow() {
+        let mut gp = estimator::<f64>(1.0, 1.0);
+        assert_eq!(gp.checked_update(u64::MAX - 5, 1.0), Ok(()));
+        let before = gp.summary();
+        assert_eq!(gp.checked_update(6, 1.0), Err(DataError::OutOfRange));
+        assert_eq!(gp.summary(), before);
+        assert_eq!(gp.checked_update(5, 1.0), Ok(()));
+        assert_eq!(gp.summary().events(), u64::MAX);
+    }
+
+    /// A rate so small that almost nothing is expected has an interval of
+    /// zero, not NaN.
+    #[test]
+    fn next_to_nothing_expected_is_nothing_expected() {
+        let model = PoissonModel::<u64>::new(1e-310).unwrap();
+        let interval = model.interval(1, Confidence::new(0.95));
+        assert_eq!((interval.lower(), interval.upper()), (0.0, 0.0));
     }
 
     #[test]

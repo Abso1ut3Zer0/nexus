@@ -12,36 +12,95 @@ contained.
 
 ### Changed (breaking)
 
-- **`GammaPoisson<T>` takes the caller's clock,** any `Tick`. The exposure
-  is a span of it (a `Duration` on physical time), and the rate is in
-  events per unit of the clock. `GammaPoisson<f64>` keeps a plain number.
-- **`update` no longer validates** and returns nothing. `checked_update`
-  refuses an exposure that is NaN, infinite or negative.
-- **`credible_interval` is Wilson and Hilferty's closed-form estimate,**
-  in place of a normal approximation, and returns a
-  `CredibleInterval { lower, upper }`. It is built for a stream: within
-  one part in a million of the exact Gamma interval from a thousand
-  events at 95%, in about 20 cycles (under ten nanoseconds), with no search that can fail.
-  With a few events it is rough (0.75% at five, 2.5% at three). Its docs
-  carry the table, measured against a 40-digit reference. It is not the
-  exact quantile; for that on a small sample, use SciPy offline.
-- **`credible_interval` takes a `Confidence`,** a level checked once
-  where it is made (at compile time in a `const`), so the method checks
-  nothing and cannot fail. It always returns an interval, the prior's
-  before any data. It used to take an `f64` and return `None` for a bad
-  level and for no data alike.
-- `new()`, `with_prior()` and `Default` are replaced by the builder, whose
-  prior defaults to (1, 1). `total_count()` and `total_exposure()` become
-  `count()` and `exposure()`. `is_primed()` is removed.
+- **A fitted family is two types: an estimator and a model.**
+  `GammaPoisson` is now `PoissonEstimator<T>` and `BetaBinomial` is
+  `BernoulliEstimator`. Each fits a parameter from data. `PoissonModel<T>`
+  and `BernoulliModel` are new: you give one its parameter, fitted or
+  known already, and it says what to expect next.
+- **An estimator only takes data in.** It has `update`, `summary()`,
+  `model()` and `reset()`, with `checked_update` on Poisson and
+  `update_batch` on Bernoulli. Every reading moved to the summary.
+  `new()`, `with_prior()` and `Default` are replaced by a builder whose
+  prior defaults to (1, 1).
+- **`summary()` has everything about the fit.** `PoissonSummary`: `rate`,
+  `variance`, `standard_error`, `credible_interval`,
+  `confidence_interval`, `events`, `exposure`, `observations`,
+  `chi_square`, `degrees_of_freedom`, `dispersion`, `p_value`.
+  `BernoulliSummary`: `probability`, `variance`, `standard_error`,
+  `credible_interval`, `confidence_interval`, `successes`, `failures`,
+  `trials`, `runs`, `expected_runs`, `p_value`. The counts are exact
+  `u64`s. `mean()` is `probability()`. `mode()`, `total()`,
+  `total_count()`, `total_exposure()`, `count()` and `is_primed()` are
+  removed.
+- **`PoissonEstimator<T>` takes the caller's clock,** any `Tick`. The
+  exposure is a span of it (a `Duration` on physical time), and the rate
+  is in events per unit of the clock. `PoissonEstimator<f64>` keeps a
+  plain number.
+- **`update` no longer validates** and returns nothing. On Poisson,
+  `checked_update` refuses an exposure that is NaN, infinite, negative,
+  zero or too small to divide by, one whose size or rate is above
+  `1e80`, and a count that would overflow the total.
+- **The intervals are closed-form estimates,** in place of a normal
+  approximation: Wilson and Hilferty's for the Poisson rate, Abramowitz
+  and Stegun's 26.5.22 for the Bernoulli probability. They are built for
+  a stream. At 95% the Poisson one is within one part in a million of
+  exact from a thousand events, and the Bernoulli one within two parts
+  in a million once the rarer outcome has been seen a thousand times.
+  With little data they are rough, and each method's docs carry the
+  table. None is the exact quantile. For that on a small sample, use
+  SciPy offline.
+- **`credible_interval` takes a `Confidence` and returns an
+  `Option<CredibleInterval>`.** It is `None` where there is too little
+  evidence for the closed form: a Poisson shape below one half, a
+  Bernoulli parameter below one half, or one from one half up to 1
+  before the other outcome has been seen about ten times. The default
+  prior always has an interval. It used to
+  take an `f64` and return a tuple.
+- **A zero exposure is not a Poisson observation.** Plain `update` takes
+  it, and the test of the fit reads NaN until `reset`. `checked_update`
+  refuses it with `DataError::OutOfRange`.
+
+### Added
+
+- **`PoissonModel<T>`:** `new(rate)`, `rate()`, `expected(exposure)` and
+  `interval(exposure, confidence)`, the range the count over a future
+  exposure will fall in. Within one count of exact at 95% for expected
+  counts from 10 to 3,000,000, as measured.
+- **`BernoulliModel`:** `new(Probability)`, `probability()`,
+  `expected(trials)` and `interval(trials, confidence)`. Within one count
+  of exact at 95% from 20 to 1,000,000 trials, as measured.
+- **`confidence_interval`** on both summaries: the classical interval,
+  from the data alone with no prior. Garwood's for the rate and the
+  Clopper-Pearson for the probability, by the same closed forms.
+- **A test of the fit on each summary.** Poisson: `chi_square`,
+  `degrees_of_freedom`, `dispersion` and `p_value` say whether the counts
+  scatter as a Poisson process does. Bernoulli: `runs`, `expected_runs`
+  and `p_value` are the Wald-Wolfowitz runs test, which says whether the
+  outcomes come in streaks. The runs test applies half a run of
+  continuity correction at every size, where statsmodels applies it below
+  50 outcomes and R never.
+- **`CredibleInterval`, `ConfidenceInterval`, `PredictionInterval`:** one
+  type per kind of statement, each with `lower`, `upper`, `width`,
+  `half_width`, `midpoint`, `contains` and `is_nan`. Both ends are part
+  of the range.
+- `Confidence` and `Probability` are re-exported at the crate root.
+- **A Jeffreys prior on a record with one outcome never seen** has a
+  credible interval, by a second closed form, once the other outcome has
+  been seen about ten times.
 
 ### Fixed
 
-- **`GammaPoisson`'s event count is exact.** It was recovered by
+- **The event and outcome counts are exact.** They were recovered by
   subtracting the prior from a float, which lost counts past 2^53 and
-  with a fractional prior. It is kept as a `u64`.
-- **The interval's lower end is no longer far too low with little data.**
-  The normal approximation put it 18% low at ten events, and at zero
-  below a shape of 3.8.
+  with a fractional prior.
+- **The intervals are no longer far off with little data or a rare
+  outcome.** The normal approximation put the Poisson lower end 18% low
+  at ten events, and the Bernoulli interval 18% off at a thousand trials
+  with a 1% rate.
+- **A NaN exposure reads as NaN** from every reader that depends on it,
+  never as a number or as "no answer yet". `update` is unchecked now, so
+  it takes one. A negative exposure is plain arithmetic and gives wrong
+  numbers. `checked_update` refuses both.
 
 ### Changed (breaking)
 
@@ -94,7 +153,8 @@ contained.
   never prime and returned `None` forever.
 - **Range errors are `DataError::OutOfRange`**, not `Negative`: ThompsonBeta /
   Exp3 reward outside `[0, 1]`, Exp3 `prob` outside `(0, 1]`, ThompsonGamma
-  non-positive reward. `GammaPoisson::update` rejects negative exposure.
+  non-positive reward. `PoissonEstimator::checked_update` returns
+  `Negative` for a negative exposure.
 - **Float slices are the caller's to validate** (features, Kalman `h`):
   debug-asserted, as in every mainstream numeric library; the scalar
   `check_finite` policy is unchanged.
@@ -120,13 +180,12 @@ contained.
   `EwExponentialRegression`, `EwLogarithmicRegression`, `EwPowerRegression`.
 - **Builder validation uses the core predicates:** an infinite
   `learning_rate`, `epsilon` or `weight_decay` (`Adam`) or prior parameter
-  (`BetaBinomial`, `GammaPoisson`) is rejected like NaN.
+  (`BernoulliEstimator`, `PoissonEstimator`) is rejected like NaN.
 - **`Coefficients::eval(x)`** evaluates the fitted polynomial;
   `PolynomialRegression::predict` is `coefficients()?.eval(x)`. `Kalman2d`
   and `Kalman3d` gain `is_primed()`.
 - **One copy of each kernel.** LMS, NLMS, RLS, Huber and `OnlineGd` use
-  `math::dot` / `math::axpy`; `BetaBinomial` and `GammaPoisson` share
-  `math::upper_tail_z`. The existing tests pass unchanged.
+  `math::dot` / `math::axpy`. The existing tests pass unchanged.
 
 ### Fixed
 

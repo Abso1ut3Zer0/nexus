@@ -12,12 +12,15 @@ contained.
 
 ### Changed (breaking)
 
-- **`estimation::GammaPoisson`** takes the caller's clock and its exposure
-  as a span of it, has a plain `update` and a guarded `checked_update`,
-  and is built with a builder. Its `credible_interval` is a closed-form
-  estimate built for large counts, far closer than the normal
-  approximation it replaces. It takes a `Confidence` (new, exported at
-  the root) and returns a `CredibleInterval`.
+- **`estimation::GammaPoisson` and `BetaBinomial` are now
+  `PoissonEstimator` and `BernoulliEstimator`,** each with a new
+  `PoissonModel` or `BernoulliModel` beside it. An estimator fits a
+  parameter and only takes data in. Its `summary()` has the estimate, its
+  error, a credible and a confidence interval, and a test of the fit. Its
+  `model()` says what to expect next. The intervals are closed-form
+  estimates built for large counts. `Confidence` and `Probability` are
+  new, exported at the root. See the regression crate's CHANGELOG and the
+  migration guide.
 
 ### Added
 

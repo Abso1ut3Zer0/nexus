@@ -166,7 +166,7 @@ mod tests {
     /// The tail is above zero and below one half for every level, the
     /// ones a rounding step from either end included.
     #[test]
-    fn the_tail_is_strictly_between_zero_and_one_half() {
+    fn the_tail_is_above_zero_and_at_most_one_half() {
         for level in [
             f64::from_bits(1),
             1e-300,

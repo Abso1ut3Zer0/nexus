@@ -839,11 +839,11 @@ mod tests {
         }
     }
 
-    /// A prior parameter below 1 leaves the closed form without an answer
-    /// until that outcome has been seen once.
+    /// With a prior below 1 and almost no data there is too little
+    /// evidence for either closed form.
     #[cfg(any(feature = "std", feature = "libm"))]
     #[test]
-    fn there_is_no_interval_while_a_parameter_is_below_one() {
+    fn there_is_no_interval_with_too_little_evidence() {
         let confidence = Confidence::new(0.95);
         let mut bb = estimator(0.5, 0.5);
         assert!(bb.summary().credible_interval(confidence).is_none());
