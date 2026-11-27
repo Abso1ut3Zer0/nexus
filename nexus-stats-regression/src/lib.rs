@@ -35,8 +35,10 @@
 //! | `Kalman1d` | 1D Kalman filter (position and velocity) | — |
 //! | `Kalman2d` | 2D Kalman filter | — |
 //! | `Kalman3d` | 3D Kalman filter | — |
-//! | `BetaBinomial` | Beta-Binomial conjugate estimator | `std` or `libm` |
-//! | `GammaPoisson` | Rate of a Poisson process, with an estimated credible interval | the interval needs `std` or `libm` |
+//! | `BernoulliEstimator` | Probability of a yes-or-no outcome, fitted from outcomes | the intervals and p-value need `std` or `libm` |
+//! | `BernoulliModel` | What to expect of trials at a known probability | the interval needs `std` or `libm` |
+//! | `PoissonEstimator` | Rate of a Poisson process, fitted from counts | the intervals and p-value need `std` or `libm` |
+//! | `PoissonModel` | What count to expect at a known rate | the interval needs `std` or `libm` |
 //! | `HawkesIntensity` | Intensity of a self-exciting point process | `std` or `libm` |
 //!
 //! # Re-export
@@ -63,6 +65,8 @@ pub mod regression;
 /// a tick of physical time.
 pub use nexus_stats_core::{Micros, Millis, Nanos, Seconds, Span, Tick, Timestamp};
 
-/// The confidence of an interval, as the estimators' `credible_interval`
-/// takes it.
+/// The confidence of an interval, as the summaries' and models' interval
+/// methods take it.
 pub use nexus_stats_core::Confidence;
+/// A probability from 0 to 1, as `BernoulliModel::new` takes it.
+pub use nexus_stats_core::Probability;

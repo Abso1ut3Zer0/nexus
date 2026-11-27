@@ -32,7 +32,7 @@ without latency jitter.
 - `trading`: `Cvar`, `KyleLambda`
 - `control`, `frequency`: every type
 - `detection`, `signal`: every type except `HalfLife` and `Hurst`
-- `regression`, `learning`, `estimation`: every type except `HitRate`, `HawkesIntensity` and `GammaPoisson`
+- `regression`, `learning`, `estimation`: every type except `HitRate`, `HawkesIntensity`, `PoissonEstimator`, `PoissonModel`, `BernoulliEstimator` and `BernoulliModel`
 
 ## Quick Start
 

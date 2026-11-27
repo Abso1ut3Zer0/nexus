@@ -172,10 +172,13 @@ type with timestamps, or `PollSaturation`, which is weighted per message.
   - Controlled false positive/negative rates. Minimal samples.
 - Is the mean shifted (continuous)? → **SprtGaussian**
   - Same as Bernoulli but for continuous observations.
-- What's the success rate with uncertainty? → **BetaBinomial**
-  - Not just "73%" but "73% ± 4% (95% CI)."
-- What's the event rate with uncertainty? → **GammaPoisson** (its interval is a fast estimate, at its best from a thousand events; use SciPy offline for an exact one on a small sample)
-  - Bayesian rate estimation with credible intervals.
+- What's the success rate with uncertainty? → **BernoulliEstimator**
+  - Not just "73%" but "73%, between 69% and 77%". Its summary also says whether the outcomes come in streaks.
+- What's the event rate with uncertainty? → **PoissonEstimator**
+  - The rate with its interval, and a dispersion test that says whether the events are Poisson at all. If they cluster, use `HawkesIntensity`.
+- I know the rate or probability. What should I expect next? → **PoissonModel**, **BernoulliModel**
+  - The expected count and the range it should fall in. Take one from an estimator with `model()`, or build it from a known parameter.
+- The intervals on all four are fast closed-form estimates, at their best on large counts: from a thousand events for a rate, or once the rarer outcome has been seen a thousand times for a probability. Use SciPy offline for an exact one on a small sample.
 
 ## "I want to predict from features"
 

@@ -104,7 +104,7 @@ information. Builders follow their type: `EmaF64Builder` → `EmaBuilder`,
 |-----|-----|
 | `AdaGradF64` | `AdaGrad` |
 | `AdamF64` | `Adam` |
-| `BetaBinomialF64` | `BetaBinomial` |
+| `BetaBinomialF64` | `BernoulliEstimator`, with `BernoulliModel` beside it (see below) |
 | `CoefficientsF64` | `Coefficients` |
 | `EpsilonGreedyF64` | `EpsilonGreedy` |
 | `EwExponentialRegressionF64` | `EwExponentialRegression` |
@@ -114,7 +114,7 @@ information. Builders follow their type: `EmaF64Builder` → `EmaBuilder`,
 | `EwPowerRegressionF64` | `EwPowerRegression` |
 | `Exp3F64` | `Exp3` |
 | `ExponentialRegressionF64` | `ExponentialRegression` |
-| `GammaPoissonF64` | `GammaPoisson<T>`, generic over the clock (see the time section) |
+| `GammaPoissonF64` | `PoissonEstimator<T>`, generic over the clock, with `PoissonModel<T>` beside it (see below) |
 | `HuberRegressionF64` | `HuberRegression` |
 | `Kalman2dF64` | `Kalman2d` |
 | `Kalman3dF64` | `Kalman3d` |
@@ -329,7 +329,7 @@ CHANGELOG entry in `nexus-stats-core`:
   it for a non-positive sample (in 6.x `update` panicked on one); ThompsonBeta/Exp3 use it for a
   reward outside `[0, 1]` (and Exp3 for `prob` outside `(0, 1]`),
   ThompsonGamma for a non-positive reward. `Negative` is kept for strictly
-  negative inputs (Amihud volume, GammaPoisson exposure).
+  negative inputs (Amihud volume, PoissonEstimator exposure).
 - `HitRate::hit_rate` / `ew_hit_rate` and `Amihud::illiq` return `Option<f64>`
   (`None` before any observation; a rate over nothing is not zero).
 - Float *slices* (features, observation vectors) are the caller's to validate:
@@ -935,42 +935,107 @@ sojourn.update(dequeued.since(enqueued));             // a Duration
 `EventRate::load()` is renamed `load_average()`, and `Load` is
 `LoadAverage`.
 
-**`GammaPoisson`** takes the caller's clock, and its exposure is a span of
-it:
+**`GammaPoisson` and `BetaBinomial`** are each two types now. The
+estimator fits a parameter from data. The model takes a parameter and
+says what to expect.
+
+| 6.x | 7.0 estimator | 7.0 model |
+|---|---|---|
+| `GammaPoissonF64` | `PoissonEstimator<T>` | `PoissonModel<T>` |
+| `BetaBinomialF64` | `BernoulliEstimator` | `BernoulliModel` |
 
 ```rust
 // before
-let mut gp = GammaPoisson::with_prior(2.0, 3.0)?;
+let mut gp = GammaPoissonF64::with_prior(2.0, 3.0)?;
 gp.update(100, 10.0)?;                            // f64 exposure, Result
+let rate = gp.rate();
 let (lo, hi) = gp.credible_interval(0.95)?;       // Option<(f64, f64)>
+
 // after
-let mut gp = GammaPoisson::<i64>::builder().alpha(2.0).beta(3.0).build()?;
-gp.update(100, Duration::from_secs(10));          // a Duration on physical time
-gp.checked_update(100, exposure)?;                // refuses a bad exposure
 const NINETY_FIVE: Confidence = Confidence::new(0.95);   // checked at compile time
-let interval = gp.credible_interval(NINETY_FIVE); // CredibleInterval { lower, upper }
+
+let mut est = PoissonEstimator::<i64>::builder().alpha(2.0).beta(3.0).build()?;
+est.update(100, Duration::from_secs(10));         // a Duration on physical time
+est.checked_update(100, exposure)?;               // refuses a bad exposure
+
+let summary = est.summary();                      // everything about the fit
+let rate = summary.rate();
+let interval = summary.credible_interval(NINETY_FIVE);    // Option<CredibleInterval>
+let interval = interval.expect("this prior always has one");
+let (lo, hi) = (interval.lower(), interval.upper());
+
+let model = est.model();                          // what to expect next
+let count = model.expected(Duration::from_secs(5));
+let range = model.interval(Duration::from_secs(5), NINETY_FIVE);
 ```
 
-- The rate is in events per unit of the clock: per second on a
+```rust
+// before
+let mut bb = BetaBinomialF64::new();
+bb.update(true);
+let p = bb.mean();
+let (lo, hi) = bb.credible_interval(0.95)?;
+
+// after
+let mut est = BernoulliEstimator::builder().build()?;
+est.update(true);
+let summary = est.summary();
+let p = summary.probability();
+let interval = summary.credible_interval(NINETY_FIVE);    // Option<CredibleInterval>
+
+// A model from a probability you already know.
+let model = BernoulliModel::new(Probability::new(0.25));
+let fills = model.expected(200);                  // 50.0
+```
+
+- **The estimator only takes data in.** It has `update`, `summary()`,
+  `model()` and `reset()`, with `checked_update` on Poisson and
+  `update_batch` on Bernoulli. Every reading is on the summary.
+- **What moved where:**
+
+  | 6.x | 7.0 |
+  |---|---|
+  | `gp.rate()`, `bb.mean()` | `summary.rate()`, `summary.probability()` |
+  | `variance()` | `summary.variance()`, and `summary.standard_error()` |
+  | `credible_interval(0.95)` | `summary.credible_interval(Confidence)` |
+  | `total_count()`, `total_exposure()` | `summary.events()` (an exact `u64`), `summary.exposure()` |
+  | `count()` | `summary.events()` on Poisson, `summary.trials()` on Bernoulli |
+  | `successes()`, `failures()`, `total()` | `summary.successes()`, `failures()`, `trials()`, all exact `u64`s |
+  | `mode()`, `is_primed()` | removed |
+  | `new()`, `with_prior(a, b)`, `Default` | `builder().alpha(a).beta(b).build()`, prior (1, 1) by default |
+
+- The Poisson rate is in events per unit of the clock: per second on a
   `Timestamp`. To keep a plain number as the exposure, use
-  `GammaPoisson::<f64>`.
-- **The interval is a closed-form estimate** (Wilson and Hilferty), in
-  place of a normal approximation. It is far closer: at 95% with 10
-  events the old lower end was 18% off and this one is 0.14% off. It is
-  within one part in a million from a thousand events. It is not the
-  exact Gamma quantile. For an exact interval on a small sample, use
+  `PoissonEstimator::<f64>`.
+- **The intervals are closed-form estimates** (Wilson and Hilferty for
+  the rate, Abramowitz and Stegun 26.5.22 for the probability), in place
+  of a normal approximation. They are far closer. At 95% with 10 events
+  the old Poisson lower end was 18% off and this one is 0.14% off, and
+  it is within one part in a million from a thousand events. At a
+  thousand trials with a 1% rate the old Bernoulli interval was 18% off
+  and this one is 0.23% off. They are not exact quantiles. For an exact
+  interval on a small sample, use SciPy offline:
   `scipy.stats.gamma.interval(confidence, alpha + k, scale=1 / (beta + t))`
-  offline.
-- `credible_interval` takes a `Confidence`, not an `f64`. Make it with
-  `Confidence::new(level)`, which in a `const` is checked when the
-  program compiles, or `Confidence::checked_new(level)?` for a level known
-  only at run time. The method then always returns an interval, the
-  prior's before any data. It returned `None` for a bad level and for no
-  data alike.
-- `new()` and `with_prior()` are replaced by the builder, whose prior
-  defaults to (1, 1). `total_count()` and `total_exposure()` are
-  `count()` (an exact `u64`) and `exposure()`. `is_primed()` is removed,
-  since the rate is defined from the prior alone.
+  or `scipy.stats.beta.interval(confidence, alpha + s, beta + f)`.
+- **`credible_interval` takes a `Confidence` and returns an `Option`.**
+  Make the level with `Confidence::new(level)`, which in a `const` is
+  checked when the program compiles, or `Confidence::checked_new(level)?`
+  for one known only at run time. The result is `None` only where there
+  is too little evidence for the closed form, which the default prior
+  never is. It returned `None` for a bad level and for no data alike.
+- **An interval is a type, not a tuple:** `lower()`, `upper()`, `width()`,
+  `midpoint()`, `contains(x)`. `CredibleInterval` is where the parameter
+  lies given the prior and the data. `ConfidenceInterval`, from
+  `summary.confidence_interval(..)`, is the classical one from the data
+  alone. `PredictionInterval`, from a model, is where a future count
+  will fall.
+- **New on the summary: a test of the fit.** `dispersion()` and
+  `p_value()` on Poisson say whether the counts scatter as a Poisson
+  process does. `runs()`, `expected_runs()` and `p_value()` on Bernoulli
+  say whether the outcomes come in streaks.
+- **A zero exposure is refused by `checked_update`.** Through plain
+  `update` it leaves the rate sound and the test of the fit NaN until
+  `reset`. A Poisson process has no two events at one instant.
 
 **`HawkesIntensity`** moved to `estimation`
 (`nexus_stats::estimation::HawkesIntensity`) and runs on any `Tick`. Its

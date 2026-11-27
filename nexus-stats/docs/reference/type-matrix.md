@@ -147,8 +147,10 @@ See [Integer vs Float](../guides/integer-vs-float.md) for the caller rules and
 | Type | Numeric | Feature | Crate (module) |
 |------|---------|---------|----------------|
 | `Kalman2d`, `Kalman3d` | `f64` | — | regression (`estimation`) |
-| `BetaBinomial` | `bool` / counts | — | regression (`estimation`) |
-| `GammaPoisson<T>` | `T: Tick`; `u64` counts, exposure as the clock's span | interval: `std\|libm` | regression (`estimation`) |
+| `BernoulliEstimator` | `bool` / `u64` counts | intervals, `standard_error`, `p_value`: `std\|libm` | regression (`estimation`) |
+| `BernoulliModel` | a `Probability`; `u64` trials | interval: `std\|libm` | regression (`estimation`) |
+| `PoissonEstimator<T>` | `T: Tick`; `u64` counts, exposure as the clock's span | intervals, `standard_error`, `p_value`: `std\|libm` | regression (`estimation`) |
+| `PoissonModel<T>` | `T: Tick`; a rate, exposure as the clock's span | interval: `std\|libm` | regression (`estimation`) |
 | `SprtBernoulli` | `bool` | `std\|libm` | detection (`estimation`) |
 | `SprtGaussian` | `f64` | `std\|libm` | detection (`estimation`) |
 

@@ -24,8 +24,8 @@ use nexus_stats::{
         RobustZScore, ShiryaevRoberts, TrendAlert,
     },
     estimation::{
-        BetaBinomial, Decision, GammaPoisson, HawkesIntensity, Kalman1d, Kalman2d, Kalman3d,
-        SprtBernoulli, SprtGaussian,
+        BernoulliEstimator, Decision, HawkesIntensity, Kalman1d, Kalman2d, Kalman3d,
+        PoissonEstimator, SprtBernoulli, SprtGaussian,
     },
     frequency::{FlexProportionGlobal, FlexProportionLocal, TopK},
     learning::{
@@ -1714,7 +1714,7 @@ fn bench_sprt_gaussian(samples: &mut [u64]) {
 }
 
 fn bench_beta_binomial_update(samples: &mut [u64]) {
-    let mut b = BetaBinomial::new();
+    let mut b = BernoulliEstimator::builder().build().unwrap();
     let mut rng = 12345u64;
     for _ in 0..WARMUP {
         b.update(next_val(&mut rng) % 100 < 70);
@@ -1725,13 +1725,14 @@ fn bench_beta_binomial_update(samples: &mut [u64]) {
             b.update(black_box(next_val(&mut rng) % 100 < 70));
         }
         let end = rdtsc_end();
-        black_box(b.mean());
+        black_box(b.summary().probability());
         *s = (end - start) / BATCH;
     }
 }
 
 fn bench_beta_binomial_queries(samples: &mut [u64], interval: bool) {
-    let mut b = BetaBinomial::new();
+    const NINETY_FIVE: nexus_stats::Confidence = nexus_stats::Confidence::new(0.95);
+    let mut b = BernoulliEstimator::builder().build().unwrap();
     let mut rng = 12345u64;
     for _ in 0..WARMUP {
         b.update(next_val(&mut rng) % 100 < 70);
@@ -1741,9 +1742,9 @@ fn bench_beta_binomial_queries(samples: &mut [u64], interval: bool) {
         for _ in 0..BATCH {
             let bb = black_box(&b);
             if interval {
-                black_box(bb.credible_interval(0.95));
+                black_box(bb.summary().credible_interval(black_box(NINETY_FIVE)));
             } else {
-                black_box(bb.mean());
+                black_box(bb.summary().probability());
             }
         }
         let end = rdtsc_end();
@@ -1752,7 +1753,7 @@ fn bench_beta_binomial_queries(samples: &mut [u64], interval: bool) {
 }
 
 fn bench_gamma_poisson_update(samples: &mut [u64]) {
-    let mut g = GammaPoisson::<f64>::builder().build().unwrap();
+    let mut g = PoissonEstimator::<f64>::builder().build().unwrap();
     let mut rng = 12345u64;
     for _ in 0..WARMUP {
         g.update(next_val(&mut rng) % 10, 1.0);
@@ -1763,7 +1764,7 @@ fn bench_gamma_poisson_update(samples: &mut [u64]) {
             g.update(black_box(next_val(&mut rng) % 10), 1.0);
         }
         let end = rdtsc_end();
-        black_box(g.rate());
+        black_box(g.summary().rate());
         *s = (end - start) / BATCH;
     }
 }
@@ -1772,7 +1773,7 @@ fn bench_gamma_poisson_update(samples: &mut [u64]) {
 /// between calls so the shape differs each time.
 fn bench_gamma_poisson_interval(samples: &mut [u64], level: f64) {
     let confidence = nexus_stats::Confidence::new(level);
-    let mut g = GammaPoisson::<f64>::builder().build().unwrap();
+    let mut g = PoissonEstimator::<f64>::builder().build().unwrap();
     let mut rng = 12345u64;
     for _ in 0..WARMUP {
         g.update(next_val(&mut rng) % 10, 1.0);
@@ -1781,7 +1782,11 @@ fn bench_gamma_poisson_interval(samples: &mut [u64], level: f64) {
         g.update(next_val(&mut rng) % 10, 1.0);
         let start = rdtsc_start();
         for _ in 0..BATCH {
-            black_box(black_box(&g).credible_interval(black_box(confidence)));
+            black_box(
+                black_box(&g)
+                    .summary()
+                    .credible_interval(black_box(confidence)),
+            );
         }
         let end = rdtsc_end();
         *s = (end - start) / BATCH;
@@ -2521,17 +2526,17 @@ fn main() {
     bench_kalman3d_update(&mut buf);
     print_row("Kalman3d::update", &mut buf);
     bench_beta_binomial_update(&mut buf);
-    print_row("BetaBinomial::update", &mut buf);
+    print_row("BernoulliEstimator::update", &mut buf);
     bench_beta_binomial_queries(&mut buf, false);
-    print_row("BetaBinomial::mean", &mut buf);
+    print_row("BernoulliEstimator::mean", &mut buf);
     bench_beta_binomial_queries(&mut buf, true);
-    print_row("BetaBinomial::credible_interval", &mut buf);
+    print_row("BernoulliEstimator::credible_interval", &mut buf);
     bench_gamma_poisson_update(&mut buf);
-    print_row("GammaPoisson::update", &mut buf);
+    print_row("PoissonEstimator::update", &mut buf);
     bench_gamma_poisson_interval(&mut buf, 0.95);
-    print_row("GammaPoisson::credible_interval(95%)", &mut buf);
+    print_row("PoissonEstimator::credible_interval(95%)", &mut buf);
     bench_gamma_poisson_interval(&mut buf, 0.999);
-    print_row("GammaPoisson::credible_interval(99.9%)", &mut buf);
+    print_row("PoissonEstimator::credible_interval(99.9%)", &mut buf);
     bench_sprt_bernoulli(&mut buf);
     print_row("SprtBernoulli::update", &mut buf);
     bench_sprt_gaussian(&mut buf);
