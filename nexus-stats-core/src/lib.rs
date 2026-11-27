@@ -17,6 +17,7 @@ extern crate alloc;
 
 mod confidence;
 mod enums;
+mod probability;
 #[macro_use]
 #[doc(hidden)]
 pub mod math;
@@ -34,6 +35,7 @@ pub mod storage;
 
 pub use confidence::Confidence;
 pub use enums::{Accuracy, Condition, ConfigError, DataError, Direction};
+pub use probability::Probability;
 
 /// The numeric types the generic monitors accept. Sealed: named as bounds,
 /// implemented only here.

@@ -189,6 +189,40 @@ pub fn exp(x: f64) -> f64 {
     }
 }
 
+/// `e^x - 1`, accurate where `x` is near zero and the subtraction would
+/// lose digits.
+#[doc(hidden)]
+#[cfg(any(feature = "std", feature = "libm"))]
+#[inline]
+#[must_use]
+pub fn exp_m1(x: f64) -> f64 {
+    #[cfg(feature = "std")]
+    {
+        x.exp_m1()
+    }
+    #[cfg(all(not(feature = "std"), feature = "libm"))]
+    {
+        libm::expm1(x)
+    }
+}
+
+/// `ln(1 + x)`, accurate where `x` is near zero and the addition would
+/// lose digits.
+#[doc(hidden)]
+#[cfg(any(feature = "std", feature = "libm"))]
+#[inline]
+#[must_use]
+pub fn ln_1p(x: f64) -> f64 {
+    #[cfg(feature = "std")]
+    {
+        x.ln_1p()
+    }
+    #[cfg(all(not(feature = "std"), feature = "libm"))]
+    {
+        libm::log1p(x)
+    }
+}
+
 /// Natural logarithm.
 ///
 /// Requires `std` or `libm` feature. Types using this (`Entropy`,
@@ -362,20 +396,6 @@ pub fn alpha_from_halflife(halflife: f64) -> f64 {
 #[allow(clippy::cast_precision_loss)]
 pub fn alpha_from_span(n: u64) -> f64 {
     2.0 / (n as f64 + 1.0)
-}
-
-/// `z` such that `P(Z > z) = p` for a standard normal, for `p` in `(0, 0.5]`:
-/// the Abramowitz & Stegun 26.2.23 rational approximation (|error| < 4.5e-4).
-///
-/// Used for the two-sided credible intervals (`p = (1 - confidence) / 2`).
-#[cfg(any(feature = "std", feature = "libm"))]
-#[inline]
-#[must_use]
-pub fn upper_tail_z(p: f64) -> f64 {
-    let t = sqrt(-2.0 * ln(p));
-    let num = 0.010_328f64.fma(t, 0.802_853).fma(t, 2.515_517);
-    let den = 0.001_308f64.fma(t, 0.189_269).fma(t, 1.432_788).fma(t, 1.0);
-    t - num / den
 }
 
 /// Dot product `Σ a[i] · b[i]` as one fused chain (`fma` per term).

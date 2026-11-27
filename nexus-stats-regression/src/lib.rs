@@ -35,8 +35,8 @@
 //! | `Kalman1d` | 1D Kalman filter (position and velocity) | — |
 //! | `Kalman2d` | 2D Kalman filter | — |
 //! | `Kalman3d` | 3D Kalman filter | — |
-//! | `BetaBinomial` | Beta-Binomial conjugate estimator | `std` or `libm` |
-//! | `GammaPoisson` | Rate of a Poisson process, with an estimated credible interval | the interval needs `std` or `libm` |
+//! | `BernoulliEstimator` | Beta-Binomial conjugate estimator | `std` or `libm` |
+//! | `PoissonEstimator` | Rate of a Poisson process, with an estimated credible interval | the interval needs `std` or `libm` |
 //! | `HawkesIntensity` | Intensity of a self-exciting point process | `std` or `libm` |
 //!
 //! # Re-export
@@ -65,4 +65,4 @@ pub use nexus_stats_core::{Micros, Millis, Nanos, Seconds, Span, Tick, Timestamp
 
 /// The confidence of an interval, as the estimators' `credible_interval`
 /// takes it.
-pub use nexus_stats_core::Confidence;
+pub use nexus_stats_core::{Confidence, Probability};

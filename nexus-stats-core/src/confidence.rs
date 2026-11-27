@@ -78,7 +78,7 @@ impl Confidence {
     }
 
     /// The probability an equal-tailed interval leaves outside at each
-    /// end: `(1 - level) / 2`. Above zero and below one half.
+    /// end: `(1 - level) / 2`. Above zero and at most one half.
     #[inline]
     #[must_use]
     pub const fn tail(self) -> f64 {
@@ -88,6 +88,24 @@ impl Confidence {
     /// NaN fails both comparisons.
     const fn is_valid(level: f64) -> bool {
         level > 0.0 && level < 1.0
+    }
+}
+
+impl From<Confidence> for f64 {
+    /// The level.
+    #[inline]
+    fn from(confidence: Confidence) -> Self {
+        confidence.0
+    }
+}
+
+impl TryFrom<f64> for Confidence {
+    type Error = ConfigError;
+
+    /// As [`Confidence::checked_new`].
+    #[inline]
+    fn try_from(level: f64) -> Result<Self, ConfigError> {
+        Self::checked_new(level)
     }
 }
 
@@ -128,13 +146,13 @@ mod tests {
     #[test]
     #[should_panic(expected = "confidence must be strictly between 0 and 1")]
     fn new_refuses_a_level_of_one() {
-        let _ = Confidence::new(std::hint::black_box(1.0));
+        let _ = Confidence::new(core::hint::black_box(1.0));
     }
 
     #[test]
     #[should_panic(expected = "confidence must be strictly between 0 and 1")]
     fn new_refuses_a_level_that_is_not_a_number() {
-        let _ = Confidence::new(std::hint::black_box(f64::NAN));
+        let _ = Confidence::new(core::hint::black_box(f64::NAN));
     }
 
     /// Usable in a `const`, where a bad level would not compile.
@@ -165,5 +183,12 @@ mod tests {
             Confidence::new(1.0 - f64::EPSILON / 2.0).tail(),
             0.5_f64.powi(54)
         );
+    }
+
+    #[test]
+    fn it_converts_to_and_from_f64() {
+        assert_eq!(f64::from(Confidence::new(0.9)), 0.9);
+        assert_eq!(Confidence::try_from(0.9), Ok(Confidence::new(0.9)));
+        assert!(Confidence::try_from(1.0).is_err());
     }
 }

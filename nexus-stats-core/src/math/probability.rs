@@ -9,6 +9,7 @@
 //! | Function | What it gives | SciPy's form |
 //! |---|---|---|
 //! | `normal_quantile` | the standard normal quantile | `scipy.stats.norm.ppf(p)` |
+//! | `normal_upper_tail` | the probability a standard normal is above `z` | `scipy.stats.norm.sf(z)` |
 //!
 //! Closed forms only, with no iteration and no table. Hidden from the
 //! public docs: callers use an estimator's own methods.
@@ -16,7 +17,7 @@
 // The polynomials keep the letters of their source.
 #![allow(clippy::many_single_char_names)]
 
-use crate::math::{MulAdd, ln, sqrt};
+use crate::math::{MulAdd, exp, ln, sqrt};
 
 /// The value a standard normal variable is at most with probability `p`,
 /// for `p` in `(0, 1)`. Negative below one half and positive above it.
@@ -86,6 +87,38 @@ pub fn normal_quantile(p: f64) -> f64 {
     horner(&A, r) * q / horner(&B, r).fma(r, 1.0)
 }
 
+/// The probability that a standard normal variable is above `z`.
+///
+/// This is `scipy.stats.norm.sf(z)`, by Abramowitz and Stegun's 7.1.26.
+/// With `x = z / sqrt(2)` and `u = 1 / (1 + 0.3275911 x)`, for `z` at or
+/// above zero it is
+///
+/// ```text
+/// (1/2) u P(u) e^(-x^2)
+/// ```
+///
+/// where `P` is the polynomial whose coefficients are in the code, and
+/// below zero it is one minus the value at `-z`. It is within `1.5e-7` of
+/// exact everywhere, so a probability below about one in a million is
+/// known only to be very small.
+#[allow(clippy::excessive_precision, clippy::unreadable_literal)]
+#[must_use]
+pub fn normal_upper_tail(z: f64) -> f64 {
+    const P: [f64; 5] = [
+        1.061405429,
+        -1.453152027,
+        1.421413741,
+        -0.284496736,
+        0.254829592,
+    ];
+    if z < 0.0 {
+        return 1.0 - normal_upper_tail(-z);
+    }
+    let x = z * core::f64::consts::FRAC_1_SQRT_2;
+    let u = 1.0 / 0.3275911f64.fma(x, 1.0);
+    0.5 * u * horner(&P, u) * exp(-x * x)
+}
+
 /// The polynomial with `coefficients` from the highest power down, at `x`,
 /// by Horner's rule: `((c0 x + c1) x + c2) x + ...`.
 #[inline]
@@ -141,5 +174,25 @@ mod tests {
             assert_eq!(normal_quantile(1.0 - p), -normal_quantile(p), "p {p}");
         }
         assert_eq!(normal_quantile(0.5), 0.0);
+    }
+
+    /// `(z, scipy.stats.norm.sf(z))`
+    const NORMAL_UPPER_TAILS: [(f64, f64); 8] = [
+        (-3.0, 0.9986501019683699),
+        (-1.0, 0.8413447460685429),
+        (0.0, 0.5),
+        (0.5, 0.3085375387259869),
+        (1.959963984540054, 0.025),
+        (3.0, 0.0013498980316300933),
+        (4.5, 3.3976731247300535e-06),
+        (6.0, 9.865876450376946e-10),
+    ];
+
+    #[test]
+    fn the_normal_upper_tail_matches_scipy() {
+        for (z, want) in NORMAL_UPPER_TAILS {
+            let got = normal_upper_tail(z);
+            assert!((got - want).abs() < 1.5e-7, "z {z}: {got} vs {want}");
+        }
     }
 }
