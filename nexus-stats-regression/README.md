@@ -13,7 +13,7 @@ Online regression, learning, and estimation for [nexus-stats](https://crates.io/
 - **A reading is an `Option`.** `None` until there is enough data, never a placeholder value.
 - **A published algorithm is implemented as published.** A type that comes from a paper or a standard follows it. Where floating point needs more care than the source gives (cancellation, overflow, a divisor near zero), the type adds the guard practitioners use, and its docs say which.
 
-**Not yet migrated:** every type in this crate except `HitRate` and `HawkesIntensity`. They have not been moved to these guarantees. Most still validate in `update` and return a `Result`.
+**Not yet migrated:** every type in this crate except `HitRate`, `HawkesIntensity` and `GammaPoisson`. They have not been moved to these guarantees. Most still validate in `update` and return a `Result`.
 
 ## Regression Types
 
@@ -42,7 +42,7 @@ Online regression, learning, and estimation for [nexus-stats](https://crates.io/
 
 - **Kalman1d / Kalman2d / Kalman3d** — 1D/2D/3D Kalman filters
 - **BetaBinomial** — Beta-Binomial conjugate estimator
-- **GammaPoisson** — Gamma-Poisson conjugate estimator
+- **GammaPoisson**: the rate of a Poisson process, learned from counts, with a credible interval by a closed-form estimate built for large counts
 - **HawkesIntensity**: the intensity of a self-exciting point process, for events that cluster (requires `std` or `libm`)
 
 ## Usage

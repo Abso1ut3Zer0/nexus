@@ -12,6 +12,23 @@ contained.
 
 ### Added (internal)
 
+- `math::probability::normal_quantile` (doc-hidden): the standard normal
+  quantile, by Acklam's rational approximation, to a relative error of
+  `1.2e-9`. For the estimators' intervals. Distribution functions that
+  several crates share go here; one with a single crate's callers stays
+  in that crate.
+
+### Added
+
+- **`Confidence`:** the confidence of an interval, a probability strictly
+  between 0 and 1. `Confidence::new(level)` is a `const fn` that panics on
+  a bad level, which in a `const` is a compile-time error.
+  `Confidence::checked_new(level)` returns a `Result` for a level known
+  only at run time. `level()` and `tail()` read it. A method that takes
+  one does no check per call.
+
+### Added (internal)
+
 - `clock::duration_from_nanos` (doc-hidden): a `u128` count of nanoseconds
   as a `Duration`, clamped at the longest one.
 

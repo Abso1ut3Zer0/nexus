@@ -174,7 +174,7 @@ type with timestamps, or `PollSaturation`, which is weighted per message.
   - Same as Bernoulli but for continuous observations.
 - What's the success rate with uncertainty? → **BetaBinomial**
   - Not just "73%" but "73% ± 4% (95% CI)."
-- What's the event rate with uncertainty? → **GammaPoisson**
+- What's the event rate with uncertainty? → **GammaPoisson** (its interval is a fast estimate, at its best from a thousand events; use SciPy offline for an exact one on a small sample)
   - Bayesian rate estimation with credible intervals.
 
 ## "I want to predict from features"

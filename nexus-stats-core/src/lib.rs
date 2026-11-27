@@ -15,6 +15,7 @@
 #[cfg(feature = "alloc")]
 extern crate alloc;
 
+mod confidence;
 mod enums;
 #[macro_use]
 #[doc(hidden)]
@@ -31,6 +32,7 @@ pub use clock::{Micros, Millis, Nanos, Seconds, Span, Tick, Timestamp};
 #[cfg(feature = "alloc")]
 pub mod storage;
 
+pub use confidence::Confidence;
 pub use enums::{Accuracy, Condition, ConfigError, DataError, Direction};
 
 /// The numeric types the generic monitors accept. Sealed: named as bounds,

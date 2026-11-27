@@ -36,7 +36,7 @@
 //! | `Kalman2d` | 2D Kalman filter | — |
 //! | `Kalman3d` | 3D Kalman filter | — |
 //! | `BetaBinomial` | Beta-Binomial conjugate estimator | `std` or `libm` |
-//! | `GammaPoisson` | Gamma-Poisson conjugate estimator | `std` or `libm` |
+//! | `GammaPoisson` | Rate of a Poisson process, with an estimated credible interval | the interval needs `std` or `libm` |
 //! | `HawkesIntensity` | Intensity of a self-exciting point process | `std` or `libm` |
 //!
 //! # Re-export
@@ -54,9 +54,15 @@ extern crate nexus_stats_core;
 pub mod estimation;
 /// Adaptive filters, online learning, and optimization.
 pub mod learning;
+#[cfg(any(feature = "std", feature = "libm"))]
+mod probability;
 /// Regression and classification.
 pub mod regression;
 
 /// The clock a `HawkesIntensity` runs on: any [`Tick`]. A [`Timestamp`] is
 /// a tick of physical time.
 pub use nexus_stats_core::{Micros, Millis, Nanos, Seconds, Span, Tick, Timestamp};
+
+/// The confidence of an interval, as the estimators' `credible_interval`
+/// takes it.
+pub use nexus_stats_core::Confidence;

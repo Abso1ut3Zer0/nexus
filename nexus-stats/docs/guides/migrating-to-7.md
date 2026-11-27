@@ -114,7 +114,7 @@ information. Builders follow their type: `EmaF64Builder` → `EmaBuilder`,
 | `EwPowerRegressionF64` | `EwPowerRegression` |
 | `Exp3F64` | `Exp3` |
 | `ExponentialRegressionF64` | `ExponentialRegression` |
-| `GammaPoissonF64` | `GammaPoisson` |
+| `GammaPoissonF64` | `GammaPoisson<T>`, generic over the clock (see the time section) |
 | `HuberRegressionF64` | `HuberRegression` |
 | `Kalman2dF64` | `Kalman2d` |
 | `Kalman3dF64` | `Kalman3d` |
@@ -934,6 +934,43 @@ sojourn.update(dequeued.since(enqueued));             // a Duration
 
 `EventRate::load()` is renamed `load_average()`, and `Load` is
 `LoadAverage`.
+
+**`GammaPoisson`** takes the caller's clock, and its exposure is a span of
+it:
+
+```rust
+// before
+let mut gp = GammaPoisson::with_prior(2.0, 3.0)?;
+gp.update(100, 10.0)?;                            // f64 exposure, Result
+let (lo, hi) = gp.credible_interval(0.95)?;       // Option<(f64, f64)>
+// after
+let mut gp = GammaPoisson::<i64>::builder().alpha(2.0).beta(3.0).build()?;
+gp.update(100, Duration::from_secs(10));          // a Duration on physical time
+gp.checked_update(100, exposure)?;                // refuses a bad exposure
+const NINETY_FIVE: Confidence = Confidence::new(0.95);   // checked at compile time
+let interval = gp.credible_interval(NINETY_FIVE); // CredibleInterval { lower, upper }
+```
+
+- The rate is in events per unit of the clock: per second on a
+  `Timestamp`. To keep a plain number as the exposure, use
+  `GammaPoisson::<f64>`.
+- **The interval is a closed-form estimate** (Wilson and Hilferty), in
+  place of a normal approximation. It is far closer: at 95% with 10
+  events the old lower end was 18% off and this one is 0.14% off. It is
+  within one part in a million from a thousand events. It is not the
+  exact Gamma quantile. For an exact interval on a small sample, use
+  `scipy.stats.gamma.interval(confidence, alpha + k, scale=1 / (beta + t))`
+  offline.
+- `credible_interval` takes a `Confidence`, not an `f64`. Make it with
+  `Confidence::new(level)`, which in a `const` is checked when the
+  program compiles, or `Confidence::checked_new(level)?` for a level known
+  only at run time. The method then always returns an interval, the
+  prior's before any data. It returned `None` for a bad level and for no
+  data alike.
+- `new()` and `with_prior()` are replaced by the builder, whose prior
+  defaults to (1, 1). `total_count()` and `total_exposure()` are
+  `count()` (an exact `u64`) and `exposure()`. `is_primed()` is removed,
+  since the rate is defined from the prior alone.
 
 **`HawkesIntensity`** moved to `estimation`
 (`nexus_stats::estimation::HawkesIntensity`) and runs on any `Tick`. Its

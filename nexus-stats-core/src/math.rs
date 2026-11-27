@@ -1,3 +1,7 @@
+/// Quantiles of the probability distributions several crates share.
+#[cfg(any(feature = "std", feature = "libm"))]
+pub mod probability;
+
 /// Returns `Err(DataError::NotANumber)` / `Err(DataError::Infinite)` from the
 /// enclosing function when a float input is not finite. The first line of
 /// every `update` that takes a float, in this crate and the subcrates.

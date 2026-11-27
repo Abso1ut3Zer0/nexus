@@ -12,6 +12,39 @@ contained.
 
 ### Changed (breaking)
 
+- **`GammaPoisson<T>` takes the caller's clock,** any `Tick`. The exposure
+  is a span of it (a `Duration` on physical time), and the rate is in
+  events per unit of the clock. `GammaPoisson<f64>` keeps a plain number.
+- **`update` no longer validates** and returns nothing. `checked_update`
+  refuses an exposure that is NaN, infinite or negative.
+- **`credible_interval` is Wilson and Hilferty's closed-form estimate,**
+  in place of a normal approximation, and returns a
+  `CredibleInterval { lower, upper }`. It is built for a stream: within
+  one part in a million of the exact Gamma interval from a thousand
+  events at 95%, in about 20 cycles (under ten nanoseconds), with no search that can fail.
+  With a few events it is rough (0.75% at five, 2.5% at three). Its docs
+  carry the table, measured against a 40-digit reference. It is not the
+  exact quantile; for that on a small sample, use SciPy offline.
+- **`credible_interval` takes a `Confidence`,** a level checked once
+  where it is made (at compile time in a `const`), so the method checks
+  nothing and cannot fail. It always returns an interval, the prior's
+  before any data. It used to take an `f64` and return `None` for a bad
+  level and for no data alike.
+- `new()`, `with_prior()` and `Default` are replaced by the builder, whose
+  prior defaults to (1, 1). `total_count()` and `total_exposure()` become
+  `count()` and `exposure()`. `is_primed()` is removed.
+
+### Fixed
+
+- **`GammaPoisson`'s event count is exact.** It was recovered by
+  subtracting the prior from a float, which lost counts past 2^53 and
+  with a fractional prior. It is kept as a `u64`.
+- **The interval's lower end is no longer far too low with little data.**
+  The normal approximation put it 18% low at ten events, and at zero
+  below a shape of 3.8.
+
+### Changed (breaking)
+
 - **`HawkesIntensity` runs on any `Tick`,** not only physical time. Its
   rates are per unit of the clock: per second on a `Timestamp`, per unit
   of volume on an `f64` volume clock, per count on a `u64`. A tick that is
