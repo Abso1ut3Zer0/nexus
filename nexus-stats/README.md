@@ -249,7 +249,7 @@ All types follow consistent conventions:
 - **Priming** — returns `None` until `min_samples` reached
 - **`is_primed()`** — check if enough data has been seen
 - **`count()`** — total samples processed
-- **`reset()`** — clear state for operational/admin reset
+- **`reset()`** — clear state for operational/admin reset (`reset_at(time)` on a type whose windows count from a time)
 - **`seed()`** — skip warmup with pre-loaded baseline (CUSUM, EMA, AdaptiveThreshold)
 - **`#[must_use]`** — compiler warns if you ignore return values
 

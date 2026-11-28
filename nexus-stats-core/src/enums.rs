@@ -126,3 +126,34 @@ impl core::fmt::Display for DataError {
 
 #[cfg(feature = "std")]
 impl std::error::Error for DataError {}
+
+/// Why a fit cannot give a model.
+///
+/// An estimator whose data may not give a model returns its model as a
+/// `Result<_, FitError>`. Its summary has the readings behind the answer,
+/// and its docs say what each variant means for it.
+///
+/// It is the third error type, beside [`ConfigError`] (the settings were
+/// wrong) and [`DataError`] (an input was refused).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FitError {
+    /// Too little has been seen to fit anything yet.
+    NotEnoughData,
+    /// What has been seen is not something the model can describe, so no
+    /// setting of its parameters fits it. That may be the nature of the
+    /// data, a sample too small to tell, or a corrupt input taken through
+    /// an unchecked `update`.
+    Degenerate,
+}
+
+impl core::fmt::Display for FitError {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        match self {
+            Self::NotEnoughData => write!(f, "not enough data to fit a model"),
+            Self::Degenerate => write!(f, "the data does not determine a model"),
+        }
+    }
+}
+
+#[cfg(feature = "std")]
+impl std::error::Error for FitError {}

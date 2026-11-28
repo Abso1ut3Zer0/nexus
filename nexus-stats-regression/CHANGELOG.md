@@ -19,7 +19,8 @@ contained.
   known already, and it says what to expect next.
 - **An estimator only takes data in.** It has `update`, `summary()`,
   `model()` and `reset()`, with `checked_update` on Poisson and
-  `update_batch` on Bernoulli. Every reading moved to the summary.
+  `update_batch` on Bernoulli. (`HawkesEstimator`, below, has
+  `reset_at(time)` for `reset()`.) Every reading moved to the summary.
   `new()`, `with_prior()` and `Default` are replaced by a builder whose
   prior defaults to (1, 1).
 - **`summary()` has everything about the fit.** `PoissonSummary`: `rate`,
@@ -68,9 +69,22 @@ contained.
   closed form. `summary()` has `windows`, `events`, `rate`, `dispersion`,
   `branching_ratio` and `baseline`. `model()` gives the fitted
   `HawkesModel`. The counting window and the model's decay are settings
-  the caller chooses, as the decay is in the `tick` library. The docs
-  carry a table of how low the branching ratio reads on a short window,
-  checked against simulation.
+  the caller chooses, as the decay is in the `tick` library, through
+  `HawkesEstimatorBuilder`, which also takes the `start` of the first
+  window. It has `checked_update`, and `reset_at(time)` in place of a
+  `reset`, since a restart needs a time, as on `EventRate`. `reset_at`
+  refuses a time before the last one seen. The summary is a
+  `HawkesSummary`. The docs carry a table
+  of how low the branching ratio reads on a short window, checked against
+  simulation.
+- **`model()` returns a `Result<_, FitError>` where a fit may have no
+  model.** `HawkesEstimator::model()` gives `NotEnoughData` until two
+  windows have closed and one of them held an event, and `Degenerate`
+  where the counts are too even to be a Hawkes process. `PoissonEstimator::model()` gives
+  `Degenerate` if a corrupt exposure has left it without a valid rate,
+  and is otherwise always `Ok`. `BernoulliEstimator::model()` cannot
+  fail and returns the model. `FitError` is re-exported at the crate
+  root.
 - **`PoissonModel<T>`:** `new(rate)`, `rate()`, `expected(exposure)` and
   `interval(exposure, confidence)`, the range the count over a future
   exposure will fall in. Within one count of exact at 95% for expected

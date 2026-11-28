@@ -111,7 +111,7 @@
 
 // Re-export core types at crate root
 pub use nexus_stats_core::{
-    Accuracy, Condition, Confidence, ConfigError, DataError, Direction, Probability,
+    Accuracy, Condition, Confidence, ConfigError, DataError, Direction, FitError, Probability,
 };
 
 /// Sealed numeric bounds of the generic types: [`Sample`] (`f64`, `i64`) and

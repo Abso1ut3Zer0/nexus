@@ -30,6 +30,7 @@ Most algorithms are pure arithmetic — no `sqrt` or `exp` needed:
 | Jitter<i64>, PollSaturation | No |
 | Liveness (`alloc`) | No, except `probability_alive()` (`exp`) |
 | EventRate, HawkesModel | Yes (an exponential) |
+| HawkesEstimator | Yes (`sqrt`, for the branching ratio) |
 | Welford (`std_dev()` query) | Yes (`sqrt`) |
 | ShiryaevRoberts | Yes (`exp`) |
 | `halflife()` on any builder | Yes (`exp`) |

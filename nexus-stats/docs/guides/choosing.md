@@ -180,7 +180,7 @@ type with timestamps, or `PollSaturation`, which is weighted per message.
   - The branching ratio: how many further events each event triggers. You choose a counting window that is long next to a burst.
 - I know the rate or probability. What should I expect next? → **PoissonModel**, **BernoulliModel**
   - The expected count and the range it should fall in. Take one from an estimator with `model()`, or build it from a known parameter.
-- The intervals on all four are fast closed-form estimates, at their best on large counts: from a thousand events for a rate, or once the rarer outcome has been seen a thousand times for a probability. Use SciPy offline for an exact one on a small sample.
+- The intervals on the Poisson and Bernoulli types are fast closed-form estimates, at their best on large counts: from a thousand events for a rate, or once the rarer outcome has been seen a thousand times for a probability. Use SciPy offline for an exact one on a small sample.
 
 ## "I want to predict from features"
 

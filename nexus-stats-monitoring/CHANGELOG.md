@@ -99,8 +99,8 @@ contained.
 
 ### Removed (moved)
 
-- `HawkesModel` is now in `nexus-stats-regression` (`estimation`),
-  beside `PoissonEstimator` and the Kalman filters.
+- `HawkesIntensity` is now in `nexus-stats-regression` (`estimation`),
+  as `HawkesModel`, beside `PoissonEstimator` and the Kalman filters.
 
 ### Fixed
 

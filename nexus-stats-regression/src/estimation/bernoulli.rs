@@ -522,9 +522,11 @@ impl BernoulliSummary {
     /// where [`runs`](Self::runs) is, and until there are a success, a
     /// failure and three outcomes in all.
     ///
-    /// The hypothesis under test is that the outcomes are independent. So
-    /// a small value counts against the model, the other way round from
-    /// the p-value of a regression coefficient.
+    /// The hypothesis under test is that the outcomes are independent, so
+    /// a small value counts against the model. A small p-value always
+    /// counts against its hypothesis. For a regression coefficient the
+    /// hypothesis is "no effect", so there a small value is the result
+    /// hoped for, and here it is not.
     ///
     /// Reading it: below 0.05 is the usual line for "not independent". It
     /// does not say which way, so compare [`runs`](Self::runs) with

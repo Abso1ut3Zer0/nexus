@@ -24,8 +24,8 @@ use nexus_stats::{
         RobustZScore, ShiryaevRoberts, TrendAlert,
     },
     estimation::{
-        BernoulliEstimator, Decision, HawkesModel, Kalman1d, Kalman2d, Kalman3d, PoissonEstimator,
-        SprtBernoulli, SprtGaussian,
+        BernoulliEstimator, Decision, HawkesEstimator, HawkesModel, Kalman1d, Kalman2d, Kalman3d,
+        PoissonEstimator, SprtBernoulli, SprtGaussian,
     },
     frequency::{FlexProportionGlobal, FlexProportionLocal, TopK},
     learning::{
@@ -1376,6 +1376,33 @@ fn bench_debounce(samples: &mut [u64]) {
     }
 }
 
+/// One event every 10 to 14 ms in 100 ms windows, so a window closes on
+/// about every eighth call.
+fn bench_hawkes_estimator(samples: &mut [u64]) {
+    let mut h = HawkesEstimator::<i128>::builder()
+        .window(core::time::Duration::from_millis(100))
+        .decay(1.0)
+        .start(0)
+        .build()
+        .unwrap();
+    let mut rng = 12345u64;
+    let mut t = 0i128; // nanoseconds
+    for _ in 0..WARMUP {
+        t += i128::from(10 + next_val(&mut rng) % 5) * 1_000_000;
+        h.update(t);
+    }
+    for s in samples.iter_mut() {
+        let start = rdtsc_start();
+        for _ in 0..BATCH {
+            t += i128::from(10 + next_val(&mut rng) % 5) * 1_000_000;
+            h.update(black_box(t));
+        }
+        let end = rdtsc_end();
+        black_box(h.summary());
+        *s = (end - start) / BATCH;
+    }
+}
+
 fn bench_hawkes_intensity(samples: &mut [u64]) {
     let mut h = HawkesModel::builder()
         .mu(0.1)
@@ -2322,6 +2349,8 @@ fn main() {
     print_row("TrendAlert::update", &mut buf);
     bench_hawkes_intensity(&mut buf);
     print_row("HawkesModel::update", &mut buf);
+    bench_hawkes_estimator(&mut buf);
+    print_row("HawkesEstimator::update", &mut buf);
 
     section("Anomaly Detection");
     print_header();

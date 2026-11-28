@@ -69,5 +69,7 @@ pub use nexus_stats_core::{Micros, Millis, Nanos, Seconds, Span, Tick, Timestamp
 /// The confidence of an interval, as the summaries' and models' interval
 /// methods take it.
 pub use nexus_stats_core::Confidence;
+/// Why a fit cannot give a model, as an estimator's `model` returns it.
+pub use nexus_stats_core::FitError;
 /// A probability from 0 to 1, as `BernoulliModel::new` takes it.
 pub use nexus_stats_core::Probability;

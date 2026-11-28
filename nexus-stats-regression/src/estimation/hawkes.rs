@@ -2,7 +2,7 @@ use core::marker::PhantomData;
 
 use nexus_stats_core::math::{MulAdd, sqrt, step_mean};
 use nexus_stats_core::parts::LastTime;
-use nexus_stats_core::{Span, Tick};
+use nexus_stats_core::{DataError, FitError, Span, Tick};
 
 /// Intensity of a self-exciting (Hawkes) point process with an
 /// exponential kernel.
@@ -202,7 +202,7 @@ impl<T: Tick> HawkesModelBuilder<T> {
         self
     }
 
-    /// Builds the estimator.
+    /// Builds the model.
     ///
     /// # Errors
     ///
@@ -258,7 +258,7 @@ impl<T: Tick> HawkesModelBuilder<T> {
 ///
 /// This type does the fitting and nothing else. [`summary`](Self::summary)
 /// has everything about the fit, and [`model`](Self::model) gives the
-/// fitted [`HawkesModel`].
+/// fitted [`HawkesModel`], or says why there is none.
 ///
 /// # The window is yours to choose
 ///
@@ -295,6 +295,20 @@ impl<T: Tick> HawkesModelBuilder<T> {
 /// It assumes a steady baseline. One that drifts looks like clustering
 /// and raises the ratio. Remove a known daily pattern before feeding it.
 ///
+/// # Where the windows start
+///
+/// At the time you give the builder, such as a session's open, or the
+/// time now. That is how the paper and the `tick` library work: over a
+/// stretch whose start is chosen apart from the events. Two estimators
+/// started at one time have windows that line up, which is what
+/// comparing two window lengths needs.
+///
+/// A window is closed by the first event past its end, so a reading
+/// appears when an event arrives, not on a timer, and the window still
+/// open is left out. An event on a boundary goes to one window or the
+/// next by rounding: the window is found by dividing two floats, and
+/// `0.3 / 0.1` is a hair under 3.
+///
 /// # Examples
 ///
 /// ```
@@ -305,13 +319,14 @@ impl<T: Tick> HawkesModelBuilder<T> {
 /// let mut fit = HawkesEstimator::<i64>::builder()
 ///     .window(Duration::from_secs(10))
 ///     .decay(2.0) // per second
+///     .start(0)
 ///     .build()
 ///     .unwrap();
 /// for second in [1, 2, 3, 12, 35, 36, 41] {
 ///     fit.update(second * 1_000_000_000);
 /// }
-/// // Four windows have closed since the first event at 1 s. They held
-/// // 3, 1, 0 and 2 events. The event at 41 s is in a window still open.
+/// // Four windows have closed since the start. They held 3, 1, 0 and 2
+/// // events. The event at 41 s is in a window still open.
 /// let summary = fit.summary();
 /// assert_eq!((summary.windows(), summary.events()), (4, 6));
 /// assert!((summary.rate().unwrap() - 6.0 / 40.0).abs() < 1e-15);
@@ -322,8 +337,8 @@ pub struct HawkesEstimator<T: Tick> {
     window: f64,
     /// The decay `beta` the fitted model takes.
     decay: f64,
-    /// The first event, where the first window starts.
-    origin: Option<T>,
+    /// Where the first window starts.
+    origin: T,
     last: LastTime<T>,
     open: OpenWindow,
     closed: WindowCounts,
@@ -334,23 +349,31 @@ pub struct HawkesEstimator<T: Tick> {
 pub struct HawkesEstimatorBuilder<T: Tick> {
     window: Option<T::Span>,
     decay: Option<f64>,
+    start: Option<T>,
 }
 
 impl<T: Tick> HawkesEstimator<T> {
-    /// Creates a builder. The window and the decay must be set.
+    /// Creates a builder. The window, the decay and the start must be
+    /// set.
     #[inline]
     #[must_use]
     pub fn builder() -> HawkesEstimatorBuilder<T> {
         HawkesEstimatorBuilder {
             window: None,
             decay: None,
+            start: None,
         }
     }
 
     /// Records an event at `time`.
     ///
-    /// The first event starts the first window. An event at a tick that
-    /// is not at or after the last one taken is ignored. See
+    /// An event at a tick that is not at or after the last one taken, or
+    /// before the start, is ignored.
+    ///
+    /// A time that is infinite, or further from the start than `u64::MAX`
+    /// windows, is taken as the arithmetic gives it: it lands in the last
+    /// window there can be, no later event closes that one, and the fit
+    /// stops moving. See
     /// [`checked_update`](Self::checked_update).
     #[inline]
     pub fn update(&mut self, time: T) {
@@ -358,9 +381,7 @@ impl<T: Tick> HawkesEstimator<T> {
             return;
         }
         self.last.set(time);
-        // The first event is its own origin, in window 0.
-        let origin = *self.origin.get_or_insert(time);
-        let index = self.window_of(time.since(origin));
+        let index = self.window_of(time);
         if index > self.open.index {
             self.close_through(index);
         }
@@ -368,16 +389,18 @@ impl<T: Tick> HawkesEstimator<T> {
     }
 
     /// Checked update. Records an event at `time`, or returns an error and
-    /// leaves the state unchanged if `time` is not at or after the last
-    /// event.
+    /// leaves the state unchanged.
     ///
     /// # Errors
     ///
-    /// [`DataError::NonMonotonicTime`](nexus_stats_core::DataError::NonMonotonicTime)
-    /// if `time` is not at or after the last event taken.
+    /// - [`DataError::NonMonotonicTime`] if `time` is not at or after the
+    ///   last event taken, or is before the start.
+    /// - [`DataError::OutOfRange`] if `time` is too far from the start to
+    ///   have a window: infinitely far, or more than `u64::MAX` windows.
     #[inline]
-    pub fn checked_update(&mut self, time: T) -> Result<(), nexus_stats_core::DataError> {
+    pub fn checked_update(&mut self, time: T) -> Result<(), DataError> {
         self.last.check(time)?;
+        self.check_window(time)?;
         self.update(time);
         Ok(())
     }
@@ -396,26 +419,59 @@ impl<T: Tick> HawkesEstimator<T> {
     /// estimator was built with, and `alpha` as the branching ratio times
     /// that decay.
     ///
-    /// `None` until the fit has a branching ratio from 0 up to 1. A ratio
-    /// below zero is data a Hawkes process does not describe.
-    #[must_use]
-    pub fn model(&self) -> Option<HawkesModel<T>> {
-        let summary = self.summary();
-        let ratio = summary.branching_ratio()?;
+    /// # Errors
+    ///
+    /// - [`FitError::NotEnoughData`] until two windows have closed and at
+    ///   least one of them held an event.
+    /// - [`FitError::Degenerate`] where the counts scatter less than
+    ///   independent events would: a branching ratio below zero, or every
+    ///   window holding the same count. A Hawkes process cannot be that
+    ///   regular, so none fits. With few windows it can be chance, and
+    ///   more events may yet give a model. The summary's
+    ///   [`dispersion`](HawkesSummary::dispersion) and
+    ///   [`branching_ratio`](HawkesSummary::branching_ratio) say how far
+    ///   off it is.
+    pub fn model(&self) -> Result<HawkesModel<T>, FitError> {
+        let fit = self.summary().fit()?;
         HawkesModel::builder()
-            .mu(summary.baseline()?)
-            .alpha(ratio * self.decay)
+            .mu(fit.baseline)
+            .alpha(fit.branching_ratio * self.decay)
             .beta(self.decay)
             .build()
-            .ok()
+            .map_err(|_| FitError::Degenerate)
     }
 
-    /// Forgets every event. The window and the decay are kept.
-    pub fn reset(&mut self) {
-        self.origin = None;
-        self.last.reset();
-        self.open = OpenWindow::default();
-        self.closed = WindowCounts::default();
+    /// Forgets every event and starts the first window at `time`, or
+    /// returns an error and changes nothing. The window and the decay are
+    /// kept.
+    ///
+    /// A restart needs a time, since the windows are counted from one.
+    /// Use it too after a pause you do not want counted as empty windows.
+    /// It cannot go back: for an earlier stretch, build a new estimator.
+    ///
+    /// # Errors
+    ///
+    /// [`DataError::NonMonotonicTime`] if `time` is before the last event
+    /// taken, or before the start.
+    pub fn reset_at(&mut self, time: T) -> Result<(), DataError> {
+        self.last.check(time)?;
+        *self = Self::starting_at(self.window, self.decay, time);
+        Ok(())
+    }
+
+    /// An estimator with nothing seen, whose first window starts at
+    /// `start`. Nothing before `start` is taken.
+    fn starting_at(window: f64, decay: f64, start: T) -> Self {
+        let mut last = LastTime::new();
+        last.set(start);
+        Self {
+            window,
+            decay,
+            origin: start,
+            last,
+            open: OpenWindow::default(),
+            closed: WindowCounts::default(),
+        }
     }
 
     /// Closes the open window and every empty one before window `index`,
@@ -427,11 +483,28 @@ impl<T: Tick> HawkesEstimator<T> {
         self.open = OpenWindow { index, events: 0 };
     }
 
-    /// Which window a time `since_origin` after the first event is in,
-    /// counted from 0. A window holds its start and not its end.
+    /// Which window `time` is in, counted from 0. The cast stops at
+    /// `u64::MAX`.
     #[inline]
-    fn window_of(&self, since_origin: T::Span) -> u64 {
-        (since_origin.as_f64() / self.window) as u64
+    fn window_of(&self, time: T) -> u64 {
+        self.windows_from_start(time) as u64
+    }
+
+    /// `Ok` if `time` is near enough to the start to have a window.
+    #[inline]
+    fn check_window(&self, time: T) -> Result<(), DataError> {
+        // 2^64. NaN fails the comparison too.
+        if self.windows_from_start(time) < u64::MAX as f64 {
+            return Ok(());
+        }
+        Err(DataError::OutOfRange)
+    }
+
+    /// How many window lengths `time` is after the start. A float
+    /// division, so a time on a boundary may round to either side.
+    #[inline]
+    fn windows_from_start(&self, time: T) -> f64 {
+        time.since(self.origin).as_f64() / self.window
     }
 }
 
@@ -455,32 +528,45 @@ impl<T: Tick> HawkesEstimatorBuilder<T> {
         self
     }
 
+    /// Where the first window starts: a time chosen apart from the
+    /// events, such as a session's open or the time now. Required. An
+    /// event before it is ignored.
+    ///
+    /// It must be a real time. One that is not a number is refused by
+    /// `build`. An infinite one cannot be told apart from a late one, and
+    /// leaves an estimator that takes no event.
+    #[must_use]
+    pub fn start(mut self, time: T) -> Self {
+        self.start = Some(time);
+        self
+    }
+
     /// Builds the estimator.
     ///
     /// # Errors
     ///
-    /// - `Missing` if the window or the decay was not set.
-    /// - `Invalid` if either is not positive and finite.
+    /// - `Missing` if the window, the decay or the start was not set.
+    /// - `Invalid` if the window or the decay is not positive and finite,
+    ///   or if the start is not a number.
     pub fn build(self) -> Result<HawkesEstimator<T>, nexus_stats_core::ConfigError> {
         use nexus_stats_core::ConfigError::{Invalid, Missing};
         use nexus_stats_core::math::positive_finite;
 
         let window = self.window.ok_or(Missing("window"))?.as_f64();
         let decay = self.decay.ok_or(Missing("decay"))?;
+        let start = self.start.ok_or(Missing("start"))?;
         if !positive_finite(window) {
             return Err(Invalid("Hawkes window must be positive and finite"));
         }
         if !positive_finite(decay) {
             return Err(Invalid("Hawkes decay must be positive and finite"));
         }
-        Ok(HawkesEstimator {
-            window,
-            decay,
-            origin: None,
-            last: LastTime::new(),
-            open: OpenWindow::default(),
-            closed: WindowCounts::default(),
-        })
+        let estimator = HawkesEstimator::starting_at(window, decay, start);
+        // Only a NaN is not at or after itself.
+        if estimator.last.would_go_back(start) {
+            return Err(Invalid("Hawkes start must be a time, not NaN"));
+        }
+        Ok(estimator)
     }
 }
 
@@ -534,6 +620,14 @@ impl WindowCounts {
     }
 }
 
+/// What the window counts determine of a Hawkes model.
+#[derive(Debug, Clone, Copy)]
+struct Fit {
+    baseline: f64,
+    /// From 0 up to 1.
+    branching_ratio: f64,
+}
+
 /// How good a [`HawkesEstimator`]'s fit is, from its
 /// [`summary`](HawkesEstimator::summary).
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -544,7 +638,8 @@ pub struct HawkesSummary {
 
 impl HawkesSummary {
     /// Windows that have closed. The fit is read from these. The open one
-    /// is left out until an event arrives past its end.
+    /// is left out until an event arrives past its end, so a stream that
+    /// goes quiet leaves the summary as it was.
     #[inline]
     #[must_use]
     pub fn windows(&self) -> u64 {
@@ -574,7 +669,8 @@ impl HawkesSummary {
     }
 
     /// The variance of the count in a window over its mean. `None` until
-    /// two windows have closed with an event between them.
+    /// two windows have closed and at least one of the closed windows
+    /// held an event.
     ///
     /// | Value | Reads as |
     /// |---|---|
@@ -603,9 +699,10 @@ impl HawkesSummary {
     /// | near 1 | nearly self-sustaining: almost every event was set off by another |
     /// | below 0 | the counts scatter less than independent events would. A Hawkes process cannot do that, so the data is not one, and [`HawkesEstimator::model`] gives none |
     ///
-    /// It is reported as the formula gives it, with no clamp, as in the
-    /// paper. It reads low when the window is short. See the table on
-    /// [`HawkesEstimator`].
+    /// A ratio below zero is reported as the formula gives it, with no
+    /// clamp, as in the paper. Where every window held the same count the
+    /// formula divides by zero, and there is no ratio. It reads low when
+    /// the window is short. See the table on [`HawkesEstimator`].
     #[inline]
     #[must_use]
     pub fn branching_ratio(&self) -> Option<f64> {
@@ -624,6 +721,20 @@ impl HawkesSummary {
     #[must_use]
     pub fn baseline(&self) -> Option<f64> {
         Some(self.rate()? * (1.0 - self.branching_ratio()?))
+    }
+
+    /// The two parameters the counts determine, or why they do not.
+    fn fit(&self) -> Result<Fit, FitError> {
+        self.dispersion().ok_or(FitError::NotEnoughData)?;
+        let branching_ratio = self
+            .branching_ratio()
+            .filter(|ratio| *ratio >= 0.0)
+            .ok_or(FitError::Degenerate)?;
+        let baseline = self.baseline().ok_or(FitError::Degenerate)?;
+        Ok(Fit {
+            baseline,
+            branching_ratio,
+        })
     }
 }
 
@@ -886,10 +997,11 @@ mod tests {
         assert_eq!(hawkes.count(), 2);
     }
 
-    fn fitter<T: Tick>(window: T::Span) -> HawkesEstimator<T> {
+    fn fitter<T: Tick>(window: T::Span, start: T) -> HawkesEstimator<T> {
         HawkesEstimator::builder()
             .window(window)
             .decay(2.0)
+            .start(start)
             .build()
             .unwrap()
     }
@@ -930,11 +1042,11 @@ mod tests {
         }
     }
 
-    /// Windows of 10 from the first event at 0: the counts are 3, 1, 0, 2,
-    /// and the event at 41 is in a window still open.
+    /// Windows of 10 from the start at 0: the counts are 3, 1, 0, 2, and
+    /// the event at 41 is in a window still open.
     #[test]
-    fn events_are_counted_in_windows_from_the_first() {
-        let mut fit = fitter::<f64>(10.0);
+    fn events_are_counted_in_windows_from_the_start() {
+        let mut fit = fitter::<f64>(10.0, 0.0);
         assert_eq!(fit.summary().windows(), 0);
         assert_eq!(fit.summary().rate(), None);
         for time in [0.0, 1.0, 2.0, 12.0, 35.0, 36.0, 41.0] {
@@ -951,10 +1063,11 @@ mod tests {
         assert!((summary.baseline().unwrap() - 0.15 * (1.0 - ratio)).abs() < 1e-15);
     }
 
-    /// An event exactly on a boundary opens the next window.
+    /// Where the division is exact, an event on a boundary opens the next
+    /// window.
     #[test]
     fn a_window_holds_its_start_and_not_its_end() {
-        let mut fit = fitter::<f64>(10.0);
+        let mut fit = fitter::<f64>(10.0, 5.0);
         for time in [5.0, 14.999, 15.0, 25.0] {
             fit.update(time);
         }
@@ -980,7 +1093,7 @@ mod tests {
         assert!((together.mean / one_by_one.mean - 1.0).abs() < 1e-12);
         assert!((together.variance() / one_by_one.variance() - 1.0).abs() < 1e-12);
 
-        let mut fit = fitter::<f64>(1.0);
+        let mut fit = fitter::<f64>(1.0, 0.0);
         fit.update(0.0);
         fit.update(1e9 + 0.5);
         assert_eq!(fit.summary().windows(), 1_000_000_000);
@@ -990,7 +1103,7 @@ mod tests {
     /// Independent events have no clustering to find.
     #[test]
     fn a_poisson_stream_has_a_branching_ratio_near_zero() {
-        let mut fit = fitter::<f64>(20.0);
+        let mut fit = fitter::<f64>(20.0, 0.0);
         for time in simulate(1.0, 0.0, 1.0, 400_000.0, 0x9E37_79B9_7F4A_7C15) {
             fit.update(time);
         }
@@ -1004,20 +1117,26 @@ mod tests {
     /// window is its own length in cluster times.
     #[test]
     fn the_fit_recovers_a_simulated_process_to_the_documented_bias() {
-        // (true ratio, window, documented estimate)
-        for (ratio, window, documented) in
-            [(0.5, 30.0, 0.494), (0.5, 3.0, 0.427), (0.8, 30.0, 0.797)]
-        {
+        // (true ratio, window, documented estimate). All but the first sit
+        // 0.04 or more below the true ratio, so the tolerance tells the
+        // documented bias from none.
+        for (ratio, window, documented) in [
+            (0.5, 30.0, 0.494),
+            (0.5, 3.0, 0.427),
+            (0.5, 1.0, 0.311),
+            (0.8, 3.0, 0.760),
+            (0.2, 3.0, 0.150),
+        ] {
             let beta = 1.0 / (1.0 - ratio);
             let (alpha, mu) = (ratio * beta, 1.0 - ratio);
-            let mut fit = fitter::<f64>(window);
-            for time in simulate(mu, alpha, beta, 600_000.0, 0xD1B5_4A32_D192_ED03) {
+            let mut fit = fitter::<f64>(window, 0.0);
+            for time in simulate(mu, alpha, beta, 2_000_000.0, 0xD1B5_4A32_D192_ED03) {
                 fit.update(time);
             }
             let summary = fit.summary();
             let got = summary.branching_ratio().unwrap();
             assert!(
-                (got - documented).abs() < 0.02,
+                (got - documented).abs() < 0.012,
                 "{ratio} at {window}: {got}"
             );
             // The mean rate is mu / (1 - ratio), which is 1 here.
@@ -1028,8 +1147,8 @@ mod tests {
 
     #[test]
     fn the_model_is_the_fit_with_the_decay_given() {
-        let mut fit = fitter::<f64>(30.0);
-        assert!(fit.model().is_none());
+        let mut fit = fitter::<f64>(30.0, 0.0);
+        assert!(matches!(fit.model(), Err(FitError::NotEnoughData)));
         for time in simulate(0.5, 1.0, 2.0, 200_000.0, 0x2545_F491_4F6C_DD1D) {
             fit.update(time);
         }
@@ -1049,32 +1168,33 @@ mod tests {
     /// Counts that scatter less than independent events would give a ratio
     /// below zero, and no model.
     #[test]
-    fn evenly_spaced_events_have_no_hawkes_model() {
-        let mut fit = fitter::<f64>(10.0);
+    fn evenly_spaced_events_are_degenerate_for_a_hawkes_model() {
+        let mut fit = fitter::<f64>(10.0, 0.0);
         for step in 0..1_000 {
             fit.update(f64::from(step) * 3.7);
         }
         assert!(fit.summary().branching_ratio().unwrap() < 0.0);
-        assert!(fit.model().is_none());
+        assert!(matches!(fit.model(), Err(FitError::Degenerate)));
         // Every window the same: no scatter at all, so no ratio.
-        let mut level = fitter::<f64>(10.0);
+        let mut level = fitter::<f64>(10.0, 0.0);
         for step in 0..100 {
             level.update(f64::from(step) * 5.0);
         }
         assert_eq!(level.summary().dispersion(), Some(0.0));
         assert_eq!(level.summary().branching_ratio(), None);
+        assert!(matches!(level.model(), Err(FitError::Degenerate)));
     }
 
     #[test]
     fn on_physical_time_the_window_is_a_duration() {
         use core::time::Duration;
 
-        let mut fit = fitter::<i64>(Duration::from_secs(10));
+        let mut fit = fitter::<i64>(Duration::from_secs(10), 0);
         for second in [1_i64, 2, 3, 12, 35, 36, 41] {
             fit.update(second * 1_000_000_000);
         }
-        // Windows from the first event at 1 s: [1, 11), [11, 21), [21, 31)
-        // and [31, 41) hold 3, 1, 0 and 2. The event at 41 s opens the next.
+        // Windows from the start at 0: [0, 10), [10, 20), [20, 30) and
+        // [30, 40) hold 3, 1, 0 and 2. The event at 41 s opens the next.
         let summary = fit.summary();
         assert_eq!((summary.windows(), summary.events()), (4, 6));
         assert!((summary.rate().unwrap() - 6.0 / 40.0).abs() < 1e-15);
@@ -1082,35 +1202,164 @@ mod tests {
 
     #[test]
     fn an_event_before_the_last_is_ignored_and_the_checked_form_says_so() {
-        let mut fit = fitter::<f64>(10.0);
+        let mut fit = fitter::<f64>(10.0, 50.0);
         fit.update(50.0);
         fit.update(40.0);
         fit.update(f64::NAN);
-        assert_eq!(
-            fit.checked_update(49.0),
-            Err(nexus_stats_core::DataError::NonMonotonicTime)
-        );
         fit.update(61.0);
+        let before = fit.summary();
+        assert_eq!(fit.checked_update(60.0), Err(DataError::NonMonotonicTime));
+        assert_eq!(fit.summary(), before);
         assert_eq!((fit.summary().windows(), fit.summary().events()), (1, 1));
         assert_eq!(fit.checked_update(61.0), Ok(()));
     }
 
+    /// A time with no window is refused by the checked form. Plain
+    /// `update` takes it, and the fit stops moving.
     #[test]
-    fn reset_forgets_the_events_and_keeps_the_window() {
-        let mut fit = fitter::<f64>(10.0);
+    fn a_time_too_far_to_have_a_window_is_refused_by_the_checked_form() {
+        let mut fit = fitter::<f64>(10.0, 0.0);
+        fit.update(0.0);
+        fit.update(25.0);
+        let before = fit.summary();
+        for far in [f64::INFINITY, 1e300] {
+            assert_eq!(fit.checked_update(far), Err(DataError::OutOfRange), "{far}");
+            assert_eq!(fit.summary(), before);
+        }
+        fit.update(f64::INFINITY);
+        assert_eq!(fit.summary().windows(), u64::MAX);
+        // Infinity was the last time seen, so there is no restarting this
+        // one at a real time.
+        assert_eq!(fit.reset_at(0.0), Err(DataError::NonMonotonicTime));
+    }
+
+    /// With a 100 ms window an event 300 ms after the start is on a
+    /// boundary, and `0.3 / 0.1` rounds down. It is in one window or the
+    /// next, and counted once.
+    #[test]
+    fn a_boundary_event_falls_to_one_side_and_is_counted_once() {
+        use core::time::Duration;
+
+        let mut fit = fitter::<i64>(Duration::from_millis(100), 0);
+        for millisecond in [50_i64, 300, 1_000] {
+            fit.update(millisecond * 1_000_000);
+        }
+        // Ten windows closed, holding both earlier events between them.
+        assert_eq!((fit.summary().windows(), fit.summary().events()), (10, 2));
+    }
+
+    /// Windows from the start you give, not from the first event.
+    #[test]
+    fn windows_start_where_the_caller_says() {
+        let mut fit = fitter::<f64>(10.0, 0.0);
+        for time in [5.0, 12.0, 25.0] {
+            fit.update(time);
+        }
+        // [0, 10) and [10, 20) hold one each. From the first event they
+        // would be [5, 15), holding two, and [15, 25), holding none.
+        let summary = fit.summary();
+        assert_eq!((summary.windows(), summary.events()), (2, 2));
+        assert_eq!(summary.dispersion(), Some(0.0));
+    }
+
+    /// Two estimators started together have windows that line up: each
+    /// long window is two short ones.
+    #[test]
+    fn estimators_started_together_have_aligned_windows() {
+        let (mut short, mut long) = (fitter::<f64>(10.0, 100.0), fitter::<f64>(20.0, 100.0));
+        for time in simulate(1.0, 0.5, 1.0, 5_000.0, 0x2545_F491_4F6C_DD1D) {
+            short.update(100.0 + time);
+            long.update(100.0 + time);
+        }
+        let (short, long) = (short.summary(), long.summary());
+        assert_eq!(long.windows(), short.windows() / 2);
+        assert!((long.rate().unwrap() - short.rate().unwrap()).abs() < 0.01);
+    }
+
+    #[test]
+    fn an_event_before_the_start_is_ignored() {
+        let mut fit = fitter::<f64>(10.0, 100.0);
+        fit.update(99.0);
+        assert_eq!(fit.checked_update(99.5), Err(DataError::NonMonotonicTime));
+        fit.update(100.0);
+        fit.update(111.0);
+        assert_eq!((fit.summary().windows(), fit.summary().events()), (1, 1));
+    }
+
+    /// Counts whose variance equals their mean have a ratio of exactly
+    /// zero, and the model for that is a Poisson process: `alpha` of 0.
+    #[test]
+    fn a_ratio_of_zero_gives_a_model_with_no_excitation() {
+        let mut fit = fitter::<f64>(10.0, 0.0);
+        // Windows holding 1 and 3: a mean of 2 and a variance of 2.
+        for time in [1.0, 11.0, 12.0, 13.0, 20.0] {
+            fit.update(time);
+        }
+        assert_eq!(fit.summary().dispersion(), Some(1.0));
+        assert_eq!(fit.summary().branching_ratio(), Some(0.0));
+        let model = fit.model().unwrap();
+        assert_eq!(model.branching_ratio(), 0.0);
+        assert_eq!(model.baseline(), 2.0 / 10.0);
+    }
+
+    #[test]
+    fn reset_at_forgets_the_events_and_starts_again_at_the_time_given() {
+        let mut fit = fitter::<f64>(10.0, 0.0);
         for time in [0.0, 5.0, 30.0] {
             fit.update(time);
         }
-        fit.reset();
+        assert_eq!(fit.reset_at(1_000.0), Ok(()));
         assert_eq!(fit.summary().windows(), 0);
-        fit.update(1_000.0);
+        // The pause is not counted as empty windows, and nothing before
+        // the new start is taken.
+        fit.update(999.0);
+        fit.update(1_005.0);
         fit.update(1_011.0);
         assert_eq!((fit.summary().windows(), fit.summary().events()), (1, 1));
     }
 
+    /// A restart cannot go back before the last time seen, and one that
+    /// is refused changes nothing.
     #[test]
-    fn the_builder_needs_a_usable_window_and_decay() {
-        let build = |window: Option<f64>, decay: Option<f64>| {
+    fn reset_at_refuses_a_time_before_the_last_seen() {
+        let mut fit = fitter::<f64>(10.0, 0.0);
+        for time in [5.0, 12.0, 30.0] {
+            fit.update(time);
+        }
+        let before = fit.summary();
+        for back in [29.0, -1.0, f64::NAN] {
+            assert_eq!(
+                fit.reset_at(back),
+                Err(DataError::NonMonotonicTime),
+                "{back}"
+            );
+            assert_eq!(fit.summary(), before);
+        }
+        // At the last time seen is not going back.
+        assert_eq!(fit.reset_at(30.0), Ok(()));
+        assert_eq!(fit.summary().windows(), 0);
+    }
+
+    /// The decay is the model's, and a restart keeps it: the model's
+    /// `alpha` is still the ratio times 2.
+    #[test]
+    fn reset_at_keeps_the_window_and_the_decay() {
+        let mut fit = fitter::<f64>(10.0, 0.0);
+        assert_eq!(fit.reset_at(1_000.0), Ok(()));
+        for time in simulate(0.5, 1.0, 2.0, 100_000.0, 0x2545_F491_4F6C_DD1D) {
+            fit.update(1_000.0 + time);
+        }
+        let ratio = fit.summary().branching_ratio().unwrap();
+        let mut model = fit.model().unwrap();
+        model.update(0.0);
+        assert!((model.intensity() - (model.baseline() + ratio * 2.0)).abs() < 1e-12);
+    }
+
+    #[test]
+    fn the_builder_needs_a_window_a_decay_and_a_start() {
+        use nexus_stats_core::ConfigError::{Invalid, Missing};
+
+        let build = |window: Option<f64>, decay: Option<f64>, start: Option<f64>| {
             let mut builder = HawkesEstimator::<f64>::builder();
             if let Some(window) = window {
                 builder = builder.window(window);
@@ -1118,14 +1367,88 @@ mod tests {
             if let Some(decay) = decay {
                 builder = builder.decay(decay);
             }
-            builder.build()
+            if let Some(start) = start {
+                builder = builder.start(start);
+            }
+            builder.build().map(|_| ())
         };
-        assert!(build(Some(10.0), Some(2.0)).is_ok());
-        assert!(build(None, Some(2.0)).is_err());
-        assert!(build(Some(10.0), None).is_err());
+        assert_eq!(build(Some(10.0), Some(2.0), Some(0.0)), Ok(()));
+        assert_eq!(build(None, Some(2.0), Some(0.0)), Err(Missing("window")));
+        assert_eq!(build(Some(10.0), None, Some(0.0)), Err(Missing("decay")));
+        assert_eq!(build(Some(10.0), Some(2.0), None), Err(Missing("start")));
+        assert!(matches!(
+            build(Some(10.0), Some(2.0), Some(f64::NAN)),
+            Err(Invalid(_))
+        ));
         for bad in [0.0, -1.0, f64::NAN, f64::INFINITY] {
-            assert!(build(Some(bad), Some(2.0)).is_err(), "window {bad}");
-            assert!(build(Some(10.0), Some(bad)).is_err(), "decay {bad}");
+            assert!(
+                matches!(build(Some(bad), Some(2.0), Some(0.0)), Err(Invalid(_))),
+                "window {bad}"
+            );
+            assert!(
+                matches!(build(Some(10.0), Some(bad), Some(0.0)), Err(Invalid(_))),
+                "decay {bad}"
+            );
         }
+    }
+
+    /// One window closed, or only empty ones, is not yet a fit.
+    #[test]
+    fn there_is_not_enough_data_before_two_windows_with_an_event() {
+        let mut fit = fitter::<f64>(10.0, 0.0);
+        fit.update(0.0);
+        fit.update(15.0);
+        assert_eq!(fit.summary().windows(), 1);
+        assert!(matches!(fit.model(), Err(FitError::NotEnoughData)));
+        fit.update(25.0);
+        fit.update(26.0);
+        fit.update(45.0);
+        assert!(fit.summary().dispersion().is_some());
+        assert!(!matches!(fit.model(), Err(FitError::NotEnoughData)));
+
+        // Two windows closed, both empty: the one event is in the third.
+        let mut empty = fitter::<f64>(10.0, 0.0);
+        empty.update(25.0);
+        assert_eq!(
+            (empty.summary().windows(), empty.summary().events()),
+            (2, 0)
+        );
+        assert!(matches!(empty.model(), Err(FitError::NotEnoughData)));
+    }
+
+    /// One event in two closed windows is a fit, if a rough one: counts
+    /// of 1 and 0 have a variance equal to their mean.
+    #[test]
+    fn one_event_in_two_windows_is_already_a_fit() {
+        let mut fit = fitter::<f64>(10.0, 0.0);
+        fit.update(5.0);
+        fit.update(25.0);
+        assert_eq!(fit.summary().dispersion(), Some(1.0));
+        let model = fit.model().unwrap();
+        assert_eq!((model.baseline(), model.branching_ratio()), (0.05, 0.0));
+    }
+
+    #[test]
+    fn the_start_is_inside_the_first_window() {
+        let mut fit = fitter::<f64>(10.0, 100.0);
+        assert_eq!(fit.checked_update(100.0), Ok(()));
+        assert_eq!(
+            fit.checked_update(f64::NAN),
+            Err(DataError::NonMonotonicTime)
+        );
+        assert_eq!(fit.checked_update(111.0), Ok(()));
+        assert_eq!((fit.summary().windows(), fit.summary().events()), (1, 1));
+    }
+
+    /// After a time with no window, later events change nothing.
+    #[test]
+    fn the_fit_stops_moving_after_an_infinite_time() {
+        let mut fit = fitter::<f64>(10.0, 0.0);
+        fit.update(1.0);
+        fit.update(f64::INFINITY);
+        let frozen = fit.summary();
+        fit.update(f64::INFINITY);
+        fit.update(5.0);
+        assert_eq!(fit.summary(), frozen);
     }
 }

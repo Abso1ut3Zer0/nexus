@@ -22,6 +22,11 @@ contained.
   way: `new`, `checked_new`, and `value()` to read it.
 - `From<Confidence> for f64`, `From<Probability> for f64`, and
   `TryFrom<f64>` for both.
+- **`FitError`:** why a fit cannot give a model. `NotEnoughData` means
+  too little has been seen yet. `Degenerate` means what has been seen is
+  not something the model can describe. It is the third error type,
+  beside `ConfigError` (wrong settings) and `DataError` (a refused
+  input).
 
 ### Added (internal)
 

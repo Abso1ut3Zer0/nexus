@@ -250,7 +250,7 @@ on `f32` accumulation for speed, measure: the hot path gains a convert.
 | `HalfLifeBuilder` | `HalfLife::new()` (the builder had no knobs) |
 | `Liveness`'s `span`, `deadline_multiple`, `deadline_absolute`, `min_samples`, `interval()`, `effective_span()`, and the `bool` from `update` and `check` | `check(now)` returns a `Suspicion`; compare `ratio()` and `silence()` to your own limits |
 | `EventRate::builder()`, `rate()`, `interval()`, `effective_span()`, `reset()` | `EventRate::new(start)`, `take(now)?.rate()`, `reset_at(now)` |
-| `HawkesModelBuilder::min_samples` | nothing; no reading used it |
+| `HawkesIntensityF64Builder::min_samples` | nothing; no reading used it |
 | `Jitter::builder()`, its `span` / `alpha` / `halflife` / `seed`, `jitter_ratio()`, `last_deviation()`, `effective_span()` | `Jitter::<f64>::new()` or `Jitter::<i64>::new()`. The type is the RFC 3550 estimator with its fixed gain of 1/16. For a ratio, divide by an `Ema` of the same samples |
 | `ErrorRateBuilder::threshold`, `ErrorRate::reconfigure_threshold`, the `Condition` returned by `update` | compare `smoothed_ratio()` or `take().ratio()` to your own limit |
 | `ErrorRate::update_weighted` | no replacement; feed an `Ema` the weighted value yourself |
@@ -964,7 +964,7 @@ let interval = summary.credible_interval(NINETY_FIVE);    // Option<CredibleInte
 let interval = interval.expect("this prior always has one");
 let (lo, hi) = (interval.lower(), interval.upper());
 
-let model = est.model();                          // what to expect next
+let model = est.model()?;                         // what to expect next
 let count = model.expected(Duration::from_secs(5));
 let range = model.interval(Duration::from_secs(5), NINETY_FIVE);
 ```
@@ -991,6 +991,8 @@ let fills = model.expected(200);                  // 50.0
 - **The estimator only takes data in.** It has `update`, `summary()`,
   `model()` and `reset()`, with `checked_update` on Poisson and
   `update_batch` on Bernoulli. Every reading is on the summary.
+  `PoissonEstimator::model()` returns a `Result`: an error only after a
+  corrupt exposure taken through plain `update`.
 - **What moved where:**
 
   | 6.x | 7.0 |
@@ -1044,7 +1046,7 @@ and `beta`. Its
 rates are per unit of the clock, which is the second on a `Timestamp`.
 Two ways to move old code:
 
-- **Keep a `u64` clock and change nothing.** A `HawkesModel<u64>`
+- **Keep a `u64` clock and change only the name.** A `HawkesModel<u64>`
   counts in your ticks as before, so `mu`, `alpha` and `beta` stay per
   tick.
 - **Move to a `Timestamp`** (`i64`, `Nanos`, `Micros`, an `Instant`). The
