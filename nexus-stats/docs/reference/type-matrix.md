@@ -97,7 +97,8 @@ See [Integer vs Float](../guides/integer-vs-float.md) for the caller rules and
 | `PollSaturation<T>` (→ `PollSummary`) | `T: Timestamp`, counts | — | monitoring |
 | `SojournSaturation` (→ `SojournSummary`) | sojourn as `Duration` | — | monitoring |
 | `ErrorRate` | `bool` outcomes | — | monitoring |
-| `HawkesIntensity<T>` | `T: Tick` | `std\|libm` | regression (`estimation`) |
+| `HawkesModel<T>` | `T: Tick` | `std\|libm` | regression (`estimation`) |
+| `HawkesEstimator<T>` | `T: Tick`; event times, a window as the clock's span | `std\|libm` | regression (`estimation`) |
 
 ## Control
 

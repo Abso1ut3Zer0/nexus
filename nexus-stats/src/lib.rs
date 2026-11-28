@@ -85,7 +85,7 @@
 //! | `detection` | `estimation` | + SprtBernoulli, SprtGaussian |
 //! | `regression` | `regression` | LinearRegression, PolynomialRegression, EwLinearRegression, EwPolynomialRegression, ExponentialRegression, LogarithmicRegression, PowerRegression (+ `Ew*`), LogisticRegression, HitRate, LaggedPredictor, SignalDecayCurve |
 //! | `regression` + `alloc` | `learning` | LmsFilter, NlmsFilter, RlsFilter, HuberRegression, OnlineKMeans, OnlineGd, AdaGrad, Adam, Ucb1, ThompsonBeta, ThompsonGamma, EpsilonGreedy, Exp3 |
-//! | `regression` | `estimation` | + Kalman1d, Kalman2d, Kalman3d, BernoulliEstimator, BernoulliModel, PoissonEstimator, PoissonModel, HawkesIntensity *(std\|libm)* |
+//! | `regression` | `estimation` | + Kalman1d, Kalman2d, Kalman3d, BernoulliEstimator, BernoulliModel, PoissonEstimator, PoissonModel, HawkesModel, HawkesEstimator *(std\|libm)* |
 //! | `control` | `control` | DeadBand, Hysteresis, Debounce, LevelCrossing, PeakDetector, BoolWindow *(alloc)* |
 //! | `control` | `frequency` | FlexProportionGlobal, FlexProportionLocal, TopK *(alloc)*, DecayAccum *(std\|libm)* |
 //! | `monitoring` | `monitoring` | PeakToTrough, WindowedMax, WindowedMin, PeakHold, CoDel, PollSaturation, SojournSaturation, Liveness *(alloc)*, EventRate *(std\|libm)*, Jitter, ErrorRate |

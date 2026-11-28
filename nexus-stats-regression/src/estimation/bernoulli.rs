@@ -490,6 +490,9 @@ impl BernoulliSummary {
 
     /// Runs seen: stretches of one outcome in a row. `Y Y N N N Y` has
     /// three. `None` once a batch of both kinds has lost the order.
+    ///
+    /// On its own the number says little. Read it against
+    /// [`expected_runs`](Self::expected_runs).
     #[inline]
     #[must_use]
     pub fn runs(&self) -> Option<u64> {
@@ -518,6 +521,17 @@ impl BernoulliSummary {
     /// independent: a single probability does not describe them. `None`
     /// where [`runs`](Self::runs) is, and until there are a success, a
     /// failure and three outcomes in all.
+    ///
+    /// The hypothesis under test is that the outcomes are independent. So
+    /// a small value counts against the model, the other way round from
+    /// the p-value of a regression coefficient.
+    ///
+    /// Reading it: below 0.05 is the usual line for "not independent". It
+    /// does not say which way, so compare [`runs`](Self::runs) with
+    /// [`expected_runs`](Self::expected_runs): fewer is streaks, more is
+    /// alternation. With very many outcomes it turns small for a departure
+    /// too slight to matter. The ratio of the two is the size of it: 0.99
+    /// is trivially streaky and 0.7 is seriously so.
     ///
     /// ```text
     /// mean     = 2 s f / (s + f) + 1

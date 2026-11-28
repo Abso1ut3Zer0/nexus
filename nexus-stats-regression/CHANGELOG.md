@@ -62,6 +62,15 @@ contained.
 
 ### Added
 
+- **`HawkesEstimator<T>`:** fits a Hawkes process from event times, by
+  Hardiman and Bouchaud's estimator (2014). It counts events in windows
+  and reads the clustering from how much the counts scatter, all in
+  closed form. `summary()` has `windows`, `events`, `rate`, `dispersion`,
+  `branching_ratio` and `baseline`. `model()` gives the fitted
+  `HawkesModel`. The counting window and the model's decay are settings
+  the caller chooses, as the decay is in the `tick` library. The docs
+  carry a table of how low the branching ratio reads on a short window,
+  checked against simulation.
 - **`PoissonModel<T>`:** `new(rate)`, `rate()`, `expected(exposure)` and
   `interval(exposure, confidence)`, the range the count over a future
   exposure will fall in. Within one count of exact at 95% for expected
@@ -104,7 +113,7 @@ contained.
 
 ### Changed (breaking)
 
-- **`HawkesIntensity` runs on any `Tick`,** not only physical time. Its
+- **`HawkesModel` runs on any `Tick`,** not only physical time. Its
   rates are per unit of the clock: per second on a `Timestamp`, per unit
   of volume on an `f64` volume clock, per count on a `u64`. A tick that is
   not at or after the last event is ignored, a NaN included, and
@@ -112,12 +121,14 @@ contained.
 
 ### Added (moved in)
 
-- **`HawkesIntensity`**, from `nexus-stats-monitoring`. It estimates the
-  state of a point-process model, as the other types in `estimation` do.
+- **`HawkesModel`**, from `nexus-stats-monitoring`, where it was
+  `HawkesIntensity`. It is the model of the family, as `PoissonModel` is:
+  you give it its parameters and it reports the intensity. The builder is
+  `HawkesModelBuilder`.
 
 ### Changed (breaking)
 
-- **`HawkesIntensity` takes the caller's clock,** and on physical time its
+- **`HawkesModel` takes the caller's clock,** and on physical time its
   rates are per second (`mu` in events per second, `beta` per second).
   See the entry above for other clocks. An event before the last one is
   ignored; `checked_update` returns `NonMonotonicTime`. `min_samples` is

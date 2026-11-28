@@ -13,7 +13,7 @@ Online regression, learning, and estimation for [nexus-stats](https://crates.io/
 - **A reading is an `Option`.** `None` until there is enough data, never a placeholder value.
 - **A published algorithm is implemented as published.** A type that comes from a paper or a standard follows it. Where floating point needs more care than the source gives (cancellation, overflow, a divisor near zero), the type adds the guard practitioners use, and its docs say which.
 
-**Not yet migrated:** every type in this crate except `HitRate`, `HawkesIntensity`, `PoissonEstimator`, `PoissonModel`, `BernoulliEstimator` and `BernoulliModel`. They have not been moved to these guarantees. Most still validate in `update` and return a `Result`.
+**Not yet migrated:** every type in this crate except `HitRate`, `HawkesModel`, `HawkesEstimator`, `PoissonEstimator`, `PoissonModel`, `BernoulliEstimator` and `BernoulliModel`. They have not been moved to these guarantees. Most still validate in `update` and return a `Result`.
 
 ## Regression Types
 
@@ -43,7 +43,7 @@ Online regression, learning, and estimation for [nexus-stats](https://crates.io/
 - **Kalman1d / Kalman2d / Kalman3d** — 1D/2D/3D Kalman filters
 - **BernoulliEstimator** and **BernoulliModel**: the probability of a yes-or-no outcome. The estimator fits it from outcomes, and its summary has the estimate, credible and confidence intervals, and a runs test. The model says what to expect of the next trials.
 - **PoissonEstimator** and **PoissonModel**: the rate of a Poisson process. The estimator fits it from counts, and its summary has the estimate, credible and confidence intervals, and a dispersion test of the fit. The model says what count to expect over a future exposure. The intervals are closed-form estimates built for large counts.
-- **HawkesIntensity**: the intensity of a self-exciting point process, for events that cluster (requires `std` or `libm`)
+- **HawkesModel** and **HawkesEstimator**: a self-exciting point process, for events that cluster. The model reports the intensity from parameters you give it. The estimator fits the rate, the branching ratio and the baseline from event times, over a counting window you choose (both require `std` or `libm`)
 
 ## Usage
 

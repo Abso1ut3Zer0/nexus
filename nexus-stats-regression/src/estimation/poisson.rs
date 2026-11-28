@@ -22,7 +22,7 @@ use super::{ConfidenceInterval, CredibleInterval, PredictionInterval};
 /// well a Poisson process describes the data. And [`model`](Self::model) gives the fitted
 /// [`PoissonModel`], which says what to expect next. A rate known already
 /// needs no fitting: build a [`PoissonModel`] from it.
-/// [`HawkesIntensity`](super::HawkesIntensity) is the model for events
+/// [`HawkesModel`](super::HawkesModel) is the model for events
 /// that cluster.
 ///
 /// # The interval is an estimate
@@ -544,6 +544,17 @@ impl PoissonSummary {
     /// An estimate of the probability that a Poisson process would scatter
     /// at least this much. Small means the data is not Poisson. `None`
     /// where [`dispersion`](Self::dispersion) is.
+    ///
+    /// The hypothesis under test is that the data is Poisson. So a small
+    /// value counts against the model, the other way round from the
+    /// p-value of a regression coefficient, where the hypothesis is "no
+    /// effect" and a small value is the result hoped for.
+    ///
+    /// Reading it: below 0.05 is the usual line for "not Poisson", and a
+    /// value near 1 means the counts are more even than chance. With very
+    /// many observations it turns small for a departure too slight to
+    /// matter, so read the [`dispersion`](Self::dispersion) beside it: 1.02
+    /// is a trivial departure and 3 is a serious one.
     ///
     /// It is the upper tail of a chi-square at the fit's statistic, with
     /// `observations - 1` degrees of freedom, by Wilson and Hilferty's

@@ -25,7 +25,7 @@ Time is a third kind, and the caller brings the clock. Physical time is a
 `EventRate`, `CoDel`, `MinMaxNorm` and the windowed extrema take any of
 them, one clock per value, and a span is a `Duration`. A raw `u64` or `u32`
 is a plain count and an `f64` a running quantity; those are `Tick`s but not
-timestamps, for a model such as `HawkesIntensity`. `DecayAccum` and
+timestamps, for a model such as `HawkesModel`. `DecayAccum` and
 `BucketAccumulator` have not moved yet and still take `u64` ticks.
 
 The normalizers (`ZScoreNorm<T>`, `MinMaxNorm<V, T>`, `QuantileNorm<T>`) and

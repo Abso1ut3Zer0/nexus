@@ -175,7 +175,9 @@ type with timestamps, or `PollSaturation`, which is weighted per message.
 - What's the success rate with uncertainty? → **BernoulliEstimator**
   - Not just "73%" but "73%, between 69% and 77%". Its summary also says whether the outcomes come in streaks.
 - What's the event rate with uncertainty? → **PoissonEstimator**
-  - The rate with its interval, and a dispersion test that says whether the events are Poisson at all. If they cluster, use `HawkesIntensity`.
+  - The rate with its interval, and a dispersion test that says whether the events are Poisson at all. If they cluster, see `HawkesEstimator`.
+- Do my events set each other off, and how much? → **HawkesEstimator**
+  - The branching ratio: how many further events each event triggers. You choose a counting window that is long next to a burst.
 - I know the rate or probability. What should I expect next? → **PoissonModel**, **BernoulliModel**
   - The expected count and the range it should fall in. Take one from an estimator with `model()`, or build it from a known parameter.
 - The intervals on all four are fast closed-form estimates, at their best on large counts: from a thousand events for a rate, or once the rarer outcome has been seen a thousand times for a probability. Use SciPy offline for an exact one on a small sample.

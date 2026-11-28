@@ -43,7 +43,7 @@ information. Builders follow their type: `EmaF64Builder` → `EmaBuilder`,
 | `EwmaVarF64` | `EwmVar` (renamed, see below) |
 | `HalfLifeF64` | `HalfLife` |
 | `HarmonicMeanF64` | `HarmonicMean` |
-| `HawkesIntensityF64` | `HawkesIntensity<T>`, now in `estimation` (see the time section) |
+| `HawkesIntensityF64` | `HawkesModel<T>`, now in `estimation` (see the time section) |
 | `HitRateF64` | `HitRate` |
 | `HurstF64` | `Hurst` |
 | `LivenessU64` | `Liveness<T>` (see the time section) |
@@ -250,7 +250,7 @@ on `f32` accumulation for speed, measure: the hot path gains a convert.
 | `HalfLifeBuilder` | `HalfLife::new()` (the builder had no knobs) |
 | `Liveness`'s `span`, `deadline_multiple`, `deadline_absolute`, `min_samples`, `interval()`, `effective_span()`, and the `bool` from `update` and `check` | `check(now)` returns a `Suspicion`; compare `ratio()` and `silence()` to your own limits |
 | `EventRate::builder()`, `rate()`, `interval()`, `effective_span()`, `reset()` | `EventRate::new(start)`, `take(now)?.rate()`, `reset_at(now)` |
-| `HawkesIntensityBuilder::min_samples` | nothing; no reading used it |
+| `HawkesModelBuilder::min_samples` | nothing; no reading used it |
 | `Jitter::builder()`, its `span` / `alpha` / `halflife` / `seed`, `jitter_ratio()`, `last_deviation()`, `effective_span()` | `Jitter::<f64>::new()` or `Jitter::<i64>::new()`. The type is the RFC 3550 estimator with its fixed gain of 1/16. For a ratio, divide by an `Ema` of the same samples |
 | `ErrorRateBuilder::threshold`, `ErrorRate::reconfigure_threshold`, the `Condition` returned by `update` | compare `smoothed_ratio()` or `take().ratio()` to your own limit |
 | `ErrorRate::update_weighted` | no replacement; feed an `Ema` the weighted value yourself |
@@ -816,7 +816,7 @@ liveness.update(Instant::now());        // a Liveness<Instant>
 ```
 
 A raw `u64` is no longer a time. It is a plain count, a `Tick` for a model
-such as `HawkesIntensity`, and a type bound by `Timestamp` will not accept
+such as `HawkesModel`, and a type bound by `Timestamp` will not accept
 it. (`DecayAccum` and `BucketAccumulator` have not moved yet and still
 take `u64` ticks in the old sense.)
 
@@ -1037,12 +1037,14 @@ let fills = model.expected(200);                  // 50.0
   `update` it leaves the rate sound and the test of the fit NaN until
   `reset`. A Poisson process has no two events at one instant.
 
-**`HawkesIntensity`** moved to `estimation`
-(`nexus_stats::estimation::HawkesIntensity`) and runs on any `Tick`. Its
+**`HawkesIntensity`** is now `HawkesModel`, in `estimation`
+(`nexus_stats::estimation::HawkesModel`), and runs on any `Tick`. It is
+the model of its family, as `PoissonModel` is: you give it `mu`, `alpha`
+and `beta`. Its
 rates are per unit of the clock, which is the second on a `Timestamp`.
 Two ways to move old code:
 
-- **Keep a `u64` clock and change nothing.** A `HawkesIntensity<u64>`
+- **Keep a `u64` clock and change nothing.** A `HawkesModel<u64>`
   counts in your ticks as before, so `mu`, `alpha` and `beta` stay per
   tick.
 - **Move to a `Timestamp`** (`i64`, `Nanos`, `Micros`, an `Instant`). The
