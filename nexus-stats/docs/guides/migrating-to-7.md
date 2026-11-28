@@ -337,8 +337,13 @@ CHANGELOG entry in `nexus-stats-core`:
 
 ### Numerics
 
-- `PolynomialRegression` / `EwPolynomialRegression` judge singularity relative
-  to the matrix scale and never return NaN coefficients; `LinearRegression` /
+- `PolynomialRegression` / `EwPolynomialRegression` fit in
+  `u = (x - x_ref) / x_scale` about an anchor that follows the data, so a
+  large x or y offset no longer cancels. `Coefficients` are on powers of
+  `u`: use `eval(x)`, or `to_raw_basis()` for powers of `x`. A fit needs as
+  many distinct x as coefficients, `r_squared` is `None` past what rounding
+  explains (before, it could leave `[0, 1]`), and singularity is judged
+  relative to the matrix scale, never giving NaN coefficients. `LinearRegression` /
   `EwLinearRegression` keep means and co-moments instead of raw power sums,
   so a large x or y offset (unix timestamps, a price level) no longer
   cancels, and return `None` for constant x instead of a rounding-noise
