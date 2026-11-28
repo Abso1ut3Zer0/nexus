@@ -34,7 +34,7 @@ pub use clock::{Micros, Millis, Nanos, Seconds, Span, Tick, Timestamp};
 pub mod storage;
 
 pub use confidence::Confidence;
-pub use enums::{Accuracy, Condition, ConfigError, DataError, Direction};
+pub use enums::{Accuracy, Condition, ConfigError, DataError, Direction, FitError};
 pub use probability::Probability;
 
 /// The numeric types the generic monitors accept. Sealed: named as bounds,

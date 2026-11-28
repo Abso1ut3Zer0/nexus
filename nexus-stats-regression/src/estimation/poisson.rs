@@ -3,7 +3,7 @@ use core::marker::PhantomData;
 #[cfg(any(feature = "std", feature = "libm"))]
 use nexus_stats_core::Confidence;
 use nexus_stats_core::math::{MulAdd, step_mean};
-use nexus_stats_core::{DataError, Span, Tick};
+use nexus_stats_core::{DataError, FitError, Span, Tick};
 
 #[cfg(any(feature = "std", feature = "libm"))]
 use super::{ConfidenceInterval, CredibleInterval, PredictionInterval};
@@ -22,7 +22,7 @@ use super::{ConfidenceInterval, CredibleInterval, PredictionInterval};
 /// well a Poisson process describes the data. And [`model`](Self::model) gives the fitted
 /// [`PoissonModel`], which says what to expect next. A rate known already
 /// needs no fitting: build a [`PoissonModel`] from it.
-/// [`HawkesIntensity`](super::HawkesIntensity) is the model for events
+/// [`HawkesModel`](super::HawkesModel) is the model for events
 /// that cluster.
 ///
 /// # The interval is an estimate
@@ -74,7 +74,7 @@ use super::{ConfidenceInterval, CredibleInterval, PredictionInterval};
 /// assert!(interval.contains(summary.rate()));
 ///
 /// // What to expect over the next five seconds.
-/// let expected = arrivals.model().expected(Duration::from_secs(5));
+/// let expected = arrivals.model().unwrap().expected(Duration::from_secs(5));
 /// assert!((expected - 505.0 / 11.0).abs() < 1e-12);
 /// ```
 #[derive(Debug, Clone)]
@@ -114,7 +114,9 @@ impl<T: Tick> PoissonEstimator<T> {
     /// The count is a `u64` and adds as `+` does, so past `u64::MAX` it
     /// panics in a debug build and wraps in a release one. An exposure
     /// that is not a number, or is below zero, corrupts the estimate from
-    /// here on.
+    /// here on. An infinite one is taken as the arithmetic gives it: the
+    /// rate becomes zero, and [`model`](Self::model) gives a model of a
+    /// process with no events.
     ///
     /// An exposure of zero leaves the rate sound and spoils the test of
     /// the fit: the [`summary`](Self::summary)'s chi-square, dispersion
@@ -168,13 +170,19 @@ impl<T: Tick> PoissonEstimator<T> {
     ///
     /// It carries the rate only. What uncertainty is left in the rate is
     /// in the [`summary`](Self::summary).
+    ///
+    /// With a prior alone there is already a model, so there is never too
+    /// little data for one.
+    ///
+    /// # Errors
+    ///
+    /// [`FitError::Degenerate`] if the fitted rate is not one a model can
+    /// have: NaN, infinite or below zero. Sound input cannot do that. It
+    /// takes an exposure that is NaN or negative, fed through plain
+    /// `update`, which [`checked_update`](Self::checked_update) refuses.
     #[inline]
-    #[must_use]
-    pub fn model(&self) -> PoissonModel<T> {
-        PoissonModel {
-            rate: self.posterior().mean(),
-            clock: PhantomData,
-        }
+    pub fn model(&self) -> Result<PoissonModel<T>, FitError> {
+        PoissonModel::new(self.posterior().mean()).map_err(|_| FitError::Degenerate)
     }
 
     /// How good the fit is: the rate, how far off it may be, and whether
@@ -544,6 +552,20 @@ impl PoissonSummary {
     /// An estimate of the probability that a Poisson process would scatter
     /// at least this much. Small means the data is not Poisson. `None`
     /// where [`dispersion`](Self::dispersion) is.
+    ///
+    /// The hypothesis under test is that the data is Poisson, so a small
+    /// value counts against the model. A small p-value always counts
+    /// against its hypothesis. For a regression coefficient the hypothesis
+    /// is "no effect", so there a small value is the result hoped for,
+    /// and here it is not.
+    ///
+    /// Reading it: below 0.05 is the usual line for "not Poisson". The
+    /// test looks one way only, at counts that scatter too much, which is
+    /// clustering. Counts more even than chance give a value near 1 and
+    /// never fall below that line, so read a dispersion below 1 for those. With very
+    /// many observations it turns small for a departure too slight to
+    /// matter, so read the [`dispersion`](Self::dispersion) beside it: 1.02
+    /// is a trivial departure and 3 is a serious one.
     ///
     /// It is the upper tail of a chi-square at the fit's statistic, with
     /// `observations - 1` degrees of freedom, by Wilson and Hilferty's
@@ -1301,7 +1323,7 @@ mod tests {
         assert!(summary.p_value().unwrap().is_nan());
         assert!(summary.credible_interval(confidence).unwrap().is_nan());
         assert!(summary.confidence_interval(confidence).unwrap().is_nan());
-        assert!(gp.model().rate().is_nan());
+        assert_eq!(gp.model(), Err(FitError::Degenerate));
         let model = PoissonModel::<f64>::new(4.0).unwrap();
         let interval = model.interval(f64::NAN, Confidence::new(0.95));
         assert!(interval.is_nan());
@@ -1320,7 +1342,7 @@ mod tests {
     #[test]
     fn the_model_is_the_fitted_rate() {
         let gp = fitted(&STEADY);
-        let model = gp.model();
+        let model = gp.model().unwrap();
         assert_eq!(model.rate(), gp.summary().rate());
         assert_eq!(model.expected(10.0), gp.summary().rate() * 10.0);
     }

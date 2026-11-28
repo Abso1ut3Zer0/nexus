@@ -39,7 +39,8 @@
 //! | `BernoulliModel` | What to expect of trials at a known probability | the interval needs `std` or `libm` |
 //! | `PoissonEstimator` | Rate of a Poisson process, fitted from counts | the intervals and p-value need `std` or `libm` |
 //! | `PoissonModel` | What count to expect at a known rate | the interval needs `std` or `libm` |
-//! | `HawkesIntensity` | Intensity of a self-exciting point process | `std` or `libm` |
+//! | `HawkesModel` | Intensity of a self-exciting point process | `std` or `libm` |
+//! | `HawkesEstimator` | Fits a Hawkes process from event times | `std` or `libm` |
 //!
 //! # Re-export
 //!
@@ -61,12 +62,14 @@ mod probability;
 /// Regression and classification.
 pub mod regression;
 
-/// The clock a `HawkesIntensity` runs on: any [`Tick`]. A [`Timestamp`] is
+/// The clock a `HawkesModel` runs on: any [`Tick`]. A [`Timestamp`] is
 /// a tick of physical time.
 pub use nexus_stats_core::{Micros, Millis, Nanos, Seconds, Span, Tick, Timestamp};
 
 /// The confidence of an interval, as the summaries' and models' interval
 /// methods take it.
 pub use nexus_stats_core::Confidence;
+/// Why a fit cannot give a model, as an estimator's `model` returns it.
+pub use nexus_stats_core::FitError;
 /// A probability from 0 to 1, as `BernoulliModel::new` takes it.
 pub use nexus_stats_core::Probability;

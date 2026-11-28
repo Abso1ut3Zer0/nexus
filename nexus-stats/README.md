@@ -32,7 +32,7 @@ without latency jitter.
 - `trading`: `Cvar`, `KyleLambda`
 - `control`, `frequency`: every type
 - `detection`, `signal`: every type except `HalfLife` and `Hurst`
-- `regression`, `learning`, `estimation`: every type except `HitRate`, `HawkesIntensity`, `PoissonEstimator`, `PoissonModel`, `BernoulliEstimator` and `BernoulliModel`
+- `regression`, `learning`, `estimation`: every type except `HitRate`, `HawkesModel`, `HawkesEstimator`, `PoissonEstimator`, `PoissonModel`, `BernoulliEstimator` and `BernoulliModel`
 
 ## Quick Start
 
@@ -99,7 +99,8 @@ docs, and each module's docs say which type to use for what.
 | `AsymEma` | Different alpha for rising vs falling | 12 |
 | `Kama` | Kaufman adaptive MA (adapts to trend/noise) | 15 |
 | `Kalman1d` | 1D Kalman filter with velocity tracking | 26 |
-| `HawkesIntensity` *(std\|libm)* | Intensity of a self-exciting point process (clustered events) | 27 |
+| `HawkesModel` *(std\|libm)* | Intensity of a self-exciting point process (clustered events) | 27 |
+| `HawkesEstimator` *(std\|libm)* | Fits a Hawkes process from event times: rate, branching ratio, baseline | 10 |
 | `Holt` | Double exponential (level + trend) | 11 |
 | `Spring` | Critically damped spring (smooth target chasing) | 13 |
 | `Slew` | Slew rate limiter: caps the change per sample | 8 |
@@ -224,7 +225,7 @@ feature vectors.
 
 The clocked types take the caller's clock. `Liveness`, `EventRate`, `CoDel`,
 `MinMaxNorm` and the windowed extrema take any `Timestamp`, with spans as
-`Duration`. `HawkesIntensity` takes any `Tick`.
+`Duration`. `HawkesModel` takes any `Tick`.
 
 | Clock | Means |
 |---|---|
@@ -248,7 +249,7 @@ All types follow consistent conventions:
 - **Priming** — returns `None` until `min_samples` reached
 - **`is_primed()`** — check if enough data has been seen
 - **`count()`** — total samples processed
-- **`reset()`** — clear state for operational/admin reset
+- **`reset()`** — clear state for operational/admin reset (`reset_at(time)` on a type whose windows count from a time)
 - **`seed()`** — skip warmup with pre-loaded baseline (CUSUM, EMA, AdaptiveThreshold)
 - **`#[must_use]`** — compiler warns if you ignore return values
 
@@ -329,7 +330,8 @@ See [`docs/use-cases/trading.md`](docs/use-cases/trading.md) for full guide with
 | Jump-robust volatility | `BipowerVariation` | trading |
 | Implicit spread estimation | `RollSpread` | trading |
 | Noise-corrected realized vol | `TwoScaleRv` | trading |
-| Bursty event intensity | `HawkesIntensity` | estimation |
+| Bursty event intensity | `HawkesModel` | estimation |
+| How much events set each other off | `HawkesEstimator` | estimation |
 | Conditional smoothing | `Ema`, updated only when the condition holds | smoothing |
 | Venue selection | `ThompsonBeta` / `Ucb1` | regression |
 | Parameter A/B testing | `Ucb1` / `EpsilonGreedy` | regression |

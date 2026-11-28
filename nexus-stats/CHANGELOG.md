@@ -24,6 +24,13 @@ contained.
 
 ### Added
 
+- `estimation::HawkesEstimator`: fits a Hawkes process from event times
+  in closed form, with the counting window and the decay as settings. Its
+  `summary()` has the rate, the branching ratio and the baseline, and its
+  `model()` gives a `HawkesModel`, or says why there is none.
+- `FitError`, exported at the root: why a fit cannot give a model.
+  `HawkesEstimator::model()` and `PoissonEstimator::model()` return a
+  `Result` with it.
 - `monitoring::ErrorRate::summary()` and `EventRate::summary(now)`: peek at
   the interval so far without closing it.
 
@@ -41,7 +48,7 @@ contained.
   Physical time is `i128` or `i64` nanoseconds, an `Instant`, a named unit
   (`Nanos`, `Micros`, `Millis`, `Seconds`), or a type of your own. A model
   can run on any tick: a count (`u64`, `u32`) or a quantity such as volume
-  (`f64`). `HawkesIntensity` does.
+  (`f64`). `HawkesModel` does.
 
 ### Changed (breaking)
 
@@ -67,13 +74,15 @@ contained.
 
 - **Physical clock time is `i128` nanoseconds or `Instant`,** through the
   new `Timestamp` trait (widened and opened in the clocks entry above). `Liveness`, `EventRate` and
-  `HawkesIntensity` are the first types on it; the others that take time
+  `HawkesModel` are the first types on the caller's clock (`HawkesModel`
+  on any `Tick`); the others that take time
   still take `u64` ticks and move as they are converted.
 - **`monitoring::Liveness`** follows Cassandra's failure detector and
   reports a suspicion level, not a verdict.
 - **`monitoring::EventRate`** counts events and reports a window's rate and
   the 1, 5 and 15 minute load on `take`.
-- **`HawkesIntensity` moves from `monitoring` to `estimation`.**
+- **`HawkesIntensity` is now `estimation::HawkesModel`,** moved from
+  `monitoring` and renamed to match `PoissonModel` and `BernoulliModel`.
 
 ### Changed (breaking)
 
