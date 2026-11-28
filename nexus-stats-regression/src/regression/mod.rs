@@ -5,6 +5,8 @@ mod hit_rate;
 #[cfg(all(feature = "alloc", any(feature = "std", feature = "libm")))]
 mod lagged_predictor;
 pub(crate) mod linear_regression;
+#[cfg(all(test, feature = "std"))]
+mod polynomial_fuzz;
 pub(crate) mod polynomial_regression;
 #[cfg(all(feature = "alloc", any(feature = "std", feature = "libm")))]
 mod signal_decay;

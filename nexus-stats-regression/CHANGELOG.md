@@ -60,6 +60,13 @@ contained.
 - **A zero exposure is not a Poisson observation.** Plain `update` takes
   it, and the test of the fit reads NaN until `reset`. `checked_update`
   refuses it with `DataError::OutOfRange`.
+- **`Coefficients` are on powers of `u = (x - x_ref) / x_scale`,** as
+  MATLAB's `polyfit` with `mu` and NumPy's `Polynomial.fit` with `domain` /
+  `window` ([#794](https://github.com/Abso1ut3Zer0/nexus/issues/794)).
+  `eval(x)` and `predict(x)` take a raw `x`; `x_ref()`, `x_scale()` and
+  `to_raw_basis()` are new, and both polynomial builders take `x_scale`
+  (default 1). `PolynomialRegression` and `EwPolynomialRegression` grow to
+  344 and 368 bytes.
 
 ### Added
 
@@ -214,6 +221,7 @@ contained.
 
 ### Fixed
 
+- **`PolynomialRegression` and `EwPolynomialRegression` keep the fit at large offsets** ([#794](https://github.com/Abso1ut3Zer0/nexus/issues/794)): raw power sums cancelled far from zero: a degree-2 fit to 100 samples one apart was lost at an offset of 1e4. The sums are now kept about an anchor, a recent sample, moved when the mean drifts past two standard deviations in x or y (Pébay, 2008; pandas `aggregations.pyx`). An update that moves it costs O(degree²). `coefficients` is `None` until as many distinct x as coefficients have been seen, where rounding could let a rank-deficient solve through. `r_squared` is `None` when y has no spread past rounding, and when the sums give a value outside `[0, 1]` by more than evaluating them rounds; before, such a value came back as is. The limits that remain are measured in the rustdoc.
 - **`LinearRegression` and `EwLinearRegression` keep the fit at large offsets** ([#792](https://github.com/Abso1ut3Zer0/nexus/issues/792)): both accumulated raw power sums, so with x on a unix-timestamp scale or y on a price level the slope cancelled to rounding noise and `slope()` returned `None` on a perfect line. They now keep means and co-moments about them (Welford; West's weighted form for the EW type), anchored on the latest sample; through-origin mode keeps raw sums. `ExponentialRegression`, `LogarithmicRegression`, `PowerRegression`, their `Ew` forms and `KyleLambda` inherit the fix. The degenerate-x check is now exact (every x equal), so a one-tick spread at a large offset is no longer rejected, and `r_squared` is clamped to `[0, 1]`.
 - **`no_std` + `libm` builds again.** `PowerRegression::predict` and
   `EwPowerRegression::predict` called `f64::powf` directly, which only exists

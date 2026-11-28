@@ -110,7 +110,9 @@ type with timestamps, or `PollSaturation`, which is weighted per message.
 - Proportional relationship through origin → `LinearRegression::through_origin()`
   - `y = ax`, no intercept. Rate estimation, calibration.
 - Quadratic / cubic / higher-degree curve → **PolynomialRegression**
-  - Builder: `.degree(3)`. Acceleration detection, complex curvature.
+  - Builder: `.degree(3)`. Acceleration detection, complex curvature. A
+    curve in time that forgets: **Kalman2d** / **Kalman3d** (level, trend
+    and, for 3d, curvature as the state).
 - Exponential growth or decay → **ExponentialRegression**
   - `y = ae^(bx)`. Growth rate estimation, half-life.
 - Logarithmic / diminishing returns → **LogarithmicRegression**
